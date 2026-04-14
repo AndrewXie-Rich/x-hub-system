@@ -28,7 +28,7 @@ function reqClientFromEnv() {
   return {
     device_id: (process.env.HUB_DEVICE_ID || 'terminal_device').trim(),
     user_id: (process.env.HUB_USER_ID || '').trim(),
-    app_id: (process.env.HUB_APP_ID || 'ax_terminal').trim(),
+    app_id: (process.env.HUB_APP_ID || 'x_terminal').trim(),
     project_id: (process.env.HUB_PROJECT_ID || '').trim(),
     session_id: (process.env.HUB_SESSION_ID || '').trim(),
   };

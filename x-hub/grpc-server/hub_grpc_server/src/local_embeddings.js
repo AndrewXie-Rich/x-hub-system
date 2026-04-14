@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { listRuntimeModelRecords } from './local_runtime_ipc.js';
+import { buildLocalRuntimeSpawnConfig, resolveLocalTaskModelRecord } from './local_runtime_ipc.js';
 import { buildLocalTaskFailure, evaluateLocalTaskPolicyGate } from './local_task_policy.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -131,15 +131,16 @@ function filterEmbeddingEligibleDocs(documents, { allowedSensitivity, allowUntru
 function defaultRuntimeTaskExecutor({ runtimeBaseDir, request, timeoutMs = 30_000 } = {}) {
   const baseDir = safeString(runtimeBaseDir);
   const payload = JSON.stringify(request || {});
+  const spawnConfig = buildLocalRuntimeSpawnConfig({ runtimeBaseDir: baseDir });
+  if (!spawnConfig.executable) {
+    return Promise.reject(new Error(spawnConfig.error || 'local_runtime_python_unavailable'));
+  }
   return new Promise((resolve, reject) => {
     const child = spawn(
-      'python3',
+      spawnConfig.executable,
       [LOCAL_RUNTIME_SCRIPT, 'run-local-task', '-'],
       {
-        env: {
-          ...process.env,
-          REL_FLOW_HUB_BASE_DIR: baseDir,
-        },
+        env: spawnConfig.env,
         stdio: ['pipe', 'pipe', 'pipe'],
       }
     );
@@ -196,27 +197,6 @@ function defaultRuntimeTaskExecutor({ runtimeBaseDir, request, timeoutMs = 30_00
       }
     }
   });
-}
-
-function resolveLocalEmbeddingModel(runtimeBaseDir, preferredModelId = '') {
-  const preferred = safeString(preferredModelId);
-  const records = listRuntimeModelRecords(runtimeBaseDir);
-  if (preferred) {
-    const exact = records.find((record) =>
-      safeString(record?.model_id) === preferred
-      && safeString(record?.backend).toLowerCase() === 'transformers'
-      && Array.isArray(record?.task_kinds)
-      && record.task_kinds.includes(EMBED_TASK_KIND)
-      && safeString(record?.model_path)
-    );
-    if (exact) return exact;
-  }
-  return records.find((record) =>
-    safeString(record?.backend).toLowerCase() === 'transformers'
-    && Array.isArray(record?.task_kinds)
-    && record.task_kinds.includes(EMBED_TASK_KIND)
-    && safeString(record?.model_path)
-  ) || null;
 }
 
 async function requestEmbeddingVectors({
@@ -395,13 +375,28 @@ export async function prepareLocalMemoryEmbeddings({
     });
   }
 
-  const model = resolveLocalEmbeddingModel(baseDir, preferredModelId);
-  if (!model) {
+  const modelSelection = resolveLocalTaskModelRecord({
+    runtimeBaseDir: baseDir,
+    taskKind: EMBED_TASK_KIND,
+    deviceId,
+    preferredModelId,
+    providerId: EMBED_PROVIDER,
+    requireLocalPath: true,
+  });
+  if (!modelSelection.ok) {
     return fail({
       rawDenyCode: 'local_embedding_model_unavailable',
+      message: safeString(modelSelection.message) || 'local_embedding_model_unavailable',
       blockedBy: 'provider',
+      extra: {
+        provider: EMBED_PROVIDER,
+        model_id: safeString(modelSelection.resolved_model_id),
+        route_source: safeString(modelSelection.route_source),
+        route_reason_code: safeString(modelSelection.reason_code),
+      },
     });
   }
+  const model = modelSelection.model;
 
   const eligibleDocs = filterEmbeddingEligibleDocs(defaultSelectDocs(documents), {
     allowedSensitivity,
@@ -447,6 +442,8 @@ export async function prepareLocalMemoryEmbeddings({
       extra: {
         provider: 'transformers',
         model_id: safeString(model?.model_id),
+        route_source: safeString(modelSelection.route_source),
+        resolved_model_id: safeString(modelSelection.resolved_model_id) || safeString(model?.model_id),
         eligible_document_count: eligibleDocs.length,
         truncated_document_count: truncatedDocumentCount,
         sanitized_change_count: sanitizedChangeCount,
@@ -475,6 +472,9 @@ export async function prepareLocalMemoryEmbeddings({
       extra: {
         provider: safeString(vectorResponse.provider) || 'transformers',
         model_id: safeString(vectorResponse.model_id) || safeString(model?.model_id),
+        route_source: safeString(modelSelection.route_source),
+        resolved_model_id: safeString(modelSelection.resolved_model_id) || safeString(model?.model_id),
+        route_reason_code: safeString(modelSelection.reason_code),
         attempted: !!vectorResponse.attempted,
         eligible_document_count: eligibleDocs.length,
         truncated_document_count: truncatedDocumentCount,
@@ -505,6 +505,8 @@ export async function prepareLocalMemoryEmbeddings({
     latency_ms: Math.max(0, Date.now() - startedAtMs),
     provider: safeString(vectorResponse.provider) || 'transformers',
     model_id: safeString(vectorResponse.model_id) || safeString(model?.model_id),
+    route_source: safeString(modelSelection.route_source),
+    resolved_model_id: safeString(modelSelection.resolved_model_id) || safeString(vectorResponse.model_id) || safeString(model?.model_id),
     dims: Math.max(0, safeNum(vectorResponse.dims, vectorDims(queryVector))),
     query_embedding: queryVector,
     documents: embeddedDocs,

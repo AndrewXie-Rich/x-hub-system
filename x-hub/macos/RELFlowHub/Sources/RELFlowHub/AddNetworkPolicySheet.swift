@@ -13,24 +13,24 @@ struct AddNetworkPolicySheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Add Network Policy")
+            Text(HubUIStrings.Settings.NetworkPolicySheet.title)
                 .font(.headline)
 
-            TextField("App (e.g. X-Terminal or *)", text: $appId)
+            TextField(HubUIStrings.Settings.NetworkPolicySheet.appPlaceholder, text: $appId)
                 .textFieldStyle(.roundedBorder)
 
-            TextField("Project (user name or *)", text: $projectId)
+            TextField(HubUIStrings.Settings.NetworkPolicySheet.projectPlaceholder, text: $projectId)
                 .textFieldStyle(.roundedBorder)
 
-            Picker("Mode", selection: $mode) {
-                Text("Manual").tag(HubNetworkPolicyMode.manual)
-                Text("Auto-approve").tag(HubNetworkPolicyMode.autoApprove)
-                Text("Always-on").tag(HubNetworkPolicyMode.alwaysOn)
-                Text("Deny").tag(HubNetworkPolicyMode.deny)
+            Picker(HubUIStrings.Settings.NetworkPolicySheet.mode, selection: $mode) {
+                Text(HubUIStrings.Settings.NetworkPolicySheet.manual).tag(HubNetworkPolicyMode.manual)
+                Text(HubUIStrings.Settings.NetworkPolicySheet.autoApprove).tag(HubNetworkPolicyMode.autoApprove)
+                Text(HubUIStrings.Settings.NetworkPolicySheet.alwaysOn).tag(HubNetworkPolicyMode.alwaysOn)
+                Text(HubUIStrings.Settings.NetworkPolicySheet.deny).tag(HubNetworkPolicyMode.deny)
             }
             .pickerStyle(.menu)
 
-            TextField("Max minutes (optional)", text: $maxMinutes)
+            TextField(HubUIStrings.Settings.NetworkPolicySheet.maxMinutesPlaceholder, text: $maxMinutes)
                 .textFieldStyle(.roundedBorder)
 
             if !errorText.isEmpty {
@@ -43,12 +43,12 @@ struct AddNetworkPolicySheet: View {
 
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
-                Button("Add") {
+                Button(HubUIStrings.Settings.NetworkPolicySheet.cancel) { dismiss() }
+                Button(HubUIStrings.Settings.NetworkPolicySheet.add) {
                     let app = appId.trimmingCharacters(in: .whitespacesAndNewlines)
                     let proj = projectId.trimmingCharacters(in: .whitespacesAndNewlines)
                     if app.isEmpty || proj.isEmpty {
-                        errorText = "App and Project are required (use * for wildcard)."
+                        errorText = HubUIStrings.Settings.NetworkPolicySheet.missingRequiredFields
                         return
                     }
                     let mins = Int(maxMinutes.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0

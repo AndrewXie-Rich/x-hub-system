@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import {
   getSupervisorOperatorChannelBindingById,
+  normalizeSupervisorScopeType,
   resolveSupervisorOperatorChannelBinding,
 } from './channel_bindings_store.js';
 import { getChannelActionPolicy } from './channel_command_gate.js';
@@ -12,6 +13,7 @@ import {
   normalizeSupervisorChannelRouteMode,
   upsertSupervisorChannelSessionRoute,
 } from './supervisor_channel_session_store.js';
+import { buildSupervisorRouteGovernanceRuntimeReadinessProjection } from './governance_runtime_readiness_projection.js';
 import { nowMs } from './util.js';
 
 function safeString(input) {
@@ -123,6 +125,33 @@ function deviceSupportsProjectScope(device, projectId) {
   if (!project) return true;
   if (!allowed.length) return true;
   return allowed.includes(project);
+}
+
+function normalizeAllowedScopeTypes(policy = null) {
+  const rows = Array.isArray(policy?.allowed_scope_types) ? policy.allowed_scope_types : [];
+  const out = [];
+  const seen = new Set();
+  for (const raw of rows) {
+    const scopeType = normalizeSupervisorScopeType(raw, '');
+    if (!scopeType || seen.has(scopeType)) continue;
+    seen.add(scopeType);
+    out.push(scopeType);
+  }
+  return out;
+}
+
+function resolveRouteScopeType(binding, route_context = {}) {
+  return normalizeSupervisorScopeType(
+    route_context.scope_type || binding?.scope_type,
+    binding?.scope_type || 'project'
+  );
+}
+
+function routeRequiresScopeSwitch(binding, action_name, route_context = {}) {
+  const policy = getChannelActionPolicy(action_name);
+  const allowedScopeTypes = normalizeAllowedScopeTypes(policy);
+  if (!policy || !allowedScopeTypes.length) return false;
+  return !allowedScopeTypes.includes(resolveRouteScopeType(binding, route_context));
 }
 
 function runnerReadyForScope(device, projectId) {
@@ -242,6 +271,7 @@ function buildRouteResult({
   same_project_scope = false,
   deny_code = '',
   selected_by = 'none',
+  governance_runtime_readiness = null,
 } = {}) {
   return {
     schema_version: SUPERVISOR_CHANNEL_SESSION_ROUTE_SCHEMA,
@@ -262,6 +292,9 @@ function buildRouteResult({
     deny_code: safeString(deny_code),
     action_name: safeString(action_name).toLowerCase(),
     selected_by,
+    governance_runtime_readiness: governance_runtime_readiness && typeof governance_runtime_readiness === 'object'
+      ? governance_runtime_readiness
+      : null,
     updated_at_ms: nowMs(),
   };
 }
@@ -304,6 +337,15 @@ export function resolveSupervisorChannelRoute({
   }
 
   const actionRouteMode = resolveActionRouteMode(action_name);
+  if (routeRequiresScopeSwitch(channelBinding, action_name, route_context)) {
+    return buildRouteResult({
+      binding: channelBinding,
+      action_name,
+      route_mode: 'hub_only_status',
+      deny_code: 'scope_switch_required',
+      selected_by: 'none',
+    });
+  }
   const scopeProjectId = resolveScopeProjectId(channelBinding, route_context);
   const devices = buildRoutableDevices({
     runtimeBaseDir,
@@ -318,6 +360,39 @@ export function resolveSupervisorChannelRoute({
     route_mode: actionRouteMode,
     project_id: scopeProjectId,
   });
+  const buildRouteGovernanceRuntimeReadiness = ({
+    route_mode,
+    resolved_device_id = '',
+    xt_online = false,
+    runner_required = false,
+    same_project_scope = false,
+    deny_code = '',
+    selected_by = selection.selected_by,
+    device = selection.device,
+  } = {}) => {
+    const routePreview = {
+      project_id: scopeProjectId,
+      decision: safeString(route_mode),
+      preferred_device_id: safeString(channelBinding.preferred_device_id || (safeString(channelBinding.scope_type) === 'device' ? channelBinding.scope_id : '')),
+      resolved_device_id: safeString(resolved_device_id),
+      runner_required: !!runner_required,
+      xt_online: !!xt_online,
+      same_project_scope: !!same_project_scope,
+      deny_code: safeString(deny_code),
+      selected_by: safeString(selected_by),
+    };
+    return buildSupervisorRouteGovernanceRuntimeReadinessProjection({
+      route: routePreview,
+      intent: safeString(action_name),
+      require_xt: actionRouteMode === 'hub_to_xt' || actionRouteMode === 'hub_to_runner',
+      require_runner: actionRouteMode === 'hub_to_runner',
+      auth_kind: 'client',
+      client_capability: 'events',
+      trust_profile_present: !!device?.trust_profile_present,
+      trusted_automation_mode: safeString(device?.trusted_automation_mode),
+      trusted_automation_state: safeString(device?.trusted_automation_state),
+    });
+  };
 
   if (actionRouteMode === 'hub_only_status') {
     const xtOnline = !!selection.device?.xt_online;
@@ -333,6 +408,17 @@ export function resolveSupervisorChannelRoute({
         : false,
       deny_code: '',
       selected_by: selection.selected_by,
+      governance_runtime_readiness: buildRouteGovernanceRuntimeReadiness({
+        route_mode: 'hub_only_status',
+        resolved_device_id: selection.device?.device_id || '',
+        xt_online: xtOnline,
+        runner_required: false,
+        same_project_scope: selection.device
+          ? deviceSupportsProjectScope(selection.device, scopeProjectId)
+          : false,
+        deny_code: '',
+        device: selection.device,
+      }),
     });
   }
 
@@ -346,6 +432,13 @@ export function resolveSupervisorChannelRoute({
           ? 'project_device_ambiguous'
           : 'preferred_device_missing',
         selected_by: selection.selected_by,
+        governance_runtime_readiness: buildRouteGovernanceRuntimeReadiness({
+          route_mode: 'xt_offline',
+          deny_code: selection.selected_by === 'ambiguous'
+            ? 'project_device_ambiguous'
+            : 'preferred_device_missing',
+          device: null,
+        }),
       });
     }
     if (!selection.device.xt_online) {
@@ -358,6 +451,14 @@ export function resolveSupervisorChannelRoute({
         same_project_scope: selection.same_project_scope,
         deny_code: 'preferred_device_offline',
         selected_by: selection.selected_by,
+        governance_runtime_readiness: buildRouteGovernanceRuntimeReadiness({
+          route_mode: 'xt_offline',
+          resolved_device_id: selection.device.device_id,
+          xt_online: false,
+          same_project_scope: selection.same_project_scope,
+          deny_code: 'preferred_device_offline',
+          device: selection.device,
+        }),
       });
     }
     if (!selection.same_project_scope) {
@@ -370,6 +471,14 @@ export function resolveSupervisorChannelRoute({
         same_project_scope: false,
         deny_code: 'preferred_device_project_scope_mismatch',
         selected_by: selection.selected_by,
+        governance_runtime_readiness: buildRouteGovernanceRuntimeReadiness({
+          route_mode: 'xt_offline',
+          resolved_device_id: selection.device.device_id,
+          xt_online: true,
+          same_project_scope: false,
+          deny_code: 'preferred_device_project_scope_mismatch',
+          device: selection.device,
+        }),
       });
     }
     return buildRouteResult({
@@ -382,6 +491,15 @@ export function resolveSupervisorChannelRoute({
       same_project_scope: true,
       deny_code: '',
       selected_by: selection.selected_by,
+      governance_runtime_readiness: buildRouteGovernanceRuntimeReadiness({
+        route_mode: 'hub_to_xt',
+        resolved_device_id: selection.device.device_id,
+        xt_online: true,
+        runner_required: false,
+        same_project_scope: true,
+        deny_code: '',
+        device: selection.device,
+      }),
     });
   }
 
@@ -397,6 +515,14 @@ export function resolveSupervisorChannelRoute({
         ? 'runner_device_ambiguous'
         : 'runner_device_missing',
       selected_by: selection.selected_by,
+      governance_runtime_readiness: buildRouteGovernanceRuntimeReadiness({
+        route_mode: 'runner_not_ready',
+        runner_required: true,
+        deny_code: selection.selected_by === 'ambiguous'
+          ? 'runner_device_ambiguous'
+          : 'runner_device_missing',
+        device: null,
+      }),
     });
   }
   if (!runnerDevice.xt_online) {
@@ -410,6 +536,15 @@ export function resolveSupervisorChannelRoute({
       same_project_scope: selection.same_project_scope,
       deny_code: 'preferred_device_offline',
       selected_by: selection.selected_by,
+      governance_runtime_readiness: buildRouteGovernanceRuntimeReadiness({
+        route_mode: 'xt_offline',
+        resolved_device_id: runnerDevice.device_id,
+        xt_online: false,
+        runner_required: true,
+        same_project_scope: selection.same_project_scope,
+        deny_code: 'preferred_device_offline',
+        device: runnerDevice,
+      }),
     });
   }
   if (!runnerReadiness.ready) {
@@ -423,6 +558,15 @@ export function resolveSupervisorChannelRoute({
       same_project_scope: selection.same_project_scope,
       deny_code: runnerReadiness.deny_code,
       selected_by: selection.selected_by,
+      governance_runtime_readiness: buildRouteGovernanceRuntimeReadiness({
+        route_mode: 'runner_not_ready',
+        resolved_device_id: runnerDevice.device_id,
+        xt_online: true,
+        runner_required: true,
+        same_project_scope: selection.same_project_scope,
+        deny_code: runnerReadiness.deny_code,
+        device: runnerDevice,
+      }),
     });
   }
   return buildRouteResult({
@@ -435,6 +579,15 @@ export function resolveSupervisorChannelRoute({
     same_project_scope: true,
     deny_code: '',
     selected_by: selection.selected_by,
+    governance_runtime_readiness: buildRouteGovernanceRuntimeReadiness({
+      route_mode: 'hub_to_runner',
+      resolved_device_id: runnerDevice.device_id,
+      xt_online: true,
+      runner_required: true,
+      same_project_scope: true,
+      deny_code: '',
+      device: runnerDevice,
+    }),
   });
 }
 

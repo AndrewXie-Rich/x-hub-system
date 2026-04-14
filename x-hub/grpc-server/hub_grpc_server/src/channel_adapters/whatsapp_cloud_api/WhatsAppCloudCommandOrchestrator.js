@@ -1,4 +1,5 @@
 import { normalizeChannelProviderId } from '../../channel_registry.js';
+import { buildChannelStableExternalId } from '../../channel_identity_store.js';
 import {
   classifyOperatorChannelCommandDispatch,
   createOperatorChannelCommandOrchestrator,
@@ -28,10 +29,18 @@ function normalizePendingGrant(input = null) {
 
 function normalizeWhatsAppCloudActor(input = {}) {
   const actor = safeObject(input);
+  const external_user_id = safeString(actor.external_user_id || actor.wa_id || actor.user_id || actor.id);
+  const external_tenant_id = safeString(actor.external_tenant_id || actor.account_id || actor.phone_number_id);
   return {
     provider: 'whatsapp_cloud_api',
-    external_user_id: safeString(actor.external_user_id || actor.wa_id || actor.user_id || actor.id),
-    external_tenant_id: safeString(actor.external_tenant_id || actor.account_id || actor.phone_number_id),
+    stable_external_id: buildChannelStableExternalId({
+      provider: 'whatsapp_cloud_api',
+      stable_external_id: actor.stable_external_id,
+      external_user_id,
+      external_tenant_id,
+    }),
+    external_user_id,
+    external_tenant_id,
   };
 }
 

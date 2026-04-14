@@ -170,3 +170,105 @@ await run('prepareLocalMemoryEmbeddings returns vectors and reuses cache across 
   assert.equal(second.cache_hit_count >= 3, true);
   assert.equal(executorCalls, 1);
 });
+
+await run('prepareLocalMemoryEmbeddings honors device routing overrides and reports route source', async () => {
+  const runtimeBaseDir = makeTempRuntimeDir();
+  writeJson(path.join(runtimeBaseDir, 'models_state.json'), {
+    updatedAt: Date.now() / 1000.0,
+    models: [
+      {
+        id: 'hf-embed-default',
+        name: 'HF Embed Default',
+        backend: 'transformers',
+        modelPath: '/models/hf-embed-default',
+        taskKinds: ['embedding'],
+        inputModalities: ['text'],
+        outputModalities: ['embedding'],
+      },
+      {
+        id: 'hf-embed-device',
+        name: 'HF Embed Device',
+        backend: 'transformers',
+        modelPath: '/models/hf-embed-device',
+        taskKinds: ['embedding'],
+        inputModalities: ['text'],
+        outputModalities: ['embedding'],
+      },
+    ],
+  });
+  writeJson(path.join(runtimeBaseDir, 'routing_settings.json'), {
+    hubDefaultModelIdByTaskKind: {
+      embedding: 'hf-embed-default',
+    },
+    devicePreferredModelIdByTaskKind: {
+      terminal_device: {
+        embedding: 'hf-embed-device',
+      },
+    },
+  });
+
+  const out = await prepareLocalMemoryEmbeddings({
+    runtimeBaseDir,
+    requestId: 'req-route-embed',
+    deviceId: 'terminal_device',
+    query: 'water purchase',
+    documents: [
+      {
+        id: 'doc-1',
+        title: 'water',
+        text: 'buy bottled water',
+        sensitivity: 'public',
+        trust_level: 'trusted',
+        created_at_ms: 1000,
+      },
+    ],
+    executor: async ({ request }) => {
+      assert.equal(String(request?.model_id || ''), 'hf-embed-device');
+      return {
+        ok: true,
+        provider: 'transformers',
+        modelId: 'hf-embed-device',
+        dims: 2,
+        latencyMs: 5,
+        vectors: [[1, 0], [0, 1]],
+      };
+    },
+  });
+
+  assert.equal(out.ok, true);
+  assert.equal(out.model_id, 'hf-embed-device');
+  assert.equal(out.route_source, 'device_override');
+  assert.equal(out.resolved_model_id, 'hf-embed-device');
+});
+
+await run('prepareLocalMemoryEmbeddings fails closed when routed embedding model is missing', async () => {
+  const runtimeBaseDir = makeTempRuntimeDir();
+  seedRuntimeState(runtimeBaseDir);
+  writeJson(path.join(runtimeBaseDir, 'routing_settings.json'), {
+    hubDefaultModelIdByTaskKind: {
+      embedding: 'hf-embed-missing',
+    },
+  });
+
+  const out = await prepareLocalMemoryEmbeddings({
+    runtimeBaseDir,
+    query: 'water purchase',
+    documents: [
+      {
+        id: 'doc-1',
+        title: 'water note',
+        text: 'buy bottled water',
+        sensitivity: 'public',
+        trust_level: 'trusted',
+        created_at_ms: 1000,
+      },
+    ],
+  });
+
+  assert.equal(out.ok, false);
+  assert.equal(out.deny_code, 'provider_unavailable');
+  assert.equal(out.model_id, 'hf-embed-missing');
+  assert.equal(out.route_source, 'hub_default');
+  assert.equal(out.route_reason_code, 'routed_model_not_registered');
+  assert.match(String(out.message || ''), /routed_model_not_registered/);
+});

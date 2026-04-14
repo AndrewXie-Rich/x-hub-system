@@ -1,24 +1,70 @@
 import Foundation
 
+public struct LocalModelVisionLoadProfile: Codable, Equatable, Sendable {
+    public var imageMaxDimension: Int?
+
+    public init(imageMaxDimension: Int? = nil) {
+        self.imageMaxDimension = LocalModelVisionLoadProfile.normalizedImageMaxDimension(imageMaxDimension)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case imageMaxDimension
+    }
+
+    enum SnakeCodingKeys: String, CodingKey {
+        case imageMaxDimension = "image_max_dimension"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let s = try decoder.container(keyedBy: SnakeCodingKeys.self)
+        self.init(
+            imageMaxDimension: (try? c.decodeIfPresent(Int.self, forKey: .imageMaxDimension))
+                ?? (try? s.decodeIfPresent(Int.self, forKey: .imageMaxDimension))
+        )
+    }
+
+    public var isEmpty: Bool {
+        imageMaxDimension == nil
+    }
+
+    private static func normalizedImageMaxDimension(_ value: Int?) -> Int? {
+        guard let value, value > 0 else { return nil }
+        return min(16_384, max(32, value))
+    }
+}
+
 public struct LocalModelLoadProfile: Codable, Equatable, Sendable {
     public var contextLength: Int
     public var gpuOffloadRatio: Double?
     public var ropeFrequencyBase: Double?
     public var ropeFrequencyScale: Double?
     public var evalBatchSize: Int?
+    public var ttl: Int?
+    public var parallel: Int?
+    public var identifier: String?
+    public var vision: LocalModelVisionLoadProfile?
 
     public init(
         contextLength: Int = 8192,
         gpuOffloadRatio: Double? = nil,
         ropeFrequencyBase: Double? = nil,
         ropeFrequencyScale: Double? = nil,
-        evalBatchSize: Int? = nil
+        evalBatchSize: Int? = nil,
+        ttl: Int? = nil,
+        parallel: Int? = nil,
+        identifier: String? = nil,
+        vision: LocalModelVisionLoadProfile? = nil
     ) {
         self.contextLength = max(512, contextLength)
         self.gpuOffloadRatio = LocalModelLoadProfile.normalizedRatio(gpuOffloadRatio)
         self.ropeFrequencyBase = LocalModelLoadProfile.normalizedPositive(ropeFrequencyBase)
         self.ropeFrequencyScale = LocalModelLoadProfile.normalizedPositive(ropeFrequencyScale)
         self.evalBatchSize = LocalModelLoadProfile.normalizedBatchSize(evalBatchSize)
+        self.ttl = LocalModelLoadProfile.normalizedPositiveInt(ttl)
+        self.parallel = LocalModelLoadProfile.normalizedPositiveInt(parallel)
+        self.identifier = LocalModelLoadProfile.normalizedIdentifier(identifier)
+        self.vision = LocalModelLoadProfile.normalizedVision(vision)
     }
 
     enum CodingKeys: String, CodingKey {
@@ -27,6 +73,10 @@ public struct LocalModelLoadProfile: Codable, Equatable, Sendable {
         case ropeFrequencyBase
         case ropeFrequencyScale
         case evalBatchSize
+        case ttl
+        case parallel
+        case identifier
+        case vision
     }
 
     enum SnakeCodingKeys: String, CodingKey {
@@ -35,11 +85,21 @@ public struct LocalModelLoadProfile: Codable, Equatable, Sendable {
         case ropeFrequencyBase = "rope_frequency_base"
         case ropeFrequencyScale = "rope_frequency_scale"
         case evalBatchSize = "eval_batch_size"
+        case ttl
+        case parallel
+        case identifier
+        case vision
+    }
+
+    enum FlatVisionCodingKeys: String, CodingKey {
+        case visionImageMaxDimension = "vision_image_max_dimension"
+        case visionImageMaxDimensionCamel = "visionImageMaxDimension"
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let s = try decoder.container(keyedBy: SnakeCodingKeys.self)
+        let v = try decoder.container(keyedBy: FlatVisionCodingKeys.self)
         let rawContextLength = (try? c.decode(Int.self, forKey: .contextLength))
             ?? (try? s.decode(Int.self, forKey: .contextLength))
             ?? 8192
@@ -51,12 +111,30 @@ public struct LocalModelLoadProfile: Codable, Equatable, Sendable {
             ?? (try? s.decodeIfPresent(Double.self, forKey: .ropeFrequencyScale))
         let rawEvalBatchSize = (try? c.decodeIfPresent(Int.self, forKey: .evalBatchSize))
             ?? (try? s.decodeIfPresent(Int.self, forKey: .evalBatchSize))
+        let rawTTL = (try? c.decodeIfPresent(Int.self, forKey: .ttl))
+            ?? (try? s.decodeIfPresent(Int.self, forKey: .ttl))
+        let rawParallel = (try? c.decodeIfPresent(Int.self, forKey: .parallel))
+            ?? (try? s.decodeIfPresent(Int.self, forKey: .parallel))
+        let rawIdentifier = (try? c.decodeIfPresent(String.self, forKey: .identifier))
+            ?? (try? s.decodeIfPresent(String.self, forKey: .identifier))
+        let rawVision = (try? c.decodeIfPresent(LocalModelVisionLoadProfile.self, forKey: .vision))
+            ?? (try? s.decodeIfPresent(LocalModelVisionLoadProfile.self, forKey: .vision))
+            ?? {
+                let flatImageMaxDimension = (try? v.decodeIfPresent(Int.self, forKey: .visionImageMaxDimension))
+                    ?? (try? v.decodeIfPresent(Int.self, forKey: .visionImageMaxDimensionCamel))
+                guard flatImageMaxDimension != nil else { return nil }
+                return LocalModelVisionLoadProfile(imageMaxDimension: flatImageMaxDimension)
+            }()
         self.init(
             contextLength: rawContextLength,
             gpuOffloadRatio: rawGpuOffloadRatio,
             ropeFrequencyBase: rawRopeFrequencyBase,
             ropeFrequencyScale: rawRopeFrequencyScale,
-            evalBatchSize: rawEvalBatchSize
+            evalBatchSize: rawEvalBatchSize,
+            ttl: rawTTL,
+            parallel: rawParallel,
+            identifier: rawIdentifier,
+            vision: rawVision
         )
     }
 
@@ -73,7 +151,11 @@ public struct LocalModelLoadProfile: Codable, Equatable, Sendable {
             gpuOffloadRatio: gpuOffloadRatio,
             ropeFrequencyBase: ropeFrequencyBase,
             ropeFrequencyScale: ropeFrequencyScale,
-            evalBatchSize: evalBatchSize
+            evalBatchSize: evalBatchSize,
+            ttl: ttl,
+            parallel: parallel,
+            identifier: identifier,
+            vision: vision
         )
     }
 
@@ -105,6 +187,21 @@ public struct LocalModelLoadProfile: Codable, Equatable, Sendable {
         guard let value, value > 0 else { return nil }
         return value
     }
+
+    private static func normalizedPositiveInt(_ value: Int?) -> Int? {
+        guard let value, value > 0 else { return nil }
+        return value
+    }
+
+    private static func normalizedIdentifier(_ value: String?) -> String? {
+        let token = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return token.isEmpty ? nil : token
+    }
+
+    private static func normalizedVision(_ value: LocalModelVisionLoadProfile?) -> LocalModelVisionLoadProfile? {
+        guard let value, !value.isEmpty else { return nil }
+        return value
+    }
 }
 
 public struct LocalModelLoadProfileOverride: Codable, Equatable, Sendable {
@@ -113,19 +210,31 @@ public struct LocalModelLoadProfileOverride: Codable, Equatable, Sendable {
     public var ropeFrequencyBase: Double?
     public var ropeFrequencyScale: Double?
     public var evalBatchSize: Int?
+    public var ttl: Int?
+    public var parallel: Int?
+    public var identifier: String?
+    public var vision: LocalModelVisionLoadProfile?
 
     public init(
         contextLength: Int? = nil,
         gpuOffloadRatio: Double? = nil,
         ropeFrequencyBase: Double? = nil,
         ropeFrequencyScale: Double? = nil,
-        evalBatchSize: Int? = nil
+        evalBatchSize: Int? = nil,
+        ttl: Int? = nil,
+        parallel: Int? = nil,
+        identifier: String? = nil,
+        vision: LocalModelVisionLoadProfile? = nil
     ) {
         self.contextLength = contextLength
         self.gpuOffloadRatio = gpuOffloadRatio
         self.ropeFrequencyBase = ropeFrequencyBase
         self.ropeFrequencyScale = ropeFrequencyScale
         self.evalBatchSize = evalBatchSize
+        self.ttl = ttl
+        self.parallel = parallel
+        self.identifier = identifier
+        self.vision = vision
     }
 
     enum CodingKeys: String, CodingKey {
@@ -134,6 +243,10 @@ public struct LocalModelLoadProfileOverride: Codable, Equatable, Sendable {
         case ropeFrequencyBase
         case ropeFrequencyScale
         case evalBatchSize
+        case ttl
+        case parallel
+        case identifier
+        case vision
     }
 
     enum SnakeCodingKeys: String, CodingKey {
@@ -142,11 +255,21 @@ public struct LocalModelLoadProfileOverride: Codable, Equatable, Sendable {
         case ropeFrequencyBase = "rope_frequency_base"
         case ropeFrequencyScale = "rope_frequency_scale"
         case evalBatchSize = "eval_batch_size"
+        case ttl
+        case parallel
+        case identifier
+        case vision
+    }
+
+    enum FlatVisionCodingKeys: String, CodingKey {
+        case visionImageMaxDimension = "vision_image_max_dimension"
+        case visionImageMaxDimensionCamel = "visionImageMaxDimension"
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let s = try decoder.container(keyedBy: SnakeCodingKeys.self)
+        let v = try decoder.container(keyedBy: FlatVisionCodingKeys.self)
         contextLength = (try? c.decodeIfPresent(Int.self, forKey: .contextLength))
             ?? (try? s.decodeIfPresent(Int.self, forKey: .contextLength))
         gpuOffloadRatio = (try? c.decodeIfPresent(Double.self, forKey: .gpuOffloadRatio))
@@ -157,6 +280,20 @@ public struct LocalModelLoadProfileOverride: Codable, Equatable, Sendable {
             ?? (try? s.decodeIfPresent(Double.self, forKey: .ropeFrequencyScale))
         evalBatchSize = (try? c.decodeIfPresent(Int.self, forKey: .evalBatchSize))
             ?? (try? s.decodeIfPresent(Int.self, forKey: .evalBatchSize))
+        ttl = (try? c.decodeIfPresent(Int.self, forKey: .ttl))
+            ?? (try? s.decodeIfPresent(Int.self, forKey: .ttl))
+        parallel = (try? c.decodeIfPresent(Int.self, forKey: .parallel))
+            ?? (try? s.decodeIfPresent(Int.self, forKey: .parallel))
+        identifier = (try? c.decodeIfPresent(String.self, forKey: .identifier))
+            ?? (try? s.decodeIfPresent(String.self, forKey: .identifier))
+        vision = (try? c.decodeIfPresent(LocalModelVisionLoadProfile.self, forKey: .vision))
+            ?? (try? s.decodeIfPresent(LocalModelVisionLoadProfile.self, forKey: .vision))
+            ?? {
+                let flatImageMaxDimension = (try? v.decodeIfPresent(Int.self, forKey: .visionImageMaxDimension))
+                    ?? (try? v.decodeIfPresent(Int.self, forKey: .visionImageMaxDimensionCamel))
+                guard flatImageMaxDimension != nil else { return nil }
+                return LocalModelVisionLoadProfile(imageMaxDimension: flatImageMaxDimension)
+            }()
     }
 
     public var isEmpty: Bool {
@@ -165,6 +302,10 @@ public struct LocalModelLoadProfileOverride: Codable, Equatable, Sendable {
             && ropeFrequencyBase == nil
             && ropeFrequencyScale == nil
             && evalBatchSize == nil
+            && ttl == nil
+            && parallel == nil
+            && (identifier?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+            && (vision?.isEmpty ?? true)
     }
 
     public func applied(to base: LocalModelLoadProfile) -> LocalModelLoadProfile {
@@ -173,7 +314,11 @@ public struct LocalModelLoadProfileOverride: Codable, Equatable, Sendable {
             gpuOffloadRatio: gpuOffloadRatio ?? base.gpuOffloadRatio,
             ropeFrequencyBase: ropeFrequencyBase ?? base.ropeFrequencyBase,
             ropeFrequencyScale: ropeFrequencyScale ?? base.ropeFrequencyScale,
-            evalBatchSize: evalBatchSize ?? base.evalBatchSize
+            evalBatchSize: evalBatchSize ?? base.evalBatchSize,
+            ttl: ttl ?? base.ttl,
+            parallel: parallel ?? base.parallel,
+            identifier: identifier ?? base.identifier,
+            vision: vision ?? base.vision
         )
     }
 }
@@ -324,6 +469,19 @@ public enum HubPairedTerminalLocalModelProfilesStorage {
         snapshot.profiles.removeAll {
             $0.deviceId == normalizedDeviceId && $0.modelId == normalizedModelId
         }
+        guard snapshot.profiles.count != originalCount else { return }
+
+        snapshot.updatedAtMs = Int64(Date().timeIntervalSince1970 * 1000.0)
+        save(snapshot)
+    }
+
+    public static func removeAll(deviceId: String) {
+        let normalizedDeviceId = deviceId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedDeviceId.isEmpty else { return }
+
+        var snapshot = load()
+        let originalCount = snapshot.profiles.count
+        snapshot.profiles.removeAll { $0.deviceId == normalizedDeviceId }
         guard snapshot.profiles.count != originalCount else { return }
 
         snapshot.updatedAtMs = Int64(Date().timeIntervalSince1970 * 1000.0)

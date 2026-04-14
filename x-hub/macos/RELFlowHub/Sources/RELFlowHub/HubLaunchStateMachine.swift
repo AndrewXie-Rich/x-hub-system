@@ -96,7 +96,9 @@ final class HubLaunchStateMachine {
                 state: .waitGRPCReady,
                 ok: true,
                 errorCode: "",
-                errorHint: HubGRPCServerSupport.shared.autoStart ? "" : "gRPC auto-start disabled"
+                errorHint: HubGRPCServerSupport.shared.autoStart
+                    ? ""
+                    : HubUIStrings.Settings.Diagnostics.LaunchFlow.grpcAutoStartDisabled
             )
             enterBridgeStage()
             return
@@ -119,10 +121,14 @@ final class HubLaunchStateMachine {
             state: .startBridge,
             ok: bridgeOk,
             errorCode: bridgeOk ? "" : "XHUB_BRIDGE_UNAVAILABLE",
-            errorHint: bridgeOk ? "" : "Bridge start was not invoked by app"
+            errorHint: bridgeOk ? "" : HubUIStrings.Settings.Diagnostics.LaunchFlow.bridgeLaunchNotTriggered
         )
         if !bridgeOk {
-            registerFailure(component: .bridge, code: "XHUB_BRIDGE_UNAVAILABLE", hint: "Bridge start was not invoked by app")
+            registerFailure(
+                component: .bridge,
+                code: "XHUB_BRIDGE_UNAVAILABLE",
+                hint: HubUIStrings.Settings.Diagnostics.LaunchFlow.bridgeLaunchNotTriggered
+            )
         }
         stage = .waitBridge
         stageStartedAtMs = nowMs()
@@ -151,7 +157,7 @@ final class HubLaunchStateMachine {
     private func enterRuntimeStage() {
         appendStep(state: .startRuntime, ok: true)
         if HubStore.shared.aiRuntimeAutoStart {
-            HubStore.shared.startAIRuntime()
+            HubStore.shared.ensureAIRuntimeRunningIfNeeded()
         }
         stage = .waitRuntime
         stageStartedAtMs = nowMs()
@@ -166,7 +172,7 @@ final class HubLaunchStateMachine {
                 state: .waitRuntimeReady,
                 ok: true,
                 errorCode: "",
-                errorHint: autoStartEnabled ? "" : "Runtime auto-start disabled"
+                errorHint: autoStartEnabled ? "" : HubUIStrings.Settings.Diagnostics.LaunchFlow.runtimeAutoStartDisabled
             )
             finalize()
             return
@@ -286,7 +292,7 @@ final class HubLaunchStateMachine {
                 ok: false,
                 component: .env,
                 errorCode: "XHUB_ENV_INVALID",
-                errorHint: "Cannot write to hub base directory: \(base.path)"
+                errorHint: HubUIStrings.Settings.Diagnostics.LaunchFlow.cannotWriteBaseDirectory(base.path)
             )
         }
 
@@ -298,7 +304,7 @@ final class HubLaunchStateMachine {
                 ok: false,
                 component: .db,
                 errorCode: "XHUB_DB_OPEN_FAILED",
-                errorHint: "Cannot create DB directory: \(dbDir.path)"
+                errorHint: HubUIStrings.Settings.Diagnostics.LaunchFlow.cannotCreateDBDirectory(dbDir.path)
             )
         }
 
@@ -311,7 +317,7 @@ final class HubLaunchStateMachine {
                 ok: false,
                 component: .db,
                 errorCode: "XHUB_DB_INTEGRITY_FAILED",
-                errorHint: "DB file is empty: \(db.path)"
+                errorHint: HubUIStrings.Settings.Diagnostics.LaunchFlow.emptyDBFile(db.path)
             )
         }
 
@@ -322,20 +328,29 @@ final class HubLaunchStateMachine {
         let err = HubGRPCServerSupport.shared.lastError.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = err.lowercased()
         if lower.contains("already in use") || lower.contains("eaddrinuse") {
-            return ("XHUB_GRPC_PORT_IN_USE", err.isEmpty ? "gRPC port is already in use" : err)
+            return (
+                "XHUB_GRPC_PORT_IN_USE",
+                err.isEmpty ? HubUIStrings.Settings.Diagnostics.LaunchFlow.grpcPortInUse : err
+            )
         }
         if lower.contains("node not found") {
-            return ("XHUB_GRPC_NODE_MISSING", err.isEmpty ? "Node.js not found" : err)
+            return (
+                "XHUB_GRPC_NODE_MISSING",
+                err.isEmpty ? HubUIStrings.Settings.Diagnostics.LaunchFlow.nodeMissing : err
+            )
         }
-        return ("XHUB_GRPC_SERVER_EXITED", err.isEmpty ? "gRPC did not become ready within timeout" : err)
+        return (
+            "XHUB_GRPC_SERVER_EXITED",
+            err.isEmpty ? HubUIStrings.Settings.Diagnostics.LaunchFlow.grpcNotReady : err
+        )
     }
 
     private func classifyBridgeFailure() -> (code: String, hint: String) {
         let st = BridgeSupport.shared.statusSnapshot()
         if st.updatedAt <= 0 {
-            return ("XHUB_BRIDGE_UNAVAILABLE", "Bridge status heartbeat is missing")
+            return ("XHUB_BRIDGE_UNAVAILABLE", HubUIStrings.Settings.Diagnostics.LaunchFlow.bridgeHeartbeatMissing)
         }
-        return ("XHUB_BRIDGE_UNAVAILABLE", "Bridge heartbeat is stale or unavailable")
+        return ("XHUB_BRIDGE_UNAVAILABLE", HubUIStrings.Settings.Diagnostics.LaunchFlow.bridgeUnavailable)
     }
 
     private func classifyRuntimeFailure() -> (code: String, hint: String) {
@@ -358,7 +373,10 @@ final class HubLaunchStateMachine {
            !importError.isEmpty {
             return ("XHUB_RT_IMPORT_ERROR", importError)
         }
-        return ("XHUB_RT_IMPORT_ERROR", err.isEmpty ? "Runtime did not become ready within timeout" : err)
+        return (
+            "XHUB_RT_IMPORT_ERROR",
+            err.isEmpty ? HubUIStrings.Settings.Diagnostics.LaunchFlow.runtimeNotReady : err
+        )
     }
 
     private func grpcReady() -> Bool {
@@ -366,7 +384,8 @@ final class HubLaunchStateMachine {
             return true
         }
         let status = HubGRPCServerSupport.shared.statusText.lowercased()
-        if status.contains("running (external)") {
+        if status.contains("running (external)")
+            || status.contains(HubUIStrings.Settings.GRPC.Runtime.statusRunningExternalToken.lowercased()) {
             return true
         }
         return false
@@ -378,7 +397,7 @@ final class HubLaunchStateMachine {
 
     private func runtimeReady() -> Bool {
         if let st = AIRuntimeStatusStorage.load() {
-            if st.isAlive(ttl: 3.0) && st.hasReadyProvider(ttl: 3.0) {
+            if st.isAlive(ttl: AIRuntimeStatus.recommendedHeartbeatTTL) && st.hasReadyProvider(ttl: AIRuntimeStatus.recommendedHeartbeatTTL) {
                 return true
             }
         }

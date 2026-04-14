@@ -20,9 +20,10 @@ import json
 import os
 import fcntl
 import subprocess
+import sys
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import inspect
@@ -30,12 +31,117 @@ import re
 
 
 # Bump this whenever IPC/gen behavior changes; also helpful to confirm which script is running.
-RUNTIME_VERSION = "2026-02-21-constitution-trigger-v2"
+RUNTIME_VERSION = "2026-03-14-mlx-instance-identity-v1"
 RUNTIME_STATUS_SCHEMA_VERSION = "xhub.local_runtime_status.v2"
+LOCAL_RUNTIME_COMMAND_IPC_VERSION = "xhub.local_runtime_command_ipc.v1"
+_MLX_IMPORT_PROBE_CACHE = {
+    "attempted": False,
+    "ok": False,
+    "error": "",
+}
 
 
 def _now() -> float:
     return time.time()
+
+
+def _normalize_executable_path(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if not raw.startswith("/"):
+        return raw
+    try:
+        return os.path.realpath(os.path.abspath(os.path.expanduser(raw)))
+    except Exception:
+        return raw
+
+
+def _looks_like_unsafe_macos_python(value: str) -> bool:
+    if sys.platform != "darwin":
+        return False
+    normalized = _normalize_executable_path(value).lower()
+    if not normalized:
+        return False
+    if normalized in {"/usr/bin/python3", "/usr/bin/python"}:
+        return True
+    return (
+        "/applications/xcode.app/contents/developer/" in normalized
+        or "/library/developer/commandlinetools/" in normalized
+    )
+
+
+def probe_mlx_runtime_support(*, force: bool = False) -> tuple[bool, str]:
+    if not force and _MLX_IMPORT_PROBE_CACHE["attempted"]:
+        return bool(_MLX_IMPORT_PROBE_CACHE["ok"]), str(_MLX_IMPORT_PROBE_CACHE["error"] or "")
+
+    _MLX_IMPORT_PROBE_CACHE["attempted"] = True
+    _MLX_IMPORT_PROBE_CACHE["ok"] = False
+    _MLX_IMPORT_PROBE_CACHE["error"] = ""
+    python_bin = _normalize_executable_path(str(sys.executable or "python3").strip() or "python3")
+    if _looks_like_unsafe_macos_python(python_bin):
+        _MLX_IMPORT_PROBE_CACHE["error"] = f"mlx_probe_skipped:unsafe_python_executable:{python_bin}"
+        return False, str(_MLX_IMPORT_PROBE_CACHE["error"])
+    probe_code = """
+import json
+import os
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+try:
+    from mlx_lm import load as _load  # noqa: F401
+    from mlx_lm import generate as _generate  # noqa: F401
+    from mlx_lm import stream_generate as _stream_generate  # noqa: F401
+    from mlx_lm.sample_utils import make_sampler as _make_sampler  # noqa: F401
+    from mlx_lm.tokenizer_utils import TokenizerWrapper as _TokenizerWrapper  # noqa: F401
+    import mlx.core as _mx  # noqa: F401
+except Exception as exc:
+    print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}))
+else:
+    print(json.dumps({"ok": True}))
+"""
+    env = dict(os.environ)
+    try:
+        completed = subprocess.run(
+            [python_bin, "-c", probe_code],
+            capture_output=True,
+            text=True,
+            timeout=12.0,
+            env=env,
+            check=False,
+        )
+    except Exception as exc:
+        _MLX_IMPORT_PROBE_CACHE["error"] = f"mlx_probe_failed:{type(exc).__name__}:{exc}"
+        return False, str(_MLX_IMPORT_PROBE_CACHE["error"])
+
+    stdout = str(completed.stdout or "").strip()
+    stderr = str(completed.stderr or "").strip()
+    detail = stdout.splitlines()[-1].strip() if stdout else ""
+    if completed.returncode == 0 and detail:
+        try:
+            payload = json.loads(detail)
+        except Exception:
+            payload = {}
+        if payload.get("ok") is True:
+            _MLX_IMPORT_PROBE_CACHE["ok"] = True
+            _MLX_IMPORT_PROBE_CACHE["error"] = ""
+            return True, ""
+        error_text = str(payload.get("error") or "").strip() or "mlx_probe_failed:unknown_error"
+        _MLX_IMPORT_PROBE_CACHE["error"] = error_text
+        return False, error_text
+
+    suffix_parts = [
+        token
+        for token in (
+            f"exit_{completed.returncode}",
+            detail,
+            stderr.splitlines()[-1].strip() if stderr else "",
+        )
+        if str(token or "").strip()
+    ]
+    _MLX_IMPORT_PROBE_CACHE["error"] = "mlx_probe_failed:" + ":".join(suffix_parts or ["unknown"])
+    return False, str(_MLX_IMPORT_PROBE_CACHE["error"])
 
 
 def _group_base_dir() -> str:
@@ -52,18 +158,38 @@ def _base_dir() -> str:
     return os.path.expanduser(env) if env else _group_base_dir()
 
 
+def _bridge_dir_is_writable(path: str) -> bool:
+    d = str(path or '').strip()
+    if not d:
+        return False
+    try:
+        if not os.path.isdir(d):
+            os.makedirs(d, exist_ok=True)
+        return os.access(d, os.W_OK | os.X_OK)
+    except Exception:
+        return False
+
+
 def _bridge_base_dir(base: str) -> str:
     # Resolve where Bridge heartbeats/requests actually live.
-    cands = [
+    cands: list[str] = []
+    seen: set[str] = set()
+    for candidate in (
         str(base or ''),
         _public_base_dir(),
         _group_base_dir(),
-    ]
+    ):
+        d = str(candidate or '').strip()
+        if not d or d in seen:
+            continue
+        seen.add(d)
+        cands.append(d)
 
     best = ''
-    best_ts = 0.0
+    best_score = (-1, -1, -1, -1.0)
     now = time.time()
     for d in cands:
+        ts = 0.0
         if not d:
             continue
         p = os.path.join(d, 'bridge_status.json')
@@ -71,14 +197,27 @@ def _bridge_base_dir(base: str) -> str:
             obj = _read_json(p)
             if isinstance(obj, dict):
                 ts = float(obj.get('updatedAt') or obj.get('updated_at') or 0.0)
-                if (now - ts) < 8.0 and ts > best_ts:
-                    best_ts = ts
-                    best = d
         except Exception:
-            continue
+            pass
 
-    if best:
+        fresh = ts > 0.0 and (now - ts) < 8.0
+        writable = _bridge_dir_is_writable(d)
+        score = (
+            1 if (fresh and writable) else 0,
+            1 if fresh else 0,
+            1 if writable else 0,
+            ts,
+        )
+        if score > best_score:
+            best_score = score
+            best = d
+
+    if best and best_score[1] == 1:
         return best
+
+    for d in cands:
+        if _bridge_dir_is_writable(d):
+            return d
 
     pub = _public_base_dir()
     if os.path.isdir(pub) or os.path.exists(pub):
@@ -101,6 +240,14 @@ def _req_dir(base: str) -> str:
 
 def _resp_dir(base: str) -> str:
     return os.path.join(base, 'ai_responses')
+
+
+def _local_runtime_cmd_dir(base: str) -> str:
+    return os.path.join(base, 'local_runtime_commands')
+
+
+def _local_runtime_result_dir(base: str) -> str:
+    return os.path.join(base, 'local_runtime_command_results')
 
 
 def _cancel_dir(base: str) -> str:
@@ -362,6 +509,10 @@ def _audit_ai(base: str, *, phase: str, req: "AIRequest" | None = None, ok: bool
                     'app_id': str(req.app_id),
                     'task_type': str(req.task_type),
                     'model_id': str(req.model_id),
+                    'device_id': str(req.device_id),
+                    'instance_key': str(req.instance_key),
+                    'load_profile_hash': str(req.load_profile_hash),
+                    'effective_context_length': int(req.effective_context_length),
                     'max_tokens': int(req.max_tokens),
                 }
             )
@@ -461,6 +612,7 @@ def _write_runtime_status(
         'updatedAt': updated_at,
         'mlxOk': bool(mlx_ok),
         'runtimeVersion': str(RUNTIME_VERSION),
+        'localCommandIpcVersion': str(LOCAL_RUNTIME_COMMAND_IPC_VERSION),
         'loadedInstances': loaded_instances,
         'loadedInstanceCount': len(loaded_instances),
         'idleEvictionByProvider': idle_eviction_by_provider,
@@ -482,20 +634,133 @@ def _write_runtime_status(
 
 def _provider_status_payloads(base: str, *, runtime: "MLXRuntime" | None = None) -> dict[str, dict[str, Any]]:
     try:
-        from providers import LocalProviderRegistry, MLXProvider, TransformersProvider
+        from relflowhub_local_runtime import provider_status_snapshot
     except Exception as e:
         _audit(base, 'local_provider_registry_import_failed', error=f'{type(e).__name__}:{e}')
         return {}
 
     try:
-        registry = LocalProviderRegistry()
-        registry.register(MLXProvider(runtime=runtime, runtime_version=str(RUNTIME_VERSION)))
-        registry.register(TransformersProvider())
-        snapshot = registry.health_snapshot(base_dir=base, catalog_models=_load_catalog(base))
-        return {provider_id: health.to_dict() for provider_id, health in snapshot.items()}
+        return provider_status_snapshot(
+            base,
+            runtime=runtime,
+            resident_transformers=True,
+        )
     except Exception as e:
         _audit(base, 'local_provider_snapshot_failed', error=f'{type(e).__name__}:{e}')
         return {}
+
+
+_LOCAL_MODEL_PROVIDER_IDS: set[str] = {
+    'mlx',
+    'mlx_vlm',
+    'transformers',
+    'llama.cpp',
+    'llama_cpp',
+}
+
+
+def _normalized_model_provider_id(model: dict[str, Any]) -> str:
+    return str(
+        model.get('runtimeProviderID')
+        or model.get('runtime_provider_id')
+        or model.get('backend')
+        or ''
+    ).strip().lower()
+
+
+def _normalized_model_path(model: dict[str, Any]) -> str:
+    return str(model.get('modelPath') or model.get('model_path') or '').strip()
+
+
+def _is_local_model_entry(model: dict[str, Any]) -> bool:
+    model_path = _normalized_model_path(model)
+    if model_path:
+        return True
+    return _normalized_model_provider_id(model) in _LOCAL_MODEL_PROVIDER_IDS
+
+
+def _local_model_offline_ready(model: dict[str, Any]) -> bool:
+    if not _is_local_model_entry(model):
+        return False
+    model_path = _normalized_model_path(model)
+    if not model_path:
+        return False
+    try:
+        return os.path.exists(os.path.expanduser(model_path))
+    except Exception:
+        return False
+
+
+def _local_model_reason_code(model: dict[str, Any], *, state: str = '') -> str:
+    if not _is_local_model_entry(model):
+        return ''
+    normalized_state = str(state or model.get('state') or '').strip().lower()
+    if normalized_state == 'loaded':
+        return ''
+    return '' if _local_model_offline_ready(model) else 'model_path_missing'
+
+
+def _sync_state_from_provider_statuses(state: dict[str, Any], provider_statuses: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], bool]:
+    if not isinstance(state.get('models'), list):
+        return state, False
+
+    loaded_by_provider: dict[str, set[str]] = {}
+    for provider_id, status_obj in (provider_statuses or {}).items():
+        if not isinstance(status_obj, dict):
+            continue
+        normalized_provider = str(provider_id or '').strip().lower()
+        loaded_ids: set[str] = set()
+        for raw_entry in status_obj.get('loadedInstances') or status_obj.get('loaded_instances') or []:
+            if not isinstance(raw_entry, dict):
+                continue
+            model_id = str(raw_entry.get('modelId') or raw_entry.get('model_id') or '').strip()
+            if model_id:
+                loaded_ids.add(model_id)
+        for raw_model_id in status_obj.get('loadedModels') or status_obj.get('loaded_models') or []:
+            model_id = str(raw_model_id or '').strip()
+            if model_id:
+                loaded_ids.add(model_id)
+        loaded_by_provider[normalized_provider] = loaded_ids
+
+    changed = False
+    for model in state.get('models') or []:
+        if not isinstance(model, dict):
+            continue
+        provider_id = _normalized_model_provider_id(model)
+        model_id = str(model.get('id') or '').strip()
+        desired_state = str(model.get('state') or '').strip().lower() or 'available'
+        if provider_id and model_id:
+            desired_state = 'loaded' if model_id in loaded_by_provider.get(provider_id, set()) else 'available'
+        if str(model.get('state') or '').strip().lower() != desired_state:
+            model['state'] = desired_state
+            changed = True
+            if desired_state != 'loaded':
+                model['memoryBytes'] = None
+                model['tokensPerSec'] = None
+        offline_ready = _local_model_offline_ready(model)
+        existing_offline_ready = bool(model.get('offlineReady') or model.get('offline_ready') or False)
+        if ('offlineReady' not in model and 'offline_ready' not in model) or existing_offline_ready != offline_ready:
+            model['offlineReady'] = offline_ready
+            model.pop('offline_ready', None)
+            changed = True
+        reason_code = _local_model_reason_code(model, state=desired_state)
+        existing_reason = str(model.get('reasonCode') or model.get('reason_code') or '').strip()
+        if reason_code:
+            if existing_reason != reason_code:
+                model['reasonCode'] = reason_code
+                model.pop('reason_code', None)
+                changed = True
+        else:
+            removed = False
+            if 'reasonCode' in model:
+                model.pop('reasonCode', None)
+                removed = True
+            if 'reason_code' in model:
+                model.pop('reason_code', None)
+                removed = True
+            if removed:
+                changed = True
+    return state, changed
 
 
 def _read_json(path: str) -> Any:
@@ -1416,6 +1681,7 @@ def _merge_remote_models_into_state(base: str, state: dict[str, Any]) -> tuple[d
             "memoryBytes": None,
             "tokensPerSec": None,
             "modelPath": "",
+            "offlineReady": False,
         }
         if note:
             entry["note"] = note
@@ -1551,6 +1817,11 @@ class Cmd:
     model_id: str
     req_id: str
     requested_at: float
+    device_id: str = ""
+    instance_key: str = ""
+    load_profile_hash: str = ""
+    effective_context_length: int = 0
+    load_profile_override: dict[str, Any] = field(default_factory=dict)
 
 
 def _scan_commands(base: str) -> list[Cmd]:
@@ -1575,10 +1846,65 @@ def _scan_commands(base: str) -> list[Cmd]:
                     model_id=str(obj.get('model_id') or ''),
                     req_id=str(obj.get('req_id') or ''),
                     requested_at=float(obj.get('requested_at') or 0.0),
+                    device_id=str(obj.get('device_id') or ''),
+                    instance_key=str(obj.get('instance_key') or obj.get('instanceKey') or ''),
+                    load_profile_hash=str(obj.get('load_profile_hash') or obj.get('loadProfileHash') or ''),
+                    effective_context_length=max(
+                        0,
+                        int(obj.get('effective_context_length') or obj.get('effectiveContextLength') or 0),
+                    ),
+                    load_profile_override=(
+                        dict(obj.get('load_profile_override'))
+                        if isinstance(obj.get('load_profile_override'), dict)
+                        else {}
+                    ),
                 )
             )
         except Exception:
             _audit(base, 'cmd_parse_failed', path=path)
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+    return out
+
+
+@dataclass
+class LocalRuntimeCommand:
+    path: str
+    command: str
+    req_id: str
+    request: dict[str, Any]
+    requested_at: float
+
+
+def _scan_local_runtime_commands(base: str) -> list[LocalRuntimeCommand]:
+    d = _local_runtime_cmd_dir(base)
+    try:
+        os.makedirs(d, exist_ok=True)
+        files = [f for f in os.listdir(d) if f.startswith('cmd_') and f.endswith('.json')]
+    except Exception:
+        return []
+
+    out: list[LocalRuntimeCommand] = []
+    for name in sorted(files):
+        path = os.path.join(d, name)
+        try:
+            obj = _read_json(path)
+            if str(obj.get('type') or '') != 'local_runtime_command':
+                continue
+            request = obj.get('request')
+            out.append(
+                LocalRuntimeCommand(
+                    path=path,
+                    command=str(obj.get('command') or ''),
+                    req_id=str(obj.get('req_id') or ''),
+                    request=dict(request) if isinstance(request, dict) else {},
+                    requested_at=float(obj.get('requested_at') or 0.0),
+                )
+            )
+        except Exception:
+            _audit(base, 'local_runtime_command_parse_failed', path=path)
             try:
                 os.remove(path)
             except Exception:
@@ -1601,6 +1927,11 @@ class AIRequest:
     top_p: float
     created_at: float
     auto_load: bool
+    instance_key: str
+    load_profile_hash: str
+    effective_context_length: int
+    effective_context_source: str
+    load_profile_override: dict[str, Any]
 
 
 def _scan_ai_requests(base: str) -> list[AIRequest]:
@@ -1634,6 +1965,24 @@ def _scan_ai_requests(base: str) -> list[AIRequest]:
                     top_p=float(obj.get('top_p') or 0.95),
                     created_at=float(obj.get('created_at') or 0.0),
                     auto_load=bool(obj.get('auto_load') or False),
+                    instance_key=str(obj.get('instance_key') or obj.get('instanceKey') or ''),
+                    load_profile_hash=str(obj.get('load_profile_hash') or obj.get('loadProfileHash') or ''),
+                    effective_context_length=max(
+                        0,
+                        int(obj.get('effective_context_length') or obj.get('effectiveContextLength') or 0),
+                    ),
+                    effective_context_source=str(
+                        obj.get('effective_context_source') or obj.get('effectiveContextSource') or ''
+                    ),
+                    load_profile_override=(
+                        dict(obj.get('load_profile_override'))
+                        if isinstance(obj.get('load_profile_override'), dict)
+                        else (
+                            dict(obj.get('loadProfileOverride'))
+                            if isinstance(obj.get('loadProfileOverride'), dict)
+                            else {}
+                        )
+                    ),
                 )
             )
         except Exception:
@@ -1643,6 +1992,106 @@ def _scan_ai_requests(base: str) -> list[AIRequest]:
             except Exception:
                 pass
     return out
+
+
+def _resolve_model_command_identity(
+    base: str,
+    cmd: Cmd,
+    *,
+    catalog_model: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    model_id = str(cmd.model_id or '').strip()
+    if not model_id:
+        return {}
+
+    identity: dict[str, Any] = {}
+    request_obj: dict[str, Any] = {
+        'model_id': model_id,
+        'device_id': str(cmd.device_id or '').strip(),
+    }
+    if isinstance(cmd.load_profile_override, dict) and cmd.load_profile_override:
+        request_obj['load_profile_override'] = dict(cmd.load_profile_override)
+    try:
+        from relflowhub_local_runtime import _resolve_model_load_profile_context
+
+        resolved = _resolve_model_load_profile_context(
+            request_obj,
+            base_dir=base,
+            provider_id='mlx',
+            model_id=model_id,
+            catalog_model=catalog_model,
+        )
+        if isinstance(resolved, dict):
+            identity.update(resolved)
+    except Exception:
+        identity = {}
+
+    if str(cmd.load_profile_hash or '').strip():
+        identity['load_profile_hash'] = str(cmd.load_profile_hash).strip()
+    if str(cmd.instance_key or '').strip():
+        identity['instance_key'] = str(cmd.instance_key).strip()
+    if int(cmd.effective_context_length or 0) > 0:
+        identity['effective_context_length'] = max(0, int(cmd.effective_context_length))
+    if not identity.get('load_profile_hash'):
+        identity['load_profile_hash'] = 'legacy_runtime'
+    if not identity.get('instance_key'):
+        identity['instance_key'] = f"mlx:{model_id}:{identity.get('load_profile_hash')}"
+    if identity.get('effective_context_length') is None:
+        identity['effective_context_length'] = 0
+    if not isinstance(identity.get('effective_load_profile'), dict):
+        identity['effective_load_profile'] = {}
+    return identity
+
+
+def _resolve_ai_request_identity(
+    base: str,
+    req: AIRequest,
+    *,
+    catalog_model: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    model_id = str(req.model_id or '').strip()
+    if not model_id:
+        return {}
+
+    identity: dict[str, Any] = {}
+    request_obj: dict[str, Any] = {
+        'model_id': model_id,
+        'device_id': str(req.device_id or '').strip(),
+    }
+    if isinstance(req.load_profile_override, dict) and req.load_profile_override:
+        request_obj['load_profile_override'] = dict(req.load_profile_override)
+    try:
+        from relflowhub_local_runtime import _resolve_model_load_profile_context
+
+        resolved = _resolve_model_load_profile_context(
+            request_obj,
+            base_dir=base,
+            provider_id='mlx',
+            model_id=model_id,
+            catalog_model=catalog_model,
+        )
+        if isinstance(resolved, dict):
+            identity.update(resolved)
+    except Exception:
+        identity = {}
+
+    if str(req.load_profile_hash or '').strip():
+        identity['load_profile_hash'] = str(req.load_profile_hash).strip()
+    if str(req.instance_key or '').strip():
+        identity['instance_key'] = str(req.instance_key).strip()
+    if int(req.effective_context_length or 0) > 0:
+        identity['effective_context_length'] = max(0, int(req.effective_context_length))
+    if str(req.effective_context_source or '').strip():
+        identity['effective_context_source'] = str(req.effective_context_source).strip()
+    if not identity.get('load_profile_hash'):
+        identity['load_profile_hash'] = 'legacy_runtime'
+    if not identity.get('instance_key'):
+        identity['instance_key'] = f"mlx:{model_id}:{identity.get('load_profile_hash')}"
+    if identity.get('effective_context_length') is None:
+        identity['effective_context_length'] = 0
+    if not isinstance(identity.get('effective_load_profile'), dict):
+        identity['effective_load_profile'] = {}
+    return identity
 
 
 def _load_catalog(base: str) -> list[dict[str, Any]]:
@@ -1663,13 +2112,15 @@ def _load_catalog(base: str) -> list[dict[str, Any]]:
 def _load_bench(base: str) -> dict[str, Any]:
     p = _bench_path(base)
     if not os.path.exists(p):
-        return {'results': [], 'updatedAt': _now()}
+        return {'schemaVersion': 'xhub.models_bench.v2', 'results': [], 'updatedAt': _now()}
     try:
         obj = _read_json(p)
         if isinstance(obj, dict):
             # Allow both {results:[...]} and legacy {models:{id:{...}}}.
             if isinstance(obj.get('results'), list):
-                return obj
+                out = dict(obj)
+                out.setdefault('schemaVersion', 'xhub.models_bench.v2')
+                return out
             if isinstance(obj.get('models'), dict):
                 results = []
                 for mid, r in obj.get('models', {}).items():
@@ -1677,12 +2128,21 @@ def _load_bench(base: str) -> dict[str, Any]:
                         rr = dict(r)
                         rr.setdefault('modelId', str(mid))
                         results.append(rr)
-                return {'results': results, 'updatedAt': float(obj.get('updatedAt') or _now())}
+                return {'schemaVersion': 'xhub.models_bench.v2', 'results': results, 'updatedAt': float(obj.get('updatedAt') or _now())}
         if isinstance(obj, list):
-            return {'results': obj, 'updatedAt': _now()}
+            return {'schemaVersion': 'xhub.models_bench.v2', 'results': obj, 'updatedAt': _now()}
     except Exception:
         pass
-    return {'results': [], 'updatedAt': _now()}
+    return {'schemaVersion': 'xhub.models_bench.v2', 'results': [], 'updatedAt': _now()}
+
+
+def _legacy_bench_verdict(generation_tps: float) -> str:
+    speed = float(generation_tps or 0.0)
+    if speed >= 30.0:
+        return 'Fast'
+    if speed >= 12.0:
+        return 'Balanced'
+    return 'Heavy'
 
 
 def _upsert_bench_result(
@@ -1694,36 +2154,69 @@ def _upsert_bench_result(
     prompt_tps: float,
     generation_tps: float,
     peak_memory_bytes: int,
+    load_profile_hash: str = "",
+    effective_context_length: int = 0,
 ) -> None:
     try:
         snap = _load_bench(base)
         results = snap.get('results')
         if not isinstance(results, list):
             results = []
+        bench_load_profile_hash = str(load_profile_hash or '').strip() or 'legacy_runtime'
+        wanted_result_id = f'{model_id}::text_generate::{bench_load_profile_hash}::legacy_mlx_text_default'
 
         # Remove existing.
         new_results: list[dict[str, Any]] = []
         for r in results:
             if not isinstance(r, dict):
                 continue
-            if str(r.get('modelId') or '') == model_id:
+            result_id = str(r.get('resultID') or r.get('resultId') or r.get('result_id') or '').strip()
+            if result_id == wanted_result_id:
+                continue
+            if (
+                not result_id
+                and str(r.get('modelId') or '') == model_id
+                and str(r.get('taskKind') or '') in {'', 'text_generate'}
+                and str(r.get('loadProfileHash') or r.get('load_profile_hash') or '').strip() == bench_load_profile_hash
+            ):
                 continue
             new_results.append(r)
 
-        new_results.append(
-            {
-                'modelId': str(model_id),
-                'measuredAt': float(_now()),
-                'promptTokens': int(prompt_tokens),
-                'generationTokens': int(generation_tokens),
-                'promptTPS': float(prompt_tps),
-                'generationTPS': float(generation_tps),
-                'peakMemoryBytes': int(max(0, peak_memory_bytes)),
-                'runtimeVersion': str(RUNTIME_VERSION),
-            }
-        )
+        measured_at = float(_now())
+        generation_latency_ms = 0
+        if generation_tps > 0 and generation_tokens > 0:
+            generation_latency_ms = int((float(generation_tokens) / float(generation_tps)) * 1000.0)
+        row = {
+            'resultID': wanted_result_id,
+            'modelId': str(model_id),
+            'providerID': 'mlx',
+            'taskKind': 'text_generate',
+            'loadProfileHash': bench_load_profile_hash,
+            'fixtureProfile': 'legacy_mlx_text_default',
+            'fixtureTitle': 'Legacy MLX text loop',
+            'measuredAt': measured_at,
+            'schemaVersion': 'xhub.models_bench.v2',
+            'resultKind': 'legacy_text_bench',
+            'ok': True,
+            'reasonCode': 'legacy_text_bench',
+            'verdict': _legacy_bench_verdict(generation_tps),
+            'fallbackMode': '',
+            'notes': ['legacy_text_bench'],
+            'latencyMs': generation_latency_ms,
+            'throughputValue': float(generation_tps),
+            'throughputUnit': 'tokens_per_sec',
+            'promptTokens': int(prompt_tokens),
+            'generationTokens': int(generation_tokens),
+            'promptTPS': float(prompt_tps),
+            'generationTPS': float(generation_tps),
+            'peakMemoryBytes': int(max(0, peak_memory_bytes)),
+            'runtimeVersion': str(RUNTIME_VERSION),
+        }
+        if int(effective_context_length or 0) > 0:
+            row['effectiveContextLength'] = max(0, int(effective_context_length))
+        new_results.append(row)
 
-        out = {'results': new_results, 'updatedAt': float(_now())}
+        out = {'schemaVersion': 'xhub.models_bench.v2', 'results': new_results, 'updatedAt': measured_at}
         _write_json_atomic(_bench_path(base), out)
     except Exception:
         pass
@@ -1782,13 +2275,18 @@ def _merge_catalog_into_state(base: str, state: dict[str, Any]) -> tuple[dict[st
             continue
         m = by_id.get(mid)
         if m is None:
+            offline_ready = _local_model_offline_ready(c)
             m = {
                 'id': mid,
                 'state': 'available',
                 'memoryBytes': None,
                 'tokensPerSec': None,
+                'offlineReady': offline_ready,
                 'note': str(c.get('note') or 'catalog'),
             }
+            reason_code = _local_model_reason_code(m)
+            if reason_code:
+                m['reasonCode'] = reason_code
             ms.append(m)
             by_id[mid] = m
             changed = True
@@ -1810,6 +2308,29 @@ def _merge_catalog_into_state(base: str, state: dict[str, Any]) -> tuple[dict[st
         if roles and m.get('roles') != roles:
             m['roles'] = roles
             changed = True
+        offline_ready = _local_model_offline_ready(m)
+        existing_offline_ready = bool(m.get('offlineReady') or m.get('offline_ready') or False)
+        if ('offlineReady' not in m and 'offline_ready' not in m) or existing_offline_ready != offline_ready:
+            m['offlineReady'] = offline_ready
+            m.pop('offline_ready', None)
+            changed = True
+        reason_code = _local_model_reason_code(m)
+        existing_reason = str(m.get('reasonCode') or m.get('reason_code') or '').strip()
+        if reason_code:
+            if existing_reason != reason_code:
+                m['reasonCode'] = reason_code
+                m.pop('reason_code', None)
+                changed = True
+        else:
+            removed = False
+            if 'reasonCode' in m:
+                m.pop('reasonCode', None)
+                removed = True
+            if 'reason_code' in m:
+                m.pop('reason_code', None)
+                removed = True
+            if removed:
+                changed = True
 
     return state, changed
 
@@ -1844,9 +2365,13 @@ def _ensure_state_from_catalog(base: str) -> dict[str, Any]:
                 'memoryBytes': None,
                 'tokensPerSec': None,
                 'modelPath': str(m.get('modelPath') or m.get('path') or ''),
+                'offlineReady': _local_model_offline_ready(m),
                 'note': str(m.get('note') or 'catalog'),
             }
         )
+        reason_code = _local_model_reason_code(models_out[-1])
+        if reason_code:
+            models_out[-1]['reasonCode'] = reason_code
 
     st = {'updatedAt': _now(), 'models': models_out}
     _write_json_atomic(p, st)
@@ -2058,7 +2583,8 @@ def _save_state(base: str, state: dict[str, Any]) -> None:
 
 class MLXRuntime:
     def __init__(self) -> None:
-        self._loaded: dict[str, tuple[Any, Any]] = {}
+        self._loaded: dict[str, dict[str, Any]] = {}
+        self._loaded_instances: dict[str, dict[str, Any]] = {}
         self._mlx_ok = False
         self._mlx_load = None
         self._mlx_generate = None
@@ -2066,12 +2592,33 @@ class MLXRuntime:
         self._mlx_stream_generate = None
         self._mx = None
         self._tokenizer_wrapper = None
+        self._import_error = ""
+        self._probe_attempted = False
 
         # Offline guardrails.
         os.environ.setdefault('HF_HUB_OFFLINE', '1')
         os.environ.setdefault('TRANSFORMERS_OFFLINE', '1')
         os.environ.setdefault('HF_DATASETS_OFFLINE', '1')
         os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
+
+    def _probe_runtime_support(self) -> tuple[bool, str]:
+        if self._probe_attempted:
+            return self._mlx_ok, str(self._import_error or "")
+
+        self._probe_attempted = True
+        self._mlx_ok, self._import_error = probe_mlx_runtime_support()
+        return self._mlx_ok, self._import_error
+
+    def _ensure_runtime_imported(self) -> bool:
+        if self._mlx_load is not None and self._mlx_generate is not None and self._mx is not None:
+            self._mlx_ok = True
+            return True
+
+        probe_ok, probe_error = self._probe_runtime_support()
+        if not probe_ok:
+            self._mlx_ok = False
+            self._import_error = probe_error
+            return False
 
         try:
             from mlx_lm import load as mlx_load  # type: ignore
@@ -2097,10 +2644,308 @@ class MLXRuntime:
             self._tokenizer_wrapper = None
             self._mx = None
             self._import_error = f'{type(e).__name__}: {e}'
+            return False
+        return True
+
+    def _normalize_load_profile_hash(
+        self,
+        model_id: str,
+        *,
+        instance_key: str = "",
+        load_profile_hash: str = "",
+    ) -> str:
+        token = str(load_profile_hash or '').strip()
+        if token:
+            return token
+        public_instance_key = str(instance_key or '').strip()
+        prefix = f"mlx:{str(model_id or '').strip()}:"
+        if public_instance_key and prefix and public_instance_key.startswith(prefix):
+            suffix = public_instance_key[len(prefix) :].strip()
+            if suffix:
+                return suffix
+        return 'legacy_runtime' if str(model_id or '').strip() else ''
+
+    def _public_instance_key(
+        self,
+        model_id: str,
+        *,
+        instance_key: str = "",
+        load_profile_hash: str = "",
+    ) -> str:
+        token = str(instance_key or '').strip()
+        if token:
+            return token
+        normalized_hash = self._normalize_load_profile_hash(
+            model_id,
+            instance_key=instance_key,
+            load_profile_hash=load_profile_hash,
+        )
+        if not str(model_id or '').strip() or not normalized_hash:
+            return ''
+        return f"mlx:{str(model_id).strip()}:{normalized_hash}"
+
+    def _effective_context_length(
+        self,
+        *,
+        effective_context_length: int = 0,
+        effective_load_profile: dict[str, Any] | None = None,
+        fallback: int = 0,
+    ) -> int:
+        explicit = int(effective_context_length or 0)
+        if explicit > 0:
+            return explicit
+        profile = effective_load_profile if isinstance(effective_load_profile, dict) else {}
+        profile_context = int(profile.get('context_length') or 0)
+        if profile_context > 0:
+            return profile_context
+        return max(0, int(fallback or 0))
+
+    def _normalize_loaded_artifact(self, model_id: str) -> dict[str, Any] | None:
+        raw = self._loaded.get(str(model_id or '').strip())
+        if raw is None:
+            return None
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, tuple) and len(raw) >= 2:
+            model, tokenizer = raw[0], raw[1]
+            normalized = {
+                'model_id': str(model_id or '').strip(),
+                'model': model,
+                'tokenizer': tokenizer,
+                'model_path': '',
+                'loaded_at': _now(),
+            }
+            self._loaded[str(model_id or '').strip()] = normalized
+            return normalized
+        return None
+
+    def _ensure_default_instance_registered(self, model_id: str) -> dict[str, Any] | None:
+        token = str(model_id or '').strip()
+        if not token:
+            return None
+        public_instance_key = self._public_instance_key(token)
+        row = self._loaded_instances.get(public_instance_key)
+        if isinstance(row, dict):
+            return row
+        artifact = self._normalize_loaded_artifact(token)
+        if artifact is None:
+            return None
+        loaded_at = float(artifact.get('loaded_at') or _now())
+        row = {
+            'instance_key': public_instance_key,
+            'model_id': token,
+            'load_profile_hash': self._normalize_load_profile_hash(token),
+            'effective_context_length': 0,
+            'effective_load_profile': {},
+            'loaded_at': loaded_at,
+            'last_used_at': loaded_at,
+            'residency': 'resident',
+            'residency_scope': 'legacy_runtime',
+            'device_backend': 'mps',
+        }
+        self._loaded_instances[public_instance_key] = row
+        return row
+
+    def _instance_rows_for_model(self, model_id: str) -> list[dict[str, Any]]:
+        token = str(model_id or '').strip()
+        rows = [
+            row for row in self._loaded_instances.values()
+            if isinstance(row, dict) and str(row.get('model_id') or '').strip() == token
+        ]
+        if not rows and token in self._loaded:
+            legacy = self._ensure_default_instance_registered(token)
+            rows = [legacy] if isinstance(legacy, dict) else []
+        rows.sort(
+            key=lambda row: (
+                float(row.get('loaded_at') or 0.0),
+                str(row.get('instance_key') or '').strip(),
+            )
+        )
+        return rows
+
+    def _resolve_loaded_instance(
+        self,
+        model_id: str,
+        *,
+        instance_key: str = "",
+        load_profile_hash: str = "",
+    ) -> dict[str, Any] | None:
+        token = str(model_id or '').strip()
+        explicit_instance_key = str(instance_key or '').strip()
+        if explicit_instance_key:
+            row = self._loaded_instances.get(explicit_instance_key)
+            if isinstance(row, dict):
+                return row
+            return None
+
+        public_instance_key = self._public_instance_key(
+            token,
+            instance_key=instance_key,
+            load_profile_hash=load_profile_hash,
+        )
+        if public_instance_key:
+            row = self._loaded_instances.get(public_instance_key)
+            if isinstance(row, dict):
+                return row
+
+        if not token:
+            return None
+
+        candidates = self._instance_rows_for_model(token)
+        if load_profile_hash:
+            wanted_hash = str(load_profile_hash or '').strip()
+            candidates = [
+                row for row in candidates
+                if str(row.get('load_profile_hash') or '').strip() == wanted_hash
+            ]
+            if not candidates:
+                return None
+            if len(candidates) == 1:
+                return candidates[0]
+
+        if len(candidates) == 1:
+            return candidates[0]
+
+        legacy_key = self._public_instance_key(token)
+        for row in candidates:
+            if str(row.get('instance_key') or '').strip() == legacy_key:
+                return row
+
+        if not candidates:
+            return None
+
+        candidates.sort(
+            key=lambda row: (
+                float(row.get('last_used_at') or 0.0),
+                float(row.get('loaded_at') or 0.0),
+                str(row.get('instance_key') or '').strip(),
+            ),
+            reverse=True,
+        )
+        return candidates[0]
+
+    def _register_loaded_instance(
+        self,
+        model_id: str,
+        *,
+        instance_key: str = "",
+        load_profile_hash: str = "",
+        effective_context_length: int = 0,
+        effective_load_profile: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        token = str(model_id or '').strip()
+        public_instance_key = self._public_instance_key(
+            token,
+            instance_key=instance_key,
+            load_profile_hash=load_profile_hash,
+        )
+        normalized_hash = self._normalize_load_profile_hash(
+            token,
+            instance_key=public_instance_key,
+            load_profile_hash=load_profile_hash,
+        )
+        now_ts = _now()
+        row = self._loaded_instances.get(public_instance_key)
+        if not isinstance(row, dict):
+            row = {
+                'instance_key': public_instance_key,
+                'model_id': token,
+                'loaded_at': now_ts,
+                'residency': 'resident',
+                'residency_scope': 'legacy_runtime',
+                'device_backend': 'mps',
+            }
+            self._loaded_instances[public_instance_key] = row
+        row['instance_key'] = public_instance_key
+        row['model_id'] = token
+        row['load_profile_hash'] = normalized_hash
+        row['effective_context_length'] = self._effective_context_length(
+            effective_context_length=effective_context_length,
+            effective_load_profile=effective_load_profile,
+            fallback=int(row.get('effective_context_length') or 0),
+        )
+        row['effective_load_profile'] = dict(effective_load_profile or {})
+        row['last_used_at'] = now_ts
+        row.setdefault('loaded_at', now_ts)
+        row['residency'] = 'resident'
+        row['residency_scope'] = 'legacy_runtime'
+        row['device_backend'] = 'mps'
+        return row
+
+    def _touch_loaded_instance(self, row: dict[str, Any]) -> None:
+        if not isinstance(row, dict):
+            return
+        row['last_used_at'] = _now()
+
+    def _release_runtime_memory(self) -> None:
+        try:
+            gc.collect()
+        except Exception:
+            pass
+
+        # Clear Metal cache when available.
+        try:
+            mx = self._mx
+            metal = getattr(mx, 'metal', None) if mx is not None else None
+            clear_cache = getattr(metal, 'clear_cache', None) if metal is not None else None
+            if callable(clear_cache):
+                clear_cache()
+        except Exception:
+            pass
+
+    def loaded_model_ids(self) -> list[str]:
+        model_ids: set[str] = set()
+        for key in (self._loaded or {}).keys():
+            token = str(key or '').strip()
+            if token:
+                model_ids.add(token)
+        for row in (self._loaded_instances or {}).values():
+            if not isinstance(row, dict):
+                continue
+            token = str(row.get('model_id') or '').strip()
+            if token:
+                model_ids.add(token)
+        return sorted(model_ids)
+
+    def loaded_model_count(self) -> int:
+        return len(self.loaded_model_ids())
+
+    def loaded_instance_rows(self) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for model_id in self.loaded_model_ids():
+            for row in self._instance_rows_for_model(model_id):
+                if not isinstance(row, dict):
+                    continue
+                public_instance_key = str(row.get('instance_key') or '').strip()
+                if not public_instance_key or public_instance_key in seen:
+                    continue
+                seen.add(public_instance_key)
+                entry = {
+                    'instanceKey': public_instance_key,
+                    'modelId': str(row.get('model_id') or '').strip(),
+                    'taskKinds': ['text_generate'],
+                    'loadProfileHash': str(row.get('load_profile_hash') or '').strip(),
+                    'effectiveContextLength': max(0, int(row.get('effective_context_length') or 0)),
+                    'loadedAt': float(row.get('loaded_at') or 0.0),
+                    'lastUsedAt': float(row.get('last_used_at') or 0.0),
+                    'residency': 'resident',
+                    'residencyScope': 'legacy_runtime',
+                    'deviceBackend': 'mps',
+                }
+                rows.append(entry)
+        rows.sort(
+            key=lambda item: (
+                str(item.get('modelId') or '').strip(),
+                str(item.get('instanceKey') or '').strip(),
+            )
+        )
+        return rows
 
     def memory_bytes(self) -> tuple[int, int]:
         """(active_bytes, peak_bytes) for MLX allocations (not RSS)."""
         try:
+            self._probe_runtime_support()
             if not self._mlx_ok or self._mx is None:
                 return 0, 0
             active = int(self._mx.get_active_memory())
@@ -2109,59 +2954,232 @@ class MLXRuntime:
         except Exception:
             return 0, 0
 
-    def load(self, model_id: str, model_path: str) -> tuple[bool, str, int]:
-        if not self._mlx_ok or self._mlx_load is None:
+    def _read_model_json(self, model_path: str, file_name: str) -> dict[str, Any]:
+        path = os.path.join(str(model_path or '').strip(), file_name)
+        if not path or not os.path.exists(path):
+            return {}
+        try:
+            obj = _read_json(path)
+        except Exception:
+            return {}
+        return obj if isinstance(obj, dict) else {}
+
+    def _mlx_load_block_reason(self, model_path: str) -> str:
+        config = self._read_model_json(model_path, 'config.json')
+        preprocessor = self._read_model_json(model_path, 'preprocessor_config.json')
+        model_type = str(config.get('model_type') or '').strip().lower()
+        architectures = ' '.join(
+            str(item or '').strip().lower()
+            for item in (config.get('architectures') or [])
+            if str(item or '').strip()
+        )
+        image_processor_type = str(preprocessor.get('image_processor_type') or '').strip().lower()
+        processor_class = str(preprocessor.get('processor_class') or '').strip().lower()
+        has_vision_config = isinstance(config.get('vision_config'), dict)
+        has_video_preprocessor = os.path.exists(os.path.join(str(model_path or '').strip(), 'video_preprocessor_config.json'))
+
+        haystack = ' '.join([
+            model_type,
+            architectures,
+            image_processor_type,
+            processor_class,
+        ])
+        multimodal_keywords = (
+            'glm4v',
+            'qwen2_vl',
+            'qwen3_vl',
+            'qwen3vl',
+            'pixtral',
+            'mistral3',
+            'llava',
+            'florence',
+            'blip',
+            'siglip',
+            'pix2struct',
+            'vision',
+        )
+        matched_keyword = next((keyword for keyword in multimodal_keywords if keyword in haystack), '')
+        has_image_processor = bool(image_processor_type)
+
+        if not (matched_keyword or has_vision_config or has_video_preprocessor or has_image_processor):
+            return ''
+
+        details: list[str] = []
+        if model_type:
+            details.append(f'model_type={model_type}')
+        if matched_keyword and matched_keyword != model_type:
+            details.append(f'signal={matched_keyword}')
+        if has_vision_config:
+            details.append('vision_config')
+        if has_image_processor:
+            details.append('image_processor')
+        if has_video_preprocessor:
+            details.append('video_preprocessor')
+        suffix = f" ({', '.join(details)})" if details else ''
+        return f"load_blocked:Hub MLX runtime is text-only and does not support multimodal MLX models yet{suffix}"
+
+    def load(
+        self,
+        model_id: str,
+        model_path: str,
+        *,
+        instance_key: str = "",
+        load_profile_hash: str = "",
+        effective_context_length: int = 0,
+        effective_load_profile: dict[str, Any] | None = None,
+    ) -> tuple[bool, str, int]:
+        if not self._ensure_runtime_imported():
             return False, f'mlx_lm_unavailable:{getattr(self, "_import_error", "")}', 0
+        model_id = str(model_id or '').strip()
+        public_instance_key = self._public_instance_key(
+            model_id,
+            instance_key=instance_key,
+            load_profile_hash=load_profile_hash,
+        )
         model_path = os.path.expanduser(str(model_path or '').strip())
-        if not model_path or not os.path.isdir(model_path):
+        if not model_path or not os.path.isdir(model_path) or not model_id:
             return False, 'model_path_missing', 0
-        if model_id in self._loaded:
+        blocked_reason = self._mlx_load_block_reason(model_path)
+        if blocked_reason:
+            return False, blocked_reason, 0
+        if public_instance_key in self._loaded_instances and self._normalize_loaded_artifact(model_id) is not None:
+            self._register_loaded_instance(
+                model_id,
+                instance_key=public_instance_key,
+                load_profile_hash=load_profile_hash,
+                effective_context_length=effective_context_length,
+                effective_load_profile=effective_load_profile,
+            )
             return True, 'already_loaded', 0
 
-        before = _ps_rss_bytes()
-        try:
-            model, tokenizer = self._mlx_load(model_path)
-        except Exception as e:
-            return False, f'load_failed:{type(e).__name__}:{e}', 0
-        after = _ps_rss_bytes()
-        self._loaded[model_id] = (model, tokenizer)
-        return True, 'ok', max(0, after - before)
-
-    def unload(self, model_id: str) -> tuple[bool, str]:
-        if model_id not in self._loaded:
-            return True, 'not_loaded'
-        try:
-            self._loaded.pop(model_id, None)
-        except Exception:
-            pass
-
-        try:
-            gc.collect()
-        except Exception:
-            pass
-
-        # Clear Metal cache when available.
-        try:
-            import mlx.core as mx  # type: ignore
-
+        delta = 0
+        artifact = self._normalize_loaded_artifact(model_id)
+        if artifact is None:
+            before = _ps_rss_bytes()
             try:
-                mx.metal.clear_cache()  # type: ignore
+                model, tokenizer = self._mlx_load(model_path)
+            except Exception as e:
+                return False, f'load_failed:{type(e).__name__}:{e}', 0
+            after = _ps_rss_bytes()
+            delta = max(0, after - before)
+            artifact = {
+                'model_id': model_id,
+                'model': model,
+                'tokenizer': tokenizer,
+                'model_path': model_path,
+                'loaded_at': _now(),
+            }
+            self._loaded[model_id] = artifact
+        else:
+            artifact['model_path'] = model_path
+        self._register_loaded_instance(
+            model_id,
+            instance_key=public_instance_key,
+            load_profile_hash=load_profile_hash,
+            effective_context_length=effective_context_length,
+            effective_load_profile=effective_load_profile,
+        )
+        return True, 'ok', delta
+
+    def unload(
+        self,
+        model_id: str,
+        *,
+        instance_key: str = "",
+        load_profile_hash: str = "",
+    ) -> tuple[bool, str]:
+        token = str(model_id or '').strip()
+        explicit = bool(str(instance_key or '').strip() or str(load_profile_hash or '').strip())
+        if explicit:
+            row = self._resolve_loaded_instance(
+                token,
+                instance_key=instance_key,
+                load_profile_hash=load_profile_hash,
+            )
+            if not isinstance(row, dict):
+                return True, 'not_loaded'
+            token = str(row.get('model_id') or token or '').strip()
+            public_instance_key = str(row.get('instance_key') or '').strip()
+            try:
+                self._loaded_instances.pop(public_instance_key, None)
             except Exception:
                 pass
-        except Exception:
-            pass
+            if not self._instance_rows_for_model(token):
+                try:
+                    self._loaded.pop(token, None)
+                except Exception:
+                    pass
+                self._release_runtime_memory()
+            return True, 'ok'
 
+        removed = False
+        for row in list(self._instance_rows_for_model(token)):
+            public_instance_key = str(row.get('instance_key') or '').strip()
+            if not public_instance_key:
+                continue
+            removed = True
+            try:
+                self._loaded_instances.pop(public_instance_key, None)
+            except Exception:
+                pass
+        if token in self._loaded:
+            removed = True
+            try:
+                self._loaded.pop(token, None)
+            except Exception:
+                pass
+        if not removed:
+            return True, 'not_loaded'
+        self._release_runtime_memory()
         return True, 'ok'
 
-    def is_loaded(self, model_id: str) -> bool:
-        return model_id in self._loaded
+    def is_loaded(
+        self,
+        model_id: str,
+        *,
+        instance_key: str = "",
+        load_profile_hash: str = "",
+    ) -> bool:
+        token = str(model_id or '').strip()
+        if str(instance_key or '').strip() or str(load_profile_hash or '').strip():
+            return self._resolve_loaded_instance(
+                token,
+                instance_key=instance_key,
+                load_profile_hash=load_profile_hash,
+            ) is not None
+        return bool(self._instance_rows_for_model(token))
 
-    def generate_text(self, model_id: str, prompt: str, *, max_tokens: int, temperature: float, top_p: float) -> tuple[bool, str, dict[str, Any]]:
-        if not self._mlx_ok or self._mlx_generate is None:
+    def generate_text(
+        self,
+        model_id: str,
+        prompt: str,
+        *,
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+        instance_key: str = "",
+        load_profile_hash: str = "",
+        effective_context_length: int = 0,
+    ) -> tuple[bool, str, dict[str, Any]]:
+        if not self._ensure_runtime_imported():
             return False, '', {'error': f'mlx_lm_unavailable:{getattr(self, "_import_error", "")}' }
-        if model_id not in self._loaded:
+        row = self._resolve_loaded_instance(
+            model_id,
+            instance_key=instance_key,
+            load_profile_hash=load_profile_hash,
+        )
+        if not isinstance(row, dict):
             return False, '', {'error': 'model_not_loaded'}
-        model, tokenizer = self._loaded[model_id]
+        artifact = self._normalize_loaded_artifact(str(row.get('model_id') or model_id))
+        if artifact is None:
+            return False, '', {'error': 'model_not_loaded'}
+        model = artifact.get('model')
+        tokenizer = artifact.get('tokenizer')
+        self._touch_loaded_instance(row)
+        max_kv_size = self._effective_context_length(
+            effective_context_length=effective_context_length,
+            fallback=int(row.get('effective_context_length') or 0),
+        )
 
         # Prefer chat-template prompts when available to improve instruction following.
         # Also explicitly disallow chain-of-thought / hidden reasoning in output.
@@ -2220,7 +3238,13 @@ class MLXRuntime:
             try:
                 sampler = self._mlx_make_sampler(temp=temp, top_p=tp)
                 t0 = _now()
-                out = gen(model, tokenizer, prompt, max_tokens=mt, sampler=sampler)
+                generate_kwargs: dict[str, Any] = {
+                    'max_tokens': mt,
+                    'sampler': sampler,
+                }
+                if max_kv_size > 0:
+                    generate_kwargs['max_kv_size'] = max_kv_size
+                out = gen(model, tokenizer, prompt, **generate_kwargs)
                 if not isinstance(out, str):
                     out = str(out)
                 out = _strip_thought(out)
@@ -2232,6 +3256,9 @@ class MLXRuntime:
                     'promptTokens': int(prompt_tokens),
                     'generationTokens': int(gen_tokens),
                     'generationTPS': float(gen_tps),
+                    'instanceKey': str(row.get('instance_key') or ''),
+                    'loadProfileHash': str(row.get('load_profile_hash') or ''),
+                    'effectiveContextLength': max_kv_size,
                 }
             except Exception as e:
                 return False, '', {'error': f'generate_failed:{type(e).__name__}:{e}'}
@@ -2243,6 +3270,11 @@ class MLXRuntime:
             variants.append({max_key: mt, 'top_p': tp})
             variants.append({max_key: mt, 'temperature': temp})
             variants.append({max_key: mt, 'temperature': temp, 'top_p': tp})
+        if max_kv_size > 0:
+            variants = [
+                dict(kwargs, max_kv_size=max_kv_size)
+                for kwargs in variants
+            ]
 
         t0 = _now()
         last_type_err: Exception | None = None
@@ -2273,19 +3305,44 @@ class MLXRuntime:
             'promptTokens': int(prompt_tokens),
             'generationTokens': int(gen_tokens),
             'generationTPS': float(gen_tps),
+            'instanceKey': str(row.get('instance_key') or ''),
+            'loadProfileHash': str(row.get('load_profile_hash') or ''),
+            'effectiveContextLength': max_kv_size,
         }
 
-    def bench(self, model_id: str, *, prompt_tokens: int = 256, generation_tokens: int = 256) -> tuple[bool, str, dict[str, Any]]:
+    def bench(
+        self,
+        model_id: str,
+        *,
+        prompt_tokens: int = 256,
+        generation_tokens: int = 256,
+        instance_key: str = "",
+        load_profile_hash: str = "",
+        effective_context_length: int = 0,
+    ) -> tuple[bool, str, dict[str, Any]]:
         """Run a short benchmark to measure tokens/s and peak MLX memory.
 
         This is meant to be fast (a few seconds) and offline.
         """
-        if not self._mlx_ok or self._mlx_stream_generate is None or self._mx is None:
+        if not self._ensure_runtime_imported():
             return False, 'mlx_lm_unavailable', {'error': f'mlx_lm_unavailable:{getattr(self, "_import_error", "")}' }
-        if model_id not in self._loaded:
+        row = self._resolve_loaded_instance(
+            model_id,
+            instance_key=instance_key,
+            load_profile_hash=load_profile_hash,
+        )
+        if not isinstance(row, dict):
             return False, 'model_not_loaded', {'error': 'model_not_loaded'}
-
-        model, tokenizer = self._loaded[model_id]
+        artifact = self._normalize_loaded_artifact(str(row.get('model_id') or model_id))
+        if artifact is None:
+            return False, 'model_not_loaded', {'error': 'model_not_loaded'}
+        model = artifact.get('model')
+        tokenizer = artifact.get('tokenizer')
+        self._touch_loaded_instance(row)
+        max_kv_size = self._effective_context_length(
+            effective_context_length=effective_context_length,
+            fallback=int(row.get('effective_context_length') or 0),
+        )
 
         pt = int(max(16, min(int(prompt_tokens), 2048)))
         gt = int(max(16, min(int(generation_tokens), 2048)))
@@ -2325,7 +3382,13 @@ class MLXRuntime:
             except Exception:
                 pass
             warm_prompt = self._mx.random.randint(0, vocab_size, (pt,)).tolist()
-            for _ in self._mlx_stream_generate(model, tok, warm_prompt, max_tokens=16, sampler=sampler):
+            warmup_kwargs: dict[str, Any] = {
+                'max_tokens': 16,
+                'sampler': sampler,
+            }
+            if max_kv_size > 0:
+                warmup_kwargs['max_kv_size'] = max_kv_size
+            for _ in self._mlx_stream_generate(model, tok, warm_prompt, **warmup_kwargs):
                 pass
         except Exception:
             pass
@@ -2338,7 +3401,13 @@ class MLXRuntime:
                 pass
             prompt = self._mx.random.randint(0, vocab_size, (pt,)).tolist()
             last = None
-            for resp in self._mlx_stream_generate(model, tok, prompt, max_tokens=gt, sampler=sampler):
+            measured_kwargs: dict[str, Any] = {
+                'max_tokens': gt,
+                'sampler': sampler,
+            }
+            if max_kv_size > 0:
+                measured_kwargs['max_kv_size'] = max_kv_size
+            for resp in self._mlx_stream_generate(model, tok, prompt, **measured_kwargs):
                 last = resp
             if last is None:
                 return False, 'bench_failed:no_response', {'error': 'no_response'}
@@ -2358,9 +3427,47 @@ class MLXRuntime:
                 'promptTPS': float(getattr(last, 'prompt_tps', 0.0)),
                 'generationTPS': float(getattr(last, 'generation_tps', 0.0)),
                 'peakMemoryBytes': int(max(0, peak_bytes)),
+                'instanceKey': str(row.get('instance_key') or ''),
+                'loadProfileHash': str(row.get('load_profile_hash') or ''),
+                'effectiveContextLength': max_kv_size,
             }
         except Exception as e:
             return False, f'bench_failed:{type(e).__name__}:{e}', {'error': f'{type(e).__name__}:{e}'}
+
+
+def _runtime_loaded_model_ids(runtime: MLXRuntime | Any) -> list[str]:
+    loaded_model_ids = getattr(runtime, 'loaded_model_ids', None)
+    if callable(loaded_model_ids):
+        try:
+            rows = loaded_model_ids()
+            if isinstance(rows, list):
+                return sorted(str(item or '').strip() for item in rows if str(item or '').strip())
+        except Exception:
+            pass
+
+    loaded = getattr(runtime, '_loaded', {}) or {}
+    if not isinstance(loaded, dict):
+        return []
+
+    out: set[str] = set()
+    for key, value in loaded.items():
+        if isinstance(value, dict):
+            token = str(value.get('model_id') or key or '').strip()
+        else:
+            token = str(key or '').strip()
+        if token:
+            out.add(token)
+    return sorted(out)
+
+
+def _runtime_loaded_model_count(runtime: MLXRuntime | Any) -> int:
+    loaded_model_count = getattr(runtime, 'loaded_model_count', None)
+    if callable(loaded_model_count):
+        try:
+            return max(0, int(loaded_model_count()))
+        except Exception:
+            pass
+    return len(_runtime_loaded_model_ids(runtime))
 
 
 def _strip_thought(text: str) -> str:
@@ -2401,6 +3508,8 @@ def main() -> int:
     os.makedirs(base, exist_ok=True)
     os.makedirs(_cmd_dir(base), exist_ok=True)
     os.makedirs(_cmd_result_dir(base), exist_ok=True)
+    os.makedirs(_local_runtime_cmd_dir(base), exist_ok=True)
+    os.makedirs(_local_runtime_result_dir(base), exist_ok=True)
     os.makedirs(_req_dir(base), exist_ok=True)
     os.makedirs(_resp_dir(base), exist_ok=True)
     os.makedirs(_cancel_dir(base), exist_ok=True)
@@ -2422,6 +3531,19 @@ def main() -> int:
         # Continue without lock; better to run than be dead.
 
     rt = MLXRuntime()
+    rt._probe_runtime_support()
+    local_runtime_entry = None
+    try:
+        import relflowhub_local_runtime as local_runtime_entry  # type: ignore
+
+        local_runtime_entry.build_registry(
+            base_dir=base,
+            runtime=rt,
+            resident_transformers=True,
+        )
+    except Exception as e:
+        _audit(base, 'local_runtime_entry_import_failed', error=f'{type(e).__name__}:{e}')
+        local_runtime_entry = None
     try:
         print(f"[mlx_runtime] start pid={os.getpid()} version={RUNTIME_VERSION} mlx_ok={int(rt._mlx_ok)}", flush=True)
     except Exception:
@@ -2443,14 +3565,18 @@ def main() -> int:
         import_error=str(getattr(rt, '_import_error', '') or ''),
         active_memory_bytes=am,
         peak_memory_bytes=pm,
-        loaded_model_count=len(getattr(rt, '_loaded', {}) or {}),
-        loaded_model_ids=sorted(str(k) for k in (getattr(rt, '_loaded', {}) or {}).keys()),
+        loaded_model_count=_runtime_loaded_model_count(rt),
+        loaded_model_ids=_runtime_loaded_model_ids(rt),
         provider_statuses=provider_statuses,
     )
 
     state = _ensure_state_from_catalog(base)
     try:
         state, _ = _merge_remote_models_into_state(base, state)
+    except Exception:
+        pass
+    try:
+        state, _ = _sync_state_from_provider_statuses(state, provider_statuses)
     except Exception:
         pass
     _save_state(base, state)
@@ -2466,6 +3592,14 @@ def main() -> int:
         with open(path, 'a', encoding='utf-8') as f:
             f.write(line)
             f.flush()
+
+    def _local_runtime_result_path(req_id: str) -> str:
+        return os.path.join(_local_runtime_result_dir(base), f'resp_{req_id}.json')
+
+    def _write_local_runtime_result(req_id: str, obj: dict[str, Any]) -> None:
+        if not str(req_id or '').strip():
+            return
+        _write_json_atomic(_local_runtime_result_path(req_id), obj)
 
     def _is_canceled(req_id: str) -> bool:
         return os.path.exists(os.path.join(_cancel_dir(base), f'cancel_{req_id}.json'))
@@ -2511,14 +3645,17 @@ def main() -> int:
         # Runtime heartbeat for clients (FA Tracker, etc).
         am, pm = rt.memory_bytes()
         provider_statuses = _provider_status_payloads(base, runtime=rt)
+        state, provider_state_changed = _sync_state_from_provider_statuses(state, provider_statuses)
+        if provider_state_changed:
+            _save_state(base, state)
         _write_runtime_status(
             base,
             mlx_ok=rt._mlx_ok,
             import_error=str(getattr(rt, '_import_error', '') or ''),
             active_memory_bytes=am,
             peak_memory_bytes=pm,
-            loaded_model_count=len(getattr(rt, '_loaded', {}) or {}),
-            loaded_model_ids=sorted(str(k) for k in (getattr(rt, '_loaded', {}) or {}).keys()),
+            loaded_model_count=_runtime_loaded_model_count(rt),
+            loaded_model_ids=_runtime_loaded_model_ids(rt),
             provider_statuses=provider_statuses,
         )
 
@@ -2567,10 +3704,23 @@ def main() -> int:
                 if m is None:
                     ok, msg = False, 'unknown_model_id'
                 else:
+                    identity = _resolve_model_command_identity(base, cmd, catalog_model=m)
+                    instance_key = str(identity.get('instance_key') or cmd.instance_key or '').strip()
+                    load_profile_hash = str(identity.get('load_profile_hash') or cmd.load_profile_hash or '').strip()
+                    effective_context_length = max(
+                        0,
+                        int(identity.get('effective_context_length') or cmd.effective_context_length or 0),
+                    )
                     action = cmd.action
                     if action == 'load':
                         mp = str(m.get('modelPath') or '')
-                        ok, msg, delta = rt.load(cmd.model_id, mp)
+                        ok, msg, delta = rt.load(
+                            cmd.model_id,
+                            mp,
+                            instance_key=instance_key,
+                            load_profile_hash=load_profile_hash,
+                            effective_context_length=effective_context_length,
+                        )
                         if ok:
                             m['state'] = 'loaded'
                             # Best-effort per-model memory estimate.
@@ -2580,13 +3730,21 @@ def main() -> int:
                                 m['tokensPerSec'] = _estimate_tokens_per_sec(float(m.get('paramsB') or 0.0), str(m.get('quant') or ''))
                     elif action == 'sleep':
                         # MVP: sleep behaves like unload but keeps the model in a "sleeping" state.
-                        ok, msg = rt.unload(cmd.model_id)
+                        ok, msg = rt.unload(
+                            cmd.model_id,
+                            instance_key=instance_key,
+                            load_profile_hash=load_profile_hash,
+                        )
                         if ok:
                             m['state'] = 'sleeping'
                             m['memoryBytes'] = None
                             m['tokensPerSec'] = None
                     elif action == 'unload':
-                        ok, msg = rt.unload(cmd.model_id)
+                        ok, msg = rt.unload(
+                            cmd.model_id,
+                            instance_key=instance_key,
+                            load_profile_hash=load_profile_hash,
+                        )
                         if ok:
                             m['state'] = 'available'
                             m['memoryBytes'] = None
@@ -2594,9 +3752,19 @@ def main() -> int:
                     elif action == 'bench':
                         # Bench requires the model to be resident in the runtime.
                         # If the runtime restarted but the state still marks it as loaded, auto-load first.
-                        if not rt.is_loaded(cmd.model_id):
+                        if not rt.is_loaded(
+                            cmd.model_id,
+                            instance_key=instance_key,
+                            load_profile_hash=load_profile_hash,
+                        ):
                             mp = str(m.get('modelPath') or '')
-                            ok_load, msg_load, delta = rt.load(cmd.model_id, mp)
+                            ok_load, msg_load, delta = rt.load(
+                                cmd.model_id,
+                                mp,
+                                instance_key=instance_key,
+                                load_profile_hash=load_profile_hash,
+                                effective_context_length=effective_context_length,
+                            )
                             if ok_load:
                                 m['state'] = 'loaded'
                                 if delta > 0:
@@ -2607,7 +3775,14 @@ def main() -> int:
                                 msg = msg_load
                                 continue
 
-                        okb, msgb, meta = rt.bench(cmd.model_id, prompt_tokens=256, generation_tokens=256)
+                        okb, msgb, meta = rt.bench(
+                            cmd.model_id,
+                            prompt_tokens=256,
+                            generation_tokens=256,
+                            instance_key=instance_key,
+                            load_profile_hash=load_profile_hash,
+                            effective_context_length=effective_context_length,
+                        )
                         ok = okb
                         msg = msgb
                         if ok and isinstance(meta, dict):
@@ -2621,6 +3796,11 @@ def main() -> int:
                                     prompt_tps=float(meta.get('promptTPS') or 0.0),
                                     generation_tps=float(meta.get('generationTPS') or 0.0),
                                     peak_memory_bytes=int(meta.get('peakMemoryBytes') or 0),
+                                    load_profile_hash=str(meta.get('loadProfileHash') or ''),
+                                    effective_context_length=max(
+                                        0,
+                                        int(meta.get('effectiveContextLength') or 0),
+                                    ),
                                 )
                             except Exception:
                                 pass
@@ -2660,6 +3840,78 @@ def main() -> int:
             except Exception:
                 pass
 
+        # 1b) Handle provider-aware resident runtime commands.
+        local_runtime_cmds = _scan_local_runtime_commands(base)
+        for cmd in local_runtime_cmds:
+            out: dict[str, Any]
+            try:
+                if local_runtime_entry is None:
+                    out = {
+                        'ok': False,
+                        'command': cmd.command,
+                        'error': 'local_runtime_entry_unavailable',
+                        'runtimeVersion': str(RUNTIME_VERSION),
+                        'updatedAt': _now(),
+                    }
+                elif cmd.command == 'run_local_task':
+                    out = local_runtime_entry.run_local_task(cmd.request, base_dir=base)
+                elif cmd.command == 'run_local_bench':
+                    out = local_runtime_entry.run_local_bench(cmd.request, base_dir=base)
+                elif cmd.command == 'manage_local_model':
+                    out = local_runtime_entry.manage_local_model(cmd.request, base_dir=base)
+                else:
+                    out = {
+                        'ok': False,
+                        'command': cmd.command,
+                        'error': f'unsupported_local_runtime_command:{cmd.command}',
+                        'runtimeVersion': str(RUNTIME_VERSION),
+                        'updatedAt': _now(),
+                    }
+            except Exception as e:
+                out = {
+                    'ok': False,
+                    'command': cmd.command,
+                    'error': f'local_runtime_command_failed:{type(e).__name__}:{e}',
+                    'runtimeVersion': str(RUNTIME_VERSION),
+                    'updatedAt': _now(),
+                }
+
+            if not isinstance(out, dict):
+                out = {
+                    'ok': False,
+                    'command': cmd.command,
+                    'error': 'invalid_local_runtime_command_result',
+                    'runtimeVersion': str(RUNTIME_VERSION),
+                    'updatedAt': _now(),
+                }
+            out.setdefault('command', cmd.command)
+            out.setdefault('reqId', cmd.req_id)
+            _write_local_runtime_result(cmd.req_id, out)
+
+            try:
+                os.remove(cmd.path)
+            except Exception:
+                pass
+
+            try:
+                provider_statuses = _provider_status_payloads(base, runtime=rt)
+                state, provider_state_changed = _sync_state_from_provider_statuses(state, provider_statuses)
+                if provider_state_changed:
+                    _save_state(base, state)
+                am, pm = rt.memory_bytes()
+                _write_runtime_status(
+                    base,
+                    mlx_ok=rt._mlx_ok,
+                    import_error=str(getattr(rt, '_import_error', '') or ''),
+                    active_memory_bytes=am,
+                    peak_memory_bytes=pm,
+                    loaded_model_count=_runtime_loaded_model_count(rt),
+                    loaded_model_ids=_runtime_loaded_model_ids(rt),
+                    provider_statuses=provider_statuses,
+                )
+            except Exception:
+                pass
+
         # 2) Handle AI generation requests (single-turn).
         reqs = _scan_ai_requests(base)
         for r in reqs:
@@ -2694,6 +3946,22 @@ def main() -> int:
             except Exception:
                 pass
 
+            identity = _resolve_ai_request_identity(
+                base,
+                r,
+                catalog_model=_find_model(state, r.model_id),
+            )
+            if identity:
+                r.instance_key = str(identity.get('instance_key') or r.instance_key or '').strip()
+                r.load_profile_hash = str(identity.get('load_profile_hash') or r.load_profile_hash or '').strip()
+                r.effective_context_length = max(
+                    0,
+                    int(identity.get('effective_context_length') or r.effective_context_length or 0),
+                )
+                r.effective_context_source = str(
+                    identity.get('effective_context_source') or r.effective_context_source or ''
+                ).strip()
+
             # Inject pinned constitution snippet (token-efficient; configurable).
             try:
                 r.prompt = _inject_ax_constitution(base, r.prompt)
@@ -2703,19 +3971,28 @@ def main() -> int:
             rp = _resp_path(r.req_id)
             # Start event.
             try:
+                start_event = {
+                    'type': 'start',
+                    'req_id': r.req_id,
+                    'app_id': r.app_id,
+                    'model_id': r.model_id,
+                    'route_reason': route_reason,
+                    'route_source': route_source,
+                    'task_type': str(r.task_type or ''),
+                    'ok': True,
+                    'started_at': _now(),
+                }
+                if r.instance_key:
+                    start_event['instance_key'] = str(r.instance_key)
+                if r.load_profile_hash:
+                    start_event['load_profile_hash'] = str(r.load_profile_hash)
+                if r.effective_context_length > 0:
+                    start_event['effective_context_length'] = int(r.effective_context_length)
+                if r.effective_context_source:
+                    start_event['effective_context_source'] = str(r.effective_context_source)
                 _append_jsonl(
                     rp,
-                    {
-                        'type': 'start',
-                        'req_id': r.req_id,
-                        'app_id': r.app_id,
-                        'model_id': r.model_id,
-                        'route_reason': route_reason,
-                        'route_source': route_source,
-                        'task_type': str(r.task_type or ''),
-                        'ok': True,
-                        'started_at': _now(),
-                    },
+                    start_event,
                 )
                 _audit_ai(base, phase='start', req=r)
             except Exception as e:
@@ -2819,7 +4096,11 @@ def main() -> int:
                 _append_jsonl(rp, {'type': 'done', 'req_id': r.req_id, 'ok': False, 'reason': route_reason or 'no_model_routed', 'route_source': route_source})
                 _audit_ai(base, phase='done', req=r, ok=False, reason=route_reason or 'no_model_routed')
                 continue
-            if not rt.is_loaded(r.model_id):
+            if not rt.is_loaded(
+                r.model_id,
+                instance_key=r.instance_key,
+                load_profile_hash=r.load_profile_hash,
+            ):
                 m = _find_model(state, r.model_id)
                 if m is None:
                     # Prefer an explicit "not found" reason over model_path_missing
@@ -2830,12 +4111,26 @@ def main() -> int:
                 mp = str((m or {}).get('modelPath') or '')
                 marked_loaded = str((m or {}).get('state') or '').strip().lower() == 'loaded'
                 if r.auto_load or marked_loaded:
-                    ok_load, msg_load, delta = rt.load(r.model_id, mp)
+                    ok_load, msg_load, delta = rt.load(
+                        r.model_id,
+                        mp,
+                        instance_key=r.instance_key,
+                        load_profile_hash=r.load_profile_hash,
+                        effective_context_length=r.effective_context_length,
+                        effective_load_profile=(
+                            dict(identity.get('effective_load_profile'))
+                            if isinstance(identity.get('effective_load_profile'), dict)
+                            else {}
+                        ),
+                    )
                     _audit(
                         base,
                         'ai_auto_load',
                         ok=int(ok_load),
                         model_id=r.model_id,
+                        instance_key=r.instance_key,
+                        load_profile_hash=r.load_profile_hash,
+                        effective_context_length=r.effective_context_length,
                         marked_loaded=int(marked_loaded),
                         msg=msg_load,
                     )
@@ -2861,6 +4156,9 @@ def main() -> int:
                 max_tokens=r.max_tokens,
                 temperature=r.temperature,
                 top_p=r.top_p,
+                instance_key=r.instance_key,
+                load_profile_hash=r.load_profile_hash,
+                effective_context_length=r.effective_context_length,
             )
             if not ok_gen:
                 _append_jsonl(rp, {'type': 'done', 'req_id': r.req_id, 'ok': False, 'reason': str(meta.get('error') or 'generate_failed')})
@@ -2894,6 +4192,12 @@ def main() -> int:
                         'promptTokens': int(meta.get('promptTokens') or 0),
                         'generationTokens': int(meta.get('generationTokens') or 0),
                         'generationTPS': float(meta.get('generationTPS') or 0.0),
+                        'instance_key': str(meta.get('instanceKey') or r.instance_key or ''),
+                        'load_profile_hash': str(meta.get('loadProfileHash') or r.load_profile_hash or ''),
+                        'effective_context_length': max(
+                            0,
+                            int(meta.get('effectiveContextLength') or r.effective_context_length or 0),
+                        ),
                         'rss_bytes': _ps_rss_bytes(),
                     },
                 )

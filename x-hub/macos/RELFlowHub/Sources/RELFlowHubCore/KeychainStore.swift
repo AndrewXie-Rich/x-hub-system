@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import Security
 
 public enum KeychainStore {
@@ -38,7 +39,7 @@ public enum KeychainStore {
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         // IMPORTANT: avoid spamming password prompts in background refresh loops.
         // If Keychain needs user interaction, fail fast and let callers fall back to ciphertext/file storage.
-        query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+        query[kSecUseAuthenticationContext as String] = nonInteractiveAuthContext()
         var item: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         if status == errSecSuccess {
@@ -74,7 +75,7 @@ public enum KeychainStore {
         let attrs: [String: Any] = [kSecValueData as String: data]
         var q2 = query
         // Avoid UI prompts; best-effort.
-        q2[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+        q2[kSecUseAuthenticationContext as String] = nonInteractiveAuthContext()
         let status = SecItemUpdate(q2 as CFDictionary, attrs as CFDictionary)
         if status == errSecItemNotFound {
             var add = q2
@@ -91,9 +92,15 @@ public enum KeychainStore {
         if acct.isEmpty { return false }
         var q = baseQuery(account: acct)
         // Avoid UI prompts; best-effort.
-        q[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+        q[kSecUseAuthenticationContext as String] = nonInteractiveAuthContext()
         let status = SecItemDelete(q as CFDictionary)
         return status == errSecSuccess || status == errSecItemNotFound
+    }
+
+    private static func nonInteractiveAuthContext() -> LAContext {
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        return context
     }
 
     private static func baseQuery(account: String) -> [String: Any] {

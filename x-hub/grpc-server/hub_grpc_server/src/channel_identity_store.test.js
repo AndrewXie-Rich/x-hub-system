@@ -78,6 +78,7 @@ run('XT-W3-24-H/identity store upserts and looks up by provider stable id, not d
           external_tenant_id: 'tenant_001',
           hub_user_id: 'user_ops_alice',
           roles: ['release_manager', 'approver'],
+          access_groups: ['group_allowlist'],
           approval_only: false,
           display_name: 'Alice One',
           status: 'active',
@@ -91,7 +92,9 @@ run('XT-W3-24-H/identity store upserts and looks up by provider stable id, not d
       });
       assert.equal(!!first.ok, true);
       assert.equal(String(first.binding?.provider || ''), 'feishu');
-      assert.deepEqual(first.binding?.roles, ['release_manager', 'approver']);
+      assert.equal(String(first.binding?.stable_external_id || ''), 'feishu/tenant_001/ou_123');
+      assert.deepEqual(first.binding?.roles, ['release_manager', 'approval_only_identity']);
+      assert.deepEqual(first.binding?.access_groups, ['group_allowlist']);
 
       const second = upsertChannelIdentityBinding(db, {
         binding: {
@@ -100,6 +103,7 @@ run('XT-W3-24-H/identity store upserts and looks up by provider stable id, not d
           external_tenant_id: 'tenant_001',
           hub_user_id: 'user_ops_alice',
           roles: ['approver'],
+          access_groups: ['group_allowlist', 'approval_only_identity'],
           approval_only: true,
           display_name: 'Alice Two',
           status: 'active',
@@ -123,13 +127,12 @@ run('XT-W3-24-H/identity store upserts and looks up by provider stable id, not d
       });
       assert.ok(fetched);
       assert.equal(String(fetched?.hub_user_id || ''), 'user_ops_alice');
-      assert.equal(String(fetched?.actor_ref || ''), 'xhub.im_identity_binding.v1:feishu/ou_123');
-      assert.deepEqual(fetched?.roles, ['approver']);
+      assert.equal(String(fetched?.actor_ref || ''), 'xhub.im_identity_binding.v1:feishu/tenant_001/ou_123');
+      assert.deepEqual(fetched?.roles, ['approval_only_identity']);
+      assert.deepEqual(fetched?.access_groups, ['group_allowlist', 'approval_only_identity']);
 
       const rows = listChannelIdentityBindings(db, {
-        provider: 'feishu',
-        hub_user_id: 'user_ops_alice',
-        status: 'active',
+        stable_external_id: 'feishu/tenant_001/ou_123',
       });
       assert.equal(rows.length, 1);
 

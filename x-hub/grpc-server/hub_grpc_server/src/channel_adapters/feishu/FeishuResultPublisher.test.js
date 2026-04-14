@@ -169,10 +169,59 @@ run('FeishuResultPublisher renders supervisor brief projection summaries when pr
   }));
   assert.equal(!!out.ok, true);
   assert.match(String(out.payload?.content || ''), /supervisor_status/);
+  assert.match(String(out.payload?.content || ''), /\*\*Project State\*\*: awaiting authorization/);
   assert.match(String(out.payload?.content || ''), /Topline: Release train paused on one approval/);
   assert.match(String(out.payload?.content || ''), /Blocker: awaiting security review/);
   assert.match(String(out.payload?.content || ''), /Pending grants: 1/);
   assert.match(String(out.payload?.content || ''), /audit-projection-1/);
+});
+
+run('FeishuResultPublisher renders governed heartbeat query summaries when execution query data is present', () => {
+  const out = buildFeishuResultSummary(makeResult({
+    command: {
+      ...makeResult().command,
+      action_name: 'supervisor.blockers.get',
+    },
+    dispatch: {
+      kind: 'hub_query',
+    },
+    execution: {
+      ok: true,
+      query: {
+        action_name: 'supervisor.blockers.get',
+        project_id: 'project_alpha',
+        heartbeat_governance_snapshot_json: JSON.stringify({
+          status_digest: 'Core loop advancing',
+          latest_quality_band: 'usable',
+          open_anomaly_types: ['stale_repeat'],
+          next_review_due: {
+            kind: 'review_pulse',
+            due: true,
+            due_at_ms: 1710000600000,
+          },
+        }),
+        heartbeat: {
+          queue_depth: 3,
+          oldest_wait_ms: 9000,
+          risk_tier: 'medium',
+          blocked_reason: ['awaiting security review'],
+          next_actions: ['approve release grant'],
+        },
+        provider_status: {
+          runtime_state: 'ready',
+        },
+      },
+      route: {
+        route_mode: 'hub_only_status',
+        resolved_device_id: 'xt-alpha-1',
+        xt_online: true,
+      },
+    },
+  }));
+  assert.equal(!!out.ok, true);
+  assert.match(String(out.payload?.content || ''), /supervisor_blockers/);
+  assert.match(String(out.payload?.content || ''), /Review pressure: quality=usable anomalies=stale_repeat/);
+  assert.match(String(out.payload?.content || ''), /Next review: review_pulse due=yes at_ms=1710000600000/);
 });
 
 run('FeishuResultPublisher renders actual governed XT command summaries when execution data is present', () => {

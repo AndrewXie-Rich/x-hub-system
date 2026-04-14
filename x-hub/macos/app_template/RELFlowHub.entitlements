@@ -15,10 +15,6 @@
 		<string>$(AppIdentifierPrefix)com.rel.flowhub.shared</string>
 	</array>
 
-    <!-- Allow reading Calendar via EventKit (still gated by user permission prompt). -->
-	<key>com.apple.security.personal-information.calendars</key>
-	<true/>
-
 	<!-- Needed to accept incoming local IPC connections (AF_UNIX socket server). -->
 	<key>com.apple.security.network.server</key>
 	<true/>
@@ -35,12 +31,16 @@
 	<key>com.apple.security.files.user-selected.read-only</key>
 	<true/>
 
-    <!-- Keep IPC + widget summary in ~/RELFlowHub for now; this exception keeps it working under sandbox. -->
+	<!-- Keep IPC + widget summary in ~/RELFlowHub for now; this exception keeps it working under sandbox. -->
 	<key>com.apple.security.temporary-exception.files.home-relative-path.read-write</key>
 	<array>
 		<string>RELFlowHub</string>
 		<string>RELFlowHub/.rel_flow_hub.sock</string>
 		<string>RELFlowHub/summary_state.json</string>
+		<string>.lmstudio-home-pointer</string>
+		<string>.lmstudio</string>
+		<string>.lmstudio/.internal</string>
+		<string>.lmstudio/models</string>
 	</array>
 
 	<!-- Allow using /tmp for a shared IPC socket when home dir writes are blocked by sandbox policy. -->

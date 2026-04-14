@@ -1,5 +1,10 @@
 import Foundation
 
+public enum RemoteProviderWireAPI: String, Codable, Equatable, Sendable {
+    case chatCompletions = "chat_completions"
+    case responses = "responses"
+}
+
 public enum RemoteProviderEndpoints {
     public static let remoteCatalogBaseURLString = "https://opencode.ai/zen/v1"
     private static let remoteCatalogLegacyBackends: Set<String> = ["opencode", "opencode_zen"]
@@ -32,6 +37,25 @@ public enum RemoteProviderEndpoints {
         isRemoteCatalogBackend(backend) ? "remote_catalog" : normalizedBackend(backend)
     }
 
+    public static func normalizedWireAPI(_ raw: String?) -> RemoteProviderWireAPI? {
+        let value = (raw ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !value.isEmpty else { return nil }
+        switch value {
+        case "responses", "response":
+            return .responses
+        case "chat_completions", "chat/completions", "chat-completions", "chatcompletions", "chat":
+            return .chatCompletions
+        default:
+            return nil
+        }
+    }
+
+    public static func resolvedOpenAIWireAPI(_ raw: String?, backend _: String) -> RemoteProviderWireAPI {
+        normalizedWireAPI(raw) ?? .chatCompletions
+    }
+
     public static func openAIChatCompletionsURL(baseURL: String?, backend: String) -> URL? {
         let b = canonicalBackend(backend)
         let base = normalizedBase(baseURL)
@@ -51,6 +75,27 @@ public enum RemoteProviderEndpoints {
             return URL(string: base + "/chat/completions")
         }
         return URL(string: base + "/v1/chat/completions")
+    }
+
+    public static func openAIResponsesURL(baseURL: String?, backend: String) -> URL? {
+        let b = canonicalBackend(backend)
+        let base = normalizedBase(baseURL)
+        if base.isEmpty {
+            if b == "openai" {
+                return URL(string: "https://api.openai.com/v1/responses")
+            }
+            if b == "remote_catalog" {
+                return URL(string: remoteCatalogBaseURLString + "/responses")
+            }
+            return nil
+        }
+        if base.hasSuffix("/responses") {
+            return URL(string: base)
+        }
+        if base.hasSuffix("/v1") {
+            return URL(string: base + "/responses")
+        }
+        return URL(string: base + "/v1/responses")
     }
 
     public static func openAIModelsURL(baseURL: String?, backend: String) -> URL? {

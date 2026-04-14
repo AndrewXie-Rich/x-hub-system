@@ -25,6 +25,7 @@ run('XT-W3-24-G/channel registry normalizes aliases to a single provider id', ()
   assert.equal(normalizeChannelProviderId('lark'), 'feishu');
   assert.equal(normalizeChannelProviderId('whatsapp_cloud_api'), 'whatsapp_cloud_api');
   assert.equal(normalizeChannelProviderId('whatsapp cloud api'), 'whatsapp_cloud_api');
+  assert.equal(normalizeChannelProviderId('whatsapp_personal_runner'), 'whatsapp_personal_qr');
 });
 
 run('XT-W3-24-G/channel registry keeps whatsapp generic alias ambiguous and fail-closed', () => {
@@ -43,5 +44,7 @@ run('XT-W3-24-G/channel registry exposes frozen provider metadata and reuse map'
   assert.equal(String(feishu?.approval_surface || ''), 'card');
   assert.equal(Array.isArray(feishu?.capabilities), true);
   assert.equal(String(HUB_CHANNEL_OPENCLAW_REUSE_MAP.registry.reuse_class || ''), 'direct_logic');
+  assert.equal(String(HUB_CHANNEL_OPENCLAW_REUSE_MAP.ingress_envelope.reuse_class || ''), 'shape_only');
+  assert.equal(String(HUB_CHANNEL_OPENCLAW_REUSE_MAP.provider_exposure_matrix.reuse_class || ''), 'shape_only');
   assert.equal(String(HUB_CHANNEL_OPENCLAW_REUSE_MAP.xt_runtime_tokens.reuse_class || ''), 'forbidden');
 });

@@ -3,6 +3,11 @@ import Darwin
 import RELFlowHubCore
 
 enum RemoteProviderClient {
+    struct UsageLimitNotice: Equatable {
+        var retryAtText: String?
+        var suggestsPlusUpgrade: Bool
+    }
+
     enum ProviderError: LocalizedError {
         case missingAPIKey
         case invalidBaseURL
@@ -14,23 +19,167 @@ enum RemoteProviderClient {
         var errorDescription: String? {
             switch self {
             case .missingAPIKey:
-                return "API Key is required."
+                return HubUIStrings.Models.ProviderImport.missingAPIKey
             case .invalidBaseURL:
-                return "Base URL is invalid for this provider."
+                return HubUIStrings.Models.ProviderImport.invalidBaseURL
             case .httpError(let status, let body):
-                if body.isEmpty {
-                    return "Provider request failed (status=\(status))."
-                }
-                return "Provider request failed (status=\(status)): \(body)"
+                return RemoteProviderClient.userFacingHTTPError(status: status, body: body)
             case .badResponse:
-                return "Provider returned an unsupported response format."
+                return HubUIStrings.Models.ProviderImport.badResponse
             case .emptyResponse:
-                return "Provider returned HTTP 200 with an empty body for /models. This gateway does not expose a model list. Enter the model ID manually or import it from provider config."
+                return HubUIStrings.Models.ProviderImport.emptyResponse
             case .bridgeFailure(let reason):
-                let r = reason.trimmingCharacters(in: .whitespacesAndNewlines)
-                return r.isEmpty ? "Bridge request failed." : "Bridge request failed: \(r)"
+                return HubUIStrings.Models.ProviderImport.bridgeFailure(
+                    RemoteProviderClient.humanizedBridgeFailureReason(reason)
+                )
             }
         }
+    }
+
+    static func userFacingHTTPError(status: Int, body: String) -> String {
+        let normalizedBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let usageLimit = usageLimitNotice(from: normalizedBody) {
+            if let retryAtText = usageLimit.retryAtText, !retryAtText.isEmpty {
+                if usageLimit.suggestsPlusUpgrade {
+                    return HubUIStrings.Settings.RemoteModels.usageLimitUpgradeRetryDetail(retryAtText)
+                }
+                return HubUIStrings.Settings.RemoteModels.usageLimitRetryDetail(retryAtText)
+            }
+            if usageLimit.suggestsPlusUpgrade {
+                return HubUIStrings.Settings.RemoteModels.usageLimitUpgradeDetail
+            }
+            return HubUIStrings.Settings.RemoteModels.usageLimitDetail
+        }
+        if let permissionNotice = permissionDeniedNotice(status: status, body: normalizedBody) {
+            return permissionNotice
+        }
+        if isQuotaError(status: status, body: normalizedBody) {
+            if normalizedBody.isEmpty {
+                return "Provider 配额不足或额度已用尽（status=\(status)）。"
+            }
+            return "Provider 配额不足或额度已用尽（status=\(status)）：\(normalizedBody)"
+        }
+        if isRateLimitError(status: status, body: normalizedBody) {
+            if normalizedBody.isEmpty {
+                return "Provider 当前正在限流，请稍后重试（status=\(status)）。"
+            }
+            return "Provider 当前正在限流，请稍后重试（status=\(status)）：\(normalizedBody)"
+        }
+        return HubUIStrings.Models.ProviderImport.httpError(status: status, body: normalizedBody)
+    }
+
+    static func usageLimitNotice(from text: String) -> UsageLimitNotice? {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return nil }
+
+        let lowercased = normalized.lowercased()
+        let suggestsPlusUpgrade = lowercased.contains("upgrade to plus")
+            || lowercased.contains("升级 plus")
+        let hasUsageLimitSignal = lowercased.contains("you've hit your usage limit")
+            || lowercased.contains("usage limit")
+            || lowercased.contains("rate limit resets")
+            || lowercased.contains("resets on")
+            || lowercased.contains("当前额度已用完")
+            || lowercased.contains("额度已用完")
+
+        let retryAtText = firstCapturedGroup(
+            in: normalized,
+            patterns: [
+                #"(?i)try again at\s+([^\n]+?)(?:[。.]?$)"#,
+                #"(?i)rate limit resets on\s+([^\n]+?)(?:\.\s*to continue|\.\s*upgrade|[。.]?$)"#,
+                #"(?i)resets on\s+([^\n]+?)(?:\.\s*to continue|\.\s*upgrade|[。.]?$)"#,
+                #"建议到\s*([^\n]+?)\s*再试"#,
+                #"到\s*([^\n]+?)\s*再试"#,
+            ]
+        )
+
+        guard hasUsageLimitSignal || retryAtText != nil else { return nil }
+        return UsageLimitNotice(
+            retryAtText: retryAtText?.trimmingCharacters(in: .whitespacesAndNewlines),
+            suggestsPlusUpgrade: suggestsPlusUpgrade
+        )
+    }
+
+    static func humanizedBridgeFailureReason(_ reason: String) -> String {
+        let normalized = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch normalized {
+        case "api_key_missing":
+            return "API Key 未设置。"
+        case "remote_model_not_found":
+            return "Hub 当前没有把这个远程模型挂到可执行面。请先 Load 再试。"
+        case "base_url_invalid":
+            return "Base URL 无效。"
+        case "missing_model_id":
+            return "缺少模型 ID。"
+        default:
+            return normalized
+        }
+    }
+
+    private static func isQuotaError(status: Int, body: String) -> Bool {
+        if usageLimitNotice(from: body) != nil {
+            return true
+        }
+        if status == 402 {
+            return true
+        }
+        let normalized = body.lowercased()
+        return normalized.contains("quota")
+            || normalized.contains("insufficient_quota")
+            || normalized.contains("insufficient quota")
+            || normalized.contains("额度")
+            || normalized.contains("余额")
+            || normalized.contains("credit balance")
+            || normalized.contains("billing")
+    }
+
+    private static func isRateLimitError(status: Int, body: String) -> Bool {
+        let normalized = body.lowercased()
+        if normalized.contains("rate limit")
+            || normalized.contains("too many requests")
+            || normalized.contains("requests per min")
+            || normalized.contains("rpm limit")
+            || normalized.contains("tpm limit") {
+            return true
+        }
+        return status == 429 && !isQuotaError(status: status, body: body)
+    }
+
+    private static func permissionDeniedNotice(status: Int, body: String) -> String? {
+        guard status == 401 || status == 403 else { return nil }
+        let normalized = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            return "Provider 权限不足（status=\(status)）。"
+        }
+
+        let lowercased = normalized.lowercased()
+        let isPermissionSignal = lowercased.contains("missing scopes")
+            || lowercased.contains("insufficient permissions")
+            || lowercased.contains("forbidden")
+            || lowercased.contains("unauthorized")
+        guard isPermissionSignal else { return nil }
+
+        if let scopes = missingScopesList(from: normalized), !scopes.isEmpty {
+            if scopes.lowercased().contains("responses.write") {
+                return "Provider 权限不足，缺少生成 scope：\(scopes)。请更换具备 Responses 写权限的 key。"
+            }
+            return "Provider 权限不足，缺少 scope：\(scopes)。"
+        }
+
+        return "Provider 权限不足（status=\(status)）：\(normalized)"
+    }
+
+    private static func missingScopesList(from text: String) -> String? {
+        let captured = firstCapturedGroup(
+            in: text,
+            patterns: [
+                #"(?i)missing scopes?:\s*([^\n]+?)(?:(?:\.\s*check that)|(?:\.\s*please)|[}\"]?$)"#,
+                #"(?i)missing scopes?:\s*([^\n]+)"#,
+            ]
+        )?.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+
+        guard let captured, !captured.isEmpty else { return nil }
+        return captured
     }
 
     static func fetchModelIds(
@@ -79,16 +228,28 @@ enum RemoteProviderClient {
             guard let url = RemoteProviderEndpoints.openAIModelsURL(baseURL: baseURL, backend: backend) else {
                 throw ProviderError.invalidBaseURL
             }
-            let payload = try await requestJSON(
-                url: url,
-                headers: ["Authorization": "Bearer \(key)"],
-                timeoutSec: timeoutSec
-            )
-            let ids = modelIds(from: payload, backend: backend)
-            guard !ids.isEmpty else {
-                throw ProviderError.badResponse
+            do {
+                let payload = try await requestJSON(
+                    url: url,
+                    headers: ["Authorization": "Bearer \(key)"],
+                    timeoutSec: timeoutSec
+                )
+                let ids = modelIds(from: payload, backend: backend)
+                guard !ids.isEmpty else {
+                    throw ProviderError.badResponse
+                }
+                return uniqSorted(ids)
+            } catch {
+                let fallback = fallbackModelIdsIfApplicable(
+                    backend: backend,
+                    baseURL: baseURL,
+                    error: error
+                )
+                if !fallback.isEmpty {
+                    return fallback
+                }
+                throw error
             }
-            return uniqSorted(ids)
         }
     }
 
@@ -124,6 +285,18 @@ enum RemoteProviderClient {
             let data = Data(bridged.text.utf8)
             return try parseJSONResponse(data: data, status: bridged.status)
         }
+    }
+
+    static func fallbackModelIdsIfApplicable(
+        backend: String,
+        baseURL: String?,
+        error: Error
+    ) -> [String] {
+        guard CodexModelCatalogFallback.supportsFallback(for: backend),
+              shouldUseLocalCatalogFallback(for: error) else {
+            return []
+        }
+        return CodexModelCatalogFallback.modelIDs(backend: backend, baseURL: baseURL)
     }
 
     private static func requestDataDirect(url: URL, headers: [String: String], timeoutSec: Double) async throws -> (Data, Int) {
@@ -167,6 +340,39 @@ enum RemoteProviderClient {
             }
         }
         return false
+    }
+
+    private static func shouldUseLocalCatalogFallback(for error: Error) -> Bool {
+        guard let providerError = error as? ProviderError else {
+            return false
+        }
+
+        switch providerError {
+        case .httpError(let status, let body):
+            if [404, 405, 410, 422, 501].contains(status) {
+                return true
+            }
+            return isModelReadScopeDenied(status: status, body: body)
+        case .badResponse, .emptyResponse:
+            return true
+        case .missingAPIKey, .invalidBaseURL, .bridgeFailure:
+            return false
+        }
+    }
+
+    private static func isModelReadScopeDenied(status: Int, body: String) -> Bool {
+        guard status == 401 || status == 403 else { return false }
+        let normalized = body.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return false }
+        if normalized.contains("api.model.read") {
+            return true
+        }
+        if normalized.contains("missing scopes") && normalized.contains("model.read") {
+            return true
+        }
+        return normalized.contains("insufficient permissions")
+            && normalized.contains("model")
+            && normalized.contains("read")
     }
 
     private static func isPermissionDenied(_ err: NSError) -> Bool {
@@ -268,6 +474,25 @@ enum RemoteProviderClient {
             }
         }
         return ""
+    }
+
+    private static func firstCapturedGroup(in text: String, patterns: [String]) -> String? {
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+                continue
+            }
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            guard let match = regex.firstMatch(in: text, options: [], range: range),
+                  match.numberOfRanges >= 2,
+                  let captureRange = Range(match.range(at: 1), in: text) else {
+                continue
+            }
+            let captured = text[captureRange].trimmingCharacters(in: .whitespacesAndNewlines)
+            if !captured.isEmpty {
+                return captured
+            }
+        }
+        return nil
     }
 
     private static func uniqSorted(_ values: [String]) -> [String] {

@@ -1,3 +1,5 @@
+import { buildChannelStableExternalId } from '../../channel_identity_store.js';
+
 function safeString(input) {
   return String(input ?? '').trim();
 }
@@ -147,6 +149,12 @@ export function compileFeishuCardAction(payload = {}) {
     audit_ref,
     actor: {
       provider: 'feishu',
+      stable_external_id: buildChannelStableExternalId({
+        provider: 'feishu',
+        stable_external_id: metadata.stable_external_id,
+        external_user_id: operatorId.external_user_id,
+        external_tenant_id: tenantKey,
+      }),
       external_user_id: operatorId.external_user_id,
       external_tenant_id: tenantKey,
     },

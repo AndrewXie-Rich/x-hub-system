@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { evaluateChannelCommandGateWithAudit } from './channel_command_gate.js';
 import { buildChannelRuntimeStatusSnapshot } from './channel_runtime_snapshot.js';
+import { buildProjectHeartbeatGovernanceSnapshot } from './project_heartbeat_governance_projection.js';
 import { resolveSupervisorChannelRoute } from './supervisor_channel_route_facade.js';
 import { upsertSupervisorChannelSessionRoute } from './supervisor_channel_session_store.js';
 import { nowMs, uuid } from './util.js';
@@ -254,8 +255,10 @@ function loadOperatorChannelProjectState(db, project_id = '') {
     return {
       project_id: '',
       root_project_id: '',
+      lineage: null,
       dispatch: null,
       heartbeat: null,
+      heartbeat_governance_snapshot: null,
       owner_identity: null,
     };
   }
@@ -268,6 +271,13 @@ function loadOperatorChannelProjectState(db, project_id = '') {
   const heartbeat = typeof db._getProjectHeartbeatRowRawByProjectId === 'function' && typeof db._parseProjectHeartbeatRow === 'function'
     ? db._parseProjectHeartbeatRow(db._getProjectHeartbeatRowRawByProjectId(projectId))
     : null;
+  const heartbeat_governance_snapshot = buildProjectHeartbeatGovernanceSnapshot({
+    db,
+    device_id: safeString(lineage?.device_id || dispatch?.device_id || heartbeat?.device_id),
+    user_id: safeString(lineage?.user_id || dispatch?.user_id || heartbeat?.user_id),
+    app_id: safeString(lineage?.app_id || dispatch?.app_id || heartbeat?.app_id),
+    project_id: projectId,
+  });
   const owner_identity = lineage || dispatch || heartbeat || null;
   return {
     project_id: projectId,
@@ -277,8 +287,10 @@ function loadOperatorChannelProjectState(db, project_id = '') {
       || heartbeat?.root_project_id
       || projectId
     ),
+    lineage,
     dispatch,
     heartbeat,
+    heartbeat_governance_snapshot,
     owner_identity,
   };
 }
@@ -311,6 +323,9 @@ function buildLocalHubQueryResult({
     provider_status: provider_status || null,
     dispatch: projectState.dispatch || null,
     heartbeat: projectState.heartbeat || null,
+    heartbeat_governance_snapshot_json: projectState.heartbeat_governance_snapshot
+      ? JSON.stringify(projectState.heartbeat_governance_snapshot)
+      : '',
     queue: null,
   };
 

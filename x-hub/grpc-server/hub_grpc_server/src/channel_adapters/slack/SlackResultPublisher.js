@@ -2,6 +2,7 @@ import {
   buildSlackApprovalCard,
   buildSlackSummaryMessage,
 } from './SlackEgress.js';
+import { buildOperatorChannelHeartbeatGovernanceSummaryLines } from '../operator_channel_heartbeat_governance_summary.js';
 
 function safeString(input) {
   return String(input ?? '').trim();
@@ -27,6 +28,19 @@ function normalizeCapabilityLabel(input) {
     return raw.slice('CAPABILITY_'.length).toLowerCase().replaceAll('_', '.');
   }
   return raw.toLowerCase();
+}
+
+function projectionStatusLabel(input) {
+  const raw = safeString(input).toLowerCase();
+  if (!raw) return '';
+  switch (raw) {
+    case 'awaiting_authorization':
+      return 'awaiting authorization';
+    case 'attention_required':
+      return 'attention required';
+    default:
+      return raw.replaceAll('_', ' ');
+  }
 }
 
 function deliveryContextFromResult(result = {}) {
@@ -151,6 +165,7 @@ function buildExecutionSummary(result = {}) {
   const grantAction = safeObject(execution.grant_action);
   const xtCommand = safeObject(execution.xt_command);
   const heartbeat = safeObject(query.heartbeat);
+  const heartbeatGovernanceLines = buildOperatorChannelHeartbeatGovernanceSummaryLines(query.heartbeat_governance_snapshot_json);
   const dispatch = safeObject(query.dispatch);
   const queue = safeObject(query.queue);
   const providerStatus = safeObject(query.provider_status);
@@ -205,7 +220,7 @@ function buildExecutionSummary(result = {}) {
 
   if (Object.keys(projection).length) {
     const projectionKind = safeString(projection.projection_kind || 'progress_brief') || 'progress_brief';
-    const projectionStatus = safeString(projection.status);
+    const projectionStatus = projectionStatusLabel(projection.status);
     const projectionTrigger = safeString(projection.trigger);
     const topline = safeString(projection.topline);
     const criticalBlocker = safeString(projection.critical_blocker);
@@ -310,6 +325,7 @@ function buildExecutionSummary(result = {}) {
       Object.keys(heartbeat).length
         ? `Heartbeat: queue_depth=${safeInt(heartbeat.queue_depth)} wait_ms=${safeInt(heartbeat.oldest_wait_ms)} risk=${safeString(heartbeat.risk_tier || 'unknown') || 'unknown'}`
         : 'Heartbeat: no live project heartbeat',
+      ...heartbeatGovernanceLines,
       safeString(providerStatus.runtime_state) ? `Channel runtime: ${safeString(providerStatus.runtime_state)}` : '',
     ].filter(Boolean);
 

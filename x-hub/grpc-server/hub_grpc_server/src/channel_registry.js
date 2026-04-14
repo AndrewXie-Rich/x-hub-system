@@ -141,7 +141,7 @@ const META_BY_ID = Object.freeze({
     order: 50,
     label: 'WhatsApp Personal QR',
     detail_label: 'WhatsApp Personal Runner',
-    aliases: ['whatsapp_personal', 'whatsapp_qr', 'wa_personal', 'wa_qr'],
+    aliases: ['whatsapp_personal', 'whatsapp_qr', 'wa_personal', 'wa_qr', 'whatsapp_personal_runner'],
     capabilities: [
       'status_query',
       'push_alerts',
@@ -187,6 +187,16 @@ export const HUB_CHANNEL_OPENCLAW_REUSE_MAP = Object.freeze({
     reuse_class: 'direct_logic',
     source_path: '/Users/andrew.xie/Documents/AX/Opensource/openclaw-main/src/utils/delivery-context.ts',
     notes: 'Reuse normalized provider+conversation+thread route-key shape.',
+  }),
+  ingress_envelope: Object.freeze({
+    reuse_class: 'shape_only',
+    source_path: '/Users/andrew.xie/Documents/AX/Opensource/openclaw-main/src/channels/registry.ts',
+    notes: 'Freeze one provider-normalized ingress envelope so adapters only emit fail-closed contract fields.',
+  }),
+  provider_exposure_matrix: Object.freeze({
+    reuse_class: 'shape_only',
+    source_path: '/Users/andrew.xie/Documents/AX/Opensource/openclaw-main/src/channels/registry.ts',
+    notes: 'Keep listener/process/path/auth/replay/body-cap metadata machine-readable instead of adapter-local constants.',
   }),
   command_gate: Object.freeze({
     reuse_class: 'shape_only',

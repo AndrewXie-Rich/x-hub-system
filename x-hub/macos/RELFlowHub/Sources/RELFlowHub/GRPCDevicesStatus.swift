@@ -166,6 +166,7 @@ struct GRPCDeviceModelBreakdownEntry: Codable, Identifiable, Equatable, Sendable
 
 struct GRPCDeviceStatusEntry: Codable, Identifiable, Equatable, Sendable {
     var deviceId: String
+    var appId: String
     var name: String
     var peerIp: String
     var connected: Bool
@@ -195,6 +196,7 @@ struct GRPCDeviceStatusEntry: Codable, Identifiable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case deviceId = "device_id"
+        case appId = "app_id"
         case name
         case peerIp = "peer_ip"
         case connected
@@ -221,9 +223,66 @@ struct GRPCDeviceStatusEntry: Codable, Identifiable, Equatable, Sendable {
         case tokenSeries5m1h = "token_series_5m_1h"
     }
 
+    init(
+        deviceId: String,
+        appId: String,
+        name: String,
+        peerIp: String,
+        connected: Bool,
+        activeEventSubscriptions: Int,
+        connectedAtMs: Int64,
+        lastSeenAtMs: Int64,
+        quotaDay: String,
+        dailyTokenUsed: Int64,
+        dailyTokenCap: Int64,
+        dailyTokenLimit: Int64,
+        dailyTokenRemaining: Int64,
+        remainingDailyTokenBudget: Int64,
+        requestsToday: Int,
+        blockedToday: Int,
+        paidModelPolicyMode: String,
+        defaultWebFetchEnabled: Bool,
+        trustProfilePresent: Bool,
+        trustMode: String,
+        topModel: String,
+        lastBlockedReason: String,
+        lastDenyCode: String,
+        modelBreakdown: [GRPCDeviceModelBreakdownEntry],
+        lastActivity: GRPCDeviceLastActivity?,
+        tokenSeries5m1h: GRPCTokenSeries?
+    ) {
+        self.deviceId = deviceId
+        self.appId = appId
+        self.name = name
+        self.peerIp = peerIp
+        self.connected = connected
+        self.activeEventSubscriptions = activeEventSubscriptions
+        self.connectedAtMs = connectedAtMs
+        self.lastSeenAtMs = lastSeenAtMs
+        self.quotaDay = quotaDay
+        self.dailyTokenUsed = dailyTokenUsed
+        self.dailyTokenCap = dailyTokenCap
+        self.dailyTokenLimit = dailyTokenLimit
+        self.dailyTokenRemaining = dailyTokenRemaining
+        self.remainingDailyTokenBudget = remainingDailyTokenBudget
+        self.requestsToday = requestsToday
+        self.blockedToday = blockedToday
+        self.paidModelPolicyMode = paidModelPolicyMode
+        self.defaultWebFetchEnabled = defaultWebFetchEnabled
+        self.trustProfilePresent = trustProfilePresent
+        self.trustMode = trustMode
+        self.topModel = topModel
+        self.lastBlockedReason = lastBlockedReason
+        self.lastDenyCode = lastDenyCode
+        self.modelBreakdown = modelBreakdown
+        self.lastActivity = lastActivity
+        self.tokenSeries5m1h = tokenSeries5m1h
+    }
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         deviceId = (try? c.decode(String.self, forKey: .deviceId)) ?? ""
+        appId = (try? c.decode(String.self, forKey: .appId)) ?? ""
         name = (try? c.decode(String.self, forKey: .name)) ?? ""
         peerIp = (try? c.decode(String.self, forKey: .peerIp)) ?? ""
         connected = (try? c.decode(Bool.self, forKey: .connected)) ?? false
@@ -280,19 +339,191 @@ struct GRPCDevicesStatusSnapshot: Codable, Equatable, Sendable {
     }
 }
 
+private struct GRPCDevicePresenceEntry: Codable, Equatable, Sendable {
+    var deviceId: String
+    var appId: String
+    var name: String
+    var peerIp: String
+    var firstSeenAtMs: Int64
+    var lastSeenAtMs: Int64
+    var updatedAtMs: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case deviceId = "device_id"
+        case appId = "app_id"
+        case name
+        case peerIp = "peer_ip"
+        case firstSeenAtMs = "first_seen_at_ms"
+        case lastSeenAtMs = "last_seen_at_ms"
+        case updatedAtMs = "updated_at_ms"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        deviceId = (try? c.decode(String.self, forKey: .deviceId)) ?? ""
+        appId = (try? c.decode(String.self, forKey: .appId)) ?? ""
+        name = (try? c.decode(String.self, forKey: .name)) ?? ""
+        peerIp = (try? c.decode(String.self, forKey: .peerIp)) ?? ""
+        firstSeenAtMs = (try? c.decode(Int64.self, forKey: .firstSeenAtMs)) ?? 0
+        lastSeenAtMs = (try? c.decode(Int64.self, forKey: .lastSeenAtMs)) ?? 0
+        updatedAtMs = (try? c.decode(Int64.self, forKey: .updatedAtMs)) ?? 0
+    }
+}
+
+private struct GRPCDevicePresenceSnapshot: Codable, Equatable, Sendable {
+    var schemaVersion: String
+    var updatedAtMs: Int64
+    var devices: [GRPCDevicePresenceEntry]
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case updatedAtMs = "updated_at_ms"
+        case devices
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = (try? c.decode(String.self, forKey: .schemaVersion)) ?? ""
+        updatedAtMs = (try? c.decode(Int64.self, forKey: .updatedAtMs)) ?? 0
+        devices = (try? c.decode([GRPCDevicePresenceEntry].self, forKey: .devices)) ?? []
+    }
+}
+
 enum GRPCDevicesStatusStorage {
     static let fileName = "grpc_devices_status.json"
+    private static let presenceFileName = "grpc_device_presence.json"
 
     static func url() -> URL {
         SharedPaths.ensureHubDirectory().appendingPathComponent(fileName)
     }
 
     static func load() -> GRPCDevicesStatusSnapshot {
-        let u = url()
-        guard let data = try? Data(contentsOf: u),
-              let obj = try? JSONDecoder().decode(GRPCDevicesStatusSnapshot.self, from: data) else {
-            return .empty()
+        var deviceCandidates: [URL] = []
+        var presenceCandidates: [URL] = []
+        var seen: Set<String> = []
+
+        func appendDevice(_ url: URL) {
+            let path = url.standardizedFileURL.path
+            guard seen.insert(path).inserted else { return }
+            deviceCandidates.append(url)
         }
-        return obj
+
+        func appendPresence(_ url: URL) {
+            let path = url.standardizedFileURL.path
+            guard seen.insert(path).inserted else { return }
+            presenceCandidates.append(url)
+        }
+
+        if let group = SharedPaths.appGroupDirectory() {
+            appendDevice(group.appendingPathComponent(fileName))
+            appendPresence(group.appendingPathComponent(presenceFileName))
+        }
+        for base in SharedPaths.hubDirectoryCandidates() {
+            appendDevice(base.appendingPathComponent(fileName))
+            appendPresence(base.appendingPathComponent(presenceFileName))
+        }
+
+        var bestSnapshot: GRPCDevicesStatusSnapshot?
+        var bestUpdatedAtMs: Int64 = 0
+        for candidate in deviceCandidates {
+            guard let data = try? Data(contentsOf: candidate),
+                  let decoded = try? JSONDecoder().decode(GRPCDevicesStatusSnapshot.self, from: data) else {
+                continue
+            }
+            if bestSnapshot == nil || decoded.updatedAtMs >= bestUpdatedAtMs {
+                bestSnapshot = decoded
+                bestUpdatedAtMs = decoded.updatedAtMs
+            }
+        }
+
+        var bestPresence: GRPCDevicePresenceSnapshot?
+        var bestPresenceUpdatedAtMs: Int64 = 0
+        for candidate in presenceCandidates {
+            guard let data = try? Data(contentsOf: candidate),
+                  let decoded = try? JSONDecoder().decode(GRPCDevicePresenceSnapshot.self, from: data) else {
+                continue
+            }
+            if bestPresence == nil || decoded.updatedAtMs >= bestPresenceUpdatedAtMs {
+                bestPresence = decoded
+                bestPresenceUpdatedAtMs = decoded.updatedAtMs
+            }
+        }
+
+        let baseSnapshot = bestSnapshot ?? .empty()
+        return mergePresence(bestPresence, into: baseSnapshot)
+    }
+
+    private static func mergePresence(
+        _ presence: GRPCDevicePresenceSnapshot?,
+        into base: GRPCDevicesStatusSnapshot
+    ) -> GRPCDevicesStatusSnapshot {
+        guard let presence else { return base }
+
+        var byDeviceID: [String: GRPCDeviceStatusEntry] = [:]
+        for device in base.devices where !device.deviceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            byDeviceID[device.deviceId] = device
+        }
+
+        for device in presence.devices {
+            let deviceId = device.deviceId.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !deviceId.isEmpty else { continue }
+
+            let existing = byDeviceID[deviceId]
+            let resolvedName = device.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? ((existing?.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) ? existing!.name : deviceId)
+                : device.name
+            let resolvedAppID = device.appId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? (existing?.appId ?? "")
+                : device.appId
+            let resolvedPeerIP = device.peerIp.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? (existing?.peerIp ?? "")
+                : device.peerIp
+            let connectedAtMs = max(existing?.connectedAtMs ?? 0, device.firstSeenAtMs)
+            let lastSeenAtMs = max(existing?.lastSeenAtMs ?? 0, device.lastSeenAtMs, device.updatedAtMs)
+
+            byDeviceID[deviceId] = GRPCDeviceStatusEntry(
+                deviceId: deviceId,
+                appId: resolvedAppID,
+                name: resolvedName,
+                peerIp: resolvedPeerIP,
+                connected: true,
+                activeEventSubscriptions: existing?.activeEventSubscriptions ?? 0,
+                connectedAtMs: connectedAtMs,
+                lastSeenAtMs: lastSeenAtMs,
+                quotaDay: existing?.quotaDay ?? "",
+                dailyTokenUsed: existing?.dailyTokenUsed ?? 0,
+                dailyTokenCap: existing?.dailyTokenCap ?? 0,
+                dailyTokenLimit: existing?.dailyTokenLimit ?? 0,
+                dailyTokenRemaining: existing?.dailyTokenRemaining ?? 0,
+                remainingDailyTokenBudget: existing?.remainingDailyTokenBudget ?? 0,
+                requestsToday: existing?.requestsToday ?? 0,
+                blockedToday: existing?.blockedToday ?? 0,
+                paidModelPolicyMode: existing?.paidModelPolicyMode ?? "",
+                defaultWebFetchEnabled: existing?.defaultWebFetchEnabled ?? false,
+                trustProfilePresent: existing?.trustProfilePresent ?? false,
+                trustMode: existing?.trustMode ?? "",
+                topModel: existing?.topModel ?? "",
+                lastBlockedReason: existing?.lastBlockedReason ?? "",
+                lastDenyCode: existing?.lastDenyCode ?? "",
+                modelBreakdown: existing?.modelBreakdown ?? [],
+                lastActivity: existing?.lastActivity,
+                tokenSeries5m1h: existing?.tokenSeries5m1h
+            )
+        }
+
+        let mergedDevices = byDeviceID.values.sorted { left, right in
+            let leftName = left.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let rightName = right.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if leftName != rightName {
+                return leftName < rightName
+            }
+            return left.deviceId.localizedCaseInsensitiveCompare(right.deviceId) == .orderedAscending
+        }
+
+        return GRPCDevicesStatusSnapshot(
+            schemaVersion: base.schemaVersion.isEmpty ? "grpc_devices_status.v2" : base.schemaVersion,
+            updatedAtMs: max(base.updatedAtMs, presence.updatedAtMs),
+            devices: mergedDevices
+        )
     }
 }

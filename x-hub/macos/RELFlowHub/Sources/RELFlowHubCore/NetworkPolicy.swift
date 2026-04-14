@@ -62,6 +62,41 @@ public struct HubNetworkPolicyList: Codable, Sendable, Equatable {
 public enum HubNetworkPolicyStorage {
     private static let fileName = "network_policies.json"
 
+    public static func canonicalAppId(_ appId: String) -> String {
+        let trimmed = appId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        if trimmed == "*" { return "*" }
+
+        let lower = trimmed.lowercased()
+        let compact = lower.unicodeScalars.reduce(into: "") { partialResult, scalar in
+            let value = scalar.value
+            if (value >= 48 && value <= 57) || (value >= 97 && value <= 122) {
+                partialResult.unicodeScalars.append(scalar)
+            }
+        }
+        if compact == "xterminal" || compact == "axterminal" {
+            return "x_terminal"
+        }
+
+        var normalized = ""
+        normalized.reserveCapacity(lower.count)
+        var lastWasUnderscore = false
+        for scalar in lower.unicodeScalars {
+            let value = scalar.value
+            if (value >= 48 && value <= 57) || (value >= 97 && value <= 122) {
+                normalized.unicodeScalars.append(scalar)
+                lastWasUnderscore = false
+            } else if value == 95 || value == 45 || value == 32 {
+                if !lastWasUnderscore {
+                    normalized.append("_")
+                    lastWasUnderscore = true
+                }
+            }
+        }
+
+        return normalized.trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+    }
+
     public static func url() -> URL {
         SharedPaths.ensureHubDirectory().appendingPathComponent(fileName)
     }
@@ -94,18 +129,21 @@ public enum HubNetworkPolicyStorage {
 
     @discardableResult
     public static func upsert(appId: String, projectId: String, mode: HubNetworkPolicyMode, maxSeconds: Int?) -> HubNetworkPolicyList {
-        let keyApp = appId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let keyApp = canonicalAppId(appId)
         let keyProject = projectId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         var list = load()
-        if let idx = list.policies.firstIndex(where: { $0.appId.lowercased() == keyApp && $0.projectId.lowercased() == keyProject }) {
+        if let idx = list.policies.firstIndex(where: {
+            canonicalAppId($0.appId) == keyApp && $0.projectId.lowercased() == keyProject
+        }) {
             var r = list.policies[idx]
             r.mode = mode
             r.maxSeconds = maxSeconds
+            r.appId = keyApp
             r.updatedAt = Date().timeIntervalSince1970
             list.policies[idx] = r
         } else {
             list.policies.append(
-                HubNetworkPolicyRule(appId: appId, projectId: projectId, mode: mode, maxSeconds: maxSeconds)
+                HubNetworkPolicyRule(appId: keyApp, projectId: projectId, mode: mode, maxSeconds: maxSeconds)
             )
         }
         save(list)
@@ -121,12 +159,12 @@ public enum HubNetworkPolicyStorage {
     }
 
     public static func match(appId: String, projectId: String) -> HubNetworkPolicyRule? {
-        let a = appId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let a = canonicalAppId(appId)
         let p = projectId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let list = load().policies
 
         func score(_ r: HubNetworkPolicyRule) -> Int {
-            let ra = r.appId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let ra = canonicalAppId(r.appId)
             let rp = r.projectId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             let appMatch = (ra == "*" || ra == a)
             let projMatch = (rp == "*" || rp == p)

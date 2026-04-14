@@ -9,13 +9,37 @@ function safeString(input) {
   return String(input ?? '').trim();
 }
 
+function safeObject(input) {
+  return input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+}
+
 function safeInt(input, fallback = 0) {
   const n = Number(input);
   return Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : fallback;
 }
 
+function parseJsonObject(input) {
+  if (input && typeof input === 'object' && !Array.isArray(input)) return input;
+  const text = safeString(input);
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function heartbeatGovernanceSnapshotFromReceipt(row) {
+  const result = safeObject(row?.result);
+  const execution = safeObject(result.execution);
+  const query = safeObject(execution.query);
+  return parseJsonObject(query.heartbeat_governance_snapshot_json);
+}
+
 function normalizeFirstSmokeReceipt(row) {
   if (!row || typeof row !== 'object') return null;
+  const heartbeatGovernanceSnapshot = heartbeatGovernanceSnapshotFromReceipt(row);
   return {
     schema_version: safeString(row.schema_version),
     receipt_id: safeString(row.receipt_id),
@@ -35,6 +59,10 @@ function normalizeFirstSmokeReceipt(row) {
     created_at_ms: safeInt(row.created_at_ms, 0),
     updated_at_ms: safeInt(row.updated_at_ms, 0),
     audit_ref: safeString(row.audit_ref),
+    heartbeat_governance_snapshot_json: heartbeatGovernanceSnapshot
+      ? JSON.stringify(heartbeatGovernanceSnapshot)
+      : '',
+    heartbeat_governance_snapshot: heartbeatGovernanceSnapshot,
   };
 }
 

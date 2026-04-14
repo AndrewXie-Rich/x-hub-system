@@ -1,5 +1,7 @@
 import crypto from 'node:crypto';
 
+import { normalizeHubChannelIngressEnvelope } from '../../channel_ingress_envelope.js';
+
 function safeString(input) {
   return String(input ?? '').trim();
 }
@@ -253,7 +255,7 @@ function normalizeSlackInteractiveRequest(body = {}, base = {}) {
     body.container?.thread_ts || body.message?.thread_ts,
     body.message?.ts
   );
-  return {
+  return normalizeHubChannelIngressEnvelope({
     ok: true,
     envelope_type: 'interactive',
     event_id: safeString(body.trigger_id || action?.action_ts || body.container?.message_ts),
@@ -272,19 +274,22 @@ function normalizeSlackInteractiveRequest(body = {}, base = {}) {
       channel_scope: normalizeSlackChannelScope(body.channel?.name || '', channelId),
     },
     source_id: safeString(`slack:${channelId}`),
-    interactive_payload: body,
-  };
+  }, {
+    provider: 'slack',
+  });
 }
 
 function normalizeSlackEventEnvelope(body = {}, base = {}) {
   if (safeString(body.type).toLowerCase() === 'url_verification') {
-    return {
+    return normalizeHubChannelIngressEnvelope({
       ok: true,
       envelope_type: 'url_verification',
       challenge: safeString(body.challenge),
       replay_key: safeString(body.challenge || sha256Hex(JSON.stringify(body)).slice(0, 24)),
       signature_valid: base.signature_valid === true,
-    };
+    }, {
+      provider: 'slack',
+    });
   }
 
   if (safeString(body.type).toLowerCase() !== 'event_callback') {
@@ -319,7 +324,7 @@ function normalizeSlackEventEnvelope(body = {}, base = {}) {
     ? compileSlackTextCommand(text)
     : null;
 
-  return {
+  return normalizeHubChannelIngressEnvelope({
     ok: true,
     envelope_type: 'event_callback',
     event_id: safeString(body.event_id || messageId),
@@ -350,8 +355,9 @@ function normalizeSlackEventEnvelope(body = {}, base = {}) {
     },
     text,
     structured_action,
-    raw_event_type: safeString(event.type),
-  };
+  }, {
+    provider: 'slack',
+  });
 }
 
 export function normalizeSlackWebhookRequest({

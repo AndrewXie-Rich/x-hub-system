@@ -309,6 +309,11 @@ await runAsync('LPR-W1-05/provider-aware bridge still surfaces MLX import error 
       const ext = JSON.parse(String(denied.ext_json || '{}'));
       assert.equal(String(ext.local_provider || ''), 'mlx');
       assert.equal(String(ext.provider_import_error || ''), 'missing_module:mlx_lm');
+      assert.equal(String(ext.requested_model_id || ''), 'mlx/qwen2.5-7b-instruct');
+      assert.equal(String(ext.execution_model_id || ''), 'mlx/qwen2.5-7b-instruct');
+      assert.ok(['db', 'runtime'].includes(String(ext.resolved_model_source || '')));
+      assert.equal(Boolean(ext.runtime_provider_ready), false);
+      assert.equal(Boolean(ext.runtime_model_found), true);
     } finally {
       db.close();
       cleanupDbArtifacts(dbPath);

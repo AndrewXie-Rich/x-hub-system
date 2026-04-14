@@ -12,6 +12,14 @@ enum RemoteCatalogClient {
         var id: String
     }
 
+    static func requestFailedError(status: Int, body: String) -> NSError {
+        NSError(
+            domain: "relflowhub",
+            code: status,
+            userInfo: [NSLocalizedDescriptionKey: HubUIStrings.Models.ImportRemoteCatalog.requestFailed(status: status, body: body)]
+        )
+    }
+
     static func fetchModelIds(apiKey: String, baseURL: URL = defaultBaseURL, timeoutSec: Double = 10.0) async throws -> [String] {
         var url = baseURL
         url.appendPathComponent("models")
@@ -31,13 +39,7 @@ enum RemoteCatalogClient {
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard status >= 200 && status < 300 else {
             let body = String(data: data, encoding: .utf8) ?? ""
-            let msg = body.trimmingCharacters(in: .whitespacesAndNewlines)
-            let suffix = msg.isEmpty ? "" : " \(msg)"
-            throw NSError(
-                domain: "relflowhub",
-                code: status,
-                userInfo: [NSLocalizedDescriptionKey: "Remote Catalog /models failed (status=\(status)).\(suffix)"]
-            )
+            throw requestFailedError(status: status, body: body)
         }
 
         let decoded = try JSONDecoder().decode(ModelsResponse.self, from: data)

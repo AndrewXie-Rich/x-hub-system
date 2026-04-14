@@ -53,6 +53,8 @@ run('FeishuIngress normalizes verified message callbacks into project-thread awa
   });
 
   assert.equal(!!out.ok, true);
+  assert.equal(String(out.schema_version || ''), 'xhub.channel_ingress_envelope.v1');
+  assert.equal(String(out.auth_mode || ''), 'feishu_verification_token');
   assert.equal(String(out.envelope_type || ''), 'event_callback');
   assert.equal(String(out.actor?.external_user_id || ''), 'ou_user_1');
   assert.equal(String(out.channel?.account_id || ''), 'tenant-ops');
@@ -109,10 +111,58 @@ run('FeishuIngress normalizes card callbacks into structured interactive actions
 
   assert.equal(!!out.ok, true);
   assert.equal(String(out.envelope_type || ''), 'interactive');
+  assert.equal(String(out.path || ''), '/feishu/events');
   assert.equal(String(out.audit_ref || ''), 'audit-feishu-grant-1');
   assert.equal(String(out.channel?.conversation_id || ''), 'oc_room_approve');
   assert.equal(String(out.action?.action_name || ''), 'grant.approve');
   assert.equal(String(out.action?.pending_grant?.grant_request_id || ''), 'grant_req_1');
+});
+
+run('FeishuIngress fails closed when card callbacks omit audit_ref', () => {
+  const payload = {
+    schema: '2.0',
+    header: {
+      event_id: 'feishu-card-missing-audit',
+      event_type: 'card.action.trigger',
+      tenant_key: 'tenant-ops',
+      token: 'verify-token-2b',
+    },
+    event: {
+      operator: {
+        operator_id: {
+          open_id: 'ou_approver_1',
+        },
+      },
+      token: 'card-trigger-missing-audit',
+      action: {
+        value: {
+          action_name: 'grant.approve',
+          binding_id: 'binding-feishu-1',
+          scope_type: 'project',
+          scope_id: 'payments-prod',
+          pending_grant_request_id: 'grant_req_1',
+          pending_grant_project_id: 'payments-prod',
+        },
+      },
+      context: {
+        open_chat_id: 'oc_room_approve',
+        open_message_id: 'om_card_1',
+        chat_type: 'group',
+      },
+    },
+  };
+
+  const out = normalizeFeishuWebhookRequest({
+    headers: {
+      'content-type': 'application/json',
+    },
+    raw_body: JSON.stringify(payload),
+    verification_token: 'verify-token-2b',
+  });
+
+  assert.equal(!!out.ok, false);
+  assert.equal(String(out.deny_code || ''), 'audit_ref_missing');
+  assert.equal(!!out.token_valid, true);
 });
 
 run('FeishuIngress validates verification token and compiles only supported text commands', () => {
@@ -154,5 +204,6 @@ run('FeishuIngress returns url verification challenge for verified setup probes'
 
   assert.equal(!!out.ok, true);
   assert.equal(String(out.envelope_type || ''), 'url_verification');
+  assert.equal(String(out.listener || ''), 'public_webhook');
   assert.equal(String(out.challenge || ''), 'challenge-feishu');
 });

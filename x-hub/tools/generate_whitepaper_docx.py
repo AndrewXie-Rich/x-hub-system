@@ -54,19 +54,19 @@ def build_docx(out_path: Path, *, version: str) -> None:
     paras.append(_p("0. 摘要 (Executive Summary)", bold=True))
     paras.append(_p(
         "X-Hub（以下简称“Hub”）是一个 macOS 本地应用，用于为内部自研应用提供离线 AI 资源调度能力，并充当本机信息提醒中心。\n"
-        "Hub 的安全设计采用 Offline-First + Least-Privilege（最小权限）原则：\n"
-        "- Hub Core（X-Hub.app）不具备出网能力（无 network client entitlement）。\n"
+        "Hub 的安全设计采用 Governed Local-First + Least-Privilege（最小权限）原则：\n"
+        "- X-Hub 以单一签名 app bundle 交付，控制面、记忆面、审计面与本地执行面收敛在同一个受沙盒约束的应用内。\n"
         "- 所有敏感能力通过 macOS 原生权限体系（TCC/App Sandbox/Code Signing）进行显式授权与隔离。\n"
-        "- 需要联网时，使用独立可审计的 Bridge（X-Hub Bridge.app）作为网络边界；Bridge 默认随 Hub 保持可用，具体 Terminal 的联网权限由 Hub 按设备能力位控制。\n"
+        "- 需要联网时，统一走 X-Hub.app 内嵌的可审计 bridge runtime；具体 Terminal 的联网权限仍由 Hub 按设备能力位、grant 与策略链控制。\n"
         "- 与卫星应用（FA Tracker 等）的交互默认采用可审计的本地 IPC（文件投递/心跳），避免隐式网络依赖。"
     ))
     paras.append(_blank())
 
     paras.append(_p("0.1 关键安全目标", bold=True))
-    paras.append(_p("- 0.1.1 零出网：Hub Core 不产生任何外向网络连接 (network egress)。"))
+    paras.append(_p("- 0.1.1 本地优先：无外部依赖时可纯本地运行；联网路径集中在受治理的 embedded bridge runtime。"))
     paras.append(_p("- 0.1.2 最小数据：默认只读取“计数/状态信号”（counts-only），避免读取内容本体。"))
     paras.append(_p("- 0.1.3 可审计：关键交互面（IPC/状态文件/权限）可落地为可检查的本地证据。"))
-    paras.append(_p("- 0.1.4 可分离：联网仍只允许发生在 Bridge 边界内，且可按 Terminal / 设备能力单独切断。"))
+    paras.append(_p("- 0.1.4 可切断：联网路径集中在 Hub 的受治理 runtime 内，且可按 Terminal / 设备能力单独切断。"))
     paras.append(_blank())
 
     paras.append(_p("1. 威胁模型 (Threat Model)", bold=True))
@@ -82,9 +82,9 @@ def build_docx(out_path: Path, *, version: str) -> None:
 
     paras.append(_p("2. 系统架构与组件边界", bold=True))
     paras.append(_p("2.1 组件", bold=True))
-    paras.append(_p("- Hub Core: X-Hub.app（App Sandbox + Offline, 不具备 network client entitlement）"))
-    paras.append(_p("- Bridge: X-Hub Bridge.app（具备 network client entitlement；默认随 Hub 运行，但是否允许某个 Terminal 联网仍由 Hub 的设备策略决定）"))
-    paras.append(_p("- Dock Agent: X-Hub Dock Agent.app（可选，用于读取 Dock badge 计数，需 Accessibility）"))
+    paras.append(_p("- Hub App: X-Hub.app（App Sandbox + 本地治理中枢 + 本地模型/runtime 协调）"))
+    paras.append(_p("- Embedded Bridge Runtime: X-Hub.app 内嵌的联网执行面（受 grant / capability / policy 控制，并保留可审计边界）"))
+    paras.append(_p("- Optional Dock Badge Reader: X-Hub.app 内的可选能力，用于读取 Dock badge 计数，需 Accessibility"))
     paras.append(_p("- Satellites: 由你控制的自研应用（如 FA Tracker、未来 AX Coder），通过本地 IPC 接入 Hub。"))
     paras.append(_blank())
 
@@ -92,7 +92,7 @@ def build_docx(out_path: Path, *, version: str) -> None:
     paras.append(_p(
         "+---------------------+                 +-----------------------+\n"
         "|  Satellite Apps     |  file IPC push  |  AX X-Hub.app          |\n"
-        "| (FA Tracker, etc.)  +---------------->+ (Sandbox, no egress)   |\n"
+        "| (FA Tracker, etc.)  +---------------->+ (Sandbox, control plane)|\n"
         "+---------+-----------+                 +-----------+-----------+\n"
         "          |                                         |\n"
         "          | local UI / actions                       | EventKit / Accessibility (TCC)\n"
@@ -102,29 +102,31 @@ def build_docx(out_path: Path, *, version: str) -> None:
         "| (Menu bar, Floating)|                 | (Calendar, Dock, etc) |\n"
         "+---------------------+                 +-----------------------+\n"
         "\n"
-        "Optional networking path (isolated):\n"
-        "+---------------------+                 +-----------------------+\n"
-        "| X-Hub Bridge.app    | <--- local IPC  | AX X-Hub.app          |\n"
-        "| (network client)    |                 | (no network client)   |\n"
-        "+---------------------+                 +-----------------------+\n",
+        "Optional networking path (governed):\n"
+        "+-----------------------------------------------+\n"
+        "| AX X-Hub.app                                   |\n"
+        "|  - Control plane / memory / audit / grants     |\n"
+        "|  - Embedded bridge runtime (networked path)    |\n"
+        "+-----------------------------------------------+\n",
         monospace=True,
     ))
     paras.append(_blank())
 
     paras.append(_p("3. 零出网保证 (Network Egress Prevention)", bold=True))
-    paras.append(_p("3.1 Hub Core：Entitlement 层面的出网阻断", bold=True))
+    paras.append(_p("3.1 Hub App：受治理的联网收敛", bold=True))
     paras.append(_p(
-        "Hub Core 通过 App Sandbox + Code Signing Entitlements 实现出网阻断：\n"
-        "- 不包含 com.apple.security.network.client entitlement\n"
-        "- 即使业务代码尝试发起 HTTP/TCP 连接，也会被系统在权限层面拒绝\n"
-        "- 该控制点可通过 codesign 工具直接审计（见 3.3）"
+        "当前交付形态采用单 app bundle：\n"
+        "- X-Hub.app 保留 App Sandbox + Code Signing Entitlements 约束\n"
+        "- 联网能力不再分散到多个独立 app，而是集中在内嵌 bridge runtime\n"
+        "- 该 runtime 仍受 Hub 的 capability / grant / policy 链与审计路径约束\n"
+        "- 该控制点可通过 codesign 与运行时观测工具直接审计（见 3.3）"
     ))
-    paras.append(_p("3.2 Bridge：显式网络边界", bold=True))
+    paras.append(_p("3.2 Embedded Bridge Runtime：显式网络边界", bold=True))
     paras.append(_p(
-        "所有联网功能都只能经由 Bridge 边界执行：\n"
-        "- Bridge 是独立可执行体，具备 network client entitlement\n"
-        "- Bridge 默认随 Hub 运行，但是否允许某个 Terminal 触发联网，由 Hub 的设备级 capability / grant / policy 链决定\n"
-        "- Hub Core 与 Bridge 之间仅通过本地 IPC 交换有限、可审计的数据"
+        "所有联网功能都只能经由内嵌 bridge runtime 执行：\n"
+        "- networked path 集中在 X-Hub.app 的单一受控执行面\n"
+        "- 是否允许某个 Terminal 触发联网，由 Hub 的设备级 capability / grant / policy 链决定\n"
+        "- 进入联网路径前后都可留下本地状态、授权与审计证据"
     ))
     paras.append(_blank())
 
@@ -132,11 +134,10 @@ def build_docx(out_path: Path, *, version: str) -> None:
     paras.append(_p(
         "(A) 审计 entitlements：\n"
         "- codesign -d --entitlements :- /Applications/X-Hub.app\n"
-        "- codesign -d --entitlements :- /Applications/X-Hub\\ Bridge.app\n"
-        "期望结果：X-Hub.app 不存在 network.client；Bridge 可能存在。\n\n"
+        "期望结果：X-Hub.app 的 entitlements 与签名保持一致，联网能力不会分散到额外 bundle。\n\n"
         "(B) 运行时观测（可选）：\n"
         "- nettop / lsof -i / pfctl 规则（按企业安全策略选择）\n"
-        "目标：确认 Hub Core 进程无外向连接，仅 Bridge 进程可见网络活动。\n",
+        "目标：确认网络活动集中出现在 X-Hub.app 的受治理路径，而不是额外的隐式后台进程。\n",
         monospace=True,
     ))
     paras.append(_blank())
@@ -150,8 +151,8 @@ def build_docx(out_path: Path, *, version: str) -> None:
     paras.append(_p("- 目的：只显示未读数量/活动信号，用作提醒，不读取内容本体。"))
     paras.append(_p("- 访问方式：读取 Dock badge（Accessibility）。"))
     paras.append(_p("- 风险控制：避免读取数据库、避免 API token，默认不触达消息内容。"))
-    paras.append(_p("4.3 Dock Agent（可选）", bold=True))
-    paras.append(_p("- 作用：在部分 macOS 版本上帮助读取 Slack/Messages 的 Dock badge 计数。"))
+    paras.append(_p("4.3 Dock Badge Reading（可选）", bold=True))
+    paras.append(_p("- 作用：在启用时读取 Slack/Messages 的 Dock badge 计数。"))
     paras.append(_p("- 权限：需要 Accessibility（仅用于读取 UI badge，不读取内容数据库）。"))
     paras.append(_blank())
 
@@ -169,7 +170,7 @@ def build_docx(out_path: Path, *, version: str) -> None:
     paras.append(_p("5.3 可审计证据点（示例）", bold=True))
     paras.append(_p("- hub_status.json：进程活性、协议版本、写入路径"))
     paras.append(_p("- ipc_events/：卫星到 Hub 的请求文件（可审计）"))
-    paras.append(_p("- dock_agent_status.json：Dock Agent 是否运行/是否自启/是否已授权"))
+    paras.append(_p("- 网络授权 / 本地执行 / 设备策略相关审计事件"))
     paras.append(_p("- ai_runtime_status.json：本地 AI runtime 心跳"))
     paras.append(_blank())
 
@@ -184,16 +185,16 @@ def build_docx(out_path: Path, *, version: str) -> None:
     paras.append(_blank())
 
     paras.append(_p("7. 详细流程图（离线保证与数据调用）", bold=True))
-    paras.append(_p("7.1 离线/出网隔离流程", bold=True))
+    paras.append(_p("7.1 本地优先 / 受治理联网流程", bold=True))
     paras.append(_p(
-        "(1) Hub Core 尝试执行任意网络调用\n"
-        "    -> (2) App Sandbox / Entitlements 检查 network.client\n"
-        "    -> (3) 缺失 entitlement => 系统拒绝 socket/HTTP 出网\n"
-        "    -> (4) Hub Core 保持离线\n"
+        "(1) Hub 任务进入需要联网的执行节点\n"
+        "    -> (2) grant / capability / policy 链先判定是否允许联网\n"
+        "    -> (3) 若拒绝，则 fail-closed 并写入本地审计\n"
+        "    -> (4) 若允许，则交给 embedded bridge runtime 执行网络动作\n"
         "\n"
-        "(A) Bridge 默认可用\n"
-        "    -> Bridge 进程具备 network.client\n"
-        "    -> 网络调用仅发生在 Bridge 边界内\n"
+        "(A) Local-first 默认路径\n"
+        "    -> 无需联网时保持纯本地执行\n"
+        "    -> 联网仅在被显式判定需要时才开启\n"
         "    -> 是否允许某个 Terminal 发起联网，由 Hub 的设备策略决定\n",
         monospace=True,
     ))
@@ -202,7 +203,7 @@ def build_docx(out_path: Path, *, version: str) -> None:
     paras.append(_p("7.2 Counts-only 读取流程（Mail/Messages/Slack）", bold=True))
     paras.append(_p(
         "+----------------------+\n"
-        "| Hub / DockAgent      |\n"
+        "| Hub App              |\n"
         "+----------+-----------+\n"
         "           | Accessibility (TCC)\n"
         "           v\n"

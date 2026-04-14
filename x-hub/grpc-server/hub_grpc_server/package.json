@@ -9,6 +9,7 @@
     "start-telegram-operator": "node src/telegram_operator_worker.js",
     "start-feishu-operator": "node src/feishu_operator_worker.js",
     "start-whatsapp-cloud-operator": "node src/whatsapp_cloud_operator_worker.js",
+    "generate-operator-live-test-evidence": "node scripts/generate_operator_channel_live_test_evidence_report.js",
     "smoke": "node src/smoke_client.js",
     "list-models": "node src/list_models_client.js",
     "skills": "node src/skills_client.js",

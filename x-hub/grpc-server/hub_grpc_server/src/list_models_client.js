@@ -28,7 +28,7 @@ function reqClientFromEnv() {
   return {
     device_id: (process.env.HUB_DEVICE_ID || 'terminal_device').trim(),
     user_id: (process.env.HUB_USER_ID || '').trim(),
-    app_id: (process.env.HUB_APP_ID || 'ax_terminal').trim(),
+    app_id: (process.env.HUB_APP_ID || 'x_terminal').trim(),
     project_id: (process.env.HUB_PROJECT_ID || '').trim(),
     session_id: (process.env.HUB_SESSION_ID || '').trim(),
   };
@@ -56,8 +56,14 @@ async function main() {
   });
 
   const models = Array.isArray(resp?.models) ? resp.models : [];
+  const trustProfilePresent = !!resp?.trust_profile_present;
+  const paidModelPolicyMode = String(resp?.paid_model_policy_mode || '').trim() || 'unspecified';
+  const dailyTokenLimit = Math.max(0, Number(resp?.daily_token_limit || 0) || 0);
+  const singleRequestTokenLimit = Math.max(0, Number(resp?.single_request_token_limit || 0) || 0);
   // eslint-disable-next-line no-console
   console.log(`Hub connected: ${addr}`);
+  // eslint-disable-next-line no-console
+  console.log(`[paid-access] trust_profile_present=${trustProfilePresent ? 'true' : 'false'} paid_model_policy_mode=${paidModelPolicyMode} daily_token_limit=${dailyTokenLimit} single_request_token_limit=${singleRequestTokenLimit}`);
   // eslint-disable-next-line no-console
   console.log(`Models: ${models.length}`);
   for (const m of models) {

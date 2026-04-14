@@ -100,23 +100,24 @@ npm run start-whatsapp-cloud-operator
 WhatsApp Cloud require-real scaffolding for `XT-W3-24-N`:
 ```bash
 node scripts/xt_w3_24_n_whatsapp_cloud_require_real_status.js
-node scripts/generate_xt_w3_24_n_whatsapp_cloud_require_real_report.js
+node scripts/prepare_xt_w3_24_n_whatsapp_cloud_require_real_sample.js
 ```
 
-Update one real sample after capture:
+If the capture bundle is missing, the status command now auto-bootstraps it.
+
+Finalize one real sample after capture:
+```bash
+node scripts/finalize_xt_w3_24_n_whatsapp_cloud_require_real_sample.js \
+  --scaffold-dir build/reports/xt_w3_24_n_whatsapp_cloud_require_real/xt_w3_24_n_rr_03_deploy_plan_routes_project_first_to_preferred_xt
+```
+
+Low-level updater is still available when you need to override the default finalize flow:
 ```bash
 node scripts/update_xt_w3_24_n_whatsapp_cloud_require_real_capture_bundle.js \
-  --sample-id xt_w3_24_n_rr_03_deploy_plan_routes_project_first_to_preferred_xt \
+  --scaffold-dir build/reports/xt_w3_24_n_whatsapp_cloud_require_real/xt_w3_24_n_rr_03_deploy_plan_routes_project_first_to_preferred_xt \
   --status passed \
   --success true \
-  --performed-at 2026-03-13T02:00:00Z \
-  --evidence-ref build/reports/xt_w3_24_n_whatsapp_cloud_require_real/xt_w3_24_n_rr_03_deploy_plan_routes_project_first_to_preferred_xt/capture-1.png \
-  --set project_binding_enforced=true \
-  --set route_mode=hub_to_xt \
-  --set resolved_device_id=xt-mac-mini-bj-01 \
-  --set execution_disposition=prepared \
-  --set side_effect_executed=false \
-  --set audit_chain_complete=true
+  --note real_runtime_capture
 node scripts/generate_xt_w3_24_n_whatsapp_cloud_require_real_report.js
 ```
 
@@ -401,7 +402,7 @@ Notes:
 ## Notes
 
 - HubAI.Generate is backed by the existing MLX runtime file IPC (`python_service/relflowhub_mlx_runtime.py`).
-- `web_fetch` is executed via **X-Hub Bridge** file IPC (`bridge_requests/` -> `bridge_responses/`). Historical internal executable naming may still use `RELFlowHubBridge` in some implementation surfaces.
+- `web_fetch` is executed via the Hub's embedded bridge file IPC (`bridge_requests/` -> `bridge_responses/`). Historical internal naming may still use `RELFlowHubBridge` in some implementation surfaces.
 - All decisions and executions emit `audit.v1` events into SQLite.
 - The Slack operator worker is a separate process and stays loopback-only by default; it should sit behind a relay/tunnel instead of exposing the raw Hub IP directly.
 - Without `HUB_SLACK_OPERATOR_BOT_TOKEN`, the Slack operator worker still processes governed ingress but only returns HTTP webhook acknowledgements; thread replies stay disabled.

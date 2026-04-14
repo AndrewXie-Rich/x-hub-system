@@ -41,9 +41,9 @@ final class LocalModelRuntimeActionPlannerTests: XCTestCase {
         let presentation = LocalModelRuntimeActionPlanner.presentation(for: model, runtimeStatus: runtimeStatus)
 
         XCTAssertEqual(presentation?.controlMode, .ephemeralOnDemand)
-        XCTAssertEqual(presentation?.badgeTitle, "On-Demand")
+        XCTAssertEqual(presentation?.badgeTitle, "按需运行")
         XCTAssertFalse(presentation?.supportsWarmup ?? true)
-        XCTAssertFalse(presentation?.supportsUnload ?? true)
+        XCTAssertTrue(presentation?.supportsUnload ?? false)
     }
 
     func testPlannerRoutesMLXActionsToLegacyCommandPath() {
@@ -129,12 +129,97 @@ final class LocalModelRuntimeActionPlannerTests: XCTestCase {
             XCTFail("expected immediate failure")
             return
         }
-        XCTAssertTrue(message.contains("runs on demand"))
-        XCTAssertTrue(message.contains("Warmup is not available"))
+        XCTAssertTrue(message.contains("还是按需运行"))
+        XCTAssertTrue(message.contains("不能直接预热"))
         XCTAssertFalse(message.contains("legacy MLX command path"))
     }
 
-    func testPlannerBlocksWarmableProviderUntilResidentTransportExists() {
+    func testPlannerBlocksProcessLocalEvictWithLocalizedActionName() {
+        let model = HubModel(
+            id: "embed-local",
+            name: "Embed Local",
+            backend: "transformers",
+            quant: "fp16",
+            contextLength: 2048,
+            paramsB: 0.4,
+            state: .available,
+            modelPath: "/tmp/models/embed-local",
+            taskKinds: ["embedding"]
+        )
+        let runtimeStatus = AIRuntimeStatus(
+            pid: 127,
+            updatedAt: Date().timeIntervalSince1970,
+            mlxOk: false,
+            providers: [
+                "transformers": AIRuntimeProviderStatus(
+                    provider: "transformers",
+                    ok: true,
+                    reasonCode: "ready",
+                    runtimeVersion: "v2",
+                    availableTaskKinds: ["embedding"],
+                    loadedModels: [],
+                    deviceBackend: "mps",
+                    updatedAt: Date().timeIntervalSince1970,
+                    lifecycleMode: "warmable",
+                    supportedLifecycleActions: ["warmup_local_model", "unload_local_model", "evict_local_instance"],
+                    warmupTaskKinds: ["embedding"],
+                    residencyScope: "process_local",
+                    loadedInstances: []
+                ),
+            ]
+        )
+
+        let plan = LocalModelRuntimeActionPlanner.plan(action: "evict", model: model, runtimeStatus: runtimeStatus)
+
+        guard case .immediateFailure(let message) = plan else {
+            XCTFail("expected immediate failure")
+            return
+        }
+        XCTAssertTrue(message.contains("不能直接驱逐"))
+        XCTAssertFalse(message.contains("不能直接evict"))
+    }
+
+    func testPlannerAllowsProcessLocalUnloadWhenProviderAdvertisesIt() {
+        let model = HubModel(
+            id: "embed-local-loaded",
+            name: "Embed Local Loaded",
+            backend: "transformers",
+            quant: "fp16",
+            contextLength: 2048,
+            paramsB: 0.4,
+            state: .loaded,
+            modelPath: "/tmp/models/embed-local-loaded",
+            taskKinds: ["embedding"]
+        )
+        let runtimeStatus = AIRuntimeStatus(
+            pid: 128,
+            updatedAt: Date().timeIntervalSince1970,
+            mlxOk: false,
+            providers: [
+                "transformers": AIRuntimeProviderStatus(
+                    provider: "transformers",
+                    ok: true,
+                    reasonCode: "ready",
+                    runtimeVersion: "v2",
+                    availableTaskKinds: ["embedding"],
+                    loadedModels: ["embed-local-loaded"],
+                    deviceBackend: "mps",
+                    updatedAt: Date().timeIntervalSince1970,
+                    lifecycleMode: "warmable",
+                    supportedLifecycleActions: ["warmup_local_model", "unload_local_model"],
+                    warmupTaskKinds: ["embedding"],
+                    residencyScope: "process_local",
+                    loadedInstances: []
+                ),
+            ]
+        )
+
+        let plan = LocalModelRuntimeActionPlanner.plan(action: "unload", model: model, runtimeStatus: runtimeStatus)
+
+        XCTAssertEqual(plan, .providerLifecycleCommand(action: "unload_local_model"))
+    }
+
+    func testPlannerRoutesRuntimeResidentWarmableProviderThroughLifecycleCommand() {
         let model = HubModel(
             id: "embed-resident",
             name: "Embed Resident",
@@ -163,19 +248,23 @@ final class LocalModelRuntimeActionPlannerTests: XCTestCase {
                     lifecycleMode: "warmable",
                     supportedLifecycleActions: ["warmup_local_model", "unload_local_model"],
                     warmupTaskKinds: ["embedding"],
-                    residencyScope: "provider_runtime",
+                    residencyScope: "runtime_process",
                     loadedInstances: []
                 ),
             ]
         )
 
-        let plan = LocalModelRuntimeActionPlanner.plan(action: "warmup", model: model, runtimeStatus: runtimeStatus)
+        let presentation = LocalModelRuntimeActionPlanner.presentation(for: model, runtimeStatus: runtimeStatus)
+        let warmupPlan = LocalModelRuntimeActionPlanner.plan(action: "warmup", model: model, runtimeStatus: runtimeStatus)
+        let unloadPlan = LocalModelRuntimeActionPlanner.plan(action: "unload", model: model, runtimeStatus: runtimeStatus)
+        let evictPlan = LocalModelRuntimeActionPlanner.plan(action: "evict", model: model, runtimeStatus: runtimeStatus)
 
-        guard case .immediateFailure(let message) = plan else {
-            XCTFail("expected immediate failure")
-            return
-        }
-        XCTAssertTrue(message.contains("resident lifecycle"))
-        XCTAssertTrue(message.contains("resident transport"))
+        XCTAssertEqual(presentation?.controlMode, .warmable)
+        XCTAssertEqual(presentation?.residencyScope, "runtime_process")
+        XCTAssertTrue(presentation?.supportsWarmup ?? false)
+        XCTAssertTrue(presentation?.supportsUnload ?? false)
+        XCTAssertEqual(warmupPlan, .providerLifecycleCommand(action: "warmup_local_model"))
+        XCTAssertEqual(unloadPlan, .providerLifecycleCommand(action: "unload_local_model"))
+        XCTAssertEqual(evictPlan, .providerLifecycleCommand(action: "evict_local_instance"))
     }
 }

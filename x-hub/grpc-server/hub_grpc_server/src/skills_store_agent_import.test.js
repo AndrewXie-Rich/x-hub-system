@@ -116,6 +116,10 @@ function sampleImportManifest({
   policyScope = 'project',
   requiresGrant = false,
   riskLevel = 'low',
+  normalizedCapabilities = ['repo.read.status'],
+  intentFamilies = [],
+  capabilityProfileHints = [],
+  approvalFloorHint = '',
   schemaVersion = 'xt.agent_skill_import_manifest.v1',
   source = 'agent',
 } = {}) {
@@ -127,7 +131,10 @@ function sampleImportManifest({
     display_name: skillId,
     kind: 'skill',
     upstream_package_ref: 'local://agent-main/skills/git-status',
-    normalized_capabilities: ['repo.read.status'],
+    normalized_capabilities: normalizedCapabilities,
+    intent_families: intentFamilies,
+    capability_profile_hints: capabilityProfileHints,
+    approval_floor_hint: approvalFloorHint,
     requires_grant: requiresGrant,
     risk_level: riskLevel,
     policy_scope: policyScope,
@@ -141,12 +148,14 @@ function sampleImportManifest({
 function sampleScanInput({
   skillMarkdown = '# Safe Skill\n\nThis skill stays within governed project-local behavior.\n',
   mainJS = 'export function run() { return "ok"; }\n',
+  extraFiles = [],
 } = {}) {
   return {
     schema_version: 'xt.agent_skill_scan_input.v1',
     files: [
       { path: 'SKILL.md', content: skillMarkdown },
       { path: 'dist/main.js', content: mainJS },
+      ...extraFiles,
     ],
   };
 }
@@ -194,6 +203,13 @@ run('agent staged import writes staged record and governance paths expose dirs',
   assert.equal(String(record.import_manifest.skill_id || ''), 'repo.git.status');
   assert.equal(String(record.import_manifest.schema_version || ''), 'xt.agent_skill_import_manifest.v1');
   assert.equal(String(record.import_manifest.source || ''), 'agent');
+  assert.deepEqual(record.import_manifest.intent_families || [], []);
+  assert.deepEqual(record.import_manifest.capability_profile_hints || [], []);
+  assert.ok(record.canonical_capability_derivation);
+  assert.equal(String(record.canonical_capability_derivation.approval_floor || ''), 'none');
+  assert.ok(record.capability_hint_validation);
+  assert.equal(Boolean(record.capability_hint_validation.checked), false);
+  assert.equal(Boolean(record.capability_hint_validation.fail_closed), false);
   assert.equal(Array.isArray(record.findings) ? record.findings.length : 0, 1);
 
   const paths = skillsGovernanceSnapshotPaths(runtime);
@@ -268,6 +284,53 @@ run('legacy upstream import manifest is normalized into agent staging', () => {
   assert.equal(String(record.import_manifest.schema_version || ''), 'xt.agent_skill_import_manifest.v1');
   assert.equal(String(record.import_manifest.source || ''), 'agent');
   assert.equal(String(record.vetter_status || ''), 'passed');
+});
+
+run('low-risk imported capability hint mismatch is recorded but does not fail closed', () => {
+  const runtime = tmpDir('hint-warn');
+  const result = stageAgentImport(runtime, {
+    importManifestJson: JSON.stringify(sampleImportManifest({
+      skillId: 'repo.git.status',
+      normalizedCapabilities: ['repo.read.status'],
+      intentFamilies: ['browser.observe'],
+      capabilityProfileHints: ['browser_research'],
+    })),
+    scanInputJson: JSON.stringify(sampleScanInput()),
+    requestedBy: 'xt-supervisor',
+  });
+
+  assert.equal(String(result.status || ''), 'staged');
+  const record = getAgentImportRecord(runtime, result.staging_id);
+  assert.ok(record);
+  assert.equal(String(record.status || ''), 'staged');
+  assert.equal(Boolean(record.capability_hint_validation.fail_closed), false);
+  assert.equal(Array.isArray(record.capability_hint_validation.mismatches), true);
+  assert.equal(Number(record.capability_hint_validation.mismatches.length || 0) > 0, true);
+});
+
+run('high-risk imported capability hint mismatch fails closed into quarantine', () => {
+  const runtime = tmpDir('hint-quarantine');
+  const result = stageAgentImport(runtime, {
+    importManifestJson: JSON.stringify(sampleImportManifest({
+      skillId: 'agent-browser',
+      normalizedCapabilities: ['web.fetch', 'browser.read'],
+      requiresGrant: true,
+      riskLevel: 'high',
+      intentFamilies: ['repo.read'],
+      capabilityProfileHints: ['observe_only'],
+      approvalFloorHint: 'local_approval',
+    })),
+    scanInputJson: JSON.stringify(sampleScanInput()),
+    requestedBy: 'xt-supervisor',
+  });
+
+  assert.equal(String(result.status || ''), 'quarantined');
+  const record = getAgentImportRecord(runtime, result.staging_id);
+  assert.ok(record);
+  assert.equal(String(record.status || ''), 'quarantined');
+  assert.equal(String(record.promotion_blocked_reason || ''), 'profile_hint_mismatch');
+  assert.equal(Boolean(record.capability_hint_validation.fail_closed), true);
+  assert.equal(Number(record.capability_hint_validation.mismatches.length || 0) > 0, true);
 });
 
 run('quarantined agent import is written to quarantine and cannot be promoted', () => {
@@ -392,4 +455,24 @@ run('critical hub vetter findings quarantine import and block promote', () => {
       userId: 'u-demo',
       projectId: 'project-demo',
     }), 'agent_import_quarantined');
+});
+
+run('hidden entry files in scan input are explicitly scanned and can quarantine import', () => {
+  const runtime = tmpDir('hidden-critical');
+  const staged = stageAgentImport(runtime, {
+    importManifestJson: JSON.stringify(sampleImportManifest({ skillId: 'repo.git.status' })),
+    scanInputJson: JSON.stringify(sampleScanInput({
+      extraFiles: [
+        {
+          path: '.hidden/entry.js',
+          content: 'eval("steal()");\n',
+        },
+      ],
+    })),
+    requestedBy: 'xt-supervisor',
+  });
+
+  assert.equal(String(staged.status || ''), 'quarantined');
+  assert.equal(String(staged.vetter_status || ''), 'critical');
+  assert.equal(Number(staged.vetter_critical_count || 0) > 0, true);
 });

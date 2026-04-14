@@ -6,8 +6,6 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 APP_PATH="$ROOT_DIR/build/X-Hub.app"
-BRIDGE_APP_PATH="$ROOT_DIR/build/X-Hub Bridge.app"
-DOCK_AGENT_APP_PATH="$ROOT_DIR/build/X-Hub Dock Agent.app"
 PLIST_SRC="$ROOT_DIR/x-hub/macos/app_template/Info.plist"
 
 if [ ! -d "$APP_PATH" ]; then
@@ -29,34 +27,20 @@ mkdir -p "$STAGE"
 echo "[DMG] Staging apps + docs..."
 cp -R "$APP_PATH" "$STAGE/X-Hub.app"
 
-if [ -d "$BRIDGE_APP_PATH" ]; then
-  cp -R "$BRIDGE_APP_PATH" "$STAGE/X-Hub Bridge.app"
-fi
-
-if [ -d "$DOCK_AGENT_APP_PATH" ]; then
-  cp -R "$DOCK_AGENT_APP_PATH" "$STAGE/X-Hub Dock Agent.app"
-fi
-
-cat > "$STAGE/README.txt" <<'TXT'
-X-Hub (macOS)
-
-Install:
-1) Drag X-Hub.app to Applications
-2) (Recommended) Drag X-Hub Dock Agent.app to Applications
-3) (Optional) Drag X-Hub Bridge.app to Applications
-
-First run / Permissions:
-- Open X-Hub.app -> Settings -> Doctor
-- Calendar: turn on Calendar integration and click Enable Calendar if needed
-- Accessibility: click Request and enable X-Hub (and Dock Agent if you use it)
-
-Optional:
-- In Doctor, you can enable X-Hub Dock Agent "Start at login" for Slack/Messages counts.
-
-Notes:
-- Slack/Messages unread counts may require X-Hub Dock Agent on newer macOS versions.
-- X-Hub Bridge enables optional networking features; the main Hub stays offline.
-TXT
+{
+  echo "X-Hub (macOS)"
+  echo
+  echo "Install:"
+  echo "1) Drag X-Hub.app to Applications"
+  echo
+  echo "First run / Permissions:"
+  echo "- Open X-Hub.app -> Settings -> Doctor"
+  echo "- Accessibility: click Request and enable X-Hub if you use those integrations"
+  echo
+  echo "Notes:"
+  echo "- Calendar reminders moved to X-Terminal Supervisor so Hub launch stays permission-free."
+  echo "- This DMG contains the single X-Hub.app bundle only."
+} > "$STAGE/README.txt"
 
 # Optional docs (user guide + security statement)
 DOC_DIR="$ROOT_DIR/docs"

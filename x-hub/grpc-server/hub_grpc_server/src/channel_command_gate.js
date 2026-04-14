@@ -8,9 +8,15 @@ import {
 import {
   getChannelIdentityBinding,
   makeChannelIdentityActorRef,
+  normalizeChannelAccessGroups,
   normalizeChannelRoles,
   normalizeChannelIdentityStatus,
 } from './channel_identity_store.js';
+import {
+  getChannelActionPolicy as getActionPolicy,
+  listChannelActionPolicies as listActionPolicies,
+  normalizeChannelActionName as normalizeRouterActionName,
+} from './channel_action_router.js';
 import { normalizeChannelProviderId } from './channel_registry.js';
 import { nowMs, uuid } from './util.js';
 
@@ -19,7 +25,7 @@ function safeString(input) {
 }
 
 function normalizeActionName(input) {
-  return safeString(input).toLowerCase();
+  return normalizeRouterActionName(input);
 }
 
 function safeBool(input, fallback = false) {
@@ -31,88 +37,8 @@ function safeBool(input, fallback = false) {
   return fallback;
 }
 
-const ACTION_POLICIES = Object.freeze({
-  'supervisor.status.get': Object.freeze({
-    action_name: 'supervisor.status.get',
-    allowed_roles: Object.freeze(['viewer', 'operator', 'approver', 'release_manager', 'admin']),
-    approval_compatible: false,
-    requires_pending_grant: false,
-    route_mode: 'hub_only_status',
-  }),
-  'supervisor.blockers.get': Object.freeze({
-    action_name: 'supervisor.blockers.get',
-    allowed_roles: Object.freeze(['viewer', 'operator', 'approver', 'release_manager', 'admin']),
-    approval_compatible: false,
-    requires_pending_grant: false,
-    route_mode: 'hub_only_status',
-  }),
-  'supervisor.queue.get': Object.freeze({
-    action_name: 'supervisor.queue.get',
-    allowed_roles: Object.freeze(['viewer', 'operator', 'approver', 'release_manager', 'admin']),
-    approval_compatible: false,
-    requires_pending_grant: false,
-    route_mode: 'hub_only_status',
-  }),
-  'grant.approve': Object.freeze({
-    action_name: 'grant.approve',
-    allowed_roles: Object.freeze(['approver', 'release_manager', 'admin']),
-    approval_compatible: true,
-    requires_pending_grant: true,
-    route_mode: 'hub_only_status',
-  }),
-  'grant.reject': Object.freeze({
-    action_name: 'grant.reject',
-    allowed_roles: Object.freeze(['approver', 'release_manager', 'admin']),
-    approval_compatible: true,
-    requires_pending_grant: true,
-    route_mode: 'hub_only_status',
-  }),
-  'deploy.plan': Object.freeze({
-    action_name: 'deploy.plan',
-    allowed_roles: Object.freeze(['operator', 'approver', 'release_manager', 'admin']),
-    approval_compatible: false,
-    requires_pending_grant: false,
-    route_mode: 'hub_to_xt',
-  }),
-  'deploy.execute': Object.freeze({
-    action_name: 'deploy.execute',
-    allowed_roles: Object.freeze(['release_manager', 'admin']),
-    approval_compatible: false,
-    requires_pending_grant: false,
-    route_mode: 'hub_to_xt',
-  }),
-  'supervisor.pause': Object.freeze({
-    action_name: 'supervisor.pause',
-    allowed_roles: Object.freeze(['operator', 'release_manager', 'admin']),
-    approval_compatible: false,
-    requires_pending_grant: false,
-    route_mode: 'hub_to_xt',
-  }),
-  'supervisor.resume': Object.freeze({
-    action_name: 'supervisor.resume',
-    allowed_roles: Object.freeze(['operator', 'release_manager', 'admin']),
-    approval_compatible: false,
-    requires_pending_grant: false,
-    route_mode: 'hub_to_xt',
-  }),
-  'device.doctor.get': Object.freeze({
-    action_name: 'device.doctor.get',
-    allowed_roles: Object.freeze(['operator', 'approver', 'release_manager', 'admin']),
-    approval_compatible: false,
-    requires_pending_grant: false,
-    route_mode: 'hub_to_runner',
-  }),
-  'device.permission_status.get': Object.freeze({
-    action_name: 'device.permission_status.get',
-    allowed_roles: Object.freeze(['operator', 'approver', 'release_manager', 'admin']),
-    approval_compatible: false,
-    requires_pending_grant: false,
-    route_mode: 'hub_to_runner',
-  }),
-});
-
 export function listChannelActionPolicies() {
-  return Object.values(ACTION_POLICIES);
+  return listActionPolicies();
 }
 
 export function normalizeChannelActionName(input) {
@@ -120,8 +46,7 @@ export function normalizeChannelActionName(input) {
 }
 
 export function getChannelActionPolicy(action_name) {
-  const actionName = normalizeActionName(action_name);
-  return ACTION_POLICIES[actionName] || null;
+  return getActionPolicy(action_name);
 }
 
 function deny({
@@ -147,6 +72,11 @@ function deny({
     policy_checked: true,
     allowed_roles: Array.isArray(policy?.allowed_roles) ? [...policy.allowed_roles] : [],
     identity_roles: normalizeChannelRoles(identity_binding?.roles || []),
+    stable_external_id: safeString(identity_binding?.stable_external_id),
+    access_groups: normalizeChannelAccessGroups(identity_binding?.access_groups || []),
+    risk_tier: safeString(policy?.risk_tier),
+    required_grant_scope: safeString(policy?.required_grant_scope),
+    route_mode: safeString(policy?.route_mode),
   };
 }
 
@@ -171,6 +101,11 @@ function allow({
     policy_checked: true,
     allowed_roles: Array.isArray(policy?.allowed_roles) ? [...policy.allowed_roles] : [],
     identity_roles: normalizeChannelRoles(identity_binding?.roles || []),
+    stable_external_id: safeString(identity_binding?.stable_external_id),
+    access_groups: normalizeChannelAccessGroups(identity_binding?.access_groups || []),
+    risk_tier: safeString(policy?.risk_tier),
+    required_grant_scope: safeString(policy?.required_grant_scope),
+    route_mode: safeString(policy?.route_mode),
   };
 }
 
@@ -178,6 +113,47 @@ function rolesIntersect(policyRoles, identityRoles) {
   const wanted = new Set(normalizeChannelRoles(policyRoles || []));
   const actual = normalizeChannelRoles(identityRoles || []);
   return actual.some((role) => wanted.has(role));
+}
+
+function hasIdentityRole(identity_binding, role) {
+  return normalizeChannelRoles(identity_binding?.roles || []).includes(normalizeActionName(role));
+}
+
+function requiredAccessGroupForRoute(route_context = {}, channel_binding = {}) {
+  const channelScope = normalizeSupervisorChannelScope(
+    route_context.channel_scope,
+    channel_binding.channel_scope || 'group'
+  );
+  if (channelScope === 'dm') return 'dm_allowlist';
+  return safeString(route_context.thread_key || channel_binding.thread_key)
+    ? 'thread_allowlist'
+    : 'group_allowlist';
+}
+
+function denyCodeForAccessGroup(group) {
+  if (group === 'dm_allowlist') return 'dm_access_not_allowlisted';
+  if (group === 'thread_allowlist') return 'thread_access_not_allowlisted';
+  return 'group_access_not_allowlisted';
+}
+
+function normalizeAllowedScopeTypes(policy = null) {
+  const rows = Array.isArray(policy?.allowed_scope_types) ? policy.allowed_scope_types : [];
+  const out = [];
+  const seen = new Set();
+  for (const raw of rows) {
+    const scopeType = normalizeSupervisorScopeType(raw, '');
+    if (!scopeType || seen.has(scopeType)) continue;
+    seen.add(scopeType);
+    out.push(scopeType);
+  }
+  return out;
+}
+
+function resolveRequestedScopeType(required_scope_type = '', channel_binding = null) {
+  return normalizeSupervisorScopeType(
+    required_scope_type || channel_binding?.scope_type,
+    channel_binding?.scope_type || 'project'
+  );
 }
 
 function normalizePendingGrant(input = {}) {
@@ -309,7 +285,19 @@ export function authorizeChannelCommand({
     });
   }
 
-  const expectedScopeType = normalizeSupervisorScopeType(required_scope_type || channel_binding.scope_type, channel_binding.scope_type);
+  const expectedScopeType = resolveRequestedScopeType(required_scope_type, channel_binding);
+  const allowedScopeTypes = normalizeAllowedScopeTypes(policy);
+  if (allowedScopeTypes.length && !allowedScopeTypes.includes(expectedScopeType)) {
+    return deny({
+      action_name: actionName,
+      deny_code: 'scope_switch_required',
+      detail: 'action requires a different binding scope',
+      identity_binding,
+      channel_binding,
+      binding_match_mode,
+      policy,
+    });
+  }
   const expectedScopeId = safeString(required_scope_id || channel_binding.scope_id);
   if (expectedScopeType !== channel_binding.scope_type || (expectedScopeId && expectedScopeId !== channel_binding.scope_id)) {
     return deny({
@@ -338,7 +326,40 @@ export function authorizeChannelCommand({
     });
   }
 
-  if (safeBool(identity_binding.approval_only, false) && !policy.approval_compatible) {
+  const accessGroups = normalizeChannelAccessGroups(identity_binding.access_groups || []);
+  if (!accessGroups.length) {
+    return deny({
+      action_name: actionName,
+      deny_code: 'access_groups_missing',
+      detail: 'identity access groups missing',
+      identity_binding,
+      channel_binding,
+      binding_match_mode,
+      policy,
+    });
+  }
+
+  const requiredAccessGroup = requiredAccessGroupForRoute(route_context, channel_binding);
+  if (
+    requiredAccessGroup
+    && !accessGroups.includes(requiredAccessGroup)
+    && !hasIdentityRole(identity_binding, 'ops_admin')
+  ) {
+    return deny({
+      action_name: actionName,
+      deny_code: denyCodeForAccessGroup(requiredAccessGroup),
+      detail: 'identity surface not allowlisted',
+      identity_binding,
+      channel_binding,
+      binding_match_mode,
+      policy,
+    });
+  }
+
+  if (
+    (safeBool(identity_binding.approval_only, false) || accessGroups.includes('approval_only_identity'))
+    && !policy.approval_compatible
+  ) {
     return deny({
       action_name: actionName,
       deny_code: 'identity_approval_only',
@@ -450,13 +471,18 @@ function appendChannelCommandAudit({
       scope_id: safeString(channel_binding?.scope_id),
       actor_ref: identity_binding ? makeChannelIdentityActorRef(identity_binding) : '',
       actor_provider: safeString(actor.provider || identity_binding?.provider),
+      actor_stable_external_id: safeString(actor.stable_external_id || identity_binding?.stable_external_id),
       actor_external_user_id: safeString(actor.external_user_id || identity_binding?.external_user_id),
       actor_hub_user_id: safeString(identity_binding?.hub_user_id),
       approval_only: identity_binding?.approval_only === true,
       allowed_roles: Array.isArray(decision.allowed_roles) ? decision.allowed_roles : [],
       identity_roles: Array.isArray(decision.identity_roles) ? decision.identity_roles : [],
+      access_groups: normalizeChannelAccessGroups(identity_binding?.access_groups || []),
       pending_grant_request_id: safeString(pending_grant?.grant_request_id),
       pending_grant_project_id: safeString(pending_grant?.project_id),
+      risk_tier: safeString(decision.risk_tier || policy?.risk_tier),
+      required_grant_scope: safeString(decision.required_grant_scope || policy?.required_grant_scope),
+      route_mode: safeString(decision.route_mode || policy?.route_mode),
       deny_code: safeString(decision.deny_code),
     }),
   });
@@ -479,6 +505,7 @@ export function evaluateChannelCommandGateWithAudit({
   }
 
   const identityBinding = getChannelIdentityBinding(db, {
+    stable_external_id: actor.stable_external_id,
     provider: actor.provider,
     external_user_id: actor.external_user_id,
     external_tenant_id: actor.external_tenant_id,

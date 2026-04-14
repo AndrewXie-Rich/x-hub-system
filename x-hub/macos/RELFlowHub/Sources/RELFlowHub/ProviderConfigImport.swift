@@ -2,12 +2,19 @@ import Foundation
 import RELFlowHubCore
 
 enum ProviderConfigImport {
+    enum ConfigSource: String, Equatable {
+        case explicitProvider = "explicit_provider"
+        case fallbackOpenAI = "fallback_openai"
+    }
+
     struct ImportedProviderConfig: Equatable {
         var providerName: String
         var backend: String
         var baseURL: String
         var apiKeyRef: String
         var preferredModelID: String
+        var wireAPI: String
+        var source: ConfigSource
     }
 
     enum ImportError: LocalizedError {
@@ -17,9 +24,9 @@ enum ProviderConfigImport {
         var errorDescription: String? {
             switch self {
             case .unsupportedFormat:
-                return "Unsupported provider config format."
+                return HubUIStrings.Models.ProviderImport.configUnsupportedFormat
             case .noSupportedProvider:
-                return "No OpenAI-auth provider with a base_url was found in this config."
+                return HubUIStrings.Models.ProviderImport.configNoSupportedProvider
             }
         }
     }
@@ -34,24 +41,31 @@ enum ProviderConfigImport {
         let providers = config.providers
             .filter { $0.requiresOpenAIAuth && !$0.baseURL.isEmpty }
         let selected = selectProvider(from: providers, preferredName: config.preferredProviderName)
-        guard let selected else {
-            throw ImportError.noSupportedProvider
+        if let selected {
+            let backend = inferredBackend(baseURL: selected.baseURL)
+            return ImportedProviderConfig(
+                providerName: selected.name,
+                backend: backend,
+                baseURL: selected.baseURL,
+                apiKeyRef: defaultAPIKeyRef(backend: backend, baseURL: selected.baseURL),
+                preferredModelID: config.preferredModelID,
+                wireAPI: selected.wireAPI,
+                source: .explicitProvider
+            )
         }
 
-        let backend = inferredBackend(baseURL: selected.baseURL)
-        return ImportedProviderConfig(
-            providerName: selected.name,
-            backend: backend,
-            baseURL: selected.baseURL,
-            apiKeyRef: defaultAPIKeyRef(backend: backend, baseURL: selected.baseURL),
-            preferredModelID: config.preferredModelID
-        )
+        if let fallback = fallbackOpenAIConfig(from: config) {
+            return fallback
+        }
+
+        throw ImportError.noSupportedProvider
     }
 
     private struct ProviderSection {
         var name: String
         var baseURL: String = ""
         var requiresOpenAIAuth: Bool = false
+        var wireAPI: String = ""
     }
 
     private struct ParsedConfig {
@@ -114,6 +128,8 @@ enum ProviderConfigImport {
                 section.baseURL = unquote(value)
             case "requires_openai_auth":
                 section.requiresOpenAIAuth = value.lowercased() == "true"
+            case "wire_api":
+                section.wireAPI = unquote(value)
             default:
                 break
             }
@@ -141,6 +157,28 @@ enum ProviderConfigImport {
             return exact
         }
         return providers.first
+    }
+
+    private static func fallbackOpenAIConfig(from config: ParsedConfig) -> ImportedProviderConfig? {
+        guard config.providers.isEmpty else { return nil }
+        let preferredModelID = config.preferredModelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let preferredProvider = config.preferredProviderName?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        if preferredProvider.isEmpty || preferredProvider == "openai" || preferredProvider == "chatgpt" || !preferredModelID.isEmpty {
+            let baseURL = "https://api.openai.com/v1"
+            let backend = "openai"
+            return ImportedProviderConfig(
+                providerName: preferredProvider.isEmpty ? "openai" : preferredProvider,
+                backend: backend,
+                baseURL: baseURL,
+                apiKeyRef: defaultAPIKeyRef(backend: backend, baseURL: baseURL),
+                preferredModelID: preferredModelID,
+                wireAPI: RemoteProviderWireAPI.responses.rawValue,
+                source: .fallbackOpenAI
+            )
+        }
+        return nil
     }
 
     private static func inferredBackend(baseURL: String) -> String {

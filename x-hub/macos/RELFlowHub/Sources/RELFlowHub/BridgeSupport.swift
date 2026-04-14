@@ -6,7 +6,12 @@ import RELFlowHubCore
 final class BridgeSupport: ObservableObject {
     static let shared = BridgeSupport()
 
-    @Published private(set) var bridgeStatusText: String = "Bridge: unknown"
+    @Published private(set) var bridgeStatusText: String = HubUIStrings.MainPanel.NetworkRequest.bridgeStatusUnknown
+    @Published private(set) var bridgeStatusSnapshot: BridgeStatusSnapshot = .init(
+        alive: false,
+        updatedAt: 0,
+        enabledUntil: 0
+    )
 
     struct BridgeStatusSnapshot: Equatable {
         var alive: Bool
@@ -34,24 +39,32 @@ final class BridgeSupport: ObservableObject {
     }
 
     func refresh() {
-        let st = statusSnapshot()
+        let st = resolvedStatusSnapshot(ttl: AIRuntimeStatus.recommendedHeartbeatTTL, now: Date().timeIntervalSince1970)
+        bridgeStatusSnapshot = st
         if !st.alive {
-            bridgeStatusText = "Bridge: off"
+            bridgeStatusText = HubUIStrings.MainPanel.NetworkRequest.bridgeStatusClosed
             return
         }
         if st.enabledUntil > Date().timeIntervalSince1970 {
             if st.looksPersistent {
-                bridgeStatusText = "Bridge: on"
+                bridgeStatusText = HubUIStrings.MainPanel.NetworkRequest.bridgeStatusOpen
                 return
             }
             let rem = Int(max(0, st.enabledUntil - Date().timeIntervalSince1970))
-            bridgeStatusText = "Bridge: on (\(rem)s)"
+            bridgeStatusText = HubUIStrings.MainPanel.NetworkRequest.bridgeStatusOpenRemaining(rem)
             return
         }
-        bridgeStatusText = "Bridge: disabled"
+        bridgeStatusText = HubUIStrings.MainPanel.NetworkRequest.bridgeStatusDisabled
     }
 
     func statusSnapshot(ttl: Double = 3.0, now: Double = Date().timeIntervalSince1970) -> BridgeStatusSnapshot {
+        if ttl == 3.0 {
+            return bridgeStatusSnapshot
+        }
+        return resolvedStatusSnapshot(ttl: ttl, now: now)
+    }
+
+    private func resolvedStatusSnapshot(ttl: Double, now: Double) -> BridgeStatusSnapshot {
         if let st = BridgePathResolver.bestStatus(ttl: ttl, now: now) {
             return BridgeStatusSnapshot(alive: st.alive, updatedAt: st.updatedAt, enabledUntil: st.enabledUntil)
         }
@@ -79,6 +92,15 @@ final class BridgeSupport: ObservableObject {
             }
             enqueueCommand(["type": "enable_until", "enabled_until": until], commandsDir: commandsDir)
         }
+    }
+
+    func restore(seconds: Int) {
+        if let appDelegate = NSApp.delegate as? AppDelegate {
+            appDelegate.restartEmbeddedBridgeForDiagnostics()
+        }
+        enable(seconds: seconds)
+        refresh()
+        HubLaunchStateMachine.shared.start(bridgeStarted: true)
     }
 
     func disable() {

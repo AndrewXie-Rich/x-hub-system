@@ -2,20 +2,33 @@ import SwiftUI
 import AppKit
 import RELFlowHubCore
 
+private struct RemoteModelSignalVisual: Identifiable {
+    let title: String
+    let systemName: String
+    let tint: Color
+
+    var id: String { title }
+}
+
 struct SettingsSheetView: View {
     @EnvironmentObject var store: HubStore
     @Environment(\.dismiss) private var dismiss
 
     @ObservedObject private var grpc = HubGRPCServerSupport.shared
+    @ObservedObject private var modelStore = ModelStore.shared
+    @ObservedObject private var servingPower = HubServingPowerManager.shared
+    @ObservedObject private var remoteRouteProbe = HubRemoteAccessRouteProbe.shared
 
-    @State private var didAutoRequestCalendarOnOpen = false
-    @State private var remoteModels: [RemoteModelEntry] = RemoteModelStorage.load().models
+    @State private var remoteModels: [RemoteModelEntry] = sortedRemoteModels(RemoteModelStorage.load().models)
     @State private var showAddRemoteModel: Bool = false
     @State private var showImportRemoteCatalog: Bool = false
+    @State private var editingRemoteModelGroup: RemoteModelKeyGroup? = nil
     @State private var networkPolicies: [HubNetworkPolicyRule] = HubNetworkPolicyStorage.load().policies
     @State private var showAddNetworkPolicy: Bool = false
     @State private var showAddGRPCClient: Bool = false
     @State private var editingGRPCClient: HubGRPCClientEntry? = nil
+    @State private var editingGRPCClientFocusCapabilityKey: String? = nil
+    @State private var deletingGRPCClient: HubGRPCClientEntry? = nil
     @State private var grpcClientListFilter: GRPCClientListFilter = .all
     @State private var grpcDevicesStatus: GRPCDevicesStatusSnapshot = GRPCDevicesStatusStorage.load()
     @State private var grpcDeniedAttempts: GRPCDeniedAttemptsSnapshot = GRPCDeniedAttemptsStorage.load()
@@ -26,6 +39,10 @@ struct SettingsSheetView: View {
     @State private var diagnosticsBundleManifestPath: String = ""
     @State private var diagnosticsBundleMissingFiles: [String] = []
     @State private var diagnosticsBundleError: String = ""
+    @State private var unifiedDoctorReportIsExporting: Bool = false
+    @State private var unifiedDoctorReportPath: String = ""
+    @State private var unifiedDoctorChannelReportPath: String = ""
+    @State private var unifiedDoctorReportError: String = ""
     @State private var fixNowIsRunning: Bool = false
     @State private var fixNowResultText: String = ""
     @State private var fixNowErrorText: String = ""
@@ -44,13 +61,38 @@ struct SettingsSheetView: View {
     @State private var axConstitutionVersion: String = ""
     @State private var axConstitutionEnabledClauseIds: [String] = []
     @State private var axConstitutionErrorText: String = ""
+    @State private var operatorChannelProviderReadiness: [HubOperatorChannelOnboardingDeliveryReadiness] = []
+    @State private var operatorChannelProviderRuntimeStatus: [HubOperatorChannelProviderRuntimeStatus] = []
+    @State private var operatorChannelProviderReadinessError: String = ""
+    @State private var operatorChannelProviderReadinessInFlight: Bool = false
+    @State private var operatorChannelProviderReadinessActionText: String = ""
 
     private var axTrusted: Bool {
         DockBadgeReader.ensureAccessibilityTrusted(prompt: false)
     }
 
-    private var calendarHasReadAccess: Bool {
-        store.calendarHasReadAccess
+    private var xhubLocalServiceRecoveryGuidance: XHubLocalServiceRecoveryGuidance? {
+        XHubLocalServiceRecoveryGuidanceBuilder.build(
+            status: store.aiRuntimeStatusSnapshot,
+            blockedCapabilities: hubLaunchStatus?.degraded.blockedCapabilities ?? []
+        )
+    }
+
+    private var runtimeRepairSurfaceSummary: LocalRuntimeRepairSurfaceSummary? {
+        LocalRuntimeRepairSurfaceSummaryBuilder.build(
+            status: store.aiRuntimeStatusSnapshot,
+            blockedCapabilities: hubLaunchStatus?.degraded.blockedCapabilities ?? []
+        )
+    }
+
+    private var grpcRemoteAccessHealthSummary: HubRemoteAccessHealthSummary {
+        HubRemoteAccessHealthSummaryBuilder.build(
+            autoStartEnabled: grpc.autoStart,
+            serverRunning: grpc.isServingAvailable,
+            externalHost: grpc.xtTerminalInternetHost,
+            hasInviteToken: grpc.hasExternalInviteToken,
+            keepSystemAwakeWhileServing: servingPower.keepSystemAwakeWhileServing
+        )
     }
 
     private func quitApp() {
@@ -76,6 +118,13 @@ struct SettingsSheetView: View {
         }
         .padding(14)
         .frame(width: 620, height: 640)
+        .onAppear {
+            remoteRouteProbe.refresh(host: grpc.xtTerminalInternetHost)
+            handleSettingsNavigationTarget(store.settingsNavigationTarget)
+        }
+        .onChange(of: store.settingsNavigationTarget) { target in
+            handleSettingsNavigationTarget(target)
+        }
         .onReceive(Timer.publish(every: 2.0, on: .main, in: .common).autoconnect()) { _ in
             // Lightweight status snapshot exported by Node server for device presence/quotas.
             grpcDevicesStatus = GRPCDevicesStatusStorage.load()
@@ -86,6 +135,11 @@ struct SettingsSheetView: View {
             skillsPins = HubSkillsStoreStorage.loadSkillPins()
             skillsSources = HubSkillsStoreStorage.loadSkillSources()
             reloadAXConstitutionStatus()
+            Task { await reloadOperatorChannelProviderReadiness() }
+            remoteRouteProbe.refresh(host: grpc.xtTerminalInternetHost)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .relflowhubRemoteModelsChanged)) { _ in
+            reloadRemoteModels()
         }
         .sheet(isPresented: $showAddRemoteModel) {
             AddRemoteModelSheet { entries in
@@ -97,10 +151,16 @@ struct SettingsSheetView: View {
                 importRemoteCatalog(result)
             }
         }
+        .sheet(item: $editingRemoteModelGroup) { group in
+            EditRemoteModelGroupDisplayNameSheet(group: group) { displayName in
+                updateRemoteModelGroupDisplayName(group, displayName: displayName)
+            }
+        }
         .sheet(isPresented: $showAddNetworkPolicy) {
             AddNetworkPolicySheet { rule in
                 _ = HubNetworkPolicyStorage.upsert(rule)
                 reloadNetworkPolicies()
+                store.reloadNetworkPolicySnapshot()
             }
         }
         .sheet(isPresented: $showAddGRPCClient) {
@@ -109,7 +169,12 @@ struct SettingsSheetView: View {
                 grpc.copyConnectVars(for: entry)
             }
         }
-        .sheet(item: $editingGRPCClient) { client in
+        .sheet(
+            item: $editingGRPCClient,
+            onDismiss: {
+                editingGRPCClientFocusCapabilityKey = nil
+            }
+        ) { client in
             let localModels = pairedTerminalLocalModels()
             EditGRPCClientSheet(
                 client: client,
@@ -120,6 +185,8 @@ struct SettingsSheetView: View {
                     deviceId: client.deviceId,
                     localModels: localModels
                 ),
+                suggestedLANAllowedCidrs: grpc.currentLANDefaultAllowedCidrs(),
+                initialCapabilityFocusKey: editingGRPCClientFocusCapabilityKey,
                 onSave: { updated in
                     grpc.upsertClient(updated)
                 },
@@ -140,6 +207,34 @@ struct SettingsSheetView: View {
                     NSPasteboard.general.setString(grpc.connectionGuideOverride(token: tok, deviceId: client.deviceId), forType: .string)
                 }
             )
+        }
+        .alert(
+            deletingGRPCClient == nil
+                ? HubUIStrings.Settings.GRPC.deleteDeviceTitle
+                : HubUIStrings.Settings.GRPC.deleteDeviceTitleConfirm,
+            isPresented: Binding(
+                get: { deletingGRPCClient != nil },
+                set: { newValue in
+                    if !newValue {
+                        deletingGRPCClient = nil
+                    }
+                }
+            ),
+            presenting: deletingGRPCClient
+        ) { client in
+            Button(HubUIStrings.Settings.GRPC.delete, role: .destructive) {
+                if editingGRPCClient?.deviceId == client.deviceId {
+                    editingGRPCClientFocusCapabilityKey = nil
+                    editingGRPCClient = nil
+                }
+                grpc.removeClient(deviceId: client.deviceId)
+                deletingGRPCClient = nil
+            }
+            Button(HubUIStrings.Settings.GRPC.cancel, role: .cancel) {
+                deletingGRPCClient = nil
+            }
+        } message: { client in
+            Text(deleteClientConfirmationMessage(client))
         }
     }
 
@@ -170,20 +265,47 @@ struct SettingsSheetView: View {
         return profiles
     }
 
+    private func handleSettingsNavigationTarget(_ target: HubSettingsNavigationTarget?) {
+        guard let target else { return }
+        switch target {
+        case .pairedDevices(let deviceID, let capabilityKey):
+            grpcClientListFilter = .all
+            if let normalizedDeviceID = deviceID?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !normalizedDeviceID.isEmpty {
+                let client = grpc.allowedClients.first(where: { entry in
+                    entry.deviceId == normalizedDeviceID
+                })
+                presentGRPCClientEditor(client, capabilityFocusKey: capabilityKey)
+            } else {
+                editingGRPCClientFocusCapabilityKey = hubNormalizedPairedDeviceCapabilityFocusKey(capabilityKey)
+                editingGRPCClient = nil
+            }
+            store.consumeSettingsNavigationTarget(target)
+        }
+    }
+
+    private func presentGRPCClientEditor(
+        _ client: HubGRPCClientEntry?,
+        capabilityFocusKey: String? = nil
+    ) {
+        editingGRPCClientFocusCapabilityKey = hubNormalizedPairedDeviceCapabilityFocusKey(capabilityFocusKey)
+        editingGRPCClient = client
+    }
+
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("X-Hub Settings")
+                    Text(HubUIStrings.Settings.title)
                         .font(.headline)
-                    Text("Pairing · Models · Grants · Security · Diagnostics")
+                    Text(HubUIStrings.Settings.subtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Done") { dismiss() }
+                Button(HubUIStrings.Settings.done) { dismiss() }
             }
-            Text("validated-mainline-only · pairing → model → grant → smoke")
+            Text(HubUIStrings.Settings.validationChain)
                 .font(.caption.monospaced())
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
@@ -199,201 +321,171 @@ struct SettingsSheetView: View {
             firstRunFastPathSection
             quickTroubleshootSection
             grpcServerSection
+            operatorChannelReadinessSection
+            operatorChannelOnboardingSection
             routingSection
             remoteModelsSection
+            modelHealthAutoScanSection
+            calendarSection
             doctorSection
+            runtimeMonitorSection
             diagnosticsSection
             networkPoliciesSection
             networkingSection
-            integrationsSection
             floatingModeSection
             skillsSection
             advancedSection
             quitSection
         }
         .formStyle(.grouped)
-        .task {
-            // If the user has Calendar integration ON but hasn't granted permission yet,
-            // attempt to trigger the system prompt once when opening Settings.
-            if didAutoRequestCalendarOnOpen { return }
-            if store.integrationCalendarEnabled, store.calendarNotDetermined {
-                didAutoRequestCalendarOnOpen = true
-                NSApp.activate(ignoringOtherApps: true)
-                store.requestCalendarAccessAndStart()
-            }
-        }
         .onAppear {
-            remoteModels = RemoteModelStorage.load().models
+            reloadRemoteModels()
             reloadNetworkPolicies()
             reloadAXConstitutionStatus()
+            Task { await reloadOperatorChannelProviderReadiness() }
         }
     }
 
     private var setupCenterSection: some View {
-        Section("Setup Center") {
+        Section(HubUIStrings.Settings.Overview.sectionTitle) {
             HubSectionCard(
                 systemImage: "link.badge.plus",
-                title: "Pair Hub",
-                summary: "把 XT 设备配对、copy bootstrap、客户端 token 与 reachability 放在一条主链。",
-                badge: grpc.isRunning ? "ready" : "needs start",
+                title: HubUIStrings.Settings.Overview.PairHub.title,
+                summary: HubUIStrings.Settings.Overview.PairHub.summary,
+                badge: grpc.isRunning ? HubUIStrings.Settings.Overview.PairHub.readyBadge : HubUIStrings.Settings.Overview.PairHub.needsStartBadge,
                 highlights: [
-                    "\(grpc.allowedClients.count) allowed clients",
-                    "pairing port \(grpc.xtTerminalPairingPort)",
+                    HubUIStrings.Settings.Overview.PairHub.allowedClients(grpc.allowedClients.count),
+                    HubUIStrings.Settings.Overview.PairHub.pairingPort(grpc.xtTerminalPairingPort),
                     grpc.statusText
                 ]
             )
 
             HubSectionCard(
                 systemImage: "cpu",
-                title: "Models & Paid Access",
-                summary: "先决定 local / paid 模型，再把 paid access 的 quota / key 状态与路由放在一起看。",
-                badge: activeRemoteModelCount > 0 ? "\(activeRemoteModelCount) enabled" : "local only",
-                highlights: [
-                    "Hub routing remains source-of-truth",
-                    "remote models can be toggled without leaving this sheet",
-                    "quota review stays next to model setup"
-                ]
+                title: HubUIStrings.Settings.Overview.Models.title,
+                summary: HubUIStrings.Settings.Overview.Models.summary,
+                badge: activeRemoteModelCount > 0 ? HubUIStrings.Settings.Overview.Models.enabledBadge(activeRemoteModelCount) : HubUIStrings.Settings.Overview.Models.localOnlyBadge,
+                highlights: HubUIStrings.Settings.Overview.Models.highlights
             )
 
             HubSectionCard(
                 systemImage: "checkmark.shield",
-                title: "Grants & Permissions",
-                summary: "设备 capability、denied attempts、系统权限与 paid model 入口统一在这里对齐。",
-                badge: grpcDeniedAttempts.attempts.isEmpty ? "clear" : "\(grpcDeniedAttempts.attempts.count) blocked",
-                highlights: [
-                    "Calendar / Accessibility repair stays close to grants",
-                    "denied attempts can jump to client edit or quotas",
-                    "permission issues stay within 3 repair steps"
-                ]
+                title: HubUIStrings.Settings.Overview.Grants.title,
+                summary: HubUIStrings.Settings.Overview.Grants.summary,
+                badge: grpcDeniedAttempts.attempts.isEmpty ? HubUIStrings.Settings.Overview.Grants.clearBadge : HubUIStrings.Settings.Overview.Grants.blockedBadge(grpcDeniedAttempts.attempts.count),
+                highlights: HubUIStrings.Settings.Overview.Grants.highlights
             )
 
             HubSectionCard(
                 systemImage: "lock.shield",
-                title: "Security Boundary",
-                summary: "Network policy、allowed CIDRs、capabilities 与 fail-closed defaults 不再散落在多个区域。",
-                badge: networkPolicies.isEmpty ? "default" : "\(networkPolicies.count) rules",
-                highlights: [
-                    "bridge remains governed by explicit grant windows",
-                    "client capabilities stay device-scoped",
-                    "security changes remain auditable"
-                ]
+                title: HubUIStrings.Settings.Overview.Security.title,
+                summary: HubUIStrings.Settings.Overview.Security.summary,
+                badge: networkPolicies.isEmpty ? HubUIStrings.Settings.Overview.Security.defaultBadge : HubUIStrings.Settings.Overview.Security.rulesBadge(networkPolicies.count),
+                highlights: HubUIStrings.Settings.Overview.Security.highlights
             )
 
             HubSectionCard(
                 systemImage: "stethoscope",
-                title: "Diagnostics & Recovery",
-                summary: "启动状态、Fix Now、导出 bundle、日志与历史都围绕 recovery 收口。",
+                title: HubUIStrings.Settings.Overview.Diagnostics.title,
+                summary: HubUIStrings.Settings.Overview.Diagnostics.summary,
                 badge: currentLaunchStateLabel,
-                highlights: [
-                    "Fix Now stays next to launch root cause",
-                    "logs and history remain one hop away",
-                    "redacted export keeps QA / support handoff short"
-                ]
+                highlights: HubUIStrings.Settings.Overview.Diagnostics.highlights
             )
         }
     }
 
     private var firstRunFastPathSection: some View {
-        Section("First Run Path") {
+        Section(HubUIStrings.Settings.FirstRun.sectionTitle) {
             VStack(alignment: .leading, spacing: 10) {
-                Text("冻结主链：pair XT device → choose model → resolve grant → run smoke")
+                Text(HubUIStrings.Settings.FirstRun.summary)
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                 firstRunStepRow(
                     index: 1,
-                    title: "Pair XT device",
-                    summary: "创建或编辑 gRPC client，并把 bootstrap/copy-vars 交给 XT。"
+                    title: HubUIStrings.Settings.FirstRun.step1Title,
+                    summary: HubUIStrings.Settings.FirstRun.step1Summary
                 ) {
-                    Button("Copy Bootstrap Cmd") { grpc.copyBootstrapCommandToClipboard() }
-                    Button("Add Client…") { showAddGRPCClient = true }
-                    Button("Refresh") { grpc.refresh() }
+                    Button(HubUIStrings.Settings.FirstRun.copyBootstrap) { grpc.copyBootstrapCommandToClipboard() }
+                    Button(HubUIStrings.Settings.FirstRun.addDevice) { showAddGRPCClient = true }
+                    Button(HubUIStrings.Settings.FirstRun.refresh) { grpc.refresh() }
                 }
 
                 firstRunStepRow(
                     index: 2,
-                    title: "Choose model",
-                    summary: "先把 Hub routing 与 paid models 定到位，避免首用时在多个地方猜测。"
+                    title: HubUIStrings.Settings.FirstRun.step2Title,
+                    summary: HubUIStrings.Settings.FirstRun.step2Summary
                 ) {
-                    Button("Add Paid Model…") { showAddRemoteModel = true }
-                    Button("Open Quotas") { grpc.openQuotaConfig() }
+                    Button(HubUIStrings.Settings.FirstRun.addPaidModel) { showAddRemoteModel = true }
+                    Button(HubUIStrings.Settings.FirstRun.openQuotaSettings) { grpc.openQuotaConfig() }
                 }
 
                 firstRunStepRow(
                     index: 3,
-                    title: "Resolve grant / permission",
-                    summary: "设备 capability、denied attempts、系统权限入口都不超过 3 步。"
+                    title: HubUIStrings.Settings.FirstRun.step3Title,
+                    summary: HubUIStrings.Settings.FirstRun.step3Summary
                 ) {
                     if let preferredClientForRepair {
-                        Button("Edit Device") { editingGRPCClient = preferredClientForRepair }
+                        Button(HubUIStrings.Settings.FirstRun.editDevice) {
+                            presentGRPCClientEditor(preferredClientForRepair)
+                        }
                     } else {
-                        Button("Open Clients") { grpc.openClientsConfig() }
+                        Button(HubUIStrings.Settings.FirstRun.openDeviceList) { grpc.openClientsConfig() }
                     }
-                    Button("Open Accessibility") { SystemSettingsLinks.openAccessibilityPrivacy() }
-                    Button("Open Quotas") { grpc.openQuotaConfig() }
+                    Button(HubUIStrings.Settings.FirstRun.openAccessibility) { SystemSettingsLinks.openAccessibilityPrivacy() }
+                    Button(HubUIStrings.Settings.FirstRun.openQuotaSettings) { grpc.openQuotaConfig() }
                 }
 
                 firstRunStepRow(
                     index: 4,
-                    title: "Run smoke",
-                    summary: "先看 launch status，再用 Fix Now / log / refresh 把 reachability 收敛。"
+                    title: HubUIStrings.Settings.FirstRun.step4Title,
+                    summary: HubUIStrings.Settings.FirstRun.step4Summary
                 ) {
-                    Button("Fix Now") { fixNow(snapshot: hubLaunchStatus) }
-                    Button("Open Log") { grpc.openLog() }
-                    Button("Refresh") { grpc.refresh() }
+                    Button(HubUIStrings.Settings.FirstRun.fixNow) { fixNow(snapshot: hubLaunchStatus) }
+                    Button(HubUIStrings.Settings.FirstRun.openLog) { grpc.openLog() }
+                    Button(HubUIStrings.Settings.FirstRun.refresh) { grpc.refresh() }
                 }
             }
         }
     }
 
     private var quickTroubleshootSection: some View {
-        Section("Troubleshoot In 3 Steps") {
+        Section(HubUIStrings.Settings.Troubleshoot.sectionTitle) {
             VStack(alignment: .leading, spacing: 10) {
                 quickFixCard(
-                    title: "grant_required",
-                    summary: "付费模型或受控能力未放行时，直接回到模型 / quota / capability 三处修复。",
-                    steps: [
-                        "1. Hub Settings → Models & Paid Access",
-                        "2. Hub Settings → Grants & Permissions / Open Quotas",
-                        "3. Retry from First Run Path"
-                    ]
+                    title: HubUIStrings.Settings.Troubleshoot.grantTitle,
+                    summary: HubUIStrings.Settings.Troubleshoot.grantSummary,
+                    steps: HubUIStrings.Settings.Troubleshoot.grantSteps
                 ) {
-                    Button("Add Model…") { showAddRemoteModel = true }
-                    Button("Open Quotas") { grpc.openQuotaConfig() }
+                    Button(HubUIStrings.Settings.Troubleshoot.addModel) { showAddRemoteModel = true }
+                    Button(HubUIStrings.Settings.FirstRun.openQuotaSettings) { grpc.openQuotaConfig() }
                 }
 
                 quickFixCard(
-                    title: "permission_denied",
-                    summary: "优先区分系统权限、device capability 还是 policy 拒绝，不再只留原始错误。",
-                    steps: [
-                        "1. Hub Settings → Grants & Permissions",
-                        "2. System Settings → Accessibility / Calendar",
-                        "3. Edit device or re-run request"
-                    ]
+                    title: HubUIStrings.Settings.Troubleshoot.permissionTitle,
+                    summary: HubUIStrings.Settings.Troubleshoot.permissionSummary,
+                    steps: HubUIStrings.Settings.Troubleshoot.permissionSteps
                 ) {
-                    Button("Open Accessibility") { SystemSettingsLinks.openAccessibilityPrivacy() }
-                    Button("Open Calendar") { SystemSettingsLinks.openCalendarPrivacy() }
+                    Button(HubUIStrings.Settings.FirstRun.openAccessibility) { SystemSettingsLinks.openAccessibilityPrivacy() }
                     if let preferredClientForRepair {
-                        Button("Edit Device") { editingGRPCClient = preferredClientForRepair }
+                        Button(HubUIStrings.Settings.FirstRun.editDevice) {
+                            presentGRPCClientEditor(preferredClientForRepair)
+                        }
                     }
                 }
 
                 quickFixCard(
-                    title: "hub_unreachable",
-                    summary: "Hub 不可达时，先查 launch status，再用 diagnostics 修复，再回 pair/smoke。",
-                    steps: [
-                        "1. First Run Path → Pair XT device",
-                        "2. Diagnostics & Recovery → Fix Now / Open Log",
-                        "3. Refresh gRPC and retry smoke"
-                    ]
+                    title: HubUIStrings.Settings.Troubleshoot.hubOfflineTitle,
+                    summary: HubUIStrings.Settings.Troubleshoot.hubOfflineSummary,
+                    steps: HubUIStrings.Settings.Troubleshoot.hubOfflineSteps
                 ) {
-                    Button("Fix Now") { fixNow(snapshot: hubLaunchStatus) }
-                    Button("Open Log") { grpc.openLog() }
-                    Button("Refresh") { grpc.refresh() }
+                    Button(HubUIStrings.Settings.FirstRun.fixNow) { fixNow(snapshot: hubLaunchStatus) }
+                    Button(HubUIStrings.Settings.FirstRun.openLog) { grpc.openLog() }
+                    Button(HubUIStrings.Settings.FirstRun.refresh) { grpc.refresh() }
                 }
 
                 if let denied = grpcDeniedAttempts.attempts.first {
-                    Text("Latest denied attempt: \(denied.clientName.isEmpty ? denied.deviceId : denied.clientName) · \(denied.reason)")
+                    Text(HubUIStrings.Settings.Troubleshoot.latestDenied(denied.clientName.isEmpty ? denied.deviceId : denied.clientName, reason: denied.reason))
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                 }
@@ -405,8 +497,132 @@ struct SettingsSheetView: View {
         remoteModels.filter { $0.enabled }.count
     }
 
+    private func launchStateLabel(_ state: HubLaunchState?) -> String {
+        switch state {
+        case .bootStart:
+            return HubUIStrings.Settings.Diagnostics.stateBootStart
+        case .envValidate:
+            return HubUIStrings.Settings.Diagnostics.stateEnvValidate
+        case .startGRPCServer, .waitGRPCReady:
+            return HubUIStrings.Settings.Diagnostics.statePrepareGRPC
+        case .startBridge, .waitBridgeReady:
+            return HubUIStrings.Settings.Diagnostics.statePrepareBridge
+        case .startRuntime, .waitRuntimeReady:
+            return HubUIStrings.Settings.Diagnostics.statePrepareRuntime
+        case .serving:
+            return HubUIStrings.Settings.Diagnostics.stateServing
+        case .degradedServing:
+            return HubUIStrings.Settings.Diagnostics.stateDegradedServing
+        case .failed:
+            return HubUIStrings.Settings.Diagnostics.stateFailed
+        case nil:
+            return HubUIStrings.Settings.Diagnostics.stateUnknown
+        }
+    }
+
     private var currentLaunchStateLabel: String {
-        hubLaunchStatus?.state.rawValue ?? "unknown"
+        launchStateLabel(hubLaunchStatus?.state)
+    }
+
+    private var operatorChannelRuntimeSnapshotText: String {
+        guard let snapshot = hubLaunchStatus else {
+            return HubUIStrings.Settings.OperatorChannels.snapshotUnavailable
+        }
+        let updatedText = snapshot.updatedAtMs > 0
+            ? formatEpochMs(snapshot.updatedAtMs)
+            : HubUIStrings.Settings.OperatorChannels.unknownTime
+        return HubUIStrings.Settings.OperatorChannels.snapshotSummary(
+            state: launchStateLabel(snapshot.state),
+            updatedText: updatedText
+        )
+    }
+
+    private var operatorChannelReadinessSection: some View {
+        Section(HubUIStrings.Settings.OperatorChannels.sectionTitle) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(HubUIStrings.Settings.OperatorChannels.unifiedSummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(HubUIStrings.Settings.OperatorChannels.onboardingHint)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button(
+                        diagnosticsActionIsRunning
+                            ? HubUIStrings.Settings.OperatorChannels.restarting
+                            : HubUIStrings.Settings.OperatorChannels.restartAndRefresh
+                    ) {
+                        Task { await restartOperatorChannelRuntimeAndRefresh() }
+                    }
+                    .disabled(operatorChannelProviderReadinessInFlight || diagnosticsActionIsRunning)
+                    .font(.caption)
+                    Button(
+                        operatorChannelProviderReadinessInFlight
+                            ? HubUIStrings.Settings.OperatorChannels.refreshingReadiness
+                            : HubUIStrings.Settings.OperatorChannels.refreshReadiness
+                    ) {
+                        Task { await reloadOperatorChannelProviderReadiness(forceMessage: true) }
+                    }
+                    .disabled(operatorChannelProviderReadinessInFlight || diagnosticsActionIsRunning)
+                    .font(.caption)
+                }
+
+                Text(operatorChannelRuntimeSnapshotText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                if !operatorChannelProviderReadinessActionText.isEmpty {
+                    Text(operatorChannelProviderReadinessActionText)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                if !operatorChannelProviderReadinessError.isEmpty {
+                    Text(operatorChannelProviderReadinessError)
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                }
+
+                ForEach(HubOperatorChannelProviderSetupGuide.supportedProviders, id: \.self) { provider in
+                    let readiness = providerReadiness(for: provider)
+                    let runtimeStatus = providerRuntimeStatus(for: provider)
+                    let guide = HubOperatorChannelProviderSetupGuide.guide(
+                        for: provider,
+                        readiness: readiness,
+                        runtimeStatus: runtimeStatus
+                    )
+                    operatorChannelReadinessCard(
+                        guide: guide,
+                        readiness: readiness,
+                        runtimeStatus: runtimeStatus,
+                        pendingTickets: pendingOnboardingTicketCount(for: provider)
+                    )
+                }
+            }
+        }
+    }
+
+    private var operatorChannelOnboardingSection: some View {
+        Section(HubUIStrings.Settings.OperatorChannels.onboardingSectionTitle) {
+            OperatorChannelsOnboardingView()
+                .environmentObject(store)
+        }
+    }
+
+    private var calendarSection: some View {
+        Section(HubUIStrings.Settings.Calendar.sectionTitle) {
+            LabeledContent(HubUIStrings.Settings.Calendar.status, value: store.calendarStatus)
+
+            Text(HubUIStrings.Settings.Calendar.localAccessHint)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            Text(HubUIStrings.Settings.Calendar.supervisorHint)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
     }
 
     private var preferredClientForRepair: HubGRPCClientEntry? {
@@ -421,7 +637,7 @@ struct SettingsSheetView: View {
     private func firstRunStepRow<Actions: View>(index: Int, title: String, summary: String, @ViewBuilder actions: () -> Actions) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
-                Text("\(index). \(title)")
+                Text(HubUIStrings.Settings.numberedItem(index, title: title))
                     .font(.subheadline.weight(.semibold))
                 Spacer()
             }
@@ -446,7 +662,7 @@ struct SettingsSheetView: View {
                 Text(title)
                     .font(.subheadline.weight(.semibold))
                 Spacer()
-                Text("3 steps")
+                Text(HubUIStrings.Settings.Troubleshoot.threeSteps)
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
             }
@@ -469,130 +685,340 @@ struct SettingsSheetView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
+    private func operatorChannelReadinessCard(
+        guide: HubOperatorChannelProviderSetupGuide,
+        readiness: HubOperatorChannelOnboardingDeliveryReadiness?,
+        runtimeStatus: HubOperatorChannelProviderRuntimeStatus?,
+        pendingTickets: Int
+    ) -> some View {
+        let flow = guide.firstUseFlow(readiness: readiness, runtimeStatus: runtimeStatus)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(guide.title)
+                        .font(.subheadline.weight(.semibold))
+                    Text(guide.summary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                operatorChannelReadinessBadge(readiness)
+            }
+
+            Text(guide.statusSummary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if let runtimeStatus {
+                let runtimeTint: Color = runtimeStatus.commandEntryReady ? .secondary : .orange
+                Text(operatorChannelRuntimeStatusSummary(runtimeStatus))
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(runtimeTint)
+                if !runtimeStatus.lastErrorCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(HubUIStrings.Settings.OperatorChannels.runtimeError(runtimeStatus.lastErrorCode))
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.orange)
+                }
+            }
+
+            if pendingTickets > 0 {
+                Text(HubUIStrings.Settings.OperatorChannels.pendingTickets(pendingTickets))
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.orange)
+            }
+
+            if !guide.checklist.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(HubUIStrings.Settings.OperatorChannels.minimalChecklistTitle)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    ForEach(guide.checklist) { item in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.key)
+                                .font(.caption.monospaced())
+                                .textSelection(.enabled)
+                            Text(item.note)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+
+            if !guide.nextStep.isEmpty {
+                Text(HubUIStrings.Settings.OperatorChannels.nextStep(guide.nextStep))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            OperatorChannelFirstUseFlowView(flow: flow)
+
+            if !guide.liveTestSteps.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(HubUIStrings.Settings.OperatorChannels.liveTestTitle)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    ForEach(Array(guide.liveTestSteps.enumerated()), id: \.offset) { index, step in
+                        Text(HubUIStrings.Settings.numberedItem(index + 1, title: step))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            if !guide.securityNotes.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(HubUIStrings.Settings.OperatorChannels.securityNotesTitle)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    ForEach(Array(guide.securityNotes.enumerated()), id: \.offset) { _, note in
+                        Text(HubUIStrings.Settings.OperatorChannels.securityNoteBullet(note))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            HStack(spacing: 10) {
+                Button(HubUIStrings.Settings.OperatorChannels.copySetupPack) {
+                    copyOperatorChannelSetupPack(guide, flow: flow)
+                }
+                .font(.caption)
+                Spacer()
+            }
+        }
+        .padding(12)
+        .background(Color.secondary.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func operatorChannelReadinessBadge(_ readiness: HubOperatorChannelOnboardingDeliveryReadiness?) -> some View {
+        let title: String
+        let tint: Color
+        if let readiness {
+            if readiness.ready {
+                title = HubUIStrings.Settings.OperatorChannels.readyBadge
+                tint = .green
+            } else if !readiness.replyEnabled {
+                title = HubUIStrings.Settings.OperatorChannels.disabledBadge
+                tint = .orange
+            } else if !readiness.credentialsConfigured {
+                title = HubUIStrings.Settings.OperatorChannels.needsConfigBadge
+                tint = .orange
+            } else {
+                title = HubUIStrings.Settings.OperatorChannels.blockedBadge
+                tint = .red
+            }
+        } else {
+            title = HubUIStrings.Settings.OperatorChannels.unknownBadge
+            tint = .secondary
+        }
+        return Text(title)
+            .font(.caption.monospaced())
+            .foregroundStyle(tint)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(tint.opacity(0.12))
+            .clipShape(Capsule())
+    }
+
+    private func providerReadiness(for provider: String) -> HubOperatorChannelOnboardingDeliveryReadiness? {
+        operatorChannelProviderReadiness.first { row in
+            row.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == provider
+        }
+    }
+
+    private func providerRuntimeStatus(for provider: String) -> HubOperatorChannelProviderRuntimeStatus? {
+        operatorChannelProviderRuntimeStatus.first { row in
+            row.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == provider
+        }
+    }
+
+    private func operatorChannelRuntimeStatusSummary(_ row: HubOperatorChannelProviderRuntimeStatus) -> String {
+        let runtimeState = row.runtimeState.trimmingCharacters(in: .whitespacesAndNewlines)
+        let commandEntry = row.commandEntryReady
+            ? HubUIStrings.Settings.OperatorChannels.readyStatus
+            : HubUIStrings.Settings.OperatorChannels.blockedStatus
+        let delivery = row.deliveryReady
+            ? HubUIStrings.Settings.OperatorChannels.readyStatus
+            : HubUIStrings.Settings.OperatorChannels.blockedStatus
+        return HubUIStrings.Settings.OperatorChannels.runtimeStatusSummary(
+            runtimeState: runtimeState.isEmpty ? HubUIStrings.Settings.OperatorChannels.unknown : runtimeState,
+            commandEntry: commandEntry,
+            delivery: delivery
+        )
+    }
+
+    private func pendingOnboardingTicketCount(for provider: String) -> Int {
+        let normalized = provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return store.pendingOperatorChannelOnboardingTickets.filter { ticket in
+            ticket.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalized && ticket.isOpen
+        }.count
+    }
+
+    private func copyOperatorChannelSetupPack(_ guide: HubOperatorChannelProviderSetupGuide, flow: HubOperatorChannelFirstUseFlow) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(guide.setupPackText(flow: flow), forType: .string)
+        operatorChannelProviderReadinessActionText = HubUIStrings.Settings.OperatorChannels.copiedSetupPack(guide.title)
+    }
+
+    private func reloadOperatorChannelProviderReadiness(forceMessage: Bool = false) async {
+        if operatorChannelProviderReadinessInFlight { return }
+        operatorChannelProviderReadinessInFlight = true
+        defer { operatorChannelProviderReadinessInFlight = false }
+        do {
+            async let readinessRows = OperatorChannelsOnboardingHTTPClient.listProviderReadiness(
+                adminToken: grpc.localAdminToken(),
+                grpcPort: grpc.port
+            )
+            async let runtimeRows = OperatorChannelsOnboardingHTTPClient.listProviderRuntimeStatus(
+                adminToken: grpc.localAdminToken(),
+                grpcPort: grpc.port
+            )
+            let (rows, runtimeStatusRows) = try await (readinessRows, runtimeRows)
+            operatorChannelProviderReadiness = rows
+            operatorChannelProviderRuntimeStatus = runtimeStatusRows
+            operatorChannelProviderReadinessError = ""
+            persistOperatorChannelDoctorReport(
+                readinessRows: rows,
+                runtimeRows: runtimeStatusRows,
+                sourceStatus: "ok",
+                fetchErrors: []
+            )
+            if forceMessage {
+                operatorChannelProviderReadinessActionText = HubUIStrings.Settings.OperatorChannels.refreshedStatus
+            }
+        } catch {
+            let errorDescription = (error as NSError).localizedDescription
+            operatorChannelProviderReadiness = []
+            operatorChannelProviderRuntimeStatus = []
+            operatorChannelProviderReadinessError = errorDescription
+            persistOperatorChannelDoctorReport(
+                readinessRows: [],
+                runtimeRows: [],
+                sourceStatus: "unavailable",
+                fetchErrors: [errorDescription]
+            )
+        }
+    }
+
+    private func persistOperatorChannelDoctorReport(
+        readinessRows: [HubOperatorChannelOnboardingDeliveryReadiness],
+        runtimeRows: [HubOperatorChannelProviderRuntimeStatus],
+        sourceStatus: String,
+        fetchErrors: [String]
+    ) {
+        let grpcPort = grpc.port
+        let adminBaseURL = grpcPort > 0
+            ? "http://127.0.0.1:\(OperatorChannelsOnboardingHTTPClient.pairingPort(grpcPort: grpcPort))"
+            : ""
+        Task.detached(priority: .utility) {
+            XHubDoctorOutputStore.writeHubChannelOnboardingReadinessReport(
+                readinessRows: readinessRows,
+                runtimeRows: runtimeRows,
+                sourceStatus: sourceStatus,
+                fetchErrors: fetchErrors,
+                adminBaseURL: adminBaseURL,
+                surface: .hubUI
+            )
+        }
+    }
+
+    @MainActor
+    private func restartOperatorChannelRuntimeAndRefresh() async {
+        if diagnosticsActionIsRunning {
+            operatorChannelProviderReadinessActionText = HubUIStrings.Settings.OperatorChannels.restartInProgress
+            return
+        }
+
+        operatorChannelProviderReadinessActionText = HubUIStrings.Settings.OperatorChannels.restartingComponents
+        await restartComponentsForDiagnosticsAsync()
+        try? await Task.sleep(nanoseconds: 900_000_000)
+        hubLaunchStatus = HubLaunchStatusStorage.load()
+        await reloadOperatorChannelProviderReadiness(forceMessage: false)
+
+        if operatorChannelProviderReadinessError.isEmpty {
+            operatorChannelProviderReadinessActionText = HubUIStrings.Settings.OperatorChannels.restartedAndUpdated
+        } else {
+            operatorChannelProviderReadinessActionText = HubUIStrings.Settings.OperatorChannels.restartCompletedRefreshFailed
+        }
+    }
+
     private var floatingModeSection: some View {
-        Section("Floating Mode") {
-            Picker("Mode", selection: $store.floatingMode) {
+        Section(HubUIStrings.Settings.FloatingMode.sectionTitle) {
+            Picker(HubUIStrings.Settings.FloatingMode.mode, selection: $store.floatingMode) {
                 ForEach(FloatingMode.allCases, id: \.self) { m in
                     Text(m.title).tag(m)
                 }
             }
             .pickerStyle(.segmented)
 
-            Stepper("Meeting urgent: \(store.meetingUrgentMinutes)m", value: $store.meetingUrgentMinutes, in: 1...30)
+            Text(HubUIStrings.Settings.FloatingMode.reminderHint)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
     }
 
-    private var integrationsSection: some View {
-        Section("Integrations") {
-            IntegrationToggleRow(
-                systemImage: "calendar",
-                title: "Calendar",
-                detail: store.calendarStatus,
-                isOn: $store.integrationCalendarEnabled
-            )
-
-            IntegrationToggleRow(
-                systemImage: "envelope",
-                title: "Mail (counts only)",
-                detail: badgeDetailText(dedupeKey: "mail_unread", isEnabled: store.integrationMailEnabled),
-                isOn: $store.integrationMailEnabled
-            )
-            IntegrationToggleRow(
-                systemImage: "message",
-                title: "Messages (counts only)",
-                detail: badgeDetailText(dedupeKey: "messages_unread", isEnabled: store.integrationMessagesEnabled),
-                isOn: $store.integrationMessagesEnabled
-            )
-            IntegrationToggleRow(
-                systemImage: "bubble.left.and.bubble.right",
-                title: "Slack (best-effort)",
-                detail: badgeDetailText(dedupeKey: "slack_updates", isEnabled: store.integrationSlackEnabled),
-                isOn: $store.integrationSlackEnabled
-            )
-
-            if store.integrationSlackEnabled, store.integrationsDebugText.contains("Slack:use_dock_agent") {
-                Text("Slack unread counts require the external Dock Agent on newer macOS versions (sandboxed apps cannot read Dock badges).")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-        }
+    private var legacyCountsOnlyIntegrationsEnabled: Bool {
+        store.integrationMailEnabled || store.integrationMessagesEnabled || store.integrationSlackEnabled
     }
 
     private var doctorSection: some View {
-        Section("Doctor") {
+        Section(HubUIStrings.Settings.Doctor.sectionTitle) {
             HStack {
-                Text("Calendar")
+                Text(HubUIStrings.Settings.Doctor.accessibility)
                 Spacer()
-                Text(store.calendarStatus)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            if store.integrationCalendarEnabled, !calendarHasReadAccess {
-                HStack(spacing: 10) {
-                    Button("Enable Calendar") {
-                        NSApp.activate(ignoringOtherApps: true)
-                        store.requestCalendarAccessAndStart()
-                    }
-                    Button("Open Settings") { SystemSettingsLinks.openCalendarPrivacy() }
-                    Spacer()
-                }
-                if store.calendarDeniedOrRestricted {
-                    Text("Calendar access is denied/restricted. Enable it in System Settings → Privacy & Security → Calendars.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            HStack {
-                Text("Accessibility")
-                Spacer()
-                Text(axTrusted ? "Granted" : "Not granted")
+                Text(axTrusted ? HubUIStrings.Settings.Doctor.authorized : HubUIStrings.Settings.Doctor.unauthorized)
                     .foregroundStyle(.secondary)
             }
             if !axTrusted {
                 HStack(spacing: 10) {
-                    Button("Request") {
+                    Button(HubUIStrings.Settings.Doctor.requestAccess) {
                         NSApp.activate(ignoringOtherApps: true)
                         _ = DockBadgeReader.ensureAccessibilityTrusted(prompt: true)
                         SystemSettingsLinks.openAccessibilityPrivacy()
                     }
-                    Button("Open Settings") { SystemSettingsLinks.openAccessibilityPrivacy() }
+                    Button(HubUIStrings.Settings.Doctor.openSettings) { SystemSettingsLinks.openAccessibilityPrivacy() }
                     Spacer()
                 }
             }
 
-            if store.integrationSlackEnabled || store.integrationMessagesEnabled {
-                HStack {
-                    Text("Dock Agent")
-                    Spacer()
-                    Text(store.dockAgentStatusText)
+            if legacyCountsOnlyIntegrationsEnabled {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(HubUIStrings.Settings.Doctor.legacyCountsEnabled)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
-                }
-                HStack {
-                    Text("Start at login")
-                    Spacer()
-                    Text(store.dockAgentAutoStartText)
+                    Text(HubUIStrings.Settings.Doctor.legacyCountsHint)
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
+                    if !store.integrationsStatusText.isEmpty || !store.integrationsDebugText.isEmpty {
+                        DisclosureGroup(HubUIStrings.Settings.Doctor.legacyDetails) {
+                            if !store.integrationsStatusText.isEmpty {
+                                Text(store.integrationsStatusText)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text(
+                                store.integrationsDebugText.isEmpty
+                                    ? HubUIStrings.Settings.Doctor.debugInfoEmpty
+                                    : store.integrationsDebugText
+                            )
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                    }
                 }
                 HStack(spacing: 10) {
-                    Button("Open Dock Agent") { openDockAgentApp() }
-                    Button("Enable at Login") { store.enableDockAgentAutoStart() }
-                    Button("Disable") { store.disableDockAgentAutoStart() }
-                    Button("Open Accessibility") { SystemSettingsLinks.openAccessibilityPrivacy() }
+                    Button(HubUIStrings.Settings.Doctor.disableLegacyCounts) {
+                        disableLegacyCountsOnlyIntegrations()
+                    }
                     Spacer()
                 }
-                Text("If Slack/Messages counts do not update, install/run REL Flow Hub Dock Agent and grant Accessibility once.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack(spacing: 10) {
-                Button("Refresh Integrations") { store.refreshIntegrationsNow() }
-                Spacer()
             }
 
             HStack {
-                Text("Local Runtime")
+                Text(HubUIStrings.Settings.Doctor.localRuntime)
                 Spacer()
                 Text(store.aiRuntimeStatusText)
                     .foregroundStyle(.secondary)
@@ -604,33 +1030,126 @@ struct SettingsSheetView: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }
+            if let guidance = xhubLocalServiceRecoveryGuidance {
+                DisclosureGroup(HubUIStrings.Settings.Doctor.recoveryDisclosure) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text(HubUIStrings.Settings.Doctor.actionCategory)
+                            Spacer()
+                            Text(guidance.actionCategory)
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                        HStack {
+                            Text(HubUIStrings.Settings.Doctor.severity)
+                            Spacer()
+                            Text(guidance.severity.uppercased())
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(localServiceRecoverySeverityColor(guidance.severity))
+                                .textSelection(.enabled)
+                        }
+                        HStack {
+                            Text(HubUIStrings.Settings.Doctor.primaryIssueCode)
+                            Spacer()
+                            Text(guidance.primaryIssue.reasonCode)
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                        if !guidance.serviceBaseURL.isEmpty {
+                            HStack {
+                                Text(HubUIStrings.Settings.Doctor.serviceBaseURL)
+                                Spacer()
+                                Text(guidance.serviceBaseURL)
+                                    .font(.caption2.monospaced())
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                        Text(guidance.primaryIssue.headline)
+                            .font(.caption.weight(.semibold))
+                        Text(guidance.primaryIssue.message)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                        Text(HubUIStrings.Settings.Doctor.installHintTitle)
+                            .font(.caption.weight(.semibold))
+                        Text(guidance.installHint)
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                            .textSelection(.enabled)
+
+                        if !guidance.recommendedActions.isEmpty {
+                            Text(HubUIStrings.Settings.Doctor.recommendedActionsTitle)
+                                .font(.caption.weight(.semibold))
+                            let rankedActions = Array(guidance.recommendedActions.enumerated())
+                            ForEach(rankedActions, id: \.offset) { item in
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(HubUIStrings.Settings.numberedItem(item.offset + 1, title: item.element.title))
+                                        .font(.caption)
+                                    Text(item.element.why)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                    if !item.element.commandOrReference.isEmpty {
+                                        Text(item.element.commandOrReference)
+                                            .font(.caption2.monospaced())
+                                            .foregroundStyle(.secondary)
+                                            .textSelection(.enabled)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+
+                        if !guidance.supportFAQ.isEmpty {
+                            Text(HubUIStrings.Settings.Doctor.supportFAQTitle)
+                                .font(.caption.weight(.semibold))
+                            ForEach(guidance.supportFAQ) { item in
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(item.question)
+                                        .font(.caption)
+                                    Text(item.answer)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .textSelection(.enabled)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+
+                        HStack(spacing: 10) {
+                            Button(HubUIStrings.Settings.Doctor.copyRecoverySummary) {
+                                copyXHubLocalServiceRecoveryToClipboard(guidance)
+                            }
+                            Spacer()
+                        }
+                        .font(.caption)
+                    }
+                    .padding(.top, 4)
+                }
+            }
             HStack(spacing: 10) {
-                Button("Copy Provider Summary") {
+                Button(HubUIStrings.Settings.RuntimeMonitor.copyProviderSummary) {
                     copyLocalProviderSummaryToClipboard(snapshot: hubLaunchStatus)
                 }
-                Button("Open AI Runtime Log") {
+                Button(HubUIStrings.Settings.RuntimeMonitor.openLog) {
                     store.openAIRuntimeLog()
                 }
                 Spacer()
             }
             .font(.caption)
-
-            DisclosureGroup("Details") {
-                if !store.integrationsStatusText.isEmpty {
-                    Text(store.integrationsStatusText)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                Text(store.integrationsDebugText.isEmpty ? "Debug: (none yet)" : store.integrationsDebugText)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
         }
     }
 
+    private func disableLegacyCountsOnlyIntegrations() {
+        store.integrationMailEnabled = false
+        store.integrationMessagesEnabled = false
+        store.integrationSlackEnabled = false
+    }
+
     private var diagnosticsSection: some View {
-        Section("Diagnostics") {
+        Section(HubUIStrings.Settings.Diagnostics.sectionTitle) {
             let snap = hubLaunchStatus
             let primary = HubLaunchStatusStorage.url()
             let fallback = URL(fileURLWithPath: "/tmp/RELFlowHub", isDirectory: true).appendingPathComponent(HubLaunchStatusStorage.fileName)
@@ -638,16 +1157,16 @@ struct SettingsSheetView: View {
             let histFallback = URL(fileURLWithPath: "/tmp/RELFlowHub", isDirectory: true).appendingPathComponent(HubLaunchHistoryStorage.fileName)
 
             HStack {
-                Text("Launch status")
+                Text(HubUIStrings.Settings.Diagnostics.launchStatus)
                 Spacer()
-                Text(snap?.state.rawValue ?? "unknown")
+                Text(currentLaunchStateLabel)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
 
             if let snap, snap.updatedAtMs > 0 {
                 HStack {
-                    Text("Updated")
+                    Text(HubUIStrings.Settings.Diagnostics.lastUpdated)
                     Spacer()
                     Text(formatEpochMs(snap.updatedAtMs))
                         .foregroundStyle(.secondary)
@@ -657,7 +1176,7 @@ struct SettingsSheetView: View {
 
             if let id = snap?.launchId.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty {
                 HStack {
-                    Text("Launch ID")
+                    Text(HubUIStrings.Settings.Diagnostics.launchID)
                     Spacer()
                     Text(id)
                         .foregroundStyle(.secondary)
@@ -668,48 +1187,52 @@ struct SettingsSheetView: View {
 
             let rootCauseText = renderRootCauseText(snap?.rootCause)
             if !rootCauseText.isEmpty {
-                Text("Root cause")
+                Text(HubUIStrings.Settings.Diagnostics.rootCauseTitle)
                     .font(.caption.weight(.semibold))
                 Text(rootCauseText)
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             } else {
-                Text("Root cause: (none)")
+                Text(HubUIStrings.Settings.Diagnostics.rootCauseEmpty)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
             let blocked = snap?.degraded.blockedCapabilities ?? []
             if !blocked.isEmpty {
-                Text("Blocked capabilities")
+                Text(HubUIStrings.Settings.Diagnostics.blockedCapabilitiesTitle)
                     .font(.caption.weight(.semibold))
                 Text(blocked.joined(separator: "\n"))
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             } else {
-                Text("Blocked capabilities: (none)")
+                Text(HubUIStrings.Settings.Diagnostics.blockedCapabilitiesEmpty)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
-            DisclosureGroup("Local runtime providers") {
+            DisclosureGroup(HubUIStrings.Settings.Diagnostics.providersDisclosure) {
                 if !store.aiRuntimeDoctorSummaryText.isEmpty {
                     Text(store.aiRuntimeDoctorSummaryText)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
-                Text(store.aiRuntimeProviderSummaryText.isEmpty ? "provider summary unavailable" : store.aiRuntimeProviderSummaryText)
+                Text(
+                    store.aiRuntimeProviderSummaryText.isEmpty
+                        ? HubUIStrings.Settings.Diagnostics.providerSummaryUnavailable
+                        : store.aiRuntimeProviderSummaryText
+                )
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                 HStack(spacing: 10) {
-                    Button("Copy Provider Summary") {
+                    Button(HubUIStrings.Settings.Diagnostics.copyProviderSummary) {
                         copyLocalProviderSummaryToClipboard(snapshot: snap)
                     }
-                    Button("Open AI Runtime Log") {
+                    Button(HubUIStrings.Settings.Diagnostics.openRuntimeLog) {
                         store.openAIRuntimeLog()
                     }
                     Spacer()
@@ -718,17 +1241,21 @@ struct SettingsSheetView: View {
             }
 
             HStack(spacing: 10) {
-                Button(diagnosticsActionIsRunning ? "Running..." : "Retry Start") {
+                Button(
+                    diagnosticsActionIsRunning
+                        ? HubUIStrings.Settings.Diagnostics.actionInProgress
+                        : HubUIStrings.Settings.Diagnostics.retryLaunch
+                ) {
                     retryLaunchDiagnosis()
                 }
                 .disabled(diagnosticsActionIsRunning || fixNowIsRunning)
 
-                Button("Restart Components") {
+                Button(HubUIStrings.Settings.Diagnostics.restartComponents) {
                     restartComponentsForDiagnostics()
                 }
                 .disabled(diagnosticsActionIsRunning || fixNowIsRunning)
 
-                Button("Reset Volatile Caches") {
+                Button(HubUIStrings.Settings.Diagnostics.resetVolatileCaches) {
                     resetVolatileCachesForDiagnostics()
                 }
                 .disabled(diagnosticsActionIsRunning || fixNowIsRunning)
@@ -738,7 +1265,7 @@ struct SettingsSheetView: View {
             .font(.caption)
 
             HStack(spacing: 10) {
-                Button("Repair DB (Safe)") {
+                Button(HubUIStrings.Settings.Diagnostics.repairDBSafe) {
                     repairDBSafeForDiagnostics()
                 }
                 .disabled(diagnosticsActionIsRunning || fixNowIsRunning)
@@ -759,12 +1286,12 @@ struct SettingsSheetView: View {
             }
 
             if !hubLaunchHistory.launches.isEmpty {
-                DisclosureGroup("Launch history") {
+                DisclosureGroup(HubUIStrings.Settings.Diagnostics.launchHistoryDisclosure) {
                     HStack(spacing: 10) {
-                        Button("Copy History") {
+                        Button(HubUIStrings.Settings.Diagnostics.copyHistory) {
                             copyLaunchHistoryToClipboard(snapshot: hubLaunchHistory)
                         }
-                        Button("Open History File") {
+                        Button(HubUIStrings.Settings.Diagnostics.openHistoryFile) {
                             openLaunchStatusFile(primary: histPrimary, fallback: histFallback)
                         }
                         Spacer()
@@ -782,21 +1309,29 @@ struct SettingsSheetView: View {
             let fixSummary = fixAction?.summary ?? ""
             if !fixSummary.isEmpty {
                 HStack(spacing: 10) {
-                    Button(fixNowIsRunning ? "Fixing..." : "Fix Now") {
+                    Button(
+                        fixNowIsRunning
+                            ? HubUIStrings.Settings.Diagnostics.fixingInProgress
+                            : HubUIStrings.Settings.Diagnostics.fixNow
+                    ) {
                         fixNow(snapshot: snap)
                     }
                     .disabled(fixNowIsRunning || diagnosticsActionIsRunning)
                     if fixAction == .restartRuntime || fixAction == .clearPythonAndRestartRuntime || fixAction == .unlockRuntimeLockHolders {
-                        Button("Open AI Runtime Log") {
+                        Button(HubUIStrings.Settings.Diagnostics.openRuntimeLog) {
                             store.openAIRuntimeLog()
                         }
                     }
                     if fixAction == .unlockRuntimeLockHolders {
-                        Button(fixNowIsRunning ? "Running..." : "Run lsof+kill") {
+                        Button(
+                            fixNowIsRunning
+                                ? HubUIStrings.Settings.Diagnostics.fixingInProgress
+                                : HubUIStrings.Settings.Diagnostics.runLsofKill
+                        ) {
                             runLsofKillAndRestart()
                         }
                         .disabled(fixNowIsRunning || diagnosticsActionIsRunning)
-                        Button("Copy lsof+kill") {
+                        Button(HubUIStrings.Settings.Diagnostics.copyLsofKill) {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(store.aiRuntimeLockKillCommandHint(), forType: .string)
                         }
@@ -822,10 +1357,10 @@ struct SettingsSheetView: View {
             }
 
             HStack(spacing: 10) {
-                Button("Copy Root Cause + Blocked") {
+                Button(HubUIStrings.Settings.Diagnostics.copyRootCauseAndBlocked) {
                     copyLaunchRootCauseAndBlockedToClipboard(snapshot: snap)
                 }
-                Button("Open File") {
+                Button(HubUIStrings.Settings.Diagnostics.openFile) {
                     openLaunchStatusFile(primary: primary, fallback: fallback)
                 }
                 Spacer()
@@ -833,20 +1368,24 @@ struct SettingsSheetView: View {
             .font(.caption)
 
             HStack(spacing: 10) {
-                Button(diagnosticsBundleIsExporting ? "Exporting..." : "Export Diagnostics Bundle (Redacted)") {
+                Button(
+                    diagnosticsBundleIsExporting
+                        ? HubUIStrings.Settings.Diagnostics.exportInProgress
+                        : HubUIStrings.Settings.Diagnostics.exportBundle
+                ) {
                     exportDiagnosticsBundle()
                 }
                 .disabled(diagnosticsBundleIsExporting)
 
                 if !diagnosticsBundleArchivePath.isEmpty {
-                    Button("Reveal") {
+                    Button(HubUIStrings.Settings.Diagnostics.revealInFinder) {
                         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: diagnosticsBundleArchivePath)])
                     }
-                    Button("Copy Path") {
+                    Button(HubUIStrings.Settings.Diagnostics.copyPath) {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(diagnosticsBundleArchivePath, forType: .string)
                     }
-                    Button("Copy Issue Snippet") {
+                    Button(HubUIStrings.Settings.Diagnostics.copyIssueSummary) {
                         copyIssueSnippetToClipboard(snapshot: snap)
                     }
                 }
@@ -865,13 +1404,60 @@ struct SettingsSheetView: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             } else {
-                Text("Bundle includes hub_launch_status.json + key status/logs. Tokens are redacted by default.")
+                Text(HubUIStrings.Settings.Diagnostics.bundleHint)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 10) {
+                Button(
+                    unifiedDoctorReportIsExporting
+                        ? HubUIStrings.Settings.Diagnostics.exportInProgress
+                        : HubUIStrings.Settings.Diagnostics.exportUnifiedReport
+                ) {
+                    exportUnifiedDoctorReport()
+                }
+                .disabled(unifiedDoctorReportIsExporting)
+
+                if !unifiedDoctorRevealURLs().isEmpty {
+                    Button(HubUIStrings.Settings.Diagnostics.revealInFinder) {
+                        NSWorkspace.shared.activateFileViewerSelecting(unifiedDoctorRevealURLs())
+                    }
+                    Button(HubUIStrings.Settings.Diagnostics.copyPath) {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(unifiedDoctorReportSummaryForClipboard(), forType: .string)
+                    }
+                }
+                Spacer()
+            }
+            .font(.caption)
+
+            if !unifiedDoctorReportError.isEmpty {
+                Text(unifiedDoctorReportError)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+            } else if !unifiedDoctorReportPath.isEmpty || !unifiedDoctorChannelReportPath.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    let companionPaths = self.hubDoctorCompanionPaths(for: unifiedDoctorReportPath)
+                    Text(HubUIStrings.Settings.Diagnostics.companionFiles(
+                        runtimeReportPath: unifiedDoctorReportPath.isEmpty ? HubUIStrings.Settings.Diagnostics.missingField : unifiedDoctorReportPath,
+                        snapshotPath: companionPaths.snapshotPath,
+                        recoveryGuidancePath: companionPaths.recoveryGuidancePath,
+                        channelOnboardingPath: unifiedDoctorChannelReportPath.isEmpty ? HubUIStrings.Settings.Diagnostics.missingField : unifiedDoctorChannelReportPath
+                    ))
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                }
+            } else {
+                Text(HubUIStrings.Settings.Diagnostics.unifiedReportHint)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
             if !diagnosticsBundleMissingFiles.isEmpty {
-                DisclosureGroup("Bundle missing files") {
+                DisclosureGroup(HubUIStrings.Settings.Diagnostics.missingFilesDisclosure) {
                     Text(diagnosticsBundleMissingFiles.joined(separator: "\n"))
                         .font(.caption2.monospaced())
                         .foregroundStyle(.secondary)
@@ -879,27 +1465,27 @@ struct SettingsSheetView: View {
                 }
             }
 
-            DisclosureGroup("Paths") {
-                Text(pathLine("Primary", url: primary))
+            DisclosureGroup(HubUIStrings.Settings.Diagnostics.pathsDisclosure) {
+                Text(pathLine(HubUIStrings.Settings.Diagnostics.primaryPath, url: primary))
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
-                Text(pathLine("Fallback", url: fallback))
+                Text(pathLine(HubUIStrings.Settings.Diagnostics.fallbackPath, url: fallback))
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
-                Text(pathLine("History", url: histPrimary))
+                Text(pathLine(HubUIStrings.Settings.Diagnostics.historyPath, url: histPrimary))
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
-                Text(pathLine("History Fallback", url: histFallback))
+                Text(pathLine(HubUIStrings.Settings.Diagnostics.historyFallbackPath, url: histFallback))
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }
 
             if let snap, !snap.steps.isEmpty {
-                DisclosureGroup("Steps") {
+                DisclosureGroup(HubUIStrings.Settings.Diagnostics.stepsDisclosure) {
                     Text(renderLaunchSteps(snap.steps))
                         .font(.caption2.monospaced())
                         .foregroundStyle(.secondary)
@@ -909,38 +1495,310 @@ struct SettingsSheetView: View {
         }
     }
 
+    private var runtimeMonitorSection: some View {
+        Section(HubUIStrings.Settings.RuntimeMonitor.sectionTitle) {
+            if let summary = runtimeRepairSurfaceSummary {
+                LocalRuntimeRepairEntryCard(
+                    summary: summary,
+                    onCopySummary: { copyLocalRuntimeRepairSummary(summary) },
+                    onOpenLog: { store.openAIRuntimeLog() }
+                )
+            }
+
+            if let status = store.aiRuntimeStatusSnapshot,
+               let monitor = status.monitorSnapshot {
+                let runtimeOpsSummary = LocalRuntimeOperationsSummaryBuilder.build(
+                    status: status,
+                    models: modelStore.snapshot.models,
+                    currentTargetsByModelID: modelStore.currentLocalRuntimeRequestContextByModelId
+                )
+                let currentTargets = modelStore.snapshot.models.compactMap { model -> (HubModel, LocalModelRuntimeRequestContext)? in
+                    guard let requestContext = modelStore.currentLocalRuntimeRequestContextByModelId[model.id] else {
+                        return nil
+                    }
+                    return (model, requestContext)
+                }
+                .sorted {
+                    let lhsName = ($0.0.name.isEmpty ? $0.0.id : $0.0.name)
+                    let rhsName = ($1.0.name.isEmpty ? $1.0.id : $1.0.name)
+                    let nameOrder = lhsName.localizedCaseInsensitiveCompare(rhsName)
+                    if nameOrder != .orderedSame {
+                        return nameOrder == .orderedAscending
+                    }
+                    return $0.0.id.localizedCaseInsensitiveCompare($1.0.id) == .orderedAscending
+                }
+                VStack(alignment: .leading, spacing: 12) {
+                    if !status.isAlive(ttl: AIRuntimeStatus.recommendedHeartbeatTTL) {
+                        Text(HubUIStrings.Settings.RuntimeMonitor.staleHeartbeat)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: 130), spacing: 8)],
+                        alignment: .leading,
+                        spacing: 8
+                    ) {
+                        runtimeMonitorMetricCard(
+                            title: HubUIStrings.Settings.RuntimeMonitor.Metric.providersTitle,
+                            value: HubUIStrings.Settings.RuntimeMonitor.Metric.providersValue(
+                                ready: monitor.providers.filter(\.ok).count,
+                                total: monitor.providers.count
+                            ),
+                            detail: HubUIStrings.Settings.RuntimeMonitor.Metric.providersDetail(
+                                hasProviders: !monitor.providers.isEmpty
+                            )
+                        )
+                        runtimeMonitorMetricCard(
+                            title: HubUIStrings.Settings.RuntimeMonitor.Metric.queueTitle,
+                            value: HubUIStrings.Settings.RuntimeMonitor.Metric.queueValue(
+                                active: monitor.queue.activeTaskCount,
+                                queued: monitor.queue.queuedTaskCount
+                            ),
+                            detail: HubUIStrings.Settings.RuntimeMonitor.Metric.queueDetail(
+                                busy: monitor.queue.providersBusyCount,
+                                maxOldestWaitMs: monitor.queue.maxOldestWaitMs
+                            )
+                        )
+                        runtimeMonitorMetricCard(
+                            title: HubUIStrings.Settings.RuntimeMonitor.Metric.instancesTitle,
+                            value: HubUIStrings.Settings.RuntimeMonitor.Metric.instancesValue(monitor.loadedInstances.count),
+                            detail: HubUIStrings.Settings.RuntimeMonitor.Metric.instancesDetail(
+                                taskCount: monitor.activeTasks.count
+                            )
+                        )
+                        runtimeMonitorMetricCard(
+                            title: HubUIStrings.Settings.RuntimeMonitor.Metric.fallbackTitle,
+                            value: HubUIStrings.Settings.RuntimeMonitor.Metric.fallbackValue(
+                                providerCount: monitor.fallbackCounters.fallbackReadyProviderCount
+                            ),
+                            detail: HubUIStrings.Settings.RuntimeMonitor.Metric.fallbackDetail(
+                                taskCount: monitor.fallbackCounters.fallbackReadyTaskCount
+                            )
+                        )
+                        runtimeMonitorMetricCard(
+                            title: HubUIStrings.Settings.RuntimeMonitor.Metric.errorsTitle,
+                            value: "\(monitor.lastErrors.count)",
+                            detail: HubUIStrings.Settings.RuntimeMonitor.Metric.errorsDetail(
+                                hasErrors: !monitor.lastErrors.isEmpty
+                            )
+                        )
+                        runtimeMonitorMetricCard(
+                            title: HubUIStrings.Settings.RuntimeMonitor.Metric.updatedAtTitle,
+                            value: formatEpochSeconds(monitor.updatedAt),
+                            detail: HubUIStrings.Settings.RuntimeMonitor.updatedAtDetail
+                        )
+                    }
+
+                    Text(HubUIStrings.Settings.RuntimeMonitor.metricsExplainer)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    HStack(spacing: 10) {
+                        HubNeutralActionChipButton(
+                            title: HubUIStrings.Settings.RuntimeMonitor.copySummary,
+                            systemName: "doc.on.doc",
+                            width: nil,
+                            help: nil
+                        ) {
+                            copyRuntimeMonitorSummaryToClipboard(status: status)
+                        }
+                        if !monitor.activeTasks.isEmpty {
+                            HubNeutralActionChipButton(
+                                title: HubUIStrings.Settings.RuntimeMonitor.copyActiveTasks,
+                                systemName: "list.bullet.rectangle",
+                                width: nil,
+                                help: nil
+                            ) {
+                                copyRuntimeMonitorActiveTasksToClipboard(monitor: monitor)
+                            }
+                        }
+                        if !monitor.loadedInstances.isEmpty {
+                            HubNeutralActionChipButton(
+                                title: HubUIStrings.Settings.RuntimeMonitor.copyLoadedInstances,
+                                systemName: "shippingbox",
+                                width: nil,
+                                help: nil
+                            ) {
+                                copyRuntimeMonitorLoadedInstancesToClipboard(summary: runtimeOpsSummary)
+                            }
+                        }
+                        if !currentTargets.isEmpty {
+                            HubNeutralActionChipButton(
+                                title: HubUIStrings.Settings.RuntimeMonitor.copyCurrentTargets,
+                                systemName: "scope",
+                                width: nil,
+                                help: nil
+                            ) {
+                                copyRuntimeMonitorCurrentTargetsToClipboard(currentTargets)
+                            }
+                        }
+                        if !monitor.lastErrors.isEmpty {
+                            HubNeutralActionChipButton(
+                                title: HubUIStrings.Settings.RuntimeMonitor.copyLastErrors,
+                                systemName: "exclamationmark.bubble",
+                                width: nil,
+                                help: nil
+                            ) {
+                                copyRuntimeMonitorErrorsToClipboard(monitor: monitor)
+                            }
+                        }
+                        HubNeutralActionChipButton(
+                            title: HubUIStrings.Settings.RuntimeMonitor.openLog,
+                            systemName: "doc.text.magnifyingglass",
+                            width: nil,
+                            help: nil
+                        ) {
+                            store.openAIRuntimeLog()
+                        }
+                        Spacer()
+                    }
+
+                    if monitor.providers.isEmpty {
+                        Text(HubUIStrings.Settings.RuntimeMonitor.noProviderRecords)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(monitor.providers, id: \.provider) { provider in
+                            runtimeMonitorProviderCard(provider)
+                        }
+                    }
+
+                    DisclosureGroup(HubUIStrings.Settings.RuntimeMonitor.currentTargetsDisclosure(currentTargets.count)) {
+                        if currentTargets.isEmpty {
+                            Text(HubUIStrings.Settings.RuntimeMonitor.currentTargetsEmpty)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            VStack(alignment: .leading, spacing: 6) {
+                                ForEach(Array(currentTargets.enumerated()), id: \.offset) { entry in
+                                    let model = entry.element.0
+                                    let requestContext = entry.element.1
+                                    Text(runtimeMonitorCurrentTargetLine(model: model, requestContext: requestContext))
+                                        .font(.caption2.monospaced())
+                                        .foregroundStyle(.secondary)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                        }
+                    }
+
+                    DisclosureGroup(HubUIStrings.Settings.RuntimeMonitor.activeTasksDisclosure(monitor.activeTasks.count)) {
+                        if monitor.activeTasks.isEmpty {
+                            Text(HubUIStrings.Settings.RuntimeMonitor.activeTasksEmpty)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            let activeTasks = Array(monitor.activeTasks.enumerated())
+                            VStack(alignment: .leading, spacing: 6) {
+                                ForEach(activeTasks, id: \.offset) { entry in
+                                    let task = entry.element
+                                    Text(runtimeMonitorActiveTaskLine(task))
+                                        .font(.caption2.monospaced())
+                                        .foregroundStyle(.secondary)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                        }
+                    }
+
+                    DisclosureGroup(
+                        HubUIStrings.Settings.RuntimeMonitor.loadedInstancesDisclosure(runtimeOpsSummary.instanceRows.count)
+                    ) {
+                        if runtimeOpsSummary.instanceRows.isEmpty {
+                            Text(HubUIStrings.Settings.RuntimeMonitor.loadedInstancesEmpty)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            VStack(alignment: .leading, spacing: 6) {
+                                ForEach(runtimeOpsSummary.instanceRows) { row in
+                                    Text(runtimeMonitorLoadedInstanceLine(row))
+                                        .font(.caption2.monospaced())
+                                        .foregroundStyle(.secondary)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                        }
+                    }
+
+                    DisclosureGroup(HubUIStrings.Settings.RuntimeMonitor.lastErrorsDisclosure(monitor.lastErrors.count)) {
+                        if monitor.lastErrors.isEmpty {
+                            Text(HubUIStrings.Settings.RuntimeMonitor.lastErrorsEmpty)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            let lastErrors = Array(monitor.lastErrors.enumerated())
+                            VStack(alignment: .leading, spacing: 6) {
+                                ForEach(lastErrors, id: \.offset) { entry in
+                                    let error = entry.element
+                                    Text(runtimeMonitorErrorLine(error))
+                                        .font(.caption2.monospaced())
+                                        .foregroundStyle(.secondary)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                Text(HubUIStrings.Settings.RuntimeMonitor.waitingForHeartbeat)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 10) {
+                    HubNeutralActionChipButton(
+                        title: HubUIStrings.Settings.RuntimeMonitor.copyProviderSummary,
+                        systemName: "doc.on.doc",
+                        width: nil,
+                        help: nil
+                    ) {
+                        copyLocalProviderSummaryToClipboard(snapshot: hubLaunchStatus)
+                    }
+                    HubNeutralActionChipButton(
+                        title: HubUIStrings.Settings.RuntimeMonitor.openLog,
+                        systemName: "doc.text.magnifyingglass",
+                        width: nil,
+                        help: nil
+                    ) {
+                        store.openAIRuntimeLog()
+                    }
+                    Spacer()
+                }
+            }
+        }
+    }
+
     private var networkingSection: some View {
-        Section("Networking (Bridge)") {
+        Section(HubUIStrings.Settings.Networking.sectionTitle) {
             HStack {
-                Text("Bridge")
+                Text(HubUIStrings.Settings.Networking.bridgeStatus)
                 Spacer()
                 Text(store.bridge.bridgeStatusText)
                     .foregroundStyle(.secondary)
             }
             HStack(spacing: 10) {
-                Button("Re-enable") {
-                    store.bridge.enable(seconds: 30 * 60)
+                Button(HubUIStrings.Settings.Networking.restoreNetwork) {
+                    store.bridge.restore(seconds: 30 * 60)
                 }
-                Button("Refresh") { store.bridge.refresh() }
+                Button(HubUIStrings.Settings.Networking.refreshStatus) { store.bridge.refresh() }
                 Spacer()
             }
 
-            Text("Bridge now runs on by default. To cut off networking for a specific Terminal, turn off that device's `web.fetch` / `ai.generate.paid` capabilities instead of shutting down the global Bridge.")
+            Text(HubUIStrings.Settings.Networking.defaultHint)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
-            DisclosureGroup("Global Operator Override") {
+            DisclosureGroup(HubUIStrings.Settings.Networking.emergencyDisclosure) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Only use this for diagnostics or emergency isolation. It disables the global Bridge for every paired Terminal until you re-enable it.")
+                    Text(HubUIStrings.Settings.Networking.emergencyHint)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     HStack(spacing: 10) {
-                        Button("Disable Global Bridge") {
+                        Button(HubUIStrings.Settings.Networking.cutOffGlobal) {
                             store.bridge.disable()
                         }
                         .tint(.red)
-                        Button("Re-enable Global Bridge") {
-                            store.bridge.enable(seconds: 30 * 60)
+                        Button(HubUIStrings.Settings.Networking.restoreGlobal) {
+                            store.bridge.restore(seconds: 30 * 60)
                         }
                         Spacer()
                     }
@@ -949,7 +1807,7 @@ struct SettingsSheetView: View {
             }
 
             if store.pendingNetworkRequests.isEmpty {
-                Text("No pending network requests.")
+                Text(HubUIStrings.Settings.Networking.noPendingRequests)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
@@ -963,40 +1821,243 @@ struct SettingsSheetView: View {
     private func formatEpochMs(_ ms: Int64) -> String {
         let d = Date(timeIntervalSince1970: Double(ms) / 1000.0)
         let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        f.dateFormat = HubUIStrings.Formatting.dateTimeWithSeconds
         return f.string(from: d)
+    }
+
+    private func formatEpochSeconds(_ seconds: Double) -> String {
+        guard seconds > 0 else { return HubUIStrings.Settings.RuntimeMonitor.unknown }
+        return formatEpochMs(Int64(seconds * 1000.0))
+    }
+
+    private func formatRuntimeMemoryBytes(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: max(0, bytes), countStyle: .memory)
+    }
+
+    private func runtimeMonitorTaskKindsText(_ values: [String]) -> String {
+        HubUIStrings.Settings.RuntimeMonitor.taskKinds(values)
+    }
+
+    private func runtimeMonitorMemoryText(_ provider: AIRuntimeMonitorProvider) -> String {
+        return HubUIStrings.Settings.RuntimeMonitor.memorySummary(
+            memoryState: provider.memoryState,
+            current: formatRuntimeMemoryBytes(provider.activeMemoryBytes),
+            peak: formatRuntimeMemoryBytes(provider.peakMemoryBytes)
+        )
+    }
+
+    @ViewBuilder
+    private func runtimeMonitorMetricCard(title: String, value: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.subheadline.weight(.semibold))
+            Text(detail)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(Color.secondary.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func runtimeMonitorProviderCard(_ provider: AIRuntimeMonitorProvider) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(provider.provider.uppercased())
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Text(HubUIStrings.Settings.RuntimeMonitor.providerStatus(ok: provider.ok))
+                    .font(.caption.monospaced())
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background((provider.ok ? Color.green : Color.red).opacity(0.14))
+                    .clipShape(Capsule())
+                if provider.queuedTaskCount > 0 {
+                    Text(HubUIStrings.Settings.RuntimeMonitor.queuedCount(provider.queuedTaskCount))
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Text(
+                HubUIStrings.Settings.RuntimeMonitor.reasonBackend(
+                    reason: provider.reasonCode.isEmpty ? HubUIStrings.Settings.RuntimeMonitor.none : provider.reasonCode,
+                    backend: provider.deviceBackend.isEmpty ? HubUIStrings.Settings.RuntimeMonitor.unknown : provider.deviceBackend
+                )
+            )
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+
+            Text(
+                HubUIStrings.Settings.RuntimeMonitor.taskKindsSummary(
+                    real: runtimeMonitorTaskKindsText(provider.realTaskKinds),
+                    fallback: runtimeMonitorTaskKindsText(provider.fallbackTaskKinds),
+                    unavailable: runtimeMonitorTaskKindsText(provider.unavailableTaskKinds)
+                )
+            )
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+
+            Text(
+                HubUIStrings.Settings.RuntimeMonitor.providerLoadSummary(
+                    activeTaskCount: provider.activeTaskCount,
+                    concurrencyLimit: provider.concurrencyLimit,
+                    queuedTaskCount: provider.queuedTaskCount,
+                    loadedInstanceCount: provider.loadedInstanceCount,
+                    loadedModelCount: provider.loadedModelCount
+                )
+            )
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+
+            Text(
+                HubUIStrings.Settings.RuntimeMonitor.queueSummary(
+                    mode: provider.queueMode.isEmpty ? HubUIStrings.Settings.RuntimeMonitor.unknown : provider.queueMode,
+                    oldestWaiterAgeMs: provider.oldestWaiterAgeMs,
+                    contentionCount: provider.contentionCount,
+                    memory: runtimeMonitorMemoryText(provider)
+                )
+            )
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+
+            if !provider.lastIdleEvictionReason.isEmpty || !provider.importError.isEmpty {
+                Text(
+                    HubUIStrings.Settings.RuntimeMonitor.idleEvictionSummary(
+                        policy: provider.idleEvictionPolicy.isEmpty ? HubUIStrings.Settings.RuntimeMonitor.unknown : provider.idleEvictionPolicy,
+                        lastEviction: provider.lastIdleEvictionReason.isEmpty ? HubUIStrings.Settings.RuntimeMonitor.none : provider.lastIdleEvictionReason,
+                        importError: provider.importError.isEmpty ? HubUIStrings.Settings.RuntimeMonitor.none : provider.importError
+                    )
+                )
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+
+            let providerHint = (store.aiRuntimeProviderHelpTextByProvider[provider.provider] ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !providerHint.isEmpty {
+                Text(providerHint)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(12)
+        .background(Color.secondary.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func runtimeMonitorActiveTaskLine(_ task: AIRuntimeMonitorActiveTask) -> String {
+        HubUIStrings.Settings.RuntimeMonitor.activeTaskLine(
+            provider: task.provider,
+            taskKind: task.taskKind,
+            modelID: task.modelId,
+            requestID: task.requestId,
+            deviceID: task.deviceId,
+            instanceKey: task.instanceKey,
+            loadConfigHash: task.loadConfigHash,
+            currentContextLength: task.currentContextLength,
+            maxContextLength: task.maxContextLength > task.currentContextLength ? task.maxContextLength : nil,
+            leaseTtlSec: task.leaseTtlSec
+        )
+    }
+
+    private func runtimeMonitorLoadedInstanceLine(_ instance: AIRuntimeLoadedInstance) -> String {
+        HubUIStrings.Settings.RuntimeMonitor.loadedInstanceLine(
+            modelID: instance.modelId,
+            taskKinds: runtimeMonitorTaskKindsText(instance.taskKinds),
+            instanceKey: instance.instanceKey,
+            loadConfigHash: instance.loadConfigHash,
+            currentContextLength: instance.currentContextLength,
+            maxContextLength: instance.maxContextLength,
+            ttl: instance.ttl ?? instance.loadConfig?.ttl,
+            residency: instance.residency,
+            backend: instance.deviceBackend,
+            lastUsedAt: formatEpochSeconds(instance.lastUsedAt)
+        )
+    }
+
+    private func runtimeMonitorLoadedInstanceLine(_ row: LocalRuntimeOperationsSummary.InstanceRow) -> String {
+        HubUIStrings.Settings.RuntimeMonitor.loadedInstanceRowLine(
+            modelID: row.modelID,
+            modelName: row.modelName,
+            providerID: row.providerID,
+            instanceKey: row.shortInstanceKey.isEmpty ? row.instanceKey : row.shortInstanceKey,
+            taskSummary: row.taskSummary,
+            loadSummary: row.loadSummary,
+            detailSummary: row.detailSummary,
+            currentTargetSummary: row.isCurrentTarget ? row.currentTargetSummary : nil
+        )
+    }
+
+    private func runtimeMonitorCurrentTargetLine(
+        model: HubModel,
+        requestContext: LocalModelRuntimeRequestContext
+    ) -> String {
+        let modelName = model.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? model.id : model.name
+        return HubUIStrings.Settings.RuntimeMonitor.currentTargetLine(
+            modelID: model.id,
+            modelName: modelName,
+            providerID: requestContext.providerID,
+            target: requestContext.uiSummary,
+            detail: requestContext.technicalSummary
+        )
+    }
+
+    private func runtimeMonitorErrorLine(_ error: AIRuntimeMonitorLastError) -> String {
+        HubUIStrings.Settings.RuntimeMonitor.errorLine(
+            provider: error.provider,
+            severity: error.severity,
+            code: error.code,
+            message: error.message
+        )
     }
 
     private func renderRootCauseText(_ rc: HubLaunchRootCause?) -> String {
         guard let rc else { return "" }
-        let comp = rc.component.rawValue
-        let code = rc.errorCode
-        let detail = rc.detail.trimmingCharacters(in: .whitespacesAndNewlines)
-        if detail.isEmpty {
-            return "\(comp) · \(code)"
-        }
-        return "\(comp) · \(code)\n\(detail)"
+        return HubUIStrings.Settings.Diagnostics.rootCauseSummary(
+            component: rc.component.rawValue,
+            code: rc.errorCode,
+            detail: rc.detail
+        )
     }
 
     private func renderLaunchHistory(_ launches: [HubLaunchStatusSnapshot], limit: Int = 12) -> String {
         let maxN = max(1, min(50, limit))
         let rows = launches.prefix(maxN).map { s in
-            let ts = s.updatedAtMs > 0 ? formatEpochMs(s.updatedAtMs) : "unknown_time"
+            let ts = s.updatedAtMs > 0 ? formatEpochMs(s.updatedAtMs) : HubUIStrings.Settings.Diagnostics.unknownTime
             let state = s.state.rawValue
             let degraded = s.degraded.isDegraded ? "1" : "0"
             let id = s.launchId.trimmingCharacters(in: .whitespacesAndNewlines)
             let root = renderRootCauseText(s.rootCause).replacingOccurrences(of: "\n", with: " | ")
-            let rootText = root.isEmpty ? "(none)" : root
+            let rootText = root.isEmpty ? HubUIStrings.Settings.Diagnostics.noneField : root
             let blocked = s.degraded.blockedCapabilities
-            let blockedText = blocked.isEmpty ? "(none)" : blocked.joined(separator: ",")
-            return "\(ts) state=\(state) degraded=\(degraded)\nlaunch_id=\(id)\nroot=\(rootText)\nblocked=\(blockedText)"
+            let blockedText = blocked.isEmpty ? HubUIStrings.Settings.Diagnostics.noneField : blocked.joined(separator: ",")
+            return HubUIStrings.Settings.Diagnostics.launchHistoryEntry(
+                timestamp: ts,
+                state: state,
+                degraded: degraded,
+                launchID: id,
+                root: rootText,
+                blocked: blockedText
+            )
         }
-        return rows.joined(separator: "\n\n---\n\n")
+        return rows.joined(separator: HubUIStrings.Settings.Diagnostics.launchHistorySeparator)
     }
 
     private func copyLaunchHistoryToClipboard(snapshot: HubLaunchHistorySnapshot) {
-        let updated = snapshot.updatedAtMs > 0 ? formatEpochMs(snapshot.updatedAtMs) : "unknown_time"
-        let header = "launch_history_updated_at: \(updated)\nmax_entries: \(snapshot.maxEntries)"
+        let updated = snapshot.updatedAtMs > 0 ? formatEpochMs(snapshot.updatedAtMs) : HubUIStrings.Settings.Diagnostics.unknownTime
+        let header = HubUIStrings.Settings.Diagnostics.launchHistoryHeader(updated: updated, maxEntries: snapshot.maxEntries)
         let body = renderLaunchHistory(snapshot.launches, limit: snapshot.maxEntries)
         let out = HubDiagnosticsBundleExporter.redactTextForSharing(header + "\n\n" + body)
         NSPasteboard.general.clearContents()
@@ -1020,18 +2081,25 @@ struct SettingsSheetView: View {
         let pid = skillsResolveProjectId.trimmingCharacters(in: .whitespacesAndNewlines)
 
         var lines: [String] = []
-        lines.append("user_id: \(uid.isEmpty ? "(empty)" : uid)")
-        lines.append("project_id: \(pid.isEmpty ? "(empty)" : pid)")
-        lines.append("precedence: Memory-Core > Global > Project")
+        lines.append(HubUIStrings.Settings.Skills.resolvedUserID(uid.isEmpty ? HubUIStrings.Settings.Skills.resolvedEmptyValue : uid))
+        lines.append(HubUIStrings.Settings.Skills.resolvedProjectID(pid.isEmpty ? HubUIStrings.Settings.Skills.resolvedEmptyValue : pid))
+        lines.append(HubUIStrings.Settings.Skills.resolvedPrecedence)
         lines.append("")
 
         for r in resolved {
             let sid = r.pin.skillId.trimmingCharacters(in: .whitespacesAndNewlines)
             let sha = r.pin.packageSha256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            let ver = r.meta?.version.trimmingCharacters(in: .whitespacesAndNewlines) ?? "(missing)"
+            let ver = r.meta?.version.trimmingCharacters(in: .whitespacesAndNewlines) ?? HubUIStrings.Settings.Diagnostics.missingField
             let src = r.meta?.sourceId.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let srcSuffix = src.isEmpty ? "" : " source=\(src)"
-            lines.append("\(r.scope.shortLabel) skill_id=\(sid) version=\(ver) package_sha256=\(sha)\(srcSuffix)")
+            lines.append(
+                HubUIStrings.Settings.Skills.resolvedSkillLine(
+                    scopeLabel: r.scope.shortLabel,
+                    skillID: sid,
+                    version: ver,
+                    packageSHA256: sha,
+                    sourceID: src
+                )
+            )
         }
 
         return HubDiagnosticsBundleExporter.redactTextForSharing(lines.joined(separator: "\n"))
@@ -1096,11 +2164,18 @@ struct SettingsSheetView: View {
 
             let newSha = packageSha256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             if newSha.isEmpty {
-                skillsLastActionText = "Unpinned \(skillId) (\(scope.shortLabel))"
+                skillsLastActionText = HubUIStrings.Settings.Skills.pinActionUnpinned(
+                    skillID: skillId,
+                    scopeLabel: scope.displayLabel
+                )
             } else {
                 let prev = res.previousSha.trimmingCharacters(in: .whitespacesAndNewlines)
-                let prevSuffix = prev.isEmpty ? "" : " prev=\(shortSha(prev))"
-                skillsLastActionText = "Pinned \(skillId) (\(scope.shortLabel)) -> \(shortSha(newSha))\(prevSuffix)"
+                skillsLastActionText = HubUIStrings.Settings.Skills.pinActionPinned(
+                    skillID: skillId,
+                    scopeLabel: scope.displayLabel,
+                    shortSHA: shortSha(newSha),
+                    previousShortSHA: prev.isEmpty ? nil : shortSha(prev)
+                )
             }
         } catch {
             skillsLastErrorText = error.localizedDescription
@@ -1122,10 +2197,10 @@ struct SettingsSheetView: View {
         let sha = r.pin.packageSha256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let ver = (r.meta?.version ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let name = (r.meta?.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let title = ver.isEmpty ? sid : "\(sid) · \(ver)"
+        let title = HubUIStrings.Settings.Skills.skillTitle(skillID: sid, version: ver)
 
         VStack(alignment: .leading, spacing: 2) {
-            Text("\(r.scope.shortLabel) · \(title)")
+            Text(HubUIStrings.Settings.Skills.scopeAndTitle(scopeLabel: r.scope.displayLabel, title: title))
                 .font(.callout.weight(.semibold))
             if !name.isEmpty, name != sid {
                 Text(name)
@@ -1134,12 +2209,12 @@ struct SettingsSheetView: View {
                     .lineLimit(1)
             }
             if r.meta == nil {
-                Text("Pinned package not installed: \(shortSha(sha))")
+                Text(HubUIStrings.Settings.Skills.packageMissing(shortSha(sha)))
                     .font(.caption2.monospaced())
                     .foregroundStyle(.red)
                     .textSelection(.enabled)
             } else {
-                Text("package_sha256: \(shortSha(sha))")
+                Text(HubUIStrings.Settings.Skills.packageSHA(shortSha(sha)))
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
@@ -1147,8 +2222,8 @@ struct SettingsSheetView: View {
 
             HStack(spacing: 10) {
                 if !sha.isEmpty {
-                    Button("Open Manifest") { openSkillManifest(packageSha256: sha) }
-                    Button("Reveal Package") { revealSkillPackage(packageSha256: sha) }
+                    Button(HubUIStrings.Settings.Skills.openManifest) { openSkillManifest(packageSha256: sha) }
+                    Button(HubUIStrings.Settings.Skills.showPackageDirectory) { revealSkillPackage(packageSha256: sha) }
                 }
                 Spacer()
             }
@@ -1162,35 +2237,38 @@ struct SettingsSheetView: View {
         let sha = p.packageSha256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let uid = (p.userId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let pid = (p.projectId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let scopeDetail = [uid.isEmpty ? nil : "user_id=\(uid)", pid.isEmpty ? nil : "project_id=\(pid)"]
+        let scopeDetail = [
+            uid.isEmpty ? nil : HubUIStrings.Settings.Skills.scopeUserID(uid),
+            pid.isEmpty ? nil : HubUIStrings.Settings.Skills.scopeProjectID(pid),
+        ]
             .compactMap { $0 }
-            .joined(separator: " · ")
+        let scopeDetailText = HubUIStrings.Formatting.middleDotSeparated(scopeDetail)
 
         let meta = skillsIndex.skills.first(where: { $0.packageSha256.lowercased() == sha })?.toMeta()
         let ver = (meta?.version ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let title = ver.isEmpty ? sid : "\(sid) · \(ver)"
+        let title = HubUIStrings.Settings.Skills.skillTitle(skillID: sid, version: ver)
 
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
                 .font(.callout.weight(.semibold))
-            if !scopeDetail.isEmpty {
-                Text(scopeDetail)
+            if !scopeDetailText.isEmpty {
+                Text(scopeDetailText)
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .textSelection(.enabled)
             }
-            Text("package_sha256: \(shortSha(sha))")
+            Text(HubUIStrings.Settings.Skills.packageSHA(shortSha(sha)))
                 .font(.caption2.monospaced())
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
 
             HStack(spacing: 10) {
                 if !sha.isEmpty {
-                    Button("Open Manifest") { openSkillManifest(packageSha256: sha) }
-                    Button("Reveal Package") { revealSkillPackage(packageSha256: sha) }
+                    Button(HubUIStrings.Settings.Skills.openManifest) { openSkillManifest(packageSha256: sha) }
+                    Button(HubUIStrings.Settings.Skills.showPackageDirectory) { revealSkillPackage(packageSha256: sha) }
                 }
-                Button("Unpin") {
+                Button(HubUIStrings.Settings.Skills.unpin) {
                     updateSkillPin(scope: scope, skillId: sid, packageSha256: "", userIdOverride: uid, projectIdOverride: pid)
                 }
                 Spacer()
@@ -1206,7 +2284,7 @@ struct SettingsSheetView: View {
         let sha = meta.packageSha256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let desc = meta.description.trimmingCharacters(in: .whitespacesAndNewlines)
         let caps = meta.capabilitiesRequired
-        let capsText = caps.isEmpty ? "(none)" : caps.joined(separator: ", ")
+        let capsText = caps.isEmpty ? HubUIStrings.Settings.Skills.empty : caps.joined(separator: ", ")
         let hint = meta.installHint.trimmingCharacters(in: .whitespacesAndNewlines)
 
         let canPin = !sha.isEmpty
@@ -1215,11 +2293,11 @@ struct SettingsSheetView: View {
 
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text("\(sid) · \(ver)")
+                Text(HubUIStrings.Settings.Skills.skillTitle(skillID: sid, version: ver))
                     .font(.callout.weight(.semibold))
                 Spacer()
                 if sha.isEmpty {
-                    Text("not installed")
+                    Text(HubUIStrings.Settings.Skills.notInstalled)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 } else {
@@ -1236,13 +2314,17 @@ struct SettingsSheetView: View {
                     .lineLimit(2)
             }
 
-            Text("publisher: \(meta.publisherId) · source: \(meta.sourceId) · caps: \(capsText)")
+            Text(HubUIStrings.Settings.Skills.publisherSourceCapabilities(
+                publisherID: meta.publisherId,
+                sourceID: meta.sourceId,
+                capabilities: capsText
+            ))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
 
             if !hint.isEmpty {
-                Text("install_hint: \(hint)")
+                Text(HubUIStrings.Settings.Skills.installHint(hint))
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -1250,30 +2332,30 @@ struct SettingsSheetView: View {
             }
 
             HStack(spacing: 10) {
-                Menu("Pin…") {
-                    Button("Memory-Core") { updateSkillPin(scope: .memoryCore, skillId: sid, packageSha256: sha) }
+                Menu(HubUIStrings.Settings.Skills.pinTo) {
+                    Button(HubUIStrings.Settings.Skills.pinMemoryCore) { updateSkillPin(scope: .memoryCore, skillId: sid, packageSha256: sha) }
                         .disabled(!canPin)
-                    Button("Global (user_id)") { updateSkillPin(scope: .global, skillId: sid, packageSha256: sha, userIdOverride: uid) }
+                    Button(HubUIStrings.Settings.Skills.pinGlobal) { updateSkillPin(scope: .global, skillId: sid, packageSha256: sha, userIdOverride: uid) }
                         .disabled(!canPin || uid.isEmpty)
-                    Button("Project (user_id + project_id)") {
+                    Button(HubUIStrings.Settings.Skills.pinProject) {
                         updateSkillPin(scope: .project, skillId: sid, packageSha256: sha, userIdOverride: uid, projectIdOverride: pid)
                     }
                     .disabled(!canPin || uid.isEmpty || pid.isEmpty)
 
                     Divider()
 
-                    Button("Unpin Memory-Core") { updateSkillPin(scope: .memoryCore, skillId: sid, packageSha256: "") }
-                    Button("Unpin Global (user_id)") { updateSkillPin(scope: .global, skillId: sid, packageSha256: "", userIdOverride: uid) }
+                    Button(HubUIStrings.Settings.Skills.unpinMemoryCore()) { updateSkillPin(scope: .memoryCore, skillId: sid, packageSha256: "") }
+                    Button(HubUIStrings.Settings.Skills.unpinGlobal()) { updateSkillPin(scope: .global, skillId: sid, packageSha256: "", userIdOverride: uid) }
                         .disabled(uid.isEmpty)
-                    Button("Unpin Project (user_id + project_id)") {
+                    Button(HubUIStrings.Settings.Skills.unpinProject()) {
                         updateSkillPin(scope: .project, skillId: sid, packageSha256: "", userIdOverride: uid, projectIdOverride: pid)
                     }
                     .disabled(uid.isEmpty || pid.isEmpty)
                 }
 
                 if !sha.isEmpty {
-                    Button("Open Manifest") { openSkillManifest(packageSha256: sha) }
-                    Button("Reveal Package") { revealSkillPackage(packageSha256: sha) }
+                    Button(HubUIStrings.Settings.Skills.openManifest) { openSkillManifest(packageSha256: sha) }
+                    Button(HubUIStrings.Settings.Skills.showPackageDirectory) { revealSkillPackage(packageSha256: sha) }
                 }
                 Spacer()
             }
@@ -1296,25 +2378,25 @@ struct SettingsSheetView: View {
         var summary: String {
             switch self {
             case .restartGRPC:
-                return "Restart gRPC"
+                return HubUIStrings.Settings.Diagnostics.FixNow.restartGRPC
             case .switchGRPCPortAndRestart:
-                return "Switch gRPC to a free port"
+                return HubUIStrings.Settings.Diagnostics.FixNow.switchGRPCPortAndRestart
             case .restartBridge:
-                return "Restart Bridge"
+                return HubUIStrings.Settings.Diagnostics.FixNow.restartBridge
             case .restartRuntime:
-                return "Restart AI Runtime"
+                return HubUIStrings.Settings.Diagnostics.FixNow.restartRuntime
             case .clearPythonAndRestartRuntime:
-                return "Auto-fix Python + restart Runtime"
+                return HubUIStrings.Settings.Diagnostics.FixNow.clearPythonAndRestartRuntime
             case .unlockRuntimeLockHolders:
-                return "Kill runtime lock holder (lsof+kill)"
+                return HubUIStrings.Settings.Diagnostics.FixNow.unlockRuntimeLockHolders
             case .repairDBAndRestartGRPC:
-                return "Repair gRPC DB + restart"
+                return HubUIStrings.Settings.Diagnostics.FixNow.repairDBAndRestartGRPC
             case .repairInstallLocation:
-                return "Repair install location"
+                return HubUIStrings.Settings.Diagnostics.FixNow.repairInstallLocation
             case .openNodeInstall:
-                return "Install Node.js"
+                return HubUIStrings.Settings.Diagnostics.FixNow.openNodeInstall
             case .openPermissionsSettings:
-                return "Open permissions settings"
+                return HubUIStrings.Settings.Diagnostics.FixNow.openPermissionsSettings
             }
         }
     }
@@ -1325,12 +2407,7 @@ struct SettingsSheetView: View {
         var detail: String
 
         func render() -> String {
-            let state = ok ? "ok" : "failed"
-            let msg = detail.trimmingCharacters(in: .whitespacesAndNewlines)
-            if msg.isEmpty {
-                return "result_code=\(code)\nstatus=\(state)"
-            }
-            return "result_code=\(code)\nstatus=\(state)\n\(msg)"
+            HubUIStrings.Settings.Diagnostics.FixNow.renderOutcome(code: code, ok: ok, detail: detail)
         }
     }
 
@@ -1368,11 +2445,21 @@ struct SettingsSheetView: View {
         // is user-initiated and should prioritize core AI health over integrations permissions.
         let status = store.aiRuntimeStatusText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let isRunning = status.contains("runtime: running")
+            || status.contains(HubUIStrings.Settings.Advanced.Runtime.statusRunningToken.lowercased())
         let wantsRefresh = status.contains("needs refresh")
+            || status.contains(HubUIStrings.Settings.Advanced.Runtime.refreshNeededKeyword)
         if wantsRefresh {
             return .restartRuntime
         }
-        if !isRunning, status.contains("stale") || status.contains("not running") || status.contains("stopped") || status.contains("error") {
+        let looksStopped = status.contains("stale")
+            || status.contains(HubUIStrings.Settings.Advanced.Runtime.staleKeyword)
+            || status.contains("not running")
+            || status.contains(HubUIStrings.Settings.Advanced.Runtime.notRunningKeyword)
+            || status.contains("stopped")
+            || status.contains(HubUIStrings.Settings.Advanced.Runtime.stoppedKeyword)
+            || status.contains("error")
+            || status.contains(HubUIStrings.Settings.Advanced.Runtime.errorKeyword)
+        if !isRunning, looksStopped {
             return .restartRuntime
         }
 
@@ -1429,10 +2516,6 @@ struct SettingsSheetView: View {
             return act
         }
 
-        // No launch root-cause fix; fall back to common permission blockers.
-        if store.integrationCalendarEnabled, store.calendarDeniedOrRestricted {
-            return .openPermissionsSettings
-        }
         let needsAXForIntegrations = store.integrationSlackEnabled || store.integrationMessagesEnabled
         if needsAXForIntegrations, !axTrusted {
             return .openPermissionsSettings
@@ -1474,10 +2557,10 @@ struct SettingsSheetView: View {
         let age = max(0.0, Date().timeIntervalSince1970 - st.updatedAt)
         let ver = (st.runtimeVersion ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return (
-            st.isAlive(ttl: 3.0),
+            st.isAlive(ttl: AIRuntimeStatus.recommendedHeartbeatTTL),
             st.pid,
-            st.hasReadyProvider(ttl: 3.0),
-            st.providerSummary(ttl: 3.0),
+            st.hasReadyProvider(ttl: AIRuntimeStatus.recommendedHeartbeatTTL),
+            st.providerSummary(ttl: AIRuntimeStatus.recommendedHeartbeatTTL),
             ver,
             age
         )
@@ -1520,7 +2603,7 @@ struct SettingsSheetView: View {
             return await verifyGRPCAfterFix(
                 successCode: "FIX_GRPC_PORT_SWITCH_OK",
                 failureCode: "FIX_GRPC_PORT_SWITCH_FAILED",
-                actionSummary: "Requested: gRPC port \(oldPort) -> \(free), restart."
+                actionSummary: HubUIStrings.Settings.Diagnostics.FixNow.requestedPortSwitch(oldPort: oldPort, newPort: free)
             )
         }
 
@@ -1528,7 +2611,7 @@ struct SettingsSheetView: View {
         return await verifyGRPCAfterFix(
             successCode: "FIX_GRPC_RESTART_OK",
             failureCode: "FIX_GRPC_RESTART_FAILED",
-            actionSummary: "No free port found nearby. Requested: gRPC restart on \(oldPort)."
+            actionSummary: HubUIStrings.Settings.Diagnostics.FixNow.requestedRestartOnSamePort(oldPort)
         )
     }
 
@@ -1551,12 +2634,12 @@ struct SettingsSheetView: View {
         }
 
         if !r.lockReleased {
-            let hint = "\n\nTry in Terminal:\n  \(r.command)"
+            let hint = HubUIStrings.Settings.Diagnostics.FixNow.terminalRetryHint(command: r.command)
             return RuntimeUnlockRestartOutcome(
                 ok: false,
                 code: "FIX_RT_LOCK_STILL_BUSY",
                 detail: "",
-                error: (r.detail.isEmpty ? "Runtime lock is still busy." : r.detail) + hint
+                error: (r.detail.isEmpty ? HubUIStrings.Settings.Diagnostics.FixNow.runtimeLockStillBusy : r.detail) + hint
             )
         }
 
@@ -1569,11 +2652,17 @@ struct SettingsSheetView: View {
             let providers = "providers=\(rt.providerSummary)"
             let ver = rt.runtimeVersion.isEmpty ? "" : " version=\(rt.runtimeVersion)"
             let killed = r.killedPids.isEmpty ? "" : " killed=\(r.killedPids.map(String.init).joined(separator: ","))"
-            let mode = forcedMode ? " (force)" : ""
             return RuntimeUnlockRestartOutcome(
                 ok: true,
                 code: forcedMode ? "FIX_RT_LOCK_FORCE_CLEAR_RESTART_OK" : "FIX_RT_LOCK_CLEAR_RESTART_OK",
-                detail: "Runtime lock cleared\(mode) + restarted · pid \(rt.pid) (\(ok); \(providers))\(ver)\(killed)",
+                detail: HubUIStrings.Settings.Diagnostics.FixNow.runtimeLockClearedAndRestarted(
+                    forced: forcedMode,
+                    pid: rt.pid,
+                    localReady: ok,
+                    providers: providers,
+                    version: ver,
+                    killed: killed
+                ),
                 error: ""
             )
         }
@@ -1584,7 +2673,7 @@ struct SettingsSheetView: View {
                 ok: false,
                 code: "FIX_RT_RESTART_AFTER_LOCK_CLEAR_FAILED",
                 detail: "",
-                error: "Lock was cleared but runtime did not start.\n\nTry in Terminal:\n  \(r.command)"
+                error: HubUIStrings.Settings.Diagnostics.FixNow.runtimeLockClearedButNotStarted(command: r.command)
             )
         }
         return RuntimeUnlockRestartOutcome(
@@ -1635,7 +2724,7 @@ struct SettingsSheetView: View {
         try? await Task.sleep(nanoseconds: 450_000_000)
         hubLaunchStatus = HubLaunchStatusStorage.load()
         hubLaunchHistory = HubLaunchHistoryStorage.load()
-        diagnosticsActionResultText = "Requested: retry start."
+        diagnosticsActionResultText = HubUIStrings.Settings.Diagnostics.FixNow.retryDiagnosisRequested
     }
 
     @MainActor
@@ -1668,7 +2757,7 @@ struct SettingsSheetView: View {
         hubLaunchStatus = HubLaunchStatusStorage.load()
         hubLaunchHistory = HubLaunchHistoryStorage.load()
 
-        diagnosticsActionResultText = "Requested: restart components (Bridge/gRPC/Runtime)."
+        diagnosticsActionResultText = HubUIStrings.Settings.Diagnostics.FixNow.restartComponentsRequested
     }
 
     @MainActor
@@ -1718,7 +2807,10 @@ struct SettingsSheetView: View {
         hubLaunchStatus = HubLaunchStatusStorage.load()
         hubLaunchHistory = HubLaunchHistoryStorage.load()
 
-        diagnosticsActionResultText = "Reset volatile caches: removed=\(removedCount) failed=\(failedCount)"
+        diagnosticsActionResultText = HubUIStrings.Settings.Diagnostics.FixNow.resetVolatileCaches(
+            removed: removedCount,
+            failed: failedCount
+        )
     }
 
     @MainActor
@@ -1788,16 +2880,22 @@ struct SettingsSheetView: View {
                 return await verifyGRPCAfterFix(
                     successCode: "FIX_GRPC_DB_REPAIR_OK",
                     failureCode: "FIX_GRPC_DB_REPAIR_RESTART_FAILED",
-                    actionSummary: "DB repair (safe): quick_check OK + restart."
+                    actionSummary: HubUIStrings.Settings.Diagnostics.FixNow.databaseRepairQuickCheckPassed
                 )
             }
 
             let err = (qc.stderr + "\n" + qc.stdout).trimmingCharacters(in: .whitespacesAndNewlines)
-            let msg = err.isEmpty ? "DB repair (safe): quick_check failed (exit=\(qc.exitCode))" : "DB repair (safe): quick_check failed\n\n\(err)"
+            let msg = err.isEmpty
+                ? HubUIStrings.Settings.Diagnostics.FixNow.databaseRepairQuickCheckFailed(exitCode: qc.exitCode)
+                : HubUIStrings.Settings.Diagnostics.FixNow.databaseRepairQuickCheckFailed(errorText: err)
             return FixNowOutcome(ok: false, code: "FIX_GRPC_DB_REPAIR_CHECK_FAILED", detail: msg)
         } catch {
             store.grpc.start()
-            return FixNowOutcome(ok: false, code: "FIX_GRPC_DB_REPAIR_EXCEPTION", detail: "DB repair (safe) failed: \(error.localizedDescription)")
+            return FixNowOutcome(
+                ok: false,
+                code: "FIX_GRPC_DB_REPAIR_EXCEPTION",
+                detail: HubUIStrings.Settings.Diagnostics.FixNow.databaseRepairException(error.localizedDescription)
+            )
         }
     }
 
@@ -1931,7 +3029,9 @@ struct SettingsSheetView: View {
         if snap.running {
             return FixNowOutcome(ok: true, code: successCode, detail: actionSummary)
         }
-        let failureText = !snap.lastError.isEmpty ? snap.lastError : (!snap.statusText.isEmpty ? snap.statusText : "gRPC is still not running.")
+        let failureText = !snap.lastError.isEmpty
+            ? snap.lastError
+            : (!snap.statusText.isEmpty ? snap.statusText : HubUIStrings.Settings.Diagnostics.grpcStillNotRunning)
         let code = classifyGRPCFailureCode(failureText, fallback: failureCode)
         return FixNowOutcome(
             ok: false,
@@ -1973,7 +3073,9 @@ struct SettingsSheetView: View {
             if snap.updatedAt <= 0 { return -1 }
             return Int(max(0.0, Date().timeIntervalSince1970 - snap.updatedAt))
         }()
-        let staleInfo = ageSec < 0 ? "Bridge heartbeat is missing." : "Bridge heartbeat is stale (\(ageSec)s)."
+        let staleInfo = ageSec < 0
+            ? HubUIStrings.Settings.Diagnostics.FixNow.bridgeHeartbeatMissing
+            : HubUIStrings.Settings.Diagnostics.FixNow.bridgeHeartbeatExpired(ageSec: ageSec)
         return FixNowOutcome(
             ok: false,
             code: failureCode,
@@ -2021,11 +3123,17 @@ struct SettingsSheetView: View {
             return FixNowOutcome(
                 ok: true,
                 code: successCode,
-                detail: "\(actionSummary)\nRuntime: running · pid \(rt.pid) (\(ok); \(providers))\(ver)"
+                detail: HubUIStrings.Settings.Diagnostics.FixNow.runtimeRunningDetail(
+                    actionSummary: actionSummary,
+                    pid: rt.pid,
+                    localReady: ok,
+                    providers: providers,
+                    version: ver
+                )
             )
         }
         let err = store.aiRuntimeLastError.trimmingCharacters(in: .whitespacesAndNewlines)
-        let msg = err.isEmpty ? "Runtime did not start. Open AI runtime log for details." : err
+        let msg = err.isEmpty ? HubUIStrings.Settings.Diagnostics.FixNow.runtimeNotStartedOpenLog : err
         let code = classifyRuntimeFailureCode(msg, fallback: failureCode)
         return FixNowOutcome(
             ok: false,
@@ -2068,11 +3176,17 @@ struct SettingsSheetView: View {
                 code: combinedCode,
                 detail:
                     """
-                    runtime[\(runtime.code)] \(runtime.ok ? "ok" : "failed")
-                    \(runtime.detail)
+                    \(HubUIStrings.Settings.Diagnostics.FixNow.combinedRuntimeOutcome(
+                        code: runtime.code,
+                        ok: runtime.ok,
+                        detail: runtime.detail
+                    ))
 
-                    grpc[\(grpc.code)] \(grpc.ok ? "ok" : "failed")
-                    \(grpc.detail)
+                    \(HubUIStrings.Settings.Diagnostics.FixNow.combinedGRPCOutcome(
+                        code: grpc.code,
+                        ok: grpc.ok,
+                        detail: grpc.detail
+                    ))
                     """
             )
             applyFixNowOutcome(combined)
@@ -2092,7 +3206,7 @@ struct SettingsSheetView: View {
                 let outcome = await verifyGRPCAfterFix(
                     successCode: "FIX_GRPC_TLS_DOWNGRADE_RESTART_OK",
                     failureCode: "FIX_GRPC_TLS_DOWNGRADE_RESTART_FAILED",
-                    actionSummary: "Detected broken TLS cert/PEM in hub_grpc.log. Switched gRPC tls \(oldMode) -> insecure and restarted."
+                    actionSummary: HubUIStrings.Settings.Diagnostics.FixNow.tlsDowngradeRestart(oldMode: oldMode)
                 )
                 applyFixNowOutcome(outcome)
                 rerunLaunchDiagnosisSoon(delayNs: 650_000_000)
@@ -2102,7 +3216,7 @@ struct SettingsSheetView: View {
             let outcome = await verifyGRPCAfterFix(
                 successCode: "FIX_GRPC_RESTART_OK",
                 failureCode: "FIX_GRPC_RESTART_FAILED",
-                actionSummary: "Requested: gRPC restart."
+                actionSummary: HubUIStrings.Settings.Diagnostics.FixNow.requestedRestartGRPC
             )
             applyFixNowOutcome(outcome)
             rerunLaunchDiagnosisSoon()
@@ -2121,7 +3235,7 @@ struct SettingsSheetView: View {
                 let outcome = await verifyBridgeAfterFix(
                     successCode: "FIX_BRIDGE_RESTART_OK",
                     failureCode: "FIX_BRIDGE_RESTART_FAILED",
-                    actionSummary: "Requested: Bridge restart."
+                    actionSummary: HubUIStrings.Settings.Diagnostics.FixNow.requestedRestartBridge
                 )
                 applyFixNowOutcome(outcome)
                 rerunLaunchDiagnosisSoon()
@@ -2130,7 +3244,7 @@ struct SettingsSheetView: View {
                     FixNowOutcome(
                         ok: false,
                         code: "FIX_BRIDGE_RESTART_UNAVAILABLE",
-                        detail: "Cannot access AppDelegate to restart embedded Bridge."
+                        detail: HubUIStrings.Settings.Diagnostics.FixNow.bridgeRestartUnavailable
                     )
                 )
             }
@@ -2156,7 +3270,7 @@ struct SettingsSheetView: View {
             let outcome = await verifyRuntimeAfterFix(
                 successCode: "FIX_RT_RESTART_OK",
                 failureCode: "FIX_RT_RESTART_FAILED",
-                actionSummary: "Requested: Runtime restart."
+                actionSummary: HubUIStrings.Settings.Diagnostics.FixNow.requestedRestartRuntime
             )
             applyFixNowOutcome(outcome)
             rerunLaunchDiagnosisSoon(delayNs: 1_350_000_000)
@@ -2181,7 +3295,7 @@ struct SettingsSheetView: View {
             let outcome = await verifyRuntimeAfterFix(
                 successCode: "FIX_RT_CLEAR_PYTHON_RESTART_OK",
                 failureCode: "FIX_RT_CLEAR_PYTHON_RESTART_FAILED",
-                actionSummary: "Requested: clear Python selection + Runtime restart."
+                actionSummary: HubUIStrings.Settings.Diagnostics.FixNow.requestedClearPythonAndRestartRuntime
             )
             applyFixNowOutcome(outcome)
             rerunLaunchDiagnosisSoon(delayNs: 1_350_000_000)
@@ -2205,7 +3319,7 @@ struct SettingsSheetView: View {
                     FixNowOutcome(
                         ok: true,
                         code: "FIX_INSTALL_GUIDE_OPENED",
-                        detail: "Opened install-location guidance."
+                        detail: HubUIStrings.Settings.Diagnostics.FixNow.openedInstallGuide
                     )
                 )
             } else {
@@ -2216,7 +3330,7 @@ struct SettingsSheetView: View {
                     FixNowOutcome(
                         ok: true,
                         code: "FIX_APP_BUNDLE_REVEALED",
-                        detail: "Revealed current app bundle."
+                        detail: HubUIStrings.Settings.Diagnostics.FixNow.revealedCurrentAppBundle
                     )
                 )
             }
@@ -2228,7 +3342,7 @@ struct SettingsSheetView: View {
                     FixNowOutcome(
                         ok: true,
                         code: "FIX_NODE_INSTALL_PAGE_OPENED",
-                        detail: "Opened Node.js download page."
+                        detail: HubUIStrings.Settings.Diagnostics.FixNow.openedNodeDownloadPage
                     )
                 )
             } else {
@@ -2236,29 +3350,20 @@ struct SettingsSheetView: View {
                     FixNowOutcome(
                         ok: false,
                         code: "FIX_NODE_INSTALL_PAGE_OPEN_FAILED",
-                        detail: "Failed to open Node.js download page."
+                        detail: HubUIStrings.Settings.Diagnostics.FixNow.openNodeDownloadPageFailed
                     )
                 )
             }
 
         case .openPermissionsSettings:
             HubDiagnostics.log("diagnostics.fix action=open_permissions")
-            if store.integrationCalendarEnabled, store.calendarDeniedOrRestricted {
-                SystemSettingsLinks.openCalendarPrivacy()
-                applyFixNowOutcome(
-                    FixNowOutcome(
-                        ok: true,
-                        code: "FIX_OPEN_SETTINGS_CALENDAR",
-                        detail: "Opened System Settings → Calendars."
-                    )
-                )
-            } else if !axTrusted {
+            if !axTrusted {
                 SystemSettingsLinks.openAccessibilityPrivacy()
                 applyFixNowOutcome(
                     FixNowOutcome(
                         ok: true,
                         code: "FIX_OPEN_SETTINGS_ACCESSIBILITY",
-                        detail: "Opened System Settings → Accessibility."
+                        detail: HubUIStrings.Settings.Diagnostics.FixNow.openedAccessibilitySettings
                     )
                 )
             } else {
@@ -2267,7 +3372,7 @@ struct SettingsSheetView: View {
                     FixNowOutcome(
                         ok: true,
                         code: "FIX_OPEN_SETTINGS_GENERAL",
-                        detail: "Opened System Settings."
+                        detail: HubUIStrings.Settings.Diagnostics.FixNow.openedSystemSettings
                     )
                 )
             }
@@ -2286,13 +3391,13 @@ struct SettingsSheetView: View {
         // Compact, grep-friendly one-line format:
         //   <elapsed_ms> <STATE> ok=<0|1> code=<...> hint=<...>
         let out = steps.map { st in
-            let ok = st.ok ? "1" : "0"
-            let code = st.errorCode.trimmingCharacters(in: .whitespacesAndNewlines)
-            let hint = st.errorHint.trimmingCharacters(in: .whitespacesAndNewlines)
-            var line = "\(st.elapsedMs) \(st.state.rawValue) ok=\(ok)"
-            if !code.isEmpty { line += " code=\(code)" }
-            if !hint.isEmpty { line += " hint=\(hint)" }
-            return line
+            HubUIStrings.Settings.Diagnostics.launchStepLine(
+                elapsedMs: st.elapsedMs,
+                state: st.state.rawValue,
+                ok: st.ok,
+                code: st.errorCode,
+                hint: st.errorHint
+            )
         }
         return out.joined(separator: "\n")
     }
@@ -2303,15 +3408,24 @@ struct SettingsSheetView: View {
         let blocked = snapshot?.degraded.blockedCapabilities ?? []
 
         var lines: [String] = []
-        lines.append("state: \(state)")
+        lines.append(HubUIStrings.Settings.Diagnostics.Export.stateLine(state))
         if let id = snapshot?.launchId.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty {
-            lines.append("launch_id: \(id)")
+            lines.append(HubUIStrings.Settings.Diagnostics.Export.launchIDLine(id))
         }
         if let snapshot, snapshot.updatedAtMs > 0 {
-            lines.append("updated_at: \(formatEpochMs(snapshot.updatedAtMs))")
+            lines.append(HubUIStrings.Settings.Diagnostics.Export.updatedAtLine(formatEpochMs(snapshot.updatedAtMs)))
         }
-        lines.append("root_cause:\n" + (root.isEmpty ? "(none)" : root))
-        lines.append("blocked_capabilities:\n" + (blocked.isEmpty ? "(none)" : blocked.joined(separator: "\n")))
+        lines.append(HubUIStrings.Settings.Diagnostics.Export.rootCauseBlock(root.isEmpty ? HubUIStrings.Settings.Diagnostics.noneField : root))
+        lines.append(
+            HubUIStrings.Settings.Diagnostics.Export.blockedCapabilitiesBlock(
+                blocked.isEmpty ? HubUIStrings.Settings.Diagnostics.noneField : blocked.joined(separator: "\n")
+            )
+        )
+        lines.append(
+            HubUIStrings.Settings.Diagnostics.Export.remoteAccessBlock(
+                remoteAccessDiagnosticsSummaryForClipboard()
+            )
+        )
 
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(lines.joined(separator: "\n\n"), forType: .string)
@@ -2321,19 +3435,124 @@ struct SettingsSheetView: View {
         let blocked = snapshot?.degraded.blockedCapabilities ?? []
         let rtStatus = store.aiRuntimeStatusText.trimmingCharacters(in: .whitespacesAndNewlines)
         let doctor = store.aiRuntimeDoctorSummaryText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let installHints = store.aiRuntimeInstallHintsText.trimmingCharacters(in: .whitespacesAndNewlines)
         let providerSummary = store.aiRuntimeProviderSummaryText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pythonCandidates = store.aiRuntimePythonCandidatesText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let monitorSummary = store.aiRuntimeStatusSnapshot?.runtimeMonitorOperatorSummary(ttl: AIRuntimeStatus.recommendedHeartbeatTTL)
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
         var lines: [String] = []
         if !rtStatus.isEmpty {
-            lines.append("runtime_status:\n\(rtStatus)")
+            lines.append(HubUIStrings.Settings.Diagnostics.Export.runtimeStatusBlock(rtStatus))
         }
         if !doctor.isEmpty {
-            lines.append("runtime_doctor:\n\(doctor)")
+            lines.append(HubUIStrings.Settings.Diagnostics.Export.runtimeDoctorBlock(doctor))
         }
-        lines.append("blocked_capabilities:\n" + (blocked.isEmpty ? "(none)" : blocked.joined(separator: "\n")))
-        lines.append("provider_summary:\n" + (providerSummary.isEmpty ? "(none)" : providerSummary))
+        if !installHints.isEmpty {
+            lines.append(HubUIStrings.Settings.Diagnostics.Export.runtimeInstallHintsBlock(installHints))
+        }
+        if let guidance = xhubLocalServiceRecoveryGuidance {
+            lines.append(HubUIStrings.Settings.Diagnostics.Export.localServiceRecoveryBlock(guidance.clipboardText))
+        }
+        lines.append(
+            HubUIStrings.Settings.Diagnostics.Export.blockedCapabilitiesBlock(
+                blocked.isEmpty ? HubUIStrings.Settings.Diagnostics.noneField : blocked.joined(separator: "\n")
+            )
+        )
+        lines.append(
+            HubUIStrings.Settings.Diagnostics.Export.providerSummaryBlock(
+                providerSummary.isEmpty ? HubUIStrings.Settings.Diagnostics.noneField : providerSummary
+            )
+        )
+        lines.append(
+            HubUIStrings.Settings.Diagnostics.Export.remoteAccessBlock(
+                remoteAccessDiagnosticsSummaryForClipboard()
+            )
+        )
+        if !pythonCandidates.isEmpty {
+            lines.append(HubUIStrings.Settings.Diagnostics.Export.pythonCandidatesBlock(pythonCandidates))
+        }
+        if !monitorSummary.isEmpty {
+            lines.append(HubUIStrings.Settings.Diagnostics.Export.runtimeMonitorBlock(monitorSummary))
+        }
 
         let out = HubDiagnosticsBundleExporter.redactTextForSharing(lines.joined(separator: "\n\n"))
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(out, forType: .string)
+    }
+
+    private func copyRuntimeMonitorSummaryToClipboard(status: AIRuntimeStatus) {
+        let text = status.runtimeMonitorOperatorSummary(ttl: AIRuntimeStatus.recommendedHeartbeatTTL)
+        let out = HubDiagnosticsBundleExporter.redactTextForSharing(text)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(out, forType: .string)
+    }
+
+    private func copyRuntimeMonitorActiveTasksToClipboard(monitor: AIRuntimeMonitorSnapshot) {
+        let body = monitor.activeTasks.isEmpty
+            ? HubUIStrings.Settings.RuntimeMonitor.noneField
+            : monitor.activeTasks.map(runtimeMonitorActiveTaskLine).joined(separator: "\n")
+        let out = HubDiagnosticsBundleExporter.redactTextForSharing(
+            HubUIStrings.Settings.Diagnostics.Export.activeTasksBlock(body)
+        )
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(out, forType: .string)
+    }
+
+    private func copyRuntimeMonitorLoadedInstancesToClipboard(summary: LocalRuntimeOperationsSummary) {
+        let body = summary.instanceRows.isEmpty
+            ? HubUIStrings.Settings.RuntimeMonitor.noneField
+            : summary.instanceRows.map(runtimeMonitorLoadedInstanceLine).joined(separator: "\n")
+        let out = HubDiagnosticsBundleExporter.redactTextForSharing(
+            HubUIStrings.Settings.Diagnostics.Export.loadedInstancesBlock(body)
+        )
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(out, forType: .string)
+    }
+
+    private func copyRuntimeMonitorCurrentTargetsToClipboard(
+        _ currentTargets: [(HubModel, LocalModelRuntimeRequestContext)]
+    ) {
+        let body = currentTargets.isEmpty
+            ? HubUIStrings.Settings.RuntimeMonitor.noneField
+            : currentTargets.map { runtimeMonitorCurrentTargetLine(model: $0.0, requestContext: $0.1) }.joined(separator: "\n")
+        let out = HubDiagnosticsBundleExporter.redactTextForSharing(
+            HubUIStrings.Settings.Diagnostics.Export.currentTargetsBlock(body)
+        )
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(out, forType: .string)
+    }
+
+    private func copyRuntimeMonitorErrorsToClipboard(monitor: AIRuntimeMonitorSnapshot) {
+        let body = monitor.lastErrors.isEmpty
+            ? HubUIStrings.Settings.RuntimeMonitor.noneField
+            : monitor.lastErrors.map(runtimeMonitorErrorLine).joined(separator: "\n")
+        let out = HubDiagnosticsBundleExporter.redactTextForSharing(
+            HubUIStrings.Settings.Diagnostics.Export.lastErrorsBlock(body)
+        )
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(out, forType: .string)
+    }
+
+    private func copyRuntimePythonCandidatesToClipboard() {
+        let body = store.aiRuntimePythonCandidatesText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let out = HubDiagnosticsBundleExporter.redactTextForSharing(
+            HubUIStrings.Settings.Diagnostics.Export.pythonCandidatesBlock(
+                body.isEmpty ? HubUIStrings.Settings.Diagnostics.noneField : body
+            )
+        )
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(out, forType: .string)
+    }
+
+    private func copyXHubLocalServiceRecoveryToClipboard(_ guidance: XHubLocalServiceRecoveryGuidance) {
+        let out = HubDiagnosticsBundleExporter.redactTextForSharing(guidance.clipboardText)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(out, forType: .string)
+    }
+
+    private func copyLocalRuntimeRepairSummary(_ summary: LocalRuntimeRepairSurfaceSummary) {
+        let out = HubDiagnosticsBundleExporter.redactTextForSharing(summary.clipboardText)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(out, forType: .string)
     }
@@ -2345,39 +3564,88 @@ struct SettingsSheetView: View {
         let rtErr = store.aiRuntimeLastError.trimmingCharacters(in: .whitespacesAndNewlines)
         let rtStatus = store.aiRuntimeStatusText.trimmingCharacters(in: .whitespacesAndNewlines)
         let rtDoctor = store.aiRuntimeDoctorSummaryText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rtInstallHints = store.aiRuntimeInstallHintsText.trimmingCharacters(in: .whitespacesAndNewlines)
         let rtProviders = store.aiRuntimeProviderSummaryText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rtPythonCandidates = store.aiRuntimePythonCandidatesText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rtMonitor = store.aiRuntimeStatusSnapshot?.runtimeMonitorOperatorSummary(ttl: AIRuntimeStatus.recommendedHeartbeatTTL)
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
         var lines: [String] = []
-        lines.append("state: \(state)")
+        lines.append(HubUIStrings.Settings.Diagnostics.Export.stateLine(state))
         if let id = snapshot?.launchId.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty {
-            lines.append("launch_id: \(id)")
+            lines.append(HubUIStrings.Settings.Diagnostics.Export.launchIDLine(id))
         }
         if let snapshot, snapshot.updatedAtMs > 0 {
-            lines.append("updated_at: \(formatEpochMs(snapshot.updatedAtMs))")
+            lines.append(HubUIStrings.Settings.Diagnostics.Export.updatedAtLine(formatEpochMs(snapshot.updatedAtMs)))
         }
-        lines.append("root_cause:\n" + (root.isEmpty ? "(none)" : root))
-        lines.append("blocked_capabilities:\n" + (blocked.isEmpty ? "(none)" : blocked.joined(separator: "\n")))
+        lines.append(HubUIStrings.Settings.Diagnostics.Export.rootCauseBlock(root.isEmpty ? HubUIStrings.Settings.Diagnostics.noneField : root))
+        lines.append(
+            HubUIStrings.Settings.Diagnostics.Export.blockedCapabilitiesBlock(
+                blocked.isEmpty ? HubUIStrings.Settings.Diagnostics.noneField : blocked.joined(separator: "\n")
+            )
+        )
         if !rtStatus.isEmpty {
-            lines.append("runtime_status:\n\(rtStatus)")
+            lines.append(HubUIStrings.Settings.Diagnostics.Export.runtimeStatusBlock(rtStatus))
         }
         if !rtDoctor.isEmpty {
-            lines.append("runtime_doctor:\n\(rtDoctor)")
+            lines.append(HubUIStrings.Settings.Diagnostics.Export.runtimeDoctorBlock(rtDoctor))
+        }
+        if !rtInstallHints.isEmpty {
+            lines.append(HubUIStrings.Settings.Diagnostics.Export.runtimeInstallHintsBlock(rtInstallHints))
+        }
+        if let guidance = xhubLocalServiceRecoveryGuidance {
+            lines.append(HubUIStrings.Settings.Diagnostics.Export.localServiceRecoveryBlock(guidance.clipboardText))
         }
         if !rtProviders.isEmpty {
-            lines.append("runtime_providers:\n\(rtProviders)")
+            lines.append(HubUIStrings.Settings.Diagnostics.Export.runtimeProvidersBlock(rtProviders))
+        }
+        if !rtPythonCandidates.isEmpty {
+            lines.append(HubUIStrings.Settings.Diagnostics.Export.runtimePythonCandidatesBlock(rtPythonCandidates))
+        }
+        if !rtMonitor.isEmpty {
+            lines.append(HubUIStrings.Settings.Diagnostics.Export.runtimeMonitorBlock(rtMonitor))
         }
         if !rtErr.isEmpty {
-            lines.append("runtime_last_error:\n\(rtErr)")
+            lines.append(HubUIStrings.Settings.Diagnostics.Export.runtimeLastErrorBlock(rtErr))
         }
-        lines.append("diagnostics_bundle:\n" + (diagnosticsBundleArchivePath.isEmpty ? "(missing)" : diagnosticsBundleArchivePath))
+        lines.append(
+            HubUIStrings.Settings.Diagnostics.Export.remoteAccessBlock(
+                remoteAccessDiagnosticsSummaryForClipboard()
+            )
+        )
+        lines.append(
+            HubUIStrings.Settings.Diagnostics.Export.unifiedDoctorReportBlock(
+                unifiedDoctorReportSummaryForClipboard()
+            )
+        )
+        lines.append(
+            HubUIStrings.Settings.Diagnostics.Export.diagnosticsBundleBlock(
+                diagnosticsBundleArchivePath.isEmpty ? HubUIStrings.Settings.Diagnostics.missingField : diagnosticsBundleArchivePath
+            )
+        )
 
         let out = HubDiagnosticsBundleExporter.redactTextForSharing(lines.joined(separator: "\n\n"))
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(out, forType: .string)
     }
 
+    private func localServiceRecoverySeverityColor(_ severity: String) -> Color {
+        switch severity.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "high":
+            return .red
+        case "medium":
+            return .orange
+        default:
+            return .secondary
+        }
+    }
+
     private func exportDiagnosticsBundle() {
         Task { await exportDiagnosticsBundleAsync() }
+    }
+
+    private func exportUnifiedDoctorReport() {
+        Task { await exportUnifiedDoctorReportAsync() }
     }
 
     private func reloadAXConstitutionStatus() {
@@ -2393,7 +3661,7 @@ struct SettingsSheetView: View {
         do {
             let raw = try JSONSerialization.jsonObject(with: data, options: [])
             guard let obj = raw as? [String: Any] else {
-                axConstitutionErrorText = "Invalid JSON shape."
+                axConstitutionErrorText = HubUIStrings.Settings.Advanced.Constitution.invalidJSONShape
                 return
             }
             if let v = obj["version"] as? String {
@@ -2425,9 +3693,17 @@ struct SettingsSheetView: View {
         let enabled = axConstitutionEnabledClauseIds
 
         var lines: [String] = []
-        lines.append("ax_constitution_path: \(url.path)")
-        lines.append("version: \(ver.isEmpty ? "(unknown)" : ver)")
-        lines.append("enabled_default_clauses: " + (enabled.isEmpty ? "(none)" : enabled.joined(separator: ",")))
+        lines.append(HubUIStrings.Settings.Advanced.Constitution.summaryPath(url.path))
+        lines.append(
+            HubUIStrings.Settings.Advanced.Constitution.summaryVersion(
+                ver.isEmpty ? HubUIStrings.Settings.Advanced.Constitution.unknown : ver
+            )
+        )
+        lines.append(
+            HubUIStrings.Settings.Advanced.Constitution.summaryEnabledDefaultClauses(
+                enabled.isEmpty ? HubUIStrings.Settings.Advanced.Constitution.none : enabled.joined(separator: ",")
+            )
+        )
 
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(lines.joined(separator: "\n"), forType: .string)
@@ -2443,9 +3719,16 @@ struct SettingsSheetView: View {
         diagnosticsBundleMissingFiles = []
         defer { diagnosticsBundleIsExporting = false }
 
+        let adminToken = grpc.localAdminToken()
+        let grpcPort = grpc.port
+
         do {
             let res: HubDiagnosticsBundleExporter.ExportResult = try await Task.detached(priority: .utility) {
-                try HubDiagnosticsBundleExporter.exportDiagnosticsBundle(redactTokens: true)
+                try await HubDiagnosticsBundleExporter.exportDiagnosticsBundle(
+                    redactTokens: true,
+                    operatorChannelAdminToken: adminToken,
+                    operatorChannelGRPCPort: grpcPort
+                )
             }.value
 
             diagnosticsBundleArchivePath = res.archivePath
@@ -2458,6 +3741,36 @@ struct SettingsSheetView: View {
         } catch {
             diagnosticsBundleError = error.localizedDescription
         }
+    }
+
+    @MainActor
+    private func exportUnifiedDoctorReportAsync() async {
+        if unifiedDoctorReportIsExporting { return }
+        unifiedDoctorReportIsExporting = true
+        unifiedDoctorReportError = ""
+        unifiedDoctorReportPath = ""
+        unifiedDoctorChannelReportPath = ""
+        defer { unifiedDoctorReportIsExporting = false }
+
+        let blockedCapabilities = hubLaunchStatus?.degraded.blockedCapabilities ?? []
+        let adminToken = grpc.localAdminToken()
+        let grpcPort = grpc.port
+        let result: HubDiagnosticsBundleExporter.UnifiedDoctorReportsResult = await Task.detached(priority: .utility) {
+            await HubDiagnosticsBundleExporter.exportUnifiedDoctorReports(
+                status: AIRuntimeStatusStorage.load(),
+                blockedCapabilities: blockedCapabilities,
+                statusURL: AIRuntimeStatusStorage.url(),
+                operatorChannelAdminToken: adminToken,
+                operatorChannelGRPCPort: grpcPort,
+                surface: .hubUI
+            )
+        }.value
+
+        unifiedDoctorReportPath = result.runtimeReportPath
+        unifiedDoctorChannelReportPath = result.channelOnboardingReportPath
+
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(unifiedDoctorReportSummaryForClipboard(), forType: .string)
     }
 
     private func openLaunchStatusFile(primary: URL, fallback: URL) {
@@ -2477,448 +3790,863 @@ struct SettingsSheetView: View {
     private func pathLine(_ label: String, url: URL) -> String {
         let fm = FileManager.default
         let exists = fm.fileExists(atPath: url.path)
-        return "\(label): \(url.path)\(exists ? "" : " (missing)")"
+        return HubUIStrings.Settings.Diagnostics.pathLine(label: label, path: url.path, exists: exists)
+    }
+
+    private func hubDoctorCompanionPaths(for reportPath: String) -> (snapshotPath: String, recoveryGuidancePath: String) {
+        let normalized = reportPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            return (
+                snapshotPath: HubUIStrings.Settings.Diagnostics.missingField,
+                recoveryGuidancePath: HubUIStrings.Settings.Diagnostics.missingField
+            )
+        }
+        let baseURL = URL(fileURLWithPath: normalized, isDirectory: false).deletingLastPathComponent()
+        return (
+            snapshotPath: baseURL.appendingPathComponent("xhub_local_service_snapshot.redacted.json").path,
+            recoveryGuidancePath: baseURL.appendingPathComponent("xhub_local_service_recovery_guidance.redacted.json").path
+        )
+    }
+
+    private func unifiedDoctorReportSummaryForClipboard() -> String {
+        let companionPaths = hubDoctorCompanionPaths(for: unifiedDoctorReportPath)
+        let companionSummary = HubUIStrings.Settings.Diagnostics.companionFiles(
+            runtimeReportPath: unifiedDoctorReportPath.isEmpty ? HubUIStrings.Settings.Diagnostics.missingField : unifiedDoctorReportPath,
+            snapshotPath: companionPaths.snapshotPath,
+            recoveryGuidancePath: companionPaths.recoveryGuidancePath,
+            channelOnboardingPath: unifiedDoctorChannelReportPath.isEmpty ? HubUIStrings.Settings.Diagnostics.missingField : unifiedDoctorChannelReportPath
+        )
+        return [
+            companionSummary,
+            HubUIStrings.Settings.Diagnostics.Export.remoteAccessBlock(remoteAccessDiagnosticsSummaryForClipboard()),
+        ].joined(separator: "\n\n")
+    }
+
+    private func remoteAccessDiagnosticsSummaryForClipboard() -> String {
+        let health = grpcRemoteAccessHealthSummary
+        let route = remoteRouteProbe.snapshot
+        let host = grpc.xtTerminalInternetHost?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let routeAddresses = route.addresses.isEmpty
+            ? HubUIStrings.Settings.Diagnostics.noneField
+            : route.addresses.joined(separator: ", ")
+        let securePackState = grpc.secureRemoteSetupPackText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "unavailable"
+            : "ready"
+
+        let lines: [String] = [
+            "external_host: \(host.isEmpty ? HubUIStrings.Settings.Diagnostics.noneField : host)",
+            "grpc_auto_start: \(grpc.autoStart ? "on" : "off")",
+            "grpc_serving: \(grpc.isServingAvailable ? "on" : "off")",
+            "invite_token: \(grpc.hasExternalInviteToken ? "issued" : "missing")",
+            "keep_system_awake: \(servingPower.keepSystemAwakeWhileServing ? "on" : "off")",
+            "keep_display_awake: \(servingPower.keepDisplayAwakeWhileServing ? "on" : "off")",
+            "health_status: \(health.badgeText)",
+            "health_headline: \(health.headline)",
+            "health_detail: \(health.detail)",
+            "health_access_scope: \(health.accessScopeText)",
+            "health_operator_hint: \(health.operatorHintText)",
+            "route_status: \(route.statusText)",
+            "route_detail: \(route.detailText)",
+            "route_addresses: \(routeAddresses)",
+            "secure_remote_setup_pack: \(securePackState)",
+        ]
+        return lines.joined(separator: "\n")
+    }
+
+    private func unifiedDoctorRevealURLs() -> [URL] {
+        var urls: [URL] = []
+        let runtimePath = unifiedDoctorReportPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !runtimePath.isEmpty {
+            urls.append(URL(fileURLWithPath: runtimePath))
+        }
+        let channelPath = unifiedDoctorChannelReportPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !channelPath.isEmpty {
+            urls.append(URL(fileURLWithPath: channelPath))
+        }
+        return urls
     }
 
     private var grpcServerSection: some View {
-        Section("LAN (gRPC)") {
-            Toggle("Enable LAN gRPC", isOn: $grpc.autoStart)
+        Section(HubUIStrings.Settings.GRPC.sectionTitle) {
+            grpcServerPrimaryBlock()
+            grpcAdvancedSettingsBlock()
+            grpcAllowedDevicesBlock()
+            grpcRemoteAccessBlock()
+        }
+    }
 
-            HStack {
-                Text("Status")
-                Spacer()
-                Text(grpc.statusText)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+    @ViewBuilder
+    private func grpcServerPrimaryBlock() -> some View {
+        Toggle(HubUIStrings.Settings.GRPC.enableLAN, isOn: $grpc.autoStart)
+
+        HStack {
+            Text(HubUIStrings.Settings.GRPC.status)
+            Spacer()
+            Text(grpc.statusText)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+
+        if !grpc.lastError.isEmpty {
+            Text(grpc.lastError)
+                .font(.caption2)
+                .foregroundStyle(.red)
+        }
+
+        if !grpc.autoPortSwitchMessage.isEmpty {
+            Text(grpc.autoPortSwitchMessage)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+
+        VStack(alignment: .leading, spacing: 6) {
+            Text(HubUIStrings.Settings.GRPC.pairingInfoTitle)
+                .font(.caption.weight(.semibold))
+
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
+                GridRow {
+                    Text(HubUIStrings.Settings.GRPC.externalAddress)
+                        .foregroundStyle(.secondary)
+                    Text(grpc.xtTerminalInternetHost ?? HubUIStrings.Settings.GRPC.noReachableHost)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(grpc.xtTerminalInternetHost == nil ? .secondary : .primary)
+                        .textSelection(.enabled)
+                }
+                GridRow {
+                    Text(HubUIStrings.Settings.GRPC.pairingPort)
+                        .foregroundStyle(.secondary)
+                    Text(HubUIStrings.Settings.numericValue(grpc.xtTerminalPairingPort))
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                }
+                GridRow {
+                    Text(HubUIStrings.Settings.GRPC.grpcPort)
+                        .foregroundStyle(.secondary)
+                    Text(HubUIStrings.Settings.numericValue(grpc.port))
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                }
             }
+            .font(.caption)
 
-            if !grpc.lastError.isEmpty {
-                Text(grpc.lastError)
+            Text(HubUIStrings.Settings.GRPC.setupHint)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+
+        if !grpc.lanAddresses.isEmpty {
+            Text(grpc.lanAddresses.joined(separator: "\n"))
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+        }
+
+        HStack(spacing: 10) {
+            Button(HubUIStrings.Settings.GRPC.copyConnectionVars) {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(grpc.connectionGuide, forType: .string)
+            }
+            Button(HubUIStrings.Settings.FirstRun.copyBootstrap) { grpc.copyBootstrapCommandToClipboard() }
+            Button(HubUIStrings.Settings.FirstRun.addDevice) { showAddGRPCClient = true }
+            Button(HubUIStrings.Settings.FirstRun.refresh) { grpc.refresh() }
+            Spacer()
+        }
+        .font(.caption)
+
+        if !grpc.connectionGuide.isEmpty {
+            Text(grpc.connectionGuide)
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+        }
+    }
+
+    @ViewBuilder
+    private func grpcAdvancedSettingsBlock() -> some View {
+        DisclosureGroup(HubUIStrings.Settings.GRPC.advancedSettings) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(HubUIStrings.Settings.GRPC.externalHostOverride)
+                    .font(.caption.weight(.semibold))
+                TextField(HubUIStrings.Settings.GRPC.externalHostPlaceholder, text: $grpc.internetHostOverride)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.caption.monospaced())
+                Text(HubUIStrings.Settings.GRPC.externalHostHint)
                     .font(.caption2)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(.secondary)
             }
+
+            Divider()
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("X-Terminal Pairing")
+                Text(HubUIStrings.Settings.GRPC.externalInviteTitle)
                     .font(.caption.weight(.semibold))
+                Text(HubUIStrings.Settings.GRPC.externalHubAlias)
+                    .font(.caption.weight(.semibold))
+                TextField(HubUIStrings.Settings.GRPC.externalHubAliasPlaceholder, text: $grpc.externalHubAlias)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.caption.monospaced())
+                Text(HubUIStrings.Settings.GRPC.externalHubAliasHint)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
 
                 Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
                     GridRow {
-                        Text("Internet Host")
+                        Text(HubUIStrings.Settings.GRPC.externalInviteToken)
                             .foregroundStyle(.secondary)
-                        Text(grpc.xtTerminalInternetHost ?? "No LAN IPv4 detected")
+                        Text(grpc.externalInviteTokenPreview.isEmpty
+                             ? HubUIStrings.Settings.GRPC.inviteTokenNotIssued
+                             : grpc.externalInviteTokenPreview)
                             .font(.caption.monospaced())
-                            .foregroundStyle(grpc.xtTerminalInternetHost == nil ? .secondary : .primary)
-                            .textSelection(.enabled)
-                    }
-                    GridRow {
-                        Text("Pairing Port")
-                            .foregroundStyle(.secondary)
-                        Text("\(grpc.xtTerminalPairingPort)")
-                            .font(.caption.monospaced())
-                            .textSelection(.enabled)
-                    }
-                    GridRow {
-                        Text("gRPC Port")
-                            .foregroundStyle(.secondary)
-                        Text("\(grpc.port)")
-                            .font(.caption.monospaced())
+                            .foregroundStyle(grpc.externalInviteTokenPreview.isEmpty ? .secondary : .primary)
                             .textSelection(.enabled)
                     }
                 }
                 .font(.caption)
 
-                Text("Use these values in X-Terminal -> Hub Setup. Internet Host should be a reachable LAN/VPN/Tunnel host for the Terminal device.")
+                HStack(spacing: 10) {
+                    Button(HubUIStrings.Settings.GRPC.copySecureRemoteSetupPack) {
+                        _ = grpc.copySecureRemoteSetupPackToClipboard()
+                    }
+                    .disabled(!grpc.canProvisionSecureRemoteSetupPack)
+                    Button(grpc.hasExternalInviteToken
+                           ? HubUIStrings.Settings.GRPC.rotateInviteToken
+                           : HubUIStrings.Settings.GRPC.issueInviteToken) {
+                        grpc.rotateExternalInviteToken()
+                    }
+                    .disabled(!grpc.canProvisionExternalInvite)
+                    Button(HubUIStrings.Settings.GRPC.copyInviteLink) {
+                        _ = grpc.copyInviteLinkToClipboard()
+                    }
+                    .disabled(!grpc.canProvisionExternalInvite)
+                    if grpc.hasExternalInviteToken {
+                        Button(HubUIStrings.Settings.GRPC.clearInviteToken) {
+                            grpc.clearExternalInviteToken()
+                        }
+                    }
+                    Spacer()
+                }
+                .font(.caption)
+
+                Text(HubUIStrings.Settings.GRPC.secureRemoteSetupPackHint)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                if !grpc.externalInviteLinkText.isEmpty {
+                    Text(grpc.externalInviteLinkText)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                    if let qrImage = grpc.externalInviteQRCodeImage {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Image(nsImage: qrImage)
+                                .interpolation(.none)
+                                .resizable()
+                                .frame(width: 156, height: 156)
+                                .padding(8)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .fill(Color.white)
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .stroke(Color.secondary.opacity(0.15), lineWidth: 1)
+                                )
+                            Text(HubUIStrings.Settings.GRPC.inviteQRCodeHint)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } else {
+                    Text(grpc.externalInviteUnavailableReason)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Text(HubUIStrings.Settings.GRPC.externalInviteTokenHint)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
-            if !grpc.lanAddresses.isEmpty {
-                Text(grpc.lanAddresses.joined(separator: "\n"))
-                    .font(.caption2.monospaced())
+            Divider()
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(HubUIStrings.Settings.GRPC.transportSecurity)
+                    .font(.caption.weight(.semibold))
+                Picker(HubUIStrings.Settings.GRPC.transportMode, selection: $grpc.tlsMode) {
+                    Text(HubUIStrings.Settings.GRPC.insecure).tag("insecure")
+                    Text(HubUIStrings.Settings.GRPC.tls).tag("tls")
+                    Text(HubUIStrings.Settings.GRPC.mtls).tag("mtls")
+                }
+                .pickerStyle(.segmented)
+                .font(.caption)
+
+                Text(HubUIStrings.Settings.GRPC.transportHint)
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
+            }
+
+            Divider()
+
+            HStack {
+                Text(HubUIStrings.Settings.GRPC.port)
+                Spacer()
+                TextField(
+                    "50051",
+                    value: $grpc.port,
+                    formatter: {
+                        let f = NumberFormatter()
+                        f.allowsFloats = false
+                        f.minimum = 1
+                        f.maximum = 65535
+                        return f
+                    }()
+                )
+                .textFieldStyle(.roundedBorder)
+                .font(.caption)
+                .frame(width: 120)
             }
 
             HStack(spacing: 10) {
-                Button("Copy Connect Vars") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(grpc.connectionGuide, forType: .string)
-                }
-                Button("Copy Bootstrap Cmd") { grpc.copyBootstrapCommandToClipboard() }
-                Button("Add Client…") { showAddGRPCClient = true }
-                Button("Refresh") { grpc.refresh() }
+                Button(HubUIStrings.Settings.GRPC.openLog) { grpc.openLog() }
+                Button(HubUIStrings.Settings.GRPC.rotateDeviceToken) { grpc.regenerateClientToken() }
                 Spacer()
             }
             .font(.caption)
 
-            if !grpc.connectionGuide.isEmpty {
-                Text(grpc.connectionGuide)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
+            HStack(spacing: 10) {
+                Button(HubUIStrings.Settings.FirstRun.openQuotaSettings) { grpc.openQuotaConfig() }
+                Spacer()
             }
+            .font(.caption)
 
-            DisclosureGroup("Advanced") {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Transport Security")
+            Text(HubUIStrings.Settings.GRPC.quotaFile(grpc.quotaConfigURL().path))
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+
+            Divider()
+        }
+    }
+
+    @ViewBuilder
+    private func grpcAllowedDevicesBlock() -> some View {
+        Text(HubUIStrings.Settings.GRPC.allowedDevicesTitle)
+            .font(.caption.weight(.semibold))
+
+        HStack(spacing: 10) {
+            Button(HubUIStrings.Settings.GRPC.add) { showAddGRPCClient = true }
+            Button(HubUIStrings.Settings.GRPC.openDeviceList) { grpc.openClientsConfig() }
+            Spacer()
+        }
+        .font(.caption)
+
+        let ipDenied = grpcDeniedAttempts.attempts
+            .filter { a in
+                a.reason.trimmingCharacters(in: .whitespacesAndNewlines) == "source_ip_not_allowed"
+                    && !a.peerIp.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            .prefix(6)
+        if !ipDenied.isEmpty {
+            Divider()
+            Text(HubUIStrings.Settings.GRPC.DeviceList.deniedSourceIPTitle)
+                .font(.caption.weight(.semibold))
+            ForEach(ipDenied) { a in
+                VStack(alignment: .leading, spacing: 4) {
+                    let title = !a.clientName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        ? a.clientName
+                        : (
+                            a.deviceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                ? HubUIStrings.Settings.GRPC.DeviceList.unknownDevice
+                                : a.deviceId
+                        )
+                    let lastText = a.lastSeenAtMs > 0 ? formatMs(a.lastSeenAtMs) : HubUIStrings.Settings.GRPC.DeviceList.unknownSeen
+
+                    Text(title)
                         .font(.caption.weight(.semibold))
-                    Picker("TLS", selection: $grpc.tlsMode) {
-                        Text("Insecure").tag("insecure")
-                        Text("TLS").tag("tls")
-                        Text("mTLS").tag("mtls")
-                    }
-                    .pickerStyle(.segmented)
-                    .font(.caption)
 
-                    Text("Recommendation: use mTLS for LAN/VPN. Insecure is for dev/compatibility only. When enabling mTLS, pair devices again so the Hub can issue client certs.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-
-                Divider()
-
-                HStack {
-                    Text("Port")
-                    Spacer()
-                    TextField(
-                        "50051",
-                        value: $grpc.port,
-                        formatter: {
-                            let f = NumberFormatter()
-                            f.allowsFloats = false
-                            f.minimum = 1
-                            f.maximum = 65535
-                            return f
-                        }()
-                    )
-                    .textFieldStyle(.roundedBorder)
-                    .font(.caption)
-                    .frame(width: 120)
-                }
-
-                HStack(spacing: 10) {
-                    Button("Open Log") { grpc.openLog() }
-                    Button("Rotate Client Token") { grpc.regenerateClientToken() }
-                    Spacer()
-                }
-                .font(.caption)
-
-                HStack(spacing: 10) {
-                    Button("Open Quotas") { grpc.openQuotaConfig() }
-                    Spacer()
-                }
-                .font(.caption)
-
-                Text("Quota file: \(grpc.quotaConfigURL().path)")
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-
-                Divider()
-
-                Text("Clients (Allowlist)")
-                    .font(.caption.weight(.semibold))
-
-                HStack(spacing: 10) {
-                    Button("Add…") { showAddGRPCClient = true }
-                    Button("Open Clients") { grpc.openClientsConfig() }
-                    Spacer()
-                }
-                .font(.caption)
-
-                let ipDenied = grpcDeniedAttempts.attempts
-                    .filter { a in
-                        a.reason.trimmingCharacters(in: .whitespacesAndNewlines) == "source_ip_not_allowed"
-                            && !a.peerIp.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    }
-                    .prefix(6)
-                if !ipDenied.isEmpty {
-                    Divider()
-                    Text("Denied (IP allowlist)")
-                        .font(.caption.weight(.semibold))
-                    ForEach(ipDenied) { a in
-                        VStack(alignment: .leading, spacing: 4) {
-                            let title = !a.clientName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                ? a.clientName
-                                : (a.deviceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Unknown device" : a.deviceId)
-                            let lastText = a.lastSeenAtMs > 0 ? formatMs(a.lastSeenAtMs) : "(unknown)"
-
-                            Text(title)
-                                .font(.caption.weight(.semibold))
-
-                            Text("ip \(a.peerIp) · \(a.count)x · last \(lastText)")
-                                .font(.caption2.monospaced())
-                                .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
-
-                            if !a.expectedAllowedCidrs.isEmpty {
-                                Text("Allowed CIDRs: " + a.expectedAllowedCidrs.joined(separator: ", "))
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(2)
-                                    .textSelection(.enabled)
-                            }
-
-                            let did = a.deviceId.trimmingCharacters(in: .whitespacesAndNewlines)
-                            if !did.isEmpty, grpc.allowedClients.contains(where: { $0.deviceId == did }) {
-                                HStack(spacing: 10) {
-                                    Button("Add IP to Device") {
-                                        grpc.addAllowedCidr(deviceId: did, value: a.peerIp)
-                                    }
-                                    .font(.caption)
-                                    Button("Edit…") {
-                                        if let c = grpc.allowedClients.first(where: { $0.deviceId == did }) {
-                                            editingGRPCClient = c
-                                        }
-                                    }
-                                    .font(.caption)
-                                    Spacer()
-                                }
-                            }
-                        }
-                        .padding(.vertical, 2)
-                    }
-                }
-
-                if grpc.allowedClients.isEmpty {
-                    Text("No clients yet.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                } else {
-                    let statusById: [String: GRPCDeviceStatusEntry] = Dictionary(
-                        uniqueKeysWithValues: grpcDevicesStatus.devices.map { ($0.deviceId, $0) }
-                    )
-                    let summary = grpcClientListSummary(grpc.allowedClients, statusById: statusById)
-                    let visibleClients = grpcVisibleClients(grpc.allowedClients, statusById: statusById)
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 6) {
-                            grpcClientNetworkPill("devices:\(summary.total)", color: .secondary)
-                            grpcClientNetworkPill("enabled:\(summary.enabled)", color: summary.enabled > 0 ? .green : .secondary)
-                            grpcClientNetworkPill("connected:\(summary.connected)", color: summary.connected > 0 ? .green : .secondary)
-                            grpcClientNetworkPill("network:\(summary.networkEnabled)", color: summary.networkEnabled > 0 ? .green : .secondary)
-                            grpcClientNetworkPill("paid:\(summary.paidEnabled)", color: summary.paidEnabled > 0 ? .orange : .secondary)
-                            grpcClientNetworkPill("web:\(summary.webEnabled)", color: summary.webEnabled > 0 ? .blue : .secondary)
-                            grpcClientNetworkPill("blocked:\(summary.blocked)", color: summary.blocked > 0 ? .red : .secondary)
-                            Spacer()
-                        }
-
-                        Picker("Filter", selection: $grpcClientListFilter) {
-                            ForEach(GRPCClientListFilter.allCases) { filter in
-                                Text(filter.title).tag(filter)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        .font(.caption)
-
-                        Text("Sorted by connected, effective network access, enabled state, then name.")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-
-                        if visibleClients.count != grpc.allowedClients.count {
-                            Text("Showing \(visibleClients.count) of \(grpc.allowedClients.count) paired devices.")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
-                    ForEach(visibleClients) { c in
-                        let network = grpcClientNetworkAccessSnapshot(c)
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack(spacing: 10) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(c.name.isEmpty ? c.deviceId : c.name)
-                                        .font(.caption.weight(.semibold))
-                                    Text(c.deviceId)
-                                        .font(.caption2.monospaced())
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Button("Edit…") { editingGRPCClient = c }
-                                    .font(.caption)
-                                Button("Copy Vars") { grpc.copyConnectVars(for: c) }
-                                    .font(.caption)
-                                Button(c.enabled ? "Disable" : "Enable") {
-                                    grpc.setClientEnabled(deviceId: c.deviceId, enabled: !c.enabled)
-                                }
-                                .font(.caption)
-                            }
-
-                            HStack(spacing: 6) {
-                                grpcClientNetworkPill(
-                                    c.enabled ? "device:on" : "device:off",
-                                    color: c.enabled ? .green : .secondary
-                                )
-                                grpcClientNetworkPill(
-                                    network.canNetwork ? "network:on" : "network:off",
-                                    color: network.canNetwork ? .green : .secondary
-                                )
-                                grpcClientNetworkPill(
-                                    network.paidEnabled ? "paid:on" : "paid:off",
-                                    color: network.paidEnabled ? .orange : .secondary
-                                )
-                                grpcClientNetworkPill(
-                                    network.webEnabled ? "web:on" : "web:off",
-                                    color: network.webEnabled ? .blue : .secondary
-                                )
-                                grpcClientNetworkPill(
-                                    network.usesPolicyProfile ? "policy" : "legacy",
-                                    color: network.usesPolicyProfile ? .purple : .secondary
-                                )
-                                if let st = statusById[c.deviceId] {
-                                    grpcClientNetworkPill(
-                                        grpcClientExecutionPillTitle(st),
-                                        color: grpcClientExecutionPillColor(st)
-                                    )
-                                }
-                                Spacer()
-                            }
-
-                            HStack(spacing: 10) {
-                                Button(network.webEnabled ? "Disable Web" : "Enable Web") {
-                                    grpcSetWebFetchEnabled(c, enabled: !network.webEnabled)
-                                }
-                                .font(.caption)
-
-                                if network.policyGrantsNetwork {
-                                    Button("Cut Network") {
-                                        grpcCutOffNetworkAccess(c)
-                                    }
-                                    .font(.caption)
-                                }
-                                Text(grpcClientQuickActionHint(network))
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                Spacer()
-                            }
-
-                            Text(grpcClientSecuritySummary(c))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                                .textSelection(.enabled)
-
-                            Text(grpcClientPaidPolicySummary(c))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                                .textSelection(.enabled)
-
-                            if let st = statusById[c.deviceId] {
-                                Text(grpcClientStatusSummary(st))
-                                    .font(.caption2)
-                                    .foregroundStyle(st.connected ? Color.green : Color.secondary)
-                                    .lineLimit(2)
-                                    .textSelection(.enabled)
-
-                                Text(grpcClientPolicyUsageSummary(st))
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(2)
-                                    .textSelection(.enabled)
-
-                                Text(grpcClientActualExecutionSummary(st))
-                                    .font(.caption2)
-                                    .foregroundStyle(grpcClientExecutionPillColor(st))
-                                    .lineLimit(3)
-                                    .textSelection(.enabled)
-
-                                if let act = st.lastActivity {
-                                    Text(grpcClientLastActivitySummary(act))
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(2)
-                                        .textSelection(.enabled)
-                                }
-
-                                if !st.lastBlockedReason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !st.lastDenyCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                    Text(grpcClientLastBlockedSummary(st))
-                                        .font(.caption2)
-                                        .foregroundStyle(.orange)
-                                        .lineLimit(2)
-                                        .textSelection(.enabled)
-                                }
-
-                                if let series = st.tokenSeries5m1h, !series.points.isEmpty {
-                                    TokenSparkline(
-                                        points: series.points,
-                                        strokeColor: st.connected ? .accentColor : Color.gray.opacity(0.7),
-                                        lineWidth: 1.5
-                                    )
-                                    .frame(height: 18)
-                                }
-
-                                if st.dailyTokenCap > 0 {
-                                    ProgressView(value: Double(st.dailyTokenUsed), total: Double(st.dailyTokenCap))
-                                        .progressViewStyle(.linear)
-                                    Text("Tokens (UTC \(st.quotaDay)): \(st.dailyTokenUsed)/\(st.dailyTokenCap) · remaining \(max(0, st.remainingDailyTokenBudget))")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                } else if st.dailyTokenUsed > 0 {
-                                    Text("Tokens (UTC \(st.quotaDay)): \(st.dailyTokenUsed) (cap: unlimited)")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
-
-                                if !st.modelBreakdown.isEmpty {
-                                    DisclosureGroup("Usage details") {
-                                        ForEach(Array(st.modelBreakdown.prefix(3))) { row in
-                                            Text(grpcClientModelBreakdownSummary(row))
-                                                .font(.caption2.monospaced())
-                                                .foregroundStyle(.secondary)
-                                                .textSelection(.enabled)
-                                        }
-                                    }
-                                    .font(.caption2)
-                                }
-                            } else {
-                                Text("Status: unknown (no event subscription yet)")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .padding(.vertical, 4)
-                    }
-                }
-
-                Text("Clients file: \(grpc.clientsConfigURL().path)")
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-
-                Text("Only enabled clients in this file can connect via LAN gRPC.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-
-                Divider()
-
-                DisclosureGroup("Remote Mode (VPN / Tunnel)") {
-                    Text("Recommendation: do NOT expose this gRPC port directly to the public Internet. Use a VPN (WireGuard / ZeroTier) or an encrypted tunnel (SSH) so gRPC stays inside a private network.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-
-                    Text("Hardening (recommended): for each paired device, set Allowed CIDRs to the VPN subnet (e.g. `10.7.0.0/24`) and keep paid/web capabilities OFF unless needed.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-
-                    Text("Admin RPCs are local-only by default (safer). If you must manage remotely, set `HUB_ADMIN_ALLOW_REMOTE=1` (or `HUB_ADMIN_ALLOWED_CIDRS=...`) when starting the server.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-
-                    Button("Copy Remote Guide") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(Self.remoteModeGuideText, forType: .string)
-                    }
-                    .font(.caption)
-
-                    Text(Self.remoteModeGuideText)
+                    Text(HubUIStrings.Settings.GRPC.DeviceList.deniedLine(ip: a.peerIp, count: a.count, lastText: lastText))
                         .font(.caption2.monospaced())
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
+
+                    if !a.expectedAllowedCidrs.isEmpty {
+                        Text(HubUIStrings.Settings.GRPC.DeviceList.allowedSources(a.expectedAllowedCidrs))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .textSelection(.enabled)
+                    }
+
+                    let did = a.deviceId.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !did.isEmpty, grpc.allowedClients.contains(where: { $0.deviceId == did }) {
+                        HStack(spacing: 10) {
+                            Button(HubUIStrings.Settings.GRPC.DeviceList.addIPToDevice) {
+                                grpc.addAllowedCidr(deviceId: did, value: a.peerIp)
+                            }
+                            .font(.caption)
+                            Button(HubUIStrings.Settings.GRPC.DeviceList.edit) {
+                                if let c = grpc.allowedClients.first(where: { $0.deviceId == did }) {
+                                    presentGRPCClientEditor(c)
+                                }
+                            }
+                            .font(.caption)
+                            Spacer()
+                        }
+                    }
                 }
+                .padding(.vertical, 2)
             }
         }
+
+        if grpc.allowedClients.isEmpty {
+            Text(HubUIStrings.Settings.GRPC.DeviceList.noPairedDevices)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        } else {
+            let statusById: [String: GRPCDeviceStatusEntry] = Dictionary(
+                uniqueKeysWithValues: grpcDevicesStatus.devices.map { ($0.deviceId, $0) }
+            )
+            let summary = grpcClientListSummary(grpc.allowedClients, statusById: statusById)
+            let visibleClients = grpcVisibleClients(grpc.allowedClients, statusById: statusById)
+
+            grpcAllowedClientsHeader(statusById: statusById, summary: summary, visibleClients: visibleClients)
+
+            grpcAllowedClientsRows(visibleClients, statusById: statusById)
+        }
+    }
+
+    @ViewBuilder
+    private func grpcAllowedClientsHeader(
+        statusById: [String: GRPCDeviceStatusEntry],
+        summary: GRPCClientListSummary,
+        visibleClients: [HubGRPCClientEntry]
+    ) -> some View {
+        grpcPairingRepairCard(statusById: statusById)
+
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                grpcClientNetworkPill(HubUIStrings.Settings.GRPC.DeviceList.totalDevices(summary.total), color: .secondary)
+                grpcClientNetworkPill(HubUIStrings.Settings.GRPC.DeviceList.enabledDevices(summary.enabled), color: .green)
+                grpcClientNetworkPill(HubUIStrings.Settings.GRPC.DeviceList.connectedDevices(summary.connected), color: .accentColor)
+                grpcClientNetworkPill(HubUIStrings.Settings.GRPC.DeviceList.staleDevices(summary.stale), color: .orange)
+                grpcClientNetworkPill(HubUIStrings.Settings.GRPC.DeviceList.networkEnabledDevices(summary.networkEnabled), color: .blue)
+                grpcClientNetworkPill(HubUIStrings.Settings.GRPC.DeviceList.paidEnabledDevices(summary.paidEnabled), color: .purple)
+                grpcClientNetworkPill(HubUIStrings.Settings.GRPC.DeviceList.webEnabledDevices(summary.webEnabled), color: .teal)
+                grpcClientNetworkPill(HubUIStrings.Settings.GRPC.DeviceList.blockedDevices(summary.blocked), color: .red)
+            }
+            .padding(.vertical, 2)
+        }
+
+        HStack(spacing: 10) {
+            Text(HubUIStrings.Settings.GRPC.DeviceList.filter)
+                .font(.caption.weight(.semibold))
+
+            Picker(HubUIStrings.Settings.GRPC.DeviceList.filter, selection: $grpcClientListFilter) {
+                ForEach(GRPCClientListFilter.allCases) { filter in
+                    Text(filter.title).tag(filter)
+                }
+            }
+            .pickerStyle(.menu)
+            .font(.caption)
+
+            Spacer()
+
+            Text(HubUIStrings.Settings.GRPC.DeviceList.visibleDevices(visibleClients.count, summary.total))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+
+        Text(HubUIStrings.Settings.GRPC.DeviceList.sortHint)
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder
+    private func grpcAllowedClientsRows(
+        _ visibleClients: [HubGRPCClientEntry],
+        statusById: [String: GRPCDeviceStatusEntry]
+    ) -> some View {
+        ForEach(visibleClients) { client in
+            grpcAllowedClientRow(client, status: statusById[client.deviceId])
+        }
+    }
+
+    @ViewBuilder
+    private func grpcAllowedClientRow(_ client: HubGRPCClientEntry, status: GRPCDeviceStatusEntry?) -> some View {
+        let network = grpcClientNetworkAccessSnapshot(client)
+
+        VStack(alignment: .leading, spacing: 6) {
+            grpcAllowedClientRowHeader(client)
+            grpcAllowedClientRowPills(client, network: network, status: status)
+            grpcAllowedClientRowActions(client, network: network)
+            grpcAllowedClientRowMetadata(client)
+            grpcAllowedClientRowStatus(status)
+        }
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private func grpcAllowedClientRowHeader(_ client: HubGRPCClientEntry) -> some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(grpcClientDisplayName(client))
+                    .font(.caption.weight(.semibold))
+                Text(client.deviceId)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Button(HubUIStrings.Settings.GRPC.DeviceList.edit) {
+                presentGRPCClientEditor(client)
+            }
+            .font(.caption)
+
+            Button(HubUIStrings.Settings.GRPC.DeviceList.copyVars) {
+                grpc.copyConnectVars(for: client)
+            }
+            .font(.caption)
+
+            Button(client.enabled ? HubUIStrings.Settings.GRPC.DeviceList.disable : HubUIStrings.Settings.GRPC.DeviceList.enable) {
+                grpc.setClientEnabled(deviceId: client.deviceId, enabled: !client.enabled)
+            }
+            .font(.caption)
+
+            if client.deviceId != "terminal_device" {
+                Button(HubUIStrings.Settings.GRPC.DeviceList.delete) {
+                    deletingGRPCClient = client
+                }
+                .font(.caption)
+                .foregroundStyle(.red)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func grpcAllowedClientRowPills(
+        _ client: HubGRPCClientEntry,
+        network: GRPCClientNetworkAccessSnapshot,
+        status: GRPCDeviceStatusEntry?
+    ) -> some View {
+        HStack(spacing: 6) {
+            grpcClientNetworkPill(
+                HubUIStrings.Settings.GRPC.DeviceList.deviceEnabledPill(client.enabled),
+                color: client.enabled ? .green : .secondary
+            )
+            grpcClientNetworkPill(
+                HubUIStrings.Settings.GRPC.DeviceList.networkEnabledPill(network.canNetwork),
+                color: network.canNetwork ? .green : .secondary
+            )
+            grpcClientNetworkPill(
+                HubUIStrings.Settings.GRPC.DeviceList.paidEnabledPill(network.paidEnabled),
+                color: network.paidEnabled ? .orange : .secondary
+            )
+            grpcClientNetworkPill(
+                network.webEnabled ? HubUIStrings.Settings.GRPC.DeviceList.webOn : HubUIStrings.Settings.GRPC.DeviceList.webOff,
+                color: network.webEnabled ? .blue : .secondary
+            )
+            grpcClientNetworkPill(
+                network.usesPolicyProfile ? HubUIStrings.Settings.GRPC.DeviceList.policyNew : HubUIStrings.Settings.GRPC.DeviceList.policyLegacy,
+                color: network.usesPolicyProfile ? .purple : .secondary
+            )
+
+            if let status {
+                grpcClientNetworkPill(
+                    grpcClientPresencePillTitle(status),
+                    color: grpcClientPresencePillColor(status)
+                )
+                grpcClientNetworkPill(
+                    grpcClientExecutionPillTitle(status),
+                    color: grpcClientExecutionPillColor(status)
+                )
+            }
+
+            Spacer()
+        }
+    }
+
+    @ViewBuilder
+    private func grpcAllowedClientRowActions(
+        _ client: HubGRPCClientEntry,
+        network: GRPCClientNetworkAccessSnapshot
+    ) -> some View {
+        HStack(spacing: 10) {
+            Button(HubUIStrings.Settings.GRPC.DeviceList.toggleWeb(network.webEnabled)) {
+                grpcSetWebFetchEnabled(client, enabled: !network.webEnabled)
+            }
+            .font(.caption)
+
+            Button(HubUIStrings.Settings.GRPC.DeviceList.adoptCurrentSuggestedRange) {
+                grpc.adoptCurrentLANDefaults(deviceId: client.deviceId)
+                if editingGRPCClient?.deviceId == client.deviceId,
+                   let refreshed = grpc.allowedClients.first(where: { $0.deviceId == client.deviceId }) {
+                    presentGRPCClientEditor(
+                        refreshed,
+                        capabilityFocusKey: editingGRPCClientFocusCapabilityKey
+                    )
+                }
+            }
+            .font(.caption)
+
+            if network.policyGrantsNetwork {
+                Button(HubUIStrings.Settings.GRPC.DeviceList.cutOffNetwork) {
+                    grpcCutOffNetworkAccess(client)
+                }
+                .font(.caption)
+            }
+
+            Text(grpcClientQuickActionHint(network))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            Spacer()
+        }
+    }
+
+    @ViewBuilder
+    private func grpcAllowedClientRowMetadata(_ client: HubGRPCClientEntry) -> some View {
+        Text(grpcClientSecuritySummary(client))
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .lineLimit(2)
+            .textSelection(.enabled)
+
+        Text(grpcClientPaidPolicySummary(client))
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .lineLimit(2)
+            .textSelection(.enabled)
+    }
+
+    @ViewBuilder
+    private func grpcAllowedClientRowStatus(_ status: GRPCDeviceStatusEntry?) -> some View {
+        if let status {
+            Text(grpcClientStatusSummary(status))
+                .font(.caption2)
+                .foregroundStyle(grpcClientPresencePillColor(status))
+                .lineLimit(2)
+                .textSelection(.enabled)
+
+            Text(grpcClientPolicyUsageSummary(status))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .textSelection(.enabled)
+
+            Text(grpcClientActualExecutionSummary(status))
+                .font(.caption2)
+                .foregroundStyle(grpcClientExecutionPillColor(status))
+                .lineLimit(3)
+                .textSelection(.enabled)
+
+            if let activity = status.lastActivity {
+                Text(grpcClientLastActivitySummary(activity))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+            }
+
+            if grpcClientPresenceCountsAsStale(status) {
+                Text(HubUIStrings.Settings.GRPC.DeviceList.staleRepairHint)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if !status.lastBlockedReason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || !status.lastDenyCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(grpcClientLastBlockedSummary(status))
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+            }
+
+            if let series = status.tokenSeries5m1h, !series.points.isEmpty {
+                TokenSparkline(
+                    points: series.points,
+                    strokeColor: grpcClientPresenceState(status) == .connected ? .accentColor : Color.gray.opacity(0.7),
+                    lineWidth: 1.5
+                )
+                .frame(height: 18)
+            }
+
+            if status.dailyTokenCap > 0 {
+                ProgressView(value: Double(status.dailyTokenUsed), total: Double(status.dailyTokenCap))
+                    .progressViewStyle(.linear)
+                Text(
+                    HubUIStrings.Settings.GRPC.DeviceList.dailyTokenUsage(
+                        day: status.quotaDay,
+                        used: Int(status.dailyTokenUsed),
+                        cap: Int(status.dailyTokenCap),
+                        remaining: Int(max(0, status.remainingDailyTokenBudget))
+                    )
+                )
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            } else if status.dailyTokenUsed > 0 {
+                Text(HubUIStrings.Settings.GRPC.DeviceList.dailyTokenUsageUnlimited(day: status.quotaDay, used: Int(status.dailyTokenUsed)))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            if !status.modelBreakdown.isEmpty {
+                DisclosureGroup(HubUIStrings.Settings.GRPC.DeviceList.usageDetails) {
+                    ForEach(Array(status.modelBreakdown.prefix(3))) { row in
+                        Text(grpcClientModelBreakdownSummary(row))
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+                .font(.caption2)
+            }
+        } else {
+            Text(HubUIStrings.Settings.GRPC.DeviceList.statusUnknownNoEvents)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func grpcRemoteAccessBlock() -> some View {
+        let remoteHealth = grpcRemoteAccessHealthSummary
+        let routeSnapshot = remoteRouteProbe.snapshot
+
+        Text(HubUIStrings.Settings.GRPC.deviceFile(grpc.clientsConfigURL().path))
+            .font(.caption2.monospaced())
+            .foregroundStyle(.secondary)
+            .textSelection(.enabled)
+
+        Text(HubUIStrings.Settings.GRPC.enabledDeviceFileHint)
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+
+        Divider()
+
+        VStack(alignment: .leading, spacing: 6) {
+            Text(HubUIStrings.Settings.GRPC.RemoteHealth.title)
+                .font(.caption.weight(.semibold))
+
+            HStack(spacing: 6) {
+                grpcClientNetworkPill(remoteHealth.badgeText, color: grpcRemoteHealthColor(remoteHealth.state))
+                Spacer()
+            }
+
+            Text(remoteHealth.headline)
+                .font(.caption.weight(.semibold))
+
+            Text(remoteHealth.detail)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            Text(remoteHealth.accessScopeText)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            Text(remoteHealth.operatorHintText)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            if let nextStep = remoteHealth.nextStep,
+               !nextStep.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(HubUIStrings.Settings.GRPC.RemoteHealth.nextStep(nextStep))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+
+        Divider()
+
+        VStack(alignment: .leading, spacing: 6) {
+            Text(HubUIStrings.Settings.GRPC.RemoteRoute.title)
+                .font(.caption.weight(.semibold))
+
+            HStack(spacing: 6) {
+                grpcClientNetworkPill(routeSnapshot.statusText, color: grpcRemoteRouteColor(routeSnapshot.state))
+                Spacer()
+            }
+
+            Text(routeSnapshot.detailText)
+                .font(.caption2)
+                .foregroundStyle(routeSnapshot.state == .failed ? .red : .secondary)
+
+            if !routeSnapshot.addresses.isEmpty {
+                Text(routeSnapshot.addresses.joined(separator: "\n"))
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+        }
+
+        Divider()
+
+        DisclosureGroup(HubUIStrings.Settings.GRPC.remoteAccessDisclosure) {
+            Text(HubUIStrings.Settings.GRPC.remoteAccessHint)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            Text(HubUIStrings.Settings.GRPC.remoteHardeningHint)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            Text(HubUIStrings.Settings.GRPC.remoteAdminHint)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            Button(HubUIStrings.Settings.GRPC.copyRemoteAccessGuide) {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(Self.remoteModeGuideText, forType: .string)
+            }
+            .font(.caption)
+
+            Text(Self.remoteModeGuideText)
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+        }
+
+        Divider()
+
+        Toggle(HubUIStrings.Settings.GRPC.ServingPower.keepSystemAwake, isOn: $servingPower.keepSystemAwakeWhileServing)
+
+        Text(HubUIStrings.Settings.GRPC.ServingPower.keepSystemAwakeHint)
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+
+        Toggle(HubUIStrings.Settings.GRPC.ServingPower.keepDisplayAwake, isOn: $servingPower.keepDisplayAwakeWhileServing)
+            .disabled(!servingPower.keepSystemAwakeWhileServing)
+
+        Text(HubUIStrings.Settings.GRPC.ServingPower.keepDisplayAwakeHint)
+            .font(.caption2)
+            .foregroundStyle(servingPower.keepSystemAwakeWhileServing ? .secondary : .tertiary)
+
+        HStack {
+            Text(HubUIStrings.Settings.GRPC.ServingPower.status)
+            Spacer()
+            Text(servingPower.statusText)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .font(.caption)
+
+        Text(servingPower.detailText)
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+
+        if !servingPower.lastError.isEmpty {
+            Text(servingPower.lastError)
+                .font(.caption2)
+                .foregroundStyle(.red)
+        }
+    }
+
+    private func deleteClientConfirmationMessage(_ client: HubGRPCClientEntry) -> String {
+        let displayName = client.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? client.deviceId
+            : client.name
+        return HubUIStrings.Settings.GRPC.deleteClientConfirmation(displayName: displayName, deviceID: client.deviceId)
     }
 
     private func grpcClientSecuritySummary(_ c: HubGRPCClientEntry) -> String {
@@ -2929,31 +4657,27 @@ struct SettingsSheetView: View {
 
         let policyText: String = {
             if c.policyMode == .legacyGrant {
-                return "Policy: legacy_grant"
+                return HubUIStrings.Settings.GRPC.DeviceList.legacyPolicyMode
             }
             guard let profile = c.approvedTrustProfile else {
-                return "Policy: new_profile (missing payload)"
+                return HubUIStrings.Settings.GRPC.DeviceList.newProfileMissing
             }
-            let paid = profile.paidModelPolicy.mode.rawValue
-            let web = profile.networkPolicy.defaultWebFetchEnabled ? "web:on" : "web:off"
-            let daily = profile.budgetPolicy.dailyTokenLimit > 0 ? "daily:\(profile.budgetPolicy.dailyTokenLimit)" : "daily:unset"
-            return "Policy: new_profile [\(paid), \(web), \(daily)]"
+            let paid = paidPolicyModeLabel(profile.paidModelPolicy.mode.rawValue)
+            let web = HubUIStrings.Settings.GRPC.DeviceList.currentWebState(profile.networkPolicy.defaultWebFetchEnabled)
+            let daily = HubUIStrings.Settings.GRPC.DeviceList.currentDailyBudget(profile.budgetPolicy.dailyTokenLimit)
+            return HubUIStrings.Settings.GRPC.DeviceList.policyProfileSummary(paid: paid, web: web, daily: daily)
         }()
-        let capsText: String = {
-            if caps.isEmpty { return "Caps: ALL (empty = allow all)" }
-            return "Caps: " + caps.joined(separator: ", ")
-        }()
-        let cidrText: String = {
-            if cidrs.isEmpty { return "IP: ANY (empty = allow any source IP)" }
-            return "IP: " + cidrs.joined(separator: ", ")
-        }()
-        let certText: String = {
-            if cert.isEmpty { return "mTLS: (not pinned)" }
-            if cert.count <= 12 { return "mTLS: pin \(cert)" }
-            return "mTLS: pin \(cert.prefix(8))…\(cert.suffix(4))"
-        }()
-        let userText = user.isEmpty ? "User: (device_id fallback)" : "User: \(user)"
-        return "\(policyText) · \(userText) · \(capsText) · \(cidrText) · \(certText)"
+        let capsText = HubUIStrings.Settings.GRPC.DeviceList.capabilities(caps)
+        let cidrText = HubUIStrings.Settings.GRPC.DeviceList.sourceIPs(cidrs)
+        let certText = HubUIStrings.Settings.GRPC.DeviceList.mtlsFingerprint(cert)
+        let userText = HubUIStrings.Settings.GRPC.DeviceList.user(user)
+        return HubUIStrings.Settings.GRPC.DeviceList.securitySummary(
+            policy: policyText,
+            user: userText,
+            caps: capsText,
+            cidr: cidrText,
+            cert: certText
+        )
     }
 
     private func grpcClientPaidPolicySummary(_ client: HubGRPCClientEntry) -> String {
@@ -2962,27 +4686,30 @@ struct SettingsSheetView: View {
                 cap.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "ai.generate.paid"
             }
             return paidEnabled
-                ? "Paid route: legacy grant path still active for this Terminal."
-                : "Paid route: legacy grant path with paid routing currently off."
+                ? HubUIStrings.Settings.GRPC.DeviceList.paidRouteLegacyOn
+                : HubUIStrings.Settings.GRPC.DeviceList.paidRouteLegacyOff
         }
 
         guard let profile = client.approvedTrustProfile else {
-            return "Paid route: new_profile selected, but the trust payload is missing."
+            return HubUIStrings.Settings.GRPC.DeviceList.paidRouteProfileMissing
         }
 
         switch profile.paidModelPolicy.mode {
         case .off:
-            return "Paid route: off."
+            return HubUIStrings.Settings.GRPC.DeviceList.paidRouteOff
         case .allPaidModels:
-            return "Paid route: all paid models allowed."
+            return HubUIStrings.Settings.GRPC.DeviceList.paidRouteAll
         case .customSelectedModels:
             let models = profile.paidModelPolicy.allowedModelIds
             if models.isEmpty {
-                return "Paid route: custom selected models, but the allowlist is empty."
+                return HubUIStrings.Settings.GRPC.DeviceList.paidRouteCustomEmpty
             }
             let preview = models.prefix(3).joined(separator: ", ")
-            let suffix = models.count > 3 ? " +\(models.count - 3) more" : ""
-            return "Paid route: custom (\(models.count)) · \(preview)\(suffix)"
+            return HubUIStrings.Settings.GRPC.DeviceList.paidRouteCustom(
+                count: models.count,
+                preview: preview,
+                extraCount: max(0, models.count - 3)
+            )
         }
     }
 
@@ -3022,6 +4749,7 @@ struct SettingsSheetView: View {
     private enum GRPCClientListFilter: String, CaseIterable, Identifiable {
         case all
         case connected
+        case stale
         case networkEnabled
         case networkOff
         case blocked
@@ -3031,15 +4759,17 @@ struct SettingsSheetView: View {
         var title: String {
             switch self {
             case .all:
-                return "All"
+                return HubUIStrings.Settings.GRPC.DeviceList.filterAll
             case .connected:
-                return "Connected"
+                return HubUIStrings.Settings.GRPC.DeviceList.filterConnected
+            case .stale:
+                return HubUIStrings.Settings.GRPC.DeviceList.filterStale
             case .networkEnabled:
-                return "Network On"
+                return HubUIStrings.Settings.GRPC.DeviceList.filterNetworkEnabled
             case .networkOff:
-                return "Network Off"
+                return HubUIStrings.Settings.GRPC.DeviceList.filterNetworkOff
             case .blocked:
-                return "Blocked"
+                return HubUIStrings.Settings.GRPC.DeviceList.filterBlocked
             }
         }
     }
@@ -3048,6 +4778,7 @@ struct SettingsSheetView: View {
         var total: Int = 0
         var enabled: Int = 0
         var connected: Int = 0
+        var stale: Int = 0
         var networkEnabled: Int = 0
         var paidEnabled: Int = 0
         var webEnabled: Int = 0
@@ -3066,8 +4797,11 @@ struct SettingsSheetView: View {
             if client.enabled {
                 summary.enabled += 1
             }
-            if status?.connected == true {
+            if grpcClientPresenceState(status) == .connected {
                 summary.connected += 1
+            }
+            if grpcClientPresenceCountsAsStale(status) {
+                summary.stale += 1
             }
             if network.canNetwork {
                 summary.networkEnabled += 1
@@ -3097,7 +4831,9 @@ struct SettingsSheetView: View {
                 case .all:
                     return true
                 case .connected:
-                    return status?.connected == true
+                    return grpcClientPresenceState(status) == .connected
+                case .stale:
+                    return grpcClientPresenceCountsAsStale(status)
                 case .networkEnabled:
                     return network.canNetwork
                 case .networkOff:
@@ -3111,9 +4847,11 @@ struct SettingsSheetView: View {
                 let rhsStatus = statusById[rhs.deviceId]
                 let lhsNetwork = grpcClientNetworkAccessSnapshot(lhs)
                 let rhsNetwork = grpcClientNetworkAccessSnapshot(rhs)
+                let lhsPresence = grpcClientPresenceSortRank(lhsStatus)
+                let rhsPresence = grpcClientPresenceSortRank(rhsStatus)
 
-                if (lhsStatus?.connected == true) != (rhsStatus?.connected == true) {
-                    return lhsStatus?.connected == true
+                if lhsPresence != rhsPresence {
+                    return lhsPresence < rhsPresence
                 }
                 if lhsNetwork.canNetwork != rhsNetwork.canNetwork {
                     return lhsNetwork.canNetwork
@@ -3141,14 +4879,130 @@ struct SettingsSheetView: View {
         return !status.lastDenyCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    private func grpcPairingRepairDeniedAttempts(limit: Int) -> [GRPCDeniedAttemptEntry] {
+        grpcDeniedAttempts.attempts
+            .filter { attempt in
+                grpcDeniedAttemptLooksLikePairingRepair(attempt.reason)
+                    || grpcDeniedAttemptLooksLikePairingRepair(attempt.message)
+            }
+            .sorted { lhs, rhs in
+                if lhs.lastSeenAtMs != rhs.lastSeenAtMs {
+                    return lhs.lastSeenAtMs > rhs.lastSeenAtMs
+                }
+                return lhs.count > rhs.count
+            }
+            .prefix(limit)
+            .map { $0 }
+    }
+
+    private func grpcPairingRepairCandidateClients(
+        _ clients: [HubGRPCClientEntry],
+        statusById: [String: GRPCDeviceStatusEntry]
+    ) -> [HubGRPCClientEntry] {
+        clients.filter { client in
+            client.deviceId != "terminal_device" && grpcClientPresenceCountsAsStale(statusById[client.deviceId])
+        }
+    }
+
+    @ViewBuilder
+    private func grpcPairingRepairCard(statusById: [String: GRPCDeviceStatusEntry]) -> some View {
+        let staleClients = grpcPairingRepairCandidateClients(grpc.allowedClients, statusById: statusById)
+        let pairingRepairDeniedAttempts = grpcPairingRepairDeniedAttempts(limit: 3)
+        let singleRepairCandidate = staleClients.count == 1 ? staleClients.first : nil
+
+        if !staleClients.isEmpty || !pairingRepairDeniedAttempts.isEmpty {
+            quickFixCard(
+                title: HubUIStrings.Settings.GRPC.pairingRepairTitle,
+                summary: grpcPairingRepairSummary(
+                    staleClients: staleClients,
+                    deniedAttempts: pairingRepairDeniedAttempts
+                ),
+                steps: [
+                    HubUIStrings.Settings.GRPC.pairingRepairStepClearXT,
+                    HubUIStrings.Settings.GRPC.pairingRepairStepDeleteHub,
+                    HubUIStrings.Settings.GRPC.pairingRepairStepReconnect,
+                ]
+            ) {
+                if !staleClients.isEmpty {
+                    Button(HubUIStrings.Settings.GRPC.filterStaleOnly) {
+                        grpcClientListFilter = .stale
+                    }
+                }
+                if let singleRepairCandidate {
+                    Button(HubUIStrings.Settings.GRPC.deleteOldDevice) {
+                        deletingGRPCClient = singleRepairCandidate
+                    }
+                    .foregroundStyle(.red)
+                }
+                Button(HubUIStrings.Settings.GRPC.openDeviceListFile) {
+                    grpc.openClientsConfig()
+                }
+            }
+        }
+    }
+
+    private func grpcDeniedAttemptLooksLikePairingRepair(_ raw: String) -> Bool {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !text.isEmpty else { return false }
+        return text.contains("unauthenticated")
+            || text.contains("mtls_client_certificate_required")
+            || text.contains("certificate_required")
+            || text.contains("pairing_health_failed")
+            || text.contains("bootstrap_refresh_failed")
+            || text.contains("missing_pairing_secret")
+            || text.contains("discover_failed_using_cached_profile")
+    }
+
+    private func grpcPairingRepairSummary(
+        staleClients: [HubGRPCClientEntry],
+        deniedAttempts: [GRPCDeniedAttemptEntry]
+    ) -> String {
+        var parts: [String] = []
+        if !staleClients.isEmpty {
+            let names = staleClients.prefix(2).map(grpcClientDisplayName)
+            if staleClients.count == 1, let name = names.first {
+                parts.append(HubUIStrings.Settings.GRPC.pairingRepairFoundOne(name))
+            } else {
+                let preview = names.joined(separator: "、")
+                parts.append(HubUIStrings.Settings.GRPC.pairingRepairFoundMany(count: staleClients.count, preview: preview))
+            }
+        }
+        if !deniedAttempts.isEmpty {
+            let names = deniedAttempts.prefix(2).map(grpcDeniedAttemptDisplayName)
+            parts.append(HubUIStrings.Settings.GRPC.pairingRepairDenied(names.joined(separator: "、")))
+        }
+        if parts.isEmpty {
+            return HubUIStrings.Settings.GRPC.pairingRepairDefaultSummary
+        }
+        parts.append(HubUIStrings.Settings.GRPC.pairingRepairClosing)
+        return parts.joined(separator: " ")
+    }
+
+    private func grpcClientDisplayName(_ client: HubGRPCClientEntry) -> String {
+        let name = client.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? client.deviceId : name
+    }
+
+    private func grpcDeniedAttemptDisplayName(_ attempt: GRPCDeniedAttemptEntry) -> String {
+        let name = attempt.clientName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let device = attempt.deviceId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty {
+            return name
+        }
+        if !device.isEmpty {
+            return device
+        }
+        return HubUIStrings.Settings.GRPC.DeviceList.unknownDevice
+    }
+
     private func grpcClientQuickActionHint(_ snapshot: GRPCClientNetworkAccessSnapshot) -> String {
         if !snapshot.clientEnabled {
-            return "This Terminal entry is disabled. Re-enable the device above before network routes can be used."
+            return HubUIStrings.Settings.GRPC.DeviceList.quickActionEnableFirst
         }
         if snapshot.policyGrantsNetwork {
-            return "Cuts off this Terminal only. Restore detailed paid-model routing in Edit if needed."
+            return HubUIStrings.Settings.GRPC.DeviceList.quickActionCutOffOnly
         }
-        return "Safe quick restore for web access only. Use Edit for paid-model routing."
+        return HubUIStrings.Settings.GRPC.DeviceList.quickActionRestoreWebOnly
     }
 
     @ViewBuilder
@@ -3160,6 +5014,30 @@ struct SettingsSheetView: View {
             .padding(.vertical, 2)
             .background(color.opacity(0.12))
             .clipShape(Capsule())
+    }
+
+    private func grpcRemoteHealthColor(_ state: HubRemoteAccessHealthSummary.State) -> Color {
+        switch state {
+        case .ready:
+            return .green
+        case .warning:
+            return .orange
+        case .critical:
+            return .red
+        }
+    }
+
+    private func grpcRemoteRouteColor(_ state: HubRemoteAccessRouteProbeSnapshot.State) -> Color {
+        switch state {
+        case .idle, .skipped:
+            return .secondary
+        case .resolving:
+            return .blue
+        case .resolved:
+            return .green
+        case .failed:
+            return .red
+        }
     }
 
     private func grpcCutOffNetworkAccess(_ client: HubGRPCClientEntry) {
@@ -3209,35 +5087,142 @@ struct SettingsSheetView: View {
     private func grpcClientStatusSummary(_ st: GRPCDeviceStatusEntry) -> String {
         let ip = st.peerIp.trimmingCharacters(in: .whitespacesAndNewlines)
         let streams = max(0, st.activeEventSubscriptions)
-        if st.connected {
-            var parts: [String] = ["Status: connected"]
-            if !ip.isEmpty { parts.append("ip \(ip)") }
-            if streams > 1 { parts.append("streams \(streams)") }
-            return parts.joined(separator: " · ")
+        switch grpcClientPresenceState(st) {
+        case .connected:
+            return HubUIStrings.Settings.GRPC.DeviceList.connectedStatus(
+                ip: ip.isEmpty ? nil : ip,
+                streams: streams
+            )
+        case .offlineRecent:
+            let lastSeen = st.lastSeenAtMs > 0
+                ? HubUIStrings.Settings.GRPC.DeviceList.lastSeen(formatMs(st.lastSeenAtMs))
+                : HubUIStrings.Settings.GRPC.DeviceList.lastSeenUnknown
+            return HubUIStrings.Settings.GRPC.DeviceList.offlineRecentStatus(
+                lastSeen: lastSeen,
+                ip: ip.isEmpty ? nil : ip
+            )
+        case .stale:
+            if st.connected {
+                let snapshotText = grpcDevicesStatus.updatedAtMs > 0
+                    ? HubUIStrings.Settings.GRPC.DeviceList.snapshotAt(formatMs(grpcDevicesStatus.updatedAtMs))
+                    : HubUIStrings.Settings.GRPC.DeviceList.snapshotMissing
+                return HubUIStrings.Settings.GRPC.DeviceList.staleStatus(
+                    reference: snapshotText,
+                    ip: ip.isEmpty ? nil : ip
+                )
+            }
+            let lastSeen = st.lastSeenAtMs > 0
+                ? HubUIStrings.Settings.GRPC.DeviceList.lastSeen(formatMs(st.lastSeenAtMs))
+                : HubUIStrings.Settings.GRPC.DeviceList.neverSeen
+            return HubUIStrings.Settings.GRPC.DeviceList.staleStatus(
+                reference: lastSeen,
+                ip: ip.isEmpty ? nil : ip
+            )
+        case .neverSeen:
+            return HubUIStrings.Settings.GRPC.DeviceList.statusNeverSeen
+        case .unknown:
+            return HubUIStrings.Settings.GRPC.DeviceList.statusUnknown
         }
-        let lastSeen = st.lastSeenAtMs > 0 ? "last seen \(formatMs(st.lastSeenAtMs))" : "never seen"
-        if ip.isEmpty { return "Status: disconnected · \(lastSeen)" }
-        return "Status: disconnected · \(lastSeen) · ip \(ip)"
     }
+
+    private enum GRPCClientPresenceState {
+        case connected
+        case offlineRecent
+        case stale
+        case neverSeen
+        case unknown
+    }
+
+    private func grpcClientPresenceState(_ status: GRPCDeviceStatusEntry?) -> GRPCClientPresenceState {
+        guard let status else { return .unknown }
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000.0)
+        let snapshotAgeMs: Int64 = {
+            let updatedAtMs = grpcDevicesStatus.updatedAtMs
+            guard updatedAtMs > 0 else { return Int64.max }
+            return max(0, nowMs - updatedAtMs)
+        }()
+
+        if status.connected {
+            return snapshotAgeMs > Self.grpcClientPresenceSnapshotStaleMs ? .stale : .connected
+        }
+        guard status.lastSeenAtMs > 0 else { return .neverSeen }
+        let lastSeenAgeMs = max(0, nowMs - status.lastSeenAtMs)
+        return lastSeenAgeMs > Self.grpcClientPresenceStaleMs ? .stale : .offlineRecent
+    }
+
+    private func grpcClientPresenceCountsAsStale(_ status: GRPCDeviceStatusEntry?) -> Bool {
+        switch grpcClientPresenceState(status) {
+        case .stale, .neverSeen:
+            return true
+        case .connected, .offlineRecent, .unknown:
+            return false
+        }
+    }
+
+    private func grpcClientPresenceSortRank(_ status: GRPCDeviceStatusEntry?) -> Int {
+        switch grpcClientPresenceState(status) {
+        case .connected:
+            return 0
+        case .offlineRecent:
+            return 1
+        case .stale:
+            return 2
+        case .neverSeen:
+            return 3
+        case .unknown:
+            return 4
+        }
+    }
+
+    private func grpcClientPresencePillTitle(_ status: GRPCDeviceStatusEntry?) -> String {
+        switch grpcClientPresenceState(status) {
+        case .connected:
+            return HubUIStrings.Settings.GRPC.DeviceList.filterConnected
+        case .offlineRecent:
+            return HubUIStrings.Settings.GRPC.DeviceList.presenceOffline
+        case .stale:
+            return HubUIStrings.Settings.GRPC.DeviceList.filterStale
+        case .neverSeen:
+            return HubUIStrings.Settings.GRPC.DeviceList.presenceNew
+        case .unknown:
+            return HubUIStrings.Settings.GRPC.DeviceList.presenceUnknown
+        }
+    }
+
+    private func grpcClientPresencePillColor(_ status: GRPCDeviceStatusEntry?) -> Color {
+        switch grpcClientPresenceState(status) {
+        case .connected:
+            return .green
+        case .offlineRecent:
+            return .secondary
+        case .stale:
+            return .orange
+        case .neverSeen, .unknown:
+            return .secondary
+        }
+    }
+
+    private static let grpcClientPresenceSnapshotStaleMs: Int64 = 15_000
+    private static let grpcClientPresenceStaleMs: Int64 = 12 * 60 * 60 * 1000
 
 
     private func grpcClientPolicyUsageSummary(_ st: GRPCDeviceStatusEntry) -> String {
         var parts: [String] = []
         let mode = st.paidModelPolicyMode.trimmingCharacters(in: .whitespacesAndNewlines)
         if !mode.isEmpty {
-            parts.append("policy \(paidPolicyModeLabel(mode))")
+            parts.append(HubUIStrings.Settings.GRPC.DeviceList.policyUsageMode(paidPolicyModeLabel(mode)))
         }
-        parts.append(st.defaultWebFetchEnabled ? "web:on" : "web:off")
+        parts.append(HubUIStrings.Settings.GRPC.DeviceList.webStateShort(st.defaultWebFetchEnabled))
         if st.dailyTokenCap > 0 {
-            parts.append("budget \(st.dailyTokenUsed)/\(st.dailyTokenCap)")
-            parts.append("remaining \(max(0, st.remainingDailyTokenBudget))")
+            parts.append(HubUIStrings.Settings.GRPC.DeviceList.budgetUsage(used: st.dailyTokenUsed, cap: st.dailyTokenCap))
+            parts.append(HubUIStrings.Settings.GRPC.DeviceList.remainingBudget(max(0, st.remainingDailyTokenBudget)))
         }
         if !st.topModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            parts.append("top \(st.topModel)")
+            parts.append(HubUIStrings.Settings.GRPC.DeviceList.topModel(st.topModel))
         }
-        if st.requestsToday > 0 { parts.append("req \(st.requestsToday)") }
-        if st.blockedToday > 0 { parts.append("blocked \(st.blockedToday)") }
-        return parts.joined(separator: " · ")
+        if st.requestsToday > 0 { parts.append(HubUIStrings.Settings.GRPC.DeviceList.requests(st.requestsToday)) }
+        if st.blockedToday > 0 { parts.append(HubUIStrings.Settings.GRPC.DeviceList.blocked(st.blockedToday)) }
+        return HubUIStrings.Settings.GRPC.DeviceList.summary(parts)
     }
 
     private enum GRPCClientExecutionState {
@@ -3272,19 +5257,19 @@ struct SettingsSheetView: View {
     private func grpcClientExecutionPillTitle(_ st: GRPCDeviceStatusEntry) -> String {
         switch grpcClientExecutionState(st) {
         case .remoteCompleted:
-            return "last:remote"
+            return HubUIStrings.Settings.GRPC.DeviceList.executionRemote
         case .localCompleted:
-            return "last:local"
+            return HubUIStrings.Settings.GRPC.DeviceList.executionLocal
         case .downgradedToLocal:
-            return "last:downgraded"
+            return HubUIStrings.Settings.GRPC.DeviceList.executionDowngraded
         case .denied:
-            return "last:denied"
+            return HubUIStrings.Settings.GRPC.DeviceList.executionDenied
         case .failed:
-            return "last:failed"
+            return HubUIStrings.Settings.GRPC.DeviceList.executionFailed
         case .canceled:
-            return "last:canceled"
+            return HubUIStrings.Settings.GRPC.DeviceList.executionCanceled
         case .unknown:
-            return "last:unknown"
+            return HubUIStrings.Settings.GRPC.DeviceList.executionUnknown
         }
     }
 
@@ -3309,76 +5294,65 @@ struct SettingsSheetView: View {
         guard let activity = st.lastActivity else {
             let topModel = st.topModel.trimmingCharacters(in: .whitespacesAndNewlines)
             if !topModel.isEmpty {
-                return "Actual execution: recent paid usage was seen on \(topModel), but the latest request detail is unavailable."
+                return HubUIStrings.Settings.GRPC.DeviceList.executionSummaryWithTopModel(topModel)
             }
-            return "Actual execution: no recent request detail is available yet."
+            return HubUIStrings.Settings.GRPC.DeviceList.actualExecutionNoDetail
         }
 
         let model = activity.modelId.trimmingCharacters(in: .whitespacesAndNewlines)
         let code = activity.errorCode.trimmingCharacters(in: .whitespacesAndNewlines)
         let message = activity.errorMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedModel = model.isEmpty ? "(model not reported)" : model
+        let resolvedModel = model.isEmpty ? HubUIStrings.Settings.GRPC.DeviceList.noReportedModel : model
 
         switch grpcClientExecutionState(st) {
         case .remoteCompleted:
-            return "Actual execution: remote route hit \(resolvedModel)."
+            return HubUIStrings.Settings.GRPC.DeviceList.actualExecutionRemote(resolvedModel)
         case .localCompleted:
-            return "Actual execution: completed on local runtime \(resolvedModel), not the remote paid route."
+            return HubUIStrings.Settings.GRPC.DeviceList.actualExecutionLocal(resolvedModel)
         case .downgradedToLocal:
-            let reason = !code.isEmpty ? code : (!message.isEmpty ? message : "downgraded_to_local")
-            return "Actual execution: paid route was downgraded to local runtime \(resolvedModel) · \(reason)."
+            let reason = !code.isEmpty ? code : (!message.isEmpty ? message : HubUIStrings.Settings.GRPC.DeviceList.downgradedFallback)
+            return HubUIStrings.Settings.GRPC.DeviceList.actualExecutionDowngraded(model: resolvedModel, reason: reason)
         case .denied:
-            let reason = !code.isEmpty ? code : (!message.isEmpty ? message : "denied")
-            return "Actual execution: request was blocked before model execution · \(reason)."
+            let reason = !code.isEmpty ? code : (!message.isEmpty ? message : HubUIStrings.Settings.GRPC.DeviceList.deniedFallback)
+            return HubUIStrings.Settings.GRPC.DeviceList.actualExecutionDenied(reason)
         case .failed:
-            let reason = !code.isEmpty ? code : (!message.isEmpty ? message : "failed")
-            return "Actual execution: request reached runtime but failed · \(reason)."
+            let reason = !code.isEmpty ? code : (!message.isEmpty ? message : HubUIStrings.Settings.GRPC.DeviceList.failedFallback)
+            return HubUIStrings.Settings.GRPC.DeviceList.actualExecutionFailed(reason)
         case .canceled:
-            return "Actual execution: request was canceled before completion."
+            return HubUIStrings.Settings.GRPC.DeviceList.actualExecutionCanceled
         case .unknown:
             let eventType = activity.eventType.trimmingCharacters(in: .whitespacesAndNewlines)
             if eventType.isEmpty {
-                return "Actual execution: latest request detail is incomplete."
+                return HubUIStrings.Settings.GRPC.DeviceList.actualExecutionIncomplete
             }
-            return "Actual execution: latest event is \(eventType) on \(resolvedModel)."
+            return HubUIStrings.Settings.GRPC.DeviceList.actualExecutionUnknown(eventType: eventType, model: resolvedModel)
         }
     }
 
     private func grpcClientLastBlockedSummary(_ st: GRPCDeviceStatusEntry) -> String {
         let reason = st.lastBlockedReason.trimmingCharacters(in: .whitespacesAndNewlines)
         let code = st.lastDenyCode.trimmingCharacters(in: .whitespacesAndNewlines)
-        if reason.isEmpty && code.isEmpty { return "Last blocked: none" }
-        if reason.isEmpty { return "Last blocked: \(code)" }
-        if code.isEmpty { return "Last blocked: \(reason)" }
-        return "Last blocked: \(reason) · \(code)"
+        if reason.isEmpty && code.isEmpty { return HubUIStrings.Settings.GRPC.DeviceList.lastBlockedNone }
+        if reason.isEmpty { return HubUIStrings.Settings.GRPC.DeviceList.lastBlocked(code) }
+        if code.isEmpty { return HubUIStrings.Settings.GRPC.DeviceList.lastBlocked(reason) }
+        return HubUIStrings.Settings.GRPC.DeviceList.lastBlocked(reason: reason, code: code)
     }
 
     private func grpcClientModelBreakdownSummary(_ row: GRPCDeviceModelBreakdownEntry) -> String {
         var parts: [String] = [row.modelId]
-        parts.append("tokens \(row.totalTokens)")
-        parts.append("req \(row.requestCount)")
-        if row.blockedCount > 0 { parts.append("blocked \(row.blockedCount)") }
-        if row.lastUsedAtMs > 0 { parts.append("last \(formatMs(row.lastUsedAtMs))") }
+        parts.append(HubUIStrings.Settings.GRPC.DeviceList.tokenUsage(row.totalTokens))
+        parts.append(HubUIStrings.Settings.GRPC.DeviceList.requests(row.requestCount))
+        if row.blockedCount > 0 { parts.append(HubUIStrings.Settings.GRPC.DeviceList.blocked(row.blockedCount)) }
+        if row.lastUsedAtMs > 0 { parts.append(HubUIStrings.Settings.GRPC.DeviceList.recent(formatMs(row.lastUsedAtMs))) }
         if row.lastBlockedAtMs > 0 {
             let code = row.lastDenyCode.trimmingCharacters(in: .whitespacesAndNewlines)
-            parts.append(code.isEmpty ? "deny logged" : "deny \(code)")
+            parts.append(code.isEmpty ? HubUIStrings.Settings.GRPC.DeviceList.denyRecorded : HubUIStrings.Settings.GRPC.DeviceList.denyCode(code))
         }
-        return parts.joined(separator: " · ")
+        return HubUIStrings.Settings.GRPC.DeviceList.summary(parts)
     }
 
     private func paidPolicyModeLabel(_ raw: String) -> String {
-        switch raw {
-        case "all_paid_models":
-            return "all_paid_models"
-        case "custom_selected_models":
-            return "custom_selected_models"
-        case "legacy_grant":
-            return "legacy_grant"
-        case "off":
-            return "off"
-        default:
-            return raw.isEmpty ? "unset" : raw
-        }
+        HubUIStrings.Settings.GRPC.DeviceList.policyModeLabel(raw)
     }
 
     private func grpcClientLastActivitySummary(_ a: GRPCDeviceLastActivity) -> String {
@@ -3389,96 +5363,73 @@ struct SettingsSheetView: View {
 
         var parts: [String] = []
         if !eventType.isEmpty {
-            parts.append("Audit: \(eventType)")
+            parts.append(HubUIStrings.Settings.GRPC.DeviceList.audit(eventType))
         } else if !model.isEmpty {
-            parts.append("Audit: \(model)")
+            parts.append(HubUIStrings.Settings.GRPC.DeviceList.audit(model))
         } else {
-            parts.append("Audit: (unknown)")
+            parts.append(HubUIStrings.Settings.GRPC.DeviceList.auditUnknown)
         }
 
-        if !model.isEmpty { parts.append("model \(model)") }
+        if !model.isEmpty { parts.append(HubUIStrings.Settings.GRPC.DeviceList.model(model)) }
         if !cap.isEmpty { parts.append(cap) }
-        parts.append(a.networkAllowed ? "net:on" : "net:off")
-        if a.totalTokens > 0 { parts.append("tokens \(a.totalTokens)") }
-        parts.append(a.ok ? "ok" : "fail")
+        parts.append(HubUIStrings.Settings.GRPC.DeviceList.network(a.networkAllowed))
+        if a.totalTokens > 0 { parts.append(HubUIStrings.Settings.GRPC.DeviceList.tokenUsage(a.totalTokens)) }
+        parts.append(HubUIStrings.Settings.GRPC.DeviceList.ok(a.ok))
         if !at.isEmpty { parts.append(at) }
         if !a.ok {
             let code = a.errorCode.trimmingCharacters(in: .whitespacesAndNewlines)
             if !code.isEmpty { parts.append(code) }
         }
-        return parts.joined(separator: " · ")
+        return HubUIStrings.Settings.GRPC.DeviceList.summary(parts)
     }
 
     private func formatMs(_ ms: Int64) -> String {
         let secs = Double(ms) / 1000.0
         let d = Date(timeIntervalSince1970: secs)
         let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        f.dateFormat = HubUIStrings.Formatting.dateTimeWithSeconds
         return f.string(from: d)
     }
 
-    private static let remoteModeGuideText: String = """
-Remote mode (VPN/Tunnel) checklist / 远程模式检查清单
-
-1) Transport (recommended): WireGuard / ZeroTier. Avoid port-forwarding gRPC directly.
-   传输层首选：WireGuard / ZeroTier（把终端变成“虚拟局域网”）。不要把 gRPC 端口直接映射到公网。
-
-   Connect: on the Terminal device, set HUB_HOST to the Hub's VPN IP (or use an encrypted tunnel like SSH).
-   连接方式：终端侧把 HUB_HOST 设置为 Hub 的 VPN IP（或用 SSH 等加密隧道把端口转发到本地）。
-
-2) Per-device hardening: set Allowed CIDRs to your VPN subnet (e.g. 10.7.0.0/24).
-   设备级加固：把 Allowed CIDRs 绑定到 VPN 子网（例如 10.7.0.0/24）。
-
-3) Capability hardening: keep `ai.generate.paid` / `web.fetch` OFF unless needed.
-   能力收敛：除非确实需要，否则不要给设备开启 `ai.generate.paid` / `web.fetch`。
-
-4) Admin RPC: local-only by default. Only enable remote admin if required.
-   管理端默认仅本机访问（更安全）。确实要远程管理时才放开。
-
-Example Allowed CIDRs:
-- private, loopback
-- 100.64.0.0/10 (Tailscale/Headscale)
-- 10.7.0.0/24
-- 192.168.1.0/24,10.7.0.0/24
-"""
+    private static let remoteModeGuideText = HubUIStrings.Settings.GRPC.remoteAccessGuideChecklist
 
     private var networkPoliciesSection: some View {
-        Section("Network Policies") {
+        Section(HubUIStrings.Settings.NetworkPolicies.sectionTitle) {
             HStack {
-                Text("Policies")
+                Text(HubUIStrings.Settings.NetworkPolicies.policy)
                 Spacer()
-                Button("Add…") { showAddNetworkPolicy = true }
+                Button(HubUIStrings.Settings.NetworkPolicies.add) { showAddNetworkPolicy = true }
             }
 
             if networkPolicies.isEmpty {
-                Text("No network policies yet.")
+                Text(HubUIStrings.Settings.NetworkPolicies.empty)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(networkPolicies) { p in
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("\(p.appId) · \(p.projectId)")
+                        Text(HubUIStrings.Settings.NetworkPolicies.policyTitle(appID: p.appId, projectID: p.projectId))
                             .font(.callout.weight(.semibold))
-                        Text("模式：\(policyModeText(p.mode)) · 限制：\(policyLimitText(p.maxSeconds))")
+                        Text(HubUIStrings.Settings.NetworkPolicies.summary(mode: policyModeText(p.mode), limit: policyLimitText(p.maxSeconds)))
                             .font(.caption2)
                             .foregroundStyle(.secondary)
 
                         HStack(spacing: 10) {
-                            Menu("Mode") {
-                                Button("Manual") { updatePolicy(p, mode: .manual, maxSeconds: nil) }
-                                Button("Auto-approve") { updatePolicy(p, mode: .autoApprove, maxSeconds: p.maxSeconds) }
-                                Button("Always-on") { updatePolicy(p, mode: .alwaysOn, maxSeconds: p.maxSeconds) }
-                                Button("Deny") { updatePolicy(p, mode: .deny, maxSeconds: nil) }
+                            Menu(HubUIStrings.Settings.NetworkPolicies.modeMenu) {
+                                Button(HubUIStrings.Settings.NetworkPolicies.manual) { updatePolicy(p, mode: .manual, maxSeconds: nil) }
+                                Button(HubUIStrings.Settings.NetworkPolicies.autoApprove) { updatePolicy(p, mode: .autoApprove, maxSeconds: p.maxSeconds) }
+                                Button(HubUIStrings.Settings.NetworkPolicies.alwaysAllow) { updatePolicy(p, mode: .alwaysOn, maxSeconds: p.maxSeconds) }
+                                Button(HubUIStrings.Settings.NetworkPolicies.alwaysDeny) { updatePolicy(p, mode: .deny, maxSeconds: nil) }
                             }
-                            Menu("Limit") {
-                                Button("No limit") { updatePolicy(p, mode: nil, maxSeconds: nil) }
-                                Button("15m") { updatePolicy(p, mode: nil, maxSeconds: 15 * 60) }
-                                Button("30m") { updatePolicy(p, mode: nil, maxSeconds: 30 * 60) }
-                                Button("60m") { updatePolicy(p, mode: nil, maxSeconds: 60 * 60) }
-                                Button("120m") { updatePolicy(p, mode: nil, maxSeconds: 120 * 60) }
-                                Button("8h") { updatePolicy(p, mode: nil, maxSeconds: 8 * 60 * 60) }
+                            Menu(HubUIStrings.Settings.NetworkPolicies.durationMenu) {
+                                Button(HubUIStrings.Settings.NetworkPolicies.noLimit) { updatePolicy(p, mode: nil, maxSeconds: nil) }
+                                Button(HubUIStrings.Settings.NetworkPolicies.fifteenMinutes) { updatePolicy(p, mode: nil, maxSeconds: 15 * 60) }
+                                Button(HubUIStrings.Settings.NetworkPolicies.thirtyMinutes) { updatePolicy(p, mode: nil, maxSeconds: 30 * 60) }
+                                Button(HubUIStrings.Settings.NetworkPolicies.sixtyMinutes) { updatePolicy(p, mode: nil, maxSeconds: 60 * 60) }
+                                Button(HubUIStrings.Settings.NetworkPolicies.oneHundredTwentyMinutes) { updatePolicy(p, mode: nil, maxSeconds: 120 * 60) }
+                                Button(HubUIStrings.Settings.NetworkPolicies.eightHours) { updatePolicy(p, mode: nil, maxSeconds: 8 * 60 * 60) }
                             }
-                            Button("Remove") { removePolicy(p) }
+                            Button(HubUIStrings.Settings.NetworkPolicies.remove) { removePolicy(p) }
                             Spacer()
                         }
                         .font(.caption)
@@ -3490,20 +5441,20 @@ Example Allowed CIDRs:
     }
 
     private var routingSection: some View {
-        Section("AI Routing") {
+        Section(HubUIStrings.Settings.Routing.sectionTitle) {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(Self.routingTaskTypes, id: \.self) { t in
                     HStack {
                         Text(t)
                             .font(.caption.monospaced())
                         Spacer()
-                        TextField("model id", text: bindingRoutingModelId(t))
+                        TextField(HubUIStrings.Settings.Routing.modelIDPlaceholder, text: bindingRoutingModelId(t))
                             .textFieldStyle(.roundedBorder)
                             .font(.caption)
                             .frame(width: 320)
                     }
                 }
-                Text("Routing lives in Hub. Coder only requests a role; Hub decides the model.")
+                Text(HubUIStrings.Settings.Routing.truthHint)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -3511,74 +5462,537 @@ Example Allowed CIDRs:
     }
 
     private var remoteModelsSection: some View {
-        Section("Remote Models (Paid)") {
+        Section(HubUIStrings.Settings.RemoteModels.sectionTitle) {
             HStack {
-                Text("Remote Models")
+                Text(HubUIStrings.Settings.RemoteModels.title)
                 Spacer()
-                Button("Remote Catalog Import…") { showImportRemoteCatalog = true }
-                Button("Add…") { showAddRemoteModel = true }
+                Button(
+                    store.remoteKeyHealthScanInFlight
+                        ? HubUIStrings.Settings.RemoteModels.healthCheckingBadge
+                        : HubUIStrings.Settings.RemoteModels.scanAll
+                ) {
+                    store.scanAllRemoteKeyHealth()
+                }
+                .disabled(store.remoteKeyHealthScanInFlight || remoteModels.isEmpty)
+                Button(HubUIStrings.Settings.RemoteModels.importCatalog) { showImportRemoteCatalog = true }
+                Button(HubUIStrings.Settings.RemoteModels.add) { showAddRemoteModel = true }
             }
             if remoteModels.isEmpty {
-                Text("No remote models yet.")
+                Text(HubUIStrings.Settings.RemoteModels.empty)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(remoteModelGroups) { group in
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(alignment: .firstTextBaseline) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(group.title)
-                                    .font(.callout.weight(.semibold))
-                                Text(group.summary)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                keychainStatusLine(model: group.primaryModel)
-                            }
-                            Spacer()
-                            Button("Remove Key Group") {
-                                removeRemoteModelGroup(keyReference: group.keyReference)
-                            }
-                        }
-
-                        ForEach(group.models) { m in
-                            HStack(spacing: 10) {
-                                Toggle("", isOn: bindingRemoteEnabled(m.id))
-                                    .labelsHidden()
-
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(m.name.isEmpty ? m.id : m.name)
-                                        .font(.callout.weight(.semibold))
-                                    Text(remoteModelSubtitle(m))
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                                Spacer()
-                                Button("Remove") { removeRemoteModel(id: m.id) }
-                            }
-                        }
-                    }
-                    .padding(.vertical, 4)
+                    remoteModelGroupCard(group)
                 }
             }
-            Text("Only runnable enabled remote models are written into models_state.json as Loaded. Entries missing an API key or failing endpoint validation stay local to Hub settings and are not pushed to X-Terminal.")
+            Text(HubUIStrings.Settings.RemoteModels.syncHint)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
     }
 
+    private var modelHealthAutoScanSection: some View {
+        Section(HubUIStrings.Settings.ModelHealthAutoScan.sectionTitle) {
+            Text(HubUIStrings.Settings.ModelHealthAutoScan.summary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            modelHealthAutoScanCard(
+                title: HubUIStrings.Settings.ModelHealthAutoScan.localTitle,
+                schedule: store.localModelHealthAutoScanSchedule,
+                hint: HubUIStrings.Settings.ModelHealthAutoScan.localHint,
+                nextRunText: nextLocalModelHealthAutoScanText(),
+                modeBinding: localModelHealthAutoScanModeBinding(),
+                intervalBinding: localModelHealthAutoScanIntervalBinding(),
+                dailyTimeBinding: localModelHealthAutoScanDailyTimeBinding()
+            )
+
+            modelHealthAutoScanCard(
+                title: HubUIStrings.Settings.ModelHealthAutoScan.remoteTitle,
+                schedule: store.remoteKeyHealthAutoScanSchedule,
+                hint: HubUIStrings.Settings.ModelHealthAutoScan.remoteHint,
+                nextRunText: nextRemoteKeyHealthAutoScanText(),
+                modeBinding: remoteKeyHealthAutoScanModeBinding(),
+                intervalBinding: remoteKeyHealthAutoScanIntervalBinding(),
+                dailyTimeBinding: remoteKeyHealthAutoScanDailyTimeBinding()
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func modelHealthAutoScanCard(
+        title: String,
+        schedule: ModelHealthAutoScanSchedule,
+        hint: String,
+        nextRunText: String?,
+        modeBinding: Binding<ModelHealthAutoScanMode>,
+        intervalBinding: Binding<Int>,
+        dailyTimeBinding: Binding<Date>
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.callout.weight(.semibold))
+
+            Picker(HubUIStrings.Settings.ModelHealthAutoScan.mode, selection: modeBinding) {
+                Text(HubUIStrings.Settings.ModelHealthAutoScan.disabled).tag(ModelHealthAutoScanMode.disabled)
+                Text(HubUIStrings.Settings.ModelHealthAutoScan.interval).tag(ModelHealthAutoScanMode.interval)
+                Text(HubUIStrings.Settings.ModelHealthAutoScan.dailyTime).tag(ModelHealthAutoScanMode.dailyTime)
+            }
+            .pickerStyle(.segmented)
+
+            switch schedule.mode {
+            case .disabled:
+                EmptyView()
+            case .interval:
+                Stepper(value: intervalBinding, in: 1...(24 * 14)) {
+                    Text(HubUIStrings.Settings.ModelHealthAutoScan.everyHours(schedule.intervalHours))
+                        .font(.caption)
+                }
+            case .dailyTime:
+                HStack {
+                    Text(HubUIStrings.Settings.ModelHealthAutoScan.dailyAt)
+                        .font(.caption)
+                    Spacer()
+                    DatePicker(
+                        "",
+                        selection: dailyTimeBinding,
+                        displayedComponents: .hourAndMinute
+                    )
+                    .labelsHidden()
+                    .datePickerStyle(.field)
+                }
+
+                Text(HubUIStrings.Settings.ModelHealthAutoScan.dailyTimeHint)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Text(hint)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            if let nextRunText {
+                Text(HubUIStrings.Settings.ModelHealthAutoScan.nextRun(nextRunText))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+        .background(Color.white.opacity(0.05))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private func localModelHealthAutoScanModeBinding() -> Binding<ModelHealthAutoScanMode> {
+        Binding(
+            get: { store.localModelHealthAutoScanSchedule.mode },
+            set: { newValue in
+                store.updateLocalModelHealthAutoScanSchedule(
+                    reconfiguredModelHealthAutoScanSchedule(from: store.localModelHealthAutoScanSchedule) {
+                        $0.mode = newValue
+                    }
+                )
+            }
+        )
+    }
+
+    private func localModelHealthAutoScanIntervalBinding() -> Binding<Int> {
+        Binding(
+            get: { store.localModelHealthAutoScanSchedule.intervalHours },
+            set: { newValue in
+                store.updateLocalModelHealthAutoScanSchedule(
+                    reconfiguredModelHealthAutoScanSchedule(from: store.localModelHealthAutoScanSchedule) {
+                        $0.intervalHours = newValue
+                    }
+                )
+            }
+        )
+    }
+
+    private func localModelHealthAutoScanDailyTimeBinding() -> Binding<Date> {
+        Binding(
+            get: { clockDate(for: store.localModelHealthAutoScanSchedule.dailyMinuteOfDay) },
+            set: { newValue in
+                store.updateLocalModelHealthAutoScanSchedule(
+                    reconfiguredModelHealthAutoScanSchedule(from: store.localModelHealthAutoScanSchedule) {
+                        $0.dailyMinuteOfDay = minuteOfDay(from: newValue)
+                    }
+                )
+            }
+        )
+    }
+
+    private func remoteKeyHealthAutoScanModeBinding() -> Binding<ModelHealthAutoScanMode> {
+        Binding(
+            get: { store.remoteKeyHealthAutoScanSchedule.mode },
+            set: { newValue in
+                store.updateRemoteKeyHealthAutoScanSchedule(
+                    reconfiguredModelHealthAutoScanSchedule(from: store.remoteKeyHealthAutoScanSchedule) {
+                        $0.mode = newValue
+                    }
+                )
+            }
+        )
+    }
+
+    private func remoteKeyHealthAutoScanIntervalBinding() -> Binding<Int> {
+        Binding(
+            get: { store.remoteKeyHealthAutoScanSchedule.intervalHours },
+            set: { newValue in
+                store.updateRemoteKeyHealthAutoScanSchedule(
+                    reconfiguredModelHealthAutoScanSchedule(from: store.remoteKeyHealthAutoScanSchedule) {
+                        $0.intervalHours = newValue
+                    }
+                )
+            }
+        )
+    }
+
+    private func remoteKeyHealthAutoScanDailyTimeBinding() -> Binding<Date> {
+        Binding(
+            get: { clockDate(for: store.remoteKeyHealthAutoScanSchedule.dailyMinuteOfDay) },
+            set: { newValue in
+                store.updateRemoteKeyHealthAutoScanSchedule(
+                    reconfiguredModelHealthAutoScanSchedule(from: store.remoteKeyHealthAutoScanSchedule) {
+                        $0.dailyMinuteOfDay = minuteOfDay(from: newValue)
+                    }
+                )
+            }
+        )
+    }
+
+    private func nextLocalModelHealthAutoScanText() -> String? {
+        guard store.localModelHealthAutoScanSchedule.isEnabled else { return nil }
+        let localModels = modelStore.snapshot.models.filter { !LocalModelRuntimeActionPlanner.isRemoteModel($0) }
+        guard !localModels.isEmpty else { return nil }
+
+        let healthByModelID = Dictionary(
+            uniqueKeysWithValues: store.localModelHealthSnapshot.records.map { ($0.modelId, $0) }
+        )
+        let dueAt = localModels.compactMap { model in
+            store.localModelHealthAutoScanSchedule.nextDueAt(
+                lastCheckedAt: healthByModelID[model.id]?.lastCheckedAt
+            )
+        }
+        .min()
+
+        return formattedAutoScanTime(dueAt)
+    }
+
+    private func nextRemoteKeyHealthAutoScanText() -> String? {
+        guard store.remoteKeyHealthAutoScanSchedule.isEnabled else { return nil }
+        let groups = RemoteKeyHealthScanner.groups(from: remoteModels)
+        guard !groups.isEmpty else { return nil }
+
+        let healthByKey = Dictionary(
+            uniqueKeysWithValues: store.remoteKeyHealthSnapshot.records.map { ($0.keyReference, $0) }
+        )
+        let dueAt = groups.compactMap { group in
+            store.remoteKeyHealthAutoScanSchedule.nextDueAt(
+                lastCheckedAt: healthByKey[group.keyReference]?.lastCheckedAt
+            )
+        }
+        .min()
+
+        return formattedAutoScanTime(dueAt)
+    }
+
+    private func reconfiguredModelHealthAutoScanSchedule(
+        from current: ModelHealthAutoScanSchedule,
+        update: (inout ModelHealthAutoScanSchedule) -> Void
+    ) -> ModelHealthAutoScanSchedule {
+        var updated = current
+        update(&updated)
+        let now = Date().timeIntervalSince1970
+        updated.configuredAt = now
+        return updated.normalized(now: now)
+    }
+
+    private func clockDate(for minuteOfDay: Int) -> Date {
+        let calendar = Calendar.autoupdatingCurrent
+        let startOfDay = calendar.startOfDay(for: Date())
+        return calendar.date(byAdding: .minute, value: minuteOfDay, to: startOfDay) ?? Date()
+    }
+
+    private func minuteOfDay(from date: Date) -> Int {
+        let components = Calendar.autoupdatingCurrent.dateComponents([.hour, .minute], from: date)
+        return (components.hour ?? 0) * 60 + (components.minute ?? 0)
+    }
+
+    private func formattedAutoScanTime(_ raw: TimeInterval?) -> String? {
+        guard let raw, raw > 0 else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale.autoupdatingCurrent
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        return formatter.string(from: Date(timeIntervalSince1970: raw))
+    }
+
+    @ViewBuilder
+    private func remoteModelGroupCard(_ group: RemoteModelKeyGroup) -> some View {
+        let usageLimitNotice = remoteKeyUsageLimitNotice(for: group)
+        let healthPresentation = remoteKeyHealthPresentation(for: group, usageLimitNotice: usageLimitNotice)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(group.title)
+                            .font(.callout.weight(.semibold))
+                        if let healthPresentation {
+                            remoteModelStatusBadge(healthPresentation.badgeText, tint: healthPresentation.tint)
+                        }
+                    }
+                    Text(group.summary)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    if let detail = group.detail, !detail.isEmpty {
+                        Text(detail)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let healthPresentation {
+                        Text(healthPresentation.detailText)
+                            .font(.caption2)
+                            .foregroundStyle(healthPresentation.tint)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    keychainStatusLine(model: group.primaryModel)
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Button(HubUIStrings.Settings.RemoteModels.loadAll) {
+                            setRemoteModelsEnabled(group.loadableModelIDs, enabled: true)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .disabled(group.loadableModelIDs.isEmpty)
+
+                        Button(HubUIStrings.Settings.RemoteModels.unloadAll) {
+                            setRemoteModelsEnabled(group.enabledModelIDs, enabled: false)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(group.enabledModelIDs.isEmpty)
+                    }
+
+                    HStack(spacing: 8) {
+                        Button(HubUIStrings.Settings.RemoteModels.rescan) {
+                            store.scanRemoteKeyHealth(for: [group.keyReference])
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(store.remoteKeyHealthScanInFlight)
+
+                        Button(group.renameActionTitle) {
+                            editingRemoteModelGroup = group
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+
+                        Button(HubUIStrings.Settings.RemoteModels.removeKeyGroup) {
+                            removeRemoteModelGroup(group)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.red)
+                        .controlSize(.small)
+                    }
+                }
+            }
+
+            ForEach(group.models) { model in
+                remoteModelRow(model)
+            }
+        }
+        .padding(12)
+        .background(Color.white.opacity(0.05))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func remoteModelRow(_ model: RemoteModelEntry) -> some View {
+        let loadState = RemoteModelPresentationSupport.state(for: model)
+        let statusText = remoteModelStatusText(loadState)
+        let statusTint = remoteModelStatusTint(loadState)
+        let title = model.nestedDisplayName
+        let signals = remoteModelSignals(for: model)
+        let metadataTags = remoteModelMetadataTags(for: model)
+        let subtitle = remoteModelSubtitle(model)
+        let detailLine = remoteModelDetailLine(model)
+        let canLoad = loadState == .available
+        let isEnabled = model.enabled
+
+        HStack(alignment: .top, spacing: 10) {
+            ZStack {
+                Circle()
+                    .fill(remoteModelGlyphTint(for: model).opacity(0.16))
+                Image(systemName: remoteModelGlyphName(for: model))
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(remoteModelGlyphTint(for: model))
+            }
+            .frame(width: 30, height: 30)
+            .padding(.top, 1)
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(title)
+                        .font(.callout.weight(.semibold))
+                        .lineLimit(1)
+
+                    remoteModelStatusBadge(statusText, tint: statusTint)
+                }
+
+                Text(model.id)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .textSelection(.enabled)
+
+                if !signals.isEmpty || !metadataTags.isEmpty {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 6) {
+                            ForEach(signals) { signal in
+                                remoteModelSignalBadge(signal)
+                            }
+                            ForEach(metadataTags, id: \.self) { tag in
+                                remoteModelChip(tag, tint: .secondary)
+                            }
+                        }
+
+                        Text(subtitle)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                }
+
+                if let detailLine {
+                    Text(detailLine)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+
+            Spacer(minLength: 10)
+
+            VStack(alignment: .trailing, spacing: 8) {
+                if isEnabled {
+                    Button(HubUIStrings.Settings.RemoteModels.unload) {
+                        setRemoteModelsEnabled([model.id], enabled: false)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                } else {
+                    Button(HubUIStrings.Settings.RemoteModels.load) {
+                        setRemoteModelsEnabled([model.id], enabled: true)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(!canLoad)
+                }
+
+                Button(HubUIStrings.Settings.RemoteModels.remove) {
+                    removeRemoteModel(id: model.id)
+                }
+                .buttonStyle(.bordered)
+                .tint(.red)
+                .controlSize(.small)
+            }
+            .frame(width: 92, alignment: .trailing)
+        }
+        .padding(10)
+        .background(isEnabled ? Color.white.opacity(0.04) : Color.white.opacity(0.025))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(isEnabled ? Color.white.opacity(0.08) : Color.white.opacity(0.05), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func remoteModelStatusText(_ state: RemoteModelLoadState) -> String {
+        switch state {
+        case .loaded:
+            return HubUIStrings.Settings.RemoteModels.loaded
+        case .available:
+            return HubUIStrings.Settings.RemoteModels.available
+        case .needsSetup:
+            return HubUIStrings.Settings.RemoteModels.needsSetup
+        }
+    }
+
+    private func remoteModelStatusTint(_ state: RemoteModelLoadState) -> Color {
+        switch state {
+        case .loaded:
+            return .green
+        case .available:
+            return .secondary
+        case .needsSetup:
+            return .orange
+        }
+    }
+
+    @ViewBuilder
+    private func remoteModelChip(_ title: String, tint: Color) -> some View {
+        Text(title)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(tint.opacity(0.12))
+            .clipShape(Capsule())
+    }
+
+    @ViewBuilder
+    private func remoteModelSignalBadge(_ signal: RemoteModelSignalVisual) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: signal.systemName)
+                .imageScale(.small)
+            Text(signal.title)
+        }
+        .font(.caption2.weight(.medium))
+        .foregroundStyle(signal.tint)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(signal.tint.opacity(0.12))
+        .overlay(
+            Capsule()
+                .stroke(signal.tint.opacity(0.24), lineWidth: 1)
+        )
+        .clipShape(Capsule())
+    }
+
+    @ViewBuilder
+    private func remoteModelStatusBadge(_ title: String, tint: Color) -> some View {
+        Text(title)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(tint.opacity(0.12))
+            .clipShape(Capsule())
+    }
+
     private var skillsSection: some View {
-        Section("Skills") {
+        Section(HubUIStrings.Settings.Skills.sectionTitle) {
             let storeDir = HubSkillsStoreStorage.skillsStoreDir()
 
             HStack {
-                Text("Store")
+                Text(HubUIStrings.Settings.Skills.store)
                 Spacer()
-                Button("Reveal") {
+                Button(HubUIStrings.Settings.Skills.showInFinder) {
                     try? FileManager.default.createDirectory(at: storeDir, withIntermediateDirectories: true)
                     NSWorkspace.shared.activateFileViewerSelecting([storeDir])
                 }
-                Button("Reload") {
+                Button(HubUIStrings.Settings.Skills.reload) {
                     reloadSkillsSnapshots()
                 }
             }
@@ -3590,16 +6004,20 @@ Example Allowed CIDRs:
                 .textSelection(.enabled)
 
             HStack {
-                Text("Installed packages")
+                Text(HubUIStrings.Settings.Skills.installedPackages)
                 Spacer()
-                Text("\(skillsIndex.skills.count)")
+                Text(HubUIStrings.Settings.countBadge(skillsIndex.skills.count))
                     .foregroundStyle(.secondary)
             }
 
             HStack {
-                Text("Pins")
+                Text(HubUIStrings.Settings.Skills.pins)
                 Spacer()
-                Text("MC \(skillsPins.memoryCorePins.count) · G \(skillsPins.globalPins.count) · P \(skillsPins.projectPins.count)")
+                Text(HubUIStrings.Settings.Skills.pinsSummary(
+                    memoryCore: skillsPins.memoryCorePins.count,
+                    global: skillsPins.globalPins.count,
+                    project: skillsPins.projectPins.count
+                ))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -3615,38 +6033,38 @@ Example Allowed CIDRs:
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             } else {
-                Text("Skills v1 is file-backed. Use Search + Pin to make them effective for a user/project.")
+                Text(HubUIStrings.Settings.Skills.storageHint)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("user_id")
+                    Text(HubUIStrings.Settings.Skills.userIDLabel)
                         .font(.caption.monospaced())
                     Spacer()
-                    TextField("user_id (for Global/Project pins)", text: $skillsResolveUserId)
+                    TextField(HubUIStrings.Settings.Skills.userIDPlaceholder, text: $skillsResolveUserId)
                         .textFieldStyle(.roundedBorder)
                         .font(.caption)
                         .frame(width: 320)
                 }
 
                 HStack {
-                    Text("project_id")
+                    Text(HubUIStrings.Settings.Skills.projectIDLabel)
                         .font(.caption.monospaced())
                     Spacer()
-                    TextField("project_id (for Project pins)", text: $skillsResolveProjectId)
+                    TextField(HubUIStrings.Settings.Skills.projectIDPlaceholder, text: $skillsResolveProjectId)
                         .textFieldStyle(.roundedBorder)
                         .font(.caption)
                         .frame(width: 320)
                 }
 
-                Text("Precedence: Memory-Core > Global(user_id) > Project(user_id+project_id).")
+                Text(HubUIStrings.Settings.Skills.priorityHint)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
-            DisclosureGroup("Resolved") {
+            DisclosureGroup(HubUIStrings.Settings.Skills.resolvedResults) {
                 let resolved = HubSkillsStoreStorage.resolvedSkills(
                     index: skillsIndex,
                     pins: skillsPins,
@@ -3655,11 +6073,11 @@ Example Allowed CIDRs:
                 )
 
                 HStack(spacing: 10) {
-                    Button("Copy Resolved") {
+                    Button(HubUIStrings.Settings.Skills.copyResolvedResults) {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(renderResolvedSkills(resolved), forType: .string)
                     }
-                    Button("Open Pins File") {
+                    Button(HubUIStrings.Settings.Skills.openPinsFile) {
                         let url = HubSkillsStoreStorage.skillsPinsURL()
                         let fm = FileManager.default
                         if !fm.fileExists(atPath: url.path) {
@@ -3684,7 +6102,7 @@ Example Allowed CIDRs:
                 .font(.caption)
 
                 if resolved.isEmpty {
-                    Text("No resolved skills (set user_id/project_id and pin something).")
+                    Text(HubUIStrings.Settings.Skills.emptyResolvedResults)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 } else {
@@ -3695,11 +6113,11 @@ Example Allowed CIDRs:
                 }
             }
 
-            DisclosureGroup("Pins") {
-                Text("Memory-Core pins")
+            DisclosureGroup(HubUIStrings.Settings.Skills.pins) {
+                Text(HubUIStrings.Settings.Skills.memoryCorePins)
                     .font(.caption.weight(.semibold))
                 if skillsPins.memoryCorePins.isEmpty {
-                    Text("(none)")
+                    Text(HubUIStrings.Settings.Skills.empty)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 } else {
@@ -3711,12 +6129,12 @@ Example Allowed CIDRs:
 
                 Divider()
 
-                Text("Global pins")
+                Text(HubUIStrings.Settings.Skills.globalPins)
                     .font(.caption.weight(.semibold))
                 let uid = skillsResolveUserId.trimmingCharacters(in: .whitespacesAndNewlines)
                 let globals = uid.isEmpty ? sortedPins(skillsPins.globalPins) : sortedPins(skillsPins.globalPins.filter { ($0.userId ?? "") == uid })
                 if globals.isEmpty {
-                    Text(uid.isEmpty ? "(none) · set user_id above to filter" : "(none)")
+                    Text(HubUIStrings.Settings.Skills.emptyGlobalPins(needsUserID: uid.isEmpty))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 } else {
@@ -3728,14 +6146,14 @@ Example Allowed CIDRs:
 
                 Divider()
 
-                Text("Project pins")
+                Text(HubUIStrings.Settings.Skills.projectPins)
                     .font(.caption.weight(.semibold))
                 let pid = skillsResolveProjectId.trimmingCharacters(in: .whitespacesAndNewlines)
                 let projects = (!uid.isEmpty && !pid.isEmpty)
                     ? sortedPins(skillsPins.projectPins.filter { ($0.userId ?? "") == uid && ($0.projectId ?? "") == pid })
                     : sortedPins(skillsPins.projectPins)
                 if projects.isEmpty {
-                    Text((!uid.isEmpty && !pid.isEmpty) ? "(none)" : "(none) · set user_id + project_id above to filter")
+                    Text(HubUIStrings.Settings.Skills.emptyProjectPins(needsProjectFilter: uid.isEmpty || pid.isEmpty))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 } else {
@@ -3746,14 +6164,18 @@ Example Allowed CIDRs:
                 }
             }
 
-            DisclosureGroup("Search") {
-                TextField("search skill_id / name / description…", text: $skillsSearchQuery)
+            DisclosureGroup(HubUIStrings.Settings.Skills.search) {
+                TextField(HubUIStrings.Settings.Skills.searchPlaceholder, text: $skillsSearchQuery)
                     .textFieldStyle(.roundedBorder)
                     .font(.caption)
 
                 let results = HubSkillsStoreStorage.searchSkills(index: skillsIndex, sources: skillsSources, query: skillsSearchQuery, limit: 30)
                 if results.isEmpty {
-                    Text(skillsSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "No skills yet." : "No matches.")
+                    Text(
+                        skillsSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            ? HubUIStrings.Settings.Skills.emptySkills
+                            : HubUIStrings.Settings.Skills.noMatchingResults
+                    )
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 } else {
@@ -3767,69 +6189,92 @@ Example Allowed CIDRs:
     }
 
     private var advancedSection: some View {
-        Section("Advanced") {
-            DisclosureGroup("AI Runtime") {
-                Toggle("Auto-start runtime", isOn: $store.aiRuntimeAutoStart)
+        Section(HubUIStrings.Settings.Advanced.sectionTitle) {
+            DisclosureGroup(HubUIStrings.Settings.Advanced.Runtime.title) {
+                Toggle(HubUIStrings.Settings.Advanced.Runtime.autoStart, isOn: $store.aiRuntimeAutoStart)
 
                 HStack {
-                    Text("Status")
+                    Text(HubUIStrings.Settings.Advanced.Runtime.status)
                     Spacer()
                     Text(store.aiRuntimeStatusText)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
 
-                if !store.aiRuntimeLastError.isEmpty {
-                    Text(store.aiRuntimeLastError)
-                        .font(.caption2)
-                        .foregroundStyle(.red)
-                }
+            if !store.aiRuntimeLastError.isEmpty {
+                Text(store.aiRuntimeLastError)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+            }
 
-                HStack(spacing: 10) {
-                    Button("Start") { store.startAIRuntime() }
-                    Button("Stop") { store.stopAIRuntime() }
-                    Button("Open Log") { store.openAIRuntimeLog() }
+            if !store.aiRuntimeInstallHintsText.isEmpty {
+                Text(store.aiRuntimeInstallHintsText)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .textSelection(.enabled)
+            }
+
+            HStack(spacing: 10) {
+                Button(HubUIStrings.Settings.Advanced.Runtime.start) { store.startAIRuntime() }
+                Button(HubUIStrings.Settings.Advanced.Runtime.stop) { store.stopAIRuntime() }
+                Button(HubUIStrings.Settings.Advanced.Runtime.openLog) { store.openAIRuntimeLog() }
                     Spacer()
                 }
 
-                DisclosureGroup("Runtime Config") {
+                DisclosureGroup(HubUIStrings.Settings.Advanced.Runtime.configuration) {
                     HStack {
-                        Text("Python")
+                        Text(HubUIStrings.Settings.Advanced.Runtime.pythonPath)
                         Spacer()
-                        TextField("/path/to/python3", text: $store.aiRuntimePython)
+                        TextField(HubUIStrings.Settings.Advanced.Runtime.pythonPathPlaceholder, text: $store.aiRuntimePython)
                             .textFieldStyle(.roundedBorder)
                             .font(.caption)
                     }
-                    Text("Runtime script is bundled with the app and auto-refreshed on updates.")
+                    Text(HubUIStrings.Settings.Advanced.Runtime.packagedScriptHint)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
+
+                if !store.aiRuntimePythonCandidatesText.isEmpty {
+                    DisclosureGroup(HubUIStrings.Settings.Advanced.Runtime.pythonCandidates) {
+                        Text(store.aiRuntimePythonCandidatesText)
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                        HStack(spacing: 10) {
+                            Button(HubUIStrings.Settings.Advanced.Runtime.copyPythonCandidates) {
+                                copyRuntimePythonCandidatesToClipboard()
+                            }
+                            Spacer()
+                        }
+                        .font(.caption)
+                    }
+                }
             }
 
-            DisclosureGroup("AX Constitution") {
+            DisclosureGroup(HubUIStrings.Settings.Advanced.Constitution.title) {
                 HStack {
-                    Text("Pinned policy file")
+                    Text(HubUIStrings.Settings.Advanced.Constitution.policyFile)
                     Spacer()
-                    Button("Reload") { reloadAXConstitutionStatus() }
-                    Button("Open…") { store.openAXConstitutionFile() }
+                    Button(HubUIStrings.Settings.Advanced.Constitution.reload) { reloadAXConstitutionStatus() }
+                    Button(HubUIStrings.Settings.Advanced.Constitution.open) { store.openAXConstitutionFile() }
                 }
                 let ver = axConstitutionVersion.trimmingCharacters(in: .whitespacesAndNewlines)
                 HStack {
-                    Text("Version")
+                    Text(HubUIStrings.Settings.Advanced.Constitution.version)
                     Spacer()
-                    Text(ver.isEmpty ? "(unknown)" : ver)
+                    Text(ver.isEmpty ? HubUIStrings.Settings.Advanced.Constitution.unknown : ver)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
                 let clauseSummary = axConstitutionEnabledClauseIds.isEmpty
-                    ? "(none)"
+                    ? HubUIStrings.Settings.Advanced.Constitution.none
                     : axConstitutionEnabledClauseIds.joined(separator: ", ")
-                Text("Enabled clauses: \(clauseSummary)")
+                Text(HubUIStrings.Settings.Advanced.Constitution.enabledClauses(clauseSummary))
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                 HStack(spacing: 10) {
-                    Button("Copy Summary") { copyAXConstitutionSummaryToClipboard() }
+                    Button(HubUIStrings.Settings.Advanced.Constitution.copySummary) { copyAXConstitutionSummaryToClipboard() }
                     Spacer()
                 }
                 Text(store.axConstitutionURL().path)
@@ -3843,7 +6288,7 @@ Example Allowed CIDRs:
                         .foregroundStyle(.red)
                         .textSelection(.enabled)
                 }
-                Text("Tip: start the AI runtime once to generate the default file if it's missing.")
+                Text(HubUIStrings.Settings.Advanced.Constitution.bootstrapHint)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -3853,14 +6298,14 @@ Example Allowed CIDRs:
     }
 
     private var quitSection: some View {
-        Section("Quit") {
+        Section(HubUIStrings.Settings.Quit.sectionTitle) {
             HStack(spacing: 10) {
-                Button("Quit REL Flow Hub") { quitApp() }
+                Button(HubUIStrings.Settings.Quit.quitApp) { quitApp() }
                 Spacer()
             }
             let ver = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? ""
             let build = (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String) ?? ""
-            Text("Version \(ver) (\(build))")
+            Text(HubUIStrings.Settings.Quit.version(ver, build))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -3869,7 +6314,7 @@ Example Allowed CIDRs:
     @ViewBuilder
     private func networkRequestCard(_ req: HubNetworkRequest) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Request from \(req.source ?? "unknown")")
+            Text(HubUIStrings.Settings.Networking.requestSource(req.source ?? HubUIStrings.Settings.Networking.unknown))
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -3886,24 +6331,24 @@ Example Allowed CIDRs:
 
             let secs = req.requestedSeconds ?? 900
             HStack(spacing: 10) {
-                Button("Approve 5m") { store.approveNetworkRequest(req, seconds: 5 * 60) }
-                Button("Approve 30m") { store.approveNetworkRequest(req, seconds: 30 * 60) }
-                Button("Approve \(max(1, secs / 60))m") { store.approveNetworkRequest(req, seconds: secs) }
-                Button("Dismiss") { store.dismissNetworkRequest(req) }
-                Menu("Policy") {
-                    Button("Always allow this project") {
+                Button(HubUIStrings.Settings.Networking.approveFiveMinutes) { store.approveNetworkRequest(req, seconds: 5 * 60) }
+                Button(HubUIStrings.Settings.Networking.approveThirtyMinutes) { store.approveNetworkRequest(req, seconds: 30 * 60) }
+                Button(HubUIStrings.Settings.Networking.approveSuggested(max(1, secs / 60))) { store.approveNetworkRequest(req, seconds: secs) }
+                Button(HubUIStrings.Settings.Networking.dismiss) { store.dismissNetworkRequest(req) }
+                Menu(HubUIStrings.Settings.Networking.policyMenu) {
+                    Button(HubUIStrings.Settings.Networking.allowProjectAlways) {
                         // No explicit limit: "always on" will be kept alive automatically by Hub.
                         store.setNetworkPolicy(for: req, mode: .alwaysOn, maxSeconds: nil)
                         let requested = max(10, req.requestedSeconds ?? 900)
                         let secs = max(requested, 8 * 60 * 60)
                         store.approveNetworkRequest(req, seconds: secs)
                     }
-                    Button("Auto-approve this project") {
+                    Button(HubUIStrings.Settings.Networking.autoApproveProject) {
                         let maxSecs = max(10, req.requestedSeconds ?? 900)
                         store.setNetworkPolicy(for: req, mode: .autoApprove, maxSeconds: maxSecs)
                         store.approveNetworkRequest(req, seconds: maxSecs)
                     }
-                    Button("Always deny this project") {
+                    Button(HubUIStrings.Settings.Networking.denyProjectAlways) {
                         store.setNetworkPolicy(for: req, mode: .deny, maxSeconds: nil)
                         store.dismissNetworkRequest(req)
                     }
@@ -3944,15 +6389,12 @@ Example Allowed CIDRs:
         )
     }
 
-    private func bindingRemoteEnabled(_ id: String) -> Binding<Bool> {
-        Binding(
-            get: { remoteModels.first(where: { $0.id == id })?.enabled ?? false },
-            set: { v in
-                guard let idx = remoteModels.firstIndex(where: { $0.id == id }) else { return }
-                remoteModels[idx].enabled = v
-                persistRemoteModels()
-            }
-        )
+    private static func sortedRemoteModels(_ models: [RemoteModelEntry]) -> [RemoteModelEntry] {
+        RemoteModelPresentationSupport.sorted(models)
+    }
+
+    private func reloadRemoteModels() {
+        remoteModels = Self.sortedRemoteModels(RemoteModelStorage.load().models)
     }
 
     private func upsertRemoteModel(_ entry: RemoteModelEntry) {
@@ -3962,26 +6404,58 @@ Example Allowed CIDRs:
     private func upsertRemoteModels(_ entries: [RemoteModelEntry]) {
         guard !entries.isEmpty else { return }
         for entry in entries {
-            if let idx = remoteModels.firstIndex(where: { $0.id == entry.id }) {
-                remoteModels[idx] = entry
-            } else {
-                remoteModels.append(entry)
-            }
+            _ = RemoteModelStorage.upsert(entry)
         }
-        remoteModels.sort { $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending }
-        persistRemoteModels()
+        remoteModels = Self.sortedRemoteModels(RemoteModelStorage.load().models)
+        ModelStore.shared.refresh()
     }
 
     private func removeRemoteModel(id: String) {
         let snap = RemoteModelStorage.remove(id: id)
-        remoteModels = snap.models.sorted { $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending }
+        remoteModels = Self.sortedRemoteModels(snap.models)
         ModelStore.shared.refresh()
     }
 
-    private func removeRemoteModelGroup(keyReference: String) {
-        let snap = RemoteModelStorage.removeGroup(keyReference: keyReference)
-        remoteModels = snap.models.sorted { $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending }
+    private func removeRemoteModelGroup(_ group: RemoteModelKeyGroup) {
+        let snap = RemoteModelStorage.remove(ids: group.models.map(\.id))
+        remoteModels = Self.sortedRemoteModels(snap.models)
         ModelStore.shared.refresh()
+    }
+
+    private func updateRemoteModelGroupDisplayName(_ group: RemoteModelKeyGroup, displayName: String) {
+        let normalized = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let modelIDs = Set(group.models.map(\.id))
+        guard !modelIDs.isEmpty else { return }
+
+        for index in remoteModels.indices where modelIDs.contains(remoteModels[index].id) {
+            remoteModels[index].groupDisplayName = normalized.isEmpty ? nil : normalized
+        }
+        remoteModels = Self.sortedRemoteModels(remoteModels)
+        persistRemoteModels()
+    }
+
+    private func setRemoteModelsEnabled(_ modelIDs: [String], enabled: Bool) {
+        let ids = Set(modelIDs)
+        guard !ids.isEmpty else { return }
+
+        var updated = remoteModels
+        var changed = false
+        for index in updated.indices where ids.contains(updated[index].id) {
+            if enabled {
+                var candidate = updated[index]
+                candidate.enabled = true
+                guard RemoteModelStorage.isExecutionReadyRemoteModel(candidate) else { continue }
+            }
+
+            if updated[index].enabled != enabled {
+                updated[index].enabled = enabled
+                changed = true
+            }
+        }
+
+        guard changed else { return }
+        remoteModels = Self.sortedRemoteModels(updated)
+        persistRemoteModels()
     }
 
     private func persistRemoteModels() {
@@ -4024,7 +6498,9 @@ Example Allowed CIDRs:
                 apiKeyRef: apiKeyRef,
                 upstreamModelId: baseModelId,
                 apiKey: apiKey,
-                note: "Remote Catalog"
+                note: HubUIStrings.Settings.RemoteModels.remoteCatalogNote,
+                knownContextLength: remoteCatalogContextLength(modelId: baseModelId),
+                knownContextSource: .catalogEstimate
             )
             imported.append(entry)
         }
@@ -4044,8 +6520,7 @@ Example Allowed CIDRs:
                 updated.append(m)
             }
         }
-        updated.sort { $0.id.lowercased() < $1.id.lowercased() }
-        remoteModels = updated
+        remoteModels = Self.sortedRemoteModels(updated)
         persistRemoteModels()
     }
 
@@ -4115,48 +6590,288 @@ Example Allowed CIDRs:
         r.updatedAt = Date().timeIntervalSince1970
         _ = HubNetworkPolicyStorage.upsert(r)
         reloadNetworkPolicies()
+        store.reloadNetworkPolicySnapshot()
     }
 
     private func removePolicy(_ rule: HubNetworkPolicyRule) {
         _ = HubNetworkPolicyStorage.remove(id: rule.id)
         reloadNetworkPolicies()
+        store.reloadNetworkPolicySnapshot()
     }
 
     private func policyModeText(_ mode: HubNetworkPolicyMode) -> String {
         switch mode {
-        case .manual: return "手动审批"
-        case .autoApprove: return "自动批准"
-        case .alwaysOn: return "总是允许"
-        case .deny: return "总是拒绝"
+        case .manual: return HubUIStrings.Settings.NetworkPolicies.manual
+        case .autoApprove: return HubUIStrings.Settings.NetworkPolicies.autoApprove
+        case .alwaysOn: return HubUIStrings.Settings.NetworkPolicies.alwaysAllow
+        case .deny: return HubUIStrings.Settings.NetworkPolicies.alwaysDeny
         }
     }
 
     private func policyLimitText(_ maxSeconds: Int?) -> String {
-        guard let s = maxSeconds, s > 0 else { return "默认" }
+        guard let s = maxSeconds, s > 0 else { return HubUIStrings.Settings.NetworkPolicies.defaultLimit }
         let mins = max(1, s / 60)
         if mins >= 60 {
             let hours = max(1, mins / 60)
-            return "\(hours) 小时"
+            return HubUIStrings.Settings.NetworkPolicies.hours(hours)
         }
-        return "\(mins) 分钟"
+        return HubUIStrings.Settings.NetworkPolicies.minutes(mins)
+    }
+
+    private func remoteModelGlyphName(for model: RemoteModelEntry) -> String {
+        let haystack = remoteModelSearchText(model)
+        if remoteModelLooksEmbedding(haystack) {
+            return "point.3.connected.trianglepath.dotted"
+        }
+        if remoteModelLooksVoice(haystack) {
+            return "speaker.wave.2.fill"
+        }
+        if remoteModelLooksAudio(haystack) {
+            return "waveform"
+        }
+        if remoteModelLooksVision(haystack) {
+            return "photo.on.rectangle"
+        }
+        if remoteModelLooksCode(haystack) {
+            return "curlybraces"
+        }
+        return "cloud"
+    }
+
+    private func remoteModelGlyphTint(for model: RemoteModelEntry) -> Color {
+        let haystack = remoteModelSearchText(model)
+        if remoteModelLooksEmbedding(haystack) {
+            return .green
+        }
+        if remoteModelLooksVoice(haystack) {
+            return .mint
+        }
+        if remoteModelLooksAudio(haystack) {
+            return .pink
+        }
+        if remoteModelLooksVision(haystack) {
+            return .orange
+        }
+        if remoteModelLooksCode(haystack) {
+            return .blue
+        }
+        return .secondary
+    }
+
+    private func remoteModelSignals(for model: RemoteModelEntry) -> [RemoteModelSignalVisual] {
+        let haystack = remoteModelSearchText(model)
+        var signals: [RemoteModelSignalVisual] = [
+            RemoteModelSignalVisual(title: ModelCapabilityPresentation.localizedTitle(for: "hosted"), systemName: "cloud", tint: .blue)
+        ]
+
+        if remoteModelLooksReasoning(haystack) {
+            signals.append(RemoteModelSignalVisual(title: ModelCapabilityPresentation.localizedTitle(for: "reasoning"), systemName: "sparkles", tint: .secondary))
+        }
+        if remoteModelLooksCode(haystack) {
+            signals.append(RemoteModelSignalVisual(title: ModelCapabilityPresentation.localizedTitle(for: "code"), systemName: "curlybraces", tint: .blue))
+        }
+        if remoteModelLooksVision(haystack) {
+            signals.append(RemoteModelSignalVisual(title: ModelCapabilityPresentation.localizedTitle(for: "vision"), systemName: "photo.on.rectangle", tint: .orange))
+        }
+        if remoteModelLooksEmbedding(haystack) {
+            signals.append(RemoteModelSignalVisual(title: ModelCapabilityPresentation.localizedTitle(for: "embedding"), systemName: "point.3.connected.trianglepath.dotted", tint: .green))
+        }
+        if remoteModelLooksAudio(haystack) {
+            signals.append(RemoteModelSignalVisual(title: ModelCapabilityPresentation.localizedTitle(for: "audio"), systemName: "waveform", tint: .pink))
+        }
+        if remoteModelLooksVoice(haystack) {
+            signals.append(RemoteModelSignalVisual(title: ModelCapabilityPresentation.localizedTitle(for: "voice"), systemName: "speaker.wave.2.fill", tint: .mint))
+        }
+
+        var seen: Set<String> = []
+        return signals.filter { seen.insert($0.title).inserted }
+    }
+
+    private func remoteModelMetadataTags(for model: RemoteModelEntry) -> [String] {
+        var tags: [String] = []
+        let backend = RemoteProviderEndpoints.canonicalBackend(model.backend).uppercased()
+        if !backend.isEmpty {
+            tags.append(backend)
+        }
+        if model.contextLength > 0 {
+            tags.append(
+                HubUIStrings.Settings.RemoteModels.configuredContextTag(
+                    remoteModelContextSummary(model.contextLength)
+                )
+            )
+        }
+        if let knownContextLength = model.knownContextLength, knownContextLength > 0 {
+            let summary = remoteModelContextSummary(knownContextLength)
+            switch model.knownContextSource {
+            case .providerReported:
+                tags.append(HubUIStrings.Settings.RemoteModels.providerReportedContextTag(summary))
+            case .catalogEstimate:
+                tags.append(HubUIStrings.Settings.RemoteModels.catalogEstimatedContextTag(summary))
+            case nil:
+                break
+            }
+        }
+        if let upstream = model.upstreamModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !upstream.isEmpty,
+           upstream != model.id {
+            tags.append(HubUIStrings.Settings.RemoteModels.aliasTag)
+        }
+        let normalized = Array(NSOrderedSet(array: tags)) as? [String] ?? tags
+        return Array(normalized.prefix(3))
+    }
+
+    private func remoteModelDetailLine(_ model: RemoteModelEntry) -> String? {
+        var parts: [String] = []
+        if let host = remoteModelEndpointHost(model) {
+            parts.append(HubUIStrings.Settings.RemoteModels.endpoint(host))
+        }
+        if let upstream = model.upstreamModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !upstream.isEmpty,
+           upstream != model.id {
+            parts.append(HubUIStrings.Settings.RemoteModels.upstreamModel(upstream))
+        }
+        let note = (model.note ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !note.isEmpty {
+            parts.append(note)
+        }
+        if model.knownContextLength == nil {
+            parts.append(HubUIStrings.Settings.RemoteModels.providerContextUnknown)
+        } else if model.knownContextSource == .catalogEstimate {
+            parts.append(HubUIStrings.Settings.RemoteModels.catalogEstimateHint)
+        }
+        guard !parts.isEmpty else { return nil }
+        return HubUIStrings.Settings.RemoteModels.detailSummary(parts)
     }
 
     private func remoteModelSubtitle(_ model: RemoteModelEntry) -> String {
         let upstream = (model.upstreamModelId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let keyRef = RemoteModelStorage.keyReference(for: model)
+        let backend = RemoteProviderEndpoints.canonicalBackend(model.backend)
+        let context = HubUIStrings.Settings.RemoteModels.detailSummary(
+            remoteModelContextSummaryParts(for: model)
+        )
         if upstream.isEmpty || upstream == model.id {
-            return "\(model.id) · \(model.backend) · ctx \(model.contextLength) · key \(keyRef)"
+            return HubUIStrings.Settings.RemoteModels.subtitleNoUpstream(
+                modelID: model.id,
+                backend: backend,
+                context: context,
+                keyRef: keyRef
+            )
         }
-        return "\(model.id) -> \(upstream) · \(model.backend) · ctx \(model.contextLength) · key \(keyRef)"
+        return HubUIStrings.Settings.RemoteModels.subtitleWithUpstream(
+            modelID: model.id,
+            upstream: upstream,
+            backend: backend,
+            context: context,
+            keyRef: keyRef
+        )
+    }
+
+    private func remoteModelContextSummary(_ contextLength: Int) -> String {
+        HubUIStrings.Settings.RemoteModels.contextLength(contextLength)
+    }
+
+    private func remoteModelContextSummaryParts(for model: RemoteModelEntry) -> [String] {
+        var parts: [String] = []
+        if model.contextLength > 0 {
+            parts.append(
+                HubUIStrings.Settings.RemoteModels.configuredContext(
+                    remoteModelContextSummary(model.contextLength)
+                )
+            )
+        }
+        if let knownContextLength = model.knownContextLength, knownContextLength > 0 {
+            let summary = remoteModelContextSummary(knownContextLength)
+            switch model.knownContextSource {
+            case .providerReported:
+                parts.append(HubUIStrings.Settings.RemoteModels.providerReportedContext(summary))
+            case .catalogEstimate:
+                parts.append(HubUIStrings.Settings.RemoteModels.catalogEstimatedContext(summary))
+            case nil:
+                break
+            }
+        } else if model.contextLength > 0 {
+            parts.append(HubUIStrings.Settings.RemoteModels.providerContextUnknown)
+        }
+        return parts
+    }
+
+    private func remoteModelEndpointHost(_ model: RemoteModelEntry) -> String? {
+        guard let raw = model.baseURL?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty,
+              let url = URL(string: raw) else {
+            return nil
+        }
+        return url.host ?? url.absoluteString
+    }
+
+    private func remoteModelSearchText(_ model: RemoteModelEntry) -> String {
+        [
+            model.id,
+            model.name,
+            model.backend,
+            model.upstreamModelId ?? "",
+            model.note ?? "",
+        ]
+        .joined(separator: " ")
+        .lowercased()
+    }
+
+    private func remoteModelLooksReasoning(_ haystack: String) -> Bool {
+        if remoteModelLooksEmbedding(haystack) || remoteModelLooksAudio(haystack) || remoteModelLooksVoice(haystack) {
+            return false
+        }
+        return remoteModelContainsAny(
+            haystack,
+            needles: ["gpt", "claude", "gemini", "reason", "think", "sonnet", "opus", "o1", "o3", "o4", "r1", "qwq", "kimi", "qwen"]
+        )
+    }
+
+    private func remoteModelLooksCode(_ haystack: String) -> Bool {
+        remoteModelContainsAny(
+            haystack,
+            needles: ["coder", "codex", "codestral", "codegemma", "deepseek-coder", "qwen2.5-coder", "codeqwen"]
+        )
+    }
+
+    private func remoteModelLooksVision(_ haystack: String) -> Bool {
+        remoteModelContainsAny(
+            haystack,
+            needles: ["vision", "image", "vl", "llava", "pixtral", "moondream", "gpt-4o", "gemini", "claude", "see", "omni"]
+        )
+    }
+
+    private func remoteModelLooksEmbedding(_ haystack: String) -> Bool {
+        remoteModelContainsAny(
+            haystack,
+            needles: ["embedding", "embed", "text-embedding", "bge", "gte", "e5"]
+        )
+    }
+
+    private func remoteModelLooksAudio(_ haystack: String) -> Bool {
+        remoteModelContainsAny(
+            haystack,
+            needles: ["audio", "speech", "stt", "asr", "whisper", "transcribe"]
+        )
+    }
+
+    private func remoteModelLooksVoice(_ haystack: String) -> Bool {
+        remoteModelContainsAny(
+            haystack,
+            needles: ["tts", "voice", "text-to-speech"]
+        )
+    }
+
+    private func remoteModelContainsAny(_ haystack: String, needles: [String]) -> Bool {
+        needles.contains(where: { haystack.contains($0) })
     }
 
     private func keychainStatus(model: RemoteModelEntry) -> (text: String, color: Color) {
         let inMemory = (model.apiKey ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if !inMemory.isEmpty {
             if KeychainStore.hasSharedAccessGroup {
-                return ("API Key: 已设置（Keychain + 加密）", .secondary)
+                return (HubUIStrings.Settings.RemoteModels.apiKeySetKeychainEncrypted, .secondary)
             }
-            return ("API Key: 已设置（加密）", .secondary)
+            return (HubUIStrings.Settings.RemoteModels.apiKeySetEncrypted, .secondary)
         }
 
         let hasEncrypted = !(model.apiKeyCiphertext ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -4165,68 +6880,158 @@ Example Allowed CIDRs:
         // Avoid triggering repeated Keychain prompts in ad-hoc/dev builds (no shared access group).
         if !KeychainStore.hasSharedAccessGroup {
             if hasEncrypted {
-                return ("API Key: 已设置（加密，当前会话未解锁）", .orange)
+                return (HubUIStrings.Settings.RemoteModels.apiKeySetEncryptedLocked, .orange)
             }
-            return ("API Key: 未设置", .red)
+            return (HubUIStrings.Settings.RemoteModels.apiKeyUnset, .red)
         }
 
         switch KeychainStore.read(account: acct) {
         case .value:
-            return ("API Key: 已设置（Keychain）", .secondary)
+            return (HubUIStrings.Settings.RemoteModels.apiKeySetKeychain, .secondary)
         case .notFound:
             if hasEncrypted {
-                return ("API Key: 已设置（加密，当前会话未解锁）", .orange)
+                return (HubUIStrings.Settings.RemoteModels.apiKeySetEncryptedLocked, .orange)
             }
-            return ("API Key: 未设置", .red)
+            return (HubUIStrings.Settings.RemoteModels.apiKeyUnset, .red)
         case .error(let msg):
             if hasEncrypted {
-                return ("API Key: 已设置（加密，Keychain错误）", .orange)
+                return (HubUIStrings.Settings.RemoteModels.apiKeySetEncryptedKeychainError, .orange)
             }
-            return ("API Key: Keychain 错误 (\(msg))", .red)
+            return (HubUIStrings.Settings.RemoteModels.apiKeyKeychainError(msg), .red)
         }
     }
 
-    private var remoteModelGroups: [RemoteModelKeyGroup] {
-        let grouped = Dictionary(grouping: remoteModels) { model in
-            RemoteModelStorage.keyReference(for: model)
-        }
+    private func remoteKeyUsageLimitNotice(for group: RemoteModelKeyGroup) -> RemoteKeyUsageLimitNotice? {
+        RemoteModelTrialIssueSupport.latestUsageLimitNotice(
+            in: group.models.compactMap { store.remoteModelTrialStatus(for: $0.id) }
+        )
+    }
 
-        return grouped
-            .map { keyRef, models in
-                let sortedModels = models.sorted { lhs, rhs in
-                    let lhsName = lhs.name.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let rhsName = rhs.name.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if lhsName != rhsName {
-                        return lhsName.localizedCaseInsensitiveCompare(rhsName) == .orderedAscending
-                    }
-                    return lhs.id.localizedCaseInsensitiveCompare(rhs.id) == .orderedAscending
-                }
-                return RemoteModelKeyGroup(keyReference: keyRef, models: sortedModels)
-            }
-            .sorted { lhs, rhs in
-                lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+    private func remoteKeyHealthPresentation(
+        for group: RemoteModelKeyGroup,
+        usageLimitNotice: RemoteKeyUsageLimitNotice?
+    ) -> RemoteKeyHealthPresentation? {
+        RemoteKeyHealthPresentationSupport.presentation(
+            health: store.remoteKeyHealth(for: group.keyReference),
+            usageLimitNotice: usageLimitNotice,
+            isScanning: store.isRemoteKeyHealthScanInProgress(for: group.keyReference)
+        )
+    }
+
+    private var remoteModelGroups: [RemoteModelKeyGroup] {
+        RemoteModelPresentationSupport.groups(
+            from: remoteModels,
+            healthSnapshot: store.remoteKeyHealthSnapshot
+        )
+            .map { group in
+                RemoteModelKeyGroup(
+                    id: group.id,
+                    keyReference: group.keyReference,
+                    title: group.title,
+                    detail: group.detail,
+                    models: group.models,
+                    loadedCount: group.loadedCount,
+                    availableCount: group.availableCount,
+                    needsSetupCount: group.needsSetupCount,
+                    enabledCount: group.enabledCount
+                )
             }
     }
 }
 
 private struct RemoteModelKeyGroup: Identifiable {
+    let id: String
     let keyReference: String
+    let title: String
+    let detail: String?
     let models: [RemoteModelEntry]
-
-    var id: String { keyReference }
+    let loadedCount: Int
+    let availableCount: Int
+    let needsSetupCount: Int
+    let enabledCount: Int
 
     var primaryModel: RemoteModelEntry {
         models[0]
     }
 
-    var title: String {
-        keyReference.isEmpty ? "Ungrouped API Key" : keyReference
+    var loadableModelIDs: [String] {
+        models
+            .filter { RemoteModelPresentationSupport.state(for: $0) == .available }
+            .map(\.id)
+    }
+
+    var enabledModelIDs: [String] {
+        models.filter(\.enabled).map(\.id)
+    }
+
+    var renameActionTitle: String {
+        primaryModel.effectiveGroupDisplayName == nil
+            ? HubUIStrings.Settings.RemoteModels.setGroupName
+            : HubUIStrings.Settings.RemoteModels.renameGroup
     }
 
     var summary: String {
-        let count = models.count
-        let enabled = models.filter(\.enabled).count
-        return "\(count) model\(count == 1 ? "" : "s") share this API key · \(enabled) enabled"
+        var parts = [HubUIStrings.Settings.RemoteModels.keyGroupSummary(count: models.count, enabled: enabledCount)]
+        if loadedCount > 0 {
+            parts.append("\(loadedCount) \(HubUIStrings.Settings.RemoteModels.loaded)")
+        }
+        if availableCount > 0 {
+            parts.append("\(availableCount) \(HubUIStrings.Settings.RemoteModels.available)")
+        }
+        if needsSetupCount > 0 {
+            parts.append("\(needsSetupCount) \(HubUIStrings.Settings.RemoteModels.needsSetup)")
+        }
+        return HubUIStrings.Settings.RemoteModels.detailSummary(parts)
+    }
+}
+
+private struct EditRemoteModelGroupDisplayNameSheet: View {
+    let group: RemoteModelKeyGroup
+    let onSave: (String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var draftName: String
+
+    init(group: RemoteModelKeyGroup, onSave: @escaping (String) -> Void) {
+        self.group = group
+        self.onSave = onSave
+        _draftName = State(initialValue: group.primaryModel.effectiveGroupDisplayName ?? "")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(HubUIStrings.Settings.RemoteModels.editGroupNameTitle)
+                .font(.headline)
+
+            Text(HubUIStrings.Settings.RemoteModels.editGroupNameSubtitle)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            TextField(HubUIStrings.Settings.RemoteModels.editGroupNamePlaceholder, text: $draftName)
+                .textFieldStyle(.roundedBorder)
+
+            if group.primaryModel.effectiveGroupDisplayName == nil {
+                Text(HubUIStrings.Settings.RemoteModels.fallbackGroupTitle(group.title))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            HStack(spacing: 10) {
+                Button(HubUIStrings.Settings.RemoteModels.cancel) {
+                    dismiss()
+                }
+                Spacer()
+                Button(HubUIStrings.Settings.RemoteModels.editGroupNameSave) {
+                    onSave(draftName)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(16)
+        .frame(width: 420, height: 190)
     }
 }
 
@@ -4238,13 +7043,13 @@ private struct AddGRPCClientSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Pair New Device")
+            Text(HubUIStrings.Settings.GRPC.AddDeviceSheet.title)
                 .font(.headline)
 
-            TextField("Device name (optional)", text: $name)
+            TextField(HubUIStrings.Settings.GRPC.AddDeviceSheet.namePlaceholder, text: $name)
                 .textFieldStyle(.roundedBorder)
 
-            Text("Tip: this adds a token entry to the Hub allowlist and copies connect vars. If the Hub is in mTLS mode, prefer the Bootstrap command (axhubctl) so the Hub can issue a client certificate.")
+            Text(HubUIStrings.Settings.GRPC.AddDeviceSheet.hint)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
@@ -4252,8 +7057,8 @@ private struct AddGRPCClientSheet: View {
 
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
-                Button("Create & Copy") {
+                Button(HubUIStrings.Settings.GRPC.AddDeviceSheet.cancel) { dismiss() }
+                Button(HubUIStrings.Settings.GRPC.AddDeviceSheet.createAndCopy) {
                     onAdd(name)
                     dismiss()
                 }
@@ -4269,8 +7074,9 @@ private struct EditGRPCClientSheet: View {
     let client: HubGRPCClientEntry
     let serverPort: Int
     let localModels: [ModelCatalogEntry]
-    let routingSettings: RoutingSettings
     let existingLocalModelProfiles: [String: HubPairedTerminalLocalModelProfile]
+    let suggestedLANAllowedCidrs: [String]
+    let initialCapabilityFocusKey: String?
     let onSave: (HubGRPCClientEntry) -> Void
     let onSaveRoutingSettings: (RoutingSettings) -> Void
     let onUpsertLocalModelProfile: (HubPairedTerminalLocalModelProfile) -> Void
@@ -4300,6 +7106,11 @@ private struct EditGRPCClientSheet: View {
     @State private var localModelOverridesExpanded: Bool
     @State private var routingSettingsDraft: RoutingSettings
     @State private var localModelContextOverrideTextById: [String: String]
+    @State private var localModelTTLTextById: [String: String]
+    @State private var localModelParallelTextById: [String: String]
+    @State private var localModelIdentifierById: [String: String]
+    @State private var localModelVisionImageMaxDimensionTextById: [String: String]
+    @State private var localModelAdvancedExpandedById: [String: Bool]
     @State private var localModelNoteById: [String: String]
 
     init(
@@ -4308,6 +7119,8 @@ private struct EditGRPCClientSheet: View {
         localModels: [ModelCatalogEntry],
         routingSettings: RoutingSettings,
         existingLocalModelProfiles: [String: HubPairedTerminalLocalModelProfile],
+        suggestedLANAllowedCidrs: [String],
+        initialCapabilityFocusKey: String? = nil,
         onSave: @escaping (HubGRPCClientEntry) -> Void,
         onSaveRoutingSettings: @escaping (RoutingSettings) -> Void,
         onUpsertLocalModelProfile: @escaping (HubPairedTerminalLocalModelProfile) -> Void,
@@ -4318,8 +7131,9 @@ private struct EditGRPCClientSheet: View {
         self.client = client
         self.serverPort = serverPort
         self.localModels = localModels
-        self.routingSettings = routingSettings
         self.existingLocalModelProfiles = existingLocalModelProfiles
+        self.suggestedLANAllowedCidrs = Self.orderedAllowedCidrs(Self.normalizeAllowedCidrs(suggestedLANAllowedCidrs))
+        self.initialCapabilityFocusKey = hubNormalizedPairedDeviceCapabilityFocusKey(initialCapabilityFocusKey)
         self.onSave = onSave
         self.onSaveRoutingSettings = onSaveRoutingSettings
         self.onUpsertLocalModelProfile = onUpsertLocalModelProfile
@@ -4356,13 +7170,28 @@ private struct EditGRPCClientSheet: View {
         _routingSettingsDraft = State(initialValue: routingSettings)
 
         var contextOverrideTextById: [String: String] = [:]
+        var ttlTextById: [String: String] = [:]
+        var parallelTextById: [String: String] = [:]
+        var identifierById: [String: String] = [:]
+        var visionImageMaxDimensionTextById: [String: String] = [:]
+        var advancedExpandedById: [String: Bool] = [:]
         var noteById: [String: String] = [:]
         for model in localModels {
             let existingProfile = existingLocalModelProfiles[model.id]
             contextOverrideTextById[model.id] = existingProfile?.overrideProfile.contextLength.map(String.init) ?? ""
+            ttlTextById[model.id] = existingProfile?.overrideProfile.ttl.map(String.init) ?? ""
+            parallelTextById[model.id] = existingProfile?.overrideProfile.parallel.map(String.init) ?? ""
+            identifierById[model.id] = existingProfile?.overrideProfile.identifier ?? ""
+            visionImageMaxDimensionTextById[model.id] = existingProfile?.overrideProfile.vision?.imageMaxDimension.map(String.init) ?? ""
+            advancedExpandedById[model.id] = Self.localModelProfileHasAdvancedFields(existingProfile?.overrideProfile)
             noteById[model.id] = existingProfile?.note ?? ""
         }
         _localModelContextOverrideTextById = State(initialValue: contextOverrideTextById)
+        _localModelTTLTextById = State(initialValue: ttlTextById)
+        _localModelParallelTextById = State(initialValue: parallelTextById)
+        _localModelIdentifierById = State(initialValue: identifierById)
+        _localModelVisionImageMaxDimensionTextById = State(initialValue: visionImageMaxDimensionTextById)
+        _localModelAdvancedExpandedById = State(initialValue: advancedExpandedById)
         _localModelNoteById = State(initialValue: noteById)
     }
 
@@ -4374,24 +7203,41 @@ private struct EditGRPCClientSheet: View {
     }
 
     private static let capSpecs: [CapSpec] = [
-        CapSpec(key: "models", title: "Models", detail: "Allow listing Hub model catalog"),
-        CapSpec(key: "events", title: "Events", detail: "Allow subscribing to Hub push events (grants/quota/killswitch/requests)"),
-        CapSpec(key: "memory", title: "Memory", detail: "Allow Hub-side thread + canonical memory RPCs"),
-        CapSpec(key: "skills", title: "Skills", detail: "Allow HubSkills search/import/pin/resolve/download RPCs"),
-        CapSpec(key: "ai.generate.local", title: "Local AI", detail: "Allow local/offline inference on Hub"),
-        CapSpec(key: "ai.generate.paid", title: "Paid AI", detail: "Allow requesting/using paid models (still grant-gated)"),
-        CapSpec(key: "web.fetch", title: "Web Fetch", detail: "Allow requesting/using web.fetch (still grant-gated)"),
+        CapSpec(key: "models", title: HubUIStrings.Settings.GRPC.EditDeviceSheet.capModelsTitle, detail: HubUIStrings.Settings.GRPC.EditDeviceSheet.capModelsDetail),
+        CapSpec(key: "events", title: HubUIStrings.Settings.GRPC.EditDeviceSheet.capEventsTitle, detail: HubUIStrings.Settings.GRPC.EditDeviceSheet.capEventsDetail),
+        CapSpec(key: "memory", title: HubUIStrings.Settings.GRPC.EditDeviceSheet.capMemoryTitle, detail: HubUIStrings.Settings.GRPC.EditDeviceSheet.capMemoryDetail),
+        CapSpec(key: "skills", title: HubUIStrings.Settings.GRPC.EditDeviceSheet.capSkillsTitle, detail: HubUIStrings.Settings.GRPC.EditDeviceSheet.capSkillsDetail),
+        CapSpec(key: "ai.generate.local", title: HubUIStrings.Settings.GRPC.EditDeviceSheet.capLocalAITitle, detail: HubUIStrings.Settings.GRPC.EditDeviceSheet.capLocalAIDetail),
+        CapSpec(key: "ai.generate.paid", title: HubUIStrings.Settings.GRPC.EditDeviceSheet.capPaidAITitle, detail: HubUIStrings.Settings.GRPC.EditDeviceSheet.capPaidAIDetail),
+        CapSpec(key: "web.fetch", title: HubUIStrings.Settings.GRPC.EditDeviceSheet.capWebFetchTitle, detail: HubUIStrings.Settings.GRPC.EditDeviceSheet.capWebFetchDetail),
     ]
+
+    private static func capSpec(for key: String?) -> CapSpec? {
+        let normalizedKey = hubNormalizedPairedDeviceCapabilityFocusKey(key)
+        return capSpecs.first(where: { $0.key == normalizedKey })
+    }
+
+    private static func localModelProfileHasAdvancedFields(_ profile: LocalModelLoadProfileOverride?) -> Bool {
+        guard let profile else { return false }
+        return profile.ttl != nil
+            || profile.parallel != nil
+            || !(profile.identifier?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+            || !(profile.vision?.isEmpty ?? true)
+            || profile.gpuOffloadRatio != nil
+            || profile.ropeFrequencyBase != nil
+            || profile.ropeFrequencyScale != nil
+            || profile.evalBatchSize != nil
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text("Edit Paired Device")
+                    Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.title)
                         .font(.headline)
                     Spacer()
-                    Button("Cancel") { dismiss() }
-                    Button("Save") {
+                    Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.cancel) { dismiss() }
+                    Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.save) {
                         var out = client
                         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
                         let effectiveName = trimmedName.isEmpty ? client.deviceId : trimmedName
@@ -4421,6 +7267,7 @@ private struct EditGRPCClientSheet: View {
                             out.approvedTrustProfile = nil
                             out.capabilities = orderedCaps(Array(caps))
                         }
+                        onSaveRoutingSettings(routingSettingsDraft)
                         persistLocalModelProfiles()
                         onSave(out)
                         dismiss()
@@ -4429,28 +7276,32 @@ private struct EditGRPCClientSheet: View {
                     .keyboardShortcut(.defaultAction)
                 }
 
+                if let focusedCapabilitySpec {
+                    focusedGrantBanner(focusedCapabilitySpec)
+                }
+
                 VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("Device ID")
+                    Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.deviceID)
                     Spacer()
                     Text(client.deviceId)
                         .font(.caption2.monospaced())
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
-                Toggle("Enabled", isOn: $enabled)
-                TextField("Display name (optional)", text: $name)
+                Toggle(HubUIStrings.Settings.GRPC.EditDeviceSheet.enabled, isOn: $enabled)
+                TextField(HubUIStrings.Settings.GRPC.EditDeviceSheet.displayNamePlaceholder, text: $name)
                     .textFieldStyle(.roundedBorder)
-                TextField("User ID (optional; empty = device_id)", text: $userId)
+                TextField(HubUIStrings.Settings.GRPC.EditDeviceSheet.userIDPlaceholder, text: $userId)
                     .textFieldStyle(.roundedBorder)
             }
 
                 Divider()
 
                 VStack(alignment: .leading, spacing: 8) {
-                Text("Policy Mode")
+                Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.policyMode)
                     .font(.callout.weight(.semibold))
-                Picker("Policy Mode", selection: $policyMode) {
+                Picker(HubUIStrings.Settings.GRPC.EditDeviceSheet.policyMode, selection: $policyMode) {
                     ForEach(HubGRPCClientPolicyMode.allCases, id: \.self) { mode in
                         Text(mode.title).tag(mode)
                     }
@@ -4458,38 +7309,44 @@ private struct EditGRPCClientSheet: View {
                 .pickerStyle(.segmented)
 
                 if policyMode == .newProfile {
-                    Picker("Paid Models", selection: $paidModelSelectionMode) {
+                    Picker(HubUIStrings.Settings.GRPC.EditDeviceSheet.paidModels, selection: $paidModelSelectionMode) {
                         ForEach(HubPaidModelSelectionMode.allCases, id: \.self) { mode in
                             Text(mode.title).tag(mode)
                         }
                     }
                     .pickerStyle(.segmented)
+                    if focusedCapabilityKey == "ai.generate.paid" {
+                        focusedGrantMarker()
+                    }
 
                     if paidModelSelectionMode == .customSelectedModels {
-                        TextField("Allowed paid models (comma or newline separated)", text: $allowedPaidModelsText)
+                        TextField(HubUIStrings.Settings.GRPC.EditDeviceSheet.customPaidModelsPlaceholder, text: $allowedPaidModelsText)
                             .textFieldStyle(.roundedBorder)
                         if parseList(allowedPaidModelsText).isEmpty {
-                            Text("Custom Selected Models requires at least one model id.")
+                            Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.customPaidModelsError)
                                 .font(.caption2)
                                 .foregroundStyle(.red)
                         }
                     }
 
-                    Toggle("Default Web Fetch Enabled", isOn: $defaultWebFetchEnabled)
+                    Toggle(HubUIStrings.Settings.GRPC.EditDeviceSheet.defaultAllowWebFetch, isOn: $defaultWebFetchEnabled)
+                    if focusedCapabilityKey == "web.fetch" {
+                        focusedGrantMarker()
+                    }
 
-                    TextField("Daily token limit", text: $dailyTokenLimitText)
+                    TextField(HubUIStrings.Settings.GRPC.EditDeviceSheet.dailyTokenLimit, text: $dailyTokenLimitText)
                         .textFieldStyle(.roundedBorder)
                     if parsedDailyTokenLimit == nil {
-                        Text("Daily token limit must be a positive integer.")
+                        Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.dailyTokenLimitError)
                             .font(.caption2)
                             .foregroundStyle(.red)
                     } else {
-                        Text("Policy profiles persist as policy_mode=new_profile with device-level paid-model, web-fetch, and budget boundaries.")
+                        Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.saveHint)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                 } else {
-                    Text("Legacy Grant keeps the current capability/grant path. Existing paired devices stay compatible until you explicitly switch to Policy Profile.")
+                    Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.legacyHint)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -4499,43 +7356,35 @@ private struct EditGRPCClientSheet: View {
 
                 VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("Capabilities")
+                    Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.capabilities)
                         .font(.callout.weight(.semibold))
                     Spacer()
-                    Button("Local-only") {
+                    Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.localOnly) {
                         caps = Set(["models", "events", "memory", "skills", "ai.generate.local"])
                     }
                     .font(.caption)
-                    Button("Full") {
+                    Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.allowAll) {
                         caps = Set(["models", "events", "memory", "skills", "ai.generate.local", "ai.generate.paid", "web.fetch"])
                     }
                     .font(.caption)
                 }
 
                 ForEach(Self.capSpecs) { spec in
-                    Toggle(isOn: bindingCap(spec.key)) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(spec.title)
-                                .font(.caption.weight(.semibold))
-                            Text(spec.detail)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
+                    capabilityToggleRow(spec)
                 }
 
                 if policyMode == .newProfile {
-                    Text("In Policy Profile mode, paid-model and web-fetch capability bits are derived from the policy fields above when you save.")
+                    Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.policyProfileCapabilitiesHint)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
 
                 if caps.isEmpty {
-                    Text("Warning: empty capabilities list means the device is allowed to call ALL RPCs (backward compatible but unsafe).")
+                    Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.emptyCapabilitiesWarning)
                         .font(.caption2)
                         .foregroundStyle(.red)
                 } else {
-                    Text("Note: Paid AI / Web Fetch still require capability allow + grant approval. Bridge is expected to stay on by default; use device capabilities to cut off networking for a specific Terminal.")
+                    Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.capabilitiesHint)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -4545,21 +7394,28 @@ private struct EditGRPCClientSheet: View {
 
                 VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("Allowed CIDRs (Source IP)")
+                    Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.allowedSources)
                         .font(.callout.weight(.semibold))
                     Spacer()
-                    Button("LAN only") {
+                    Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.adoptSuggestedRange) {
+                        let defaults = suggestedLANAllowedCidrs.isEmpty ? ["private", "loopback"] : suggestedLANAllowedCidrs
+                        allowAnySourceIP = false
+                        allowedCidrs = defaults
+                        allowedCidrsBackup = defaults
+                    }
+                        .font(.caption)
+                    Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.lanOnly) {
                         allowAnySourceIP = false
                         allowedCidrs = ["private", "loopback"]
                         allowedCidrsBackup = allowedCidrs
                     }
                         .font(.caption)
-                    Button("Any") { allowAnySourceIP = true }
+                    Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.anySource) { allowAnySourceIP = true }
                         .font(.caption)
                 }
 
                 Toggle(
-                    "Allow any source IP (unsafe)",
+                    HubUIStrings.Settings.GRPC.EditDeviceSheet.allowAnySourceIP,
                     isOn: Binding(
                         get: { allowAnySourceIP },
                         set: { on in
@@ -4576,13 +7432,13 @@ private struct EditGRPCClientSheet: View {
                 )
 
                 VStack(alignment: .leading, spacing: 8) {
-                    Toggle("Allow private (RFC1918)", isOn: bindingAllowedCidrRule("private"))
-                    Toggle("Allow loopback (localhost)", isOn: bindingAllowedCidrRule("loopback"))
+                    Toggle(HubUIStrings.Settings.GRPC.EditDeviceSheet.allowPrivate, isOn: bindingAllowedCidrRule("private"))
+                    Toggle(HubUIStrings.Settings.GRPC.EditDeviceSheet.allowLoopback, isOn: bindingAllowedCidrRule("loopback"))
 
                     let customs = allowedCidrsCustomItems
                     if !customs.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Custom CIDRs / IPs")
+                            Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.customSources)
                                 .font(.caption.weight(.semibold))
                             ForEach(customs, id: \.self) { v in
                                 HStack(spacing: 8) {
@@ -4591,7 +7447,7 @@ private struct EditGRPCClientSheet: View {
                                         .foregroundStyle(.secondary)
                                         .textSelection(.enabled)
                                     Spacer()
-                                    Button("Remove") { removeAllowedCidrValue(v) }
+                                    Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.remove) { removeAllowedCidrValue(v) }
                                         .font(.caption)
                                 }
                             }
@@ -4599,9 +7455,9 @@ private struct EditGRPCClientSheet: View {
                     }
 
                     HStack(spacing: 8) {
-                        TextField("Add CIDR/IP (e.g. 10.7.0.0/24)", text: $addCidrText)
+                        TextField(HubUIStrings.Settings.GRPC.EditDeviceSheet.addCIDROrIPPlaceholder, text: $addCidrText)
                             .textFieldStyle(.roundedBorder)
-                        Button("Add") { addAllowedCidrsFromText(addCidrText) }
+                        Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.add) { addAllowedCidrsFromText(addCidrText) }
                             .font(.caption)
                             .disabled(addCidrText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
@@ -4609,35 +7465,73 @@ private struct EditGRPCClientSheet: View {
                 .disabled(allowAnySourceIP)
 
                 if allowAnySourceIP {
-                    Text("Warning: allow-any means any source IP is accepted. For remote mode, set this to your VPN subnet and keep paid/web caps OFF unless needed.")
+                    Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.anySourceWarning)
                         .font(.caption2)
                         .foregroundStyle(.orange)
                 } else if !allowedCidrsConfigIsValid {
-                    Text("Invalid: restricted mode requires at least one rule (otherwise it behaves like ANY). Add your VPN subnet (e.g. 10.7.0.0/24) or enable LAN-only.")
+                    Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.invalidRestrictedSources)
                         .font(.caption2)
                         .foregroundStyle(.red)
                 } else {
-                    Text("Supported: `private`, `loopback`, exact IP, or IPv4 CIDR (e.g. 10.7.0.0/24).")
+                    Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.supportedSourcesHint)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                    if !suggestedLANAllowedCidrs.isEmpty {
+                        Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.suggestedLANRanges(suggestedLANAllowedCidrs.joined(separator: ", ")))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
                 }
             }
+
+                if hasLocalTaskRoutingSection {
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.localTaskRoutingTitle)
+                                .font(.callout.weight(.semibold))
+                            Spacer()
+                            Button(localTaskRoutingExpanded ? HubUIStrings.Settings.GRPC.EditDeviceSheet.collapse : HubUIStrings.Settings.GRPC.EditDeviceSheet.expand) {
+                                localTaskRoutingExpanded.toggle()
+                            }
+                            .font(.caption)
+                        }
+
+                        Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.localTaskRoutingHint)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+
+                        if localTaskRoutingExpanded {
+                            VStack(alignment: .leading, spacing: 10) {
+                                ForEach(LocalTaskRoutingCatalog.descriptors) { descriptor in
+                                    pairedTerminalLocalTaskRoutingCard(descriptor)
+                                }
+                            }
+                        } else {
+                            Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.localTaskRoutingCount(LocalTaskRoutingCatalog.descriptors.count))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
 
                 if !localModels.isEmpty {
                     Divider()
 
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
-                            Text("Per-Device Local Model Context")
+                            Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.localModelOverridesTitle)
                                 .font(.callout.weight(.semibold))
                             Spacer()
-                            Button(localModelOverridesExpanded ? "Collapse" : "Expand") {
+                            Button(localModelOverridesExpanded ? HubUIStrings.Settings.GRPC.EditDeviceSheet.collapse : HubUIStrings.Settings.GRPC.EditDeviceSheet.expand) {
                                 localModelOverridesExpanded.toggle()
                             }
                             .font(.caption)
                         }
 
-                        Text("Local model identity stays in the Hub catalog. Only device-scoped load overrides land in `hub_paired_terminal_local_model_profiles.json`.")
+                        Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.localModelOverridesHint)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
 
@@ -4648,7 +7542,7 @@ private struct EditGRPCClientSheet: View {
                                 }
                             }
                         } else {
-                            Text("\(localModels.count) local models available for this Terminal.")
+                            Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.localModelOverridesCount(localModels.count))
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
@@ -4659,16 +7553,16 @@ private struct EditGRPCClientSheet: View {
 
                 VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("mTLS Cert Pin (sha256)")
+                    Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.mtlsFingerprint)
                         .font(.callout.weight(.semibold))
                     Spacer()
-                    Button("Clear") { certSha256 = "" }
+                    Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.clear) { certSha256 = "" }
                         .font(.caption)
                 }
-                TextField("Optional (hex). Leave empty to allow any client cert (unsafe in mTLS mode).", text: $certSha256)
+                TextField(HubUIStrings.Settings.GRPC.EditDeviceSheet.certFingerprintPlaceholder, text: $certSha256)
                     .textFieldStyle(.roundedBorder)
                     .font(.caption2.monospaced())
-                Text("Tip: when the Hub is running in mTLS mode, set this to bind the device token to a specific client certificate fingerprint.")
+                Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.certFingerprintHint)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -4676,9 +7570,9 @@ private struct EditGRPCClientSheet: View {
                 Divider()
 
                 HStack(spacing: 10) {
-                Button("Copy Vars (LAN)") { onCopyVars(token) }
+                Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.copyLANVars) { onCopyVars(token) }
                     .font(.caption)
-                Button("Copy Vars (Remote)") {
+                Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.copyRemoteVars) {
                     let p = max(1, min(65535, serverPort))
                     let snippet = """
 HUB_HOST=<hub_vpn_ip_or_tunnel>
@@ -4689,7 +7583,7 @@ HUB_CLIENT_TOKEN='\(token)'
                     NSPasteboard.general.setString(snippet, forType: .string)
                 }
                 .font(.caption)
-                Button("Rotate Token") {
+                Button(HubUIStrings.Settings.GRPC.rotateDeviceToken) {
                     if let newToken = onRotateToken(client.deviceId) {
                         token = newToken
                         createdAtMs = Int64(Date().timeIntervalSince1970 * 1000.0)
@@ -4715,6 +7609,71 @@ HUB_CLIENT_TOKEN='\(token)'
         )
     }
 
+    private var focusedCapabilityKey: String? {
+        hubNormalizedPairedDeviceCapabilityFocusKey(initialCapabilityFocusKey)
+    }
+
+    private var focusedCapabilitySpec: CapSpec? {
+        Self.capSpec(for: focusedCapabilityKey)
+    }
+
+    @ViewBuilder
+    private func focusedGrantBanner(_ spec: CapSpec) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(HubUIStrings.Settings.GRPC.EditDeviceSheet.focusedGrantTitle, systemImage: "exclamationmark.circle.fill")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.orange)
+            Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.focusedGrantSummary(spec.title))
+                .font(.caption)
+            Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.focusedGrantNextStep(spec.title))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.09))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.orange.opacity(0.28), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    @ViewBuilder
+    private func focusedGrantMarker() -> some View {
+        Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.focusedGrantMarker)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.orange)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func capabilityToggleRow(_ spec: CapSpec) -> some View {
+        let isFocused = spec.key == focusedCapabilityKey
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(isOn: bindingCap(spec.key)) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(spec.title)
+                        .font(.caption.weight(.semibold))
+                    Text(spec.detail)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if isFocused {
+                focusedGrantMarker()
+            }
+        }
+        .padding(isFocused ? 10 : 0)
+        .background(isFocused ? Color.orange.opacity(0.08) : Color.clear)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(isFocused ? Color.orange.opacity(0.28) : Color.clear, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
     private var parsedDailyTokenLimit: Int? {
         let trimmed = dailyTokenLimitText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let value = Int(trimmed), value > 0 else { return nil }
@@ -4738,7 +7697,171 @@ HUB_CLIENT_TOKEN='\(token)'
     }
 
     private var localModelOverridesAreValid: Bool {
-        localModels.allSatisfy { localModelContextValidationError(for: $0) == nil }
+        localModels.allSatisfy { localModelValidationMessages(for: $0).isEmpty }
+    }
+
+    private var hasLocalTaskRoutingSection: Bool {
+        if !localModels.isEmpty {
+            return true
+        }
+        return LocalTaskRoutingCatalog.descriptors.contains { descriptor in
+            let binding = routingBindingDraft(for: descriptor.taskKind)
+            return !binding.hubDefaultModelId.isEmpty || !binding.deviceOverrideModelId.isEmpty
+        }
+    }
+
+    private func routingBindingDraft(for taskKind: String) -> HubResolvedRoutingBinding {
+        let normalizedTaskKind = taskKind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let resolved = routingSettingsDraft.resolvedModelId(taskKind: normalizedTaskKind, deviceId: client.deviceId)
+        let normalizedDeviceId = client.deviceId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return HubResolvedRoutingBinding(
+            taskType: normalizedTaskKind,
+            taskLabel: LocalTaskRoutingCatalog.title(for: normalizedTaskKind),
+            effectiveModelId: resolved.modelId,
+            source: resolved.source,
+            hubDefaultModelId: routingSettingsDraft.hubDefaultModelIdByTaskKind[normalizedTaskKind] ?? "",
+            deviceOverrideModelId: routingSettingsDraft.devicePreferredModelIdByTaskKind[normalizedDeviceId]?[normalizedTaskKind] ?? ""
+        )
+    }
+
+    private func localModelsSupportingTaskKind(_ taskKind: String) -> [ModelCatalogEntry] {
+        let normalizedTaskKind = taskKind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return localModels.filter { model in
+            LocalTaskRoutingCatalog.supportedTaskKinds(in: model.taskKinds).contains(normalizedTaskKind)
+        }
+    }
+
+    private func routingModelDisplayName(_ modelId: String) -> String {
+        let trimmed = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return HubUIStrings.Settings.GRPC.EditDeviceSheet.automatic }
+        if let model = localModels.first(where: { $0.id == trimmed }) {
+            return model.name.isEmpty ? model.id : model.name
+        }
+        return HubUIStrings.Settings.GRPC.EditDeviceSheet.missingModel(trimmed)
+    }
+
+    private func routingSourceLabel(_ source: String) -> String {
+        switch source.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "request_override":
+            return HubUIStrings.Settings.GRPC.EditDeviceSheet.requestOverride
+        case "device_override":
+            return HubUIStrings.Settings.GRPC.EditDeviceSheet.deviceOverride
+        case "hub_default":
+            return HubUIStrings.Settings.GRPC.EditDeviceSheet.hubDefault
+        case "auto_selected":
+            return HubUIStrings.Settings.GRPC.EditDeviceSheet.autoSelected
+        default:
+            return source.isEmpty ? HubUIStrings.Settings.GRPC.EditDeviceSheet.autoSelected : source
+        }
+    }
+
+    private func localModelContextSourceLabel(_ source: String) -> String {
+        switch source.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "hub_default":
+            return HubUIStrings.Settings.GRPC.EditDeviceSheet.hubDefault
+        case "device_override":
+            return HubUIStrings.Settings.GRPC.EditDeviceSheet.deviceOverride
+        case "runtime_clamped":
+            return HubUIStrings.Settings.GRPC.EditDeviceSheet.runtimeClamped
+        default:
+            return source.isEmpty ? HubUIStrings.Settings.GRPC.EditDeviceSheet.hubDefault : source
+        }
+    }
+
+    private func pairedTerminalLocalTaskRoutingCard(_ descriptor: LocalTaskRoutingDescriptor) -> some View {
+        let binding = routingBindingDraft(for: descriptor.taskKind)
+        let compatibleModels = localModelsSupportingTaskKind(descriptor.taskKind)
+        let hubDefaultDisplay = routingModelDisplayName(binding.hubDefaultModelId)
+        let deviceOverrideDisplay = binding.deviceOverrideModelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? (
+                binding.hubDefaultModelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? HubUIStrings.Settings.GRPC.EditDeviceSheet.automatic
+                : HubUIStrings.Settings.GRPC.EditDeviceSheet.hubDefault
+            )
+            : routingModelDisplayName(binding.deviceOverrideModelId)
+        let effectiveDisplay = routingModelDisplayName(binding.effectiveModelId)
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(descriptor.title)
+                        .font(.caption.weight(.semibold))
+                    Text(descriptor.taskKind)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text(routingSourceLabel(binding.source))
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.inheritHubDefault)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(hubDefaultDisplay)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+
+            HStack {
+                Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.deviceOverride)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Menu {
+                    Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.useHubDefault) {
+                        routingSettingsDraft.setModelId(nil, for: descriptor.taskKind, deviceId: client.deviceId)
+                    }
+                    Divider()
+                    ForEach(compatibleModels) { model in
+                        Button(model.name.isEmpty ? model.id : model.name) {
+                            routingSettingsDraft.setModelId(model.id, for: descriptor.taskKind, deviceId: client.deviceId)
+                        }
+                    }
+                } label: {
+                    Text(deviceOverrideDisplay)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+                .controlSize(.mini)
+            }
+
+            HStack {
+                Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.effectiveFinal)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(
+                    HubUIStrings.Settings.GRPC.EditDeviceSheet.effectiveSummary(
+                        display: effectiveDisplay,
+                        source: routingSourceLabel(binding.source)
+                    )
+                )
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+
+            if compatibleModels.isEmpty {
+                Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.noCompatibleLocalModels(descriptor.shortTitle))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.compatibleModels(
+                    compatibleModels.map { $0.name.isEmpty ? $0.id : $0.name }.joined(separator: ", ")
+                ))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
+        .padding(10)
+        .background(Color.secondary.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
     private var allowedCidrsCustomItems: [String] {
@@ -4810,6 +7933,10 @@ HUB_CLIENT_TOKEN='\(token)'
     }
 
     private func orderedAllowedCidrs(_ list: [String]) -> [String] {
+        Self.orderedAllowedCidrs(list)
+    }
+
+    private static func orderedAllowedCidrs(_ list: [String]) -> [String] {
         let clean = Self.normalizeAllowedCidrs(list)
         if clean.isEmpty { return [] }
 
@@ -4886,9 +8013,11 @@ HUB_CLIENT_TOKEN='\(token)'
     private func pairedTerminalLocalModelOverrideCard(_ model: ModelCatalogEntry) -> some View {
         let effective = localModelEffectiveLoadProfile(for: model)
         let source = localModelEffectiveContextSource(for: model)
-        let validationError = localModelContextValidationError(for: model)
+        let validationMessages = localModelValidationMessages(for: model)
         let draftText = localModelContextOverrideDraftText(for: model.id)
         let hasHiddenFields = localModelHasHiddenNonContextFields(model.id)
+        let advancedSummary = localModelAdvancedSummary(for: effective)
+        let sourceLabel = localModelContextSourceLabel(source)
 
         return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 8) {
@@ -4907,52 +8036,111 @@ HUB_CLIENT_TOKEN='\(token)'
             }
 
             HStack(spacing: 10) {
-                Text("max \(model.maxContextLength)")
-                Text("default \(model.defaultLoadProfile.contextLength)")
-                Text("effective \(effective.contextLength)")
+                Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.contextLimit(model.maxContextLength))
+                Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.defaultContext(model.defaultLoadProfile.contextLength))
+                Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.effectiveContext(effective.contextLength))
                 Spacer()
-                Text("source \(source)")
+                Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.sourceSummary(sourceLabel))
             }
             .font(.caption2.monospaced())
             .foregroundStyle(.secondary)
 
             HStack(spacing: 8) {
                 TextField(
-                    "Override context length (empty = Hub default)",
+                    HubUIStrings.Settings.GRPC.EditDeviceSheet.contextOverridePlaceholder,
                     text: localModelContextOverrideBinding(for: model.id)
                 )
                 .textFieldStyle(.roundedBorder)
 
-                Button("Hub Default") {
+                Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.restoreHubDefault) {
                     localModelContextOverrideTextById[model.id] = ""
                 }
                 .font(.caption)
 
-                Button("Use Max") {
+                Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.useMaximum) {
                     localModelContextOverrideTextById[model.id] = String(model.maxContextLength)
                 }
                 .font(.caption)
             }
 
-            TextField("Note (optional)", text: localModelNoteBinding(for: model.id))
+            DisclosureGroup(
+                isExpanded: localModelAdvancedExpandedBinding(for: model.id),
+                content: {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 8) {
+                            TextField(HubUIStrings.Settings.GRPC.EditDeviceSheet.ttlSecondsPlaceholder, text: localModelTTLBinding(for: model.id))
+                                .textFieldStyle(.roundedBorder)
+                            TextField(HubUIStrings.Settings.GRPC.EditDeviceSheet.parallelismPlaceholder, text: localModelParallelBinding(for: model.id))
+                                .textFieldStyle(.roundedBorder)
+                        }
+
+                        TextField(HubUIStrings.Settings.GRPC.EditDeviceSheet.identifierPlaceholder, text: localModelIdentifierBinding(for: model.id))
+                            .textFieldStyle(.roundedBorder)
+
+                        TextField(
+                            HubUIStrings.Settings.GRPC.EditDeviceSheet.visionImageMaxDimensionPlaceholder,
+                            text: localModelVisionImageMaxDimensionBinding(for: model.id)
+                        )
+                        .textFieldStyle(.roundedBorder)
+
+                        HStack(spacing: 10) {
+                            Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.effective)
+                            Text(advancedSummary)
+                            Spacer()
+                            Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.clearAdvanced) {
+                                localModelTTLTextById[model.id] = ""
+                                localModelParallelTextById[model.id] = ""
+                                localModelIdentifierById[model.id] = ""
+                                localModelVisionImageMaxDimensionTextById[model.id] = ""
+                            }
+                            .font(.caption)
+                        }
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+
+                        Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.advancedOptionsHint)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.top, 2)
+                },
+                label: {
+                    HStack(spacing: 8) {
+                        Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.advancedOptions)
+                            .font(.caption.weight(.semibold))
+                        Text(advancedSummary)
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            )
+
+            TextField(HubUIStrings.Settings.GRPC.EditDeviceSheet.notePlaceholder, text: localModelNoteBinding(for: model.id))
                 .textFieldStyle(.roundedBorder)
 
-            if let validationError {
-                Text(validationError)
-                    .font(.caption2)
-                    .foregroundStyle(.red)
+            if !validationMessages.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(validationMessages, id: \.self) { message in
+                        Text(message)
+                            .font(.caption2)
+                            .foregroundStyle(.red)
+                    }
+                }
             } else if source == "runtime_clamped", let requested = Int(draftText) {
-                Text("Requested context \(requested) is being clamped to effective \(effective.contextLength). Fix the value before saving.")
+                Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.runtimeClampedWarning(
+                    requested: requested,
+                    effective: effective.contextLength
+                ))
                     .font(.caption2)
                     .foregroundStyle(.orange)
             } else {
-                Text("Effective context is resolved as provider-safe default -> Hub default -> device override.")
+                Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.finalResolutionHint)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
             if hasHiddenFields {
-                Text("This profile already has non-context load fields in JSON. They stay preserved when you save from this sheet.")
+                Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.hiddenMachineFieldsHint)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -4969,6 +8157,41 @@ HUB_CLIENT_TOKEN='\(token)'
         )
     }
 
+    private func localModelTTLBinding(for modelId: String) -> Binding<String> {
+        Binding(
+            get: { localModelTTLDraftText(for: modelId) },
+            set: { localModelTTLTextById[modelId] = $0 }
+        )
+    }
+
+    private func localModelParallelBinding(for modelId: String) -> Binding<String> {
+        Binding(
+            get: { localModelParallelDraftText(for: modelId) },
+            set: { localModelParallelTextById[modelId] = $0 }
+        )
+    }
+
+    private func localModelIdentifierBinding(for modelId: String) -> Binding<String> {
+        Binding(
+            get: { localModelIdentifierDraftText(for: modelId) },
+            set: { localModelIdentifierById[modelId] = $0 }
+        )
+    }
+
+    private func localModelVisionImageMaxDimensionBinding(for modelId: String) -> Binding<String> {
+        Binding(
+            get: { localModelVisionImageMaxDimensionDraftText(for: modelId) },
+            set: { localModelVisionImageMaxDimensionTextById[modelId] = $0 }
+        )
+    }
+
+    private func localModelAdvancedExpandedBinding(for modelId: String) -> Binding<Bool> {
+        Binding(
+            get: { localModelAdvancedExpandedById[modelId] ?? false },
+            set: { localModelAdvancedExpandedById[modelId] = $0 }
+        )
+    }
+
     private func localModelNoteBinding(for modelId: String) -> Binding<String> {
         Binding(
             get: { localModelNoteById[modelId] ?? "" },
@@ -4980,18 +8203,84 @@ HUB_CLIENT_TOKEN='\(token)'
         localModelContextOverrideTextById[modelId] ?? ""
     }
 
+    private func localModelTTLDraftText(for modelId: String) -> String {
+        localModelTTLTextById[modelId] ?? ""
+    }
+
+    private func localModelParallelDraftText(for modelId: String) -> String {
+        localModelParallelTextById[modelId] ?? ""
+    }
+
+    private func localModelIdentifierDraftText(for modelId: String) -> String {
+        localModelIdentifierById[modelId] ?? ""
+    }
+
+    private func localModelVisionImageMaxDimensionDraftText(for modelId: String) -> String {
+        localModelVisionImageMaxDimensionTextById[modelId] ?? ""
+    }
+
     private func localModelContextValidationError(for model: ModelCatalogEntry) -> String? {
         let trimmed = localModelContextOverrideDraftText(for: model.id)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         guard let value = Int(trimmed) else {
-            return "Context length must be an integer."
+            return HubUIStrings.Settings.GRPC.EditDeviceSheet.contextLengthMustBeInteger
         }
         if value < 512 {
-            return "Context length must be at least 512."
+            return HubUIStrings.Settings.GRPC.EditDeviceSheet.contextLengthMinimum(512)
         }
         if value > model.maxContextLength {
-            return "Context length exceeds model max \(model.maxContextLength)."
+            return HubUIStrings.Settings.GRPC.EditDeviceSheet.contextLengthMaximum(model.maxContextLength)
+        }
+        return nil
+    }
+
+    private func localModelValidationMessages(for model: ModelCatalogEntry) -> [String] {
+        var messages: [String] = []
+        if let contextError = localModelContextValidationError(for: model) {
+            messages.append(contextError)
+        }
+        if let ttlError = localModelPositiveIntegerValidationError(
+            localModelTTLDraftText(for: model.id),
+            field: HubUIStrings.Settings.GRPC.EditDeviceSheet.ttlField,
+            minimum: 1
+        ) {
+            messages.append(ttlError)
+        }
+        if let parallelError = localModelPositiveIntegerValidationError(
+            localModelParallelDraftText(for: model.id),
+            field: HubUIStrings.Settings.GRPC.EditDeviceSheet.parallelismField,
+            minimum: 1
+        ) {
+            messages.append(parallelError)
+        }
+        if let imageDimensionError = localModelPositiveIntegerValidationError(
+            localModelVisionImageMaxDimensionDraftText(for: model.id),
+            field: HubUIStrings.Settings.GRPC.EditDeviceSheet.visionImageMaxDimensionField,
+            minimum: 32,
+            maximum: 16_384
+        ) {
+            messages.append(imageDimensionError)
+        }
+        return messages
+    }
+
+    private func localModelPositiveIntegerValidationError(
+        _ rawText: String,
+        field: String,
+        minimum: Int,
+        maximum: Int? = nil
+    ) -> String? {
+        let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard let value = Int(trimmed) else {
+            return HubUIStrings.Settings.GRPC.EditDeviceSheet.integerFieldError(field: field)
+        }
+        if value < minimum {
+            return HubUIStrings.Settings.GRPC.EditDeviceSheet.minimumFieldError(field: field, minimum: minimum)
+        }
+        if let maximum, value > maximum {
+            return HubUIStrings.Settings.GRPC.EditDeviceSheet.maximumFieldError(field: field, maximum: maximum)
         }
         return nil
     }
@@ -5005,6 +8294,34 @@ HUB_CLIENT_TOKEN='\(token)'
             draft.contextLength = nil
         } else if let value = Int(trimmed) {
             draft.contextLength = value
+        }
+
+        let ttlTrimmed = localModelTTLDraftText(for: model.id)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if ttlTrimmed.isEmpty {
+            draft.ttl = nil
+        } else if let value = Int(ttlTrimmed), value > 0 {
+            draft.ttl = value
+        }
+
+        let parallelTrimmed = localModelParallelDraftText(for: model.id)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if parallelTrimmed.isEmpty {
+            draft.parallel = nil
+        } else if let value = Int(parallelTrimmed), value > 0 {
+            draft.parallel = value
+        }
+
+        let identifierTrimmed = localModelIdentifierDraftText(for: model.id)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        draft.identifier = identifierTrimmed.isEmpty ? nil : identifierTrimmed
+
+        let imageMaxDimensionTrimmed = localModelVisionImageMaxDimensionDraftText(for: model.id)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if imageMaxDimensionTrimmed.isEmpty {
+            draft.vision = nil
+        } else if let value = Int(imageMaxDimensionTrimmed), value >= 32, value <= 16_384 {
+            draft.vision = LocalModelVisionLoadProfile(imageMaxDimension: value)
         }
 
         return draft.isEmpty ? nil : draft
@@ -5037,6 +8354,26 @@ HUB_CLIENT_TOKEN='\(token)'
             || overrideProfile.evalBatchSize != nil
     }
 
+    private func localModelAdvancedSummary(for profile: LocalModelLoadProfile) -> String {
+        var parts: [String] = []
+        if let ttl = profile.ttl {
+            parts.append(HubUIStrings.Settings.GRPC.EditDeviceSheet.advancedTTL(ttl))
+        }
+        if let parallel = profile.parallel {
+            parts.append(HubUIStrings.Settings.GRPC.EditDeviceSheet.advancedParallel(parallel))
+        }
+        if let identifier = profile.identifier,
+           !identifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append(HubUIStrings.Settings.GRPC.EditDeviceSheet.advancedIdentifier(identifier))
+        }
+        if let imageMaxDimension = profile.vision?.imageMaxDimension {
+            parts.append(HubUIStrings.Settings.GRPC.EditDeviceSheet.advancedImage(imageMaxDimension))
+        }
+        return parts.isEmpty
+            ? HubUIStrings.Settings.GRPC.EditDeviceSheet.inheritDefaults
+            : HubUIStrings.Settings.GRPC.EditDeviceSheet.advancedSummary(parts)
+    }
+
     private func persistLocalModelProfiles() {
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000.0)
         for model in localModels {
@@ -5044,6 +8381,22 @@ HUB_CLIENT_TOKEN='\(token)'
             let contextText = localModelContextOverrideDraftText(for: model.id)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             overrideProfile.contextLength = Int(contextText)
+            let ttlText = localModelTTLDraftText(for: model.id)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            overrideProfile.ttl = Int(ttlText)
+            let parallelText = localModelParallelDraftText(for: model.id)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            overrideProfile.parallel = Int(parallelText)
+            let identifierText = localModelIdentifierDraftText(for: model.id)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            overrideProfile.identifier = identifierText.isEmpty ? nil : identifierText
+            let imageDimensionText = localModelVisionImageMaxDimensionDraftText(for: model.id)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if let value = Int(imageDimensionText), value >= 32, value <= 16_384 {
+                overrideProfile.vision = LocalModelVisionLoadProfile(imageMaxDimension: value)
+            } else {
+                overrideProfile.vision = nil
+            }
 
             let note = (localModelNoteById[model.id] ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5094,36 +8447,20 @@ HUB_CLIENT_TOKEN='\(token)'
 }
 
 extension SettingsSheetView {
-    private func openDockAgentApp() {
-        // Prefer LaunchServices lookup by bundle id.
-        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.rel.flowhub.dockagent") {
-            NSWorkspace.shared.open(url)
-            return
-        }
-
-        // Dev convention: Dock Agent app is placed next to Hub app in the build output.
-        let hubBundle = Bundle.main.bundleURL
-        let dir = hubBundle.deletingLastPathComponent()
-        let agent = dir.appendingPathComponent("RELFlowHubDockAgent.app")
-        if FileManager.default.fileExists(atPath: agent.path) {
-            NSWorkspace.shared.open(agent)
-        }
-    }
-
     private func badgeDetailText(dedupeKey: String, isEnabled: Bool) -> String {
         // Dock badge integrations require Accessibility.
         if isEnabled, (dedupeKey == "mail_unread" || dedupeKey == "messages_unread" || dedupeKey == "slack_updates"),
            !DockBadgeReader.ensureAccessibilityTrusted(prompt: false) {
-            return "Need Accessibility"
+            return HubUIStrings.Notifications.Unread.accessibilityRequired
         }
         if let n = store.notifications.first(where: { $0.dedupeKey == dedupeKey }) {
             let c = firstInt(in: n.title) ?? firstInt(in: n.body) ?? 0
             if c > 0 {
-                return "\(c) unread"
+                return HubUIStrings.Notifications.Unread.count(c)
             }
-            return "No unread"
+            return HubUIStrings.Notifications.Unread.noUnread
         }
-        return "No unread"
+        return HubUIStrings.Notifications.Unread.noUnread
     }
 
     private func firstInt(in s: String) -> Int? {

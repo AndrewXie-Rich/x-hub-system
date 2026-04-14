@@ -27,6 +27,10 @@ run('XT-W3-24/delivery readiness reports missing Slack credentials with remediat
   assert.equal(readiness.credentials_configured, false);
   assert.equal(readiness.deny_code, 'provider_delivery_not_configured');
   assert.equal(readiness.remediation_hint.includes('HUB_SLACK_OPERATOR_BOT_TOKEN'), true);
+  assert.equal(
+    (readiness.repair_hints || []).some((item) => String(item || '').includes('HUB_SLACK_OPERATOR_BOT_TOKEN')),
+    true
+  );
 });
 
 run('XT-W3-24/delivery readiness treats Telegram as ready when bot token is configured', () => {
@@ -58,6 +62,10 @@ run('XT-W3-24/delivery readiness keeps Feishu blocked until reply is explicitly 
   assert.equal(readiness.credentials_configured, true);
   assert.equal(readiness.deny_code, 'provider_delivery_not_configured');
   assert.equal(readiness.remediation_hint.includes('HUB_FEISHU_OPERATOR_REPLY_ENABLE=1'), true);
+  assert.equal(
+    (readiness.repair_hints || []).some((item) => String(item || '').includes('HUB_FEISHU_OPERATOR_REPLY_ENABLE=1')),
+    true
+  );
 });
 
 run('XT-W3-24/delivery target shares the same readiness semantics for WhatsApp Cloud', () => {

@@ -2,11 +2,18 @@ import Foundation
 import RELFlowHubCore
 
 enum ProviderAuthImport {
+    enum CredentialKind: String, Equatable {
+        case apiKey
+        case chatGPTTokenBundle = "chatgpt_token_bundle"
+    }
+
     struct ImportedCredentials: Equatable {
         var backend: String
         var apiKey: String
         var baseURL: String
         var apiKeyRef: String
+        var wireAPI: String
+        var kind: CredentialKind
     }
 
     enum ImportError: LocalizedError {
@@ -16,9 +23,9 @@ enum ProviderAuthImport {
         var errorDescription: String? {
             switch self {
             case .unsupportedFormat:
-                return "Unsupported auth.json format."
+                return HubUIStrings.Models.ProviderImport.authUnsupportedFormat
             case .noSupportedProviderKey:
-                return "No supported provider API key found in this file."
+                return HubUIStrings.Models.ProviderImport.authNoSupportedProviderKey
             }
         }
     }
@@ -40,12 +47,19 @@ enum ProviderAuthImport {
                 env["OPENAI_API_BASE"],
                 env["OPENAI_BASEURL"]
             )
+            let wireAPI = firstNonEmpty(
+                env["OPENAI_WIRE_API"],
+                env["WIRE_API"],
+                env["wire_api"]
+            )
             let backend = inferredOpenAIBackend(baseURL: base)
             return ImportedCredentials(
                 backend: backend,
                 apiKey: key,
                 baseURL: base,
-                apiKeyRef: defaultAPIKeyRef(backend: backend, baseURL: base)
+                apiKeyRef: defaultAPIKeyRef(backend: backend, baseURL: base),
+                wireAPI: wireAPI,
+                kind: .apiKey
             )
         }
 
@@ -59,7 +73,9 @@ enum ProviderAuthImport {
                 backend: backend,
                 apiKey: key,
                 baseURL: base,
-                apiKeyRef: defaultAPIKeyRef(backend: backend, baseURL: base)
+                apiKeyRef: defaultAPIKeyRef(backend: backend, baseURL: base),
+                wireAPI: "",
+                kind: .apiKey
             )
         }
 
@@ -74,7 +90,30 @@ enum ProviderAuthImport {
                 backend: backend,
                 apiKey: key,
                 baseURL: base,
-                apiKeyRef: defaultAPIKeyRef(backend: backend, baseURL: base)
+                apiKeyRef: defaultAPIKeyRef(backend: backend, baseURL: base),
+                wireAPI: "",
+                kind: .apiKey
+            )
+        }
+
+        let authMode = nonEmpty(env["auth_mode"])?.lowercased() ?? ""
+        if authMode == "chatgpt",
+           let tokens = raw["tokens"] as? [String: Any],
+           let accessToken = nonEmpty(tokens["access_token"] as? String) {
+            let base = firstNonEmpty(
+                env["OPENAI_BASE_URL"],
+                env["OPENAI_API_BASE"],
+                env["OPENAI_BASEURL"],
+                "https://api.openai.com/v1"
+            )
+            let backend = "openai"
+            return ImportedCredentials(
+                backend: backend,
+                apiKey: accessToken,
+                baseURL: base,
+                apiKeyRef: defaultAPIKeyRef(backend: backend, baseURL: base),
+                wireAPI: RemoteProviderWireAPI.responses.rawValue,
+                kind: .chatGPTTokenBundle
             )
         }
 

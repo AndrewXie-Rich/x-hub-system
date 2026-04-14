@@ -113,6 +113,80 @@ await runAsync('XT-W3-24/automation queues first smoke and leaves outbox pending
     });
     assert.equal(!!reviewed.ok, true);
 
+    const now = Date.now();
+    const lineage = db.upsertProjectLineage({
+      request_id: 'automation-test-lineage-1',
+      device_id: 'xt-alpha-1',
+      user_id: 'xt-owner',
+      app_id: 'x_terminal',
+      root_project_id: 'project_alpha',
+      parent_project_id: '',
+      project_id: 'project_alpha',
+      status: 'active',
+      created_at_ms: now - 4_000,
+    });
+    assert.equal(!!lineage.accepted, true);
+    const heartbeat = db.upsertProjectHeartbeat({
+      request_id: 'automation-test-heartbeat-1',
+      device_id: 'xt-alpha-1',
+      user_id: 'xt-owner',
+      app_id: 'x_terminal',
+      root_project_id: 'project_alpha',
+      parent_project_id: '',
+      project_id: 'project_alpha',
+      queue_depth: 2,
+      oldest_wait_ms: 6_000,
+      blocked_reason: ['awaiting_security_review'],
+      next_actions: ['approve release grant'],
+      risk_tier: 'medium',
+      heartbeat_seq: 1,
+      sent_at_ms: now,
+    });
+    assert.equal(!!heartbeat.accepted, true);
+    const heartbeatGovernance = db.upsertCanonicalItem({
+      scope: 'project',
+      device_id: 'xt-alpha-1',
+      user_id: 'xt-owner',
+      app_id: 'x_terminal',
+      project_id: 'project_alpha',
+      key: 'xterminal.project.heartbeat.summary_json',
+      value: JSON.stringify({
+        schema_version: 'xt.project_heartbeat.v1',
+        project_id: 'project_alpha',
+        project_name: 'Alpha',
+        updated_at_ms: now,
+        last_heartbeat_at_ms: now,
+        status_digest: 'Core loop advancing',
+        current_state_summary: 'Project is actively moving through the build lane.',
+        next_step_summary: 'Queue the next governed pulse review.',
+        blocker_summary: 'awaiting_security_review',
+        latest_quality_band: 'usable',
+        latest_quality_score: 71,
+        weak_reasons: ['evidence_thin'],
+        open_anomaly_types: ['stale_repeat'],
+        project_phase: 'build',
+        execution_status: 'active',
+        risk_tier: 'medium',
+        cadence: {
+          reviewPulse: {
+            dimension: 'review_pulse',
+            configuredSeconds: 900,
+            recommendedSeconds: 600,
+            effectiveSeconds: 600,
+            effectiveReasonCodes: ['quality_usable'],
+            nextDueAtMs: now + 600_000,
+            nextDueReasonCodes: ['pulse_due_window'],
+            isDue: true,
+          },
+        },
+        next_review_kind: 'review_pulse',
+        next_review_due_at_ms: now + 600_000,
+        next_review_due: true,
+      }),
+      pinned: false,
+    });
+    assert.equal(String(heartbeatGovernance?.key || ''), 'xterminal.project.heartbeat.summary_json');
+
     const automated = runApprovedChannelOnboardingAutomation(db, {
       ticket: reviewed.ticket,
       decision: reviewed.decision,
@@ -128,8 +202,20 @@ await runAsync('XT-W3-24/automation queues first smoke and leaves outbox pending
     assert.equal(!!automated.ok, true);
     assert.equal(String(automated.ack_item?.item_kind || ''), 'onboarding_ack');
     assert.equal(String(automated.smoke_item?.item_kind || ''), 'onboarding_first_smoke');
+    assert.match(String(automated.ack_item?.payload?.text || ''), /Approval Recorded/);
+    assert.match(String(automated.ack_item?.payload?.text || ''), /approval_recorded_pending_smoke/);
+    assert.doesNotMatch(String(automated.ack_item?.payload?.text || ''), /Operator Channel Connected/);
     assert.equal(String(automated.receipt?.status || ''), 'query_executed');
     assert.equal(String(automated.receipt?.action_name || ''), 'supervisor.status.get');
+    const heartbeatGovernanceSnapshot = JSON.parse(
+      String(automated.receipt?.result?.execution?.query?.heartbeat_governance_snapshot_json || '{}')
+    );
+    assert.equal(String(heartbeatGovernanceSnapshot.project_id || ''), 'project_alpha');
+    assert.equal(String(heartbeatGovernanceSnapshot.latest_quality_band || ''), 'usable');
+    assert.deepEqual(heartbeatGovernanceSnapshot.open_anomaly_types || [], ['stale_repeat']);
+    assert.equal(String(heartbeatGovernanceSnapshot.next_review_due?.kind || ''), 'review_pulse');
+    assert.match(String(automated.smoke_item?.payload?.text || ''), /Review pressure: quality=usable anomalies=stale_repeat/);
+    assert.match(String(automated.smoke_item?.payload?.text || ''), /Next review: review_pulse due=yes/);
 
     const storedReceipt = getChannelOnboardingFirstSmokeReceiptByTicketId(db, {
       ticket_id: seeded.ticket.ticket_id,
@@ -179,6 +265,90 @@ await runAsync('XT-W3-24/automation queues first smoke and leaves outbox pending
       String(automationState?.delivery_readiness?.remediation_hint || '').includes('HUB_SLACK_OPERATOR_BOT_TOKEN'),
       true
     );
+  } finally {
+    db.close();
+    cleanupDbArtifacts(dbPath);
+    try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+});
+
+await runAsync('XT-W3-24/automation reports runner-not-ready first smoke without describing the channel as already connected', async () => {
+  const dbPath = makeTmp('db', '.db');
+  const runtimeBaseDir = makeTmp('runtime');
+  fs.mkdirSync(runtimeBaseDir, { recursive: true });
+  const db = new HubDB({ dbPath });
+
+  try {
+    const seeded = createOrTouchChannelOnboardingDiscoveryTicket(db, {
+      request_id: 'automation-test-discovery-runner-1',
+      ticket: {
+        provider: 'slack',
+        account_id: 'T_DEVICE',
+        external_user_id: 'U_device_1',
+        external_tenant_id: 'T_DEVICE',
+        conversation_id: 'C_device_1',
+        thread_key: '171.128',
+        ingress_surface: 'group',
+        first_message_preview: 'device doctor',
+        proposed_scope_type: 'device',
+        proposed_scope_id: 'xt-alpha-1',
+      },
+      audit: {
+        app_id: 'test',
+      },
+    });
+    assert.equal(!!seeded.ok, true);
+
+    const reviewed = reviewChannelOnboardingDiscoveryTicket(db, {
+      ticket_id: seeded.ticket.ticket_id,
+      decision: {
+        decision: 'approve',
+        approved_by_hub_user_id: 'user_ops_admin',
+        approved_via: 'test',
+        hub_user_id: 'user_ops_alice',
+        scope_type: 'device',
+        scope_id: 'xt-alpha-1',
+        binding_mode: 'thread_binding',
+        preferred_device_id: 'xt-alpha-1',
+        allowed_actions: ['device.doctor.get'],
+        grant_profile: 'low_risk_diagnostics',
+      },
+      request_id: 'automation-test-review-runner-1',
+      audit: {
+        device_id: 'test',
+        user_id: 'user_ops_admin',
+        app_id: 'test',
+      },
+    });
+    assert.equal(!!reviewed.ok, true);
+
+    const automated = runApprovedChannelOnboardingAutomation(db, {
+      ticket: reviewed.ticket,
+      decision: reviewed.decision,
+      auto_bind_receipt: reviewed.auto_bind_receipt,
+      request_id: 'automation-test-run-runner-1',
+      runtimeBaseDir,
+      audit: {
+        device_id: 'test',
+        user_id: 'user_ops_admin',
+        app_id: 'test',
+      },
+    });
+    assert.equal(!!automated.ok, true);
+    assert.match(String(automated.ack_item?.payload?.text || ''), /Approval Recorded/);
+    assert.doesNotMatch(String(automated.ack_item?.payload?.text || ''), /Connected/);
+    assert.equal(String(automated.receipt?.status || ''), 'route_blocked');
+    assert.equal(String(automated.receipt?.route_mode || ''), 'runner_not_ready');
+    assert.equal(String(automated.receipt?.deny_code || ''), 'runner_device_missing');
+    assert.match(String(automated.receipt?.remediation_hint || ''), /trusted runner/i);
+    assert.match(String(automated.smoke_item?.payload?.text || ''), /Route Blocked/);
+    assert.match(String(automated.smoke_item?.payload?.text || ''), /status=route_blocked/);
+
+    const storedReceipt = getChannelOnboardingFirstSmokeReceiptByTicketId(db, {
+      ticket_id: seeded.ticket.ticket_id,
+    });
+    assert.equal(String(storedReceipt?.status || ''), 'route_blocked');
+    assert.equal(String(storedReceipt?.route_mode || ''), 'runner_not_ready');
   } finally {
     db.close();
     cleanupDbArtifacts(dbPath);

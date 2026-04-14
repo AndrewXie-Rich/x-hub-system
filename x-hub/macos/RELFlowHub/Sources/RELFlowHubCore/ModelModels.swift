@@ -124,6 +124,54 @@ public struct ModelProcessorRequirements: Codable, Equatable, Sendable {
     }
 }
 
+public struct ModelVoiceProfile: Codable, Equatable, Sendable {
+    public var languageHints: [String]
+    public var styleHints: [String]
+    public var engineHints: [String]
+
+    public init(
+        languageHints: [String] = [],
+        styleHints: [String] = [],
+        engineHints: [String] = []
+    ) {
+        self.languageHints = LocalModelCapabilityDefaults.normalizedStringList(languageHints, fallback: [])
+        self.styleHints = LocalModelCapabilityDefaults.normalizedStringList(styleHints, fallback: [])
+        self.engineHints = LocalModelCapabilityDefaults.normalizedStringList(engineHints, fallback: [])
+    }
+
+    public var isEmpty: Bool {
+        languageHints.isEmpty && styleHints.isEmpty && engineHints.isEmpty
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case languageHints
+        case styleHints
+        case engineHints
+    }
+
+    enum SnakeCodingKeys: String, CodingKey {
+        case languageHints = "language_hints"
+        case styleHints = "style_hints"
+        case engineHints = "engine_hints"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let s = try decoder.container(keyedBy: SnakeCodingKeys.self)
+        self.init(
+            languageHints: (try? c.decode([String].self, forKey: .languageHints))
+                ?? (try? s.decode([String].self, forKey: .languageHints))
+                ?? [],
+            styleHints: (try? c.decode([String].self, forKey: .styleHints))
+                ?? (try? s.decode([String].self, forKey: .styleHints))
+                ?? [],
+            engineHints: (try? c.decode([String].self, forKey: .engineHints))
+                ?? (try? s.decode([String].self, forKey: .engineHints))
+                ?? []
+        )
+    }
+}
+
 public enum LocalModelCapabilityDefaults {
     public static func defaultLoadProfile(contextLength: Int) -> LocalModelLoadProfile {
         LocalModelLoadProfile(contextLength: max(512, contextLength))
@@ -141,6 +189,8 @@ public enum LocalModelCapabilityDefaults {
         switch backend.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "mlx":
             return "mlx"
+        case "llama.cpp":
+            return "gguf"
         case "transformers":
             return "hf_transformers"
         case "onnx":
@@ -155,8 +205,13 @@ public enum LocalModelCapabilityDefaults {
         if normalizedRoles.contains("embed") || normalizedRoles.contains("embedding") {
             return ["embedding"]
         }
+        if normalizedRoles.contains("tts") || normalizedRoles.contains("voice") {
+            return ["text_to_speech"]
+        }
         switch backend.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "mlx":
+            return ["text_generate"]
+        case "llama.cpp":
             return ["text_generate"]
         default:
             return ["text_generate"]
@@ -172,6 +227,8 @@ public enum LocalModelCapabilityDefaults {
                 appendUnique("audio", into: &out)
             case "vision_understand", "ocr":
                 appendUnique("image", into: &out)
+            case "text_to_speech":
+                appendUnique("text", into: &out)
             default:
                 appendUnique("text", into: &out)
             }
@@ -193,6 +250,8 @@ public enum LocalModelCapabilityDefaults {
             case "speech_to_text":
                 appendUnique("text", into: &out)
                 appendUnique("segments", into: &out)
+            case "text_to_speech":
+                appendUnique("audio", into: &out)
             case "ocr":
                 appendUnique("text", into: &out)
                 appendUnique("spans", into: &out)
@@ -211,6 +270,91 @@ public enum LocalModelCapabilityDefaults {
         return backend.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "mlx"
     }
 
+    public static func defaultVoiceProfile(
+        modelID: String,
+        name: String,
+        note: String? = nil,
+        taskKinds: [String],
+        outputModalities: [String] = []
+    ) -> ModelVoiceProfile? {
+        let normalizedTaskKinds = normalizedStringList(taskKinds, fallback: [])
+        let normalizedOutputs = normalizedStringList(outputModalities, fallback: [])
+        guard normalizedTaskKinds.contains("text_to_speech") || normalizedOutputs.contains("audio") else {
+            return nil
+        }
+
+        let haystack = [modelID, name, note ?? ""]
+            .joined(separator: " ")
+            .lowercased()
+        let tokens = tokenSet(from: haystack)
+
+        var languageHints: [String] = []
+        if containsAny(haystack, values: ["multilingual", "bilingual", "zh-en", "en-zh", "zh_en", "en_zh", "multi-language"]) {
+            appendUnique("multi", into: &languageHints)
+        } else {
+            if tokens.contains("zh")
+                || containsAny(haystack, values: ["zh-cn", "zh_cn", "chinese", "mandarin", "中文"]) {
+                appendUnique("zh", into: &languageHints)
+            }
+            if tokens.contains("en")
+                || containsAny(haystack, values: ["en-us", "en_us", "english", "英文"]) {
+                appendUnique("en", into: &languageHints)
+            }
+        }
+
+        var styleHints: [String] = []
+        for (needle, token) in [
+            ("warm", "warm"),
+            ("clear", "clear"),
+            ("bright", "bright"),
+            ("calm", "calm"),
+            ("neutral", "neutral"),
+            ("soft", "calm"),
+            ("gentle", "calm"),
+            ("soothing", "calm"),
+            ("studio", "clear"),
+            ("crisp", "clear"),
+            ("温暖", "warm"),
+            ("清晰", "clear"),
+            ("明亮", "bright"),
+            ("沉稳", "calm"),
+            ("中性", "neutral"),
+        ] {
+            if haystack.contains(needle) {
+                appendUnique(token, into: &styleHints)
+            }
+        }
+
+        var engineHints: [String] = []
+        for (needle, token) in [
+            ("kokoro", "kokoro"),
+            ("cosyvoice", "cosyvoice"),
+            ("cosy voice", "cosyvoice"),
+            ("melo", "melotts"),
+            ("melotts", "melotts"),
+            ("melo-tts", "melotts"),
+            ("chattts", "chattts"),
+            ("chat-tts", "chattts"),
+            ("f5-tts", "f5-tts"),
+            ("f5_tts", "f5-tts"),
+            ("f5tts", "f5-tts"),
+            ("bark", "bark"),
+            ("parler", "parler"),
+            ("vits", "vits"),
+        ] {
+            if haystack.contains(needle) {
+                appendUnique(token, into: &engineHints)
+            }
+        }
+
+        let profile = ModelVoiceProfile(
+            languageHints: languageHints,
+            styleHints: styleHints,
+            engineHints: engineHints
+        )
+        return profile.isEmpty ? nil : profile
+    }
+
     public static func defaultResourceProfile(
         backend: String,
         quant: String,
@@ -222,6 +366,8 @@ public enum LocalModelCapabilityDefaults {
             switch normalizedBackend {
             case "mlx", "transformers":
                 return "mps"
+            case "llama.cpp":
+                return "metal"
             default:
                 return "unknown"
             }
@@ -269,7 +415,7 @@ public enum LocalModelCapabilityDefaults {
     ) -> ModelProcessorRequirements {
         let normalizedTaskKinds = normalizedStringList(taskKinds, fallback: defaultTaskKinds(forBackend: backend))
         let requiresTextTokenizer = normalizedTaskKinds.contains { kind in
-            kind == "text_generate" || kind == "embedding" || kind == "rerank" || kind == "classify"
+            kind == "text_generate" || kind == "embedding" || kind == "rerank" || kind == "classify" || kind == "text_to_speech"
         }
         let requiresProcessor = normalizedTaskKinds.contains { kind in
             kind == "speech_to_text" || kind == "vision_understand" || kind == "ocr"
@@ -310,12 +456,26 @@ public enum LocalModelCapabilityDefaults {
             array.append(value)
         }
     }
+
+    private static func containsAny(_ haystack: String, values: [String]) -> Bool {
+        values.contains { haystack.contains($0) }
+    }
+
+    private static func tokenSet(from text: String) -> Set<String> {
+        let normalized = String(
+            text.unicodeScalars.map { scalar in
+                CharacterSet.alphanumerics.contains(scalar) ? Character(scalar) : " "
+            }
+        )
+        return Set(normalized.split(separator: " ").map { String($0) })
+    }
 }
 
 public struct HubModel: Identifiable, Codable, Equatable, Sendable {
     public var id: String
     public var name: String
     public var backend: String
+    public var runtimeProviderID: String?
     public var quant: String
     public var contextLength: Int
     public var maxContextLength: Int
@@ -332,14 +492,23 @@ public struct HubModel: Identifiable, Codable, Equatable, Sendable {
     public var inputModalities: [String]
     public var outputModalities: [String]
     public var offlineReady: Bool
+    public var voiceProfile: ModelVoiceProfile?
     public var resourceProfile: ModelResourceProfile
     public var trustProfile: ModelTrustProfile
     public var processorRequirements: ModelProcessorRequirements
+    public var remoteConfiguredContextLength: Int?
+    public var remoteKnownContextLength: Int?
+    public var remoteKnownContextSource: String?
+    public var remoteGroupDisplayName: String?
+    public var remoteProviderModelID: String?
+    public var remoteKeyReference: String?
+    public var remoteEndpointHost: String?
 
     public init(
         id: String,
         name: String,
         backend: String,
+        runtimeProviderID: String? = nil,
         quant: String,
         contextLength: Int,
         maxContextLength: Int? = nil,
@@ -356,13 +525,22 @@ public struct HubModel: Identifiable, Codable, Equatable, Sendable {
         inputModalities: [String]? = nil,
         outputModalities: [String]? = nil,
         offlineReady: Bool? = nil,
+        voiceProfile: ModelVoiceProfile? = nil,
         resourceProfile: ModelResourceProfile? = nil,
         trustProfile: ModelTrustProfile? = nil,
-        processorRequirements: ModelProcessorRequirements? = nil
+        processorRequirements: ModelProcessorRequirements? = nil,
+        remoteConfiguredContextLength: Int? = nil,
+        remoteKnownContextLength: Int? = nil,
+        remoteKnownContextSource: String? = nil,
+        remoteGroupDisplayName: String? = nil,
+        remoteProviderModelID: String? = nil,
+        remoteKeyReference: String? = nil,
+        remoteEndpointHost: String? = nil
     ) {
         self.id = id
         self.name = name
         self.backend = backend
+        self.runtimeProviderID = runtimeProviderID?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.quant = quant
         let resolvedModelFormat = modelFormat ?? LocalModelCapabilityDefaults.defaultModelFormat(forBackend: backend)
         let resolvedDefaultLoadProfile = (defaultLoadProfile ?? LocalModelCapabilityDefaults.defaultLoadProfile(contextLength: contextLength))
@@ -395,6 +573,13 @@ public struct HubModel: Identifiable, Codable, Equatable, Sendable {
             fallback: LocalModelCapabilityDefaults.defaultOutputModalities(forTaskKinds: resolvedTaskKinds)
         )
         self.offlineReady = offlineReady ?? LocalModelCapabilityDefaults.defaultOfflineReady(backend: backend, modelPath: modelPath)
+        self.voiceProfile = voiceProfile ?? LocalModelCapabilityDefaults.defaultVoiceProfile(
+            modelID: id,
+            name: name,
+            note: note,
+            taskKinds: resolvedTaskKinds,
+            outputModalities: self.outputModalities
+        )
         self.resourceProfile = resourceProfile ?? LocalModelCapabilityDefaults.defaultResourceProfile(
             backend: backend,
             quant: quant,
@@ -406,12 +591,48 @@ public struct HubModel: Identifiable, Codable, Equatable, Sendable {
             modelFormat: resolvedModelFormat,
             taskKinds: resolvedTaskKinds
         )
+        if let remoteConfiguredContextLength, remoteConfiguredContextLength > 0 {
+            self.remoteConfiguredContextLength = max(512, remoteConfiguredContextLength)
+        } else {
+            self.remoteConfiguredContextLength = nil
+        }
+        if let remoteKnownContextLength, remoteKnownContextLength > 0 {
+            self.remoteKnownContextLength = max(512, remoteKnownContextLength)
+        } else {
+            self.remoteKnownContextLength = nil
+        }
+        let trimmedRemoteKnownContextSource = remoteKnownContextSource?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        self.remoteKnownContextSource = trimmedRemoteKnownContextSource?.isEmpty == false
+            ? trimmedRemoteKnownContextSource
+            : nil
+        let trimmedRemoteGroupDisplayName = remoteGroupDisplayName?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        self.remoteGroupDisplayName = trimmedRemoteGroupDisplayName?.isEmpty == false
+            ? trimmedRemoteGroupDisplayName
+            : nil
+        let trimmedRemoteProviderModelID = remoteProviderModelID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        self.remoteProviderModelID = trimmedRemoteProviderModelID?.isEmpty == false
+            ? trimmedRemoteProviderModelID
+            : nil
+        let trimmedRemoteKeyReference = remoteKeyReference?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        self.remoteKeyReference = trimmedRemoteKeyReference?.isEmpty == false
+            ? trimmedRemoteKeyReference
+            : nil
+        let trimmedRemoteEndpointHost = remoteEndpointHost?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        self.remoteEndpointHost = trimmedRemoteEndpointHost?.isEmpty == false
+            ? trimmedRemoteEndpointHost
+            : nil
     }
 
     enum CodingKeys: String, CodingKey {
         case id
         case name
         case backend
+        case runtimeProviderID
         case quant
         case contextLength
         case maxContextLength
@@ -428,22 +649,47 @@ public struct HubModel: Identifiable, Codable, Equatable, Sendable {
         case inputModalities
         case outputModalities
         case offlineReady
+        case voiceProfile
         case resourceProfile
         case trustProfile
         case processorRequirements
+        case remoteConfiguredContextLength
+        case remoteKnownContextLength
+        case remoteKnownContextSource
+        case remoteGroupDisplayName
+        case remoteProviderModelID
+        case remoteKeyReference
+        case remoteEndpointHost
     }
 
     enum SnakeCodingKeys: String, CodingKey {
+        case runtimeProviderID = "runtime_provider_id"
         case maxContextLength = "max_context_length"
+        case defaultLoadConfig = "default_load_config"
         case defaultLoadProfile = "default_load_profile"
+        case voiceProfile = "voice_profile"
+        case remoteConfiguredContextLength = "remote_configured_context_length"
+        case remoteKnownContextLength = "remote_known_context_length"
+        case remoteKnownContextSource = "remote_known_context_source"
+        case remoteGroupDisplayName = "remote_group_display_name"
+        case remoteProviderModelID = "remote_provider_model_id"
+        case remoteKeyReference = "remote_key_reference"
+        case remoteEndpointHost = "remote_endpoint_host"
+    }
+
+    enum AliasCodingKeys: String, CodingKey {
+        case defaultLoadConfig
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let s = try decoder.container(keyedBy: SnakeCodingKeys.self)
+        let a = try decoder.container(keyedBy: AliasCodingKeys.self)
         id = (try? c.decode(String.self, forKey: .id)) ?? ""
         name = (try? c.decode(String.self, forKey: .name)) ?? id
         backend = (try? c.decode(String.self, forKey: .backend)) ?? "mlx"
+        runtimeProviderID = (try? c.decodeIfPresent(String.self, forKey: .runtimeProviderID))
+            ?? (try? s.decodeIfPresent(String.self, forKey: .runtimeProviderID))
         quant = (try? c.decode(String.self, forKey: .quant)) ?? "bf16"
         let legacyContextLength = (try? c.decode(Int.self, forKey: .contextLength)) ?? 8192
         paramsB = (try? c.decode(Double.self, forKey: .paramsB)) ?? 0.0
@@ -455,7 +701,9 @@ public struct HubModel: Identifiable, Codable, Equatable, Sendable {
         note = try? c.decodeIfPresent(String.self, forKey: .note)
         let defaultTaskKinds = LocalModelCapabilityDefaults.defaultTaskKinds(forBackend: backend, roles: roles)
         modelFormat = (try? c.decode(String.self, forKey: .modelFormat)) ?? LocalModelCapabilityDefaults.defaultModelFormat(forBackend: backend)
-        let decodedDefaultLoadProfile = (try? c.decode(LocalModelLoadProfile.self, forKey: .defaultLoadProfile))
+        let decodedDefaultLoadProfile = (try? a.decode(LocalModelLoadProfile.self, forKey: .defaultLoadConfig))
+            ?? (try? c.decode(LocalModelLoadProfile.self, forKey: .defaultLoadProfile))
+            ?? (try? s.decode(LocalModelLoadProfile.self, forKey: .defaultLoadConfig))
             ?? (try? s.decode(LocalModelLoadProfile.self, forKey: .defaultLoadProfile))
         let decodedMaxContextLength = (try? c.decode(Int.self, forKey: .maxContextLength))
             ?? (try? s.decode(Int.self, forKey: .maxContextLength))
@@ -481,12 +729,105 @@ public struct HubModel: Identifiable, Codable, Equatable, Sendable {
         )
         offlineReady = (try? c.decode(Bool.self, forKey: .offlineReady))
             ?? LocalModelCapabilityDefaults.defaultOfflineReady(backend: backend, modelPath: modelPath)
+        voiceProfile = (try? c.decodeIfPresent(ModelVoiceProfile.self, forKey: .voiceProfile))
+            ?? (try? s.decodeIfPresent(ModelVoiceProfile.self, forKey: .voiceProfile))
+            ?? LocalModelCapabilityDefaults.defaultVoiceProfile(
+                modelID: id,
+                name: name,
+                note: note,
+                taskKinds: taskKinds,
+                outputModalities: outputModalities
+            )
         resourceProfile = (try? c.decode(ModelResourceProfile.self, forKey: .resourceProfile))
             ?? LocalModelCapabilityDefaults.defaultResourceProfile(backend: backend, quant: quant, paramsB: paramsB)
         trustProfile = (try? c.decode(ModelTrustProfile.self, forKey: .trustProfile))
             ?? LocalModelCapabilityDefaults.defaultTrustProfile()
         processorRequirements = (try? c.decode(ModelProcessorRequirements.self, forKey: .processorRequirements))
             ?? LocalModelCapabilityDefaults.defaultProcessorRequirements(backend: backend, modelFormat: modelFormat, taskKinds: taskKinds)
+        remoteConfiguredContextLength = (try? c.decodeIfPresent(Int.self, forKey: .remoteConfiguredContextLength))
+            ?? (try? s.decodeIfPresent(Int.self, forKey: .remoteConfiguredContextLength))
+        if let remoteConfiguredContextLength, remoteConfiguredContextLength > 0 {
+            self.remoteConfiguredContextLength = max(512, remoteConfiguredContextLength)
+        } else {
+            self.remoteConfiguredContextLength = nil
+        }
+        remoteKnownContextLength = (try? c.decodeIfPresent(Int.self, forKey: .remoteKnownContextLength))
+            ?? (try? s.decodeIfPresent(Int.self, forKey: .remoteKnownContextLength))
+        if let remoteKnownContextLength, remoteKnownContextLength > 0 {
+            self.remoteKnownContextLength = max(512, remoteKnownContextLength)
+        } else {
+            self.remoteKnownContextLength = nil
+        }
+        let decodedRemoteKnownContextSource = (try? c.decodeIfPresent(String.self, forKey: .remoteKnownContextSource))
+            ?? (try? s.decodeIfPresent(String.self, forKey: .remoteKnownContextSource))
+        let trimmedRemoteKnownContextSource = decodedRemoteKnownContextSource?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        remoteKnownContextSource = trimmedRemoteKnownContextSource?.isEmpty == false
+            ? trimmedRemoteKnownContextSource
+            : nil
+        let decodedRemoteGroupDisplayName = (try? c.decodeIfPresent(String.self, forKey: .remoteGroupDisplayName))
+            ?? (try? s.decodeIfPresent(String.self, forKey: .remoteGroupDisplayName))
+        let trimmedRemoteGroupDisplayName = decodedRemoteGroupDisplayName?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        remoteGroupDisplayName = trimmedRemoteGroupDisplayName?.isEmpty == false
+            ? trimmedRemoteGroupDisplayName
+            : nil
+        let decodedRemoteProviderModelID = (try? c.decodeIfPresent(String.self, forKey: .remoteProviderModelID))
+            ?? (try? s.decodeIfPresent(String.self, forKey: .remoteProviderModelID))
+        let trimmedRemoteProviderModelID = decodedRemoteProviderModelID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        remoteProviderModelID = trimmedRemoteProviderModelID?.isEmpty == false
+            ? trimmedRemoteProviderModelID
+            : nil
+        let decodedRemoteKeyReference = (try? c.decodeIfPresent(String.self, forKey: .remoteKeyReference))
+            ?? (try? s.decodeIfPresent(String.self, forKey: .remoteKeyReference))
+        let trimmedRemoteKeyReference = decodedRemoteKeyReference?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        remoteKeyReference = trimmedRemoteKeyReference?.isEmpty == false
+            ? trimmedRemoteKeyReference
+            : nil
+        let decodedRemoteEndpointHost = (try? c.decodeIfPresent(String.self, forKey: .remoteEndpointHost))
+            ?? (try? s.decodeIfPresent(String.self, forKey: .remoteEndpointHost))
+        let trimmedRemoteEndpointHost = decodedRemoteEndpointHost?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        remoteEndpointHost = trimmedRemoteEndpointHost?.isEmpty == false
+            ? trimmedRemoteEndpointHost
+            : nil
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(backend, forKey: .backend)
+        try c.encodeIfPresent(runtimeProviderID, forKey: .runtimeProviderID)
+        try c.encode(quant, forKey: .quant)
+        try c.encode(contextLength, forKey: .contextLength)
+        try c.encode(maxContextLength, forKey: .maxContextLength)
+        try c.encode(paramsB, forKey: .paramsB)
+        try c.encodeIfPresent(roles, forKey: .roles)
+        try c.encode(state, forKey: .state)
+        try c.encodeIfPresent(memoryBytes, forKey: .memoryBytes)
+        try c.encodeIfPresent(tokensPerSec, forKey: .tokensPerSec)
+        try c.encodeIfPresent(modelPath, forKey: .modelPath)
+        try c.encodeIfPresent(note, forKey: .note)
+        try c.encode(modelFormat, forKey: .modelFormat)
+        try c.encode(defaultLoadProfile, forKey: .defaultLoadProfile)
+        try c.encode(taskKinds, forKey: .taskKinds)
+        try c.encode(inputModalities, forKey: .inputModalities)
+        try c.encode(outputModalities, forKey: .outputModalities)
+        try c.encode(offlineReady, forKey: .offlineReady)
+        try c.encodeIfPresent(voiceProfile, forKey: .voiceProfile)
+        try c.encode(resourceProfile, forKey: .resourceProfile)
+        try c.encode(trustProfile, forKey: .trustProfile)
+        try c.encode(processorRequirements, forKey: .processorRequirements)
+        try c.encodeIfPresent(remoteConfiguredContextLength, forKey: .remoteConfiguredContextLength)
+        try c.encodeIfPresent(remoteKnownContextLength, forKey: .remoteKnownContextLength)
+        try c.encodeIfPresent(remoteKnownContextSource, forKey: .remoteKnownContextSource)
+        try c.encodeIfPresent(remoteGroupDisplayName, forKey: .remoteGroupDisplayName)
+        try c.encodeIfPresent(remoteProviderModelID, forKey: .remoteProviderModelID)
+        try c.encodeIfPresent(remoteKeyReference, forKey: .remoteKeyReference)
+        try c.encodeIfPresent(remoteEndpointHost, forKey: .remoteEndpointHost)
     }
 }
 
@@ -494,6 +835,7 @@ public struct ModelCatalogEntry: Identifiable, Codable, Equatable, Sendable {
     public var id: String
     public var name: String
     public var backend: String
+    public var runtimeProviderID: String?
     public var quant: String
     public var contextLength: Int
     public var maxContextLength: Int
@@ -507,6 +849,7 @@ public struct ModelCatalogEntry: Identifiable, Codable, Equatable, Sendable {
     public var inputModalities: [String]
     public var outputModalities: [String]
     public var offlineReady: Bool
+    public var voiceProfile: ModelVoiceProfile?
     public var resourceProfile: ModelResourceProfile
     public var trustProfile: ModelTrustProfile
     public var processorRequirements: ModelProcessorRequirements
@@ -515,6 +858,7 @@ public struct ModelCatalogEntry: Identifiable, Codable, Equatable, Sendable {
         id: String,
         name: String,
         backend: String = "mlx",
+        runtimeProviderID: String? = nil,
         quant: String = "bf16",
         contextLength: Int = 8192,
         maxContextLength: Int? = nil,
@@ -528,6 +872,7 @@ public struct ModelCatalogEntry: Identifiable, Codable, Equatable, Sendable {
         inputModalities: [String]? = nil,
         outputModalities: [String]? = nil,
         offlineReady: Bool? = nil,
+        voiceProfile: ModelVoiceProfile? = nil,
         resourceProfile: ModelResourceProfile? = nil,
         trustProfile: ModelTrustProfile? = nil,
         processorRequirements: ModelProcessorRequirements? = nil
@@ -535,6 +880,7 @@ public struct ModelCatalogEntry: Identifiable, Codable, Equatable, Sendable {
         self.id = id
         self.name = name
         self.backend = backend
+        self.runtimeProviderID = runtimeProviderID?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.quant = quant
         let resolvedModelFormat = modelFormat ?? LocalModelCapabilityDefaults.defaultModelFormat(forBackend: backend)
         let resolvedDefaultLoadProfile = (defaultLoadProfile ?? LocalModelCapabilityDefaults.defaultLoadProfile(contextLength: contextLength))
@@ -564,6 +910,13 @@ public struct ModelCatalogEntry: Identifiable, Codable, Equatable, Sendable {
             fallback: LocalModelCapabilityDefaults.defaultOutputModalities(forTaskKinds: resolvedTaskKinds)
         )
         self.offlineReady = offlineReady ?? LocalModelCapabilityDefaults.defaultOfflineReady(backend: backend, modelPath: modelPath)
+        self.voiceProfile = voiceProfile ?? LocalModelCapabilityDefaults.defaultVoiceProfile(
+            modelID: id,
+            name: name,
+            note: note,
+            taskKinds: resolvedTaskKinds,
+            outputModalities: self.outputModalities
+        )
         self.resourceProfile = resourceProfile ?? LocalModelCapabilityDefaults.defaultResourceProfile(
             backend: backend,
             quant: quant,
@@ -581,6 +934,7 @@ public struct ModelCatalogEntry: Identifiable, Codable, Equatable, Sendable {
         case id
         case name
         case backend
+        case runtimeProviderID
         case quant
         case contextLength
         case maxContextLength
@@ -594,22 +948,33 @@ public struct ModelCatalogEntry: Identifiable, Codable, Equatable, Sendable {
         case inputModalities
         case outputModalities
         case offlineReady
+        case voiceProfile
         case resourceProfile
         case trustProfile
         case processorRequirements
     }
 
     enum SnakeCodingKeys: String, CodingKey {
+        case runtimeProviderID = "runtime_provider_id"
         case maxContextLength = "max_context_length"
+        case defaultLoadConfig = "default_load_config"
         case defaultLoadProfile = "default_load_profile"
+        case voiceProfile = "voice_profile"
+    }
+
+    enum AliasCodingKeys: String, CodingKey {
+        case defaultLoadConfig
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let s = try decoder.container(keyedBy: SnakeCodingKeys.self)
+        let a = try decoder.container(keyedBy: AliasCodingKeys.self)
         id = (try? c.decode(String.self, forKey: .id)) ?? ""
         name = (try? c.decode(String.self, forKey: .name)) ?? id
         backend = (try? c.decode(String.self, forKey: .backend)) ?? "mlx"
+        runtimeProviderID = (try? c.decodeIfPresent(String.self, forKey: .runtimeProviderID))
+            ?? (try? s.decodeIfPresent(String.self, forKey: .runtimeProviderID))
         quant = (try? c.decode(String.self, forKey: .quant)) ?? "bf16"
         let legacyContextLength = (try? c.decode(Int.self, forKey: .contextLength)) ?? 8192
         paramsB = (try? c.decode(Double.self, forKey: .paramsB)) ?? 0.0
@@ -618,7 +983,9 @@ public struct ModelCatalogEntry: Identifiable, Codable, Equatable, Sendable {
         note = try? c.decodeIfPresent(String.self, forKey: .note)
         let defaultTaskKinds = LocalModelCapabilityDefaults.defaultTaskKinds(forBackend: backend, roles: roles)
         modelFormat = (try? c.decode(String.self, forKey: .modelFormat)) ?? LocalModelCapabilityDefaults.defaultModelFormat(forBackend: backend)
-        let decodedDefaultLoadProfile = (try? c.decode(LocalModelLoadProfile.self, forKey: .defaultLoadProfile))
+        let decodedDefaultLoadProfile = (try? a.decode(LocalModelLoadProfile.self, forKey: .defaultLoadConfig))
+            ?? (try? c.decode(LocalModelLoadProfile.self, forKey: .defaultLoadProfile))
+            ?? (try? s.decode(LocalModelLoadProfile.self, forKey: .defaultLoadConfig))
             ?? (try? s.decode(LocalModelLoadProfile.self, forKey: .defaultLoadProfile))
         let decodedMaxContextLength = (try? c.decode(Int.self, forKey: .maxContextLength))
             ?? (try? s.decode(Int.self, forKey: .maxContextLength))
@@ -644,12 +1011,46 @@ public struct ModelCatalogEntry: Identifiable, Codable, Equatable, Sendable {
         )
         offlineReady = (try? c.decode(Bool.self, forKey: .offlineReady))
             ?? LocalModelCapabilityDefaults.defaultOfflineReady(backend: backend, modelPath: modelPath)
+        voiceProfile = (try? c.decodeIfPresent(ModelVoiceProfile.self, forKey: .voiceProfile))
+            ?? (try? s.decodeIfPresent(ModelVoiceProfile.self, forKey: .voiceProfile))
+            ?? LocalModelCapabilityDefaults.defaultVoiceProfile(
+                modelID: id,
+                name: name,
+                note: note,
+                taskKinds: taskKinds,
+                outputModalities: outputModalities
+            )
         resourceProfile = (try? c.decode(ModelResourceProfile.self, forKey: .resourceProfile))
             ?? LocalModelCapabilityDefaults.defaultResourceProfile(backend: backend, quant: quant, paramsB: paramsB)
         trustProfile = (try? c.decode(ModelTrustProfile.self, forKey: .trustProfile))
             ?? LocalModelCapabilityDefaults.defaultTrustProfile()
         processorRequirements = (try? c.decode(ModelProcessorRequirements.self, forKey: .processorRequirements))
             ?? LocalModelCapabilityDefaults.defaultProcessorRequirements(backend: backend, modelFormat: modelFormat, taskKinds: taskKinds)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(backend, forKey: .backend)
+        try c.encodeIfPresent(runtimeProviderID, forKey: .runtimeProviderID)
+        try c.encode(quant, forKey: .quant)
+        try c.encode(contextLength, forKey: .contextLength)
+        try c.encode(maxContextLength, forKey: .maxContextLength)
+        try c.encode(paramsB, forKey: .paramsB)
+        try c.encode(modelPath, forKey: .modelPath)
+        try c.encodeIfPresent(roles, forKey: .roles)
+        try c.encodeIfPresent(note, forKey: .note)
+        try c.encode(modelFormat, forKey: .modelFormat)
+        try c.encode(defaultLoadProfile, forKey: .defaultLoadProfile)
+        try c.encode(taskKinds, forKey: .taskKinds)
+        try c.encode(inputModalities, forKey: .inputModalities)
+        try c.encode(outputModalities, forKey: .outputModalities)
+        try c.encode(offlineReady, forKey: .offlineReady)
+        try c.encodeIfPresent(voiceProfile, forKey: .voiceProfile)
+        try c.encode(resourceProfile, forKey: .resourceProfile)
+        try c.encode(trustProfile, forKey: .trustProfile)
+        try c.encode(processorRequirements, forKey: .processorRequirements)
     }
 }
 
@@ -726,12 +1127,37 @@ public enum ModelStateStorage {
     }
 
     public static func load() -> ModelStateSnapshot {
-        let url = url()
-        if let data = try? Data(contentsOf: url),
-           let obj = try? JSONDecoder().decode(ModelStateSnapshot.self, from: data) {
-            return obj
+        var candidates: [URL] = []
+        var seen: Set<String> = []
+
+        func append(_ url: URL) {
+            let standardized = url.standardizedFileURL
+            let path = standardized.path
+            guard seen.insert(path).inserted else { return }
+            candidates.append(standardized)
         }
-        return .empty()
+
+        append(url())
+        for base in SharedPaths.hubDirectoryCandidates() {
+            append(base.appendingPathComponent(fileName))
+        }
+
+        var freshestFallback: ModelStateSnapshot?
+        var freshestFallbackUpdatedAt: Double = 0
+        for (index, candidate) in candidates.enumerated() {
+            guard let data = try? Data(contentsOf: candidate),
+                  let decoded = try? JSONDecoder().decode(ModelStateSnapshot.self, from: data) else {
+                continue
+            }
+            if index == 0 {
+                return decoded
+            }
+            if freshestFallback == nil || decoded.updatedAt >= freshestFallbackUpdatedAt {
+                freshestFallback = decoded
+                freshestFallbackUpdatedAt = decoded.updatedAt
+            }
+        }
+        return freshestFallback ?? .empty()
     }
 
     public static func save(_ state: ModelStateSnapshot) {

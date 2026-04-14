@@ -28,6 +28,13 @@ def _safe_int(value: Any, fallback: int = 0) -> int:
         return int(fallback)
 
 
+def _safe_float(value: Any, fallback: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(fallback)
+
+
 def _safe_bool(value: Any, fallback: bool = False) -> bool:
     if isinstance(value, bool):
         return value
@@ -45,6 +52,45 @@ def _normalize_provider_id(value: Any) -> str:
 
 def _normalize_task_kind(value: Any) -> str:
     return _safe_str(value).lower()
+
+
+def _lease_ttl_sec(entry: dict[str, Any]) -> int:
+    expires_at = _safe_float(entry.get("expiresAt") or entry.get("expires_at"), 0.0)
+    started_at = _safe_float(entry.get("startedAt") or entry.get("started_at"), 0.0)
+    if expires_at > 0 and started_at > 0 and expires_at >= started_at:
+        return max(0, int(round(expires_at - started_at)))
+    return max(
+        0,
+        _safe_int(
+            entry.get("leaseTtlSec")
+            if entry.get("leaseTtlSec") is not None
+            else entry.get("lease_ttl_sec")
+            if entry.get("lease_ttl_sec") is not None
+            else entry.get("ttlSec")
+            if entry.get("ttlSec") is not None
+            else entry.get("ttl_sec"),
+            0,
+        ),
+    )
+
+
+def _lease_remaining_ttl_sec(entry: dict[str, Any], *, now: float | None = None) -> int:
+    expires_at = _safe_float(entry.get("expiresAt") or entry.get("expires_at"), 0.0)
+    if expires_at > 0:
+        return max(0, int(round(expires_at - float(now if now is not None else _now()))))
+    return max(
+        0,
+        _safe_int(
+            entry.get("leaseRemainingTtlSec")
+            if entry.get("leaseRemainingTtlSec") is not None
+            else entry.get("lease_remaining_ttl_sec")
+            if entry.get("lease_remaining_ttl_sec") is not None
+            else entry.get("ttlRemainingSec")
+            if entry.get("ttlRemainingSec") is not None
+            else entry.get("ttl_remaining_sec"),
+            0,
+        ),
+    )
 
 
 def _request_field(request: dict[str, Any], snake_name: str, camel_name: str) -> Any:
@@ -261,7 +307,11 @@ def _provider_models(provider_id: str, catalog_models: list[dict[str, Any]]) -> 
     return [
         model
         for model in catalog_models
-        if isinstance(model, dict) and _normalize_provider_id(model.get("backend")) == normalized_provider
+        if isinstance(model, dict)
+        and (
+            _normalize_provider_id(model.get("runtimeProviderID") or model.get("runtime_provider_id"))
+            or _normalize_provider_id(model.get("backend"))
+        ) == normalized_provider
     ]
 
 
@@ -344,6 +394,7 @@ def read_provider_scheduler_telemetry(
     policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     provider = _normalize_provider_id(provider_id)
+    snapshot_now = _now()
     _ensure_provider_dirs(base_dir, provider)
     lock_path = _provider_lock_path(base_dir, provider)
     if _acquire_guard_lock(lock_path, timeout_ms=250, poll_ms=25):
@@ -357,30 +408,57 @@ def read_provider_scheduler_telemetry(
 
     event_counters = _read_event_counters(base_dir, provider)
     resource_policy = policy if isinstance(policy, dict) else {}
+    oldest_waiter_started_at = min(
+        (
+            _safe_float(entry.get("startedAt"), 0.0)
+            for entry in waiters
+            if _safe_float(entry.get("startedAt"), 0.0) > 0
+        ),
+        default=0.0,
+    )
+    oldest_waiter_age_ms = max(
+        0,
+        int(round((snapshot_now - oldest_waiter_started_at) * 1000.0)),
+    ) if oldest_waiter_started_at > 0 else 0
+    active_tasks: list[dict[str, Any]] = []
+    for entry in leases:
+        if not isinstance(entry, dict):
+            continue
+        started_at = _safe_float(entry.get("startedAt"), 0.0)
+        expires_at = _safe_float(entry.get("expiresAt"), 0.0)
+        lease_ttl_sec = _lease_ttl_sec(entry)
+        lease_remaining_ttl_sec = _lease_remaining_ttl_sec(entry, now=snapshot_now)
+        row = {
+            "leaseId": _safe_str(entry.get("leaseId")),
+            "taskKind": _normalize_task_kind(entry.get("taskKind")),
+            "modelId": _safe_str(entry.get("modelId")),
+            "requestId": _safe_str(entry.get("requestId")),
+            "deviceId": _safe_str(entry.get("deviceId")),
+            "loadProfileHash": _safe_str(entry.get("loadProfileHash")),
+            "instanceKey": _safe_str(entry.get("instanceKey")),
+            "effectiveContextLength": max(0, _safe_int(entry.get("effectiveContextLength"), 0)),
+            "startedAt": started_at,
+        }
+        if lease_ttl_sec > 0:
+            row["leaseTtlSec"] = lease_ttl_sec
+        if lease_remaining_ttl_sec > 0 or expires_at > 0:
+            row["leaseRemainingTtlSec"] = lease_remaining_ttl_sec
+        if expires_at > 0:
+            row["expiresAt"] = expires_at
+        active_tasks.append(row)
     return {
         "provider": provider,
         "concurrencyLimit": max(1, _safe_int(resource_policy.get("concurrencyLimit"), 1)),
         "activeTaskCount": len(leases),
         "queuedTaskCount": len(waiters),
-        "activeTasks": [
-            {
-                "leaseId": _safe_str(entry.get("leaseId")),
-                "taskKind": _normalize_task_kind(entry.get("taskKind")),
-                "modelId": _safe_str(entry.get("modelId")),
-                "requestId": _safe_str(entry.get("requestId")),
-                "deviceId": _safe_str(entry.get("deviceId")),
-                "loadProfileHash": _safe_str(entry.get("loadProfileHash")),
-                "instanceKey": _safe_str(entry.get("instanceKey")),
-                "effectiveContextLength": max(0, _safe_int(entry.get("effectiveContextLength"), 0)),
-                "startedAt": float(entry.get("startedAt") or 0.0),
-            }
-            for entry in leases
-        ],
+        "activeTasks": active_tasks,
         "queueMode": _safe_str(resource_policy.get("queueMode")) or "opt_in_wait",
         "queueingSupported": bool(resource_policy.get("queueingSupported", True)),
+        "oldestWaiterStartedAt": oldest_waiter_started_at,
+        "oldestWaiterAgeMs": oldest_waiter_age_ms,
         "contentionCount": int(event_counters.get("contentionCount") or 0),
         "lastContentionAt": float(event_counters.get("lastContentionAt") or 0.0),
-        "updatedAt": _now(),
+        "updatedAt": snapshot_now,
     }
 
 
@@ -458,6 +536,7 @@ def acquire_provider_slot(
                     "instanceKey": instance_key,
                     "effectiveContextLength": effective_context_length,
                     "startedAt": now,
+                    "leaseTtlSec": max(1, int(round(lease_ttl_ms / 1000.0))),
                     "expiresAt": now + (lease_ttl_ms / 1000.0),
                     "pid": os.getpid(),
                 }
@@ -519,6 +598,7 @@ def acquire_provider_slot(
                     "instanceKey": instance_key,
                     "effectiveContextLength": effective_context_length,
                     "startedAt": start_ts,
+                    "leaseTtlSec": max(1, int(round(lease_ttl_ms / 1000.0))),
                     "expiresAt": now + max(1.0, (max(queue_timeout_ms, lease_ttl_ms) / 1000.0)),
                     "pid": os.getpid(),
                 }

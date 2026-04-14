@@ -57,12 +57,15 @@ run('SlackIngress normalizes signed event callback into project-thread aware env
   });
 
   assert.equal(!!out.ok, true);
+  assert.equal(String(out.schema_version || ''), 'xhub.channel_ingress_envelope.v1');
+  assert.equal(String(out.auth_mode || ''), 'slack_signature_v0');
   assert.equal(String(out.envelope_type || ''), 'event_callback');
   assert.equal(String(out.actor?.external_user_id || ''), 'U123');
   assert.equal(String(out.channel?.account_id || ''), 'T001');
   assert.equal(String(out.channel?.conversation_id || ''), 'C456');
   assert.equal(String(out.channel?.thread_key || ''), '1710000000.0001');
   assert.equal(String(out.channel?.channel_scope || ''), 'group');
+  assert.equal(String(out.delivery_context?.provider || ''), 'slack');
   assert.equal(String(out.ingress_event?.message_id || ''), 'msg-1');
   assert.equal(String(out.structured_action?.action_name || ''), 'supervisor.status.get');
 });
@@ -100,8 +103,31 @@ run('SlackIngress validates interactive form payloads and DM thread fallback', (
 
   assert.equal(!!out.ok, true);
   assert.equal(String(out.envelope_type || ''), 'interactive');
+  assert.equal(String(out.path || ''), '/slack/events');
   assert.equal(String(out.channel?.channel_scope || ''), 'dm');
   assert.equal(String(out.channel?.thread_key || ''), '1710000001.0002');
+});
+
+run('SlackIngress accepts signed url_verification challenges as provider-scoped verification envelopes', () => {
+  const signing_secret = 'slack-signing-secret';
+  const payload = {
+    type: 'url_verification',
+    challenge: 'challenge-xyz',
+  };
+  const raw_body = JSON.stringify(payload);
+  const timestamp_sec = 1710000005;
+
+  const out = normalizeSlackWebhookRequest({
+    headers: makeSignedHeaders({ signing_secret, raw_body, timestamp_sec }),
+    raw_body,
+    signing_secret,
+    now_ms: timestamp_sec * 1000,
+  });
+
+  assert.equal(!!out.ok, true);
+  assert.equal(String(out.provider || ''), 'slack');
+  assert.equal(String(out.envelope_type || ''), 'url_verification');
+  assert.equal(String(out.challenge || ''), 'challenge-xyz');
 });
 
 run('SlackIngress rejects invalid signatures and compiles supported text commands only', () => {

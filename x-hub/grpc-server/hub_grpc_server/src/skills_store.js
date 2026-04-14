@@ -7,6 +7,15 @@ import {
   isAgentSkillScannable,
   scanAgentSkillDirectoryWithSummary,
 } from './agent_skill_vetter.js';
+import {
+  deriveSkillCapabilitySemantics,
+  validateSkillCapabilityHints,
+} from './skill_capability_derivation.js';
+import {
+  maybeAutoSyncOfficialSkillChannel,
+  readOfficialSkillChannelState,
+  resolveOfficialSkillChannelSnapshotDir,
+} from './official_skill_channel_sync.js';
 
 const SKILL_SCOPE_PRIORITY = {
   SKILL_PIN_SCOPE_MEMORY_CORE: 3,
@@ -29,6 +38,8 @@ const HIGH_RISK_CAPABILITY_RE = [
 const OFFICIAL_AGENT_CATALOG_SOURCE_ID = 'builtin:catalog';
 const OFFICIAL_AGENT_SKILL_SRC_DIR = path.dirname(fileURLToPath(import.meta.url));
 const OFFICIAL_AGENT_SKILL_REPO_ROOT = path.resolve(OFFICIAL_AGENT_SKILL_SRC_DIR, '../../../../');
+const PACKAGE_DOCTOR_SURFACES = new Set(['hub_cli', 'xt_ui', 'hub_ui', 'operator_channel', 'api']);
+const OFFICIAL_SKILL_PACKAGE_LIFECYCLE_SCHEMA = 'xhub.official_skill_package_lifecycle_snapshot.v1';
 const OFFICIAL_AGENT_BASELINE_FALLBACK = Object.freeze([
   {
     skill_id: 'find-skills',
@@ -37,6 +48,9 @@ const OFFICIAL_AGENT_BASELINE_FALLBACK = Object.freeze([
     description: 'Official discovery wrapper over Hub skills.search; default baseline for finding capabilities and usage.',
     publisher_id: 'xhub.official',
     capabilities_required: ['skills.search'],
+    side_effect_class: 'read_only',
+    risk_level: 'low',
+    requires_grant: false,
     install_hint: 'Included in the default Agent baseline profile; prefer the built-in SearchSkills flow in X-Terminal.',
   },
   {
@@ -46,6 +60,9 @@ const OFFICIAL_AGENT_BASELINE_FALLBACK = Object.freeze([
     description: 'Governed browser automation package for navigation, screenshot capture, structured extraction, and Secret Vault-aware credential handling.',
     publisher_id: 'xhub.official',
     capabilities_required: ['browser.read', 'device.browser.control', 'web.fetch'],
+    side_effect_class: 'external_side_effect',
+    risk_level: 'high',
+    requires_grant: true,
     install_hint: 'Recommended default managed skill; enable through Hub-governed import and pin flow before browser-heavy tasks.',
   },
   {
@@ -55,6 +72,9 @@ const OFFICIAL_AGENT_BASELINE_FALLBACK = Object.freeze([
     description: 'Supervisor retrospective and self-improvement workflow pack for learning from failed runs without bypassing governance.',
     publisher_id: 'xhub.official',
     capabilities_required: ['memory.snapshot', 'project.snapshot', 'repo.read.file'],
+    side_effect_class: 'read_only',
+    risk_level: 'medium',
+    requires_grant: false,
     install_hint: 'Recommended default managed skill; intended for the Agent baseline profile and Supervisor retrospectives.',
   },
   {
@@ -64,7 +84,22 @@ const OFFICIAL_AGENT_BASELINE_FALLBACK = Object.freeze([
     description: 'Governed summarize wrapper for webpages, PDFs, and long documents using Hub-routed fetch and model generation.',
     publisher_id: 'xhub.official',
     capabilities_required: ['web.fetch', 'browser.read', 'ai.generate.local'],
+    side_effect_class: 'read_only',
+    risk_level: 'medium',
+    requires_grant: false,
     install_hint: 'Included in the default Agent baseline profile; use for document and webpage summarization under Hub policy.',
+  },
+  {
+    skill_id: 'supervisor-voice',
+    name: 'Supervisor Voice',
+    version: '1.0.0',
+    description: 'Governed XT voice playback helper for checking route status, previewing the current Supervisor voice, speaking a short line, and stopping playback.',
+    publisher_id: 'xhub.official',
+    capabilities_required: ['supervisor.voice.playback'],
+    side_effect_class: 'local_side_effect',
+    risk_level: 'low',
+    requires_grant: false,
+    install_hint: 'Built into XT by default; pin the official package only when you want it surfaced through Hub catalog workflows.',
   },
 ]);
 
@@ -177,9 +212,88 @@ function isHighRiskManifest(manifestObj) {
   if (riskProfile === 'high' || riskProfile === 'critical') return true;
   const caps = safeStringArray(obj.capabilities_required);
   for (const cap of caps) {
-    if (HIGH_RISK_CAPABILITY_RE.some((re) => re.test(cap))) return true;
+    if (isHighRiskCapability(cap)) return true;
   }
   return false;
+}
+
+function normalizedRiskLevel(raw) {
+  const text = safeString(raw).toLowerCase();
+  if (text === 'moderate') return 'medium';
+  if (text === 'low' || text === 'medium' || text === 'high' || text === 'critical') return text;
+  return '';
+}
+
+function isHighRiskCapability(capability) {
+  const cap = safeString(capability).toLowerCase();
+  return !!cap && HIGH_RISK_CAPABILITY_RE.some((re) => re.test(cap));
+}
+
+function inferRiskLevelFromCapabilities(capabilities) {
+  const caps = safeStringArray(capabilities).map((cap) => cap.toLowerCase());
+  if (caps.some((cap) => isHighRiskCapability(cap))) return 'high';
+  if (caps.some((cap) => cap.startsWith('browser.') || cap.startsWith('email.') || cap.startsWith('repo.'))) {
+    return 'medium';
+  }
+  return 'low';
+}
+
+function inferSideEffectClass(explicit, capabilities, riskLevel) {
+  const explicitValue = safeString(explicit);
+  if (explicitValue) return explicitValue;
+  const caps = safeStringArray(capabilities).map((cap) => cap.toLowerCase());
+  const normalizedRisk = normalizedRiskLevel(riskLevel) || 'low';
+  if (caps.length === 0) return normalizedRisk === 'low' ? 'read_only' : 'external_side_effect';
+  if (caps.every((cap) => (
+    cap.includes('status')
+    || cap.includes('read')
+    || cap.includes('list')
+    || cap.includes('search')
+    || cap.includes('snapshot')
+    || cap.includes('inspect')
+  ))) {
+    return 'read_only';
+  }
+  if (caps.some((cap) => isHighRiskCapability(cap))) return 'external_side_effect';
+  if (caps.some((cap) => cap.startsWith('repo.') || cap.startsWith('filesystem.') || cap.startsWith('fs.'))) {
+    return 'project_write';
+  }
+  return normalizedRisk === 'low' ? 'read_only' : 'project_write';
+}
+
+function inferRequiresGrant(rawValue, capabilities, riskLevel) {
+  const explicit = parseBoolLike(rawValue);
+  if (explicit != null) return explicit;
+  const normalizedRisk = normalizedRiskLevel(riskLevel) || inferRiskLevelFromCapabilities(capabilities);
+  if (normalizedRisk === 'high' || normalizedRisk === 'critical') return true;
+  return safeStringArray(capabilities).some((cap) => isHighRiskCapability(cap));
+}
+
+function normalizeSkillGovernanceMeta(input, capabilityFallback = null) {
+  const obj = isObject(input) ? input : {};
+  const capabilities = Array.isArray(capabilityFallback)
+    ? safeStringArray(capabilityFallback)
+    : safeStringArray(obj.capabilities_required);
+  const risk_level = normalizedRiskLevel(obj.risk_level || obj.riskLevel || obj.risk_profile)
+    || inferRiskLevelFromCapabilities(capabilities);
+  return {
+    risk_level,
+    requires_grant: inferRequiresGrant(obj.requires_grant ?? obj.requiresGrant, capabilities, risk_level),
+    side_effect_class: inferSideEffectClass(
+      obj.side_effect_class || obj.sideEffectClass,
+      capabilities,
+      risk_level
+    ),
+  };
+}
+
+function assertCanonicalCapabilityHints(input, derived) {
+  const validation = validateSkillCapabilityHints(input, derived);
+  if (!validation.fail_closed) return validation;
+  throw new SkillStoreDenyError('profile_hint_mismatch', {
+    skill_id: safeString(input?.skill_id || input?.id),
+    mismatches: validation.mismatches,
+  });
 }
 
 function normalizeArchivePath(rawPath) {
@@ -567,6 +681,11 @@ function safeStringArray(v) {
   return v.map((s) => safeString(s)).filter(Boolean);
 }
 
+function cloneJSONValue(v) {
+  if (v == null) return null;
+  return JSON.parse(JSON.stringify(v));
+}
+
 function safeBool(v, fallback) {
   if (typeof v === 'boolean') return v;
   if (typeof v === 'number') return v !== 0;
@@ -654,6 +773,26 @@ function resolveStringArrayField(obj, canonicalField, aliases, { required = fals
   return Array.isArray(defaultValue) ? [...defaultValue] : [];
 }
 
+function resolveBoolLikeField(obj, canonicalField, aliases, { required = false, defaultValue = null } = {}, tracker) {
+  const fields = Array.isArray(aliases) ? aliases.map((s) => safeString(s)).filter(Boolean) : [];
+  for (let i = 0; i < fields.length; i += 1) {
+    const alias = fields[i];
+    const raw = getByPath(obj, alias);
+    if (raw == null) continue;
+    const value = parseBoolLike(raw);
+    if (value == null) {
+      throw new Error(`invalid_manifest: ${canonicalField} must be bool-like`);
+    }
+    if (tracker && i > 0) tracker.aliases.add(`${canonicalField}<-${alias}`);
+    return value;
+  }
+  if (required) {
+    throw new Error(`invalid_manifest: missing ${canonicalField}`);
+  }
+  if (tracker) tracker.defaults.add(canonicalField);
+  return defaultValue == null ? null : !!defaultValue;
+}
+
 function nowMs() {
   return Date.now();
 }
@@ -665,6 +804,54 @@ function readJsonSafe(filePath) {
   } catch {
     return null;
   }
+}
+
+function safeRealpath(filePath) {
+  try {
+    if (typeof fs.realpathSync?.native === 'function') {
+      return fs.realpathSync.native(String(filePath || ''));
+    }
+    return fs.realpathSync(String(filePath || ''));
+  } catch {
+    return '';
+  }
+}
+
+function isPathInsideRoot(rootDir, targetPath) {
+  const rootReal = safeRealpath(rootDir);
+  const targetReal = safeRealpath(targetPath);
+  if (!rootReal || !targetReal) return false;
+  if (rootReal === targetReal) return true;
+  const relative = path.relative(rootReal, targetReal);
+  if (!relative) return true;
+  if (relative.startsWith('..')) return false;
+  if (path.isAbsolute(relative)) return false;
+  return true;
+}
+
+function readJsonSafeWithinRoot(rootDir, filePath) {
+  if (!isPathInsideRoot(rootDir, filePath)) return null;
+  return readJsonSafe(filePath);
+}
+
+function resolvePathWithinRoot(rootDir, relativeOrAbsolutePath) {
+  const candidate = safeString(relativeOrAbsolutePath);
+  if (!candidate) return '';
+  const root = safeRealpath(rootDir) || path.resolve(String(rootDir || ''));
+  if (!root) return '';
+  const resolved = path.resolve(root, candidate);
+  const relative = path.relative(root, resolved);
+  if (relative.startsWith('..')) return '';
+  if (path.isAbsolute(relative)) return '';
+  return resolved;
+}
+
+function resolveExistingPathWithinRoot(rootDir, relativeOrAbsolutePath) {
+  const resolved = resolvePathWithinRoot(rootDir, relativeOrAbsolutePath);
+  if (!resolved) return '';
+  if (!fs.existsSync(resolved)) return '';
+  if (!isPathInsideRoot(rootDir, resolved)) return '';
+  return resolved;
 }
 
 function writeJsonAtomic(filePath, obj) {
@@ -730,6 +917,12 @@ function revocationsPath(runtimeBaseDir) {
   const dir = skillsStoreBaseDir(runtimeBaseDir);
   if (!dir) return '';
   return path.join(dir, 'revoked.json');
+}
+
+function officialSkillPackageLifecyclePath(runtimeBaseDir) {
+  const dir = skillsStoreBaseDir(runtimeBaseDir);
+  if (!dir) return '';
+  return path.join(dir, 'official_skill_package_lifecycle.json');
 }
 
 function agentImportsBaseDir(runtimeBaseDir) {
@@ -877,7 +1070,34 @@ function officialAgentSkillsSourceRoot() {
   return path.join(OFFICIAL_AGENT_SKILL_REPO_ROOT, 'official-agent-skills');
 }
 
-function officialAgentSkillsDistRoot() {
+function officialAgentAutoSyncSourceRoot() {
+  const sourceOverride = safeString(process.env.XHUB_OFFICIAL_AGENT_SKILLS_DIR);
+  if (sourceOverride) return path.resolve(sourceOverride);
+  const distOverride = safeString(process.env.XHUB_OFFICIAL_AGENT_SKILLS_DIST_DIR);
+  if (distOverride) return path.resolve(distOverride);
+  return officialAgentSkillsSourceRoot();
+}
+
+function officialAgentAutoSyncRetryMs() {
+  const raw = Number(process.env.XHUB_OFFICIAL_AGENT_AUTO_SYNC_RETRY_MS || 30_000);
+  if (!Number.isFinite(raw)) return 30_000;
+  return Math.max(0, Math.floor(raw));
+}
+
+function officialAgentSyncedSnapshotDir(runtimeBaseDir = '') {
+  const runtime = safeString(runtimeBaseDir);
+  if (!runtime) return '';
+  maybeAutoSyncOfficialSkillChannel(runtime, {
+    channelId: 'official-stable',
+    sourceRoot: officialAgentAutoSyncSourceRoot(),
+    retryAfterMs: officialAgentAutoSyncRetryMs(),
+  });
+  return resolveOfficialSkillChannelSnapshotDir(runtime, { channelId: 'official-stable' });
+}
+
+function officialAgentSkillsDistRoot(runtimeBaseDir = '') {
+  const synced = officialAgentSyncedSnapshotDir(runtimeBaseDir);
+  if (synced) return synced;
   const override = safeString(process.env.XHUB_OFFICIAL_AGENT_SKILLS_DIST_DIR);
   if (override) return path.resolve(override);
   return path.join(officialAgentSkillsSourceRoot(), 'dist');
@@ -885,6 +1105,47 @@ function officialAgentSkillsDistRoot() {
 
 function defaultOfficialAgentCatalogFallback() {
   return OFFICIAL_AGENT_BASELINE_FALLBACK.map((row) => ({ ...row }));
+}
+
+function officialAgentCatalogSnapshotPath(runtimeBaseDir = '') {
+  const synced = officialAgentSyncedSnapshotDir(runtimeBaseDir);
+  if (!synced) return '';
+  const fp = path.join(synced, 'official_catalog_snapshot.json');
+  if (!fs.existsSync(fp)) return '';
+  return fp;
+}
+
+function loadOfficialAgentCatalogEntriesFromSnapshot(runtimeBaseDir = '') {
+  const fp = officialAgentCatalogSnapshotPath(runtimeBaseDir);
+  if (!fp) return [];
+  const obj = readJsonSafe(fp);
+  if (!isObject(obj)) return [];
+  const publishedIndex = loadOfficialAgentPublishedIndex(runtimeBaseDir);
+  const bySha = new Map();
+  const bySkillId = new Map();
+  for (const row of Array.isArray(publishedIndex.skills) ? publishedIndex.skills : []) {
+    const sha = safeString(row?.package_sha256).toLowerCase();
+    const skillId = safeString(row?.skill_id);
+    if (sha) bySha.set(sha, row);
+    if (skillId && !bySkillId.has(skillId)) bySkillId.set(skillId, row);
+  }
+  const entries = [];
+  for (const raw of Array.isArray(obj.skills) ? obj.skills : []) {
+    const packageSha = safeString(raw?.package_sha256).toLowerCase();
+    const skillId = safeString(raw?.skill_id || raw?.id);
+    const published = bySha.get(packageSha) || bySkillId.get(skillId) || null;
+    const meta = normalizeSkillMeta({
+      ...(published || {}),
+      ...(isObject(raw) ? raw : {}),
+      package_sha256: packageSha || safeString(published?.package_sha256).toLowerCase(),
+      publisher_id: safeString(raw?.publisher_id || published?.publisher_id || obj.publisher_id),
+      source_id: OFFICIAL_AGENT_CATALOG_SOURCE_ID,
+    }, OFFICIAL_AGENT_CATALOG_SOURCE_ID);
+    if (!meta) continue;
+    entries.push(meta);
+  }
+  entries.sort((lhs, rhs) => safeString(lhs.skill_id).localeCompare(safeString(rhs.skill_id)));
+  return entries;
 }
 
 function loadOfficialAgentCatalogEntriesFromSource() {
@@ -902,7 +1163,7 @@ function loadOfficialAgentCatalogEntriesFromSource() {
     const dirName = safeString(row.name);
     if (!dirName || dirName.startsWith('.') || dirName === 'dist') continue;
     const manifestFp = path.join(root, dirName, 'skill.json');
-    const manifestObj = readJsonSafe(manifestFp);
+    const manifestObj = readJsonSafeWithinRoot(root, manifestFp);
     const meta = normalizeSkillMeta(manifestObj, OFFICIAL_AGENT_CATALOG_SOURCE_ID);
     if (!meta) continue;
     entries.push(meta);
@@ -911,10 +1172,10 @@ function loadOfficialAgentCatalogEntriesFromSource() {
   return entries;
 }
 
-function loadOfficialAgentPublishedIndex() {
-  const distRoot = officialAgentSkillsDistRoot();
+function loadOfficialAgentPublishedIndexRaw(runtimeBaseDir = '') {
+  const distRoot = officialAgentSkillsDistRoot(runtimeBaseDir);
   const indexFp = path.join(distRoot, 'index.json');
-  const obj = readJsonSafe(indexFp);
+  const obj = readJsonSafeWithinRoot(distRoot, indexFp);
   if (!isObject(obj)) {
     return {
       index_path: indexFp,
@@ -928,17 +1189,13 @@ function loadOfficialAgentPublishedIndex() {
     .map((row) => {
       const normalized = normalizePackageEntry(row);
       if (!normalized) return null;
-      const packageRel = safeString(row.package_path);
-      const manifestRel = safeString(row.manifest_path);
-      const package_fp = packageRel ? path.resolve(distRoot, packageRel) : '';
-      const manifest_fp = manifestRel ? path.resolve(distRoot, manifestRel) : '';
-      if (!package_fp || !manifest_fp) return null;
-      if (!fs.existsSync(package_fp) || !fs.existsSync(manifest_fp)) return null;
       return {
         ...normalized,
         source_id: OFFICIAL_AGENT_CATALOG_SOURCE_ID,
-        package_fp,
-        manifest_fp,
+        package_path: safeString(row.package_path),
+        manifest_path: safeString(row.manifest_path),
+        package_fp: resolvePathWithinRoot(distRoot, row.package_path),
+        manifest_fp: resolvePathWithinRoot(distRoot, row.manifest_path),
       };
     })
     .filter(Boolean);
@@ -950,17 +1207,44 @@ function loadOfficialAgentPublishedIndex() {
   };
 }
 
-function findOfficialAgentPublishedSkill(packageSha256) {
+function loadOfficialAgentPublishedIndex(runtimeBaseDir = '') {
+  const raw = loadOfficialAgentPublishedIndexRaw(runtimeBaseDir);
+  return {
+    ...raw,
+    skills: raw.skills.filter((row) => (
+      !!safeString(row.package_fp)
+      && !!safeString(row.manifest_fp)
+      && fs.existsSync(row.package_fp)
+      && fs.existsSync(row.manifest_fp)
+    )),
+  };
+}
+
+function findOfficialAgentPublishedSkill(runtimeBaseDir, packageSha256) {
   const sha = safeString(packageSha256).toLowerCase();
   if (!sha) return null;
-  const index = loadOfficialAgentPublishedIndex();
+  const index = loadOfficialAgentPublishedIndex(runtimeBaseDir);
   for (const row of index.skills) {
     if (safeString(row.package_sha256).toLowerCase() === sha) return row;
   }
   return null;
 }
 
-function defaultAgentBaselineCatalogEntries() {
+function findOfficialAgentPublishedSkillRaw(runtimeBaseDir, packageSha256) {
+  const sha = safeString(packageSha256).toLowerCase();
+  if (!sha) return null;
+  const index = loadOfficialAgentPublishedIndexRaw(runtimeBaseDir);
+  for (const row of index.skills) {
+    if (safeString(row.package_sha256).toLowerCase() === sha) return row;
+  }
+  return null;
+}
+
+function defaultAgentBaselineCatalogEntries(runtimeBaseDir = '') {
+  const syncedEntries = loadOfficialAgentCatalogEntriesFromSnapshot(runtimeBaseDir);
+  if (syncedEntries.length > 0) {
+    return syncedEntries.map((row) => ({ ...row }));
+  }
   const entries = loadOfficialAgentCatalogEntriesFromSource();
   if (entries.length > 0) {
     return entries.map((row) => ({
@@ -970,13 +1254,16 @@ function defaultAgentBaselineCatalogEntries() {
       description: safeString(row.description),
       publisher_id: safeString(row.publisher_id),
       capabilities_required: safeStringArray(row.capabilities_required),
+      side_effect_class: safeString(row.side_effect_class),
+      risk_level: safeString(row.risk_level),
+      requires_grant: !!row.requires_grant,
       install_hint: safeString(row.install_hint),
     }));
   }
   return defaultOfficialAgentCatalogFallback();
 }
 
-function defaultSources() {
+function defaultSources(runtimeBaseDir = '') {
   return {
     schema_version: 'skill_sources.v1',
     updated_at_ms: 0,
@@ -986,13 +1273,77 @@ function defaultSources() {
         type: 'catalog',
         default_trust_policy: 'trusted_official',
         updated_at_ms: 0,
-        discovery_index: defaultAgentBaselineCatalogEntries(),
+        discovery_index: defaultAgentBaselineCatalogEntries(runtimeBaseDir),
       },
     ],
   };
 }
 
-function officialAgentTrustedPublishersPath() {
+function normalizeSourceDiscoveryIndex(rows, sourceId) {
+  const dedup = new Map();
+  for (const raw of Array.isArray(rows) ? rows : []) {
+    const meta = normalizeSkillMeta(raw, sourceId);
+    if (!meta) continue;
+    meta.package_sha256 = safeString(meta.package_sha256).toLowerCase();
+    const key = `${safeString(meta.skill_id)}::${safeString(meta.version)}`;
+    const prev = dedup.get(key);
+    if (!prev) {
+      dedup.set(key, meta);
+      continue;
+    }
+    const prevHasPackage = !!safeString(prev.package_sha256);
+    const nextHasPackage = !!safeString(meta.package_sha256);
+    if (nextHasPackage && !prevHasPackage) {
+      dedup.set(key, meta);
+      continue;
+    }
+    if ((nextHasPackage && prevHasPackage) || (!nextHasPackage && !prevHasPackage)) {
+      dedup.set(key, meta);
+    }
+  }
+  return Array.from(dedup.values());
+}
+
+function normalizeSkillSourceRow(input) {
+  if (!isObject(input)) return null;
+  const source_id = safeString(input.source_id || input.id);
+  if (!source_id) return null;
+  return {
+    source_id,
+    type: safeString(input.type || 'catalog') || 'catalog',
+    default_trust_policy: safeString(input.default_trust_policy || 'manual_review') || 'manual_review',
+    updated_at_ms: Number(input.updated_at_ms || 0),
+    discovery_index: normalizeSourceDiscoveryIndex(input.discovery_index, source_id),
+  };
+}
+
+function mergeSkillSourceRows(prev, next) {
+  if (!prev) return next;
+  if (!next) return prev;
+  const nextWins = Number(next.updated_at_ms || 0) >= Number(prev.updated_at_ms || 0);
+  return {
+    source_id: safeString(prev.source_id || next.source_id),
+    type: nextWins ? safeString(next.type || prev.type || 'catalog') : safeString(prev.type || next.type || 'catalog'),
+    default_trust_policy: nextWins
+      ? safeString(next.default_trust_policy || prev.default_trust_policy || 'manual_review')
+      : safeString(prev.default_trust_policy || next.default_trust_policy || 'manual_review'),
+    updated_at_ms: Math.max(Number(prev.updated_at_ms || 0), Number(next.updated_at_ms || 0)),
+    discovery_index: normalizeSourceDiscoveryIndex(
+      [
+        ...(Array.isArray(prev.discovery_index) ? prev.discovery_index : []),
+        ...(Array.isArray(next.discovery_index) ? next.discovery_index : []),
+      ],
+      safeString(prev.source_id || next.source_id)
+    ),
+  };
+}
+
+function officialAgentTrustedPublishersPath(runtimeBaseDir = '') {
+  const synced = officialAgentSyncedSnapshotDir(runtimeBaseDir);
+  if (synced) {
+    const syncedPath = path.join(synced, 'trusted_publishers.json');
+    if (fs.existsSync(syncedPath)) return syncedPath;
+  }
   const sourceRoot = officialAgentSkillsSourceRoot();
   const sourcePath = path.join(sourceRoot, 'publisher', 'trusted_publishers.json');
   if (fs.existsSync(sourcePath)) return sourcePath;
@@ -1001,8 +1352,24 @@ function officialAgentTrustedPublishersPath() {
   return sourcePath;
 }
 
-function loadBundledOfficialTrustedPublishers() {
-  const fp = officialAgentTrustedPublishersPath();
+function officialAgentRevocationsPath(runtimeBaseDir = '') {
+  const synced = officialAgentSyncedSnapshotDir(runtimeBaseDir);
+  if (synced) {
+    for (const fileName of ['revocations.json', 'revoked.json']) {
+      const fp = path.join(synced, fileName);
+      if (fs.existsSync(fp)) return fp;
+    }
+  }
+  const distRoot = officialAgentSkillsDistRoot();
+  for (const fileName of ['revocations.json', 'revoked.json']) {
+    const fp = path.join(distRoot, fileName);
+    if (fs.existsSync(fp)) return fp;
+  }
+  return '';
+}
+
+function loadBundledOfficialTrustedPublishers(runtimeBaseDir = '') {
+  const fp = officialAgentTrustedPublishersPath(runtimeBaseDir);
   const obj = readJsonSafe(fp);
   if (!isObject(obj)) {
     return {
@@ -1021,8 +1388,8 @@ function loadBundledOfficialTrustedPublishers() {
   };
 }
 
-function defaultTrustedPublishers() {
-  const bundled = loadBundledOfficialTrustedPublishers();
+function defaultTrustedPublishers(runtimeBaseDir = '') {
+  const bundled = loadBundledOfficialTrustedPublishers(runtimeBaseDir);
   return {
     schema_version: safeString(bundled.schema_version || 'xhub.trusted_publishers.v1') || 'xhub.trusted_publishers.v1',
     updated_at_ms: Number(bundled.updated_at_ms || 0),
@@ -1030,7 +1397,18 @@ function defaultTrustedPublishers() {
   };
 }
 
-function defaultSkillRevocations() {
+function defaultSkillRevocations(runtimeBaseDir = '') {
+  const bundledPath = officialAgentRevocationsPath(runtimeBaseDir);
+  const bundled = bundledPath ? readJsonSafe(bundledPath) : null;
+  if (isObject(bundled)) {
+    return {
+      schema_version: safeString(bundled.schema_version || 'xhub.skill_revocations.v1') || 'xhub.skill_revocations.v1',
+      updated_at_ms: Number(bundled.updated_at_ms || 0),
+      revoked_sha256: normalizeRevocationList(bundled.revoked_sha256, { lowercase: true }),
+      revoked_skill_ids: normalizeRevocationList(bundled.revoked_skill_ids),
+      revoked_publishers: normalizeRevocationList(bundled.revoked_publishers),
+    };
+  }
   return {
     schema_version: 'xhub.skill_revocations.v1',
     updated_at_ms: 0,
@@ -1053,7 +1431,7 @@ function normalizeTrustedPublisher(it) {
 
 export function loadTrustedPublishers(runtimeBaseDir) {
   const fp = trustedPublishersPath(runtimeBaseDir);
-  const defaults = defaultTrustedPublishers();
+  const defaults = defaultTrustedPublishers(runtimeBaseDir);
   ensureStableSnapshotExists(fp);
   const obj = readJsonSafe(fp);
   if (!isObject(obj)) {
@@ -1083,19 +1461,28 @@ export function loadTrustedPublishers(runtimeBaseDir) {
 
 export function loadSkillRevocations(runtimeBaseDir) {
   const fp = revocationsPath(runtimeBaseDir);
+  const defaults = defaultSkillRevocations(runtimeBaseDir);
   ensureStableSnapshotExists(fp);
   const obj = readJsonSafe(fp);
   if (!isObject(obj)) {
-    const def = defaultSkillRevocations();
-    writeJsonAtomic(fp, def);
-    return def;
+    writeJsonAtomic(fp, defaults);
+    return defaults;
   }
   return {
-    schema_version: safeString(obj.schema_version || 'xhub.skill_revocations.v1') || 'xhub.skill_revocations.v1',
-    updated_at_ms: Number(obj.updated_at_ms || 0),
-    revoked_sha256: normalizeRevocationList(obj.revoked_sha256, { lowercase: true }),
-    revoked_skill_ids: normalizeRevocationList(obj.revoked_skill_ids),
-    revoked_publishers: normalizeRevocationList(obj.revoked_publishers),
+    schema_version: safeString(obj.schema_version || defaults.schema_version || 'xhub.skill_revocations.v1') || 'xhub.skill_revocations.v1',
+    updated_at_ms: Math.max(Number(defaults.updated_at_ms || 0), Number(obj.updated_at_ms || 0)),
+    revoked_sha256: normalizeRevocationList([
+      ...(Array.isArray(defaults.revoked_sha256) ? defaults.revoked_sha256 : []),
+      ...(Array.isArray(obj.revoked_sha256) ? obj.revoked_sha256 : []),
+    ], { lowercase: true }),
+    revoked_skill_ids: normalizeRevocationList([
+      ...(Array.isArray(defaults.revoked_skill_ids) ? defaults.revoked_skill_ids : []),
+      ...(Array.isArray(obj.revoked_skill_ids) ? obj.revoked_skill_ids : []),
+    ]),
+    revoked_publishers: normalizeRevocationList([
+      ...(Array.isArray(defaults.revoked_publishers) ? defaults.revoked_publishers : []),
+      ...(Array.isArray(obj.revoked_publishers) ? obj.revoked_publishers : []),
+    ]),
   };
 }
 
@@ -1191,39 +1578,39 @@ function verifySkillPackageSecurity(runtimeBaseDir, { manifestObj, manifestText,
 export function loadSkillSources(runtimeBaseDir) {
   const fp = sourcesPath(runtimeBaseDir);
   const obj = readJsonSafe(fp);
+  const defaults = defaultSources(runtimeBaseDir);
+  const merged = new Map();
+  for (const row of Array.isArray(defaults.sources) ? defaults.sources : []) {
+    const normalized = normalizeSkillSourceRow(row);
+    if (!normalized) continue;
+    merged.set(normalized.source_id, normalized);
+  }
   if (!obj || typeof obj !== 'object') {
-    const def = defaultSources();
-    writeJsonAtomic(fp, def);
-    return def;
+    writeJsonAtomic(fp, defaults);
+    return defaults;
   }
   const inSources = Array.isArray(obj.sources) ? obj.sources : [];
-  const sources = inSources
-    .map((it) => {
-      if (!it || typeof it !== 'object') return null;
-      const source_id = safeString(it.source_id || it.id);
-      if (!source_id) return null;
-      const discoveryRaw = Array.isArray(it.discovery_index) ? it.discovery_index : [];
-      const discovery_index = discoveryRaw
-        .map((r) => normalizeSkillMeta(r, source_id))
-        .filter(Boolean)
-        .map((r) => ({ ...r, package_sha256: '' }));
-      return {
-        source_id,
-        type: safeString(it.type || 'catalog') || 'catalog',
-        default_trust_policy: safeString(it.default_trust_policy || 'manual_review') || 'manual_review',
-        updated_at_ms: Number(it.updated_at_ms || 0),
-        discovery_index,
-      };
-    })
-    .filter(Boolean);
-  if (!sources.length) {
-    const def = defaultSources();
-    writeJsonAtomic(fp, def);
-    return def;
+  for (const row of inSources) {
+    const normalized = normalizeSkillSourceRow(row);
+    if (!normalized) continue;
+    if (normalized.source_id === OFFICIAL_AGENT_CATALOG_SOURCE_ID) {
+      const builtin = merged.get(OFFICIAL_AGENT_CATALOG_SOURCE_ID);
+      if (!builtin) {
+        merged.set(OFFICIAL_AGENT_CATALOG_SOURCE_ID, normalized);
+        continue;
+      }
+      merged.set(OFFICIAL_AGENT_CATALOG_SOURCE_ID, {
+        ...builtin,
+        updated_at_ms: Math.max(Number(builtin.updated_at_ms || 0), Number(normalized.updated_at_ms || 0)),
+      });
+      continue;
+    }
+    merged.set(normalized.source_id, mergeSkillSourceRows(merged.get(normalized.source_id) || null, normalized));
   }
+  const sources = Array.from(merged.values()).sort((lhs, rhs) => safeString(lhs.source_id).localeCompare(safeString(rhs.source_id)));
   return {
-    schema_version: safeString(obj.schema_version || 'skill_sources.v1') || 'skill_sources.v1',
-    updated_at_ms: Number(obj.updated_at_ms || 0),
+    schema_version: safeString(obj.schema_version || defaults.schema_version || 'skill_sources.v1') || 'skill_sources.v1',
+    updated_at_ms: Math.max(Number(defaults.updated_at_ms || 0), Number(obj.updated_at_ms || 0)),
     sources,
   };
 }
@@ -1233,20 +1620,59 @@ function normalizePackageEntry(it) {
   const skill_id = safeString(it.skill_id);
   const package_sha256 = safeString(it.package_sha256 || it.sha256).toLowerCase();
   if (!skill_id || !package_sha256) return null;
+  const capabilities_required = safeStringArray(it.capabilities_required);
+  const governance = normalizeSkillGovernanceMeta(it, capabilities_required);
+  const derived = deriveSkillCapabilitySemantics({
+    ...it,
+    skill_id,
+    capabilities_required,
+    risk_level: governance.risk_level,
+    requires_grant: governance.requires_grant,
+  });
   return {
     package_sha256,
     skill_id,
+    package_id: safeString(it.package_id || skill_id) || skill_id,
     name: safeString(it.name),
     version: safeString(it.version),
     description: safeString(it.description),
     publisher_id: safeString(it.publisher_id),
-    capabilities_required: safeStringArray(it.capabilities_required),
+    capabilities_required,
+    intent_families: safeStringArray(it.intent_families).length > 0
+      ? safeStringArray(it.intent_families)
+      : derived.intent_families,
+    capability_families: safeStringArray(it.capability_families).length > 0
+      ? safeStringArray(it.capability_families)
+      : derived.capability_families,
+    capability_profiles: safeStringArray(it.capability_profiles).length > 0
+      ? safeStringArray(it.capability_profiles)
+      : derived.capability_profiles,
+    grant_floor: safeString(it.grant_floor || derived.grant_floor) || derived.grant_floor,
+    approval_floor: safeString(it.approval_floor || derived.approval_floor) || derived.approval_floor,
+    side_effect_class: governance.side_effect_class,
+    risk_level: governance.risk_level,
+    requires_grant: governance.requires_grant,
     source_id: safeString(it.source_id || 'local'),
     install_hint: safeString(it.install_hint),
+    package_kind: safeString(it.package_kind),
+    trust_tier: safeString(it.trust_tier),
+    contract_version: safeString(it.contract_version),
+    package_state: safeString(it.package_state),
+    catalog_tier: safeString(it.catalog_tier || it.registry_catalog_tier),
+    source_type: safeString(it.source_type),
+    downloadability: safeString(it.downloadability),
+    buildability: safeString(it.buildability),
+    support_tier: safeString(it.support_tier),
+    revoke_state: safeString(it.revoke_state),
+    artifact_resolution_mode: safeString(it.artifact_resolution_mode),
+    doctor_bundles: safeStringArray(it.doctor_bundles),
     manifest_json: safeString(it.manifest_json),
     manifest_sha256: safeString(it.manifest_sha256).toLowerCase(),
     abi_compat_version: safeString(it.abi_compat_version || SKILL_ABI_COMPAT_VERSION) || SKILL_ABI_COMPAT_VERSION,
     compatibility_state: safeString(it.compatibility_state || 'supported') || 'supported',
+    compatibility_envelope: isObject(it.compatibility_envelope) ? cloneJSONValue(it.compatibility_envelope) : null,
+    quality_evidence_status: isObject(it.quality_evidence_status) ? cloneJSONValue(it.quality_evidence_status) : null,
+    artifact_integrity: isObject(it.artifact_integrity) ? cloneJSONValue(it.artifact_integrity) : null,
     mapping_aliases_used: safeStringArray(it.mapping_aliases_used),
     defaults_applied: safeStringArray(it.defaults_applied),
     entrypoint_runtime: safeString(it.entrypoint_runtime),
@@ -1443,7 +1869,33 @@ export function normalizeCompatibleSkillManifest(manifestObj, { sourceId, packag
     'capabilities_required',
     ['capabilities_required', 'capabilities', 'required_capabilities'],
     { defaultValue: [] },
+      tracker
+  );
+  const explicitRiskLevel = resolveStringField(
+    obj,
+    'risk_level',
+    ['risk_level', 'riskLevel', 'risk_profile'],
+    { defaultValue: '' },
     tracker
+  );
+  const risk_level = normalizedRiskLevel(explicitRiskLevel) || inferRiskLevelFromCapabilities(capabilities_required);
+  const requires_grant = resolveBoolLikeField(
+    obj,
+    'requires_grant',
+    ['requires_grant', 'requiresGrant'],
+    { defaultValue: null },
+    tracker
+  );
+  const side_effect_class = inferSideEffectClass(
+    resolveStringField(
+      obj,
+      'side_effect_class',
+      ['side_effect_class', 'sideEffectClass'],
+      { defaultValue: '' },
+      tracker
+    ),
+    capabilities_required,
+    risk_level
   );
   const publisher_id = resolveStringField(
     obj,
@@ -1475,6 +1927,11 @@ export function normalizeCompatibleSkillManifest(manifestObj, { sourceId, packag
     description,
     entrypoint,
     capabilities_required,
+    side_effect_class,
+    risk_level,
+    requires_grant: requires_grant == null
+      ? inferRequiresGrant(null, capabilities_required, risk_level)
+      : requires_grant,
     network_policy: {
       direct_network_forbidden,
     },
@@ -1483,6 +1940,16 @@ export function normalizeCompatibleSkillManifest(manifestObj, { sourceId, packag
     },
     install_hint,
   };
+  const derived = deriveSkillCapabilitySemantics({
+    ...obj,
+    ...normalized_manifest,
+    source_id: safeString(sourceId || 'local') || 'local',
+  });
+  assertCanonicalCapabilityHints({
+    ...obj,
+    ...normalized_manifest,
+    source_id: safeString(sourceId || 'local') || 'local',
+  }, derived);
   const manifest_sha256 = sha256Hex(Buffer.from(canonicalizeManifest(normalized_manifest), 'utf8'));
   const mapping_aliases_used = Array.from(tracker.aliases).sort();
   const defaults_applied = Array.from(tracker.defaults).sort();
@@ -1500,6 +1967,16 @@ export function normalizeCompatibleSkillManifest(manifestObj, { sourceId, packag
       description,
       publisher_id: publisher_id || 'unknown',
       capabilities_required,
+      intent_families: derived.intent_families,
+      capability_families: derived.capability_families,
+      capability_profiles: derived.capability_profiles,
+      grant_floor: derived.grant_floor,
+      approval_floor: derived.approval_floor,
+      side_effect_class,
+      risk_level,
+      requires_grant: requires_grant == null
+        ? inferRequiresGrant(null, capabilities_required, risk_level)
+        : requires_grant,
       source_id: safeString(sourceId || 'local') || 'local',
       package_sha256: safeString(packageSha).toLowerCase(),
       install_hint,
@@ -1608,6 +2085,9 @@ function normalizeAgentImportManifest(input) {
     kind: safeString(obj.kind || 'skill') || 'skill',
     upstream_package_ref,
     normalized_capabilities: safeStringArray(obj.normalized_capabilities),
+    intent_families: safeStringArray(obj.intent_families),
+    capability_profile_hints: safeStringArray(obj.capability_profile_hints),
+    approval_floor_hint: safeString(obj.approval_floor_hint),
     requires_grant: !!obj.requires_grant,
     risk_level: safeString(obj.risk_level || 'low').toLowerCase() || 'low',
     policy_scope: normalizeAgentPolicyScope(obj.policy_scope),
@@ -1716,7 +2196,27 @@ function buildAgentImportRecord({
   const now = Math.max(0, Number(createdAtMs || nowMs()));
   const tokenSeed = sha256Hex(Buffer.from(JSON.stringify(toCanonicalValue(manifestObj)), 'utf8')).slice(0, 12);
   const staging_id = `agent-${now}-${tokenSeed}`;
-  const resolvedStatus = status || agentImportStatusForManifest(manifestObj);
+  const derivedCapabilitySemantics = deriveSkillCapabilitySemantics({
+    skill_id: manifestObj.skill_id,
+    capabilities_required: safeStringArray(manifestObj.normalized_capabilities),
+    risk_level: manifestObj.risk_level,
+    requires_grant: manifestObj.requires_grant,
+    intent_families: manifestObj.intent_families,
+    capability_profile_hints: manifestObj.capability_profile_hints,
+    approval_floor_hint: manifestObj.approval_floor_hint,
+    source_id: 'agent:import',
+  });
+  const hintValidation = validateSkillCapabilityHints({
+    skill_id: manifestObj.skill_id,
+    risk_level: manifestObj.risk_level,
+    requires_grant: manifestObj.requires_grant,
+    intent_families: manifestObj.intent_families,
+    capability_profile_hints: manifestObj.capability_profile_hints,
+    approval_floor_hint: manifestObj.approval_floor_hint,
+    source_id: 'agent:import',
+  }, derivedCapabilitySemantics);
+  const manifestStatus = status || agentImportStatusForManifest(manifestObj);
+  const resolvedStatus = hintValidation.fail_closed ? 'quarantined' : manifestStatus;
   return {
     schema_version: 'xhub.agent_import_record.v1',
     staging_id,
@@ -1727,13 +2227,17 @@ function buildAgentImportRecord({
     requested_by: safeString(requestedBy),
     note: safeString(note),
     import_manifest: manifestObj,
+    canonical_capability_derivation: derivedCapabilitySemantics,
+    capability_hint_validation: hintValidation,
     findings: normalizeAgentImportFindings(findings),
     vetter_status: resolvedStatus === 'quarantined' ? 'critical' : 'pending',
     vetter_audit_ref: '',
     vetter_report_ref: '',
     vetter_critical_count: 0,
     vetter_warn_count: 0,
-    promotion_blocked_reason: resolvedStatus === 'quarantined' ? 'preflight_quarantined' : 'vetter_pending',
+    promotion_blocked_reason: resolvedStatus === 'quarantined'
+      ? (hintValidation.fail_closed ? 'profile_hint_mismatch' : 'preflight_quarantined')
+      : 'vetter_pending',
     enabled_package_sha256: '',
     enabled_scope: '',
     user_id: safeString(userId),
@@ -1827,7 +2331,9 @@ function evaluateAgentImportVetter(runtimeBaseDir, record, scanInputJson) {
 
   let reportPath = '';
   try {
-    const report = scanAgentSkillDirectoryWithSummary(mirror.mirror_dir);
+    const report = scanAgentSkillDirectoryWithSummary(mirror.mirror_dir, {
+      includeFiles: normalizedScanInput.files.map((row) => row.path),
+    });
     const finalReport = {
       ...report,
       staging_id,
@@ -2075,13 +2581,21 @@ export function stageAgentImport(runtimeBaseDir, {
     createdAtMs: nowMs(),
   });
   const vetter = evaluateAgentImportVetter(runtimeBaseDir, record, scanInputJson);
-  record.vetter_status = vetter.vetter_status;
+  const hintFailClosed = !!record?.capability_hint_validation?.fail_closed;
+  const hintMismatchCount = Array.isArray(record?.capability_hint_validation?.mismatches)
+    ? record.capability_hint_validation.mismatches.length
+    : 0;
+  record.vetter_status = hintFailClosed ? 'critical' : vetter.vetter_status;
   record.vetter_audit_ref = vetter.vetter_audit_ref;
   record.vetter_report_ref = vetter.vetter_report_ref;
-  record.vetter_critical_count = vetter.vetter_critical_count;
+  record.vetter_critical_count = hintFailClosed
+    ? Math.max(Number(vetter.vetter_critical_count || 0), Math.max(1, hintMismatchCount))
+    : vetter.vetter_critical_count;
   record.vetter_warn_count = vetter.vetter_warn_count;
-  record.promotion_blocked_reason = vetter.promotion_blocked_reason;
-  if (record.status !== 'quarantined' && vetter.vetter_status === 'critical') {
+  record.promotion_blocked_reason = hintFailClosed
+    ? 'profile_hint_mismatch'
+    : vetter.promotion_blocked_reason;
+  if (!hintFailClosed && record.status !== 'quarantined' && vetter.vetter_status === 'critical') {
     record.status = 'quarantined';
   }
   record.updated_at_ms = nowMs();
@@ -2223,16 +2737,67 @@ export function normalizeSkillMeta(input, fallbackSourceId = '') {
   const skill_id = safeString(input.skill_id || input.id);
   const version = safeString(input.version);
   if (!skill_id || !version) return null;
+  const publisherObj = isObject(input.publisher) ? input.publisher : {};
+  const capabilities_required = safeStringArray(input.capabilities_required);
+  const governance = normalizeSkillGovernanceMeta(input, capabilities_required);
+  const derived = deriveSkillCapabilitySemantics({
+    ...input,
+    skill_id,
+    capabilities_required,
+    risk_level: governance.risk_level,
+    requires_grant: governance.requires_grant,
+    source_id: safeString(input.source_id || fallbackSourceId || 'builtin:catalog') || 'builtin:catalog',
+  });
   return {
     skill_id,
+    package_id: safeString(input.package_id || skill_id) || skill_id,
     name: safeString(input.name || skill_id),
     version,
     description: safeString(input.description),
-    publisher_id: safeString(input.publisher_id || input.publisher || 'unknown'),
-    capabilities_required: safeStringArray(input.capabilities_required),
+    publisher_id: safeString(input.publisher_id || publisherObj.publisher_id || input.publisher || 'unknown'),
+    capabilities_required,
+    intent_families: safeStringArray(input.intent_families).length > 0
+      ? safeStringArray(input.intent_families)
+      : derived.intent_families,
+    capability_families: safeStringArray(input.capability_families).length > 0
+      ? safeStringArray(input.capability_families)
+      : derived.capability_families,
+    capability_profiles: safeStringArray(input.capability_profiles).length > 0
+      ? safeStringArray(input.capability_profiles)
+      : derived.capability_profiles,
+    grant_floor: safeString(input.grant_floor || derived.grant_floor) || derived.grant_floor,
+    approval_floor: safeString(input.approval_floor || derived.approval_floor) || derived.approval_floor,
+    side_effect_class: governance.side_effect_class,
+    risk_level: governance.risk_level,
+    requires_grant: governance.requires_grant,
     source_id: safeString(input.source_id || fallbackSourceId || 'builtin:catalog') || 'builtin:catalog',
     package_sha256: safeString(input.package_sha256 || '').toLowerCase(),
     install_hint: safeString(input.install_hint),
+    package_kind: safeString(input.package_kind),
+    trust_tier: safeString(input.trust_tier),
+    contract_version: safeString(input.contract_version),
+    package_state: safeString(input.package_state),
+    catalog_tier: safeString(input.catalog_tier || input.registry_catalog_tier),
+    source_type: safeString(input.source_type),
+    downloadability: safeString(input.downloadability),
+    buildability: safeString(input.buildability),
+    support_tier: safeString(input.support_tier),
+    revoke_state: safeString(input.revoke_state),
+    artifact_resolution_mode: safeString(input.artifact_resolution_mode),
+    doctor_bundles: safeStringArray(input.doctor_bundles),
+    manifest_sha256: safeString(input.manifest_sha256).toLowerCase(),
+    abi_compat_version: safeString(input.abi_compat_version),
+    compatibility_state: safeString(input.compatibility_state),
+    compatibility_envelope: isObject(input.compatibility_envelope) ? cloneJSONValue(input.compatibility_envelope) : null,
+    quality_evidence_status: isObject(input.quality_evidence_status) ? cloneJSONValue(input.quality_evidence_status) : null,
+    artifact_integrity: isObject(input.artifact_integrity) ? cloneJSONValue(input.artifact_integrity) : null,
+    signature_alg: safeString(input.signature_alg),
+    signature_verified: !!input.signature_verified,
+    signature_bypassed: !!input.signature_bypassed,
+    security_profile: safeString(input.security_profile),
+    package_format: safeString(input.package_format),
+    file_hash_count: Math.max(0, Number(input.file_hash_count || 0)),
+    package_size_bytes: Math.max(0, Number(input.package_size_bytes || 0)),
   };
 }
 
@@ -2368,7 +2933,7 @@ export function getSkillPackageMeta(runtimeBaseDir, packageSha256) {
   for (const it of snap.skills) {
     if (safeString(it.package_sha256).toLowerCase() === sha) return it;
   }
-  const official = findOfficialAgentPublishedSkill(sha);
+  const official = findOfficialAgentPublishedSkill(runtimeBaseDir, sha);
   if (official) return official;
   return null;
 }
@@ -2524,6 +3089,12 @@ export function setSkillPin(runtimeBaseDir, { scope, userId, projectId, skillId,
     publisher_id: skill.publisher_id,
   });
   mirrorSkillPackageMetaIntoRuntimeIndex(runtimeBaseDir, package_sha256);
+  const review = reviewSkillPinRequest(runtimeBaseDir, {
+    skillMeta: skill,
+    userId: uid,
+    projectId: pid,
+    packageSha256: package_sha256,
+  });
 
   const pins = loadSkillsPins(runtimeBaseDir);
   const now = nowMs();
@@ -2581,7 +3152,66 @@ export function setSkillPin(runtimeBaseDir, { scope, userId, projectId, skillId,
     package_sha256,
     previous_package_sha256: previous,
     updated_at_ms: now,
+    review_kind: safeString(review.review_kind),
+    review_status: safeString(review.review_status),
+    review_overall_state: safeString(review.review_overall_state),
+    review_package_state: safeString(review.review_package_state),
+    review_audit_ref: safeString(review.review_audit_ref),
+    review_doctor_bundle: safeString(review.review_doctor_bundle),
+    review_generated_at_ms: Math.max(0, Number(review.review_generated_at_ms || 0)),
   };
+}
+
+function shouldApplyOfficialSkillPinReview(skillMeta) {
+  const meta = isObject(skillMeta) ? skillMeta : {};
+  return safeString(meta.package_kind) === 'official_skill'
+    && safeStringArray(meta.doctor_bundles).includes('official_skills');
+}
+
+function reviewSkillPinRequest(runtimeBaseDir, { skillMeta, userId, projectId, packageSha256 }) {
+  const meta = isObject(skillMeta) ? skillMeta : {};
+  if (!shouldApplyOfficialSkillPinReview(meta)) {
+    return {
+      review_kind: '',
+      review_status: 'not_required',
+      review_overall_state: '',
+      review_package_state: '',
+      review_audit_ref: '',
+      review_doctor_bundle: '',
+      review_generated_at_ms: 0,
+    };
+  }
+
+  const report = getSkillPackageDoctorReport(runtimeBaseDir, {
+    packageSha256,
+    userId,
+    projectId,
+    surface: 'hub_grpc',
+  });
+  const overall_state = safeString(report?.overall_state).toLowerCase();
+  const package_state = safeString(report?.package_state).toLowerCase();
+  const review = {
+    review_kind: 'official_skill_doctor',
+    review_status: overall_state === 'ready' ? 'approved' : 'blocked',
+    review_overall_state: overall_state || 'unknown',
+    review_package_state: package_state,
+    review_audit_ref: safeString(report?.audit_ref),
+    review_doctor_bundle: safeString(report?.doctor_bundle || 'official_skills') || 'official_skills',
+    review_generated_at_ms: Math.max(0, Number(report?.generated_at_ms || 0)),
+  };
+  if (review.review_status !== 'approved') {
+    throw new SkillStoreDenyError('official_skill_review_blocked', {
+      skill_id: safeString(meta.skill_id),
+      package_sha256: safeString(packageSha256).toLowerCase(),
+      overall_state: review.review_overall_state,
+      package_state: review.review_package_state,
+      review_kind: review.review_kind,
+      doctor_bundle: review.review_doctor_bundle,
+      review_audit_ref: review.review_audit_ref,
+      review_generated_at_ms: review.review_generated_at_ms,
+    });
+  }
+  return review;
 }
 
 function scoreSearch(meta, q) {
@@ -2602,6 +3232,7 @@ export function searchSkills(runtimeBaseDir, { query, sourceFilter, limit }) {
   const lim = Math.max(1, Math.min(100, Number(limit || 20)));
 
   const merged = [];
+  const installableBySourceSkill = new Set();
   const index = loadSkillsIndex(runtimeBaseDir);
   for (const it of index.skills) {
     const revoked = revocationDecision(runtimeBaseDir, {
@@ -2615,10 +3246,13 @@ export function searchSkills(runtimeBaseDir, { query, sourceFilter, limit }) {
     meta.package_sha256 = safeString(it.package_sha256).toLowerCase();
     meta.install_hint = safeString(it.install_hint || '');
     if (sf && safeString(meta.source_id) !== sf) continue;
+    if (safeString(meta.package_sha256)) {
+      installableBySourceSkill.add(`${safeString(meta.source_id)}::${safeString(meta.skill_id)}`);
+    }
     merged.push({ meta, uploaded: true, sort_updated_at_ms: Number(it.updated_at_ms || 0) });
   }
 
-  const official = loadOfficialAgentPublishedIndex();
+  const official = loadOfficialAgentPublishedIndex(runtimeBaseDir);
   for (const it of official.skills) {
     const revoked = revocationDecision(runtimeBaseDir, {
       package_sha256: it.package_sha256,
@@ -2631,6 +3265,9 @@ export function searchSkills(runtimeBaseDir, { query, sourceFilter, limit }) {
     meta.package_sha256 = safeString(it.package_sha256).toLowerCase();
     meta.install_hint = safeString(it.install_hint || '');
     if (sf && safeString(meta.source_id) !== sf) continue;
+    if (safeString(meta.package_sha256)) {
+      installableBySourceSkill.add(`${safeString(meta.source_id)}::${safeString(meta.skill_id)}`);
+    }
     merged.push({
       meta,
       uploaded: true,
@@ -2647,6 +3284,8 @@ export function searchSkills(runtimeBaseDir, { query, sourceFilter, limit }) {
     for (const raw of arr) {
       const meta = normalizeSkillMeta(raw, sid);
       if (!meta) continue;
+      const installableKey = `${safeString(meta.source_id)}::${safeString(meta.skill_id)}`;
+      if (!safeString(meta.package_sha256) && installableBySourceSkill.has(installableKey)) continue;
       const revoked = revocationDecision(runtimeBaseDir, {
         package_sha256: meta.package_sha256,
         skill_id: meta.skill_id,
@@ -2813,14 +3452,777 @@ export function listResolvedSkills(runtimeBaseDir, { userId, projectId }) {
   return resolveSkillsWithTrace(runtimeBaseDir, { userId, projectId }).resolved;
 }
 
+function normalizePackageDoctorSurface(surface) {
+  const normalized = safeString(surface).toLowerCase();
+  if (PACKAGE_DOCTOR_SURFACES.has(normalized)) return normalized;
+  return 'hub_cli';
+}
+
+function hubRuntimeHostVersion() {
+  const explicit = safeString(process.env.HUB_RUNTIME_HOST_VERSION || process.env.HUB_VERSION);
+  if (explicit) return explicit;
+  const pkg = readJsonSafe(path.join(OFFICIAL_AGENT_SKILL_REPO_ROOT, 'x-hub/grpc-server/hub_grpc_server/package.json'));
+  return safeString(pkg?.version);
+}
+
+function buildPackageDoctorCheck({
+  check_id,
+  check_kind,
+  status,
+  severity,
+  blocking = false,
+  message,
+  failure_source,
+  observed_at_ms,
+}) {
+  return {
+    check_id: safeString(check_id),
+    check_kind: safeString(check_kind),
+    status: safeString(status),
+    severity: safeString(severity),
+    blocking: !!blocking,
+    message: safeString(message),
+    failure_source: safeString(failure_source),
+    observed_at_ms: Math.max(0, Number(observed_at_ms || 0)),
+  };
+}
+
+function buildPackageDoctorNextStep({
+  step_id,
+  kind,
+  label,
+  owner,
+  blocking = false,
+  suggested_command_or_path,
+}) {
+  return {
+    step_id: safeString(step_id),
+    kind: safeString(kind),
+    label: safeString(label),
+    owner: safeString(owner),
+    blocking: !!blocking,
+    suggested_command_or_path: safeString(suggested_command_or_path),
+  };
+}
+
+function buildPackageDoctorFailureRecord({
+  failure_id,
+  source,
+  event_code,
+  first_seen_at_ms,
+  last_seen_at_ms,
+  count = 1,
+  latest_deny_code,
+}) {
+  return {
+    failure_id: safeString(failure_id),
+    source: safeString(source),
+    event_code: safeString(event_code),
+    first_seen_at_ms: Math.max(0, Number(first_seen_at_ms || 0)),
+    last_seen_at_ms: Math.max(0, Number(last_seen_at_ms || 0)),
+    count: Math.max(1, Number(count || 1)),
+    latest_deny_code: safeString(latest_deny_code),
+  };
+}
+
+function summarizePackageDoctorChecks(checks) {
+  const summary = { passed: 0, failed: 0, warned: 0, skipped: 0 };
+  for (const check of Array.isArray(checks) ? checks : []) {
+    const status = safeString(check?.status).toLowerCase();
+    if (status === 'pass') summary.passed += 1;
+    else if (status === 'fail') summary.failed += 1;
+    else if (status === 'warn') summary.warned += 1;
+    else summary.skipped += 1;
+  }
+  return summary;
+}
+
+function resolveDoctorCompatibilityStatus(meta) {
+  const raw = safeString(meta?.compatibility_envelope?.compatibility_state || meta?.compatibility_state).toLowerCase();
+  if (raw === 'verified' || raw === 'supported') {
+    return {
+      status: 'pass',
+      severity: 'info',
+      blocking: false,
+      message: 'Compatibility envelope is verified for the current official skill package.',
+    };
+  }
+  if (raw === 'incompatible') {
+    return {
+      status: 'fail',
+      severity: 'critical',
+      blocking: true,
+      message: 'Compatibility envelope marks this package as incompatible with the current host/runtime.',
+    };
+  }
+  if (raw === 'deprecated') {
+    return {
+      status: 'warn',
+      severity: 'warning',
+      blocking: false,
+      message: 'Compatibility envelope marks this package as deprecated and due for refresh.',
+    };
+  }
+  if (raw === 'partial' || raw === 'unknown') {
+    return {
+      status: 'warn',
+      severity: 'warning',
+      blocking: false,
+      message: 'Compatibility envelope is not fully verified yet for this package.',
+    };
+  }
+  return {
+    status: 'warn',
+    severity: 'warning',
+    blocking: false,
+    message: 'Compatibility state is unspecified; treat this package as not fully verified.',
+  };
+}
+
+function resolveDoctorPackageState(runtimeBaseDir, meta, { userId, projectId, hasBlockingFailures, hasWarnings, revoked }) {
+  if (revoked) return 'revoked';
+  let state = safeString(meta?.package_state || 'discovered') || 'discovered';
+  const uid = safeString(userId);
+  const pid = safeString(projectId);
+  if (uid) {
+    const resolved = resolveSkillsWithTrace(runtimeBaseDir, { userId: uid, projectId: pid });
+    const active = Array.isArray(resolved?.resolved)
+      ? resolved.resolved.some((row) => safeString(row?.skill?.package_sha256).toLowerCase() === safeString(meta?.package_sha256).toLowerCase())
+      : false;
+    if (active) state = 'active';
+  }
+  if (state === 'active' && (hasBlockingFailures || hasWarnings)) return 'degraded';
+  return state;
+}
+
+export function getSkillPackageDoctorReport(
+  runtimeBaseDir,
+  {
+    packageSha256,
+    userId = '',
+    projectId = '',
+    surface = 'hub_cli',
+    xtVersion = '',
+    generatedAtMs = nowMs(),
+  } = {}
+) {
+  const generated_at_ms = Math.max(0, Number(generatedAtMs || nowMs()));
+  const package_sha256 = safeString(packageSha256).toLowerCase();
+  const doctor_surface = normalizePackageDoctorSurface(surface);
+  const indexedMeta = getSkillPackageMeta(runtimeBaseDir, package_sha256);
+  const rawOfficialMeta = indexedMeta ? null : findOfficialAgentPublishedSkillRaw(runtimeBaseDir, package_sha256);
+  const meta = indexedMeta || rawOfficialMeta;
+  const channelState = readOfficialSkillChannelState(runtimeBaseDir, { channelId: 'official-stable' });
+  const checks = [];
+  const next_steps = [];
+  const recent_failures = [];
+  const trustedPublishers = trustedPublisherMap(runtimeBaseDir);
+  const reportTrustTier = safeString(meta?.trust_tier || 'governed_package') || 'governed_package';
+  const reportKind = safeString(meta?.package_kind || 'official_skill') || 'official_skill';
+  const package_id = safeString(meta?.package_id || meta?.skill_id || package_sha256 || 'unknown') || 'unknown';
+  const package_version = safeString(meta?.version);
+  const doctor_run_id = `pkgdoc-${normalizeRecordToken(package_sha256 || package_id, 'pkg')}-${generated_at_ms}`;
+  const audit_ref = `audit-skill-package-doctor-${normalizeRecordToken(package_sha256 || package_id, 'pkg')}`;
+
+  if (!meta) {
+    checks.push(buildPackageDoctorCheck({
+      check_id: 'registry_entry_present',
+      check_kind: 'registry_lookup',
+      status: 'fail',
+      severity: 'error',
+      blocking: true,
+      message: 'Official skill package was not found in the current catalog or local skills store.',
+      failure_source: 'artifact',
+      observed_at_ms: generated_at_ms,
+    }));
+    next_steps.push(buildPackageDoctorNextStep({
+      step_id: 'open_official_skill_catalog',
+      kind: 'open_docs',
+      label: 'Open official skill catalog',
+      owner: 'user',
+      blocking: true,
+      suggested_command_or_path: 'Re-run skills.search and verify the official package_sha256 before retrying doctor.',
+    }));
+    return {
+      schema_version: 'xhub.package_doctor_report.v1',
+      doctor_run_id,
+      package_id,
+      package_version,
+      kind: reportKind,
+      trust_tier: reportTrustTier,
+      doctor_bundle: 'official_skills',
+      surface: doctor_surface,
+      package_state: 'removed',
+      overall_state: 'not_installed',
+      summary: summarizePackageDoctorChecks(checks),
+      checks,
+      next_steps,
+      recent_failures,
+      generated_at_ms,
+      audit_ref,
+      runtime_snapshot: {
+        host_version: hubRuntimeHostVersion(),
+        xt_version: safeString(xtVersion),
+        runtime_host: 'hub_runtime',
+        catalog_source: 'embedded_official',
+        last_success_at_ms: Math.max(0, Number(channelState?.last_success_at_ms || 0)),
+        last_failure_at_ms: safeString(channelState?.status).toLowerCase() === 'failed'
+          ? Math.max(0, Number(channelState?.updated_at_ms || channelState?.last_attempt_at_ms || 0))
+          : 0,
+      },
+    };
+  }
+
+  const supportsOfficialSkillsDoctor = reportKind === 'official_skill'
+    && safeStringArray(meta.doctor_bundles).includes('official_skills');
+  const registryPresentMessage = supportsOfficialSkillsDoctor
+    ? 'Official skill package is present in the governed catalog metadata.'
+    : 'Package metadata is present, but it is not eligible for the official_skills doctor bundle.';
+  checks.push(buildPackageDoctorCheck({
+    check_id: 'registry_entry_present',
+    check_kind: 'registry_lookup',
+    status: supportsOfficialSkillsDoctor ? 'pass' : 'fail',
+    severity: supportsOfficialSkillsDoctor ? 'info' : 'error',
+    blocking: !supportsOfficialSkillsDoctor,
+    message: registryPresentMessage,
+    failure_source: supportsOfficialSkillsDoctor ? 'recent_events' : 'manifest',
+    observed_at_ms: generated_at_ms,
+  }));
+  if (!supportsOfficialSkillsDoctor) {
+    next_steps.push(buildPackageDoctorNextStep({
+      step_id: 'open_package_governance_docs',
+      kind: 'open_docs',
+      label: 'Open governed package docs',
+      owner: 'user',
+      blocking: true,
+      suggested_command_or_path: 'Use the official_skills doctor only for official_skill packages that advertise the official_skills bundle.',
+    }));
+  }
+
+  const package_fp = safeString(meta.package_fp || packagePath(runtimeBaseDir, package_sha256));
+  const manifest_fp = safeString(meta.manifest_fp || manifestPath(runtimeBaseDir, package_sha256));
+  const package_present = !!package_fp && fs.existsSync(package_fp);
+  const manifest_present = !!safeString(meta.manifest_json) || (!!manifest_fp && fs.existsSync(manifest_fp));
+  checks.push(buildPackageDoctorCheck({
+    check_id: 'artifact_integrity_check',
+    check_kind: 'artifact_integrity',
+    status: package_present && manifest_present ? 'pass' : 'fail',
+    severity: package_present && manifest_present ? 'info' : 'critical',
+    blocking: !(package_present && manifest_present),
+    message: package_present && manifest_present
+      ? 'Package archive and manifest are both available under the governed catalog snapshot.'
+      : 'Package archive or manifest is missing from the governed catalog snapshot.',
+    failure_source: 'artifact',
+    observed_at_ms: generated_at_ms,
+  }));
+  if (!(package_present && manifest_present)) {
+    next_steps.push(buildPackageDoctorNextStep({
+      step_id: 'repair_official_artifact',
+      kind: 'repair_artifact',
+      label: 'Repair official artifact snapshot',
+      owner: 'hub_runtime',
+      blocking: true,
+      suggested_command_or_path: 'Resync the official skill channel snapshot and restore index/package/manifest consistency.',
+    }));
+    recent_failures.push(buildPackageDoctorFailureRecord({
+      failure_id: `artifact-missing-${normalizeRecordToken(package_id, 'pkg')}`,
+      source: 'artifact',
+      event_code: 'official_skill_artifact_missing',
+      first_seen_at_ms: generated_at_ms,
+      last_seen_at_ms: generated_at_ms,
+      latest_deny_code: 'artifact_missing',
+    }));
+  }
+
+  const trustedPublisher = trustedPublishers.get(safeString(meta.publisher_id));
+  checks.push(buildPackageDoctorCheck({
+    check_id: 'publisher_trust_check',
+    check_kind: 'publisher_trust',
+    status: trustedPublisher ? 'pass' : 'fail',
+    severity: trustedPublisher ? 'info' : 'critical',
+    blocking: !trustedPublisher,
+    message: trustedPublisher
+      ? 'Publisher remains present in the trusted publisher set.'
+      : 'Publisher is not currently present in the trusted publisher set.',
+    failure_source: 'auth',
+    observed_at_ms: generated_at_ms,
+  }));
+  if (!trustedPublisher) {
+    next_steps.push(buildPackageDoctorNextStep({
+      step_id: 'repair_publisher_trust',
+      kind: 'repair_auth',
+      label: 'Repair trusted publisher set',
+      owner: 'operator',
+      blocking: true,
+      suggested_command_or_path: 'Restore the official publisher key in trusted_publishers.json before reusing this package.',
+    }));
+  }
+
+  const signatureVerified = !!meta.signature_verified;
+  const signatureBypassed = !!meta.signature_bypassed;
+  const signatureStatus = signatureVerified ? 'pass' : 'fail';
+  checks.push(buildPackageDoctorCheck({
+    check_id: 'signature_verification_check',
+    check_kind: 'signature_verification',
+    status: signatureStatus,
+    severity: signatureVerified ? 'info' : signatureBypassed ? 'error' : 'critical',
+    blocking: !signatureVerified,
+    message: signatureVerified
+      ? 'Package signature is verified against the trusted publisher key.'
+      : signatureBypassed
+        ? 'Package signature verification was bypassed; official skills should not remain in this state.'
+        : 'Package signature is not verified for the current official skill artifact.',
+    failure_source: 'artifact',
+    observed_at_ms: generated_at_ms,
+  }));
+  if (!signatureVerified) {
+    next_steps.push(buildPackageDoctorNextStep({
+      step_id: 'repair_package_signature',
+      kind: 'repair_artifact',
+      label: 'Repair package signature',
+      owner: 'operator',
+      blocking: true,
+      suggested_command_or_path: 'Rebuild or republish the official skill package with a trusted signature before promotion.',
+    }));
+  }
+
+  const compatibility = resolveDoctorCompatibilityStatus(meta);
+  checks.push(buildPackageDoctorCheck({
+    check_id: 'compatibility_gate_check',
+    check_kind: 'compatibility_gate',
+    status: compatibility.status,
+    severity: compatibility.severity,
+    blocking: compatibility.blocking,
+    message: compatibility.message,
+    failure_source: 'runtime',
+    observed_at_ms: generated_at_ms,
+  }));
+  if (compatibility.status === 'fail') {
+    next_steps.push(buildPackageDoctorNextStep({
+      step_id: 'repair_compatibility',
+      kind: 'retry_runtime',
+      label: 'Repair compatibility',
+      owner: 'hub_runtime',
+      blocking: true,
+      suggested_command_or_path: 'Refresh the package against the current ABI/runtime contract before marking it ready again.',
+    }));
+  }
+
+  const revocation = revocationDecision(runtimeBaseDir, {
+    package_sha256,
+    skill_id: meta.skill_id,
+    publisher_id: meta.publisher_id,
+  });
+  checks.push(buildPackageDoctorCheck({
+    check_id: 'revocation_check',
+    check_kind: 'revocation_gate',
+    status: revocation.revoked ? 'fail' : 'pass',
+    severity: revocation.revoked ? 'critical' : 'info',
+    blocking: revocation.revoked,
+    message: revocation.revoked
+      ? `Package is revoked by ${safeString(revocation.reason)}=${safeString(revocation.value)}.`
+      : 'Package is not present in the current revocation set.',
+    failure_source: revocation.revoked ? 'recent_events' : 'recent_events',
+    observed_at_ms: generated_at_ms,
+  }));
+  if (revocation.revoked) {
+    recent_failures.push(buildPackageDoctorFailureRecord({
+      failure_id: `revoked-${normalizeRecordToken(package_id, 'pkg')}`,
+      source: 'recent_events',
+      event_code: `revoked_by_${safeString(revocation.reason) || 'policy'}`,
+      first_seen_at_ms: generated_at_ms,
+      last_seen_at_ms: generated_at_ms,
+      latest_deny_code: safeString(revocation.deny_code || 'revoked'),
+    }));
+    next_steps.push(buildPackageDoctorNextStep({
+      step_id: 'contact_operator_for_revoked_package',
+      kind: 'contact_operator',
+      label: 'Contact package operator',
+      owner: 'operator',
+      blocking: true,
+      suggested_command_or_path: 'Do not reactivate this package; investigate the revocation source and roll forward to a supported release.',
+    }));
+  }
+
+  const channelStatus = safeString(channelState?.status).toLowerCase();
+  let channelCheck = null;
+  if (channelStatus === 'healthy') {
+    channelCheck = buildPackageDoctorCheck({
+      check_id: 'catalog_snapshot_check',
+      check_kind: 'catalog_snapshot',
+      status: 'pass',
+      severity: 'info',
+      blocking: false,
+      message: 'Official skill channel snapshot is healthy.',
+      failure_source: 'recent_events',
+      observed_at_ms: generated_at_ms,
+    });
+  } else if (channelStatus === 'failed') {
+    channelCheck = buildPackageDoctorCheck({
+      check_id: 'catalog_snapshot_check',
+      check_kind: 'catalog_snapshot',
+      status: package_present && manifest_present ? 'warn' : 'fail',
+      severity: package_present && manifest_present ? 'warning' : 'error',
+      blocking: !(package_present && manifest_present),
+      message: 'Official skill channel sync is currently failed; package may rely on stale or missing snapshot data.',
+      failure_source: 'recent_events',
+      observed_at_ms: generated_at_ms,
+    });
+    recent_failures.push(buildPackageDoctorFailureRecord({
+      failure_id: `channel-sync-${normalizeRecordToken(package_id, 'pkg')}`,
+      source: 'recent_events',
+      event_code: 'official_skill_channel_sync_failed',
+      first_seen_at_ms: Math.max(0, Number(channelState?.last_attempt_at_ms || generated_at_ms)),
+      last_seen_at_ms: Math.max(0, Number(channelState?.updated_at_ms || generated_at_ms)),
+      latest_deny_code: safeString(channelState?.error_code || 'official_channel_failed'),
+    }));
+  } else if (channelStatus === 'stale' || channelStatus === 'missing') {
+    channelCheck = buildPackageDoctorCheck({
+      check_id: 'catalog_snapshot_check',
+      check_kind: 'catalog_snapshot',
+      status: 'warn',
+      severity: 'warning',
+      blocking: false,
+      message: channelStatus === 'stale'
+        ? 'Official skill channel is using last-known-good snapshot data.'
+        : 'Official skill channel snapshot has not been established yet; env/repo fallback is being used.',
+      failure_source: 'recent_events',
+      observed_at_ms: generated_at_ms,
+    });
+  }
+  if (channelCheck) checks.push(channelCheck);
+
+  const summary = summarizePackageDoctorChecks(checks);
+  const hasBlockingFailures = Array.isArray(checks) && checks.some((check) => check.status === 'fail' && check.blocking);
+  const hasWarnings = summary.warned > 0;
+  const package_state = resolveDoctorPackageState(runtimeBaseDir, meta, {
+    userId,
+    projectId,
+    hasBlockingFailures,
+    hasWarnings,
+    revoked: revocation.revoked,
+  });
+  const overall_state = !supportsOfficialSkillsDoctor
+    ? 'not_supported'
+    : hasBlockingFailures
+      ? (package_state === 'degraded' ? 'degraded' : 'blocked')
+      : hasWarnings
+        ? 'degraded'
+        : 'ready';
+
+  return {
+    schema_version: 'xhub.package_doctor_report.v1',
+    doctor_run_id,
+    package_id,
+    package_version,
+    kind: reportKind,
+    trust_tier: reportTrustTier,
+    doctor_bundle: 'official_skills',
+    surface: doctor_surface,
+    package_state,
+    overall_state,
+    summary,
+    checks,
+    next_steps,
+    recent_failures,
+    generated_at_ms,
+    audit_ref,
+    runtime_snapshot: {
+      host_version: hubRuntimeHostVersion(),
+      xt_version: safeString(xtVersion),
+      runtime_host: 'hub_runtime',
+      catalog_source: safeString(meta.catalog_tier || meta.source_type || meta.source_id || 'embedded_official') || 'embedded_official',
+      last_success_at_ms: Math.max(0, Number(channelState?.last_success_at_ms || 0)),
+      last_failure_at_ms: channelStatus === 'failed'
+        ? Math.max(0, Number(channelState?.updated_at_ms || channelState?.last_attempt_at_ms || 0))
+        : 0,
+    },
+  };
+}
+
+function normalizeOfficialSkillDoctorFilterValue(value) {
+  return safeString(value).toLowerCase();
+}
+
+function normalizeOfficialSkillPackageLifecycleRow(row) {
+  if (!isObject(row)) return null;
+  const package_sha256 = safeString(row.package_sha256).toLowerCase();
+  const skill_id = safeString(row.skill_id);
+  if (!package_sha256 || !skill_id) return null;
+  return {
+    package_sha256,
+    skill_id,
+    name: safeString(row.name || skill_id),
+    version: safeString(row.version),
+    description: safeString(row.description),
+    publisher_id: safeString(row.publisher_id),
+    source_id: safeString(row.source_id || OFFICIAL_AGENT_CATALOG_SOURCE_ID) || OFFICIAL_AGENT_CATALOG_SOURCE_ID,
+    install_hint: safeString(row.install_hint),
+    risk_level: safeString(row.risk_level),
+    requires_grant: !!row.requires_grant,
+    side_effect_class: safeString(row.side_effect_class),
+    package_kind: safeString(row.package_kind),
+    trust_tier: safeString(row.trust_tier),
+    support_tier: safeString(row.support_tier),
+    revoke_state: safeString(row.revoke_state),
+    package_state: safeString(row.package_state),
+    overall_state: safeString(row.overall_state),
+    doctor_bundle: safeString(row.doctor_bundle),
+    generated_at_ms: Math.max(0, Number(row.generated_at_ms || 0)),
+    updated_at_ms: Math.max(0, Number(row.updated_at_ms || 0)),
+    first_seen_at_ms: Math.max(0, Number(row.first_seen_at_ms || 0)),
+    last_transition_at_ms: Math.max(0, Number(row.last_transition_at_ms || 0)),
+    last_ready_at_ms: Math.max(0, Number(row.last_ready_at_ms || 0)),
+    last_degraded_at_ms: Math.max(0, Number(row.last_degraded_at_ms || 0)),
+    last_blocked_at_ms: Math.max(0, Number(row.last_blocked_at_ms || 0)),
+    last_revoked_at_ms: Math.max(0, Number(row.last_revoked_at_ms || 0)),
+    transition_count: Math.max(0, Number(row.transition_count || 0)),
+    blocking_failures: Math.max(0, Number(row.blocking_failures || 0)),
+    audit_ref: safeString(row.audit_ref),
+    summary: isObject(row.summary) ? cloneJSONValue(row.summary) : { passed: 0, failed: 0, warned: 0, skipped: 0 },
+  };
+}
+
+function summarizeOfficialSkillPackageLifecycleTotals(rows) {
+  const packages = Array.isArray(rows) ? rows : [];
+  return {
+    packages_total: packages.length,
+    ready_total: packages.filter((row) => safeString(row.overall_state) === 'ready').length,
+    degraded_total: packages.filter((row) => safeString(row.overall_state) === 'degraded').length,
+    blocked_total: packages.filter((row) => safeString(row.overall_state) === 'blocked').length,
+    not_installed_total: packages.filter((row) => safeString(row.overall_state) === 'not_installed').length,
+    not_supported_total: packages.filter((row) => safeString(row.overall_state) === 'not_supported').length,
+    revoked_total: packages.filter((row) => safeString(row.package_state) === 'revoked').length,
+    active_total: packages.filter((row) => safeString(row.package_state) === 'active').length,
+  };
+}
+
+function doctorSummaryFromMetaAndReport(meta, report) {
+  const checks = Array.isArray(report?.checks) ? report.checks : [];
+  const blocking_failures = checks.filter((check) => String(check?.status || '') === 'fail' && !!check?.blocking).length;
+  return {
+    package_sha256: safeString(meta?.package_sha256).toLowerCase(),
+    skill_id: safeString(meta?.skill_id),
+    name: safeString(meta?.name || meta?.skill_id),
+    version: safeString(meta?.version),
+    description: safeString(meta?.description),
+    publisher_id: safeString(meta?.publisher_id),
+    source_id: safeString(meta?.source_id || OFFICIAL_AGENT_CATALOG_SOURCE_ID) || OFFICIAL_AGENT_CATALOG_SOURCE_ID,
+    install_hint: safeString(meta?.install_hint),
+    risk_level: safeString(meta?.risk_level),
+    requires_grant: !!meta?.requires_grant,
+    side_effect_class: safeString(meta?.side_effect_class),
+    package_kind: safeString(meta?.package_kind),
+    trust_tier: safeString(meta?.trust_tier),
+    support_tier: safeString(meta?.support_tier),
+    revoke_state: safeString(meta?.revoke_state),
+    package_state: safeString(report?.package_state),
+    overall_state: safeString(report?.overall_state),
+    doctor_bundle: safeString(report?.doctor_bundle),
+    generated_at_ms: Math.max(0, Number(report?.generated_at_ms || 0)),
+    audit_ref: safeString(report?.audit_ref),
+    summary: isObject(report?.summary) ? cloneJSONValue(report.summary) : { passed: 0, failed: 0, warned: 0, skipped: 0 },
+    blocking_failures,
+  };
+}
+
+export function loadOfficialSkillPackageLifecycleSnapshot(runtimeBaseDir) {
+  const fp = officialSkillPackageLifecyclePath(runtimeBaseDir);
+  if (!fp) {
+    return {
+      schema_version: OFFICIAL_SKILL_PACKAGE_LIFECYCLE_SCHEMA,
+      updated_at_ms: 0,
+      packages: [],
+      totals: summarizeOfficialSkillPackageLifecycleTotals([]),
+    };
+  }
+  ensureStableSnapshotExists(fp);
+  const obj = readJsonSafe(fp);
+  if (!isObject(obj)) {
+    return {
+      schema_version: OFFICIAL_SKILL_PACKAGE_LIFECYCLE_SCHEMA,
+      updated_at_ms: 0,
+      packages: [],
+      totals: summarizeOfficialSkillPackageLifecycleTotals([]),
+    };
+  }
+  const packages = Array.isArray(obj.packages)
+    ? obj.packages.map((row) => normalizeOfficialSkillPackageLifecycleRow(row)).filter(Boolean)
+    : [];
+  return {
+    schema_version: safeString(obj.schema_version || OFFICIAL_SKILL_PACKAGE_LIFECYCLE_SCHEMA) || OFFICIAL_SKILL_PACKAGE_LIFECYCLE_SCHEMA,
+    updated_at_ms: Math.max(0, Number(obj.updated_at_ms || 0)),
+    packages,
+    totals: isObject(obj.totals)
+      ? {
+        packages_total: Math.max(0, Number(obj.totals.packages_total || packages.length)),
+        ready_total: Math.max(0, Number(obj.totals.ready_total || 0)),
+        degraded_total: Math.max(0, Number(obj.totals.degraded_total || 0)),
+        blocked_total: Math.max(0, Number(obj.totals.blocked_total || 0)),
+        not_installed_total: Math.max(0, Number(obj.totals.not_installed_total || 0)),
+        not_supported_total: Math.max(0, Number(obj.totals.not_supported_total || 0)),
+        revoked_total: Math.max(0, Number(obj.totals.revoked_total || 0)),
+        active_total: Math.max(0, Number(obj.totals.active_total || 0)),
+      }
+      : summarizeOfficialSkillPackageLifecycleTotals(packages),
+  };
+}
+
+function lifecycleRowFromSummary(summary, previous, generated_at_ms) {
+  const prev = isObject(previous) ? previous : {};
+  const package_state = safeString(summary?.package_state);
+  const overall_state = safeString(summary?.overall_state);
+  const prevPackageState = safeString(prev.package_state);
+  const prevOverallState = safeString(prev.overall_state);
+  const changed = package_state !== prevPackageState || overall_state !== prevOverallState;
+  return {
+    ...summary,
+    updated_at_ms: generated_at_ms,
+    first_seen_at_ms: Math.max(0, Number(prev.first_seen_at_ms || 0)) || generated_at_ms,
+    last_transition_at_ms: changed
+      ? generated_at_ms
+      : Math.max(0, Number(prev.last_transition_at_ms || 0)) || generated_at_ms,
+    last_ready_at_ms: overall_state === 'ready'
+      ? generated_at_ms
+      : Math.max(0, Number(prev.last_ready_at_ms || 0)),
+    last_degraded_at_ms: overall_state === 'degraded'
+      ? generated_at_ms
+      : Math.max(0, Number(prev.last_degraded_at_ms || 0)),
+    last_blocked_at_ms: overall_state === 'blocked' || overall_state === 'not_installed' || overall_state === 'not_supported'
+      ? generated_at_ms
+      : Math.max(0, Number(prev.last_blocked_at_ms || 0)),
+    last_revoked_at_ms: package_state === 'revoked'
+      ? generated_at_ms
+      : Math.max(0, Number(prev.last_revoked_at_ms || 0)),
+    transition_count: Math.max(0, Number(prev.transition_count || 0)) + (changed ? 1 : 0),
+  };
+}
+
+export function listOfficialSkillPackageDoctorSummaries(
+  runtimeBaseDir,
+  {
+    userId = '',
+    projectId = '',
+    surface = 'hub_ui',
+    xtVersion = '',
+    overallState = '',
+    packageState = '',
+    skillId = '',
+    limit = 200,
+  } = {}
+) {
+  const raw = loadOfficialAgentPublishedIndexRaw(runtimeBaseDir);
+  const stateFilter = normalizeOfficialSkillDoctorFilterValue(overallState);
+  const packageStateFilter = normalizeOfficialSkillDoctorFilterValue(packageState);
+  const skillFilter = safeString(skillId);
+  const max = Math.max(1, Math.min(500, Number(limit || 200)));
+  const out = [];
+  const rows = Array.isArray(raw.skills) ? [...raw.skills] : [];
+  rows.sort((lhs, rhs) => {
+    const bySkill = safeString(lhs?.skill_id).localeCompare(safeString(rhs?.skill_id));
+    if (bySkill !== 0) return bySkill;
+    return safeString(lhs?.package_sha256).localeCompare(safeString(rhs?.package_sha256));
+  });
+  for (const meta of rows) {
+    if (skillFilter && safeString(meta?.skill_id) !== skillFilter) continue;
+    const report = getSkillPackageDoctorReport(runtimeBaseDir, {
+      packageSha256: meta.package_sha256,
+      userId,
+      projectId,
+      surface,
+      xtVersion,
+    });
+    const summary = doctorSummaryFromMetaAndReport(meta, report);
+    if (stateFilter && normalizeOfficialSkillDoctorFilterValue(summary.overall_state) !== stateFilter) continue;
+    if (packageStateFilter && normalizeOfficialSkillDoctorFilterValue(summary.package_state) !== packageStateFilter) continue;
+    out.push(summary);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+export function refreshOfficialSkillPackageLifecycleSnapshot(
+  runtimeBaseDir,
+  {
+    surface = 'hub_ui',
+    xtVersion = '',
+    generatedAtMs = nowMs(),
+  } = {}
+) {
+  const fp = officialSkillPackageLifecyclePath(runtimeBaseDir);
+  const previous = loadOfficialSkillPackageLifecycleSnapshot(runtimeBaseDir);
+  const previousBySha = new Map();
+  for (const row of Array.isArray(previous.packages) ? previous.packages : []) {
+    const sha = safeString(row?.package_sha256).toLowerCase();
+    if (!sha) continue;
+    previousBySha.set(sha, row);
+  }
+  const generated_at_ms = Math.max(0, Number(generatedAtMs || nowMs()));
+  const packages = listOfficialSkillPackageDoctorSummaries(runtimeBaseDir, {
+    surface,
+    xtVersion,
+    limit: 500,
+  }).map((summary) => lifecycleRowFromSummary(
+    summary,
+    previousBySha.get(safeString(summary?.package_sha256).toLowerCase()) || null,
+    generated_at_ms
+  ));
+  const snapshot = {
+    schema_version: OFFICIAL_SKILL_PACKAGE_LIFECYCLE_SCHEMA,
+    updated_at_ms: generated_at_ms,
+    packages,
+    totals: summarizeOfficialSkillPackageLifecycleTotals(packages),
+  };
+  if (fp) {
+    captureStableSnapshot(fp);
+    writeJsonAtomic(fp, snapshot);
+  }
+  return snapshot;
+}
+
+export function listOfficialSkillPackageLifecycleRows(
+  runtimeBaseDir,
+  {
+    overallState = '',
+    packageState = '',
+    skillId = '',
+    limit = 200,
+    refresh = false,
+    surface = 'hub_ui',
+    xtVersion = '',
+  } = {}
+) {
+  const snapshot = refresh
+    ? refreshOfficialSkillPackageLifecycleSnapshot(runtimeBaseDir, { surface, xtVersion })
+    : loadOfficialSkillPackageLifecycleSnapshot(runtimeBaseDir);
+  const stateFilter = normalizeOfficialSkillDoctorFilterValue(overallState);
+  const packageStateFilter = normalizeOfficialSkillDoctorFilterValue(packageState);
+  const skillFilter = safeString(skillId);
+  const max = Math.max(1, Math.min(500, Number(limit || 200)));
+  const rows = [];
+  for (const row of Array.isArray(snapshot.packages) ? snapshot.packages : []) {
+    if (skillFilter && safeString(row?.skill_id) !== skillFilter) continue;
+    if (stateFilter && normalizeOfficialSkillDoctorFilterValue(row?.overall_state) !== stateFilter) continue;
+    if (packageStateFilter && normalizeOfficialSkillDoctorFilterValue(row?.package_state) !== packageStateFilter) continue;
+    rows.push(row);
+    if (rows.length >= max) break;
+  }
+  return {
+    snapshot,
+    packages: rows,
+  };
+}
+
 export function skillsGovernanceSnapshotPaths(runtimeBaseDir) {
   const pins = pinsPath(runtimeBaseDir);
   const trusted = trustedPublishersPath(runtimeBaseDir);
   const revoked = revocationsPath(runtimeBaseDir);
+  const lifecycle = officialSkillPackageLifecyclePath(runtimeBaseDir);
   return {
     pins: { active: pins, previous_stable: stableSnapshotPath(pins) },
     trusted_publishers: { active: trusted, previous_stable: stableSnapshotPath(trusted) },
     revoked: { active: revoked, previous_stable: stableSnapshotPath(revoked) },
+    official_skill_package_lifecycle: { active: lifecycle, previous_stable: stableSnapshotPath(lifecycle) },
     agent_imports: {
       staging_dir: agentStagingDir(runtimeBaseDir),
       quarantine_dir: agentQuarantineDir(runtimeBaseDir),

@@ -271,6 +271,17 @@ final class UnixSocketServer: @unchecked Sendable {
             writeResponse(fd, IPCResponse(type: "push_ack", reqId: req.reqId, ok: false, id: nil, error: "missing_notification"))
             return
         }
+        if typ == "remove_notification" {
+            let payload = req.notificationDismiss
+            Task { @MainActor in
+                self.store.removeNotification(
+                    dedupeKey: payload?.dedupeKey,
+                    id: payload?.id
+                )
+            }
+            writeResponse(fd, IPCResponse(type: "remove_notification_ack", reqId: req.reqId, ok: true, id: payload?.id ?? payload?.dedupeKey, error: nil))
+            return
+        }
         if typ == "project_sync" {
             if let p = req.project {
                 _ = HubProjectRegistryStorage.upsert(p)
@@ -367,6 +378,63 @@ final class UnixSocketServer: @unchecked Sendable {
             }
             let profile = HubVoiceWakeProfileStorage.update(profile: payload)
             writeResponse(fd, IPCResponse(type: "voice_wake_profile_ack", reqId: req.reqId, ok: true, id: profile.profileID, error: nil, voiceWakeProfile: profile))
+            return
+        }
+        if typ == "voice_tts_readiness" {
+            guard let payload = req.voiceTTSReadiness else {
+                writeResponse(fd, IPCResponse(type: "voice_tts_readiness_ack", reqId: req.reqId, ok: false, id: nil, error: "missing_voice_tts_readiness"))
+                return
+            }
+            let result = HubVoiceTTSSynthesisService.playbackReadiness(payload)
+            writeResponse(
+                fd,
+                IPCResponse(
+                    type: "voice_tts_readiness_ack",
+                    reqId: req.reqId,
+                    ok: result.ok,
+                    id: result.modelID,
+                    error: result.ok ? nil : result.reasonCode,
+                    voiceTTSReadiness: result
+                )
+            )
+            return
+        }
+        if typ == "voice_tts_synthesize" {
+            guard let payload = req.voiceTTS else {
+                writeResponse(fd, IPCResponse(type: "voice_tts_synthesize_ack", reqId: req.reqId, ok: false, id: nil, error: "missing_voice_tts"))
+                return
+            }
+            let result = HubVoiceTTSSynthesisService.synthesize(payload)
+            writeResponse(
+                fd,
+                IPCResponse(
+                    type: "voice_tts_synthesize_ack",
+                    reqId: req.reqId,
+                    ok: result.ok,
+                    id: result.modelID,
+                    error: result.ok ? nil : (result.reasonCode ?? result.error),
+                    voiceTTS: result
+                )
+            )
+            return
+        }
+        if typ == "local_task_execute" {
+            guard let payload = req.localTask else {
+                writeResponse(fd, IPCResponse(type: "local_task_execute_ack", reqId: req.reqId, ok: false, id: nil, error: "missing_local_task"))
+                return
+            }
+            let result = HubLocalTaskExecutionService.execute(payload)
+            writeResponse(
+                fd,
+                IPCResponse(
+                    type: "local_task_execute_ack",
+                    reqId: req.reqId,
+                    ok: result.ok,
+                    id: result.modelID,
+                    error: result.ok ? nil : (result.reasonCode ?? result.error),
+                    localTask: result
+                )
+            )
             return
         }
         if typ == "secret_vault_list" {

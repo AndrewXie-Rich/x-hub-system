@@ -1,4 +1,5 @@
 import { normalizeChannelProviderId } from '../../channel_registry.js';
+import { buildChannelStableExternalId } from '../../channel_identity_store.js';
 import {
   classifyOperatorChannelCommandDispatch,
   createOperatorChannelCommandOrchestrator,
@@ -28,10 +29,18 @@ function normalizePendingGrant(input = null) {
 
 function normalizeTelegramActor(input = {}) {
   const actor = safeObject(input);
+  const external_user_id = safeString(actor.external_user_id || actor.user_id || actor.id);
+  const external_tenant_id = safeString(actor.external_tenant_id || actor.account_id || actor.tenant_id);
   return {
     provider: 'telegram',
-    external_user_id: safeString(actor.external_user_id || actor.user_id || actor.id),
-    external_tenant_id: safeString(actor.external_tenant_id || actor.account_id || actor.tenant_id),
+    stable_external_id: buildChannelStableExternalId({
+      provider: 'telegram',
+      stable_external_id: actor.stable_external_id,
+      external_user_id,
+      external_tenant_id,
+    }),
+    external_user_id,
+    external_tenant_id,
   };
 }
 

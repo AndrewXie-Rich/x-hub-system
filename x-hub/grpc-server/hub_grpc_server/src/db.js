@@ -13,6 +13,14 @@ import {
   unwrapDekWithKek,
   wrapDekWithKek,
 } from './at_rest_crypto.js';
+import {
+  normalizeMemoryModelMode,
+  normalizeMemoryModelPreferenceRow,
+  normalizeMemoryModelPreferenceScopeKind,
+  normalizeMemoryModelPreferenceSelectionStrategy,
+  selectWinningMemoryModelPreference,
+  validateMemoryModelPreference,
+} from './memory_model_preferences.js';
 
 function parseBoolEnv(v, fallback = false) {
   if (v == null) return fallback;
@@ -43,6 +51,36 @@ function sha256Hex(text) {
 
 function utf8Bytes(text) {
   return Buffer.byteLength(String(text), 'utf8');
+}
+
+function parseJsonObject(rawValue, fallback = {}) {
+  if (rawValue == null || rawValue === '') return fallback;
+  try {
+    const parsed = JSON.parse(String(rawValue));
+    return parsed && typeof parsed === 'object' ? parsed : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function uniqueOrderedStrings(values) {
+  if (!Array.isArray(values)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const raw of values) {
+    const cleaned = String(raw || '').trim();
+    if (!cleaned || seen.has(cleaned)) continue;
+    seen.add(cleaned);
+    out.push(cleaned);
+  }
+  return out;
+}
+
+function escapeSqlLikePattern(value) {
+  return String(value || '')
+    .replace(/\\/g, '\\\\')
+    .replace(/%/g, '\\%')
+    .replace(/_/g, '\\_');
 }
 
 const DEFAULT_RISK_TUNING_PROFILE_ID = 'risk_default_v1';
@@ -516,6 +554,30 @@ export class HubDB {
         updated_at_ms INTEGER NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS memory_model_preferences (
+        profile_id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        scope_kind TEXT NOT NULL,
+        scope_ref TEXT NOT NULL DEFAULT '',
+        mode TEXT NOT NULL DEFAULT '',
+        selection_strategy TEXT NOT NULL,
+        primary_model_id TEXT,
+        job_model_map_json TEXT,
+        mode_model_map_json TEXT,
+        fallback_policy_json TEXT,
+        remote_allowed INTEGER NOT NULL,
+        policy_version TEXT NOT NULL,
+        note TEXT,
+        updated_at_ms INTEGER NOT NULL,
+        disabled_at_ms INTEGER
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_memory_model_preferences_user
+        ON memory_model_preferences(user_id, updated_at_ms DESC);
+
+      CREATE INDEX IF NOT EXISTS idx_memory_model_preferences_scope
+        ON memory_model_preferences(user_id, scope_kind, scope_ref, mode, disabled_at_ms, updated_at_ms DESC);
+
       CREATE TABLE IF NOT EXISTS grant_requests (
         grant_request_id TEXT PRIMARY KEY,
         request_id TEXT NOT NULL,
@@ -629,6 +691,43 @@ export class HubDB {
 
       CREATE INDEX IF NOT EXISTS idx_turns_thread_time
         ON turns(thread_id, created_at_ms);
+
+      CREATE TABLE IF NOT EXISTS supervisor_memory_candidate_carrier (
+        carrier_id TEXT PRIMARY KEY,
+        request_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        thread_key TEXT NOT NULL,
+        device_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        app_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        record_type TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        why_promoted TEXT NOT NULL,
+        source_ref TEXT NOT NULL,
+        audit_ref TEXT NOT NULL,
+        session_participation_class TEXT NOT NULL,
+        write_permission_scope TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        payload_summary TEXT NOT NULL,
+        payload_fields_json TEXT NOT NULL,
+        candidate_payload_json TEXT NOT NULL,
+        schema_version TEXT NOT NULL,
+        carrier_kind TEXT NOT NULL,
+        mirror_target TEXT NOT NULL,
+        local_store_role TEXT NOT NULL,
+        summary_line TEXT NOT NULL,
+        emitted_at_ms INTEGER NOT NULL,
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_supervisor_memory_candidate_carrier_idem
+        ON supervisor_memory_candidate_carrier(device_id, app_id, idempotency_key);
+
+      CREATE INDEX IF NOT EXISTS idx_supervisor_memory_candidate_carrier_request
+        ON supervisor_memory_candidate_carrier(device_id, app_id, request_id);
 
       CREATE TABLE IF NOT EXISTS canonical_memory (
         item_id TEXT PRIMARY KEY,
@@ -1030,6 +1129,10 @@ export class HubDB {
         expected_photo_hash TEXT,
         expected_geo_hash TEXT,
         expected_qr_payload_hash TEXT,
+        preview_fee_minor INTEGER,
+        preview_risk_level TEXT,
+        preview_undo_window_ms INTEGER,
+        preview_card_hash TEXT,
         evidence_photo_hash TEXT,
         evidence_geo_hash TEXT,
         evidence_qr_payload_hash TEXT,
@@ -1535,6 +1638,10 @@ export class HubDB {
     this._ensureColumn('memory_payment_intents', 'receipt_compensation_due_at_ms', 'INTEGER');
     this._ensureColumn('memory_payment_intents', 'receipt_compensated_at_ms', 'INTEGER');
     this._ensureColumn('memory_payment_intents', 'receipt_compensation_reason', 'TEXT');
+    this._ensureColumn('memory_payment_intents', 'preview_fee_minor', 'INTEGER');
+    this._ensureColumn('memory_payment_intents', 'preview_risk_level', 'TEXT');
+    this._ensureColumn('memory_payment_intents', 'preview_undo_window_ms', 'INTEGER');
+    this._ensureColumn('memory_payment_intents', 'preview_card_hash', 'TEXT');
   }
 
   _ensureColumn(tableName, columnName, columnSql) {
@@ -3278,6 +3385,218 @@ export class HubDB {
     };
   }
 
+  _getMemoryModelPreferenceRowRaw(profileId) {
+    const normalizedId = String(profileId || '').trim();
+    if (!normalizedId) return null;
+    return this.db
+      .prepare(
+        `SELECT *
+         FROM memory_model_preferences
+         WHERE profile_id = ?
+         LIMIT 1`
+      )
+      .get(normalizedId) || null;
+  }
+
+  _parseMemoryModelPreferenceRow(row) {
+    return normalizeMemoryModelPreferenceRow(row);
+  }
+
+  getMemoryModelPreference(profileId) {
+    return this._parseMemoryModelPreferenceRow(this._getMemoryModelPreferenceRowRaw(profileId));
+  }
+
+  getMemoryModelPreferences(profileId) {
+    return this.getMemoryModelPreference(profileId);
+  }
+
+  listMemoryModelPreferences(filters = {}) {
+    const wh = [];
+    const args = [];
+
+    const profileId = String(filters?.profile_id || '').trim();
+    const userId = String(filters?.user_id || '').trim();
+    const scopeKind = normalizeMemoryModelPreferenceScopeKind(filters?.scope_kind, '');
+    const scopeRef = String(filters?.scope_ref || '').trim();
+    const mode = normalizeMemoryModelMode(filters?.mode, '');
+    const selectionStrategy = normalizeMemoryModelPreferenceSelectionStrategy(filters?.selection_strategy, '');
+    const includeDisabled = !!filters?.include_disabled;
+    const limit = Math.max(1, Math.min(500, Number(filters?.limit || 100)));
+
+    if (profileId) {
+      wh.push('profile_id = ?');
+      args.push(profileId);
+    }
+    if (userId) {
+      wh.push('user_id = ?');
+      args.push(userId);
+    }
+    if (scopeKind) {
+      wh.push('scope_kind = ?');
+      args.push(scopeKind);
+    }
+    if (scopeRef) {
+      wh.push('scope_ref = ?');
+      args.push(scopeRef);
+    }
+    if (mode) {
+      wh.push('mode = ?');
+      args.push(mode);
+    }
+    if (selectionStrategy) {
+      wh.push('selection_strategy = ?');
+      args.push(selectionStrategy);
+    }
+    if (!includeDisabled) wh.push('disabled_at_ms IS NULL');
+
+    const where = wh.length ? `WHERE ${wh.join(' AND ')}` : '';
+    return this.db
+      .prepare(
+        `SELECT *
+         FROM memory_model_preferences
+         ${where}
+         ORDER BY updated_at_ms DESC, profile_id ASC
+         LIMIT ${limit}`
+      )
+      .all(...args)
+      .map((row) => this._parseMemoryModelPreferenceRow(row))
+      .filter(Boolean);
+  }
+
+  upsertMemoryModelPreferences(fields = {}) {
+    const validated = validateMemoryModelPreference(fields);
+    if (!validated.ok || !validated.value) {
+      throw new Error(`invalid memory model preferences: ${validated.errors.join(',')}`);
+    }
+
+    const value = validated.value;
+    const now = nowMs();
+    const updatedAtMs = Math.max(0, Number(value.updated_at_ms || 0)) || now;
+    const disabledAtMs = value.disabled_at_ms != null ? Math.max(0, Number(value.disabled_at_ms || 0)) : null;
+    const existing = this._getMemoryModelPreferenceRowRaw(value.profile_id);
+
+    if (existing) {
+      this.db
+        .prepare(
+          `UPDATE memory_model_preferences
+           SET user_id = ?,
+               scope_kind = ?,
+               scope_ref = ?,
+               mode = ?,
+               selection_strategy = ?,
+               primary_model_id = ?,
+               job_model_map_json = ?,
+               mode_model_map_json = ?,
+               fallback_policy_json = ?,
+               remote_allowed = ?,
+               policy_version = ?,
+               note = ?,
+               updated_at_ms = ?,
+               disabled_at_ms = ?
+           WHERE profile_id = ?`
+        )
+        .run(
+          value.user_id,
+          value.scope_kind,
+          value.scope_ref,
+          value.mode,
+          value.selection_strategy,
+          value.primary_model_id || null,
+          value.job_model_map_json,
+          value.mode_model_map_json,
+          value.fallback_policy_json,
+          value.remote_allowed ? 1 : 0,
+          value.policy_version,
+          value.note || null,
+          updatedAtMs,
+          disabledAtMs,
+          value.profile_id
+        );
+    } else {
+      this.db
+        .prepare(
+          `INSERT INTO memory_model_preferences(
+             profile_id, user_id, scope_kind, scope_ref, mode, selection_strategy,
+             primary_model_id, job_model_map_json, mode_model_map_json, fallback_policy_json,
+             remote_allowed, policy_version, note, updated_at_ms, disabled_at_ms
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+        )
+        .run(
+          value.profile_id,
+          value.user_id,
+          value.scope_kind,
+          value.scope_ref,
+          value.mode,
+          value.selection_strategy,
+          value.primary_model_id || null,
+          value.job_model_map_json,
+          value.mode_model_map_json,
+          value.fallback_policy_json,
+          value.remote_allowed ? 1 : 0,
+          value.policy_version,
+          value.note || null,
+          updatedAtMs,
+          disabledAtMs
+        );
+    }
+
+    return this.getMemoryModelPreference(value.profile_id);
+  }
+
+  resolveMemoryModelPreferencesWinner(filters = {}) {
+    const userId = String(filters?.user_id || '').trim();
+    const projectId = String(filters?.project_id || '').trim();
+    const mode = normalizeMemoryModelMode(filters?.mode, '');
+    const preferredProfileId = String(filters?.preferred_profile_id || '').trim();
+    const clauses = [`scope_kind = 'user_default'`];
+    const args = [userId];
+
+    if (!userId) {
+      return {
+        ok: false,
+        profile: null,
+        deny_code: 'memory_model_profile_missing',
+      };
+    }
+
+    if (projectId && mode) {
+      clauses.unshift(`(scope_kind = 'project_mode' AND scope_ref = ? AND mode = ?)`);
+      args.push(projectId, mode);
+    }
+    if (projectId) {
+      clauses.push(`(scope_kind = 'project' AND scope_ref = ?)`);
+      args.push(projectId);
+    }
+    if (mode) {
+      clauses.push(`(scope_kind = 'mode' AND mode = ?)`);
+      args.push(mode);
+    }
+    if (preferredProfileId) {
+      clauses.push(`profile_id = ?`);
+      args.push(preferredProfileId);
+    }
+
+    const rows = this.db
+      .prepare(
+        `SELECT *
+         FROM memory_model_preferences
+         WHERE user_id = ?
+           AND (${clauses.join(' OR ')})
+         ORDER BY updated_at_ms DESC, profile_id ASC
+         LIMIT 128`
+      )
+      .all(...args)
+      .map((row) => this._parseMemoryModelPreferenceRow(row))
+      .filter(Boolean);
+
+    return selectWinningMemoryModelPreference(rows, {
+      user_id: userId,
+      project_id: projectId,
+      mode,
+      preferred_profile_id: preferredProfileId,
+    });
+  }
+
   // -------------------- Grants --------------------
 
   getGrantRequest(grantRequestId) {
@@ -3750,7 +4069,7 @@ export class HubDB {
     try {
       const row = this.db
         .prepare(
-          `SELECT event_type, created_at_ms, capability, model_id, total_tokens, network_allowed, ok, error_code, error_message
+          `SELECT event_type, created_at_ms, capability, model_id, total_tokens, network_allowed, ok, error_code, error_message, app_id
            FROM audit_events
            WHERE device_id = ?
              AND (
@@ -4183,6 +4502,473 @@ export class HubDB {
       }
       throw e;
     }
+  }
+
+  hasSupervisorMemoryCandidateCarrierRequest({ device_id, app_id, request_id }) {
+    const row = this.db
+      .prepare(
+        `SELECT request_id
+         FROM supervisor_memory_candidate_carrier
+         WHERE device_id = ? AND app_id = ? AND request_id = ?
+         LIMIT 1`
+      )
+      .get(
+        String(device_id || '').trim(),
+        String(app_id || '').trim(),
+        String(request_id || '').trim()
+      );
+    return !!row;
+  }
+
+  appendSupervisorMemoryCandidateCarrierTurns({
+    thread,
+    request_id,
+    turns,
+    envelope,
+    candidates,
+  }) {
+    const scopeThread = thread && typeof thread === 'object' ? thread : {};
+    const threadId = String(scopeThread.thread_id || '').trim();
+    const threadKey = String(scopeThread.thread_key || '').trim();
+    const deviceId = String(scopeThread.device_id || '').trim();
+    const userId = String(scopeThread.user_id || '').trim();
+    const appId = String(scopeThread.app_id || '').trim();
+    const requestId = String(request_id || '').trim();
+    if (!threadId) throw new Error('missing thread_id');
+    if (!deviceId || !appId) throw new Error('missing device_id/app_id');
+    if (!requestId) throw new Error('missing request_id');
+    if (!Array.isArray(turns) || turns.length === 0) throw new Error('missing turns');
+    if (!Array.isArray(candidates) || candidates.length === 0) throw new Error('missing candidates');
+    if (this.hasSupervisorMemoryCandidateCarrierRequest({
+      device_id: deviceId,
+      app_id: appId,
+      request_id: requestId,
+    })) {
+      return {
+        duplicate: true,
+        appended_turns: 0,
+        inserted_candidates: 0,
+      };
+    }
+
+    const carrierEnvelope = envelope && typeof envelope === 'object' ? envelope : {};
+    const baseScope = {
+      thread_id: threadId,
+      device_id: deviceId,
+      user_id: userId,
+      app_id: appId,
+      project_id: String(scopeThread.project_id || ''),
+    };
+    const insertTurn = this.db.prepare(
+      `INSERT INTO turns(turn_id, thread_id, request_id, role, content, is_private, created_at_ms)
+       VALUES(?,?,?,?,?,?,?)`
+    );
+    const insertCarrier = this.db.prepare(
+      `INSERT INTO supervisor_memory_candidate_carrier(
+         carrier_id, request_id, thread_id, thread_key, device_id, user_id, app_id, project_id,
+         scope, record_type, confidence, why_promoted, source_ref, audit_ref,
+         session_participation_class, write_permission_scope, idempotency_key, payload_summary,
+         payload_fields_json, candidate_payload_json, schema_version, carrier_kind, mirror_target,
+         local_store_role, summary_line, emitted_at_ms, created_at_ms, updated_at_ms
+       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    );
+    const touchThread = this.db.prepare(`UPDATE threads SET updated_at_ms = ? WHERE thread_id = ?`);
+    const storedAt = nowMs();
+    let appendedTurns = 0;
+    let insertedCandidates = 0;
+
+    this.db.exec('BEGIN;');
+    try {
+      for (const t of turns) {
+        const turnId = uuid();
+        const role = String(t?.role || '').trim();
+        const content = String(t?.content ?? '');
+        if (!role || !content) continue;
+        const isPrivate = t?.is_private ? 1 : 0;
+        const createdAt = Number(t?.created_at_ms || nowMs());
+        const storedContent = this._encryptTurnContent({
+          turn_id: turnId,
+          thread_id: threadId,
+          role,
+          content,
+        });
+        insertTurn.run(turnId, threadId, requestId, role, storedContent, isPrivate, createdAt);
+        this._appendMemoryIndexChangelog({
+          event_type: 'insert',
+          table_name: 'turns',
+          record_id: turnId,
+          scope: baseScope,
+          source: 'append_supervisor_memory_candidate_carrier_turns',
+          created_at_ms: createdAt,
+          payload: {
+            role,
+            is_private: isPrivate,
+            request_id: requestId,
+            created_at_ms: createdAt,
+            content_bytes: utf8Bytes(content),
+          },
+        });
+        appendedTurns += 1;
+      }
+
+      for (const candidate of candidates) {
+        const row = candidate && typeof candidate === 'object' ? candidate : {};
+        const carrierId = uuid();
+        const candidateProjectId = String(row.project_id || '').trim();
+        const candidateCreatedAt = Number(row.created_at_ms || storedAt);
+        insertCarrier.run(
+          carrierId,
+          requestId,
+          threadId,
+          threadKey,
+          deviceId,
+          userId,
+          appId,
+          candidateProjectId,
+          String(row.scope || ''),
+          String(row.record_type || ''),
+          Number(row.confidence || 0),
+          String(row.why_promoted || ''),
+          String(row.source_ref || ''),
+          String(row.audit_ref || ''),
+          String(row.session_participation_class || ''),
+          String(row.write_permission_scope || ''),
+          String(row.idempotency_key || ''),
+          String(row.payload_summary || ''),
+          JSON.stringify(row.payload_fields || {}),
+          JSON.stringify(row.raw_candidate || {}),
+          String(carrierEnvelope.schema_version || ''),
+          String(carrierEnvelope.carrier_kind || ''),
+          String(carrierEnvelope.mirror_target || ''),
+          String(carrierEnvelope.local_store_role || ''),
+          String(carrierEnvelope.summary_line || ''),
+          Number(carrierEnvelope.emitted_at_ms || candidateCreatedAt),
+          candidateCreatedAt,
+          storedAt
+        );
+        this._appendMemoryIndexChangelog({
+          event_type: 'insert',
+          table_name: 'supervisor_memory_candidate_carrier',
+          record_id: carrierId,
+          scope: {
+            thread_id: threadId,
+            device_id: deviceId,
+            user_id: userId,
+            app_id: appId,
+            project_id: candidateProjectId,
+          },
+          source: 'append_supervisor_memory_candidate_carrier_turns',
+          created_at_ms: candidateCreatedAt,
+          payload: {
+            request_id: requestId,
+            scope: String(row.scope || ''),
+            record_type: String(row.record_type || ''),
+            session_participation_class: String(row.session_participation_class || ''),
+            write_permission_scope: String(row.write_permission_scope || ''),
+            idempotency_key: String(row.idempotency_key || ''),
+            emitted_at_ms: Number(carrierEnvelope.emitted_at_ms || candidateCreatedAt),
+          },
+        });
+        insertedCandidates += 1;
+      }
+
+      touchThread.run(storedAt, threadId);
+      this.db.exec('COMMIT;');
+      if (appendedTurns > 0) this._maybeRunMemoryRetentionJob('append_supervisor_memory_candidate_carrier_turns');
+      return {
+        duplicate: false,
+        appended_turns: appendedTurns,
+        inserted_candidates: insertedCandidates,
+      };
+    } catch (e) {
+      try {
+        this.db.exec('ROLLBACK;');
+      } catch {
+        // ignore
+      }
+      throw e;
+    }
+  }
+
+  listSupervisorMemoryCandidateCarrier(filters = {}) {
+    const deviceId = String(filters.device_id || '').trim();
+    const appId = String(filters.app_id || '').trim();
+    const requestId = String(filters.request_id || '').trim();
+    const idempotencyKey = String(filters.idempotency_key || '').trim();
+    const threadId = String(filters.thread_id || '').trim();
+    const projectId = String(filters.project_id || '').trim();
+    const limit = Math.max(1, Math.min(2000, Number(filters.limit || 200)));
+    const wh = [];
+    const args = [];
+
+    if (deviceId) {
+      wh.push('device_id = ?');
+      args.push(deviceId);
+    }
+    if (appId) {
+      wh.push('app_id = ?');
+      args.push(appId);
+    }
+    if (requestId) {
+      wh.push('request_id = ?');
+      args.push(requestId);
+    }
+    if (idempotencyKey) {
+      wh.push('idempotency_key = ?');
+      args.push(idempotencyKey);
+    }
+    if (threadId) {
+      wh.push('thread_id = ?');
+      args.push(threadId);
+    }
+    if (projectId) {
+      wh.push('project_id = ?');
+      args.push(projectId);
+    }
+
+    const sql = [
+      `SELECT * FROM supervisor_memory_candidate_carrier`,
+      wh.length > 0 ? `WHERE ${wh.join(' AND ')}` : '',
+      `ORDER BY created_at_ms DESC, scope ASC, record_type ASC`,
+      `LIMIT ?`,
+    ].filter(Boolean).join('\n');
+    args.push(limit);
+
+    const rows = this.db.prepare(sql).all(...args);
+    return rows.map((row) => ({
+      carrier_id: String(row.carrier_id || ''),
+      request_id: String(row.request_id || ''),
+      thread_id: String(row.thread_id || ''),
+      thread_key: String(row.thread_key || ''),
+      device_id: String(row.device_id || ''),
+      user_id: String(row.user_id || ''),
+      app_id: String(row.app_id || ''),
+      project_id: String(row.project_id || ''),
+      scope: String(row.scope || ''),
+      record_type: String(row.record_type || ''),
+      confidence: Number(row.confidence || 0),
+      why_promoted: String(row.why_promoted || ''),
+      source_ref: String(row.source_ref || ''),
+      audit_ref: String(row.audit_ref || ''),
+      session_participation_class: String(row.session_participation_class || ''),
+      write_permission_scope: String(row.write_permission_scope || ''),
+      idempotency_key: String(row.idempotency_key || ''),
+      payload_summary: String(row.payload_summary || ''),
+      payload_fields: parseJsonObject(row.payload_fields_json),
+      candidate_payload: parseJsonObject(row.candidate_payload_json),
+      schema_version: String(row.schema_version || ''),
+      carrier_kind: String(row.carrier_kind || ''),
+      mirror_target: String(row.mirror_target || ''),
+      local_store_role: String(row.local_store_role || ''),
+      summary_line: String(row.summary_line || ''),
+      emitted_at_ms: Number(row.emitted_at_ms || 0),
+      created_at_ms: Number(row.created_at_ms || 0),
+      updated_at_ms: Number(row.updated_at_ms || 0),
+    }));
+  }
+
+  listSupervisorMemoryCandidateCarrierReviewQueue(filters = {}) {
+    const deviceId = String(filters.device_id || '').trim();
+    const appId = String(filters.app_id || '').trim();
+    const requestId = String(filters.request_id || '').trim();
+    const idempotencyKey = String(filters.idempotency_key || '').trim();
+    const threadId = String(filters.thread_id || '').trim();
+    const projectId = String(filters.project_id || '').trim();
+    const limit = Math.max(1, Math.min(500, Number(filters.limit || 200)));
+
+    const seedWhere = [];
+    const seedArgs = [];
+    if (deviceId) {
+      seedWhere.push('device_id = ?');
+      seedArgs.push(deviceId);
+    }
+    if (appId) {
+      seedWhere.push('app_id = ?');
+      seedArgs.push(appId);
+    }
+    if (requestId) {
+      seedWhere.push('request_id = ?');
+      seedArgs.push(requestId);
+    }
+    if (idempotencyKey) {
+      seedWhere.push('idempotency_key = ?');
+      seedArgs.push(idempotencyKey);
+    }
+    if (threadId) {
+      seedWhere.push('thread_id = ?');
+      seedArgs.push(threadId);
+    }
+    if (projectId) {
+      seedWhere.push('project_id = ?');
+      seedArgs.push(projectId);
+    }
+
+    const seedSql = [
+      `SELECT request_id, device_id, app_id,
+              MAX(COALESCE(emitted_at_ms, created_at_ms)) AS latest_emitted_at_ms
+       FROM supervisor_memory_candidate_carrier`,
+      seedWhere.length > 0 ? `WHERE ${seedWhere.join(' AND ')}` : '',
+      `GROUP BY request_id, device_id, app_id`,
+      `ORDER BY latest_emitted_at_ms DESC, request_id ASC`,
+      `LIMIT ?`,
+    ].filter(Boolean).join('\n');
+    const seeds = this.db.prepare(seedSql).all(...seedArgs, limit);
+    const out = [];
+
+    for (const seed of seeds) {
+      const groupRows = this.listSupervisorMemoryCandidateCarrier({
+        device_id: String(seed?.device_id || ''),
+        app_id: String(seed?.app_id || ''),
+        request_id: String(seed?.request_id || ''),
+        thread_id: threadId,
+        limit: 512,
+      });
+      if (!Array.isArray(groupRows) || groupRows.length === 0) continue;
+
+      const latestRow = groupRows[0] || {};
+      const projectIds = uniqueOrderedStrings(groupRows.map((row) => row.project_id));
+      const scopes = uniqueOrderedStrings(groupRows.map((row) => row.scope));
+      const recordTypes = uniqueOrderedStrings(groupRows.map((row) => row.record_type));
+      const auditRefs = uniqueOrderedStrings(groupRows.map((row) => row.audit_ref));
+      const idempotencyKeys = uniqueOrderedStrings(groupRows.map((row) => row.idempotency_key));
+      const latestEmittedAtMs = Math.max(
+        0,
+        ...groupRows.map((row) => Number(row?.emitted_at_ms || row?.created_at_ms || 0))
+      );
+      const latestCreatedAtMs = Math.max(
+        0,
+        ...groupRows.map((row) => Number(row?.created_at_ms || 0))
+      );
+      const earliestCreatedAtMs = groupRows.reduce((min, row) => {
+        const ts = Number(row?.created_at_ms || 0);
+        if (ts <= 0) return min;
+        if (min <= 0) return ts;
+        return Math.min(min, ts);
+      }, 0);
+      const latestUpdatedAtMs = Math.max(
+        0,
+        ...groupRows.map((row) => Number(row?.updated_at_ms || 0))
+      );
+      const primaryProjectId = projectId || (projectIds.length === 1 ? projectIds[0] : '');
+      const normalizedRequestId = String(seed?.request_id || '').trim();
+      const evidenceRef = normalizedRequestId ? `candidate_carrier_request:${normalizedRequestId}` : '';
+      const stagedChange = evidenceRef
+        ? this.findLatestMemoryMarkdownPendingChangeByProvenanceRef({
+            provenance_ref: evidenceRef,
+            created_by_device_id: String(seed?.device_id || ''),
+            created_by_user_id: String(latestRow.user_id || ''),
+            created_by_app_id: String(seed?.app_id || ''),
+            created_by_project_id: primaryProjectId,
+          })
+        : null;
+      const stageStatus = String(stagedChange?.status || '').trim().toLowerCase();
+      let reviewState = 'pending_review';
+      let durablePromotionState = 'not_promoted';
+      let promotionBoundary = 'candidate_carrier_only';
+      if (stageStatus === 'draft') {
+        reviewState = 'draft_staged';
+        promotionBoundary = 'longterm_markdown_pending_change';
+      } else if (stageStatus === 'reviewed') {
+        reviewState = 'reviewed_pending_approval';
+        promotionBoundary = 'longterm_markdown_pending_change';
+      } else if (stageStatus === 'approved') {
+        reviewState = 'approved_for_writeback';
+        promotionBoundary = 'longterm_markdown_pending_change';
+      } else if (stageStatus === 'written') {
+        reviewState = 'writeback_queued';
+        durablePromotionState = 'queued_for_writeback';
+        promotionBoundary = 'longterm_markdown_writeback_queue';
+      } else if (stageStatus === 'rejected') {
+        reviewState = 'rejected';
+        promotionBoundary = 'longterm_markdown_pending_change';
+      } else if (stageStatus === 'rolled_back') {
+        reviewState = 'rolled_back';
+        durablePromotionState = 'rolled_back';
+        promotionBoundary = 'longterm_markdown_writeback_queue';
+      }
+
+      out.push({
+        schema_version: 'xhub.supervisor_candidate_review_item.v1',
+        review_id: `sup_cand_review:${String(seed?.device_id || '')}:${String(seed?.app_id || '')}:${normalizedRequestId}`,
+        request_id: normalizedRequestId,
+        evidence_ref: evidenceRef,
+        review_state: reviewState,
+        durable_promotion_state: durablePromotionState,
+        promotion_boundary: promotionBoundary,
+        device_id: String(seed?.device_id || ''),
+        user_id: String(latestRow.user_id || ''),
+        app_id: String(seed?.app_id || ''),
+        thread_id: String(latestRow.thread_id || ''),
+        thread_key: String(latestRow.thread_key || ''),
+        project_id: primaryProjectId,
+        project_ids: projectIds,
+        scopes,
+        record_types: recordTypes,
+        audit_refs: auditRefs,
+        idempotency_keys: idempotencyKeys,
+        candidate_count: groupRows.length,
+        summary_line: String(latestRow.summary_line || '') || scopes.join(', '),
+        mirror_target: String(latestRow.mirror_target || ''),
+        local_store_role: String(latestRow.local_store_role || ''),
+        carrier_kind: String(latestRow.carrier_kind || ''),
+        carrier_schema_version: String(latestRow.schema_version || ''),
+        pending_change_id: String(stagedChange?.change_id || ''),
+        pending_change_status: stageStatus,
+        edit_session_id: String(stagedChange?.edit_session_id || ''),
+        doc_id: String(stagedChange?.doc_id || ''),
+        writeback_ref: String(stagedChange?.writeback_ref || ''),
+        stage_created_at_ms: Math.max(0, Number(stagedChange?.created_at_ms || 0)),
+        stage_updated_at_ms: Math.max(0, Number(stagedChange?.updated_at_ms || 0)),
+        latest_emitted_at_ms: latestEmittedAtMs,
+        created_at_ms: earliestCreatedAtMs,
+        updated_at_ms: Math.max(latestUpdatedAtMs, latestCreatedAtMs, latestEmittedAtMs),
+      });
+    }
+
+    out.sort((left, right) => {
+      const lts = Number(left?.latest_emitted_at_ms || 0);
+      const rts = Number(right?.latest_emitted_at_ms || 0);
+      if (lts !== rts) return rts - lts;
+      const lcount = Number(left?.candidate_count || 0);
+      const rcount = Number(right?.candidate_count || 0);
+      if (lcount !== rcount) return rcount - lcount;
+      const lreq = String(left?.request_id || '');
+      const rreq = String(right?.request_id || '');
+      return lreq.localeCompare(rreq);
+    });
+
+    return out.slice(0, limit);
+  }
+
+  findLatestMemoryMarkdownPendingChangeByProvenanceRef({
+    provenance_ref,
+    created_by_device_id,
+    created_by_user_id,
+    created_by_app_id,
+    created_by_project_id,
+  } = {}) {
+    const provenanceRef = String(provenance_ref || '').trim();
+    const deviceId = String(created_by_device_id || '').trim();
+    const userId = created_by_user_id != null ? String(created_by_user_id).trim() : '';
+    const appId = String(created_by_app_id || '').trim();
+    const projectId = created_by_project_id != null ? String(created_by_project_id).trim() : '';
+    if (!provenanceRef || !deviceId || !appId) return null;
+
+    const pattern = `%\"${escapeSqlLikePattern(provenanceRef)}\"%`;
+    const row = this.db
+      .prepare(
+        `SELECT *
+         FROM memory_markdown_pending_changes
+         WHERE created_by_device_id = ?
+           AND IFNULL(created_by_user_id, '') = ?
+           AND created_by_app_id = ?
+           AND IFNULL(created_by_project_id, '') = ?
+           AND provenance_refs_json LIKE ? ESCAPE '\\'
+         ORDER BY created_at_ms DESC, updated_at_ms DESC
+         LIMIT 1`
+      )
+      .get(deviceId, userId, appId, projectId, pattern) || null;
+    return this._parseMemoryMarkdownPendingChangeRow(row);
   }
 
   listTurns({ thread_id, limit }) {
@@ -7389,6 +8175,43 @@ export class HubDB {
     return String(fallback || 'prepared').trim().toLowerCase() || 'prepared';
   }
 
+  _normalizePaymentPreviewRiskLevel(value, fallback = 'high') {
+    const raw = String(value || '').trim().toLowerCase();
+    if (raw === 'low' || raw === 'medium' || raw === 'high') return raw;
+    const normalizedFallback = String(fallback || 'high').trim().toLowerCase();
+    return normalizedFallback === 'low' || normalizedFallback === 'medium' || normalizedFallback === 'high'
+      ? normalizedFallback
+      : 'high';
+  }
+
+  _buildPaymentPreviewCard(fields = {}) {
+    const src = fields && typeof fields === 'object' ? fields : {};
+    const card = {
+      amount_minor: Math.max(0, Math.floor(Number(src.amount_minor || 0))),
+      currency: String(src.currency || '').trim().toUpperCase(),
+      merchant_id: String(src.merchant_id || '').trim(),
+      source_terminal_id: String(src.source_terminal_id || '').trim(),
+      allowed_mobile_terminal_id: String(src.allowed_mobile_terminal_id || '').trim(),
+      preview_fee_minor: Math.max(0, Math.floor(Number(src.preview_fee_minor || 0))),
+      preview_risk_level: this._normalizePaymentPreviewRiskLevel(src.preview_risk_level, 'high'),
+      preview_undo_window_ms: Math.max(0, Math.floor(Number(src.preview_undo_window_ms || 0))),
+    };
+    return {
+      ...card,
+      preview_card_hash: sha256Hex(JSON.stringify(card)),
+    };
+  }
+
+  _derivePaymentTwoPhaseState(row) {
+    const status = this._normalizePaymentIntentStatus(row?.status, 'prepared');
+    const receiptState = this._normalizePaymentReceiptDeliveryState(row?.receipt_delivery_state, 'prepared');
+    if (receiptState === 'compensated') return 'compensated';
+    if (status === 'authorized') return 'approved';
+    if (status === 'committed' && receiptState === 'prepared') return 'dispatched';
+    if (status === 'committed') return 'acked';
+    return 'prepared';
+  }
+
   _isPaymentIntentTerminalStatus(status) {
     const normalized = this._normalizePaymentIntentStatus(status, '');
     return normalized === 'committed' || normalized === 'aborted' || normalized === 'expired';
@@ -7412,6 +8235,14 @@ export class HubDB {
       expected_photo_hash: row.expected_photo_hash != null ? String(row.expected_photo_hash || '') : '',
       expected_geo_hash: row.expected_geo_hash != null ? String(row.expected_geo_hash || '') : '',
       expected_qr_payload_hash: row.expected_qr_payload_hash != null ? String(row.expected_qr_payload_hash || '') : '',
+      preview_fee_minor: row.preview_fee_minor != null
+        ? Math.max(0, Math.floor(Number(row.preview_fee_minor || 0)))
+        : 0,
+      preview_risk_level: this._normalizePaymentPreviewRiskLevel(row.preview_risk_level, 'high'),
+      preview_undo_window_ms: row.preview_undo_window_ms != null
+        ? Math.max(0, Math.floor(Number(row.preview_undo_window_ms || 0)))
+        : Math.max(0, Math.floor(Number(this.paymentReceiptUndoWindowMs || 0))),
+      preview_card_hash: row.preview_card_hash != null ? String(row.preview_card_hash || '') : '',
       evidence_photo_hash: row.evidence_photo_hash != null ? String(row.evidence_photo_hash || '') : '',
       evidence_geo_hash: row.evidence_geo_hash != null ? String(row.evidence_geo_hash || '') : '',
       evidence_qr_payload_hash: row.evidence_qr_payload_hash != null ? String(row.evidence_qr_payload_hash || '') : '',
@@ -7440,6 +8271,15 @@ export class HubDB {
       receipt_compensation_due_at_ms: Math.max(0, Number(row.receipt_compensation_due_at_ms || 0)),
       receipt_compensated_at_ms: Math.max(0, Number(row.receipt_compensated_at_ms || 0)),
       receipt_compensation_reason: row.receipt_compensation_reason != null ? String(row.receipt_compensation_reason || '') : '',
+      two_phase_state: this._derivePaymentTwoPhaseState(row),
+      approved_at_ms: Math.max(0, Number(row.authorized_at_ms || 0)),
+      dispatched_at_ms: Math.max(0, Number(row.committed_at_ms || 0)),
+      acked_at_ms: (
+        this._normalizePaymentIntentStatus(row.status, 'prepared') === 'committed'
+        || this._normalizePaymentReceiptDeliveryState(row.receipt_delivery_state, 'prepared') === 'compensated'
+      )
+        ? Math.max(0, Number(row.committed_at_ms || 0))
+        : 0,
       abort_reason: row.abort_reason != null ? String(row.abort_reason || '') : '',
       aborted_at_ms: Math.max(0, Number(row.aborted_at_ms || 0)),
       expired_at_ms: Math.max(0, Number(row.expired_at_ms || 0)),
@@ -7869,6 +8709,16 @@ export class HubDB {
     const createdAtMs = Math.max(0, Number(fields.created_at_ms || now));
     const ttlMs = this._normalizePaymentIntentTtlMs(fields.ttl_ms, 60 * 1000, 5 * 1000, 15 * 60 * 1000);
     const challengeTtlMs = this._normalizePaymentIntentTtlMs(fields.challenge_ttl_ms, 30 * 1000, 2 * 1000, 5 * 60 * 1000);
+    const previewCard = this._buildPaymentPreviewCard({
+      amount_minor: amountMinor,
+      currency,
+      merchant_id: merchantId,
+      source_terminal_id: sourceTerminalId,
+      allowed_mobile_terminal_id: allowedMobileTerminalId,
+      preview_fee_minor: 0,
+      preview_risk_level: 'high',
+      preview_undo_window_ms: Math.max(0, Number(this.paymentReceiptUndoWindowMs || 0)),
+    });
 
     if (!requestId || !deviceId || !appId || !currency || amountMinor <= 0) {
       return this._paymentIntentDeny('invalid_request');
@@ -7904,10 +8754,11 @@ export class HubDB {
            intent_id, request_id, device_id, user_id, app_id, project_id,
            status, amount_minor, currency, merchant_id, source_terminal_id, allowed_mobile_terminal_id,
            expected_photo_hash, expected_geo_hash, expected_qr_payload_hash,
+           preview_fee_minor, preview_risk_level, preview_undo_window_ms, preview_card_hash,
            challenge_ttl_ms, expires_at_ms, deny_code,
            receipt_delivery_state, receipt_commit_deadline_at_ms, receipt_compensation_due_at_ms, receipt_compensated_at_ms, receipt_compensation_reason,
            created_at_ms, updated_at_ms
-         ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+         ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       )
       .run(
         intentId,
@@ -7925,6 +8776,10 @@ export class HubDB {
         expectedPhotoHash || null,
         expectedGeoHash || null,
         expectedQrPayloadHash || null,
+        previewCard.preview_fee_minor,
+        previewCard.preview_risk_level,
+        previewCard.preview_undo_window_ms,
+        previewCard.preview_card_hash,
         challengeTtlMs,
         expiresAtMs,
         null,
@@ -8402,6 +9257,17 @@ export class HubDB {
         idempotent: false,
         deny_code: 'invalid_request',
         intent: null,
+        expired,
+      };
+    }
+
+    const recomputedPreview = this._buildPaymentPreviewCard(current);
+    if (!current.preview_card_hash || current.preview_card_hash !== recomputedPreview.preview_card_hash) {
+      return {
+        committed: false,
+        idempotent: false,
+        deny_code: 'request_tampered',
+        intent: current,
         expired,
       };
     }

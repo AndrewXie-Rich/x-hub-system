@@ -19,6 +19,14 @@ enum HubSkillsStoreStorage {
             case .project: return "Project"
             }
         }
+
+        var displayLabel: String {
+            switch self {
+            case .memoryCore: return HubUIStrings.Settings.Skills.scopeMemoryCore
+            case .global: return HubUIStrings.Settings.Skills.scopeGlobal
+            case .project: return HubUIStrings.Settings.Skills.scopeProject
+            }
+        }
     }
 
     struct SkillMeta: Codable, Hashable, Identifiable {

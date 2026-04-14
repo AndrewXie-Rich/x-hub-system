@@ -175,7 +175,16 @@ public struct IPCMemoryContextRequestPayload: Codable, Sendable, Equatable {
     public var projectRoot: String?
     public var displayName: String?
     public var latestUser: String
+    public var reviewLevelHint: String?
     public var constitutionHint: String?
+    public var dialogueWindowText: String?
+    public var portfolioBriefText: String?
+    public var focusedProjectAnchorPackText: String?
+    public var longtermOutlineText: String?
+    public var deltaFeedText: String?
+    public var conflictSetText: String?
+    public var contextRefsText: String?
+    public var evidencePackText: String?
     public var canonicalText: String?
     public var observationsText: String?
     public var workingSetText: String?
@@ -189,7 +198,16 @@ public struct IPCMemoryContextRequestPayload: Codable, Sendable, Equatable {
         projectRoot: String? = nil,
         displayName: String? = nil,
         latestUser: String,
+        reviewLevelHint: String? = nil,
         constitutionHint: String? = nil,
+        dialogueWindowText: String? = nil,
+        portfolioBriefText: String? = nil,
+        focusedProjectAnchorPackText: String? = nil,
+        longtermOutlineText: String? = nil,
+        deltaFeedText: String? = nil,
+        conflictSetText: String? = nil,
+        contextRefsText: String? = nil,
+        evidencePackText: String? = nil,
         canonicalText: String? = nil,
         observationsText: String? = nil,
         workingSetText: String? = nil,
@@ -202,7 +220,16 @@ public struct IPCMemoryContextRequestPayload: Codable, Sendable, Equatable {
         self.projectRoot = projectRoot
         self.displayName = displayName
         self.latestUser = latestUser
+        self.reviewLevelHint = reviewLevelHint
         self.constitutionHint = constitutionHint
+        self.dialogueWindowText = dialogueWindowText
+        self.portfolioBriefText = portfolioBriefText
+        self.focusedProjectAnchorPackText = focusedProjectAnchorPackText
+        self.longtermOutlineText = longtermOutlineText
+        self.deltaFeedText = deltaFeedText
+        self.conflictSetText = conflictSetText
+        self.contextRefsText = contextRefsText
+        self.evidencePackText = evidencePackText
         self.canonicalText = canonicalText
         self.observationsText = observationsText
         self.workingSetText = workingSetText
@@ -217,7 +244,16 @@ public struct IPCMemoryContextRequestPayload: Codable, Sendable, Equatable {
         case projectRoot = "project_root"
         case displayName = "display_name"
         case latestUser = "latest_user"
+        case reviewLevelHint = "review_level_hint"
         case constitutionHint = "constitution_hint"
+        case dialogueWindowText = "dialogue_window_text"
+        case portfolioBriefText = "portfolio_brief_text"
+        case focusedProjectAnchorPackText = "focused_project_anchor_pack_text"
+        case longtermOutlineText = "longterm_outline_text"
+        case deltaFeedText = "delta_feed_text"
+        case conflictSetText = "conflict_set_text"
+        case contextRefsText = "context_refs_text"
+        case evidencePackText = "evidence_pack_text"
         case canonicalText = "canonical_text"
         case observationsText = "observations_text"
         case workingSetText = "working_set_text"
@@ -304,13 +340,22 @@ public struct IPCMemoryContextResponsePayload: Codable, Sendable, Equatable {
 }
 
 public struct IPCMemoryRetrievalRequestPayload: Codable, Sendable, Equatable {
+    public var schemaVersion: String
+    public var requestId: String?
     public var scope: String
     public var requesterRole: String
+    public var mode: String?
     public var projectId: String?
+    public var crossProjectTargetIds: [String]
     public var projectRoot: String?
     public var displayName: String?
+    public var query: String?
     public var latestUser: String
+    public var allowedLayers: [String]
+    public var retrievalKind: String?
+    public var maxResults: Int?
     public var reason: String?
+    public var requireExplainability: Bool?
     public var requestedKinds: [String]
     public var explicitRefs: [String]
     public var maxSnippets: Int
@@ -318,26 +363,44 @@ public struct IPCMemoryRetrievalRequestPayload: Codable, Sendable, Equatable {
     public var auditRef: String
 
     public init(
+        schemaVersion: String = "xt.memory_retrieval_request.v1",
+        requestId: String? = nil,
         scope: String,
         requesterRole: String,
+        mode: String? = nil,
         projectId: String? = nil,
+        crossProjectTargetIds: [String] = [],
         projectRoot: String? = nil,
         displayName: String? = nil,
+        query: String? = nil,
         latestUser: String,
+        allowedLayers: [String] = [],
+        retrievalKind: String? = nil,
+        maxResults: Int? = nil,
         reason: String? = nil,
+        requireExplainability: Bool? = nil,
         requestedKinds: [String] = [],
         explicitRefs: [String] = [],
         maxSnippets: Int = 3,
         maxSnippetChars: Int = 420,
         auditRef: String
     ) {
+        self.schemaVersion = schemaVersion
+        self.requestId = requestId
         self.scope = scope
         self.requesterRole = requesterRole
+        self.mode = mode
         self.projectId = projectId
+        self.crossProjectTargetIds = crossProjectTargetIds
         self.projectRoot = projectRoot
         self.displayName = displayName
+        self.query = query
         self.latestUser = latestUser
+        self.allowedLayers = allowedLayers
+        self.retrievalKind = retrievalKind
+        self.maxResults = maxResults
         self.reason = reason
+        self.requireExplainability = requireExplainability
         self.requestedKinds = requestedKinds
         self.explicitRefs = explicitRefs
         self.maxSnippets = maxSnippets
@@ -346,18 +409,61 @@ public struct IPCMemoryRetrievalRequestPayload: Codable, Sendable, Equatable {
     }
 
     public enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case requestId = "request_id"
         case scope
         case requesterRole = "requester_role"
+        case mode
         case projectId = "project_id"
+        case crossProjectTargetIds = "cross_project_target_ids"
         case projectRoot = "project_root"
         case displayName = "display_name"
+        case query
         case latestUser = "latest_user"
+        case allowedLayers = "allowed_layers"
+        case retrievalKind = "retrieval_kind"
+        case maxResults = "max_results"
         case reason
+        case requireExplainability = "require_explainability"
         case requestedKinds = "requested_kinds"
         case explicitRefs = "explicit_refs"
         case maxSnippets = "max_snippets"
         case maxSnippetChars = "max_snippet_chars"
         case auditRef = "audit_ref"
+    }
+}
+
+public struct IPCMemoryRetrievalResultItem: Codable, Sendable, Equatable {
+    public var ref: String
+    public var sourceKind: String
+    public var summary: String
+    public var snippet: String
+    public var score: Double
+    public var redacted: Bool
+
+    public init(
+        ref: String,
+        sourceKind: String,
+        summary: String,
+        snippet: String,
+        score: Double,
+        redacted: Bool
+    ) {
+        self.ref = ref
+        self.sourceKind = sourceKind
+        self.summary = summary
+        self.snippet = snippet
+        self.score = score
+        self.redacted = redacted
+    }
+
+    public enum CodingKeys: String, CodingKey {
+        case ref
+        case sourceKind = "source_kind"
+        case summary
+        case snippet
+        case score
+        case redacted
     }
 }
 
@@ -400,42 +506,70 @@ public struct IPCMemoryRetrievalSnippet: Codable, Sendable, Equatable {
 }
 
 public struct IPCMemoryRetrievalResponsePayload: Codable, Sendable, Equatable {
+    public var schemaVersion: String?
+    public var requestId: String?
+    public var status: String?
+    public var resolvedScope: String?
     public var source: String
     public var scope: String
     public var auditRef: String
     public var reasonCode: String?
     public var denyCode: String?
+    public var results: [IPCMemoryRetrievalResultItem]?
     public var snippets: [IPCMemoryRetrievalSnippet]
+    public var truncated: Bool?
+    public var budgetUsedChars: Int?
     public var truncatedItems: Int
     public var redactedItems: Int
 
     public init(
+        schemaVersion: String? = nil,
+        requestId: String? = nil,
+        status: String? = nil,
+        resolvedScope: String? = nil,
         source: String,
         scope: String,
         auditRef: String,
         reasonCode: String? = nil,
         denyCode: String? = nil,
+        results: [IPCMemoryRetrievalResultItem]? = nil,
         snippets: [IPCMemoryRetrievalSnippet],
+        truncated: Bool? = nil,
+        budgetUsedChars: Int? = nil,
         truncatedItems: Int,
         redactedItems: Int
     ) {
+        self.schemaVersion = schemaVersion
+        self.requestId = requestId
+        self.status = status
+        self.resolvedScope = resolvedScope
         self.source = source
         self.scope = scope
         self.auditRef = auditRef
         self.reasonCode = reasonCode
         self.denyCode = denyCode
+        self.results = results
         self.snippets = snippets
+        self.truncated = truncated
+        self.budgetUsedChars = budgetUsedChars
         self.truncatedItems = truncatedItems
         self.redactedItems = redactedItems
     }
 
     public enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case requestId = "request_id"
+        case status
+        case resolvedScope = "resolved_scope"
         case source
         case scope
         case auditRef = "audit_ref"
         case reasonCode = "reason_code"
         case denyCode = "deny_code"
+        case results
         case snippets
+        case truncated
+        case budgetUsedChars = "budget_used_chars"
         case truncatedItems = "truncated_items"
         case redactedItems = "redacted_items"
     }
@@ -648,6 +782,274 @@ public struct IPCVoiceWakeProfile: Codable, Sendable, Equatable {
         case wakeMode = "wake_mode"
         case requiresPairingReady = "requires_pairing_ready"
         case auditRef = "audit_ref"
+    }
+}
+
+public struct IPCVoiceTTSRequestPayload: Codable, Sendable, Equatable {
+    public var preferredModelID: String
+    public var text: String
+    public var localeIdentifier: String?
+    public var voiceColor: String?
+    public var speechRate: Double?
+
+    public init(
+        preferredModelID: String,
+        text: String,
+        localeIdentifier: String? = nil,
+        voiceColor: String? = nil,
+        speechRate: Double? = nil
+    ) {
+        self.preferredModelID = preferredModelID
+        self.text = text
+        self.localeIdentifier = localeIdentifier
+        self.voiceColor = voiceColor
+        self.speechRate = speechRate
+    }
+
+    public enum CodingKeys: String, CodingKey {
+        case preferredModelID = "preferred_model_id"
+        case text
+        case localeIdentifier = "locale_identifier"
+        case voiceColor = "voice_color"
+        case speechRate = "speech_rate"
+    }
+}
+
+public struct IPCVoiceTTSReadinessRequestPayload: Codable, Sendable, Equatable {
+    public var preferredModelID: String
+
+    public init(preferredModelID: String) {
+        self.preferredModelID = preferredModelID
+    }
+
+    public enum CodingKeys: String, CodingKey {
+        case preferredModelID = "preferred_model_id"
+    }
+}
+
+public struct IPCVoiceTTSReadinessResult: Codable, Sendable, Equatable {
+    public var ok: Bool
+    public var source: String
+    public var provider: String?
+    public var modelID: String?
+    public var reasonCode: String?
+    public var detail: String?
+
+    public init(
+        ok: Bool,
+        source: String,
+        provider: String? = nil,
+        modelID: String? = nil,
+        reasonCode: String? = nil,
+        detail: String? = nil
+    ) {
+        self.ok = ok
+        self.source = source
+        self.provider = provider
+        self.modelID = modelID
+        self.reasonCode = reasonCode
+        self.detail = detail
+    }
+
+    public enum CodingKeys: String, CodingKey {
+        case ok
+        case source
+        case provider
+        case modelID = "model_id"
+        case reasonCode = "reason_code"
+        case detail
+    }
+}
+
+public struct IPCVoiceTTSAudit: Codable, Sendable, Equatable {
+    public var schemaVersion: String
+    public var ok: Bool
+    public var taskKind: String
+    public var requestID: String
+    public var capability: String
+    public var provider: String
+    public var requestedModelID: String
+    public var modelID: String
+    public var resolvedModelID: String
+    public var routeSource: String
+    public var sourceKind: String
+    public var outputRefKind: String
+    public var engineName: String
+    public var speakerId: String
+    public var nativeTTSUsed: Bool?
+    public var fallbackUsed: Bool
+    public var fallbackMode: String
+    public var fallbackReasonCode: String
+    public var denyCode: String
+    public var rawDenyCode: String
+    public var locale: String
+    public var voiceColor: String
+    public var speechRate: Double
+
+    public init(
+        schemaVersion: String,
+        ok: Bool,
+        taskKind: String,
+        requestID: String,
+        capability: String,
+        provider: String,
+        requestedModelID: String,
+        modelID: String,
+        resolvedModelID: String,
+        routeSource: String,
+        sourceKind: String,
+        outputRefKind: String,
+        engineName: String,
+        speakerId: String,
+        nativeTTSUsed: Bool? = nil,
+        fallbackUsed: Bool,
+        fallbackMode: String,
+        fallbackReasonCode: String,
+        denyCode: String,
+        rawDenyCode: String,
+        locale: String,
+        voiceColor: String,
+        speechRate: Double
+    ) {
+        self.schemaVersion = schemaVersion
+        self.ok = ok
+        self.taskKind = taskKind
+        self.requestID = requestID
+        self.capability = capability
+        self.provider = provider
+        self.requestedModelID = requestedModelID
+        self.modelID = modelID
+        self.resolvedModelID = resolvedModelID
+        self.routeSource = routeSource
+        self.sourceKind = sourceKind
+        self.outputRefKind = outputRefKind
+        self.engineName = engineName
+        self.speakerId = speakerId
+        self.nativeTTSUsed = nativeTTSUsed
+        self.fallbackUsed = fallbackUsed
+        self.fallbackMode = fallbackMode
+        self.fallbackReasonCode = fallbackReasonCode
+        self.denyCode = denyCode
+        self.rawDenyCode = rawDenyCode
+        self.locale = locale
+        self.voiceColor = voiceColor
+        self.speechRate = speechRate
+    }
+
+    public enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case ok
+        case taskKind = "task_kind"
+        case requestID = "request_id"
+        case capability
+        case provider
+        case requestedModelID = "requested_model_id"
+        case modelID = "model_id"
+        case resolvedModelID = "resolved_model_id"
+        case routeSource = "route_source"
+        case sourceKind = "source_kind"
+        case outputRefKind = "output_ref_kind"
+        case engineName = "engine_name"
+        case speakerId = "speaker_id"
+        case nativeTTSUsed = "native_tts_used"
+        case fallbackUsed = "fallback_used"
+        case fallbackMode = "fallback_mode"
+        case fallbackReasonCode = "fallback_reason_code"
+        case denyCode = "deny_code"
+        case rawDenyCode = "raw_deny_code"
+        case locale
+        case voiceColor = "voice_color"
+        case speechRate = "speech_rate"
+    }
+}
+
+public struct IPCVoiceTTSResult: Codable, Sendable, Equatable {
+    public var ok: Bool
+    public var source: String
+    public var provider: String?
+    public var modelID: String?
+    public var taskKind: String?
+    public var audioFilePath: String?
+    public var audioFormat: String?
+    public var voiceName: String?
+    public var engineName: String?
+    public var speakerId: String?
+    public var deviceBackend: String?
+    public var nativeTTSUsed: Bool?
+    public var fallbackMode: String?
+    public var fallbackReasonCode: String?
+    public var reasonCode: String?
+    public var runtimeReasonCode: String?
+    public var error: String?
+    public var detail: String?
+    public var ttsAudit: IPCVoiceTTSAudit?
+    public var ttsAuditLine: String?
+
+    public init(
+        ok: Bool,
+        source: String,
+        provider: String? = nil,
+        modelID: String? = nil,
+        taskKind: String? = nil,
+        audioFilePath: String? = nil,
+        audioFormat: String? = nil,
+        voiceName: String? = nil,
+        engineName: String? = nil,
+        speakerId: String? = nil,
+        deviceBackend: String? = nil,
+        nativeTTSUsed: Bool? = nil,
+        fallbackMode: String? = nil,
+        fallbackReasonCode: String? = nil,
+        reasonCode: String? = nil,
+        runtimeReasonCode: String? = nil,
+        error: String? = nil,
+        detail: String? = nil,
+        ttsAudit: IPCVoiceTTSAudit? = nil,
+        ttsAuditLine: String? = nil
+    ) {
+        self.ok = ok
+        self.source = source
+        self.provider = provider
+        self.modelID = modelID
+        self.taskKind = taskKind
+        self.audioFilePath = audioFilePath
+        self.audioFormat = audioFormat
+        self.voiceName = voiceName
+        self.engineName = engineName
+        self.speakerId = speakerId
+        self.deviceBackend = deviceBackend
+        self.nativeTTSUsed = nativeTTSUsed
+        self.fallbackMode = fallbackMode
+        self.fallbackReasonCode = fallbackReasonCode
+        self.reasonCode = reasonCode
+        self.runtimeReasonCode = runtimeReasonCode
+        self.error = error
+        self.detail = detail
+        self.ttsAudit = ttsAudit
+        self.ttsAuditLine = ttsAuditLine
+    }
+
+    public enum CodingKeys: String, CodingKey {
+        case ok
+        case source
+        case provider
+        case modelID = "model_id"
+        case taskKind = "task_kind"
+        case audioFilePath = "audio_file_path"
+        case audioFormat = "audio_format"
+        case voiceName = "voice_name"
+        case engineName = "engine_name"
+        case speakerId = "speaker_id"
+        case deviceBackend = "device_backend"
+        case nativeTTSUsed = "native_tts_used"
+        case fallbackMode = "fallback_mode"
+        case fallbackReasonCode = "fallback_reason_code"
+        case reasonCode = "reason_code"
+        case runtimeReasonCode = "runtime_reason_code"
+        case error
+        case detail
+        case ttsAudit = "tts_audit"
+        case ttsAuditLine = "tts_audit_line"
     }
 }
 
@@ -895,6 +1297,298 @@ public struct IPCSecretVaultRedeemResult: Codable, Sendable, Equatable {
     }
 }
 
+public enum IPCJSONValue: Codable, Sendable, Equatable {
+    case string(String)
+    case number(Double)
+    case bool(Bool)
+    case object([String: IPCJSONValue])
+    case array([IPCJSONValue])
+    case null
+
+    public init(from decoder: Decoder) throws {
+        if let container = try? decoder.container(keyedBy: DynamicCodingKey.self) {
+            var object: [String: IPCJSONValue] = [:]
+            for key in container.allKeys {
+                object[key.stringValue] = (try? container.decode(IPCJSONValue.self, forKey: key)) ?? .null
+            }
+            self = .object(object)
+            return
+        }
+        if var container = try? decoder.unkeyedContainer() {
+            var array: [IPCJSONValue] = []
+            while !container.isAtEnd {
+                array.append((try? container.decode(IPCJSONValue.self)) ?? .null)
+            }
+            self = .array(array)
+            return
+        }
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+            return
+        }
+        if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+            return
+        }
+        if let value = try? container.decode(Double.self) {
+            self = .number(value)
+            return
+        }
+        if let value = try? container.decode(String.self) {
+            self = .string(value)
+            return
+        }
+        self = .null
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        switch self {
+        case .string(let value):
+            var container = encoder.singleValueContainer()
+            try container.encode(value)
+        case .number(let value):
+            var container = encoder.singleValueContainer()
+            try container.encode(value)
+        case .bool(let value):
+            var container = encoder.singleValueContainer()
+            try container.encode(value)
+        case .object(let value):
+            var container = encoder.container(keyedBy: DynamicCodingKey.self)
+            for (key, nested) in value {
+                try container.encode(nested, forKey: DynamicCodingKey(key))
+            }
+        case .array(let value):
+            var container = encoder.unkeyedContainer()
+            for nested in value {
+                try container.encode(nested)
+            }
+        case .null:
+            var container = encoder.singleValueContainer()
+            try container.encodeNil()
+        }
+    }
+
+    struct DynamicCodingKey: CodingKey {
+        var stringValue: String
+        var intValue: Int? = nil
+
+        init(_ value: String) {
+            self.stringValue = value
+        }
+
+        init?(stringValue: String) {
+            self.stringValue = stringValue
+        }
+
+        init?(intValue: Int) {
+            return nil
+        }
+    }
+}
+
+extension IPCJSONValue {
+    public var stringValue: String? {
+        switch self {
+        case .string(let value):
+            return value
+        case .number(let value):
+            if value.rounded() == value {
+                return String(Int(value))
+            }
+            return String(value)
+        case .bool(let value):
+            return value ? "true" : "false"
+        default:
+            return nil
+        }
+    }
+
+    public var boolValue: Bool? {
+        switch self {
+        case .bool(let value):
+            return value
+        case .number(let value):
+            return value != 0
+        case .string(let value):
+            switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "1", "true", "yes", "on":
+                return true
+            case "0", "false", "no", "off":
+                return false
+            default:
+                return nil
+            }
+        default:
+            return nil
+        }
+    }
+
+    public var objectValue: [String: IPCJSONValue]? {
+        guard case .object(let value) = self else {
+            return nil
+        }
+        return value
+    }
+
+    public var arrayValue: [IPCJSONValue]? {
+        guard case .array(let value) = self else {
+            return nil
+        }
+        return value
+    }
+
+    public var foundationValue: Any {
+        switch self {
+        case .string(let value):
+            return value
+        case .number(let value):
+            return value
+        case .bool(let value):
+            return value
+        case .object(let value):
+            return value.mapValues(\.foundationValue)
+        case .array(let value):
+            return value.map(\.foundationValue)
+        case .null:
+            return NSNull()
+        }
+    }
+
+    public static func fromFoundation(_ value: Any) -> IPCJSONValue {
+        switch value {
+        case let value as IPCJSONValue:
+            return value
+        case let value as String:
+            return .string(value)
+        case let value as Bool:
+            return .bool(value)
+        case let value as Double:
+            return .number(value)
+        case let value as Float:
+            return .number(Double(value))
+        case let value as Int:
+            return .number(Double(value))
+        case let value as Int8:
+            return .number(Double(value))
+        case let value as Int16:
+            return .number(Double(value))
+        case let value as Int32:
+            return .number(Double(value))
+        case let value as Int64:
+            return .number(Double(value))
+        case let value as UInt:
+            return .number(Double(value))
+        case let value as UInt8:
+            return .number(Double(value))
+        case let value as UInt16:
+            return .number(Double(value))
+        case let value as UInt32:
+            return .number(Double(value))
+        case let value as UInt64:
+            return .number(Double(value))
+        case let value as NSNumber:
+            return .number(value.doubleValue)
+        case let value as [String: Any]:
+            return .object(value.mapValues(IPCJSONValue.fromFoundation))
+        case let value as [Any]:
+            return .array(value.map(IPCJSONValue.fromFoundation))
+        case _ as NSNull:
+            return .null
+        default:
+            return .string(String(describing: value))
+        }
+    }
+}
+
+public struct IPCLocalTaskRequestPayload: Codable, Sendable, Equatable {
+    public var schemaVersion: String
+    public var taskKind: String
+    public var modelID: String
+    public var deviceID: String?
+    public var timeoutSec: Double?
+    public var parameters: [String: IPCJSONValue]
+
+    public init(
+        schemaVersion: String = "xhub.local_task_ipc.v1",
+        taskKind: String,
+        modelID: String,
+        deviceID: String? = nil,
+        timeoutSec: Double? = nil,
+        parameters: [String: IPCJSONValue] = [:]
+    ) {
+        self.schemaVersion = schemaVersion
+        self.taskKind = taskKind
+        self.modelID = modelID
+        self.deviceID = deviceID
+        self.timeoutSec = timeoutSec
+        self.parameters = parameters
+    }
+
+    public enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case taskKind = "task_kind"
+        case modelID = "model_id"
+        case deviceID = "device_id"
+        case timeoutSec = "timeout_sec"
+        case parameters
+    }
+}
+
+public struct IPCLocalTaskResult: Codable, Sendable, Equatable {
+    public var ok: Bool
+    public var source: String
+    public var runtimeSource: String?
+    public var provider: String?
+    public var modelID: String?
+    public var taskKind: String?
+    public var reasonCode: String?
+    public var runtimeReasonCode: String?
+    public var error: String?
+    public var detail: String?
+    public var payload: [String: IPCJSONValue]
+
+    public init(
+        ok: Bool,
+        source: String,
+        runtimeSource: String? = nil,
+        provider: String? = nil,
+        modelID: String? = nil,
+        taskKind: String? = nil,
+        reasonCode: String? = nil,
+        runtimeReasonCode: String? = nil,
+        error: String? = nil,
+        detail: String? = nil,
+        payload: [String: IPCJSONValue] = [:]
+    ) {
+        self.ok = ok
+        self.source = source
+        self.runtimeSource = runtimeSource
+        self.provider = provider
+        self.modelID = modelID
+        self.taskKind = taskKind
+        self.reasonCode = reasonCode
+        self.runtimeReasonCode = runtimeReasonCode
+        self.error = error
+        self.detail = detail
+        self.payload = payload
+    }
+
+    public enum CodingKeys: String, CodingKey {
+        case ok
+        case source
+        case runtimeSource = "runtime_source"
+        case provider
+        case modelID = "model_id"
+        case taskKind = "task_kind"
+        case reasonCode = "reason_code"
+        case runtimeReasonCode = "runtime_reason_code"
+        case error
+        case detail
+        case payload
+    }
+}
+
 public struct IPCProjectCanonicalMemoryItem: Codable, Sendable, Equatable {
     public var key: String
     public var value: String
@@ -961,10 +1655,26 @@ public struct IPCDeviceCanonicalMemoryPayload: Codable, Sendable, Equatable {
     }
 }
 
+public struct IPCNotificationDismissPayload: Codable, Sendable, Equatable {
+    public var id: String?
+    public var dedupeKey: String?
+
+    public init(id: String? = nil, dedupeKey: String? = nil) {
+        self.id = id
+        self.dedupeKey = dedupeKey
+    }
+
+    public enum CodingKeys: String, CodingKey {
+        case id
+        case dedupeKey = "dedupe_key"
+    }
+}
+
 public struct IPCRequest: Codable, Sendable {
     public var type: String
     public var reqId: String?
     public var notification: HubNotification?
+    public var notificationDismiss: IPCNotificationDismissPayload?
     public var project: HubProjectSnapshot?
     public var projectCanonicalMemory: IPCProjectCanonicalMemoryPayload?
     public var deviceCanonicalMemory: IPCDeviceCanonicalMemoryPayload?
@@ -975,6 +1685,9 @@ public struct IPCRequest: Codable, Sendable {
     public var supervisorProjectAction: IPCSupervisorProjectActionAuditPayload?
     public var voiceWakeProfileRequest: IPCVoiceWakeProfileRequestPayload?
     public var voiceWakeProfile: IPCVoiceWakeProfile?
+    public var voiceTTSReadiness: IPCVoiceTTSReadinessRequestPayload?
+    public var voiceTTS: IPCVoiceTTSRequestPayload?
+    public var localTask: IPCLocalTaskRequestPayload?
     public var secretVaultCreate: IPCSecretVaultCreateRequestPayload?
     public var secretVaultList: IPCSecretVaultListRequestPayload?
     public var secretVaultUse: IPCSecretVaultUseRequestPayload?
@@ -984,6 +1697,7 @@ public struct IPCRequest: Codable, Sendable {
         type: String,
         reqId: String? = nil,
         notification: HubNotification? = nil,
+        notificationDismiss: IPCNotificationDismissPayload? = nil,
         project: HubProjectSnapshot? = nil,
         projectCanonicalMemory: IPCProjectCanonicalMemoryPayload? = nil,
         deviceCanonicalMemory: IPCDeviceCanonicalMemoryPayload? = nil,
@@ -994,6 +1708,9 @@ public struct IPCRequest: Codable, Sendable {
         supervisorProjectAction: IPCSupervisorProjectActionAuditPayload? = nil,
         voiceWakeProfileRequest: IPCVoiceWakeProfileRequestPayload? = nil,
         voiceWakeProfile: IPCVoiceWakeProfile? = nil,
+        voiceTTSReadiness: IPCVoiceTTSReadinessRequestPayload? = nil,
+        voiceTTS: IPCVoiceTTSRequestPayload? = nil,
+        localTask: IPCLocalTaskRequestPayload? = nil,
         secretVaultCreate: IPCSecretVaultCreateRequestPayload? = nil,
         secretVaultList: IPCSecretVaultListRequestPayload? = nil,
         secretVaultUse: IPCSecretVaultUseRequestPayload? = nil,
@@ -1002,6 +1719,7 @@ public struct IPCRequest: Codable, Sendable {
         self.type = type
         self.reqId = reqId
         self.notification = notification
+        self.notificationDismiss = notificationDismiss
         self.project = project
         self.projectCanonicalMemory = projectCanonicalMemory
         self.deviceCanonicalMemory = deviceCanonicalMemory
@@ -1012,6 +1730,9 @@ public struct IPCRequest: Codable, Sendable {
         self.supervisorProjectAction = supervisorProjectAction
         self.voiceWakeProfileRequest = voiceWakeProfileRequest
         self.voiceWakeProfile = voiceWakeProfile
+        self.voiceTTSReadiness = voiceTTSReadiness
+        self.voiceTTS = voiceTTS
+        self.localTask = localTask
         self.secretVaultCreate = secretVaultCreate
         self.secretVaultList = secretVaultList
         self.secretVaultUse = secretVaultUse
@@ -1022,6 +1743,7 @@ public struct IPCRequest: Codable, Sendable {
         case type
         case reqId = "req_id"
         case notification
+        case notificationDismiss = "notification_dismiss"
         case project
         case projectCanonicalMemory = "project_canonical_memory"
         case deviceCanonicalMemory = "device_canonical_memory"
@@ -1032,6 +1754,9 @@ public struct IPCRequest: Codable, Sendable {
         case supervisorProjectAction = "supervisor_project_action"
         case voiceWakeProfileRequest = "voice_wake_profile_request"
         case voiceWakeProfile = "voice_wake_profile"
+        case voiceTTSReadiness = "voice_tts_readiness"
+        case voiceTTS = "voice_tts"
+        case localTask = "local_task"
         case secretVaultCreate = "secret_vault_create"
         case secretVaultList = "secret_vault_list"
         case secretVaultUse = "secret_vault_use"
@@ -1048,6 +1773,9 @@ public struct IPCResponse: Codable, Sendable {
     public var memoryContext: IPCMemoryContextResponsePayload?
     public var memoryRetrieval: IPCMemoryRetrievalResponsePayload?
     public var voiceWakeProfile: IPCVoiceWakeProfile?
+    public var voiceTTSReadiness: IPCVoiceTTSReadinessResult?
+    public var voiceTTS: IPCVoiceTTSResult?
+    public var localTask: IPCLocalTaskResult?
     public var secretVaultItem: IPCSecretVaultItem?
     public var secretVaultSnapshot: IPCSecretVaultSnapshot?
     public var secretVaultUse: IPCSecretVaultUseResult?
@@ -1062,6 +1790,9 @@ public struct IPCResponse: Codable, Sendable {
         memoryContext: IPCMemoryContextResponsePayload? = nil,
         memoryRetrieval: IPCMemoryRetrievalResponsePayload? = nil,
         voiceWakeProfile: IPCVoiceWakeProfile? = nil,
+        voiceTTSReadiness: IPCVoiceTTSReadinessResult? = nil,
+        voiceTTS: IPCVoiceTTSResult? = nil,
+        localTask: IPCLocalTaskResult? = nil,
         secretVaultItem: IPCSecretVaultItem? = nil,
         secretVaultSnapshot: IPCSecretVaultSnapshot? = nil,
         secretVaultUse: IPCSecretVaultUseResult? = nil,
@@ -1075,6 +1806,9 @@ public struct IPCResponse: Codable, Sendable {
         self.memoryContext = memoryContext
         self.memoryRetrieval = memoryRetrieval
         self.voiceWakeProfile = voiceWakeProfile
+        self.voiceTTSReadiness = voiceTTSReadiness
+        self.voiceTTS = voiceTTS
+        self.localTask = localTask
         self.secretVaultItem = secretVaultItem
         self.secretVaultSnapshot = secretVaultSnapshot
         self.secretVaultUse = secretVaultUse
@@ -1090,6 +1824,9 @@ public struct IPCResponse: Codable, Sendable {
         case memoryContext = "memory_context"
         case memoryRetrieval = "memory_retrieval"
         case voiceWakeProfile = "voice_wake_profile"
+        case voiceTTSReadiness = "voice_tts_readiness"
+        case voiceTTS = "voice_tts"
+        case localTask = "local_task"
         case secretVaultItem = "secret_vault_item"
         case secretVaultSnapshot = "secret_vault_snapshot"
         case secretVaultUse = "secret_vault_use"

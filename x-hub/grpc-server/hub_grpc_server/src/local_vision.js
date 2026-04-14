@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { listRuntimeModelRecords } from './local_runtime_ipc.js';
+import { buildLocalRuntimeSpawnConfig, resolveLocalTaskModelRecord } from './local_runtime_ipc.js';
 import { buildLocalTaskFailure, evaluateLocalTaskPolicyGate } from './local_task_policy.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -38,15 +38,16 @@ function safeNum(value, fallback = 0) {
 function defaultRuntimeTaskExecutor({ runtimeBaseDir, request, timeoutMs = 30_000 } = {}) {
   const baseDir = safeString(runtimeBaseDir);
   const payload = JSON.stringify(request || {});
+  const spawnConfig = buildLocalRuntimeSpawnConfig({ runtimeBaseDir: baseDir });
+  if (!spawnConfig.executable) {
+    return Promise.reject(new Error(spawnConfig.error || 'local_runtime_python_unavailable'));
+  }
   return new Promise((resolve, reject) => {
     const child = spawn(
-      'python3',
+      spawnConfig.executable,
       [LOCAL_RUNTIME_SCRIPT, 'run-local-task', '-'],
       {
-        env: {
-          ...process.env,
-          REL_FLOW_HUB_BASE_DIR: baseDir,
-        },
+        env: spawnConfig.env,
         stdio: ['pipe', 'pipe', 'pipe'],
       }
     );
@@ -186,28 +187,6 @@ export function inspectLocalImage(imagePath) {
     height: safeNum(info.height, 0),
     pixel_count: Math.max(0, safeNum(info.width, 0) * safeNum(info.height, 0)),
   };
-}
-
-function resolveLocalVisionModel(runtimeBaseDir, taskKind, preferredModelId = '') {
-  const preferred = safeString(preferredModelId);
-  const normalizedTaskKind = safeString(taskKind).toLowerCase();
-  const records = listRuntimeModelRecords(runtimeBaseDir);
-  if (preferred) {
-    const exact = records.find((record) =>
-      safeString(record?.model_id) === preferred
-      && safeString(record?.backend).toLowerCase() === VISION_PROVIDER
-      && Array.isArray(record?.task_kinds)
-      && record.task_kinds.includes(normalizedTaskKind)
-      && safeString(record?.model_path)
-    );
-    if (exact) return exact;
-  }
-  return records.find((record) =>
-    safeString(record?.backend).toLowerCase() === VISION_PROVIDER
-    && Array.isArray(record?.task_kinds)
-    && record.task_kinds.includes(normalizedTaskKind)
-    && safeString(record?.model_path)
-  ) || null;
 }
 
 function modelUnavailableCode(taskKind) {
@@ -350,16 +329,29 @@ export async function runLocalVisionTask({
     });
   }
 
-  const model = resolveLocalVisionModel(baseDir, normalizedTaskKind, preferredModelId);
-  if (!model) {
+  const modelSelection = resolveLocalTaskModelRecord({
+    runtimeBaseDir: baseDir,
+    taskKind: normalizedTaskKind,
+    deviceId,
+    preferredModelId,
+    providerId: VISION_PROVIDER,
+    requireLocalPath: true,
+  });
+  if (!modelSelection.ok) {
     return fail({
       rawDenyCode: modelUnavailableCode(normalizedTaskKind),
+      message: safeString(modelSelection.message) || modelUnavailableCode(normalizedTaskKind),
       blockedBy: 'provider',
       extra: {
+        provider: VISION_PROVIDER,
+        model_id: safeString(modelSelection.resolved_model_id),
+        route_source: safeString(modelSelection.route_source),
+        route_reason_code: safeString(modelSelection.reason_code),
         usage: imageUsagePayload(imageInfo, promptText),
       },
     });
   }
+  const model = modelSelection.model;
 
   const taskExecutor = typeof executor === 'function' ? executor : defaultRuntimeTaskExecutor;
   try {
@@ -388,6 +380,8 @@ export async function runLocalVisionTask({
         extra: {
           provider: safeString(response?.provider) || VISION_PROVIDER,
           model_id: safeString(response?.modelId) || safeString(model.model_id),
+          route_source: safeString(modelSelection.route_source),
+          resolved_model_id: safeString(modelSelection.resolved_model_id) || safeString(model.model_id),
           usage: response?.usage && typeof response.usage === 'object'
             ? response.usage
             : imageUsagePayload(imageInfo, promptText),
@@ -400,6 +394,8 @@ export async function runLocalVisionTask({
       capability: policyGate.capability,
       provider: safeString(response.provider) || VISION_PROVIDER,
       model_id: safeString(response.modelId) || safeString(model.model_id),
+      route_source: safeString(modelSelection.route_source),
+      resolved_model_id: safeString(modelSelection.resolved_model_id) || safeString(response.modelId) || safeString(model.model_id),
       text: safeString(response.text),
       spans: Array.isArray(response.spans) ? response.spans : [],
       language: safeString(response.language),
@@ -417,6 +413,8 @@ export async function runLocalVisionTask({
       extra: {
         provider: VISION_PROVIDER,
         model_id: safeString(model.model_id),
+        route_source: safeString(modelSelection.route_source),
+        resolved_model_id: safeString(modelSelection.resolved_model_id) || safeString(model.model_id),
         usage: imageUsagePayload(imageInfo, promptText),
       },
     });

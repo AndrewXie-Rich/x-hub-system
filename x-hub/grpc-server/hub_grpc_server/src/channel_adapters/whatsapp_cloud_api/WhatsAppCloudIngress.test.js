@@ -68,10 +68,13 @@ run('WhatsAppCloudIngress normalizes verified text messages into operator envelo
   });
 
   assert.equal(!!out.ok, true);
+  assert.equal(String(out.schema_version || ''), 'xhub.channel_ingress_envelope.v1');
+  assert.equal(String(out.auth_mode || ''), 'meta_app_secret_signature+verify_token_get');
   assert.equal(String(out.actor?.external_user_id || ''), '15551234567');
   assert.equal(String(out.channel?.account_id || ''), 'ops_whatsapp_cloud');
   assert.equal(String(out.channel?.conversation_id || ''), '15551234567');
   assert.equal(String(out.channel?.thread_key || ''), 'wamid.1');
+  assert.equal(String(out.delivery_context?.provider || ''), 'whatsapp_cloud_api');
   assert.equal(String(out.structured_action?.action_name || ''), 'supervisor.status.get');
 });
 

@@ -1,5 +1,7 @@
 import crypto from 'node:crypto';
 
+import { normalizeHubChannelIngressEnvelope } from '../../channel_ingress_envelope.js';
+
 function safeString(input) {
   return String(input ?? '').trim();
 }
@@ -204,7 +206,7 @@ export function normalizeWhatsAppCloudWebhookRequest({
         const text = extractWhatsAppText(message);
         const senderId = safeString(message.from);
         const messageId = safeString(message.id);
-        return {
+        return normalizeHubChannelIngressEnvelope({
           ok: true,
           envelope_type: field || 'messages',
           event_id: messageId || sha256Hex(raw_body).slice(0, 24),
@@ -230,12 +232,14 @@ export function normalizeWhatsAppCloudWebhookRequest({
             message_type: safeString(message.type),
           },
           structured_action: compileWhatsAppCloudTextCommand(text),
-        };
+        }, {
+          provider: 'whatsapp_cloud_api',
+        });
       }
 
       const firstStatus = safeArray(value.statuses)[0];
       if (firstStatus) {
-        return {
+        return normalizeHubChannelIngressEnvelope({
           ok: true,
           envelope_type: field || 'statuses',
           event_id: safeString(firstStatus.id || firstStatus.meta_msg_id || sha256Hex(raw_body).slice(0, 24)),
@@ -261,7 +265,9 @@ export function normalizeWhatsAppCloudWebhookRequest({
             phone_number_id: phoneNumberId,
           },
           structured_action: null,
-        };
+        }, {
+          provider: 'whatsapp_cloud_api',
+        });
       }
     }
   }

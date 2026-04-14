@@ -6,6 +6,7 @@ import path from 'node:path';
 import { HubDB } from './db.js';
 import { loadClients } from './clients.js';
 import { HubEventBus } from './event_bus.js';
+import { responsePathForRequest } from './local_runtime_ipc.js';
 import { makeServices, resolvePaidModelRuntimeAccess } from './services.js';
 
 function run(name, fn) {
@@ -99,6 +100,192 @@ function baseEnv(runtimeBaseDir) {
     HUB_MEMORY_RETENTION_ENABLED: 'false',
     HUB_MLX_RESPONSE_TIMEOUT_NO_RUNTIME_MS: '100',
   };
+}
+
+function writeJson(filePath, obj) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, JSON.stringify(obj, null, 2) + '\n', 'utf8');
+}
+
+function writeModelsState(runtimeBaseDir, models) {
+  writeJson(path.join(runtimeBaseDir, 'models_state.json'), {
+    updatedAt: Date.now() / 1000.0,
+    models,
+  });
+}
+
+function writeProviderAwareMLXStatus(runtimeBaseDir, { ok, importError = '' }) {
+  writeJson(path.join(runtimeBaseDir, 'ai_runtime_status.json'), {
+    schema_version: 'xhub.local_runtime_status.v2',
+    pid: 12345,
+    updatedAt: Date.now() / 1000.0,
+    mlxOk: !!ok,
+    runtimeVersion: 'paired-terminal-policy-usage-test',
+    providers: {
+      mlx: {
+        provider: 'mlx',
+        ok: !!ok,
+        reasonCode: ok ? 'ready' : 'import_error',
+        importError,
+        updatedAt: Date.now() / 1000.0,
+      },
+    },
+  });
+}
+
+function seedGovernedCodingRuntimeArtifacts(projectRoot, projectId = 'proj-w328') {
+  const stateDir = path.join(projectRoot, '.xterminal');
+  const reportsDir = path.join(projectRoot, 'build', 'reports');
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.mkdirSync(reportsDir, { recursive: true });
+
+  const checkpointPath = path.join(reportsDir, 'xt_w3_25_run_checkpoint_2.v1.json');
+  const handoffPath = path.join(reportsDir, 'xt_automation_run_handoff_run-1.v1.json');
+  const retryPath = path.join(reportsDir, 'xt_automation_retry_package_run-1-retry.v1.json');
+  const guidancePath = path.join(stateDir, 'supervisor_guidance_injections.json');
+  const heartbeatPath = path.join(stateDir, 'heartbeat_memory_projection.json');
+
+  writeJson(checkpointPath, {
+    schema_version: 'xt.automation_run_checkpoint.v1',
+    run_id: 'run-1',
+    recipe_id: 'recipe-1',
+    state: 'blocked',
+    attempt: 2,
+    last_transition: 'blocked',
+    retry_after_seconds: 120,
+    resume_token: 'resume-1',
+    checkpoint_ref: checkpointPath,
+    stable_identity: true,
+    current_step_id: 'step-verify',
+    current_step_title: 'Verify focused smoke tests',
+    current_step_state: 'retry_wait',
+    current_step_summary: 'Waiting before retrying the reduced verify set.',
+    audit_ref: 'audit-checkpoint-1',
+  });
+  writeJson(handoffPath, {
+    schema_version: 'xt.automation_run_handoff.v1',
+    generated_at: 123.0,
+    run_id: 'run-1',
+    recipe_ref: 'recipe://run-1',
+    delivery_ref: 'build/reports/delivery-card.v1.json',
+    final_state: 'blocked',
+    hold_reason: 'automation_verify_failed',
+    detail: 'Smoke tests are still red.',
+    action_results: [],
+    verification_report: {
+      required: true,
+      executed: true,
+      command_count: 3,
+      passed_command_count: 1,
+      hold_reason: 'automation_verify_failed',
+    },
+    suggested_next_actions: [
+      'shrink verify scope',
+      're-run smoke tests',
+    ],
+    structured_blocker: {
+      code: 'automation_verify_failed',
+      summary: 'Smoke tests are still red.',
+      stage: 'verification',
+      current_step_id: 'step-verify',
+      current_step_title: 'Verify focused smoke tests',
+      current_step_state: 'retry_wait',
+      current_step_summary: 'Waiting before retrying the reduced verify set.',
+    },
+    current_step_id: 'step-verify',
+    current_step_title: 'Verify focused smoke tests',
+    current_step_state: 'retry_wait',
+    current_step_summary: 'Waiting before retrying the reduced verify set.',
+  });
+  writeJson(retryPath, {
+    schema_version: 'xt.automation_retry_package.v1',
+    generated_at: 124.0,
+    project_id: projectId,
+    delivery_ref: 'build/reports/delivery-card.v1.json',
+    source_run_id: 'run-1',
+    source_final_state: 'blocked',
+    source_hold_reason: 'automation_verify_failed',
+    source_handoff_artifact_path: handoffPath,
+    source_blocker: {
+      code: 'automation_verify_failed',
+      summary: 'Smoke tests are still red.',
+      stage: 'verification',
+      current_step_id: 'step-verify',
+      current_step_title: 'Verify focused smoke tests',
+      current_step_state: 'retry_wait',
+      current_step_summary: 'Waiting before retrying the reduced verify set.',
+    },
+    retry_strategy: 'shrink_verify_scope',
+    retry_reason: 'automation_verify_failed',
+    retry_reason_descriptor: {
+      code: 'retry_verify_scope',
+      summary: 'Retry with a reduced verify set',
+      strategy: 'shrink_verify_scope',
+      current_step_id: 'step-verify',
+      current_step_title: 'Verify focused smoke tests',
+      current_step_state: 'retry_wait',
+      current_step_summary: 'Waiting before retrying the reduced verify set.',
+    },
+    planning_mode: 'verification_recovery',
+    planning_summary: 'Retry with a reduced verify scope before escalating.',
+    retry_run_id: 'run-1-retry',
+    retry_artifact_path: retryPath,
+  });
+  writeJson(guidancePath, {
+    schema_version: 'xt.supervisor_guidance_injection_snapshot.v1',
+    updated_at_ms: 900,
+    items: [
+      {
+        schema_version: 'xt.supervisor_guidance_injection.v1',
+        injection_id: 'guidance-1',
+        review_id: 'review-1',
+        project_id: projectId,
+        target_role: 'coder',
+        delivery_mode: 'priority_insert',
+        intervention_mode: 'replan_next_safe_point',
+        safe_point_policy: 'next_step_boundary',
+        guidance_text: 'Pause the broader rollout and reduce the verify scope before the next retry.',
+        ack_status: 'pending',
+        ack_required: true,
+        effective_supervisor_tier: 's3_strategic_coach',
+        work_order_ref: 'xt-w4-guidance',
+        ack_note: '',
+        injected_at_ms: 880,
+        ack_updated_at_ms: 880,
+        audit_ref: 'audit-guidance-1',
+      },
+    ],
+  });
+  writeJson(heartbeatPath, {
+    schema_version: 'xt.heartbeat_memory_projection.v1',
+    project_id: projectId,
+    project_root: projectRoot,
+    project_name: 'Runtime Project',
+    created_at_ms: 950,
+    raw_vault_ref: path.join(stateDir, 'raw_log.jsonl'),
+    raw_payload: {
+      status_digest: 'Blocked on smoke tests',
+      current_state_summary: 'Verification failed after patch',
+      next_step_summary: 'Retry with reduced verify scope',
+      blocker_summary: 'Smoke tests are still red.',
+      latest_quality_band: 'medium',
+      latest_quality_score: 62,
+      execution_status: 'blocked',
+      risk_tier: 'medium',
+      recovery_decision: {
+        action: 'queue_strategic_review',
+        urgency: 'active',
+        reason_code: 'blocker_detected',
+        summary: 'Queue a strategic review before retrying.',
+        queued_review_trigger: 'blocker_detected',
+        queued_review_level: 'r2_strategic',
+        queued_review_run_kind: 'event_driven',
+      },
+    },
+    canonical_projection: {
+      audit_ref: 'audit-heartbeat-canonical-1',
+    },
+  });
 }
 
 function makeTrustedAutomationClientEntry({
@@ -233,6 +420,39 @@ function lastErrorCode(call) {
   return String(last?.error?.error?.code || '');
 }
 
+function lastGenerateError(call) {
+  return [...(call?.writes || [])].reverse().find((item) => item?.error)?.error || null;
+}
+
+function lastGenerateDone(call) {
+  return [...(call?.writes || [])].reverse().find((item) => item?.done)?.done || null;
+}
+
+async function satisfyLocalRuntimeRequest(runtimeBaseDir, requestId, onRequest = () => {}) {
+  const reqPath = path.join(runtimeBaseDir, 'ai_requests', `req_${requestId}.json`);
+  const respPath = responsePathForRequest(runtimeBaseDir, requestId);
+  const deadline = Date.now() + 2000;
+
+  while (Date.now() < deadline) {
+    if (fs.existsSync(reqPath)) break;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+
+  assert.equal(fs.existsSync(reqPath), true, 'expected runtime request file to be written');
+  const req = JSON.parse(fs.readFileSync(reqPath, 'utf8'));
+  onRequest(req);
+
+  fs.mkdirSync(path.dirname(respPath), { recursive: true });
+  const startedAt = Date.now() / 1000.0;
+  const lines = [
+    JSON.stringify({ type: 'start', req_id: requestId, model_id: String(req.model_id || ''), started_at: startedAt }),
+    JSON.stringify({ type: 'delta', req_id: requestId, seq: 1, text: 'local-ok' }),
+    JSON.stringify({ type: 'done', req_id: requestId, ok: true, reason: 'eos', promptTokens: 7, generationTokens: 3 }),
+  ];
+  fs.writeFileSync(respPath, `${lines.join('\n')}\n`, 'utf8');
+  return req;
+}
+
 function assertAuditEvent(db, {
   device_id,
   user_id,
@@ -250,6 +470,63 @@ function assertAuditEvent(db, {
     assert.equal(String(row?.error_code || ''), String(error_code || ''));
   }
   return row;
+}
+
+function auditExt(row) {
+  try {
+    return JSON.parse(String(row?.ext_json || '{}'));
+  } catch {
+    return {};
+  }
+}
+
+function expectedGovernanceReadinessForDeny(denyCode) {
+  const raw = String(denyCode || '').trim();
+  if (!raw) return null;
+  if (raw === 'trusted_automation_capabilities_empty_blocked') {
+    return {
+      componentKey: 'capability_ready',
+      missingReason: 'capability_device_tools_unavailable',
+    };
+  }
+  if (raw === 'device_permission_owner_missing') {
+    return {
+      componentKey: 'grant_ready',
+      missingReason: 'permission_owner_not_ready',
+    };
+  }
+  if (
+    raw === 'trusted_automation_project_not_bound'
+    || raw === 'trusted_automation_workspace_mismatch'
+    || raw === 'trusted_automation_mode_off'
+    || raw === 'trusted_automation_profile_missing'
+  ) {
+    return {
+      componentKey: 'grant_ready',
+      missingReason: 'trusted_automation_not_ready',
+    };
+  }
+  return null;
+}
+
+function assertGovernanceRuntimeReadinessAudit(row, denyCode) {
+  const expectation = expectedGovernanceReadinessForDeny(denyCode);
+  if (!expectation) return;
+  const ext = auditExt(row);
+  if (!ext?.governance_runtime_readiness) return;
+  assert.equal(Boolean(ext?.governance_runtime_readiness?.runtime_ready), false);
+  assert.ok(
+    Array.isArray(ext?.governance_runtime_readiness?.missing_reason_codes)
+      && ext.governance_runtime_readiness.missing_reason_codes.includes(expectation.missingReason)
+  );
+  assert.ok(
+    Array.isArray(ext?.governance_runtime_readiness?.blocked_component_keys)
+      && ext.governance_runtime_readiness.blocked_component_keys.includes(expectation.componentKey)
+  );
+  assert.equal(
+    String(ext?.governance_runtime_readiness?.components_by_xt_key?.[expectation.componentKey]?.state || ''),
+    'blocked'
+  );
 }
 
 async function assertTrustedAutomationProjectMismatch({
@@ -327,13 +604,14 @@ async function assertTrustedAutomationDenyAudit({
           return true;
         }
       );
-      assertAuditEvent(db, {
+      const row = assertAuditEvent(db, {
         device_id: deviceId,
         user_id: deviceId,
         request_id: requestId,
         event_type,
         error_code: denyCode,
       });
+      assertGovernanceRuntimeReadinessAudit(row, denyCode);
     } finally {
       db.close();
     }
@@ -489,6 +767,33 @@ async function invokeGetOrCreateThread({ db, runtimeBaseDir, clientEntry, reques
       }
       resolve(response);
     });
+  });
+}
+
+async function invokeRetrieveMemory({ db, runtimeBaseDir, clientEntry, requestOverrides = {} }) {
+  return invokeHubMemoryUnary({
+    db,
+    runtimeBaseDir,
+    clientEntry,
+    rpcName: 'RetrieveMemory',
+    baseRequest: {
+      schema_version: 'xt.memory_retrieval_request.v1',
+      request_id: `mem_retr_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+      scope: 'current_project',
+      requester_role: 'chat',
+      mode: 'project_chat',
+      query: 'governed retrieval',
+      latest_user: 'governed retrieval',
+      retrieval_kind: 'search',
+      max_results: 3,
+      require_explainability: true,
+      requested_kinds: ['decision_track'],
+      explicit_refs: [],
+      max_snippets: 3,
+      max_snippet_chars: 320,
+      audit_ref: 'audit-paired-terminal-memory-retrieval',
+    },
+    requestOverrides,
   });
 }
 
@@ -1322,6 +1627,7 @@ await runAsync('generate returns device_paid_model_not_allowed and writes dashbo
       const clientEntry = {
         device_id: deviceId,
         user_id: deviceId,
+        app_id: 'x_terminal',
         name: 'Allowlist Device',
         token,
         enabled: true,
@@ -1343,6 +1649,7 @@ await runAsync('generate returns device_paid_model_not_allowed and writes dashbo
       const snapshot = JSON.parse(fs.readFileSync(path.join(runtimeBaseDir, 'grpc_devices_status.json'), 'utf8'));
       const device = (snapshot.devices || []).find((item) => item.device_id === deviceId);
       assert.ok(device);
+      assert.equal(String(device.app_id || ''), 'x_terminal');
       assert.equal(device.paid_model_policy_mode, 'custom_selected_models');
       assert.equal(device.daily_token_limit, 500);
       assert.equal(device.remaining_daily_token_budget, 500);
@@ -1397,6 +1704,48 @@ await runAsync('generate returns device_single_request_token_exceeded for truste
         },
       });
       assert.equal(lastErrorCode(call), 'device_single_request_token_exceeded');
+    } finally {
+      db.close();
+    }
+  });
+
+  cleanupDbArtifacts(dbPath);
+  try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch { /* ignore */ }
+});
+
+await runAsync('list models returns paired terminal paid access budget truth', async () => {
+  const runtimeBaseDir = makeTmp('runtime_list_models_paid_access_truth');
+  const dbPath = makeTmp('db_list_models_paid_access_truth', '.db');
+  fs.mkdirSync(runtimeBaseDir, { recursive: true });
+
+  await withEnvAsync(baseEnv(runtimeBaseDir), async () => {
+    const db = new HubDB({ dbPath });
+    try {
+      const deviceId = 'dev-list-models-budget';
+      const token = 'tok-list-models-budget';
+      const clientEntry = {
+        device_id: deviceId,
+        user_id: deviceId,
+        name: 'List Models Budget Device',
+        token,
+        enabled: true,
+        capabilities: ['models', 'events', 'memory', 'skills', 'ai.generate.local', 'ai.generate.paid', 'web.fetch'],
+        policy_mode: 'new_profile',
+        approved_trust_profile: makeApprovedTrustProfile({
+          deviceId,
+          deviceName: 'List Models Budget Device',
+          capabilities: ['models', 'events', 'memory', 'skills', 'ai.generate.local', 'ai.generate.paid', 'web.fetch'],
+          paidModelPolicyMode: 'all_paid_models',
+          dailyTokenLimit: 640,
+          singleRequestTokenLimit: 256,
+        }),
+      };
+
+      const response = await invokeListModels({ db, runtimeBaseDir, clientEntry });
+      assert.equal(response.trust_profile_present, true);
+      assert.equal(response.paid_model_policy_mode, 'all_paid_models');
+      assert.equal(response.daily_token_limit, 640);
+      assert.equal(response.single_request_token_limit, 256);
     } finally {
       db.close();
     }
@@ -1495,6 +1844,252 @@ await runAsync('generate returns legacy_grant_flow_required for legacy paired de
   try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
+await runAsync('generate denied error exposes route audit metadata for legacy grant path', async () => {
+  const runtimeBaseDir = makeTmp('runtime_legacy_audit');
+  const dbPath = makeTmp('db_legacy_audit', '.db');
+  fs.mkdirSync(runtimeBaseDir, { recursive: true });
+
+  await withEnvAsync(baseEnv(runtimeBaseDir), async () => {
+    const db = new HubDB({ dbPath });
+    try {
+      const deviceId = 'dev-legacy-audit';
+      const token = 'tok-legacy-audit';
+      const clientEntry = {
+        device_id: deviceId,
+        user_id: deviceId,
+        name: 'Legacy Audit Device',
+        token,
+        enabled: true,
+        capabilities: ['models', 'events', 'memory', 'skills', 'ai.generate.local', 'ai.generate.paid'],
+        policy_mode: 'legacy_grant',
+      };
+      const call = await invokeGenerate({ db, runtimeBaseDir, clientEntry });
+      const errorEvent = lastGenerateError(call);
+      assert.ok(errorEvent);
+      assert.equal(String(errorEvent?.error?.code || ''), 'legacy_grant_flow_required');
+      assert.equal(String(errorEvent?.model_id || ''), 'openai/gpt-4.1');
+      assert.equal(String(errorEvent?.runtime_provider || ''), 'Hub (Remote)');
+      assert.equal(String(errorEvent?.execution_path || ''), 'remote_error');
+      assert.equal(String(errorEvent?.deny_code || ''), 'legacy_grant_flow_required');
+      assert.ok(String(errorEvent?.audit_ref || '').length > 0);
+
+      const auditRow = assertAuditEvent(db, {
+        device_id: deviceId,
+        user_id: deviceId,
+        request_id: String(call.request?.request_id || ''),
+        event_type: 'ai.generate.denied',
+        error_code: 'legacy_grant_flow_required',
+      });
+      assert.equal(String(errorEvent?.audit_ref || ''), String(auditRow?.event_id || ''));
+      const ext = auditExt(auditRow);
+      assert.equal(String(ext?.governance_runtime_readiness?.schema_version || ''), 'xhub.governance_runtime_readiness.v1');
+      assert.equal(Boolean(ext?.governance_runtime_readiness?.runtime_ready), false);
+      assert.equal(String(ext?.governance_runtime_readiness?.components?.grant?.deny_code || ''), 'legacy_grant_flow_required');
+      assert.equal(Boolean(ext?.governance_runtime_readiness?.components?.capability?.ready), true);
+      assert.equal(Boolean(ext?.governance_runtime_readiness?.components?.checkpoint_recovery?.ready), true);
+      assert.equal(Boolean(ext?.governance_runtime_readiness?.components?.evidence_export?.ready), true);
+    } finally {
+      db.close();
+    }
+  });
+
+  cleanupDbArtifacts(dbPath);
+  try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch { /* ignore */ }
+});
+
+await runAsync('generate done exposes downgrade audit metadata after remote export local fallback', async () => {
+  const runtimeBaseDir = makeTmp('runtime_downgrade_done');
+  const dbPath = makeTmp('db_downgrade_done', '.db');
+  fs.mkdirSync(runtimeBaseDir, { recursive: true });
+
+  await withEnvAsync(
+    {
+      ...baseEnv(runtimeBaseDir),
+      HUB_REMOTE_EXPORT_ON_BLOCK: 'downgrade_to_local',
+      HUB_REMOTE_EXPORT_SECRET_MODE: 'deny',
+      HUB_MLX_RESPONSE_TIMEOUT_NO_RUNTIME_MS: '1500',
+    },
+    async () => {
+      writeModelsState(runtimeBaseDir, [
+        {
+          model_id: 'mlx/qwen2.5-7b-instruct',
+          name: 'Qwen 2.5 7B',
+          kind: 'local_offline',
+          backend: 'mlx',
+          task_kinds: ['text_generate'],
+        },
+      ]);
+      writeProviderAwareMLXStatus(runtimeBaseDir, { ok: true });
+
+      const db = new HubDB({ dbPath });
+      try {
+        const deviceId = 'dev-downgrade-done';
+        const token = 'tok-downgrade-done';
+        const clientEntry = {
+          device_id: deviceId,
+          user_id: deviceId,
+          name: 'Downgrade Done Device',
+          token,
+          enabled: true,
+          capabilities: ['models', 'events', 'memory', 'skills', 'ai.generate.local', 'ai.generate.paid', 'web.fetch'],
+          policy_mode: 'new_profile',
+          approved_trust_profile: makeApprovedTrustProfile({
+            deviceId,
+            deviceName: 'Downgrade Done Device',
+            capabilities: ['models', 'events', 'memory', 'skills', 'ai.generate.local', 'ai.generate.paid', 'web.fetch'],
+            paidModelPolicyMode: 'all_paid_models',
+          }),
+        };
+        const requestId = `rid_down_done_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+        const callPromise = invokeGenerate({
+          db,
+          runtimeBaseDir,
+          clientEntry,
+          requestOverrides: {
+            request_id: requestId,
+            messages: [{ role: 'user', content: 'Please export [private]payment pin 7788[/private]' }],
+          },
+        });
+
+        const runtimeRequest = await satisfyLocalRuntimeRequest(runtimeBaseDir, requestId);
+        const call = await callPromise;
+        const doneEvent = lastGenerateDone(call);
+        assert.ok(doneEvent);
+        assert.equal(doneEvent.ok, true);
+        assert.equal(String(doneEvent.actual_model_id || ''), 'mlx/qwen2.5-7b-instruct');
+        assert.equal(String(doneEvent.runtime_provider || ''), 'Hub (Local)');
+        assert.equal(String(doneEvent.execution_path || ''), 'hub_downgraded_to_local');
+        assert.ok(String(doneEvent.audit_ref || '').length > 0);
+        assert.ok(String(doneEvent.deny_code || '').length > 0);
+        assert.equal(String(runtimeRequest.model_id || ''), 'mlx/qwen2.5-7b-instruct');
+
+        const rows = db.listAuditEvents({ device_id: deviceId, request_id: requestId }) || [];
+        const downgradedRow = rows.find((row) =>
+          String(row?.event_type || '') === 'ai.generate.downgraded_to_local'
+        );
+        assert.ok(downgradedRow);
+        assert.equal(String(doneEvent.audit_ref || ''), String(downgradedRow?.event_id || ''));
+        assert.equal(String(doneEvent.deny_code || ''), String(downgradedRow?.error_code || ''));
+      } finally {
+        db.close();
+      }
+    }
+  );
+
+  cleanupDbArtifacts(dbPath);
+  try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch { /* ignore */ }
+});
+
+await runAsync('generate memory route injects governed coding runtime truth into prompt assembly', async () => {
+  const runtimeBaseDir = makeTmp('runtime_memory_runtime_truth');
+  const dbPath = makeTmp('db_memory_runtime_truth', '.db');
+  const projectRoot = makeTmp('project_root_memory_runtime_truth');
+  fs.mkdirSync(runtimeBaseDir, { recursive: true });
+  fs.mkdirSync(projectRoot, { recursive: true });
+
+  await withEnvAsync(
+    {
+      ...baseEnv(runtimeBaseDir),
+      HUB_MLX_RESPONSE_TIMEOUT_NO_RUNTIME_MS: '1500',
+    },
+    async () => {
+      writeModelsState(runtimeBaseDir, [
+        {
+          model_id: 'mlx/qwen2.5-7b-instruct',
+          name: 'Qwen 2.5 7B',
+          kind: 'local_offline',
+          backend: 'mlx',
+          task_kinds: ['text_generate'],
+        },
+      ]);
+      writeProviderAwareMLXStatus(runtimeBaseDir, { ok: true });
+      seedGovernedCodingRuntimeArtifacts(projectRoot, 'proj-w328');
+
+      const db = new HubDB({ dbPath });
+      try {
+        const deviceId = 'dev-memory-runtime-truth';
+        const token = 'tok-memory-runtime-truth';
+        const clientEntry = makeTrustedAutomationClientEntry({
+          deviceId,
+          token,
+          name: 'Memory Runtime Truth Device',
+          allowedProjectIds: ['proj-w328'],
+        });
+        const thread = await invokeGetOrCreateThread({
+          db,
+          runtimeBaseDir,
+          clientEntry,
+          requestOverrides: {
+            thread_key: 'xterminal_project_proj-w328',
+            client: {
+              project_root: projectRoot,
+            },
+          },
+        });
+        const threadId = String(thread?.thread?.thread_id || '');
+        assert.ok(threadId);
+
+        const requestId = `rid_memory_runtime_truth_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+        const callPromise = invokeGenerate({
+          db,
+          runtimeBaseDir,
+          clientEntry,
+          requestOverrides: {
+            request_id: requestId,
+            model_id: 'mlx/qwen2.5-7b-instruct',
+            thread_id: threadId,
+            messages: [{ role: 'user', content: '请结合 checkpoint blocker retry guidance heartbeat 继续推进' }],
+            client: {
+              project_root: projectRoot,
+            },
+          },
+        });
+
+        const runtimeRequest = await satisfyLocalRuntimeRequest(runtimeBaseDir, requestId, (req) => {
+          const prompt = String(req?.prompt || '');
+          assert.match(prompt, /\[GOVERNED CODING RUNTIME TRUTH\]/);
+          assert.match(prompt, /source_kind=guidance_injection/);
+          assert.match(prompt, /guidance_summary: Pause the broader rollout and reduce the verify scope before the next retry\./);
+          assert.match(prompt, /source_kind=automation_retry_package/);
+          assert.match(prompt, /retry_strategy: shrink_verify_scope/);
+          assert.match(prompt, /source_kind=heartbeat_projection/);
+          assert.match(prompt, /blocker_summary: Smoke tests are still red\./);
+        });
+        const call = await callPromise;
+        const doneEvent = lastGenerateDone(call);
+        assert.ok(doneEvent);
+        assert.equal(String(runtimeRequest.model_id || ''), 'mlx/qwen2.5-7b-instruct');
+        assert.ok(doneEvent.memory_prompt_projection);
+        assert.ok(Number(doneEvent.memory_prompt_projection.runtime_truth_item_count || 0) >= 1);
+        assert.ok(
+          Array.isArray(doneEvent.memory_prompt_projection.runtime_truth_source_kinds)
+          && doneEvent.memory_prompt_projection.runtime_truth_source_kinds.includes('guidance_injection')
+        );
+
+        const routeRow = assertAuditEvent(db, {
+          device_id: deviceId,
+          user_id: deviceId,
+          request_id: requestId,
+          event_type: 'memory.route.applied',
+        });
+        const ext = JSON.parse(String(routeRow?.ext_json || '{}'));
+        assert.ok(ext?.retrieval?.prompt_projection);
+        assert.ok(Number(ext.retrieval.prompt_projection.runtime_truth_item_count || 0) >= 1);
+        assert.ok(
+          Array.isArray(ext.retrieval.prompt_projection.runtime_truth_source_kinds)
+          && ext.retrieval.prompt_projection.runtime_truth_source_kinds.includes('guidance_injection')
+        );
+      } finally {
+        db.close();
+      }
+    }
+  );
+
+  cleanupDbArtifacts(dbPath);
+  try { fs.rmSync(projectRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+  try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch { /* ignore */ }
+});
+
 await runAsync('generate returns trusted_automation_capabilities_empty_blocked for strict empty capabilities', async () => {
   const runtimeBaseDir = makeTmp('runtime_tam_empty_caps');
   const dbPath = makeTmp('db_tam_empty_caps', '.db');
@@ -1530,6 +2125,14 @@ await runAsync('generate returns trusted_automation_capabilities_empty_blocked f
       };
       const call = await invokeGenerate({ db, runtimeBaseDir, clientEntry });
       assert.equal(lastErrorCode(call), 'trusted_automation_capabilities_empty_blocked');
+      const auditRow = assertAuditEvent(db, {
+        device_id: deviceId,
+        user_id: deviceId,
+        request_id: String(call.request?.request_id || ''),
+        event_type: 'ai.generate.denied',
+        error_code: 'trusted_automation_capabilities_empty_blocked',
+      });
+      assertGovernanceRuntimeReadinessAudit(auditRow, 'trusted_automation_capabilities_empty_blocked');
     } finally {
       db.close();
     }
@@ -1628,6 +2231,25 @@ await runAsync('generate returns trusted_automation_project_not_bound for cross-
         },
       });
       assert.equal(lastErrorCode(call), 'trusted_automation_project_not_bound');
+      const auditRow = assertAuditEvent(db, {
+        device_id: deviceId,
+        user_id: deviceId,
+        request_id: String(call.request?.request_id || ''),
+        event_type: 'ai.generate.denied',
+        error_code: 'trusted_automation_project_not_bound',
+      });
+      const ext = auditExt(auditRow);
+      assert.equal(String(ext?.governance_runtime_readiness?.components?.grant?.deny_code || ''), 'trusted_automation_project_not_bound');
+      assert.equal(Boolean(ext?.governance_runtime_readiness?.components?.route?.ready), true);
+      assert.equal(Boolean(ext?.governance_runtime_readiness?.components?.capability?.ready), true);
+      assert.ok(
+        Array.isArray(ext?.governance_runtime_readiness?.missing_reason_codes)
+          && ext.governance_runtime_readiness.missing_reason_codes.includes('trusted_automation_not_ready')
+      );
+      assert.equal(
+        String(ext?.governance_runtime_readiness?.components_by_xt_key?.grant_ready?.state || ''),
+        'blocked'
+      );
     } finally {
       db.close();
     }
@@ -1670,6 +2292,14 @@ await runAsync('generate returns device_permission_owner_missing when xt binding
       };
       const call = await invokeGenerate({ db, runtimeBaseDir, clientEntry });
       assert.equal(lastErrorCode(call), 'device_permission_owner_missing');
+      const auditRow = assertAuditEvent(db, {
+        device_id: deviceId,
+        user_id: deviceId,
+        request_id: String(call.request?.request_id || ''),
+        event_type: 'ai.generate.denied',
+        error_code: 'device_permission_owner_missing',
+      });
+      assertGovernanceRuntimeReadinessAudit(auditRow, 'device_permission_owner_missing');
     } finally {
       db.close();
     }
@@ -1856,6 +2486,149 @@ await runAsync('get or create thread returns trusted_automation_project_not_boun
 
   cleanupDbArtifacts(dbPath);
   try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch { /* ignore */ }
+});
+
+await runAsync('retrieve memory returns governed current-project results for paired trusted automation client', async () => {
+  const runtimeBaseDir = makeTmp('runtime_tam_memory_retrieve_ok');
+  const dbPath = makeTmp('db_tam_memory_retrieve_ok', '.db');
+  fs.mkdirSync(runtimeBaseDir, { recursive: true });
+
+  await withEnvAsync(baseEnv(runtimeBaseDir), async () => {
+    const db = new HubDB({ dbPath });
+    try {
+      const deviceId = 'dev-tam-memory-retrieve-ok';
+      const token = 'tok-tam-memory-retrieve-ok';
+      const requestId = 'req-tam-memory-retrieve-ok';
+      const clientEntry = makeTrustedAutomationClientEntry({
+        deviceId,
+        token,
+        name: 'Trusted Automation Memory Retrieve OK',
+        allowedProjectIds: ['proj-w328'],
+      });
+
+      await invokeHubMemoryUnary({
+        db,
+        runtimeBaseDir,
+        clientEntry,
+        rpcName: 'UpsertCanonicalMemory',
+        requestOverrides: {
+          scope: 'project',
+          key: 'stack_decision',
+          value: 'Use governed Hub retrieval so XT and Hub share one retrieval contract.',
+          pinned: false,
+        },
+      });
+
+      const response = await invokeRetrieveMemory({
+        db,
+        runtimeBaseDir,
+        clientEntry,
+        requestOverrides: {
+          request_id: requestId,
+          query: 'retrieval contract',
+          latest_user: 'retrieval contract',
+          requested_kinds: ['decision_track', 'canonical_memory'],
+          audit_ref: 'audit-tam-memory-retrieve-ok',
+        },
+      });
+
+      assert.equal(String(response?.schema_version || ''), 'xt.memory_retrieval_result.v1');
+      assert.equal(String(response?.request_id || ''), requestId);
+      assert.equal(String(response?.status || ''), 'ok');
+      assert.equal(String(response?.resolved_scope || ''), 'current_project');
+      assert.ok(Array.isArray(response?.results));
+      assert.ok((response?.results?.length || 0) >= 1);
+      assert.match(String(response?.results?.[0]?.ref || ''), /^memory:\/\/hub\//);
+
+      assertAuditEvent(db, {
+        device_id: deviceId,
+        user_id: deviceId,
+        request_id: requestId,
+        event_type: 'memory.retrieval.performed',
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  cleanupDbArtifacts(dbPath);
+  try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch { /* ignore */ }
+});
+
+await runAsync('upsert canonical memory returns audit and durable refs for paired trusted automation client', async () => {
+  const runtimeBaseDir = makeTmp('runtime_tam_memory_upsert_audit_ok');
+  const dbPath = makeTmp('db_tam_memory_upsert_audit_ok', '.db');
+  fs.mkdirSync(runtimeBaseDir, { recursive: true });
+
+  await withEnvAsync(baseEnv(runtimeBaseDir), async () => {
+    const db = new HubDB({ dbPath });
+    try {
+      const deviceId = 'dev-tam-memory-upsert-audit-ok';
+      const token = 'tok-tam-memory-upsert-audit-ok';
+      const requestId = 'req-tam-memory-upsert-audit-ok';
+      const auditRef = 'audit-tam-memory-upsert-audit-ok';
+      const clientEntry = makeTrustedAutomationClientEntry({
+        deviceId,
+        token,
+        name: 'Trusted Automation Memory Upsert Audit OK',
+        allowedProjectIds: ['proj-w328'],
+      });
+
+      const response = await invokeHubMemoryUnary({
+        db,
+        runtimeBaseDir,
+        clientEntry,
+        rpcName: 'UpsertCanonicalMemory',
+        requestOverrides: {
+          scope: 'project',
+          key: 'writeback_closure',
+          value: 'Return audit_ref and durable refs to XT retry status.',
+          pinned: false,
+          request_id: requestId,
+          audit_ref: auditRef,
+        },
+      });
+
+      assert.equal(String(response?.audit_ref || ''), auditRef);
+      assert.match(String(response?.evidence_ref || ''), /^canonical_memory_item:/);
+      assert.equal(String(response?.writeback_ref || ''), String(response?.evidence_ref || ''));
+      assert.ok(String(response?.item?.item_id || '').trim().length > 0);
+
+      const row = assertAuditEvent(db, {
+        device_id: deviceId,
+        user_id: deviceId,
+        request_id: requestId,
+        event_type: 'memory.canonical.upserted',
+      });
+      const ext = JSON.parse(String(row?.ext_json || '{}'));
+      assert.equal(String(ext.audit_ref || ''), auditRef);
+      assert.equal(String(ext.writeback_ref || ''), String(response?.writeback_ref || ''));
+      assert.equal(String(ext.item_id || ''), String(response?.item?.item_id || ''));
+      assert.equal(String(ext.scope || ''), 'project');
+      assert.equal(String(ext.key || ''), 'writeback_closure');
+    } finally {
+      db.close();
+    }
+  });
+
+  cleanupDbArtifacts(dbPath);
+  try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch { /* ignore */ }
+});
+
+await runAsync('retrieve memory returns trusted_automation_project_not_bound for cross-project trusted automation request', async () => {
+  await assertTrustedAutomationProjectMismatch({
+    runtimeLabel: 'runtime_tam_memory_retrieve_project_mismatch',
+    dbLabel: 'db_tam_memory_retrieve_project_mismatch',
+    deviceId: 'dev-tam-memory-retrieve-project-mismatch',
+    token: 'tok-tam-memory-retrieve-project-mismatch',
+    name: 'Trusted Automation Memory Retrieve Project Mismatch',
+    invoke: invokeRetrieveMemory,
+    requestOverrides: {
+      request_id: 'req-tam-memory-retrieve-project-mismatch',
+    },
+    requestId: 'req-tam-memory-retrieve-project-mismatch',
+    event_type: 'memory.retrieval.denied',
+  });
 });
 
 for (const spec of [

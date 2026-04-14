@@ -2,6 +2,7 @@ import {
   buildTelegramApprovalMessage,
   buildTelegramSummaryMessage,
 } from './TelegramEgress.js';
+import { buildOperatorChannelHeartbeatGovernanceSummaryLines } from '../operator_channel_heartbeat_governance_summary.js';
 
 function safeString(input) {
   return String(input ?? '').trim();
@@ -18,6 +19,19 @@ function safeObject(input) {
 
 function safeArray(input) {
   return Array.isArray(input) ? input : [];
+}
+
+function projectionStatusLabel(input) {
+  const raw = safeString(input).toLowerCase();
+  if (!raw) return '';
+  switch (raw) {
+    case 'awaiting_authorization':
+      return 'awaiting authorization';
+    case 'attention_required':
+      return 'attention required';
+    default:
+      return raw.replaceAll('_', ' ');
+  }
 }
 
 function normalizeCapabilityLabel(input) {
@@ -146,6 +160,7 @@ function buildExecutionSummary(result = {}) {
   const grantAction = safeObject(execution.grant_action);
   const xtCommand = safeObject(execution.xt_command);
   const heartbeat = safeObject(query.heartbeat);
+  const heartbeatGovernanceLines = buildOperatorChannelHeartbeatGovernanceSummaryLines(query.heartbeat_governance_snapshot_json);
   const dispatch = safeObject(query.dispatch);
   const queue = safeObject(query.queue);
   const providerStatus = safeObject(query.provider_status);
@@ -183,6 +198,7 @@ function buildExecutionSummary(result = {}) {
   }
 
   if (Object.keys(projection).length) {
+    const projectionStatus = projectionStatusLabel(projection.status);
     const topline = safeString(projection.topline);
     const criticalBlocker = safeString(projection.critical_blocker);
     const nextBestAction = safeString(projection.next_best_action);
@@ -195,6 +211,7 @@ function buildExecutionSummary(result = {}) {
       project_id: safeString(projection.project_id || projectId),
       lines: [
         actionName ? `Action: ${actionName}` : '',
+        projectionStatus ? `Project state: ${projectionStatus}` : '',
         topline ? `Topline: ${topline}` : '',
         criticalBlocker ? `Blocker: ${criticalBlocker}` : '',
         nextBestAction ? `Next: ${nextBestAction}` : '',
@@ -251,6 +268,7 @@ function buildExecutionSummary(result = {}) {
       safeString(query.root_project_id) && safeString(query.root_project_id) !== projectId ? `Root project: ${safeString(query.root_project_id)}` : '',
       safeString(dispatch.assigned_agent_profile) ? `Dispatch: ${safeString(dispatch.assigned_agent_profile)} priority=${safeInt(dispatch.queue_priority)}` : '',
       Object.keys(heartbeat).length ? `Heartbeat: queue_depth=${safeInt(heartbeat.queue_depth)} wait_ms=${safeInt(heartbeat.oldest_wait_ms)} risk=${safeString(heartbeat.risk_tier || 'unknown') || 'unknown'}` : 'Heartbeat: no live project heartbeat',
+      ...heartbeatGovernanceLines,
       safeString(providerStatus.runtime_state) ? `Channel runtime: ${safeString(providerStatus.runtime_state)}` : '',
     ].filter(Boolean);
 

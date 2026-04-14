@@ -1,0 +1,104 @@
+{
+  "schemaVersion": "xhub.local_bench_fixture_pack.v1",
+  "updatedAt": "2026-03-13T23:40:00+08:00",
+  "fixtures": [
+    {
+      "id": "text_short",
+      "taskKind": "text_generate",
+      "title": "Short Prompt",
+      "description": "Short deterministic prompt for text-generation capable local models.",
+      "input": {
+        "prompt": "Write three short bullets about why offline local AI runtimes should stay observable and explainable."
+      },
+      "options": {
+        "generation_tokens": 128,
+        "prompt_tokens_hint": 40
+      }
+    },
+    {
+      "id": "legacy_text_loop",
+      "taskKind": "text_generate",
+      "title": "Legacy MLX Token Loop",
+      "description": "MLX legacy runtime uses its built-in random token loop bench instead of prompt fixtures.",
+      "providerIds": ["mlx"],
+      "input": {
+        "mode": "legacy_runtime_loop"
+      },
+      "options": {
+        "prompt_tokens": 256,
+        "generation_tokens": 256
+      }
+    },
+    {
+      "id": "embed_small_docs",
+      "taskKind": "embedding",
+      "title": "Small Document Batch",
+      "description": "A small, mixed-purpose document batch for quick embedding latency and throughput checks.",
+      "input": {
+        "texts": [
+          "Warm a local embedding model before indexing a private project knowledge base.",
+          "Transcribe a short product call and summarize the decisions offline.",
+          "Use OCR on a dense invoice scan and extract the visible line items."
+        ]
+      },
+      "options": {
+        "max_length": 256
+      }
+    },
+    {
+      "id": "asr_short_clip",
+      "taskKind": "speech_to_text",
+      "title": "Short Speech Clip",
+      "description": "Generated silence WAV fixture used to benchmark short ASR latency without network access.",
+      "input": {
+        "audio": {
+          "generator": "silence_wav",
+          "durationSec": 0.25,
+          "sampleRate": 16000
+        },
+        "language": "en",
+        "timestamps": true
+      }
+    },
+    {
+      "id": "voice_status_reply",
+      "taskKind": "text_to_speech",
+      "title": "Short Voice Reply",
+      "description": "Short deterministic TTS reply used to benchmark local Supervisor voice playback once a runtime is available.",
+      "input": {
+        "text": "Project status is green. No blockers need escalation right now.",
+        "locale": "en-US",
+        "voice_color": "neutral",
+        "speech_rate": 1.0
+      }
+    },
+    {
+      "id": "vision_single_image",
+      "taskKind": "vision_understand",
+      "title": "Single Image Preview",
+      "description": "Generated PNG header used for quick vision preview and fallback-only bench paths.",
+      "input": {
+        "image": {
+          "generator": "png_header",
+          "width": 640,
+          "height": 384
+        },
+        "prompt": "Describe the image layout and the kind of content it likely contains."
+      }
+    },
+    {
+      "id": "ocr_dense_doc",
+      "taskKind": "ocr",
+      "title": "Dense Document Preview",
+      "description": "Generated tall PNG header used for OCR preview-oriented quick bench checks.",
+      "input": {
+        "image": {
+          "generator": "png_header",
+          "width": 1240,
+          "height": 1754
+        },
+        "prompt": "Extract the visible document text."
+      }
+    }
+  ]
+}

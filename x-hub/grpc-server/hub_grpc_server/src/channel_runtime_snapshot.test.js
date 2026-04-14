@@ -84,3 +84,68 @@ run('XT-W3-24-G/runtime snapshot defaults known wave1 providers to not_configure
   assert.equal(!!personal?.require_real_evidence, true);
   assert.equal(Number(snapshot.totals.planned_total || 0), 2);
 });
+
+run('XT-W3-24-M/runtime snapshot projects delivery dead-letter degradation without hiding command ingress readiness', () => {
+  const snapshot = buildChannelRuntimeStatusSnapshot([
+    {
+      provider: 'slack',
+      account_id: 'ops-slack',
+      runtime_state: 'ready',
+      delivery_ready: true,
+      command_entry_ready: true,
+      delivery_dead_letter_count: 1,
+      manual_retry_available: true,
+      last_delivery_error_code: 'slack_rate_limited',
+      updated_at_ms: 4100,
+    },
+  ], {
+    updated_at_ms: 5000,
+    now_ms: 4500,
+  });
+
+  const slack = snapshot.providers.find((row) => row.provider === 'slack');
+  assert.equal(String(slack?.runtime_state || ''), 'degraded');
+  assert.equal(String(slack?.last_error_code || ''), 'slack_rate_limited');
+  assert.equal(!!slack?.delivery_ready, false);
+  assert.equal(!!slack?.command_entry_ready, true);
+  assert.equal(Number(slack?.delivery_dead_letter_count || 0), 1);
+  assert.equal(!!slack?.manual_retry_available, true);
+  assert.equal(Number(snapshot.totals.degraded_total || 0), 1);
+});
+
+run('XT-W3-24-M/runtime snapshot surfaces invalid token repair hints for governed onboarding repair paths', () => {
+  const snapshot = buildChannelRuntimeStatusSnapshot([
+    {
+      provider: 'feishu',
+      account_id: 'tenant_ops',
+      runtime_state: 'ingress_ready',
+      delivery_ready: false,
+      command_entry_ready: false,
+      last_error_code: 'verification_token_invalid',
+      updated_at_ms: 6100,
+    },
+    {
+      provider: 'whatsapp_cloud_api',
+      account_id: 'wa_ops',
+      runtime_state: 'ingress_ready',
+      delivery_ready: false,
+      command_entry_ready: false,
+      last_error_code: 'verify_token_invalid',
+      updated_at_ms: 6200,
+    },
+  ], {
+    updated_at_ms: 7000,
+  });
+
+  const feishu = snapshot.providers.find((row) => row.provider === 'feishu');
+  const whatsapp = snapshot.providers.find((row) => row.provider === 'whatsapp_cloud_api');
+
+  assert.equal(
+    (feishu?.repair_hints || []).some((item) => String(item || '').includes('HUB_FEISHU_OPERATOR_VERIFICATION_TOKEN')),
+    true
+  );
+  assert.equal(
+    (whatsapp?.repair_hints || []).some((item) => String(item || '').includes('HUB_WHATSAPP_CLOUD_OPERATOR_VERIFY_TOKEN')),
+    true
+  );
+});

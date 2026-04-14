@@ -7,6 +7,9 @@ import path from 'node:path';
 import {
   createPreauthSurfaceGuard,
   createWebhookReplayGuard,
+  evaluateFirstPairSameLanRequirement,
+  resolveFirstPairSameLanAllowedCidrs,
+  shouldRequireInviteTokenForPairingRequest,
   startPairingHTTPServer,
 } from './pairing_http.js';
 import { createConnectorDeliveryReceiptCompensator } from './connector_delivery_receipt_compensator.js';
@@ -183,6 +186,73 @@ async function withPairingServer({
   });
 }
 
+await runAsync('DPR-W1/client presence endpoint records authenticated remote heartbeat', async () => {
+  const runtimeBaseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pairing_presence_runtime_'));
+  try {
+    fs.writeFileSync(
+      path.join(runtimeBaseDir, 'hub_grpc_clients.json'),
+      JSON.stringify({
+        schema_version: 'hub_grpc_clients.v1',
+        updated_at_ms: 1,
+        clients: [
+          {
+            device_id: 'dev_presence_xt',
+            user_id: 'dev_presence_xt',
+            app_id: 'x_terminal',
+            name: 'XT Presence Mac',
+            token: 'tok_presence_xt',
+            enabled: true,
+            created_at_ms: 1,
+            capabilities: ['models', 'events'],
+            allowed_cidrs: ['any'],
+          },
+        ],
+      }, null, 2) + '\n',
+      'utf8'
+    );
+
+    await withPairingServer({
+      env: {
+        HUB_RUNTIME_BASE_DIR: runtimeBaseDir,
+      },
+    }, async ({ baseUrl }) => {
+      const out = await requestJson({
+        method: 'POST',
+        url: `${baseUrl}/clients/presence`,
+        headers: {
+          authorization: 'Bearer tok_presence_xt',
+        },
+        body: {
+          app_id: 'x_terminal',
+          device_name: 'XT Presence Mac',
+          route: 'internet',
+          transport_mode: 'hub_grpc_internet',
+        },
+      });
+
+      assert.equal(out.status, 200);
+      assert.equal(!!out.json?.ok, true);
+      assert.equal(String(out.json?.device_id || ''), 'dev_presence_xt');
+
+      const snap = JSON.parse(fs.readFileSync(path.join(runtimeBaseDir, 'grpc_device_presence.json'), 'utf8'));
+      assert.equal(String(snap.schema_version || ''), 'grpc_device_presence.v1');
+      assert.ok(Array.isArray(snap.devices), 'expected presence devices array');
+      assert.equal(snap.devices.length, 1);
+      assert.equal(String(snap.devices[0]?.device_id || ''), 'dev_presence_xt');
+      assert.equal(String(snap.devices[0]?.app_id || ''), 'x_terminal');
+      assert.equal(String(snap.devices[0]?.route || ''), 'internet');
+      assert.equal(String(snap.devices[0]?.transport_mode || ''), 'hub_grpc_internet');
+      assert.equal(String(snap.devices[0]?.name || ''), 'XT Presence Mac');
+    });
+  } finally {
+    try {
+      fs.rmSync(runtimeBaseDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  }
+});
+
 run('CM-W3-18/preauth rotating source key stays bounded with stale prune', () => {
   const guard = createPreauthSurfaceGuard({
     window_ms: 60_000,
@@ -208,6 +278,50 @@ run('CM-W3-18/preauth rotating source key stays bounded with stale prune', () =>
   guard.prune(now + (10 * 60 * 1000));
   const afterPrune = guard.snapshot();
   assert.equal(Number(afterPrune.state_keys || 0), 0);
+});
+
+run('CRK-W1-20/invite token policy treats forwarded public peers as external', () => {
+  assert.equal(shouldRequireInviteTokenForPairingRequest({
+    peer_ip: '127.0.0.1',
+    forwarded_for: '203.0.113.8',
+  }), true);
+  assert.equal(shouldRequireInviteTokenForPairingRequest({
+    peer_ip: '127.0.0.1',
+    forwarded_for: '100.96.10.8',
+  }), false);
+  assert.equal(shouldRequireInviteTokenForPairingRequest({
+    peer_ip: '100.96.10.8',
+    forwarded_for: '',
+  }), false);
+});
+
+run('XPF-02-C/first pair same-lan policy strips broad private rules and keeps explicit LAN cidrs', () => {
+  assert.deepEqual(
+    resolveFirstPairSameLanAllowedCidrs({
+      HUB_ALLOWED_CIDRS: 'private,loopback,192.168.0.0/24,17.81.0.0/16',
+    }),
+    ['loopback', '192.168.0.0/24', '17.81.0.0/16']
+  );
+
+  const local = evaluateFirstPairSameLanRequirement({
+    peer_ip: '127.0.0.1',
+    forwarded_for: '192.168.0.55',
+    env: {
+      HUB_PAIRING_FIRST_PAIR_ALLOWED_CIDRS: 'loopback,192.168.0.0/24',
+    },
+  });
+  assert.equal(local.ok, true);
+  assert.equal(String(local.effective_peer_ip || ''), '192.168.0.55');
+
+  const remote = evaluateFirstPairSameLanRequirement({
+    peer_ip: '127.0.0.1',
+    forwarded_for: '203.0.113.8',
+    env: {
+      HUB_PAIRING_FIRST_PAIR_ALLOWED_CIDRS: 'loopback,192.168.0.0/24',
+    },
+  });
+  assert.equal(remote.ok, false);
+  assert.equal(String(remote.effective_peer_ip || ''), '203.0.113.8');
 });
 
 await runAsync('CRK-W1-07/webhook replay duplicate signature second send is rejected', async () => {
@@ -252,6 +366,258 @@ await runAsync('CRK-W1-07/webhook replay duplicate signature second send is reje
     }
     assert.ok(Number(ext.webhook_replay_block_rate || 0) > 0, 'webhook_replay_block_rate should be > 0');
   });
+});
+
+await runAsync('CRK-W1-19/pairing discovery keeps LAN host hint and exposes separate internet host hint', async () => {
+  const runtimeBaseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pairing_discovery_identity_'));
+  try {
+    await withPairingServer({
+      env: {
+        HUB_RUNTIME_BASE_DIR: runtimeBaseDir,
+        HUB_PAIRING_PUBLIC_HOST: 'hub.tailnet.example',
+      },
+    }, async ({ baseUrl }) => {
+      const out = await requestJson({ url: `${baseUrl}/pairing/discovery` });
+      assert.equal(out.status, 200);
+      assert.equal(out.json?.ok, true);
+      assert.match(String(out.json?.hub_instance_id || ''), /^hub_[a-f0-9]{20}$/);
+      assert.match(String(out.json?.lan_discovery_name || ''), /^axhub-[a-z0-9-]+$/);
+      assert.equal(Number(out.json?.pairing_profile_epoch || 0), 0);
+      assert.match(String(out.json?.route_pack_version || ''), /^route_pack_[a-f0-9]{24}$/);
+      assert.equal(String(out.json?.hub_host_hint || ''), '127.0.0.1');
+      assert.equal(String(out.json?.internet_host_hint || ''), 'hub.tailnet.example');
+      assert.notEqual(String(out.json?.internet_host_hint || ''), String(out.json?.lan_discovery_name || ''));
+    });
+  } finally {
+    try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch {}
+  }
+});
+
+await runAsync('CRK-W1-20/pairing request requires valid invite token when gate is forced', async () => {
+  const runtimeBaseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pairing_invite_token_gate_'));
+  const dbPath = path.join(runtimeBaseDir, 'hub.db');
+  try {
+    fs.writeFileSync(
+      path.join(runtimeBaseDir, 'hub_external_invite_token.json'),
+      JSON.stringify({
+        schema_version: 'hub.external_invite_token.v1',
+        token_id: 'invite_test_1',
+        token_secret: 'axhub_invite_test_123',
+        created_at_ms: Date.now(),
+      }),
+      'utf8'
+    );
+
+    await withEnvAsync({
+      HUB_MEMORY_KEK_FILE: path.join(runtimeBaseDir, 'hub_memory_kek.json'),
+    }, async () => {
+      const db = new HubDB({ dbPath });
+      try {
+        await withPairingServer({
+          db,
+          env: {
+            HUB_PAIRING_REQUIRE_INVITE_TOKEN: '1',
+            REL_FLOW_HUB_BASE_DIR: runtimeBaseDir,
+          },
+        }, async ({ baseUrl }) => {
+          const missing = await requestJson({
+            method: 'POST',
+            url: `${baseUrl}/pairing/requests`,
+            body: {
+              app_id: 'ax_terminal',
+              device_name: 'XT Remote',
+              pairing_secret: 'secret_secret_1234',
+            },
+          });
+          assert.equal(missing.status, 403);
+          assert.equal(String(missing.json?.error?.code || ''), 'invite_token_required');
+
+          const invalid = await requestJson({
+            method: 'POST',
+            url: `${baseUrl}/pairing/requests`,
+            body: {
+              app_id: 'ax_terminal',
+              device_name: 'XT Remote',
+              pairing_secret: 'secret_secret_1234',
+              invite_token: 'wrong_token',
+            },
+          });
+          assert.equal(invalid.status, 403);
+          assert.equal(String(invalid.json?.error?.code || ''), 'invite_token_invalid');
+
+          const accepted = await requestJson({
+            method: 'POST',
+            url: `${baseUrl}/pairing/requests`,
+            body: {
+              app_id: 'ax_terminal',
+              device_name: 'XT Remote',
+              pairing_secret: 'secret_secret_1234',
+              invite_token: 'axhub_invite_test_123',
+            },
+          });
+          assert.equal(accepted.status, 201);
+          assert.equal(!!accepted.json?.ok, true);
+          assert.ok(String(accepted.json?.pairing_request_id || '').length > 0);
+        });
+      } finally {
+        db.close();
+      }
+    });
+  } finally {
+    cleanupDbArtifacts(dbPath);
+    try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch {}
+  }
+});
+
+await runAsync('XPF-02-C/pairing request rejects first pair outside same lan before invite flow', async () => {
+  await withPairingServer({
+    env: {
+      HUB_PAIRING_FIRST_PAIR_ALLOWED_CIDRS: 'loopback,192.168.0.0/24',
+      HUB_PAIRING_REQUIRE_INVITE_TOKEN: '1',
+    },
+  }, async ({ baseUrl, db }) => {
+    const rejected = await requestJson({
+      method: 'POST',
+      url: `${baseUrl}/pairing/requests`,
+      headers: {
+        'x-forwarded-for': '203.0.113.8',
+      },
+      body: {
+        app_id: 'ax_terminal',
+        device_name: 'XT Remote',
+        pairing_secret: 'secret_secret_1234',
+        invite_token: 'axhub_invite_test_123',
+      },
+    });
+    assert.equal(rejected.status, 403);
+    assert.equal(String(rejected.json?.error?.code || ''), 'first_pair_requires_same_lan');
+
+    const auditRow = db.rows.find((row) => String(row?.event_type || '') === 'pairing.same_lan.rejected');
+    assert.ok(auditRow, 'expected pairing.same_lan.rejected audit');
+  });
+});
+
+await runAsync('XPF-02-C/pairing request accepts first pair from allowed same-lan peer', async () => {
+  const runtimeBaseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pairing_same_lan_accept_'));
+  const dbPath = path.join(runtimeBaseDir, 'hub.db');
+  try {
+    await withEnvAsync({
+      HUB_MEMORY_KEK_FILE: path.join(runtimeBaseDir, 'hub_memory_kek.json'),
+    }, async () => {
+      const db = new HubDB({ dbPath });
+      try {
+        await withPairingServer({
+          db,
+          env: {
+            HUB_PAIRING_FIRST_PAIR_ALLOWED_CIDRS: 'loopback,192.168.0.0/24',
+          },
+        }, async ({ baseUrl }) => {
+          const accepted = await requestJson({
+            method: 'POST',
+            url: `${baseUrl}/pairing/requests`,
+            headers: {
+              'x-forwarded-for': '192.168.0.44',
+            },
+            body: {
+              app_id: 'ax_terminal',
+              device_name: 'XT Nearby',
+              pairing_secret: 'secret_secret_1234',
+            },
+          });
+          assert.equal(accepted.status, 201);
+          assert.equal(!!accepted.json?.ok, true);
+        });
+      } finally {
+        db.close();
+      }
+    });
+  } finally {
+    cleanupDbArtifacts(dbPath);
+    try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch {}
+  }
+});
+
+await runAsync('XPF-02-C/approved pairing status exposes pairing profile epoch and route pack version', async () => {
+  const runtimeBaseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pairing_status_epoch_route_pack_'));
+  const dbPath = path.join(runtimeBaseDir, 'hub.db');
+  try {
+    await withEnvAsync({
+      HUB_MEMORY_KEK_FILE: path.join(runtimeBaseDir, 'hub_memory_kek.json'),
+    }, async () => {
+      const db = new HubDB({ dbPath });
+      try {
+        await withPairingServer({
+          db,
+          env: {
+            HUB_RUNTIME_BASE_DIR: runtimeBaseDir,
+            HUB_PAIRING_PUBLIC_HOST: 'hub.tailnet.example',
+            HUB_ADMIN_TOKEN: 'admin-pairing-meta',
+            HUB_PAIRING_FIRST_PAIR_ALLOWED_CIDRS: 'loopback,192.168.0.0/24',
+          },
+        }, async ({ baseUrl }) => {
+          const requested = await requestJson({
+            method: 'POST',
+            url: `${baseUrl}/pairing/requests`,
+            headers: {
+              'x-forwarded-for': '192.168.0.44',
+            },
+            body: {
+              app_id: 'ax_terminal',
+              device_name: 'XT Nearby',
+              pairing_secret: 'secret_secret_1234',
+            },
+          });
+          assert.equal(requested.status, 201);
+          const pairingRequestId = String(requested.json?.pairing_request_id || '');
+          assert.ok(pairingRequestId);
+
+          const approved = await requestJson({
+            method: 'POST',
+            url: `${baseUrl}/admin/pairing/requests/${pairingRequestId}/approve`,
+            headers: {
+              authorization: 'Bearer admin-pairing-meta',
+            },
+            body: {},
+          });
+          assert.equal(approved.status, 200);
+          assert.equal(String(approved.json?.status || ''), 'approved');
+          assert.ok(Number(approved.json?.pairing_profile_epoch || 0) > 0);
+          assert.match(String(approved.json?.route_pack_version || ''), /^route_pack_[a-f0-9]{24}$/);
+
+          const clientsSnapshot = JSON.parse(
+            fs.readFileSync(path.join(runtimeBaseDir, 'hub_grpc_clients.json'), 'utf8')
+          );
+          assert.equal(
+            Number(approved.json?.pairing_profile_epoch || 0),
+            Number(clientsSnapshot?.updated_at_ms || 0)
+          );
+
+          const statusOut = await requestJson({
+            method: 'GET',
+            url: `${baseUrl}/pairing/requests/${pairingRequestId}`,
+            headers: {
+              'x-pairing-secret': 'secret_secret_1234',
+            },
+          });
+          assert.equal(statusOut.status, 200);
+          assert.equal(String(statusOut.json?.status || ''), 'approved');
+          assert.equal(
+            Number(statusOut.json?.pairing_profile_epoch || 0),
+            Number(approved.json?.pairing_profile_epoch || 0)
+          );
+          assert.equal(
+            String(statusOut.json?.route_pack_version || ''),
+            String(approved.json?.route_pack_version || '')
+          );
+        });
+      } finally {
+        db.close();
+      }
+    });
+  } finally {
+    cleanupDbArtifacts(dbPath);
+    try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch {}
+  }
 });
 
 await runAsync('CRK-W1-07/webhook replay dedupe persists across server restart with HubDB', async () => {

@@ -2,6 +2,7 @@ import {
   buildWhatsAppCloudApprovalMessage,
   buildWhatsAppCloudSummaryMessage,
 } from './WhatsAppCloudEgress.js';
+import { buildOperatorChannelHeartbeatGovernanceSummaryLines } from '../operator_channel_heartbeat_governance_summary.js';
 
 function safeString(input) {
   return String(input ?? '').trim();
@@ -18,6 +19,19 @@ function safeObject(input) {
 
 function safeArray(input) {
   return Array.isArray(input) ? input : [];
+}
+
+function projectionStatusLabel(input) {
+  const raw = safeString(input).toLowerCase();
+  if (!raw) return '';
+  switch (raw) {
+    case 'awaiting_authorization':
+      return 'awaiting authorization';
+    case 'attention_required':
+      return 'attention required';
+    default:
+      return raw.replaceAll('_', ' ');
+  }
 }
 
 function deliveryContextFromResult(result = {}) {
@@ -41,10 +55,19 @@ function bindingDeliveryContext(binding = {}) {
 }
 
 function auditRefFromResult(result = {}) {
-  return safeString(result.command?.audit_ref || result.request_id || result.route?.route_id || result.gate?.binding_id);
+  return safeString(
+    result.command?.audit_ref
+    || result.discovery_ticket?.audit_ref
+    || result.request_id
+    || result.route?.route_id
+    || result.gate?.binding_id
+  );
 }
 
 function projectIdFromResult(result = {}) {
+  if (safeString(result.discovery_ticket?.proposed_scope_type) === 'project' && safeString(result.discovery_ticket?.proposed_scope_id)) {
+    return safeString(result.discovery_ticket.proposed_scope_id);
+  }
   if (safeString(result.execution?.projection?.project_id)) return safeString(result.execution.projection.project_id);
   if (safeString(result.execution?.xt_command?.project_id)) return safeString(result.execution.xt_command.project_id);
   if (safeString(result.execution?.query?.project_id)) return safeString(result.execution.query.project_id);
@@ -57,6 +80,8 @@ function projectIdFromResult(result = {}) {
 }
 
 function classifyStatus(result = {}) {
+  const dispatchKind = safeString(result.dispatch?.kind);
+  if (dispatchKind === 'discovery_ticket') return 'access_pending_approval';
   const execution = safeObject(result.execution);
   if (Object.keys(execution).length) {
     const xtStatus = safeString(execution.xt_command?.status);
@@ -77,13 +102,36 @@ function classifyStatus(result = {}) {
     if (queryAction === 'supervisor.queue.get') return 'supervisor_queue';
   }
 
-  const dispatchKind = safeString(result.dispatch?.kind);
   if (dispatchKind === 'deny') return 'denied';
   if (dispatchKind === 'route_blocked') return 'route_blocked';
   if (dispatchKind === 'xt_command') return 'routed_to_xt';
   if (dispatchKind === 'runner_command') return 'routed_to_runner';
   if (dispatchKind === 'hub_grant_action') return 'hub_action';
   return 'hub_query';
+}
+
+function buildWhatsAppCloudDiscoverySummary(result = {}) {
+  const ticket = safeObject(result.discovery_ticket);
+  if (!safeString(ticket.ticket_id)) return null;
+  const actionName = safeString(result.command?.action_name || result.gate?.action_name);
+  const scopeHint = safeString(ticket.proposed_scope_type) && safeString(ticket.proposed_scope_id)
+    ? `${safeString(ticket.proposed_scope_type)}/${safeString(ticket.proposed_scope_id)}`
+    : '';
+  return buildWhatsAppCloudSummaryMessage({
+    delivery_context: deliveryContextFromResult(result),
+    title: 'Access Pending Approval',
+    status: classifyStatus(result),
+    project_id: projectIdFromResult(result),
+    lines: [
+      'This WhatsApp Cloud conversation is not bound to a governed operator scope yet.',
+      actionName ? `Requested action: ${actionName}` : '',
+      safeString(ticket.ticket_id) ? `Ticket: ${safeString(ticket.ticket_id)}` : '',
+      scopeHint ? `Scope hint: ${scopeHint}` : '',
+      safeString(ticket.recommended_binding_mode) ? `Binding mode: ${safeString(ticket.recommended_binding_mode)}` : '',
+      'A local Hub admin needs to approve this channel once before commands can run.',
+    ].filter(Boolean),
+    audit_ref: safeString(ticket.audit_ref || auditRefFromResult(result)),
+  });
 }
 
 function grantEventAuditRef(event = {}) {
@@ -102,6 +150,7 @@ function buildExecutionSummary(result = {}) {
   const grantAction = safeObject(execution.grant_action);
   const xtCommand = safeObject(execution.xt_command);
   const heartbeat = safeObject(query.heartbeat);
+  const heartbeatGovernanceLines = buildOperatorChannelHeartbeatGovernanceSummaryLines(query.heartbeat_governance_snapshot_json);
   const queue = safeObject(query.queue);
   const actionName = safeString(
     query.action_name
@@ -136,6 +185,7 @@ function buildExecutionSummary(result = {}) {
   }
 
   if (Object.keys(projection).length) {
+    const projectionStatus = projectionStatusLabel(projection.status);
     const topline = safeString(projection.topline);
     const criticalBlocker = safeString(projection.critical_blocker);
     const nextBestAction = safeString(projection.next_best_action);
@@ -148,6 +198,7 @@ function buildExecutionSummary(result = {}) {
       project_id: safeString(projection.project_id || projectId),
       lines: [
         actionName ? `Action: ${actionName}` : '',
+        projectionStatus ? `Project state: ${projectionStatus}` : '',
         topline ? `Topline: ${topline}` : '',
         criticalBlocker ? `Blocker: ${criticalBlocker}` : '',
         nextBestAction ? `Next: ${nextBestAction}` : '',
@@ -202,6 +253,7 @@ function buildExecutionSummary(result = {}) {
       routeMode ? `Route: ${routeMode}` : '',
       resolvedDeviceId ? `Device: ${resolvedDeviceId}${route.xt_online === true ? ' (online)' : ''}` : '',
       Object.keys(heartbeat).length ? `Heartbeat: queue_depth=${safeInt(heartbeat.queue_depth)} wait_ms=${safeInt(heartbeat.oldest_wait_ms)} risk=${safeString(heartbeat.risk_tier || 'unknown') || 'unknown'}` : 'Heartbeat: no live project heartbeat',
+      ...heartbeatGovernanceLines,
     ].filter(Boolean);
 
     if (actionName === 'supervisor.blockers.get') {
@@ -240,6 +292,9 @@ function buildExecutionSummary(result = {}) {
 }
 
 export function buildWhatsAppCloudResultSummary(result = {}) {
+  const discoverySummary = buildWhatsAppCloudDiscoverySummary(result);
+  if (discoverySummary) return discoverySummary;
+
   const executionSummary = buildExecutionSummary(result);
   if (executionSummary) return executionSummary;
 

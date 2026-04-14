@@ -18,15 +18,15 @@ enum BridgeFetchIPC {
         var errorDescription: String? {
             switch self {
             case .bridgeNotRunning:
-                return "Bridge is not running. Restart X-Hub or restart the Bridge from Settings -> Networking (Bridge), then retry."
+                return HubUIStrings.Settings.Networking.BridgeIPC.notRunning
             case .bridgeNotEnabled:
-                return "Bridge networking is disabled by operator policy. Re-enable it in Settings -> Networking (Bridge), then retry."
+                return HubUIStrings.Settings.Networking.BridgeIPC.disabledByPolicy
             case .writeFailed:
-                return "Failed to write bridge request."
+                return HubUIStrings.Settings.Networking.BridgeIPC.writeFailed
             case .timeout:
-                return "Bridge request timed out. Ensure Bridge is running, then retry."
+                return HubUIStrings.Settings.Networking.BridgeIPC.timedOut
             case .badResponse:
-                return "Bridge returned an invalid response."
+                return HubUIStrings.Settings.Networking.BridgeIPC.invalidResponse
             }
         }
     }

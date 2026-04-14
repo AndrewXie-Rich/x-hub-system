@@ -148,7 +148,30 @@ function appendRouteAudit({
   audit = {},
   created = false,
   updated = false,
+  governance_runtime_readiness = null,
 }) {
+  const ext = {
+    schema_version: SUPERVISOR_CHANNEL_SESSION_ROUTE_SCHEMA,
+    route_id: route.route_id,
+    provider: route.provider,
+    account_id: route.account_id,
+    conversation_id: route.conversation_id,
+    thread_key: route.thread_key,
+    scope_type: route.scope_type,
+    scope_id: route.scope_id,
+    preferred_device_id: route.preferred_device_id,
+    resolved_device_id: route.resolved_device_id,
+    route_mode: route.route_mode,
+    xt_online: route.xt_online,
+    runner_required: route.runner_required,
+    same_project_scope: route.same_project_scope,
+    deny_code: route.deny_code,
+    created,
+    updated,
+  };
+  if (governance_runtime_readiness && typeof governance_runtime_readiness === 'object') {
+    ext.governance_runtime_readiness = governance_runtime_readiness;
+  }
   return db.appendAudit({
     event_id: audit.event_id || uuid(),
     event_type: 'channel.session_route.upserted',
@@ -169,25 +192,7 @@ function appendRouteAudit({
     error_message: route.route_mode === 'xt_offline' || route.route_mode === 'runner_not_ready'
       ? safeString(route.route_mode)
       : null,
-    ext_json: JSON.stringify({
-      schema_version: SUPERVISOR_CHANNEL_SESSION_ROUTE_SCHEMA,
-      route_id: route.route_id,
-      provider: route.provider,
-      account_id: route.account_id,
-      conversation_id: route.conversation_id,
-      thread_key: route.thread_key,
-      scope_type: route.scope_type,
-      scope_id: route.scope_id,
-      preferred_device_id: route.preferred_device_id,
-      resolved_device_id: route.resolved_device_id,
-      route_mode: route.route_mode,
-      xt_online: route.xt_online,
-      runner_required: route.runner_required,
-      same_project_scope: route.same_project_scope,
-      deny_code: route.deny_code,
-      created,
-      updated,
-    }),
+    ext_json: JSON.stringify(ext),
   });
 }
 
@@ -250,6 +255,9 @@ export function upsertSupervisorChannelSessionRoute(db, {
   request_id = '',
 } = {}) {
   ensureDb(db);
+  const governanceRuntimeReadiness = route && typeof route.governance_runtime_readiness === 'object'
+    ? route.governance_runtime_readiness
+    : null;
   const normalized = normalizeSupervisorChannelSessionRoute(route);
   if (!normalized.provider) {
     return routeDeny('provider_unknown');
@@ -299,6 +307,7 @@ export function upsertSupervisorChannelSessionRoute(db, {
       audit,
       created,
       updated,
+      governance_runtime_readiness: governanceRuntimeReadiness,
     });
     db.db
       .prepare(
@@ -351,12 +360,18 @@ export function upsertSupervisorChannelSessionRoute(db, {
         auditRef
       );
     const row = getSupervisorChannelSessionRouteById(db, { route_id: routeId });
+    const routeWithRuntimeReadiness = row && governanceRuntimeReadiness
+      ? {
+          ...row,
+          governance_runtime_readiness: governanceRuntimeReadiness,
+        }
+      : row;
     db.db.exec('COMMIT;');
     return {
       ok: true,
       deny_code: '',
       detail: {},
-      route: row,
+      route: routeWithRuntimeReadiness,
       audit_logged: true,
       created,
       updated,

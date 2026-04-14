@@ -5,80 +5,76 @@ import RELFlowHubCore
 
 @main
 struct RELFlowHubApp: App {
-    // Use an AppDelegate so we can programmatically show a popover (needed for widget click -> open popover).
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
+    init() {
+        if let code = XHubCLIRunner.runIfRequested(arguments: CommandLine.arguments) {
+            fflush(stdout)
+            fflush(stderr)
+            Foundation.exit(Int32(code))
+        }
+    }
+
     var body: some Scene {
-        // Menu bar apps don't need a normal window.
         Settings {
-            EmptyView()
+            SettingsSheetView()
+                .environmentObject(HubStore.shared)
         }
     }
 }
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
-    private var statusController: StatusBarController?
     private var floatingController: FloatingPanelController?
     private var mainPanelController: MainPanelController?
+    private var statusBarController: StatusBarController?
     private var embeddedBridgeRunner: EmbeddedBridgeRunner?
     private var activity: NSObjectProtocol?
     private var didCheckInstallLocation = false
-
-    private let didShowMainOnFirstLaunchKey = "relflowhub_did_show_main_on_first_launch"
+    private var launchStartedAt = Date()
+    private var foregroundPresentationEstablished = false
+    private var foregroundPresentationRepairScheduled = false
+    private let launchPresentationPolicy = LaunchPresentationPolicy.from(arguments: CommandLine.arguments)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Accessory app: show in menu bar, hide Dock icon.
-        NSApp.setActivationPolicy(.accessory)
+        if XHubCLIRunner.isCLIInvocation(arguments: CommandLine.arguments) {
+            return
+        }
+        launchStartedAt = Date()
+        NSApp.setActivationPolicy(.regular)
+        HubDiagnostics.log("app.launch didFinishLaunching presentation=\(launchPresentationPolicy)")
 
-        // Prevent App Nap from pausing timers (IPC heartbeat/drain, calendar polling).
-        // On macOS 26, LSUIElement apps can get napped aggressively.
+        LegacyBridgeProcessCleanup.terminateLegacyProcessesIfNeeded()
+
         activity = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical],
-            reason: "REL Flow Hub timers (IPC/Calendar)"
+            reason: "REL Flow Hub timers (IPC/background refresh)"
         )
 
-        // Allow meeting reminders to open join links.
-        // NOTE: calling UNUserNotificationCenter.current() can assert+abort when running via
-        // `swift run` (not an app bundle). Only enable notifications for real .app builds.
         if NotificationSupport.isAvailable {
             UNUserNotificationCenter.current().delegate = self
         }
+        registerWorkspacePowerObservers()
 
-        // Single-app mode: run Bridge IPC service inside Hub.
         let embeddedBridge = EmbeddedBridgeRunner()
         embeddedBridge.start()
         embeddedBridgeRunner = embeddedBridge
 
-        // Ensure enabled remote models are reflected in models_state.json for satellites (gRPC/X-Terminal).
         RemoteModelStorage.syncEnabledRemoteModelsIntoModelState()
 
-        // Resolve HubStore before starting launch-state timers. HubStore init can briefly spin
-        // the main runloop (for bounded subprocess probes); starting the state machine first can
-        // re-enter HubStore.shared during initialization and crash with recursive dispatch_once.
         let store = HubStore.shared
-        statusController = StatusBarController(store: store)
-        floatingController = FloatingPanelController(store: store)
-        mainPanelController = MainPanelController(store: store)
+        ensurePresentationControllers(store: store, resetFrames: false, reason: "launch")
+        if launchPresentationPolicy == .background {
+            statusBarController = StatusBarController(store: store)
+        } else {
+            ensureForegroundPresentation(reason: "launch_immediate")
+            scheduleForegroundPresentationRetry(after: 0.35, reason: "launch_retry_350ms")
+            scheduleForegroundPresentationRetry(after: 1.2, reason: "launch_retry_1200ms")
+        }
 
-        // Emit a single structured launch status file so startup failures are diagnosable
-        // even when the UI appears "stuck" (common for LSUIElement apps).
         HubLaunchStateMachine.shared.start(bridgeStarted: true)
-
-        // Make launch visible (LSUIElement apps can feel like "nothing happened").
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-            guard let self else { return }
-            self.floatingController?.show()
-            self.showMainPanelIfFirstLaunch()
-
-            // After we have shown something, guide users to install into /Applications.
-            // This reduces repeated Calendar/Accessibility prompts caused by running from DMG/Downloads.
-            if !self.didCheckInstallLocation {
-                self.didCheckInstallLocation = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    AppInstallDoctor.showInstallAlertIfNeeded()
-                }
-            }
+        if launchPresentationPolicy == .background {
+            HubDiagnostics.log("app.launch background_mode_ready")
         }
 
         NotificationCenter.default.addObserver(
@@ -96,11 +92,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         )
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        HubDiagnostics.log("app.terminate requested")
+        return .terminateNow
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
+        HubDiagnostics.log("app.terminate willTerminate")
         HubLaunchStateMachine.shared.stop()
         embeddedBridgeRunner?.stop()
         embeddedBridgeRunner = nil
+        unregisterWorkspacePowerObservers()
         HubGRPCServerSupport.shared.stop()
+        HubServingPowerManager.shared.shutdown()
         if let activity {
             ProcessInfo.processInfo.endActivity(activity)
             self.activity = nil
@@ -117,18 +121,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        // Finder double-clicking an LSUIElement app often feels like "nothing happened".
-        // Bring up a real window so users have an obvious affordance.
-        floatingController?.show()
-        mainPanelController?.show()
+        ensureForegroundPresentation(reason: "reopen")
         return true
     }
 
-    private func showMainPanelIfFirstLaunch() {
-        let didShow = UserDefaults.standard.bool(forKey: didShowMainOnFirstLaunchKey)
-        guard !didShow else { return }
-        UserDefaults.standard.set(true, forKey: didShowMainOnFirstLaunchKey)
-        mainPanelController?.show()
+    func applicationDidBecomeActive(_ notification: Notification) {
+        guard launchPresentationPolicy == .foreground else { return }
+        guard !foregroundPresentationEstablished else { return }
+        if Date().timeIntervalSince(launchStartedAt) <= 8.0 {
+            ensureForegroundPresentation(reason: "did_become_active")
+        }
     }
 
     @objc private func toggleFloatingWindow() {
@@ -136,13 +138,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     @objc private func openMainPanel() {
-        mainPanelController?.show()
+        ensureForegroundPresentation(reason: "open_main_notification")
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
-        // Future: handle relflowhub://open?panel=inbox to show popover.
         guard !urls.isEmpty else { return }
-        mainPanelController?.show()
+        ensureForegroundPresentation(reason: "open_url")
     }
 
     nonisolated func userNotificationCenter(
@@ -166,5 +167,140 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 NSWorkspace.shared.open(url)
             }
         }
+    }
+
+    private func showMainPanel() {
+        mainPanelController?.show()
+        if mainPanelController?.isVisible == true {
+            foregroundPresentationEstablished = true
+        }
+        maybeCheckInstallLocation()
+    }
+
+    private func ensureForegroundPresentation(reason: String) {
+        guard launchPresentationPolicy == .foreground else { return }
+        let store = HubStore.shared
+        ensurePresentationControllers(store: store, resetFrames: false, reason: reason)
+        let mainVisible = mainPanelController?.isVisible ?? false
+        let floatingVisible = floatingController?.isVisible ?? false
+        HubDiagnostics.log(
+            "app.presentation.ensure reason=\(reason) mainVisible=\(mainVisible ? 1 : 0) floatingVisible=\(floatingVisible ? 1 : 0) hasMain=\(mainPanelController != nil ? 1 : 0) hasFloating=\(floatingController != nil ? 1 : 0)"
+        )
+
+        NSApp.activate(ignoringOtherApps: true)
+        floatingController?.show()
+        if !mainVisible {
+            showMainPanel()
+        } else {
+            foregroundPresentationEstablished = true
+        }
+        scheduleForegroundPresentationRepairIfNeeded(reason: reason)
+    }
+
+    private func scheduleForegroundPresentationRetry(after delay: TimeInterval, reason: String) {
+        guard launchPresentationPolicy == .foreground else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+            guard !(self.mainPanelController?.isVisible ?? false) else {
+                self.foregroundPresentationEstablished = true
+                return
+            }
+            self.ensureForegroundPresentation(reason: reason)
+        }
+    }
+
+    private func maybeCheckInstallLocation() {
+        guard !didCheckInstallLocation else { return }
+        didCheckInstallLocation = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            AppInstallDoctor.showInstallAlertIfNeeded()
+        }
+    }
+
+    private func ensurePresentationControllers(store: HubStore, resetFrames: Bool, reason: String) {
+        if resetFrames {
+            UserDefaults.standard.removeObject(forKey: "relflowhub_main_frame")
+            UserDefaults.standard.removeObject(forKey: "relflowhub_floating_frame")
+        }
+
+        if floatingController == nil {
+            floatingController = FloatingPanelController(store: store)
+            HubDiagnostics.log("app.presentation.controller_create target=floating reason=\(reason) reset=\(resetFrames ? 1 : 0)")
+        }
+        if mainPanelController == nil {
+            mainPanelController = MainPanelController(store: store)
+            HubDiagnostics.log("app.presentation.controller_create target=main reason=\(reason) reset=\(resetFrames ? 1 : 0)")
+        }
+    }
+
+    private func scheduleForegroundPresentationRepairIfNeeded(reason: String) {
+        guard launchPresentationPolicy == .foreground else { return }
+        guard !foregroundPresentationRepairScheduled else { return }
+        foregroundPresentationRepairScheduled = true
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            guard let self else { return }
+            self.foregroundPresentationRepairScheduled = false
+
+            let mainVisible = self.mainPanelController?.isVisible ?? false
+            let floatingVisible = self.floatingController?.isVisible ?? false
+            guard !mainVisible, !floatingVisible else {
+                if mainVisible {
+                    self.foregroundPresentationEstablished = true
+                }
+                return
+            }
+
+            HubDiagnostics.log("app.presentation.repair reason=\(reason) action=rebuild_reset_frames")
+            self.floatingController = nil
+            self.mainPanelController = nil
+            self.ensurePresentationControllers(store: HubStore.shared, resetFrames: true, reason: "\(reason)_repair")
+            self.floatingController?.show()
+            self.showMainPanel()
+
+            let repairedMainVisible = self.mainPanelController?.isVisible ?? false
+            let repairedFloatingVisible = self.floatingController?.isVisible ?? false
+            HubDiagnostics.log(
+                "app.presentation.repair_done reason=\(reason) mainVisible=\(repairedMainVisible ? 1 : 0) floatingVisible=\(repairedFloatingVisible ? 1 : 0)"
+            )
+        }
+    }
+
+    private func registerWorkspacePowerObservers() {
+        let center = NSWorkspace.shared.notificationCenter
+        center.addObserver(self, selector: #selector(handleSystemWillSleep), name: NSWorkspace.willSleepNotification, object: nil)
+        center.addObserver(self, selector: #selector(handleSystemDidWake), name: NSWorkspace.didWakeNotification, object: nil)
+        center.addObserver(self, selector: #selector(handleScreensDidSleep), name: NSWorkspace.screensDidSleepNotification, object: nil)
+        center.addObserver(self, selector: #selector(handleScreensDidWake), name: NSWorkspace.screensDidWakeNotification, object: nil)
+    }
+
+    private func unregisterWorkspacePowerObservers() {
+        NSWorkspace.shared.notificationCenter.removeObserver(self, name: NSWorkspace.willSleepNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.removeObserver(self, name: NSWorkspace.didWakeNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.removeObserver(self, name: NSWorkspace.screensDidSleepNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.removeObserver(self, name: NSWorkspace.screensDidWakeNotification, object: nil)
+    }
+
+    @objc private func handleSystemWillSleep() {
+        let grpc = HubGRPCServerSupport.shared
+        HubDiagnostics.log(
+            "power.system_will_sleep auto_start=\(grpc.autoStart ? 1 : 0) serving=\(grpc.isServingAvailable ? 1 : 0) running=\(grpc.isRunning ? 1 : 0) host=\(grpc.xtTerminalInternetHost ?? "-")"
+        )
+    }
+
+    @objc private func handleSystemDidWake() {
+        let grpc = HubGRPCServerSupport.shared
+        HubDiagnostics.log(
+            "power.system_did_wake auto_start=\(grpc.autoStart ? 1 : 0) serving=\(grpc.isServingAvailable ? 1 : 0) running=\(grpc.isRunning ? 1 : 0) host=\(grpc.xtTerminalInternetHost ?? "-")"
+        )
+        grpc.refresh()
+    }
+
+    @objc private func handleScreensDidSleep() {
+        HubDiagnostics.log("power.screens_did_sleep")
+    }
+
+    @objc private func handleScreensDidWake() {
+        HubDiagnostics.log("power.screens_did_wake")
     }
 }

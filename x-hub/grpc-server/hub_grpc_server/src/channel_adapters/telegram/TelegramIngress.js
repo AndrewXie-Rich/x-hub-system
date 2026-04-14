@@ -1,4 +1,5 @@
 import { compileTelegramCallbackAction } from './TelegramInteractiveActions.js';
+import { normalizeHubChannelIngressEnvelope } from '../../channel_ingress_envelope.js';
 
 function safeString(input) {
   return String(input ?? '').trim();
@@ -115,13 +116,19 @@ export function normalizeTelegramUpdate(update = {}, { account_id = '' } = {}) {
       account_id,
     });
     if (!interactive.ok) return interactive;
-    return {
+    const envelope = normalizeHubChannelIngressEnvelope({
       ...interactive,
       envelope_type: 'callback_query',
       event_id: safeString(src.update_id || callbackQuery.id),
       replay_key: safeString(src.update_id || callbackQuery.id),
+      audit_ref: safeString(interactive.audit_ref || `telegram_callback:${safeString(callbackQuery.id || src.update_id) || 'unknown'}`),
       signature_valid: true,
       token_valid: true,
+    });
+    if (!envelope.ok) return envelope;
+    return {
+      ...envelope,
+      callback_query_id: safeString(interactive.callback_query_id || callbackQuery.id),
     };
   }
 
@@ -143,7 +150,7 @@ export function normalizeTelegramUpdate(update = {}, { account_id = '' } = {}) {
   const structured_action = compileTelegramTextCommand(message.text || message.caption || '');
   const chat = safeObject(message.chat);
   const from = safeObject(message.from);
-  return {
+  return normalizeHubChannelIngressEnvelope({
     ok: true,
     envelope_type: 'message',
     event_id: safeString(src.update_id || message.message_id),
@@ -164,5 +171,5 @@ export function normalizeTelegramUpdate(update = {}, { account_id = '' } = {}) {
       channel_scope: normalizeTelegramChannelScope(chat.type),
     },
     structured_action,
-  };
+  });
 }

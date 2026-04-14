@@ -224,3 +224,32 @@ await runAsync('TelegramCommandOrchestrator creates discovery ticket when govern
   assert.equal(String(discovery_calls[0].ticket.conversation_id || ''), '-1001234567890');
   assert.equal(String(discovery_calls[0].ticket.recommended_binding_mode || ''), 'thread_binding');
 });
+
+run('TelegramCommandOrchestrator derives actor identity from stable Telegram ids, not display text', () => {
+  const normalized = normalizeTelegramCommandInput({
+    envelope_type: 'message',
+    actor: {
+      external_user_id: '123456',
+      external_tenant_id: 'telegram_ops_bot',
+      username: 'alice_ops',
+      display_name: 'Alice Visible',
+    },
+    channel: {
+      provider: 'telegram',
+      account_id: 'telegram_ops_bot',
+      conversation_id: '-1001234567890',
+      thread_key: 'topic:42',
+      channel_scope: 'group',
+    },
+    structured_action: {
+      action_name: 'deploy.plan',
+    },
+  }, {
+    now_ms: 1710000012000,
+  });
+
+  assert.equal(!!normalized.ok, true);
+  assert.equal(String(normalized.actor?.external_user_id || ''), '123456');
+  assert.equal(String(normalized.actor?.external_tenant_id || ''), 'telegram_ops_bot');
+  assert.equal(String(normalized.actor?.stable_external_id || ''), 'telegram/telegram_ops_bot/123456');
+});

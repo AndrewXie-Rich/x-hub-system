@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 
+import { normalizeHubChannelIngressEnvelope } from '../../channel_ingress_envelope.js';
 import { compileFeishuCardAction } from './FeishuCards.js';
 
 function safeString(input) {
@@ -190,13 +191,15 @@ export function normalizeFeishuWebhookRequest({
 
   const eventType = extractFeishuEventType(body);
   if (eventType === 'url_verification') {
-    return {
+    return normalizeHubChannelIngressEnvelope({
       ok: true,
       envelope_type: 'url_verification',
       challenge: safeString(body.challenge),
       replay_key: safeString(body.challenge || body.uuid || sha256Hex(raw_body).slice(0, 24)),
       token_valid: true,
-    };
+    }, {
+      provider: 'feishu',
+    });
   }
 
   const header = safeObject(body.header);
@@ -209,14 +212,16 @@ export function normalizeFeishuWebhookRequest({
         token_valid: true,
       };
     }
-    return {
+    return normalizeHubChannelIngressEnvelope({
       ...interactive,
       envelope_type: 'interactive',
       event_id: safeString(header.event_id || interactive.request_id),
       replay_key: safeString(header.event_id || interactive.request_id || sha256Hex(raw_body).slice(0, 24)),
       token_valid: true,
       signature_valid: true,
-    };
+    }, {
+      provider: 'feishu',
+    });
   }
 
   if (eventType !== 'im.message.receive_v1') {
@@ -238,7 +243,7 @@ export function normalizeFeishuWebhookRequest({
   const text = parseFeishuMessageText(message.content, message.message_type);
   const messageType = safeString(message.message_type).toLowerCase();
 
-  return {
+  return normalizeHubChannelIngressEnvelope({
     ok: true,
     envelope_type: 'event_callback',
     event_id: safeString(header.event_id || messageId),
@@ -272,6 +277,7 @@ export function normalizeFeishuWebhookRequest({
     structured_action: messageType === 'text'
       ? compileFeishuTextCommand(text)
       : null,
-    raw_event_type: eventType,
-  };
+  }, {
+    provider: 'feishu',
+  });
 }

@@ -37,4 +37,25 @@ public enum ClientStorage {
         }
         return SharedPaths.ensureHubDirectory().appendingPathComponent("clients", isDirectory: true)
     }
+
+    public static func readDirectoryCandidates() -> [URL] {
+        var out: [URL] = []
+        var seen: Set<String> = []
+
+        func append(_ url: URL) {
+            let path = url.standardizedFileURL.path
+            guard seen.insert(path).inserted else { return }
+            out.append(url)
+        }
+
+        if let group = SharedPaths.appGroupDirectory() {
+            append(group.appendingPathComponent("clients", isDirectory: true))
+        }
+
+        for base in SharedPaths.hubDirectoryCandidates() {
+            append(base.appendingPathComponent("clients", isDirectory: true))
+        }
+
+        return out
+    }
 }

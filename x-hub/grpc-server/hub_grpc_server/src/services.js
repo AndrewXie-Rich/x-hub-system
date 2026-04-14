@@ -5,6 +5,11 @@ import crypto from 'node:crypto';
 import { nowMs, uuid, estimateTokens, requireHttpsUrl, chunkText } from './util.js';
 import { requireAdminAuth, requireClientAuth, requireOperatorChannelConnectorAuth } from './auth.js';
 import { loadClients } from './clients.js';
+import {
+  devicePresenceTTLms,
+  isDevicePresenceFresh,
+  loadDevicePresenceSnapshot,
+} from './device_presence.js';
 import { loadQuotaConfig, resolveDeviceDailyTokenCap, utcDayKey } from './quota.js';
 import { pushHubNotification } from './hub_ipc.js';
 import {
@@ -48,6 +53,8 @@ import {
   stageAgentImport,
   uploadSkillPackage,
 } from './skills_store.js';
+import { readOfficialSkillChannelState } from './official_skill_channel_sync.js';
+import { readOfficialSkillChannelMaintenanceStatus } from './official_skill_channel_maintenance.js';
 import { stripPrivateTagsFailClosed } from './private_tags.js';
 import { runMemoryRetrievalPipeline } from './memory_retrieval_pipeline.js';
 import { buildTrustShardHitStats, routeMemoryByTrustShards } from './memory_trust_router.js';
@@ -64,6 +71,8 @@ import {
 } from './memory_markdown_review.js';
 import { getVoiceWakeProfile, setVoiceWakeProfile } from './voicewake.js';
 import { buildChannelRuntimeStatusSnapshot } from './channel_runtime_snapshot.js';
+import { appendOperatorChannelActionAudit } from './channel_audit_events.js';
+import { buildProjectHeartbeatGovernanceSnapshot as buildProjectHeartbeatGovernanceSnapshotShared } from './project_heartbeat_governance_projection.js';
 import {
   getChannelIdentityBinding,
   listChannelIdentityBindings,
@@ -74,9 +83,28 @@ import {
   upsertSupervisorOperatorChannelBinding,
 } from './channel_bindings_store.js';
 import {
+  createOrTouchChannelOnboardingDiscoveryTicket,
+  getChannelOnboardingDiscoveryTicketById,
+  getLatestChannelOnboardingApprovalDecisionByTicketId,
+  listChannelOnboardingDiscoveryTickets,
+  reviewChannelOnboardingDiscoveryTicket,
+} from './channel_onboarding_discovery_store.js';
+import {
+  flushChannelOutboxForTicket,
+  retryChannelOnboardingOutbox,
+  runApprovedChannelOnboardingAutomation,
+} from './channel_onboarding_automation.js';
+import {
+  getChannelOnboardingAutoBindRevocationByTicketId,
+  revokeApprovedChannelOnboardingAutoBind,
+} from './channel_onboarding_transaction.js';
+import { listChannelDeliveryJobRuntimeRows } from './channel_delivery_jobs.js';
+import { getChannelOnboardingAutomationState } from './channel_onboarding_status_view.js';
+import {
   evaluateChannelCommandGateWithAudit,
   getChannelActionPolicy,
 } from './channel_command_gate.js';
+import { normalizeChannelProviderId } from './channel_registry.js';
 import {
   loadGrpcDevicesStatusSnapshot,
   resolveSupervisorChannelRoute,
@@ -88,6 +116,11 @@ import {
 } from './operator_channel_xt_command_queue.js';
 import { prepareLocalMemoryEmbeddings } from './local_embeddings.js';
 import { buildLocalTaskFailure, evaluateLocalTaskPolicyGate } from './local_task_policy.js';
+import {
+  buildGovernanceRuntimeReadinessFromDenyCode,
+  buildGovernanceRuntimeReadinessProjection,
+  buildSupervisorRouteGovernanceRuntimeReadinessProjection,
+} from './governance_runtime_readiness_projection.js';
 
 
 function safeStringList(values) {
@@ -108,11 +141,357 @@ function safeString(value) {
   return String(value ?? '').trim();
 }
 
+function safeStringArray(values) {
+  if (!Array.isArray(values)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const raw of values) {
+    const cleaned = safeString(raw);
+    if (!cleaned || seen.has(cleaned)) continue;
+    seen.add(cleaned);
+    out.push(cleaned);
+  }
+  return out;
+}
+
+function safeJsonParse(value, fallback = null) {
+  try {
+    return JSON.parse(String(value ?? ''));
+  } catch {
+    return fallback;
+  }
+}
+
 function nonNegativeInt(value, fallback = 0) {
   if (value == null || value === '') return fallback;
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
   return Math.max(0, Math.floor(number));
+}
+
+const XT_PROJECT_HEARTBEAT_CANONICAL_PREFIX = 'xterminal.project.heartbeat.';
+const XT_PROJECT_HEARTBEAT_SUMMARY_JSON_KEY = `${XT_PROJECT_HEARTBEAT_CANONICAL_PREFIX}summary_json`;
+
+const SUPERVISOR_MEMORY_CANDIDATE_THREAD_KEY = 'xterminal_supervisor_durable_candidate_device';
+const SUPERVISOR_MEMORY_CANDIDATE_SCHEMA_VERSION = 'xt.supervisor.durable_candidate_mirror.v1';
+const SUPERVISOR_MEMORY_CANDIDATE_CARRIER_KIND = 'supervisor_after_turn_durable_candidate_shadow_write';
+const SUPERVISOR_MEMORY_CANDIDATE_TARGET = 'hub_candidate_carrier_shadow_thread';
+const SUPERVISOR_MEMORY_CANDIDATE_LOCAL_STORE_ROLE = 'cache|fallback|edit_buffer';
+const SUPERVISOR_MEMORY_CANDIDATE_ALLOWED_SCOPES = new Set(['user_scope', 'project_scope', 'cross_link_scope']);
+const SUPERVISOR_MEMORY_CANDIDATE_ALLOWED_SESSION_PARTICIPATION = new Set(['ignore', 'read_only', 'scoped_write']);
+
+function parseSupervisorCandidatePayloadSummary(payloadSummary) {
+  const fields = {};
+  const raw = String(payloadSummary || '');
+  if (!raw) return fields;
+  for (const chunk of raw.split(';')) {
+    const token = String(chunk || '').trim();
+    if (!token) continue;
+    const separator = token.indexOf('=');
+    if (separator <= 0) continue;
+    const key = token.slice(0, separator).trim();
+    const value = token.slice(separator + 1).trim();
+    if (!key || !value || fields[key] != null) continue;
+    fields[key] = value;
+  }
+  return fields;
+}
+
+function uniqueOrderedValues(values) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of values) {
+    const value = safeString(raw);
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
+}
+
+function resolveModelSelectionRecord(input, models) {
+  const raw = safeString(input);
+  if (!raw) return { ok: false, id: '', info: null, reason: 'empty' };
+
+  const rows = Array.isArray(models) ? models : [];
+  const byId = new Map();
+  for (const row of rows) {
+    const id = safeString(row?.model_id);
+    if (!id || byId.has(id)) continue;
+    byId.set(id, row);
+  }
+  if (byId.has(raw)) return { ok: true, id: raw, info: byId.get(raw), reason: 'exact' };
+
+  const nameMatches = rows.filter((row) => safeString(row?.name) === raw);
+  if (nameMatches.length === 1) {
+    const id = safeString(nameMatches[0]?.model_id);
+    if (id) return { ok: true, id, info: nameMatches[0], reason: 'name' };
+  }
+
+  const suffixMatches = rows.filter((row) => {
+    const id = safeString(row?.model_id);
+    if (!id) return false;
+    return id === raw || id.endsWith(`/${raw}`);
+  });
+  if (suffixMatches.length === 1) {
+    const id = safeString(suffixMatches[0]?.model_id);
+    if (id) return { ok: true, id, info: suffixMatches[0], reason: 'suffix' };
+  }
+
+  return {
+    ok: false,
+    id: '',
+    info: null,
+    reason: suffixMatches.length > 1 ? 'ambiguous' : 'not_found',
+  };
+}
+
+function resolveServiceModelMeta({ db, runtimeBaseDir, modelId } = {}) {
+  const requestedModelId = safeString(modelId);
+  if (!requestedModelId) {
+    return {
+      requested_model_id: '',
+      resolved_model_id: '',
+      model: null,
+      source: '',
+      reason: 'empty',
+    };
+  }
+
+  try {
+    const dbModels = typeof db?.listModels === 'function' ? db.listModels() : [];
+    const resolved = resolveModelSelectionRecord(requestedModelId, dbModels);
+    if (resolved.ok) {
+      const canonicalModelId = safeString(resolved.id);
+      const canonicalModel = (canonicalModelId && typeof db?.getModel === 'function')
+        ? (db.getModel(canonicalModelId) || resolved.info)
+        : resolved.info;
+      if (canonicalModel) {
+        return {
+          requested_model_id: requestedModelId,
+          resolved_model_id: canonicalModelId || requestedModelId,
+          model: canonicalModel,
+          source: 'db',
+          reason: resolved.reason,
+        };
+      }
+    }
+  } catch {
+    // ignore and continue to runtime lookup
+  }
+
+  try {
+    const exactRuntimeModel = runtimeModelMeta(runtimeBaseDir, requestedModelId);
+    if (exactRuntimeModel) {
+      const canonicalModelId = safeString(exactRuntimeModel?.model_id) || requestedModelId;
+      return {
+        requested_model_id: requestedModelId,
+        resolved_model_id: canonicalModelId,
+        model: exactRuntimeModel,
+        source: 'runtime',
+        reason: 'exact',
+      };
+    }
+  } catch {
+    // ignore and continue to runtime snapshot lookup
+  }
+
+  try {
+    const runtimeSnapshot = runtimeModelsSnapshot(runtimeBaseDir);
+    if (runtimeSnapshot?.ok && Array.isArray(runtimeSnapshot.models)) {
+      const resolved = resolveModelSelectionRecord(requestedModelId, runtimeSnapshot.models);
+      if (resolved.ok) {
+        const canonicalModelId = safeString(resolved.id);
+        const canonicalModel = runtimeModelMeta(runtimeBaseDir, canonicalModelId) || resolved.info;
+        if (canonicalModel) {
+          return {
+            requested_model_id: requestedModelId,
+            resolved_model_id: canonicalModelId || requestedModelId,
+            model: canonicalModel,
+            source: 'runtime',
+            reason: resolved.reason,
+          };
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  return {
+    requested_model_id: requestedModelId,
+    resolved_model_id: '',
+    model: null,
+    source: '',
+    reason: 'not_found',
+  };
+}
+
+function normalizeSupervisorMemoryCandidateCarrierRequest({
+  thread,
+  request_id,
+  created_at_ms,
+  messages,
+} = {}) {
+  const requestId = safeString(request_id);
+  if (!requestId) {
+    return { ok: false, deny_code: 'supervisor_candidate_request_id_empty' };
+  }
+
+  const msgList = Array.isArray(messages) ? messages : [];
+  const userText = safeString(msgList.find((message) => safeString(message?.role) === 'user')?.content || '');
+  const assistantText = safeString(msgList.find((message) => safeString(message?.role) === 'assistant')?.content || '');
+  if (!userText || !assistantText) {
+    return { ok: false, deny_code: 'supervisor_candidate_turn_shape_invalid' };
+  }
+  if (!userText.startsWith('shadow_write durable_candidates')) {
+    return { ok: false, deny_code: 'supervisor_candidate_user_marker_invalid' };
+  }
+
+  let parsedEnvelope = null;
+  try {
+    parsedEnvelope = JSON.parse(assistantText);
+  } catch {
+    return { ok: false, deny_code: 'supervisor_candidate_envelope_invalid_json' };
+  }
+  if (!parsedEnvelope || typeof parsedEnvelope !== 'object' || Array.isArray(parsedEnvelope)) {
+    return { ok: false, deny_code: 'supervisor_candidate_envelope_invalid_json' };
+  }
+
+  const schemaVersion = safeString(parsedEnvelope.schema_version || parsedEnvelope.schemaVersion);
+  if (schemaVersion !== SUPERVISOR_MEMORY_CANDIDATE_SCHEMA_VERSION) {
+    return { ok: false, deny_code: 'supervisor_candidate_schema_version_mismatch' };
+  }
+  const carrierKind = safeString(parsedEnvelope.carrier_kind || parsedEnvelope.carrierKind);
+  if (carrierKind !== SUPERVISOR_MEMORY_CANDIDATE_CARRIER_KIND) {
+    return { ok: false, deny_code: 'supervisor_candidate_carrier_kind_mismatch' };
+  }
+  const mirrorTarget = safeString(parsedEnvelope.mirror_target || parsedEnvelope.mirrorTarget);
+  if (mirrorTarget !== SUPERVISOR_MEMORY_CANDIDATE_TARGET) {
+    return { ok: false, deny_code: 'supervisor_candidate_mirror_target_mismatch' };
+  }
+  const localStoreRole = safeString(parsedEnvelope.local_store_role || parsedEnvelope.localStoreRole);
+  if (localStoreRole !== SUPERVISOR_MEMORY_CANDIDATE_LOCAL_STORE_ROLE) {
+    return { ok: false, deny_code: 'supervisor_candidate_local_store_role_mismatch' };
+  }
+
+  const emittedAtMs = nonNegativeInt(parsedEnvelope.emitted_at_ms ?? parsedEnvelope.emittedAtMs, 0);
+  if (emittedAtMs <= 0) {
+    return { ok: false, deny_code: 'supervisor_candidate_emitted_at_invalid' };
+  }
+
+  const candidatesRaw = Array.isArray(parsedEnvelope.candidates) ? parsedEnvelope.candidates : [];
+  if (candidatesRaw.length === 0) {
+    return { ok: false, deny_code: 'supervisor_candidate_empty' };
+  }
+  const candidateCount = nonNegativeInt(parsedEnvelope.candidate_count ?? parsedEnvelope.candidateCount, candidatesRaw.length);
+  if (candidateCount !== candidatesRaw.length) {
+    return { ok: false, deny_code: 'supervisor_candidate_count_mismatch' };
+  }
+
+  const declaredScopes = uniqueOrderedValues(
+    Array.isArray(parsedEnvelope.scopes) ? parsedEnvelope.scopes : []
+  );
+  const seenIdempotencyKeys = new Set();
+  const normalizedCandidates = [];
+
+  for (const rawCandidate of candidatesRaw) {
+    const candidate = rawCandidate && typeof rawCandidate === 'object' && !Array.isArray(rawCandidate)
+      ? rawCandidate
+      : null;
+    if (!candidate) {
+      return { ok: false, deny_code: 'supervisor_candidate_shape_invalid' };
+    }
+
+    const scope = safeString(candidate.scope);
+    if (!SUPERVISOR_MEMORY_CANDIDATE_ALLOWED_SCOPES.has(scope)) {
+      return { ok: false, deny_code: 'supervisor_candidate_scope_invalid' };
+    }
+    const recordType = safeString(candidate.record_type || candidate.recordType);
+    const whyPromoted = safeString(candidate.why_promoted || candidate.whyPromoted);
+    const sourceRef = safeString(candidate.source_ref || candidate.sourceRef);
+    const auditRef = safeString(candidate.audit_ref || candidate.auditRef);
+    const idempotencyKey = safeString(candidate.idempotency_key || candidate.idempotencyKey);
+    const payloadSummary = safeString(candidate.payload_summary || candidate.payloadSummary);
+    const sessionParticipationClass = safeString(
+      candidate.session_participation_class || candidate.sessionParticipationClass
+    ).toLowerCase();
+    const writePermissionScope = safeString(
+      candidate.write_permission_scope || candidate.writePermissionScope
+    );
+
+    if (!recordType || !whyPromoted || !sourceRef || !auditRef || !idempotencyKey || !payloadSummary) {
+      return { ok: false, deny_code: 'supervisor_candidate_required_field_missing' };
+    }
+    if (!SUPERVISOR_MEMORY_CANDIDATE_ALLOWED_SESSION_PARTICIPATION.has(sessionParticipationClass)) {
+      return { ok: false, deny_code: 'supervisor_candidate_session_participation_invalid' };
+    }
+    if (sessionParticipationClass !== 'scoped_write') {
+      return { ok: false, deny_code: 'supervisor_candidate_session_participation_denied' };
+    }
+    if (writePermissionScope !== scope) {
+      return { ok: false, deny_code: 'supervisor_candidate_scope_mismatch' };
+    }
+    if (seenIdempotencyKeys.has(idempotencyKey)) {
+      return { ok: false, deny_code: 'supervisor_candidate_duplicate_idempotency_key' };
+    }
+    seenIdempotencyKeys.add(idempotencyKey);
+
+    const payloadFields = parseSupervisorCandidatePayloadSummary(payloadSummary);
+    const candidateProjectId = safeString(payloadFields.project_id);
+    if ((scope === 'project_scope' || scope === 'cross_link_scope') && !candidateProjectId) {
+      return { ok: false, deny_code: 'supervisor_candidate_project_id_missing' };
+    }
+
+    normalizedCandidates.push({
+      scope,
+      record_type: recordType,
+      confidence: Number(candidate.confidence || 0),
+      why_promoted: whyPromoted,
+      source_ref: sourceRef,
+      audit_ref: auditRef,
+      session_participation_class: sessionParticipationClass,
+      write_permission_scope: writePermissionScope,
+      idempotency_key: idempotencyKey,
+      payload_summary: payloadSummary,
+      payload_fields: payloadFields,
+      project_id: candidateProjectId,
+      created_at_ms: emittedAtMs || nonNegativeInt(created_at_ms, emittedAtMs),
+      raw_candidate: {
+        scope,
+        record_type: recordType,
+        confidence: Number(candidate.confidence || 0),
+        why_promoted: whyPromoted,
+        source_ref: sourceRef,
+        audit_ref: auditRef,
+        session_participation_class: sessionParticipationClass,
+        write_permission_scope: writePermissionScope,
+        idempotency_key: idempotencyKey,
+        payload_summary: payloadSummary,
+      },
+    });
+  }
+
+  const normalizedScopes = uniqueOrderedValues(normalizedCandidates.map((candidate) => candidate.scope));
+  if (declaredScopes.length > 0 && declaredScopes.join('|') !== normalizedScopes.join('|')) {
+    return { ok: false, deny_code: 'supervisor_candidate_scope_summary_mismatch' };
+  }
+
+  return {
+    ok: true,
+    envelope: {
+      schema_version: schemaVersion,
+      carrier_kind: carrierKind,
+      mirror_target: mirrorTarget,
+      local_store_role: localStoreRole,
+      summary_line: safeString(parsedEnvelope.summary_line || parsedEnvelope.summaryLine) || normalizedScopes.join(', '),
+      emitted_at_ms: emittedAtMs,
+      thread_key: safeString(thread?.thread_key || ''),
+    },
+    candidates: normalizedCandidates,
+    scopes: normalizedScopes,
+    project_ids: uniqueOrderedValues(normalizedCandidates.map((candidate) => candidate.project_id)),
+  };
 }
 
 export function findRuntimeClientConfig(runtimeBaseDir, deviceId) {
@@ -236,7 +615,28 @@ function renderCanonicalItems(items) {
   return lines.join('\n').trim();
 }
 
-function renderPromptFromHubMemory({ canonicalItems, workingSetRows }) {
+const GRPC_MEMORY_RUNTIME_SOURCE_KINDS = new Set([
+  'automation_checkpoint',
+  'automation_execution_report',
+  'automation_retry_package',
+  'guidance_injection',
+  'heartbeat_projection',
+]);
+
+function renderGovernedCodingRuntimeDocs(docs) {
+  const rows = Array.isArray(docs) ? docs : [];
+  const blocks = [];
+  for (const doc of rows) {
+    const sourceKind = grpcMemoryRetrievalSourceKind(doc);
+    const title = safeString(doc?.title || 'runtime truth');
+    const text = safeString(doc?.text);
+    if (!GRPC_MEMORY_RUNTIME_SOURCE_KINDS.has(sourceKind) || !text) continue;
+    blocks.push(`- source_kind=${sourceKind} title=${title}\n${text}`);
+  }
+  return blocks.join('\n\n').trim();
+}
+
+function renderPromptFromHubMemory({ canonicalItems, workingSetRows, runtimeTruthDocs }) {
   const parts = [];
   const canon = renderCanonicalItems(canonicalItems);
   if (canon) {
@@ -250,6 +650,13 @@ function renderPromptFromHubMemory({ canonicalItems, workingSetRows }) {
     parts.push('[WORKING SET]');
     parts.push(ws);
     parts.push('[END_WORKING SET]');
+  }
+
+  const runtimeTruth = renderGovernedCodingRuntimeDocs(runtimeTruthDocs);
+  if (runtimeTruth) {
+    parts.push('[GOVERNED CODING RUNTIME TRUTH]');
+    parts.push(runtimeTruth);
+    parts.push('[END_GOVERNED CODING RUNTIME TRUTH]');
   }
 
   return parts.join('\n\n').trim();
@@ -368,12 +775,912 @@ function buildMemoryRetrievalDocs({ canonicalProject, canonicalThread, workingRo
   return docs;
 }
 
+const GRPC_MEMORY_RETRIEVAL_L1_SOURCE_KINDS = new Set([
+  'canonical_memory',
+  'project_spec_capsule',
+  'decision_track',
+  'automation_checkpoint',
+  'automation_execution_report',
+  'guidance_injection',
+]);
+
+const GRPC_MEMORY_RETRIEVAL_L2_SOURCE_KINDS = new Set([
+  'background_preferences',
+  'recent_context',
+  'automation_retry_package',
+  'heartbeat_projection',
+]);
+
+function normalizeGrpcMemoryProjectRoot(value) {
+  const raw = safeString(value);
+  if (!raw) return '';
+  try {
+    return path.resolve(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function grpcMemoryPathWithinRoot(candidate, root) {
+  const target = normalizeGrpcMemoryProjectRoot(candidate);
+  const base = normalizeGrpcMemoryProjectRoot(root);
+  if (!target || !base) return false;
+  const rel = path.relative(base, target);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+function resolveGrpcMemoryRetrievalProjectRoot({ request, actor, trustedAutomationScope } = {}) {
+  const req = request && typeof request === 'object' ? request : {};
+  const client = actor && typeof actor === 'object' ? actor : {};
+  const candidates = [
+    req.project_root,
+    req.projectRoot,
+    client.project_root,
+    client.projectRoot,
+    req.workspace_root,
+    req.workspaceRoot,
+    client.workspace_root,
+    client.workspaceRoot,
+    trustedAutomationScope?.workspace_root,
+  ]
+    .map((value) => normalizeGrpcMemoryProjectRoot(value))
+    .filter(Boolean);
+  const projectRoot = candidates[0] || '';
+  const trustedRoot = normalizeGrpcMemoryProjectRoot(trustedAutomationScope?.workspace_root);
+  if (projectRoot && trustedRoot && !grpcMemoryPathWithinRoot(projectRoot, trustedRoot)) {
+    return '';
+  }
+  return projectRoot;
+}
+
+function readGrpcMemoryJsonFile(filePath) {
+  const resolved = normalizeGrpcMemoryProjectRoot(filePath);
+  if (!resolved) return null;
+  try {
+    if (!fs.existsSync(resolved)) return null;
+    const raw = fs.readFileSync(resolved, 'utf8');
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function grpcMemoryFileStatMs(filePath) {
+  const resolved = normalizeGrpcMemoryProjectRoot(filePath);
+  if (!resolved) return 0;
+  try {
+    return Math.max(0, Math.floor(Number(fs.statSync(resolved).mtimeMs || 0)));
+  } catch {
+    return 0;
+  }
+}
+
+function listLatestGrpcMemoryArtifactFiles({ directory, prefix, suffix, maxCount = 2 } = {}) {
+  const dir = normalizeGrpcMemoryProjectRoot(directory);
+  if (!dir) return [];
+  let entries = [];
+  try {
+    entries = fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((name) => name.startsWith(prefix) && name.endsWith(suffix))
+    .map((name) => {
+      const filePath = path.join(dir, name);
+      return {
+        filePath,
+        name,
+        mtimeMs: grpcMemoryFileStatMs(filePath),
+      };
+    })
+    .sort((lhs, rhs) => {
+      if (lhs.mtimeMs !== rhs.mtimeMs) return rhs.mtimeMs - lhs.mtimeMs;
+      return rhs.name.localeCompare(lhs.name);
+    })
+    .slice(0, Math.max(1, Number(maxCount || 2)))
+    .map((entry) => entry.filePath);
+}
+
+function selectGrpcMemoryArtifactFiles({
+  directory,
+  prefix,
+  suffix,
+  specificPath = '',
+  maxCount = 2,
+} = {}) {
+  const resolvedSpecific = normalizeGrpcMemoryProjectRoot(specificPath);
+  if (resolvedSpecific) {
+    return fs.existsSync(resolvedSpecific) ? [resolvedSpecific] : [];
+  }
+  return listLatestGrpcMemoryArtifactFiles({ directory, prefix, suffix, maxCount });
+}
+
+function stableGrpcMemoryArtifactDocId(kind, filePath, fragment = '') {
+  const hash = crypto
+    .createHash('sha1')
+    .update(`${safeString(kind)}|${normalizeGrpcMemoryProjectRoot(filePath)}|${safeString(fragment)}`)
+    .digest('hex')
+    .slice(0, 16);
+  return `runtime:${safeString(kind)}:${hash}`;
+}
+
+function sanitizeGrpcMemoryArtifactText(input) {
+  let text = String(input ?? '').replace(/\r\n/g, '\n');
+  let redactedItems = 0;
+  const replacements = [
+    [/<private>[\s\S]*?<\/private>/gi, '[private omitted]'],
+    [/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g, '[redacted_private_key]'],
+    [/sk-[A-Za-z0-9]{20,}/g, '[redacted_api_key]'],
+    [/sk-ant-[A-Za-z0-9_-]{20,}/g, '[redacted_api_key]'],
+    [/gh[pousr]_[A-Za-z0-9]{20,}/g, '[redacted_token]'],
+    [/\bbearer\s+[A-Za-z0-9._-]{16,}/gi, 'Bearer [redacted_token]'],
+    [/eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}/g, '[redacted_jwt]'],
+  ];
+  for (const [pattern, replacement] of replacements) {
+    text = text.replace(pattern, () => {
+      redactedItems += 1;
+      return replacement;
+    });
+  }
+  text = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join('\n');
+  return {
+    text,
+    redactedItems,
+  };
+}
+
+function buildGrpcMemoryRuntimeDoc({
+  kind,
+  title,
+  filePath,
+  fragment = '',
+  lines,
+  createdAtMs = 0,
+  scopeRef,
+  sourcePayload = {},
+} = {}) {
+  const sanitized = sanitizeGrpcMemoryArtifactText(Array.isArray(lines) ? lines.filter(Boolean).join('\n') : '');
+  if (!sanitized.text) return { doc: null, redactedItems: sanitized.redactedItems };
+  const scope = scopeRef && typeof scopeRef === 'object' ? scopeRef : {};
+  const doc = {
+    id: stableGrpcMemoryArtifactDocId(kind, filePath, fragment),
+    title: safeString(title) || safeString(kind) || 'memory runtime artifact',
+    text: sanitized.text,
+    tags: ['governed_coding_runtime', safeString(kind)].filter(Boolean),
+    sensitivity: inferMemorySensitivity({
+      sourceType: safeString(kind) || 'runtime_artifact',
+      key: safeString(title),
+      text: sanitized.text,
+    }) === 'secret' ? 'secret' : 'internal',
+    trust_level: 'trusted',
+    scope: {
+      device_id: safeString(scope.device_id),
+      user_id: safeString(scope.user_id),
+      app_id: safeString(scope.app_id),
+      project_id: safeString(scope.project_id),
+      thread_id: '',
+    },
+    created_at_ms: Math.max(0, Number(createdAtMs || 0)),
+    source_type: safeString(kind) || 'runtime_artifact',
+    source_payload: {
+      file_path: normalizeGrpcMemoryProjectRoot(filePath),
+      fragment: safeString(fragment),
+      ...((sourcePayload && typeof sourcePayload === 'object') ? sourcePayload : {}),
+    },
+  };
+  return { doc, redactedItems: sanitized.redactedItems };
+}
+
+function grpcMemoryPushLine(lines, label, value) {
+  const rendered = safeString(value);
+  if (!rendered) return;
+  lines.push(`${label}: ${rendered}`);
+}
+
+function grpcMemoryPushJoinedLine(lines, label, values) {
+  const rendered = safeStringList(Array.isArray(values) ? values : []).join(', ');
+  if (!rendered) return;
+  lines.push(`${label}: ${rendered}`);
+}
+
+function grpcMemoryCappedText(value, maxChars = 220) {
+  const text = safeString(value);
+  if (!text) return '';
+  const limit = Math.max(40, Number(maxChars || 220));
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit).trimEnd()}…`;
+}
+
+function grpcMemoryRuntimeKindsForRequest({ requestedKinds, retrievalKind } = {}) {
+  const kinds = new Set(
+    safeStringList(requestedKinds)
+      .map((value) => value.toLowerCase())
+      .filter(Boolean)
+  );
+  const includeAll = safeString(retrievalKind).toLowerCase() === 'get_ref' || kinds.size === 0;
+  return {
+    includeAll,
+    includes(kind) {
+      const normalizedKind = safeString(kind).toLowerCase();
+      return !!normalizedKind && (includeAll || kinds.has(normalizedKind));
+    },
+  };
+}
+
+function buildGrpcAutomationCheckpointDocs({ projectRoot, scopeRef, specificPath = '' } = {}) {
+  const files = selectGrpcMemoryArtifactFiles({
+    directory: path.join(projectRoot, 'build', 'reports'),
+    prefix: 'xt_w3_25_run_checkpoint_',
+    suffix: '.v1.json',
+    specificPath,
+    maxCount: 2,
+  });
+  const docs = [];
+  let redactedItems = 0;
+  for (const filePath of files) {
+    const payload = readGrpcMemoryJsonFile(filePath);
+    if (!payload || typeof payload !== 'object') continue;
+    const lines = [];
+    grpcMemoryPushLine(lines, 'run_id', payload.run_id);
+    grpcMemoryPushLine(lines, 'state', payload.state);
+    grpcMemoryPushLine(lines, 'attempt', payload.attempt);
+    grpcMemoryPushLine(lines, 'retry_after_seconds', payload.retry_after_seconds);
+    grpcMemoryPushLine(lines, 'stable_identity', payload.stable_identity);
+    grpcMemoryPushLine(lines, 'checkpoint_ref', payload.checkpoint_ref);
+    grpcMemoryPushLine(lines, 'current_step_id', payload.current_step_id);
+    grpcMemoryPushLine(lines, 'current_step_title', payload.current_step_title);
+    grpcMemoryPushLine(lines, 'current_step_state', payload.current_step_state);
+    grpcMemoryPushLine(lines, 'current_step_summary', payload.current_step_summary);
+    grpcMemoryPushLine(lines, 'audit_ref', payload.audit_ref);
+    const built = buildGrpcMemoryRuntimeDoc({
+      kind: 'automation_checkpoint',
+      title: `Automation checkpoint ${safeString(payload.state) || 'snapshot'}`,
+      filePath,
+      fragment: `run:${safeString(payload.run_id)}`,
+      lines,
+      createdAtMs: grpcMemoryFileStatMs(filePath),
+      scopeRef,
+      sourcePayload: {
+        run_id: safeString(payload.run_id),
+        checkpoint_ref: safeString(payload.checkpoint_ref),
+      },
+    });
+    if (!built.doc) continue;
+    docs.push(built.doc);
+    redactedItems += built.redactedItems;
+  }
+  return { docs, redactedItems };
+}
+
+function buildGrpcAutomationExecutionReportDocs({ projectRoot, scopeRef, specificPath = '' } = {}) {
+  const files = selectGrpcMemoryArtifactFiles({
+    directory: path.join(projectRoot, 'build', 'reports'),
+    prefix: 'xt_automation_run_handoff_',
+    suffix: '.v1.json',
+    specificPath,
+    maxCount: 2,
+  });
+  const docs = [];
+  let redactedItems = 0;
+  for (const filePath of files) {
+    const payload = readGrpcMemoryJsonFile(filePath);
+    if (!payload || typeof payload !== 'object') continue;
+    const verification = payload.verification_report && typeof payload.verification_report === 'object'
+      ? payload.verification_report
+      : {};
+    const blocker = payload.structured_blocker && typeof payload.structured_blocker === 'object'
+      ? payload.structured_blocker
+      : {};
+    const lines = [];
+    grpcMemoryPushLine(lines, 'run_id', payload.run_id);
+    grpcMemoryPushLine(lines, 'final_state', payload.final_state);
+    grpcMemoryPushLine(lines, 'hold_reason', payload.hold_reason);
+    grpcMemoryPushLine(lines, 'recipe_ref', payload.recipe_ref);
+    grpcMemoryPushLine(lines, 'delivery_ref', payload.delivery_ref);
+    grpcMemoryPushLine(lines, 'current_step_id', payload.current_step_id);
+    grpcMemoryPushLine(lines, 'current_step_title', payload.current_step_title);
+    grpcMemoryPushLine(lines, 'current_step_state', payload.current_step_state);
+    grpcMemoryPushLine(lines, 'current_step_summary', payload.current_step_summary);
+    grpcMemoryPushLine(lines, 'verification_required', verification.required);
+    grpcMemoryPushLine(lines, 'verification_executed', verification.executed);
+    grpcMemoryPushLine(lines, 'verification_command_count', verification.command_count);
+    grpcMemoryPushLine(lines, 'verification_passed_command_count', verification.passed_command_count);
+    grpcMemoryPushLine(lines, 'verification_hold_reason', verification.hold_reason);
+    grpcMemoryPushLine(lines, 'blocker_code', blocker.code);
+    grpcMemoryPushLine(lines, 'blocker_summary', blocker.summary);
+    grpcMemoryPushLine(lines, 'blocker_stage', blocker.stage);
+    grpcMemoryPushLine(lines, 'detail', payload.detail);
+    grpcMemoryPushJoinedLine(lines, 'suggested_next_actions', payload.suggested_next_actions);
+    const built = buildGrpcMemoryRuntimeDoc({
+      kind: 'automation_execution_report',
+      title: `Automation execution ${safeString(payload.final_state) || 'snapshot'}`,
+      filePath,
+      fragment: `run:${safeString(payload.run_id)}`,
+      lines,
+      createdAtMs: grpcMemoryFileStatMs(filePath),
+      scopeRef,
+      sourcePayload: {
+        run_id: safeString(payload.run_id),
+        final_state: safeString(payload.final_state),
+      },
+    });
+    if (!built.doc) continue;
+    docs.push(built.doc);
+    redactedItems += built.redactedItems;
+  }
+  return { docs, redactedItems };
+}
+
+function buildGrpcAutomationRetryPackageDocs({ projectRoot, scopeRef, specificPath = '' } = {}) {
+  const files = selectGrpcMemoryArtifactFiles({
+    directory: path.join(projectRoot, 'build', 'reports'),
+    prefix: 'xt_automation_retry_package_',
+    suffix: '.v1.json',
+    specificPath,
+    maxCount: 2,
+  });
+  const docs = [];
+  let redactedItems = 0;
+  for (const filePath of files) {
+    const payload = readGrpcMemoryJsonFile(filePath);
+    if (!payload || typeof payload !== 'object') continue;
+    const sourceBlocker = payload.source_blocker && typeof payload.source_blocker === 'object'
+      ? payload.source_blocker
+      : {};
+    const retryReason = payload.retry_reason_descriptor && typeof payload.retry_reason_descriptor === 'object'
+      ? payload.retry_reason_descriptor
+      : {};
+    const lines = [];
+    grpcMemoryPushLine(lines, 'source_run_id', payload.source_run_id);
+    grpcMemoryPushLine(lines, 'source_final_state', payload.source_final_state);
+    grpcMemoryPushLine(lines, 'source_hold_reason', payload.source_hold_reason);
+    grpcMemoryPushLine(lines, 'retry_run_id', payload.retry_run_id);
+    grpcMemoryPushLine(lines, 'retry_strategy', payload.retry_strategy);
+    grpcMemoryPushLine(lines, 'retry_reason', payload.retry_reason);
+    grpcMemoryPushLine(lines, 'delivery_ref', payload.delivery_ref);
+    grpcMemoryPushLine(lines, 'planning_mode', payload.planning_mode);
+    grpcMemoryPushLine(lines, 'planning_summary', payload.planning_summary);
+    grpcMemoryPushLine(lines, 'source_blocker_code', sourceBlocker.code);
+    grpcMemoryPushLine(lines, 'source_blocker_summary', sourceBlocker.summary);
+    grpcMemoryPushLine(lines, 'source_blocker_stage', sourceBlocker.stage);
+    grpcMemoryPushLine(lines, 'retry_reason_code', retryReason.code);
+    grpcMemoryPushLine(lines, 'retry_reason_summary', retryReason.summary);
+    grpcMemoryPushLine(lines, 'retry_reason_strategy', retryReason.strategy);
+    grpcMemoryPushLine(lines, 'current_step_id', retryReason.current_step_id);
+    grpcMemoryPushLine(lines, 'current_step_title', retryReason.current_step_title);
+    grpcMemoryPushLine(lines, 'current_step_state', retryReason.current_step_state);
+    grpcMemoryPushLine(lines, 'current_step_summary', retryReason.current_step_summary);
+    const built = buildGrpcMemoryRuntimeDoc({
+      kind: 'automation_retry_package',
+      title: `Automation retry ${safeString(payload.retry_strategy) || 'snapshot'}`,
+      filePath,
+      fragment: `retry_run:${safeString(payload.retry_run_id)}`,
+      lines,
+      createdAtMs: grpcMemoryFileStatMs(filePath),
+      scopeRef,
+      sourcePayload: {
+        source_run_id: safeString(payload.source_run_id),
+        retry_run_id: safeString(payload.retry_run_id),
+        retry_strategy: safeString(payload.retry_strategy),
+      },
+    });
+    if (!built.doc) continue;
+    docs.push(built.doc);
+    redactedItems += built.redactedItems;
+  }
+  return { docs, redactedItems };
+}
+
+function buildGrpcGuidanceInjectionDocs({ projectRoot, scopeRef, specificPath = '' } = {}) {
+  const filePath = normalizeGrpcMemoryProjectRoot(
+    specificPath || path.join(projectRoot, '.xterminal', 'supervisor_guidance_injections.json')
+  );
+  const snapshot = readGrpcMemoryJsonFile(filePath);
+  if (!snapshot || typeof snapshot !== 'object') return { docs: [], redactedItems: 0 };
+  const items = Array.isArray(snapshot.items) ? snapshot.items : [];
+  const docs = [];
+  let redactedItems = 0;
+  for (const item of items
+    .filter((row) => row && typeof row === 'object')
+    .sort((lhs, rhs) => Number(rhs.injected_at_ms || 0) - Number(lhs.injected_at_ms || 0))
+    .slice(0, 3)) {
+    const lines = [];
+    grpcMemoryPushLine(lines, 'review_id', item.review_id);
+    grpcMemoryPushLine(lines, 'ack_status', item.ack_status);
+    grpcMemoryPushLine(lines, 'ack_required', item.ack_required);
+    grpcMemoryPushLine(lines, 'delivery_mode', item.delivery_mode);
+    grpcMemoryPushLine(lines, 'intervention_mode', item.intervention_mode);
+    grpcMemoryPushLine(lines, 'safe_point_policy', item.safe_point_policy);
+    grpcMemoryPushLine(lines, 'injected_at_ms', item.injected_at_ms);
+    grpcMemoryPushLine(lines, 'effective_supervisor_tier', item.effective_supervisor_tier);
+    grpcMemoryPushLine(lines, 'work_order_ref', item.work_order_ref);
+    grpcMemoryPushLine(lines, 'audit_ref', item.audit_ref);
+    grpcMemoryPushLine(lines, 'guidance_summary', grpcMemoryCappedText(item.guidance_text, 220));
+    const built = buildGrpcMemoryRuntimeDoc({
+      kind: 'guidance_injection',
+      title: `Guidance ${safeString(item.ack_status) || 'snapshot'}`,
+      filePath,
+      fragment: `guidance:${safeString(item.injection_id)}`,
+      lines,
+      createdAtMs: Number(item.injected_at_ms || 0) || grpcMemoryFileStatMs(filePath),
+      scopeRef,
+      sourcePayload: {
+        injection_id: safeString(item.injection_id),
+        review_id: safeString(item.review_id),
+        ack_status: safeString(item.ack_status),
+      },
+    });
+    if (!built.doc) continue;
+    docs.push(built.doc);
+    redactedItems += built.redactedItems;
+  }
+  return { docs, redactedItems };
+}
+
+function buildGrpcHeartbeatProjectionDocs({ projectRoot, scopeRef, specificPath = '' } = {}) {
+  const filePath = normalizeGrpcMemoryProjectRoot(
+    specificPath || path.join(projectRoot, '.xterminal', 'heartbeat_memory_projection.json')
+  );
+  const projection = readGrpcMemoryJsonFile(filePath);
+  if (!projection || typeof projection !== 'object') return { docs: [], redactedItems: 0 };
+  const rawPayload = projection.raw_payload && typeof projection.raw_payload === 'object'
+    ? projection.raw_payload
+    : {};
+  const recoveryDecision = rawPayload.recovery_decision && typeof rawPayload.recovery_decision === 'object'
+    ? rawPayload.recovery_decision
+    : {};
+  const canonicalProjection = projection.canonical_projection && typeof projection.canonical_projection === 'object'
+    ? projection.canonical_projection
+    : {};
+  const lines = [];
+  grpcMemoryPushLine(lines, 'status_digest', rawPayload.status_digest);
+  grpcMemoryPushLine(lines, 'current_state_summary', rawPayload.current_state_summary);
+  grpcMemoryPushLine(lines, 'next_step_summary', rawPayload.next_step_summary);
+  grpcMemoryPushLine(lines, 'blocker_summary', rawPayload.blocker_summary);
+  grpcMemoryPushLine(lines, 'created_at_ms', projection.created_at_ms);
+  grpcMemoryPushLine(lines, 'latest_quality_band', rawPayload.latest_quality_band);
+  grpcMemoryPushLine(lines, 'latest_quality_score', rawPayload.latest_quality_score);
+  grpcMemoryPushLine(lines, 'execution_status', rawPayload.execution_status);
+  grpcMemoryPushLine(lines, 'risk_tier', rawPayload.risk_tier);
+  grpcMemoryPushLine(lines, 'recovery_action', recoveryDecision.action);
+  grpcMemoryPushLine(lines, 'recovery_urgency', recoveryDecision.urgency);
+  grpcMemoryPushLine(lines, 'recovery_reason_code', recoveryDecision.reason_code);
+  grpcMemoryPushLine(lines, 'recovery_summary', recoveryDecision.summary);
+  grpcMemoryPushLine(lines, 'queued_review_trigger', recoveryDecision.queued_review_trigger);
+  grpcMemoryPushLine(lines, 'queued_review_level', recoveryDecision.queued_review_level);
+  grpcMemoryPushLine(lines, 'queued_review_run_kind', recoveryDecision.queued_review_run_kind);
+  grpcMemoryPushLine(lines, 'canonical_audit_ref', canonicalProjection.audit_ref);
+  const built = buildGrpcMemoryRuntimeDoc({
+    kind: 'heartbeat_projection',
+    title: `Heartbeat projection ${safeString(rawPayload.execution_status) || 'snapshot'}`,
+    filePath,
+    fragment: `heartbeat:${safeString(projection.created_at_ms)}`,
+    lines,
+    createdAtMs: Number(projection.created_at_ms || 0) || grpcMemoryFileStatMs(filePath),
+    scopeRef,
+    sourcePayload: {
+      created_at_ms: Math.max(0, Number(projection.created_at_ms || 0)),
+      execution_status: safeString(rawPayload.execution_status),
+    },
+  });
+  return {
+    docs: built.doc ? [built.doc] : [],
+    redactedItems: built.redactedItems,
+  };
+}
+
+function buildGrpcGovernedCodingRuntimeDocs({
+  projectRoot,
+  scopeRef,
+  requestedKinds,
+  retrievalKind,
+} = {}) {
+  const normalizedRoot = normalizeGrpcMemoryProjectRoot(projectRoot);
+  if (!normalizedRoot) return { docs: [], redactedItems: 0 };
+  const includeKinds = grpcMemoryRuntimeKindsForRequest({ requestedKinds, retrievalKind });
+  const docs = [];
+  let redactedItems = 0;
+
+  const appendResult = (result) => {
+    if (!result || typeof result !== 'object') return;
+    if (Array.isArray(result.docs) && result.docs.length > 0) docs.push(...result.docs);
+    redactedItems += Math.max(0, Number(result.redactedItems || 0));
+  };
+
+  if (includeKinds.includes('automation_checkpoint')) {
+    appendResult(buildGrpcAutomationCheckpointDocs({ projectRoot: normalizedRoot, scopeRef }));
+  }
+  if (includeKinds.includes('automation_execution_report')) {
+    appendResult(buildGrpcAutomationExecutionReportDocs({ projectRoot: normalizedRoot, scopeRef }));
+  }
+  if (includeKinds.includes('automation_retry_package')) {
+    appendResult(buildGrpcAutomationRetryPackageDocs({ projectRoot: normalizedRoot, scopeRef }));
+  }
+  if (includeKinds.includes('guidance_injection')) {
+    appendResult(buildGrpcGuidanceInjectionDocs({ projectRoot: normalizedRoot, scopeRef }));
+  }
+  if (includeKinds.includes('heartbeat_projection')) {
+    appendResult(buildGrpcHeartbeatProjectionDocs({ projectRoot: normalizedRoot, scopeRef }));
+  }
+
+  return { docs, redactedItems };
+}
+
+function clampUnitScore(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 0;
+  if (num < 0) return 0;
+  if (num > 1) return 1;
+  return Number(num.toFixed(6));
+}
+
+function truncateMemoryRetrievalSnippet(text, maxChars = 420) {
+  const raw = safeString(text);
+  if (!raw) return { text: '', truncated: false };
+  const limit = Math.max(120, Math.min(1200, Number(maxChars || 420)));
+  if (raw.length <= limit) return { text: raw, truncated: false };
+  return {
+    text: `${raw.slice(0, limit).trimEnd()}…`,
+    truncated: true,
+  };
+}
+
+function grpcMemoryRetrievalSourceKind(doc) {
+  const sourceType = safeString(doc?.source_type).toLowerCase();
+  if (sourceType === 'canonical') return 'canonical_memory';
+  if (sourceType === 'turn') return 'recent_context';
+  const tags = Array.isArray(doc?.tags) ? doc.tags.map((tag) => safeString(tag).toLowerCase()).filter(Boolean) : [];
+  if (tags.includes('canonical')) return 'canonical_memory';
+  if (tags.includes('working_set')) return 'recent_context';
+  return sourceType || 'memory_doc';
+}
+
+function grpcMemoryRetrievalMatchesAllowedLayers(doc, allowedLayers) {
+  const layers = safeStringList(allowedLayers).map((value) => value.toLowerCase());
+  if (layers.length === 0) return true;
+  const sourceKind = grpcMemoryRetrievalSourceKind(doc);
+  return layers.some((layer) => {
+    if (layer === 'l1_canonical') return GRPC_MEMORY_RETRIEVAL_L1_SOURCE_KINDS.has(sourceKind);
+    if (layer === 'l2_observations') return GRPC_MEMORY_RETRIEVAL_L2_SOURCE_KINDS.has(sourceKind);
+    return false;
+  });
+}
+
+function grpcMemoryRetrievalRef(doc, row) {
+  const id = safeString(row?.id || doc?.id);
+  if (id) return `memory://hub/${id}`;
+  const title = safeString(row?.title || doc?.title || 'memory_doc');
+  return `memory://hub/${title}`;
+}
+
+function inferGrpcMemoryRetrievalTruncated({ retrieval, resultCount }) {
+  const trace = Array.isArray(retrieval?.pipeline_stage_trace) ? retrieval.pipeline_stage_trace : [];
+  const gateStage = trace.find((item) => safeString(item?.stage) === 'gate');
+  if (gateStage) {
+    const inCount = Number(gateStage?.in_count || 0);
+    const outCount = Number(gateStage?.out_count || 0);
+    if (outCount > 0 && inCount > outCount) return true;
+  }
+  const rerankStage = trace.find((item) => safeString(item?.stage) === 'rerank');
+  if (rerankStage) {
+    const outCount = Number(rerankStage?.out_count || 0);
+    if (outCount > resultCount) return true;
+  }
+  return false;
+}
+
+export function buildXTMemoryRetrievalResultV1({
+  requestId = '',
+  source = 'hub_memory_retrieval_grpc_v1',
+  resolvedScope = 'current_project',
+  retrieval = {},
+  documentsById = new Map(),
+  auditRef = '',
+  maxSnippetChars = 420,
+  truncatedItems = 0,
+  redactedItems = 0,
+  forceTruncated = null,
+} = {}) {
+  const rows = Array.isArray(retrieval?.results) ? retrieval.results : [];
+  const blocked = !!retrieval?.blocked;
+  const denyReason = safeString(retrieval?.deny_reason);
+  const results = rows.map((row) => {
+    const doc = documentsById instanceof Map
+      ? documentsById.get(safeString(row?.id))
+      : null;
+    const summary = safeString(row?.title || doc?.title || 'memory retrieval result');
+    const snippetSource = safeString(doc?.text || doc?.source_payload?.value || doc?.source_payload?.content || '');
+    const snippet = truncateMemoryRetrievalSnippet(snippetSource, maxSnippetChars);
+    return {
+      ref: grpcMemoryRetrievalRef(doc, row),
+      source_kind: grpcMemoryRetrievalSourceKind(doc),
+      summary,
+      snippet: snippet.text,
+      score: clampUnitScore(row?.final_score ?? row?.relevance_score ?? row?.lexical_score ?? 0),
+      redacted: false,
+    };
+  });
+  const budgetUsedChars = results.reduce(
+    (total, item) => total + item.ref.length + item.summary.length + item.snippet.length,
+    0
+  );
+  const truncated = forceTruncated == null
+    ? (!blocked && inferGrpcMemoryRetrievalTruncated({ retrieval, resultCount: results.length }))
+    : !!forceTruncated;
+  const status = blocked ? 'denied' : (truncated ? 'truncated' : 'ok');
+  const reasonCode = blocked
+    ? denyReason
+    : (results.length > 0 ? '' : 'no_relevant_snippets');
+
+  return {
+    schema_version: 'xt.memory_retrieval_result.v1',
+    request_id: safeString(requestId),
+    status,
+    resolved_scope: safeString(resolvedScope) || 'current_project',
+    source: safeString(source) || 'hub_memory_retrieval_grpc_v1',
+    scope: safeString(resolvedScope) || 'current_project',
+    audit_ref: safeString(auditRef) || `audit-memory-route-${safeString(requestId) || 'unknown'}`,
+    reason_code: reasonCode,
+    deny_code: blocked ? denyReason : '',
+    results: blocked ? [] : results,
+    truncated,
+    budget_used_chars: blocked ? 0 : budgetUsedChars,
+    truncated_items: blocked ? 0 : Math.max(0, Number(truncatedItems || 0)),
+    redacted_items: blocked ? 0 : Math.max(0, Number(redactedItems || 0)),
+  };
+}
+
+function grpcMemoryRetrievalThreadKey(projectId) {
+  const trimmed = safeString(projectId);
+  return trimmed ? `xterminal_project_${trimmed}` : 'xterminal_project_unknown';
+}
+
+function normalizeGrpcMemoryRetrievalScope(rawScope) {
+  const scope = safeString(rawScope).toLowerCase();
+  if (!scope) return 'current_project';
+  if (scope === 'current_project') return 'current_project';
+  return scope;
+}
+
+function resolveGrpcMemoryRetrievalDoc(ref, documentsById) {
+  const raw = safeString(ref);
+  if (!raw || !(documentsById instanceof Map)) return null;
+  const direct = documentsById.get(raw);
+  if (direct) return direct;
+  const id = raw.startsWith('memory://hub/') ? raw.slice('memory://hub/'.length) : raw;
+  return documentsById.get(id) || null;
+}
+
+function buildHubMemoryRetrievalResponse({
+  db,
+  client,
+  req,
+  trustedAutomationScope,
+} = {}) {
+  const actor = client && typeof client === 'object' ? client : {};
+  const request = req && typeof req === 'object' ? req : {};
+  const requestId = safeString(request.request_id) || `memreq_${String(uuid()).replace(/-/g, '').slice(0, 12)}`;
+  const requestedScope = normalizeGrpcMemoryRetrievalScope(request.scope);
+  const resolvedScope = 'current_project';
+  const projectId = safeString(request.project_id || actor.project_id);
+  const auditRef = safeString(request.audit_ref) || `audit-memory-route-${requestId}`;
+  const retrievalKind = safeString(request.retrieval_kind).toLowerCase()
+    || (Array.isArray(request.explicit_refs) && request.explicit_refs.length > 0 ? 'get_ref' : 'search');
+  const maxResults = Math.max(1, Math.min(6, Number(request.max_results || request.max_snippets || 3)));
+  const maxSnippetChars = Math.max(120, Math.min(1200, Number(request.max_snippet_chars || 420)));
+  const query = latestQueryFromMessages(
+    [{ role: 'user', content: safeString(request.query || request.latest_user) }],
+    safeString(request.latest_user || request.query)
+  );
+  const explicitRefs = safeStringList(request.explicit_refs);
+  const requestedKinds = safeStringList(request.requested_kinds);
+  const allowedLayers = safeStringList(request.allowed_layers);
+  const device_id = safeString(actor.device_id);
+  const user_id = actor.user_id ? String(actor.user_id) : '';
+  const app_id = safeString(actor.app_id);
+
+  if (requestedScope !== 'current_project') {
+    return {
+      response: {
+        schema_version: 'xt.memory_retrieval_result.v1',
+        request_id: requestId,
+        status: 'denied',
+        resolved_scope: resolvedScope,
+        source: 'hub_memory_retrieval_grpc_v1',
+        scope: resolvedScope,
+        audit_ref: auditRef,
+        reason_code: 'scope_not_supported',
+        deny_code: 'cross_scope_memory_denied',
+        results: [],
+        truncated: false,
+        budget_used_chars: 0,
+        truncated_items: 0,
+        redacted_items: 0,
+      },
+      requestId,
+      auditRef,
+      projectId,
+      retrievalKind,
+      explicitRefs,
+      requestedKinds,
+      allowedLayers,
+      query,
+    };
+  }
+
+  if (!projectId) {
+    return {
+      response: {
+        schema_version: 'xt.memory_retrieval_result.v1',
+        request_id: requestId,
+        status: 'denied',
+        resolved_scope: resolvedScope,
+        source: 'hub_memory_retrieval_grpc_v1',
+        scope: resolvedScope,
+        audit_ref: auditRef,
+        reason_code: 'project_context_missing',
+        deny_code: 'cross_scope_memory_denied',
+        results: [],
+        truncated: false,
+        budget_used_chars: 0,
+        truncated_items: 0,
+        redacted_items: 0,
+      },
+      requestId,
+      auditRef,
+      projectId,
+      retrievalKind,
+      explicitRefs,
+      requestedKinds,
+      allowedLayers,
+      query,
+    };
+  }
+
+  const thread = db.findThreadByKey({
+    device_id,
+    app_id,
+    project_id: projectId,
+    thread_key: grpcMemoryRetrievalThreadKey(projectId),
+  });
+  const threadId = safeString(thread?.thread_id);
+  const canonicalProject = db.listCanonicalItems({
+    scope: 'project',
+    thread_id: '',
+    device_id,
+    user_id,
+    app_id,
+    project_id: projectId,
+    limit: 80,
+  });
+  const canonicalThread = threadId
+    ? db.listCanonicalItems({
+        scope: 'thread',
+        thread_id: threadId,
+        device_id,
+        user_id,
+        app_id,
+        project_id: projectId,
+        limit: 40,
+      })
+    : [];
+  const workingRows = threadId ? db.listTurns({ thread_id: threadId, limit: 24 }).reverse() : [];
+  const scopeRef = { device_id, user_id, app_id, project_id: projectId, thread_id: threadId };
+  const retrievalDocs = buildMemoryRetrievalDocs({
+    canonicalProject,
+    canonicalThread,
+    workingRows,
+    scopeRef,
+  });
+  const runtimeProjectRoot = resolveGrpcMemoryRetrievalProjectRoot({
+    request,
+    actor,
+    trustedAutomationScope,
+  });
+  const runtimeDocs = buildGrpcGovernedCodingRuntimeDocs({
+    projectRoot: runtimeProjectRoot,
+    scopeRef,
+    requestedKinds,
+    retrievalKind,
+  });
+  const filteredRuntimeDocs = runtimeDocs.docs.filter((doc) => grpcMemoryRetrievalMatchesAllowedLayers(doc, allowedLayers));
+  const mergedDocs = retrievalDocs.concat(filteredRuntimeDocs);
+  const routeResult = routeMemoryByTrustShards({
+    documents: mergedDocs,
+    remote_mode: false,
+    allow_untrusted: false,
+  });
+  const documentsById = new Map(routeResult.documents.map((doc) => [safeString(doc?.id), doc]).filter((row) => row[0]));
+
+  let retrieval = {
+    blocked: false,
+    deny_reason: '',
+    results: [],
+    pipeline_stage_trace: [],
+  };
+  let truncatedItems = 0;
+
+  if (retrievalKind === 'get_ref' && explicitRefs.length > 0) {
+    const selectedDocs = [];
+    const seenIds = new Set();
+    for (const ref of explicitRefs) {
+      const doc = resolveGrpcMemoryRetrievalDoc(ref, documentsById);
+      const docId = safeString(doc?.id);
+      if (!doc || !docId || seenIds.has(docId)) continue;
+      seenIds.add(docId);
+      selectedDocs.push(doc);
+    }
+    const limitedDocs = selectedDocs.slice(0, maxResults);
+    truncatedItems = Math.max(0, selectedDocs.length - limitedDocs.length);
+    retrieval = {
+      blocked: false,
+      deny_reason: '',
+      results: limitedDocs.map((doc, index) => ({
+        id: safeString(doc?.id),
+        title: safeString(doc?.title || doc?.source_payload?.key || doc?.source_payload?.role || 'memory retrieval result'),
+        final_score: clampUnitScore(1 - (index * 0.01)),
+        sensitivity: safeString(doc?.sensitivity),
+      })),
+      pipeline_stage_trace: [],
+    };
+  } else {
+    const pipeline = runMemoryRetrievalPipeline({
+      documents: routeResult.documents,
+      query,
+      scope: { device_id, user_id, app_id, project_id: projectId, thread_id: threadId },
+      allowed_sensitivity: routeResult.policy.allowed_sensitivity,
+      allow_untrusted: routeResult.policy.allow_untrusted,
+      top_k: Math.max(12, maxResults * 4),
+      remote_mode: false,
+      risk_penalty_enabled: true,
+      trace_enabled: !!request.require_explainability,
+    });
+    const allResults = Array.isArray(pipeline?.results) ? pipeline.results : [];
+    truncatedItems = Math.max(0, allResults.length - maxResults);
+    retrieval = {
+      ...pipeline,
+      results: allResults.slice(0, maxResults),
+    };
+  }
+
+  const response = buildXTMemoryRetrievalResultV1({
+    requestId,
+    source: 'hub_memory_retrieval_grpc_v1',
+    resolvedScope,
+    retrieval,
+    documentsById,
+    auditRef,
+    maxSnippetChars,
+    truncatedItems,
+    redactedItems: runtimeDocs.redactedItems,
+    forceTruncated: truncatedItems > 0 ? true : null,
+  });
+
+  return {
+    response,
+    requestId,
+    auditRef,
+    projectId,
+    retrievalKind,
+    explicitRefs,
+    requestedKinds,
+    allowedLayers,
+    query,
+  };
+}
+
 export function toProtoCapability(cap) {
   const c = String(cap || '').toUpperCase();
   if (c.includes('AI_GENERATE_LOCAL')) return 'CAPABILITY_AI_GENERATE_LOCAL';
   if (c.includes('AI_GENERATE_PAID')) return 'CAPABILITY_AI_GENERATE_PAID';
   if (c.includes('WEB_FETCH')) return 'CAPABILITY_WEB_FETCH';
   if (c.includes('AI_EMBED_LOCAL')) return 'CAPABILITY_AI_EMBED_LOCAL';
+  if (c.includes('AI_AUDIO_TTS_LOCAL')) return 'CAPABILITY_AI_AUDIO_LOCAL';
   if (c.includes('AI_AUDIO_LOCAL')) return 'CAPABILITY_AI_AUDIO_LOCAL';
   if (c.includes('AI_VISION_LOCAL')) return 'CAPABILITY_AI_VISION_LOCAL';
   // Allow legacy string form used by HTTP docs.
@@ -381,6 +1688,7 @@ export function toProtoCapability(cap) {
   if (String(cap || '') === 'ai.generate.paid') return 'CAPABILITY_AI_GENERATE_PAID';
   if (String(cap || '') === 'web.fetch') return 'CAPABILITY_WEB_FETCH';
   if (String(cap || '') === 'ai.embed.local') return 'CAPABILITY_AI_EMBED_LOCAL';
+  if (String(cap || '') === 'ai.audio.tts.local') return 'CAPABILITY_AI_AUDIO_LOCAL';
   if (String(cap || '') === 'ai.audio.local') return 'CAPABILITY_AI_AUDIO_LOCAL';
   if (String(cap || '') === 'ai.vision.local') return 'CAPABILITY_AI_VISION_LOCAL';
   return 'CAPABILITY_UNSPECIFIED';
@@ -404,13 +1712,23 @@ function killSwitchBlocksGrantedCapability(capability, killSwitch) {
     return { blocked: false, rule_id: '', reason: '' };
   }
   const disabledCapabilities = safeStringList(killSwitch.disabled_local_capabilities);
+  const wantedKillSwitchAliases = wanted === 'ai.audio.tts.local'
+    ? ['ai.audio.tts.local', 'ai.audio.local']
+    : [wanted];
   if (
-    (wanted === 'ai.generate.local' || wanted === 'ai.embed.local' || wanted === 'ai.audio.local' || wanted === 'ai.vision.local')
-    && disabledCapabilities.includes(wanted)
+    (
+      wanted === 'ai.generate.local'
+      || wanted === 'ai.embed.local'
+      || wanted === 'ai.audio.local'
+      || wanted === 'ai.audio.tts.local'
+      || wanted === 'ai.vision.local'
+    )
+    && wantedKillSwitchAliases.some((candidate) => disabledCapabilities.includes(candidate))
   ) {
+    const matchedCapability = wantedKillSwitchAliases.find((candidate) => disabledCapabilities.includes(candidate)) || wanted;
     return {
       blocked: true,
-      rule_id: `kill_switch_capability:${wanted}`,
+      rule_id: `kill_switch_capability:${matchedCapability}`,
       reason: String(killSwitch.reason || '').trim(),
     };
   }
@@ -471,6 +1789,29 @@ function makeProtoSkillMeta(row) {
     source_id: String(row.source_id || ''),
     package_sha256: String(row.package_sha256 || ''),
     install_hint: String(row.install_hint || ''),
+    risk_level: String(row.risk_level || ''),
+    requires_grant: !!row.requires_grant,
+    side_effect_class: String(row.side_effect_class || ''),
+  };
+}
+
+function makeProtoOfficialSkillChannelStatus(row) {
+  if (!row || typeof row !== 'object') return null;
+  return {
+    channel_id: String(row.channel_id || ''),
+    status: String(row.status || ''),
+    updated_at_ms: Math.max(0, Number(row.updated_at_ms || 0)),
+    last_attempt_at_ms: Math.max(0, Number(row.last_attempt_at_ms || 0)),
+    last_success_at_ms: Math.max(0, Number(row.last_success_at_ms || 0)),
+    skill_count: Math.max(0, Number(row.skill_count || 0)),
+    error_code: String(row.error_code || ''),
+    maintenance_enabled: !!row.maintenance_enabled,
+    maintenance_interval_ms: Math.max(0, Number(row.maintenance_interval_ms || 0)),
+    maintenance_last_run_at_ms: Math.max(0, Number(row.maintenance_last_run_at_ms || 0)),
+    maintenance_source_kind: String(row.maintenance_source_kind || ''),
+    last_transition_at_ms: Math.max(0, Number(row.last_transition_at_ms || 0)),
+    last_transition_kind: String(row.last_transition_kind || ''),
+    last_transition_summary: String(row.last_transition_summary || ''),
   };
 }
 
@@ -499,6 +1840,7 @@ const SKILL_IMPORT_DENY_REMEDIATION = Object.freeze({
   unsupported_scope: 'scope 仅支持 global/project，memory_core 为保留系统层。',
   package_not_found: '请先执行 upload/import 让 package_sha256 入库，再执行 pin。',
   skill_package_mismatch: 'pin 的 skill_id 与 package_sha256 不匹配，请使用上传返回的 skill_id。',
+  official_skill_review_blocked: 'Hub 已自动审查该官方技能包，但当前 official_skills doctor 结果不是 ready。请先查看 doctor / lifecycle 结果并修复后再重试。',
   invalid_pin_request: '请确认 skill_id/package_sha256 均已填写且格式正确。',
   permission_denied: '当前 token 未启用 skills capability；请重新安装客户端令牌或更新 capability allowlist。',
   skill_upload_failed: '请查看 Hub 审计中的 deny_code 与 fix_suggestion 字段并按提示修复。',
@@ -568,6 +1910,48 @@ function makeProtoPendingGrantItem(row) {
   };
 }
 
+function makeProtoSupervisorCandidateReviewItem(row) {
+  if (!row) return null;
+  const request_id = String(row.request_id || '').trim();
+  if (!request_id) return null;
+  return {
+    schema_version: String(row.schema_version || '').trim(),
+    review_id: String(row.review_id || '').trim(),
+    request_id,
+    evidence_ref: String(row.evidence_ref || '').trim(),
+    review_state: String(row.review_state || '').trim().toLowerCase(),
+    durable_promotion_state: String(row.durable_promotion_state || '').trim().toLowerCase(),
+    promotion_boundary: String(row.promotion_boundary || '').trim().toLowerCase(),
+    device_id: String(row.device_id || '').trim(),
+    user_id: String(row.user_id || '').trim(),
+    app_id: String(row.app_id || '').trim(),
+    thread_id: String(row.thread_id || '').trim(),
+    thread_key: String(row.thread_key || '').trim(),
+    project_id: String(row.project_id || '').trim(),
+    project_ids: safeStringList(row.project_ids),
+    scopes: safeStringList(row.scopes),
+    record_types: safeStringList(row.record_types),
+    audit_refs: safeStringList(row.audit_refs),
+    idempotency_keys: safeStringList(row.idempotency_keys),
+    candidate_count: Number(row.candidate_count || 0),
+    summary_line: String(row.summary_line || '').trim(),
+    mirror_target: String(row.mirror_target || '').trim(),
+    local_store_role: String(row.local_store_role || '').trim(),
+    carrier_kind: String(row.carrier_kind || '').trim(),
+    carrier_schema_version: String(row.carrier_schema_version || '').trim(),
+    pending_change_id: String(row.pending_change_id || '').trim(),
+    pending_change_status: String(row.pending_change_status || '').trim().toLowerCase(),
+    edit_session_id: String(row.edit_session_id || '').trim(),
+    doc_id: String(row.doc_id || '').trim(),
+    writeback_ref: String(row.writeback_ref || '').trim(),
+    stage_created_at_ms: Number(row.stage_created_at_ms || 0),
+    stage_updated_at_ms: Number(row.stage_updated_at_ms || 0),
+    latest_emitted_at_ms: Number(row.latest_emitted_at_ms || 0),
+    created_at_ms: Number(row.created_at_ms || 0),
+    updated_at_ms: Number(row.updated_at_ms || 0),
+  };
+}
+
 function makeProtoConnectorIngressReceipt(row) {
   if (!row) return null;
   const receipt_id = String(row.receipt_id || '').trim();
@@ -619,10 +2003,12 @@ function makeProtoChannelIdentityBinding(row) {
   return {
     schema_version: safeString(row.schema_version),
     provider: safeString(row.provider),
+    stable_external_id: safeString(row.stable_external_id),
     external_user_id: safeString(row.external_user_id),
     external_tenant_id: safeString(row.external_tenant_id),
     hub_user_id: safeString(row.hub_user_id),
     roles: Array.isArray(row.roles) ? row.roles.map((item) => safeString(item)).filter(Boolean) : [],
+    access_groups: Array.isArray(row.access_groups) ? row.access_groups.map((item) => safeString(item)).filter(Boolean) : [],
     approval_only: !!row.approval_only,
     status: safeString(row.status),
     synced_at_ms: Number(row.synced_at_ms || 0),
@@ -656,6 +2042,183 @@ function makeProtoSupervisorOperatorChannelBinding(row) {
   };
 }
 
+function deriveEffectiveChannelOnboardingStatus(ticket, {
+  latestDecision = null,
+  revocation = null,
+} = {}) {
+  const revoked = safeString(revocation?.status).toLowerCase();
+  if (revoked === 'revoked') return 'revoked';
+  const latest = safeString(latestDecision?.decision).toLowerCase();
+  if (latest === 'approve') return 'approved';
+  if (latest === 'hold') return 'held';
+  if (latest === 'reject') return 'rejected';
+  return safeString(ticket?.status).toLowerCase();
+}
+
+function makeProtoChannelOnboardingDiscoveryTicket(row, {
+  latestDecision = null,
+  revocation = null,
+} = {}) {
+  if (!row) return null;
+  return {
+    schema_version: safeString(row.schema_version),
+    ticket_id: safeString(row.ticket_id),
+    provider: safeString(row.provider),
+    account_id: safeString(row.account_id),
+    external_user_id: safeString(row.external_user_id),
+    external_tenant_id: safeString(row.external_tenant_id),
+    conversation_id: safeString(row.conversation_id),
+    thread_key: safeString(row.thread_key),
+    ingress_surface: safeString(row.ingress_surface),
+    first_message_preview: safeString(row.first_message_preview),
+    proposed_scope_type: safeString(row.proposed_scope_type),
+    proposed_scope_id: safeString(row.proposed_scope_id),
+    recommended_binding_mode: safeString(row.recommended_binding_mode),
+    status: safeString(row.status),
+    event_count: Number(row.event_count || 0),
+    first_seen_at_ms: Number(row.first_seen_at_ms || 0),
+    last_seen_at_ms: Number(row.last_seen_at_ms || 0),
+    created_at_ms: Number(row.created_at_ms || 0),
+    updated_at_ms: Number(row.updated_at_ms || 0),
+    expires_at_ms: Number(row.expires_at_ms || 0),
+    last_request_id: safeString(row.last_request_id),
+    audit_ref: safeString(row.audit_ref),
+    effective_status: deriveEffectiveChannelOnboardingStatus(row, {
+      latestDecision,
+      revocation,
+    }),
+  };
+}
+
+function makeProtoChannelOnboardingApprovalDecision(row) {
+  if (!row) return null;
+  return {
+    schema_version: safeString(row.schema_version),
+    decision_id: safeString(row.decision_id),
+    ticket_id: safeString(row.ticket_id),
+    decision: safeString(row.decision),
+    approved_by_hub_user_id: safeString(row.approved_by_hub_user_id),
+    approved_via: safeString(row.approved_via),
+    hub_user_id: safeString(row.hub_user_id),
+    scope_type: safeString(row.scope_type),
+    scope_id: safeString(row.scope_id),
+    binding_mode: safeString(row.binding_mode),
+    preferred_device_id: safeString(row.preferred_device_id),
+    allowed_actions: Array.isArray(row.allowed_actions) ? row.allowed_actions.map((item) => safeString(item)).filter(Boolean) : [],
+    grant_profile: safeString(row.grant_profile),
+    note: safeString(row.note),
+    created_at_ms: Number(row.created_at_ms || 0),
+    audit_ref: safeString(row.audit_ref),
+  };
+}
+
+function makeProtoChannelOnboardingRevocation(row) {
+  if (!row) return null;
+  return {
+    schema_version: safeString(row.schema_version),
+    revocation_id: safeString(row.revocation_id),
+    ticket_id: safeString(row.ticket_id),
+    receipt_id: safeString(row.receipt_id),
+    decision_id: safeString(row.decision_id),
+    status: safeString(row.status),
+    provider: safeString(row.provider),
+    account_id: safeString(row.account_id),
+    external_user_id: safeString(row.external_user_id),
+    external_tenant_id: safeString(row.external_tenant_id),
+    conversation_id: safeString(row.conversation_id),
+    thread_key: safeString(row.thread_key),
+    hub_user_id: safeString(row.hub_user_id),
+    scope_type: safeString(row.scope_type),
+    scope_id: safeString(row.scope_id),
+    identity_actor_ref: safeString(row.identity_actor_ref),
+    channel_binding_id: safeString(row.channel_binding_id),
+    revoked_by_hub_user_id: safeString(row.revoked_by_hub_user_id),
+    revoked_via: safeString(row.revoked_via),
+    note: safeString(row.note),
+    created_at_ms: Number(row.created_at_ms || 0),
+    updated_at_ms: Number(row.updated_at_ms || 0),
+    audit_ref: safeString(row.audit_ref),
+  };
+}
+
+function makeProtoChannelOnboardingFirstSmokeReceipt(row) {
+  if (!row) return null;
+  return {
+    schema_version: safeString(row.schema_version),
+    receipt_id: safeString(row.receipt_id),
+    ticket_id: safeString(row.ticket_id),
+    decision_id: safeString(row.decision_id),
+    provider: safeString(row.provider),
+    action_name: safeString(row.action_name),
+    status: safeString(row.status),
+    route_mode: safeString(row.route_mode),
+    deny_code: safeString(row.deny_code),
+    detail: safeString(row.detail),
+    remediation_hint: safeString(row.remediation_hint),
+    project_id: safeString(row.project_id),
+    binding_id: safeString(row.binding_id),
+    ack_outbox_item_id: safeString(row.ack_outbox_item_id),
+    smoke_outbox_item_id: safeString(row.smoke_outbox_item_id),
+    created_at_ms: Number(row.created_at_ms || 0),
+    updated_at_ms: Number(row.updated_at_ms || 0),
+    audit_ref: safeString(row.audit_ref),
+    heartbeat_governance_snapshot_json: safeString(row.heartbeat_governance_snapshot_json),
+    heartbeat_governance_snapshot: row.heartbeat_governance_snapshot || null,
+  };
+}
+
+function makeProtoChannelOutboxItem(row) {
+  if (!row) return null;
+  return {
+    schema_version: safeString(row.schema_version),
+    item_id: safeString(row.item_id),
+    provider: safeString(row.provider),
+    item_kind: safeString(row.item_kind),
+    status: safeString(row.status),
+    ticket_id: safeString(row.ticket_id),
+    decision_id: safeString(row.decision_id),
+    receipt_id: safeString(row.receipt_id),
+    attempt_count: Number(row.attempt_count || 0),
+    last_error_code: safeString(row.last_error_code),
+    last_error_message: safeString(row.last_error_message),
+    provider_message_ref: safeString(row.provider_message_ref),
+    created_at_ms: Number(row.created_at_ms || 0),
+    updated_at_ms: Number(row.updated_at_ms || 0),
+    delivered_at_ms: Number(row.delivered_at_ms || 0),
+    audit_ref: safeString(row.audit_ref),
+  };
+}
+
+function makeProtoChannelOnboardingDeliveryReadiness(row) {
+  if (!row) return null;
+  return {
+    provider: safeString(row.provider),
+    ready: !!row.ready,
+    reply_enabled: !!row.reply_enabled,
+    credentials_configured: !!row.credentials_configured,
+    deny_code: safeString(row.deny_code),
+    remediation_hint: safeString(row.remediation_hint),
+    repair_hints: Array.isArray(row.repair_hints)
+      ? row.repair_hints.map((item) => safeString(item)).filter(Boolean)
+      : [],
+  };
+}
+
+function makeProtoChannelOnboardingAutomationState(row) {
+  if (!row) return null;
+  return {
+    schema_version: safeString(row.schema_version),
+    ticket_id: safeString(row.ticket_id),
+    first_smoke: makeProtoChannelOnboardingFirstSmokeReceipt(row.first_smoke),
+    outbox_items: Array.isArray(row.outbox_items)
+      ? row.outbox_items.map((item) => makeProtoChannelOutboxItem(item)).filter(Boolean)
+      : [],
+    outbox_pending_count: Number(row.outbox_pending_count || 0),
+    outbox_delivered_count: Number(row.outbox_delivered_count || 0),
+    delivery_readiness: makeProtoChannelOnboardingDeliveryReadiness(row.delivery_readiness),
+  };
+}
+
 function makeProtoChannelCommandGateDecision(row) {
   if (!row) return null;
   const policy = getChannelActionPolicy(row.action_name);
@@ -673,13 +2236,17 @@ function makeProtoChannelCommandGateDecision(row) {
     policy_checked: row.policy_checked !== false,
     allowed_roles: Array.isArray(row.allowed_roles) ? row.allowed_roles.map((item) => safeString(item)).filter(Boolean) : [],
     identity_roles: Array.isArray(row.identity_roles) ? row.identity_roles.map((item) => safeString(item)).filter(Boolean) : [],
+    stable_external_id: safeString(row.stable_external_id),
+    access_groups: Array.isArray(row.access_groups) ? row.access_groups.map((item) => safeString(item)).filter(Boolean) : [],
     route_mode: safeString(policy?.route_mode),
+    risk_tier: safeString(row.risk_tier || policy?.risk_tier),
+    required_grant_scope: safeString(row.required_grant_scope || policy?.required_grant_scope),
   };
 }
 
 function makeProtoSupervisorChannelRoute(row) {
   if (!row) return null;
-  return {
+  const out = {
     schema_version: safeString(row.schema_version),
     route_id: safeString(row.route_id),
     provider: safeString(row.provider),
@@ -700,6 +2267,10 @@ function makeProtoSupervisorChannelRoute(row) {
     selected_by: safeString(row.selected_by),
     action_name: safeString(row.action_name),
   };
+  if (row.governance_runtime_readiness && typeof row.governance_runtime_readiness === 'object') {
+    out.governance_runtime_readiness = row.governance_runtime_readiness;
+  }
+  return out;
 }
 
 function makeProtoSupervisorTargetScope(row) {
@@ -738,7 +2309,7 @@ function makeProtoSupervisorSurfaceIngress(row) {
 
 function makeProtoSupervisorRouteDecision(row) {
   if (!row || typeof row !== 'object') return null;
-  return {
+  const out = {
     schema_version: safeString(row.schema_version),
     route_id: safeString(row.route_id),
     request_id: safeString(row.request_id),
@@ -759,6 +2330,10 @@ function makeProtoSupervisorRouteDecision(row) {
     updated_at_ms: Number(row.updated_at_ms || 0),
     audit_ref: safeString(row.audit_ref),
   };
+  if (row.governance_runtime_readiness && typeof row.governance_runtime_readiness === 'object') {
+    out.governance_runtime_readiness = row.governance_runtime_readiness;
+  }
+  return out;
 }
 
 function makeProtoSupervisorBriefProjection(row) {
@@ -858,6 +2433,9 @@ function makeProtoChannelProviderRuntimeStatus(row) {
     command_entry_ready: !!row.command_entry_ready,
     last_error_code: safeString(row.last_error_code),
     updated_at_ms: Number(row.updated_at_ms || 0),
+    repair_hints: Array.isArray(row.repair_hints)
+      ? row.repair_hints.map((item) => safeString(item)).filter(Boolean)
+      : [],
   };
 }
 
@@ -999,6 +2577,33 @@ function buildHubChannelRuntimeStatusSnapshot({ db, runtimeBaseDir }) {
     });
   }
 
+  for (const raw of listChannelDeliveryJobRuntimeRows(db, {
+    now_ms: nowMs(),
+  })) {
+    const provider = safeString(raw?.provider).toLowerCase();
+    const account_id = safeString(raw?.account_id);
+    const key = `${provider}|${account_id}`;
+    if (!provider) continue;
+    const existing = merged.get(key) || {
+      provider,
+      account_id,
+      runtime_state: raw?.delivery_circuit_open ? 'degraded' : 'not_configured',
+      updated_at_ms: 0,
+    };
+    merged.set(key, {
+      ...existing,
+      ...raw,
+      provider,
+      account_id,
+      updated_at_ms: Math.max(
+        Number(existing.updated_at_ms || 0),
+        Number(raw?.updated_at_ms || 0),
+        Number(raw?.last_delivery_success_at_ms || 0),
+        Number(raw?.last_delivery_failure_at_ms || 0)
+      ),
+    });
+  }
+
   const rows = Array.from(merged.values());
   const updated_at_ms = Math.max(
     Number(runtimeSnapshot.updated_at_ms || 0),
@@ -1016,6 +2621,17 @@ function operatorChannelAuditActor(fallbackAppId = 'hub_runtime_operator_channel
     app_id,
     project_id: '',
     session_id: '',
+  };
+}
+
+function localAdminAuditActor(admin = {}, fallbackAppId = 'hub_runtime_local_admin') {
+  const src = admin && typeof admin === 'object' ? admin : {};
+  return {
+    device_id: safeString(src.device_id || 'hub_admin_local') || 'hub_admin_local',
+    user_id: safeString(src.user_id),
+    app_id: safeString(src.app_id || fallbackAppId) || fallbackAppId,
+    project_id: safeString(src.project_id),
+    session_id: safeString(src.session_id),
   };
 }
 
@@ -1210,6 +2826,14 @@ function makeProtoPaymentIntent(row) {
     receipt_compensation_due_at_ms: Math.max(0, Number(row.receipt_compensation_due_at_ms || 0)),
     receipt_compensated_at_ms: Math.max(0, Number(row.receipt_compensated_at_ms || 0)),
     receipt_compensation_reason: String(row.receipt_compensation_reason || ''),
+    preview_fee_minor: Math.max(0, Math.floor(Number(row.preview_fee_minor || 0))),
+    preview_risk_level: String(row.preview_risk_level || 'high'),
+    preview_undo_window_ms: Math.max(0, Number(row.preview_undo_window_ms || 0)),
+    preview_card_hash: String(row.preview_card_hash || ''),
+    two_phase_state: String(row.two_phase_state || ''),
+    approved_at_ms: Math.max(0, Number(row.approved_at_ms || row.authorized_at_ms || 0)),
+    dispatched_at_ms: Math.max(0, Number(row.dispatched_at_ms || row.committed_at_ms || 0)),
+    acked_at_ms: Math.max(0, Number(row.acked_at_ms || row.committed_at_ms || 0)),
   };
 }
 
@@ -1235,6 +2859,181 @@ function makeProtoProjectHeartbeat(row) {
     expires_at_ms: Math.max(0, Number(row.expires_at_ms || 0)),
     conservative_only: !!row.conservative_only,
   };
+}
+
+function normalizeHeartbeatCadenceDimension(raw, fallbackDimension = '') {
+  const dimension = safeString(raw?.dimension) || safeString(fallbackDimension);
+  return {
+    dimension,
+    configured_seconds: raw?.configuredSeconds == null ? null : nonNegativeInt(raw.configuredSeconds),
+    recommended_seconds: raw?.recommendedSeconds == null ? null : nonNegativeInt(raw.recommendedSeconds),
+    effective_seconds: raw?.effectiveSeconds == null ? null : nonNegativeInt(raw.effectiveSeconds),
+    effective_reason_codes: safeStringArray(raw?.effectiveReasonCodes),
+    next_due_at_ms: raw?.nextDueAtMs == null ? null : Math.max(0, Number(raw.nextDueAtMs || 0)),
+    next_due_reason_codes: safeStringArray(raw?.nextDueReasonCodes),
+    due: raw?.isDue == null ? null : !!raw.isDue,
+  };
+}
+
+function normalizeHeartbeatNextReviewDue(rawSummary, cadence = {}) {
+  const kind = safeString(rawSummary?.next_review_kind);
+  const due = rawSummary?.next_review_due == null ? null : !!rawSummary.next_review_due;
+  const atMs = rawSummary?.next_review_due_at_ms == null ? null : Math.max(0, Number(rawSummary.next_review_due_at_ms || 0));
+  let reasonCodes = [];
+  const pulse = cadence.review_pulse && typeof cadence.review_pulse === 'object' ? cadence.review_pulse : null;
+  const brainstorm = cadence.brainstorm_review && typeof cadence.brainstorm_review === 'object' ? cadence.brainstorm_review : null;
+  if (kind && pulse?.dimension === kind) {
+    reasonCodes = safeStringArray(pulse.next_due_reason_codes);
+  } else if (kind && brainstorm?.dimension === kind) {
+    reasonCodes = safeStringArray(brainstorm.next_due_reason_codes);
+  }
+  return {
+    kind: kind || null,
+    due,
+    at_ms: atMs,
+    reason_codes: reasonCodes,
+  };
+}
+
+function normalizeHeartbeatRecoveryDecision(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const action = safeString(raw.action);
+  const urgency = safeString(raw.urgency);
+  const reasonCode = safeString(raw.reasonCode);
+  const summary = safeString(raw.summary);
+  const sourceSignals = safeStringArray(raw.sourceSignals);
+  const anomalyTypes = safeStringArray(raw.anomalyTypes);
+  const blockedLaneReasons = safeStringArray(raw.blockedLaneReasons);
+  const blockedLaneCount = raw.blockedLaneCount == null ? null : nonNegativeInt(raw.blockedLaneCount);
+  const stalledLaneCount = raw.stalledLaneCount == null ? null : nonNegativeInt(raw.stalledLaneCount);
+  const failedLaneCount = raw.failedLaneCount == null ? null : nonNegativeInt(raw.failedLaneCount);
+  const recoveringLaneCount = raw.recoveringLaneCount == null ? null : nonNegativeInt(raw.recoveringLaneCount);
+  const requiresUserAction = raw.requiresUserAction == null ? null : !!raw.requiresUserAction;
+  const queuedReviewTrigger = safeString(raw.queuedReviewTrigger);
+  const queuedReviewLevel = safeString(raw.queuedReviewLevel);
+  const queuedReviewRunKind = safeString(raw.queuedReviewRunKind);
+
+  if (
+    !action
+    && !urgency
+    && !reasonCode
+    && !summary
+    && sourceSignals.length === 0
+    && anomalyTypes.length === 0
+    && blockedLaneReasons.length === 0
+    && blockedLaneCount == null
+    && stalledLaneCount == null
+    && failedLaneCount == null
+    && recoveringLaneCount == null
+    && requiresUserAction == null
+    && !queuedReviewTrigger
+    && !queuedReviewLevel
+    && !queuedReviewRunKind
+  ) {
+    return null;
+  }
+
+  return {
+    action: action || null,
+    urgency: urgency || null,
+    reason_code: reasonCode || null,
+    summary,
+    source_signals: sourceSignals,
+    anomaly_types: anomalyTypes,
+    blocked_lane_reasons: blockedLaneReasons,
+    blocked_lane_count: blockedLaneCount,
+    stalled_lane_count: stalledLaneCount,
+    failed_lane_count: failedLaneCount,
+    recovering_lane_count: recoveringLaneCount,
+    requires_user_action: requiresUserAction,
+    queued_review_trigger: queuedReviewTrigger || null,
+    queued_review_level: queuedReviewLevel || null,
+    queued_review_run_kind: queuedReviewRunKind || null,
+  };
+}
+
+function heartbeatCadenceProjectionFromSummary(rawSummary) {
+  const cadence = rawSummary?.cadence && typeof rawSummary.cadence === 'object'
+    ? rawSummary.cadence
+    : {};
+  const progressHeartbeat = normalizeHeartbeatCadenceDimension(
+    cadence.progressHeartbeat,
+    'progress_heartbeat',
+  );
+  const reviewPulse = normalizeHeartbeatCadenceDimension(
+    cadence.reviewPulse,
+    'review_pulse',
+  );
+  const brainstormReview = normalizeHeartbeatCadenceDimension(
+    cadence.brainstormReview,
+    'brainstorm_review',
+  );
+  return {
+    progress_heartbeat: progressHeartbeat,
+    review_pulse: reviewPulse,
+    brainstorm_review: brainstormReview,
+    next_review_due: normalizeHeartbeatNextReviewDue(
+      rawSummary,
+      {
+        review_pulse: reviewPulse,
+        brainstorm_review: brainstormReview,
+      },
+    ),
+  };
+}
+
+function buildHeartbeatGovernanceSnapshotFromSummary(rawSummary) {
+  if (!rawSummary || typeof rawSummary !== 'object') return null;
+  const projectId = safeString(rawSummary.project_id);
+  if (!projectId) return null;
+
+  const cadenceProjection = heartbeatCadenceProjectionFromSummary(rawSummary);
+  const digest = rawSummary.digestExplainability && typeof rawSummary.digestExplainability === 'object'
+    ? rawSummary.digestExplainability
+    : {};
+
+  return {
+    project_id: projectId,
+    project_name: safeString(rawSummary.project_name),
+    status_digest: safeString(rawSummary.status_digest),
+    current_state_summary: safeString(rawSummary.current_state_summary),
+    next_step_summary: safeString(rawSummary.next_step_summary),
+    blocker_summary: safeString(rawSummary.blocker_summary),
+    last_heartbeat_at_ms: Math.max(0, Number(rawSummary.last_heartbeat_at_ms || 0)),
+    latest_quality_band: safeString(rawSummary.latest_quality_band) || null,
+    latest_quality_score: rawSummary.latest_quality_score == null ? null : nonNegativeInt(rawSummary.latest_quality_score),
+    weak_reasons: safeStringArray(rawSummary.weak_reasons),
+    open_anomaly_types: safeStringArray(rawSummary.open_anomaly_types),
+    project_phase: safeString(rawSummary.project_phase) || null,
+    execution_status: safeString(rawSummary.execution_status) || null,
+    risk_tier: safeString(rawSummary.risk_tier) || null,
+    digest_visibility: safeString(digest.visibility) || 'suppressed',
+    digest_reason_codes: safeStringArray(digest.reasonCodes),
+    digest_what_changed_text: safeString(digest.whatChangedText),
+    digest_why_important_text: safeString(digest.whyImportantText),
+    digest_system_next_step_text: safeString(digest.systemNextStepText),
+    progress_heartbeat: cadenceProjection.progress_heartbeat,
+    review_pulse: cadenceProjection.review_pulse,
+    brainstorm_review: cadenceProjection.brainstorm_review,
+    next_review_due: cadenceProjection.next_review_due,
+    recovery_decision: normalizeHeartbeatRecoveryDecision(rawSummary.recoveryDecision),
+  };
+}
+
+export function buildProjectHeartbeatGovernanceSnapshot({
+  db,
+  device_id,
+  user_id,
+  app_id,
+  project_id,
+} = {}) {
+  return buildProjectHeartbeatGovernanceSnapshotShared({
+    db,
+    device_id,
+    user_id,
+    app_id,
+    project_id,
+  });
 }
 
 function makeProtoDispatchPlanItem(row) {
@@ -1267,6 +3066,7 @@ function loadOperatorChannelProjectState(db, project_id = '') {
       lineage: null,
       dispatch: null,
       heartbeat: null,
+      heartbeat_governance_snapshot: null,
       owner_identity: null,
     };
   }
@@ -1280,6 +3080,13 @@ function loadOperatorChannelProjectState(db, project_id = '') {
   const heartbeat = typeof db._getProjectHeartbeatRowRawByProjectId === 'function' && typeof db._parseProjectHeartbeatRow === 'function'
     ? db._parseProjectHeartbeatRow(db._getProjectHeartbeatRowRawByProjectId(projectId))
     : null;
+  const heartbeat_governance_snapshot = buildProjectHeartbeatGovernanceSnapshot({
+    db,
+    device_id: safeString(lineage?.device_id || dispatch?.device_id || heartbeat?.device_id),
+    user_id: safeString(lineage?.user_id || dispatch?.user_id || heartbeat?.user_id),
+    app_id: safeString(lineage?.app_id || dispatch?.app_id || heartbeat?.app_id),
+    project_id: projectId,
+  });
 
   const owner_identity = lineage || dispatch || heartbeat || null;
   return {
@@ -1293,6 +3100,7 @@ function loadOperatorChannelProjectState(db, project_id = '') {
     lineage,
     dispatch,
     heartbeat,
+    heartbeat_governance_snapshot,
     owner_identity,
   };
 }
@@ -1337,6 +3145,9 @@ function buildOperatorChannelHubQueryResult({
     provider_status: makeProtoChannelProviderRuntimeStatus(provider_status_row),
     dispatch: makeProtoProjectDispatchContext(projectState.dispatch),
     heartbeat: makeProtoProjectHeartbeat(projectState.heartbeat),
+    heartbeat_governance_snapshot_json: projectState.heartbeat_governance_snapshot
+      ? JSON.stringify(projectState.heartbeat_governance_snapshot)
+      : '',
     queue: null,
   };
 
@@ -1388,6 +3199,8 @@ function buildOperatorChannelHubQueryResult({
 function normalizeSupervisorSurfaceType(value, fallback = 'hub_internal') {
   const raw = safeString(value).toLowerCase();
   if (!raw) return fallback;
+  const normalizedProvider = normalizeChannelProviderId(raw);
+  if (normalizedProvider) return normalizedProvider;
   const known = new Set([
     'xt_ui',
     'xt_voice',
@@ -1397,7 +3210,7 @@ function normalizeSupervisorSurfaceType(value, fallback = 'hub_internal') {
     'telegram',
     'feishu',
     'whatsapp_cloud_api',
-    'whatsapp_personal_runner',
+    'whatsapp_personal_qr',
     'runner_event',
     'hub_internal',
   ]);
@@ -1406,7 +3219,7 @@ function normalizeSupervisorSurfaceType(value, fallback = 'hub_internal') {
 
 function inferSupervisorTrustLevel(surface_type = '') {
   const surface = normalizeSupervisorSurfaceType(surface_type, 'hub_internal');
-  if (surface === 'runner_event' || surface === 'whatsapp_personal_runner') return 'runner_observation';
+  if (surface === 'runner_event' || surface === 'whatsapp_personal_qr') return 'runner_observation';
   if (surface === 'hub_internal') return 'hub_internal';
   if (surface === 'xt_ui' || surface === 'xt_voice' || surface === 'mobile_companion' || surface === 'wearable_companion') {
     return 'paired_surface';
@@ -2298,15 +4111,13 @@ function resolveLocalFallbackModelId({ db, runtimeBaseDir, preferred_model_id = 
   }
 
   const seen = new Set();
-  for (const modelId of candidates) {
+  for (const requestedModelId of candidates) {
+    if (!requestedModelId) continue;
+    const resolved = resolveServiceModelMeta({ db, runtimeBaseDir, modelId: requestedModelId });
+    const modelId = safeString(resolved.resolved_model_id);
     if (!modelId || seen.has(modelId)) continue;
     seen.add(modelId);
-    let meta = null;
-    try {
-      meta = db.getModel(modelId) || runtimeModelMeta(runtimeBaseDir, modelId);
-    } catch {
-      meta = null;
-    }
+    const meta = resolved.model;
     if (!meta || isPaidModelMeta(meta)) continue;
     if (supportsLocalTextGenerate({ runtimeBaseDir, modelId, modelMeta: meta })) {
       return modelId;
@@ -2697,15 +4508,28 @@ export function makeServices({ db, bus }) {
     } catch {
       runtimeClients = [];
     }
+    let presenceSnapshot = null;
+    try {
+      presenceSnapshot = loadDevicePresenceSnapshot(base);
+    } catch {
+      presenceSnapshot = null;
+    }
     const runtimeClientsByDeviceId = new Map(
       (runtimeClients || [])
         .map((client) => [String(client?.device_id || '').trim(), client])
         .filter(([deviceId]) => !!deviceId)
     );
+    const presenceByDeviceId = new Map(
+      (Array.isArray(presenceSnapshot?.devices) ? presenceSnapshot.devices : [])
+        .map((entry) => [String(entry?.device_id || '').trim(), entry])
+        .filter(([deviceId]) => !!deviceId)
+    );
+    const presenceFreshTTL = devicePresenceTTLms();
 
     const deviceIds = new Set([
       ...Array.from(eventSubsByDeviceId.keys()),
       ...Array.from(runtimeClientsByDeviceId.keys()),
+      ...Array.from(presenceByDeviceId.keys()),
     ]);
 
     const devices = [];
@@ -2713,6 +4537,7 @@ export function makeServices({ db, bus }) {
       if (!device_id) continue;
       const st = eventSubsByDeviceId.get(device_id) || null;
       const runtimeClient = runtimeClientsByDeviceId.get(device_id) || null;
+      const presence = presenceByDeviceId.get(device_id) || null;
       const scope = `device:${device_id}`;
       const quotaUsed = db.getQuotaUsageDaily(scope, quotaDay);
       const legacyCap = quotaCfg ? resolveDeviceDailyTokenCap(quotaCfg, device_id) : 0;
@@ -2745,6 +4570,7 @@ export function makeServices({ db, bus }) {
             ok: !!Number(row.ok || 0),
             error_code: row.error_code != null ? String(row.error_code || '') : '',
             error_message: row.error_message != null ? String(row.error_message || '') : '',
+            app_id: row.app_id != null ? String(row.app_id || '') : '',
           };
         }
       } catch {
@@ -2752,6 +4578,7 @@ export function makeServices({ db, bus }) {
       }
 
       const nowAtMs = Date.now();
+      const presenceFresh = isDevicePresenceFresh(presence, nowAtMs, presenceFreshTTL);
       const windowMs = 60 * 60 * 1000;
       const bucketMs = 5 * 60 * 1000;
       const sinceMs = Math.max(0, nowAtMs - windowMs);
@@ -2777,21 +4604,32 @@ export function makeServices({ db, bus }) {
       const remainingBudget = dailyTokenLimit > 0 ? Math.max(0, dailyTokenLimit - dailyTokenUsed) : 0;
       const resolvedName = String(
         st?.name
+        || presence?.name
         || runtimeClient?.name
         || runtimeClient?.trust_profile?.device_name
         || modelBreakdown[0]?.device_name
         || device_id
       ).trim() || device_id;
+      const connectedAtMs = Math.max(
+        Number(st?.connected_at_ms || 0),
+        Number(presence?.first_seen_at_ms || 0)
+      );
+      const lastSeenAtMs = Math.max(
+        Number(st?.last_seen_at_ms || 0),
+        Number(presence?.last_seen_at_ms || 0),
+        Number(presence?.updated_at_ms || 0)
+      );
 
       devices.push({
         device_id,
+        app_id: String(runtimeClient?.app_id || presence?.app_id || lastActivity?.app_id || '').trim(),
         name: resolvedName,
         device_name: resolvedName,
-        peer_ip: String(st?.peer_ip || '').trim(),
-        connected: Number(st?.count || 0) > 0,
+        peer_ip: String(st?.peer_ip || presence?.peer_ip || '').trim(),
+        connected: Number(st?.count || 0) > 0 || presenceFresh,
         active_event_subscriptions: Number(st?.count || 0),
-        connected_at_ms: Number(st?.connected_at_ms || 0),
-        last_seen_at_ms: Number(st?.last_seen_at_ms || 0),
+        connected_at_ms: connectedAtMs,
+        last_seen_at_ms: lastSeenAtMs,
         quota_day: quotaDay,
         daily_token_used: dailyTokenUsed,
         daily_token_cap: dailyTokenLimit,
@@ -2943,6 +4781,23 @@ export function makeServices({ db, bus }) {
     };
   }
 
+  function buildSupervisorCandidateReviewSnapshot({
+    deviceId = '',
+    appId = '',
+    projectId = '',
+    limit = 200,
+  } = {}) {
+    return {
+      updated_at_ms: nowMs(),
+      items: db.listSupervisorMemoryCandidateCarrierReviewQueue({
+        device_id: String(deviceId || '').trim(),
+        app_id: String(appId || '').trim(),
+        project_id: String(projectId || '').trim(),
+        limit: parseIntInRange(limit, 200, 1, 500),
+      }),
+    };
+  }
+
   function buildConnectorIngressReceiptsSnapshot({
     projectId = '',
     limit = 200,
@@ -3056,6 +4911,26 @@ export function makeServices({ db, bus }) {
     });
   }
 
+  function writeSupervisorCandidateReviewStatus(runtimeBaseDir) {
+    const base = String(runtimeBaseDir || '').trim();
+    if (!base) return;
+    const filePath = path.join(base, 'supervisor_candidate_review_status.json');
+    const snapshot = buildSupervisorCandidateReviewSnapshot({
+      deviceId: '',
+      appId: '',
+      projectId: '',
+      limit: 400,
+    });
+    if (!fs.existsSync(filePath) && (!Array.isArray(snapshot.items) || snapshot.items.length === 0)) {
+      return;
+    }
+    writeJsonAtomic(filePath, {
+      schema_version: 'supervisor_candidate_review_status.v1',
+      updated_at_ms: snapshot.updated_at_ms,
+      items: Array.isArray(snapshot.items) ? snapshot.items : [],
+    });
+  }
+
   function writeAutonomyPolicyOverridesStatus(runtimeBaseDir) {
     const base = String(runtimeBaseDir || '').trim();
     if (!base) return;
@@ -3101,6 +4976,7 @@ export function makeServices({ db, bus }) {
       writeGrpcDevicesStatus(resolveRuntimeBaseDir());
       writePaidAISchedulerStatus(resolveRuntimeBaseDir());
       writePendingGrantRequestsStatus(resolveRuntimeBaseDir());
+      writeSupervisorCandidateReviewStatus(resolveRuntimeBaseDir());
       writeAutonomyPolicyOverridesStatus(resolveRuntimeBaseDir());
       writeSecretVaultItemsStatus(resolveRuntimeBaseDir());
     } catch {
@@ -3348,7 +5224,243 @@ export function makeServices({ db, bus }) {
     return true;
   }
 
-  function effectiveClientIdentity(raw, auth) {
+  function clientRequiresExplicitCapabilitiesSnapshot(auth) {
+    const policyMode = String(auth?.policy_mode || '').trim().toLowerCase();
+    const trustMode = String(auth?.trust_mode || '').trim().toLowerCase();
+    const trustedMode = String(
+      auth?.trusted_automation_mode
+      || auth?.approved_trust_profile?.mode
+      || ''
+    ).trim().toLowerCase();
+    return policyMode === 'new_profile'
+      || trustMode === 'trusted_automation'
+      || trustedMode === 'trusted_automation';
+  }
+
+  function clientAllowsSnapshot(auth, capabilityKey) {
+    const wanted = safeString(capabilityKey);
+    if (!wanted) return { allowed: true, deny_code: '' };
+    const caps = Array.isArray(auth?.capabilities)
+      ? auth.capabilities.map((c) => safeString(c)).filter(Boolean)
+      : [];
+    if (caps.length === 0) {
+      const denyCode = clientRequiresExplicitCapabilitiesSnapshot(auth)
+        ? 'trusted_automation_capabilities_empty_blocked'
+        : '';
+      return {
+        allowed: !denyCode,
+        deny_code: denyCode,
+      };
+    }
+    if (wanted === 'skills' && String(process.env.HUB_REQUIRE_SKILLS_CAP || '').trim() !== '1' && caps.includes('memory')) {
+      return { allowed: true, deny_code: '' };
+    }
+    const allowed = caps.includes(wanted);
+    return {
+      allowed,
+      deny_code: allowed ? '' : 'permission_denied',
+    };
+  }
+
+  function buildGovernanceRuntimeComponent(component, {
+    required = true,
+    ready = false,
+    deny_code = '',
+    summary = '',
+    ext = {},
+  } = {}) {
+    return compactObject({
+      component: safeString(component),
+      required: !!required,
+      ready: !!ready,
+      deny_code: safeString(deny_code),
+      summary: safeString(summary),
+      ...(ext && typeof ext === 'object' ? ext : {}),
+    });
+  }
+
+function buildGenerateGovernanceRuntimeReadiness({
+    auth,
+    scope = {},
+    capabilityKey = '',
+    capabilityAllowed = true,
+    capabilityDenyCode = '',
+    localTaskGate = null,
+    trustedPaidAccess = null,
+    trustedAutomationAllowed = true,
+    trustedAutomationDenyCode = '',
+    killSwitch = null,
+    routeDenyCode = '',
+    routeSummary = '',
+    isPaid = false,
+  } = {}) {
+    const project_id = safeString(scope?.project_id);
+    const workspace_root = normalizeTrustedAutomationRoot(scope?.workspace_root || '');
+    const configured = !!project_id || !!workspace_root;
+    const capabilityProbe = clientAllowsSnapshot(auth, capabilityKey);
+    const memoryProbe = clientAllowsSnapshot(auth, 'memory');
+    const eventsProbe = clientAllowsSnapshot(auth, 'events');
+    const trust_profile_present = !!(
+      auth?.trust_profile_present
+      || auth?.approved_trust_profile
+      || trustedPaidAccess?.trust_profile_present
+    );
+    const policy_mode = safeString(auth?.policy_mode || trustedPaidAccess?.policy_mode).toLowerCase();
+    const trusted_automation_mode = trustedAutomationMode(auth);
+    const trusted_automation_state = trustedAutomationState(auth);
+    const xt_binding_required = !!(
+      auth?.xt_binding_required
+      ?? auth?.approved_trust_profile?.xt_binding_required
+    );
+    const device_permission_owner_ref = safeString(
+      auth?.device_permission_owner_ref
+      || auth?.approved_trust_profile?.device_permission_owner_ref
+    );
+    const localTaskGovernanceComponent = safeString(localTaskGate?.governance_component);
+
+    let capabilityPlaneDenyCode = '';
+    if (!capabilityAllowed) {
+      capabilityPlaneDenyCode = safeString(capabilityDenyCode || capabilityProbe.deny_code || 'permission_denied');
+    } else if (localTaskGate && localTaskGate.ok === false && localTaskGovernanceComponent === 'capability') {
+      capabilityPlaneDenyCode = safeString(localTaskGate.raw_deny_code || localTaskGate.deny_code);
+    }
+
+    let grantPlaneDenyCode = '';
+    if (trustedPaidAccess && trustedPaidAccess.allow === false) {
+      grantPlaneDenyCode = safeString(trustedPaidAccess.deny_code);
+    }
+    if (!grantPlaneDenyCode && !trustedAutomationAllowed) {
+      grantPlaneDenyCode = safeString(trustedAutomationDenyCode);
+    }
+    if (!grantPlaneDenyCode && localTaskGate && localTaskGate.ok === false && localTaskGovernanceComponent === 'grant') {
+      grantPlaneDenyCode = safeString(localTaskGate.raw_deny_code || localTaskGate.deny_code);
+    }
+    if (!grantPlaneDenyCode && (killSwitch?.models_disabled || killSwitch?.network_disabled)) {
+      grantPlaneDenyCode = 'kill_switch_active';
+    }
+
+    const routeRequired = configured;
+    const capabilityRequired = configured;
+    const grantRequired = configured;
+    const checkpointRequired = configured;
+    const evidenceRequired = configured;
+    const checkpointPlaneDenyCode = checkpointRequired
+      ? (!eventsProbe.allowed ? 'events_capability_missing' : (!memoryProbe.allowed ? 'memory_capability_missing' : ''))
+      : '';
+    const evidencePlaneDenyCode = evidenceRequired
+      ? (!memoryProbe.allowed ? 'memory_capability_missing' : '')
+      : '';
+
+    const components = {
+      route: buildGovernanceRuntimeComponent('route', {
+        required: routeRequired,
+        ready: routeRequired ? !safeString(routeDenyCode) : true,
+        deny_code: routeRequired ? safeString(routeDenyCode) : '',
+        summary: routeRequired
+          ? (safeString(routeSummary) || (isPaid ? 'hub_remote_route_ready' : 'hub_local_route_ready'))
+          : 'project_scope_not_bound',
+      }),
+      capability: buildGovernanceRuntimeComponent('capability', {
+        required: capabilityRequired,
+        ready: capabilityRequired ? !capabilityPlaneDenyCode : true,
+        deny_code: capabilityRequired ? capabilityPlaneDenyCode : '',
+        summary: capabilityRequired
+          ? (!capabilityPlaneDenyCode
+              ? `capability surface ready: ${safeString(capabilityKey) || 'unknown'}`
+              : `capability surface blocked: ${capabilityPlaneDenyCode}`)
+          : 'project_scope_not_bound',
+        ext: compactObject({
+          capability_key: safeString(capabilityKey),
+          local_task_kind: safeString(localTaskGate?.task_kind),
+          local_provider: safeString(localTaskGate?.provider),
+        }),
+      }),
+      grant: buildGovernanceRuntimeComponent('grant', {
+        required: grantRequired,
+        ready: grantRequired ? !grantPlaneDenyCode : true,
+        deny_code: grantRequired ? grantPlaneDenyCode : '',
+        summary: grantRequired
+          ? (!grantPlaneDenyCode ? 'governance gate armed' : `governance gate blocked: ${grantPlaneDenyCode}`)
+          : 'project_scope_not_bound',
+        ext: compactObject({
+          trust_profile_present,
+          policy_mode,
+          trusted_automation_mode,
+          trusted_automation_state,
+          xt_binding_required,
+          device_permission_owner_ref_present: !!device_permission_owner_ref,
+          paid_model_policy_mode: safeString(trustedPaidAccess?.paid_model_policy_mode),
+        }),
+      }),
+      checkpoint_recovery: buildGovernanceRuntimeComponent('checkpoint_recovery', {
+        required: checkpointRequired,
+        ready: checkpointRequired ? !checkpointPlaneDenyCode : true,
+        deny_code: checkpointRequired ? checkpointPlaneDenyCode : '',
+        summary: checkpointRequired
+          ? (!checkpointPlaneDenyCode ? 'checkpoint and recovery continuity ready' : `checkpoint/recovery blocked: ${checkpointPlaneDenyCode}`)
+          : 'project_scope_not_bound',
+        ext: compactObject({
+          events_capability_ready: eventsProbe.allowed,
+          memory_capability_ready: memoryProbe.allowed,
+        }),
+      }),
+      evidence_export: buildGovernanceRuntimeComponent('evidence_export', {
+        required: evidenceRequired,
+        ready: evidenceRequired ? !evidencePlaneDenyCode : true,
+        deny_code: evidenceRequired ? evidencePlaneDenyCode : '',
+        summary: evidenceRequired
+          ? (!evidencePlaneDenyCode ? 'evidence and export trail ready' : `evidence/export blocked: ${evidencePlaneDenyCode}`)
+          : 'project_scope_not_bound',
+        ext: compactObject({
+          audit_trail_available: true,
+          memory_capability_ready: memoryProbe.allowed,
+        }),
+      }),
+    };
+
+  return buildGovernanceRuntimeReadinessProjection({
+    schema_version: 'xhub.governance_runtime_readiness.v1',
+    source: 'hub',
+    governance_surface: 'a4_agent',
+    context: 'ai_generate',
+      configured,
+      project_id,
+      workspace_root,
+    components,
+  });
+}
+
+function buildSupervisorRouteGovernanceRuntimeReadiness({
+  access = null,
+  route = {},
+  intent = '',
+  require_xt = false,
+  require_runner = false,
+} = {}) {
+  const clientAuth = access?.auth_kind === 'client' && access?.auth && typeof access.auth === 'object'
+    ? access.auth
+    : null;
+
+  return buildSupervisorRouteGovernanceRuntimeReadinessProjection({
+    route,
+    intent,
+    require_xt,
+    require_runner,
+    auth_kind: safeString(access?.auth_kind),
+    client_capability: 'events',
+    trust_profile_present: !!(clientAuth?.trust_profile_present || clientAuth?.approved_trust_profile),
+    trusted_automation_mode: safeString(
+      clientAuth?.trusted_automation_mode
+      || clientAuth?.approved_trust_profile?.mode
+    ),
+    trusted_automation_state: safeString(
+      clientAuth?.trusted_automation_state
+      || clientAuth?.approved_trust_profile?.state
+    ),
+  });
+}
+
+function effectiveClientIdentity(raw, auth) {
     const base = raw && typeof raw === 'object' ? { ...raw } : {};
     const did = String(auth?.device_id || '').trim();
     if (did) base.device_id = did;
@@ -3369,19 +5481,44 @@ export function makeServices({ db, bus }) {
       return;
     }
 
+    const paidAccess = resolvePaidModelRuntimeAccess({
+      runtimeClient: {
+        ...auth,
+        name: auth.client_name,
+        trust_profile: auth.approved_trust_profile,
+        approved_trust_profile: auth.approved_trust_profile,
+      },
+      capabilityAllowed: clientAllows(auth, 'ai.generate.paid'),
+      capabilityDenyCode: capabilityDenyCode(auth),
+    });
+    const paidAccessFields = {
+      trust_profile_present: !!paidAccess?.trust_profile_present,
+      paid_model_policy_mode: safeString(paidAccess?.paid_model_policy_mode),
+      daily_token_limit: nonNegativeInt(paidAccess?.daily_token_limit, 0),
+      single_request_token_limit: nonNegativeInt(paidAccess?.single_request_token_limit, 0),
+    };
+
     // Prefer the runtime-published models_state.json when available (authoritative list of configured models).
     const runtimeBaseDir = resolveRuntimeBaseDir();
     const snap = runtimeModelsSnapshot(runtimeBaseDir);
     if (snap.ok && Array.isArray(snap.models) && snap.models.length) {
       const models = snap.models.map(makeProtoModelInfo).filter(Boolean);
-      callback(null, { updated_at_ms: Number(snap.updated_at_ms || nowMs()), models });
+      callback(null, {
+        updated_at_ms: Number(snap.updated_at_ms || nowMs()),
+        models,
+        ...paidAccessFields,
+      });
       return;
     }
 
     // Fallback: DB seeds (mostly for dev/smoke).
     const rows = db.listModels();
     const models = rows.map(makeProtoModelInfo).filter(Boolean);
-    callback(null, { updated_at_ms: nowMs(), models });
+    callback(null, {
+      updated_at_ms: nowMs(),
+      models,
+      ...paidAccessFields,
+    });
   }
 
   // -------------------- HubGrants --------------------
@@ -3400,7 +5537,12 @@ export function makeServices({ db, bus }) {
     const app_id = String(client.app_id || '').trim();
     const request_id = String(req.request_id || '').trim();
     const capability = capabilityDbKey(req.capability);
-    const model_id = (req.model_id || '').toString().trim();
+    const requested_model_id = (req.model_id || '').toString().trim();
+    const runtimeBaseDir = resolveRuntimeBaseDir();
+    const resolvedModel = capability === 'ai.generate.paid'
+      ? resolveServiceModelMeta({ db, runtimeBaseDir, modelId: requested_model_id })
+      : null;
+    const model_id = resolvedModel?.resolved_model_id || requested_model_id;
 
     if (!device_id || !app_id || !request_id || capability === 'unknown') {
       callback(new Error('invalid grant request: missing device_id/app_id/request_id/capability'));
@@ -3419,8 +5561,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (capability === 'ai.generate.paid') {
-      const runtimeBaseDir = resolveRuntimeBaseDir();
-      const m = (db.getModel(model_id) || runtimeModelMeta(runtimeBaseDir, model_id)) ?? null;
+      const m = resolvedModel?.model ?? null;
       if (!m) {
         callback(new Error('invalid grant request: unknown model_id'));
         return;
@@ -3939,7 +6080,6 @@ export function makeServices({ db, bus }) {
     const app_id = String(client.app_id || '').trim() || 'unknown';
     const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
     const project_id = trustedAutomationScope.project_id;
-    const model_id = String(req.model_id || '').trim();
     const failClosedOnDowngrade =
       req.fail_closed_on_downgrade === true
       || String(req.fail_closed_on_downgrade || '').trim() === '1';
@@ -3958,13 +6098,16 @@ export function makeServices({ db, bus }) {
       killSwitch = null;
     }
 
+    const requested_model_id = String(req.model_id || '').trim();
     const runtimeBaseDir = resolveRuntimeBaseDir();
-    const model = model_id ? (db.getModel(model_id) || runtimeModelMeta(runtimeBaseDir, model_id)) : null;
+    const resolvedModel = requested_model_id
+      ? resolveServiceModelMeta({ db, runtimeBaseDir, modelId: requested_model_id })
+      : null;
+    const model_id = resolvedModel?.resolved_model_id || requested_model_id;
+    const model = resolvedModel?.model || null;
     if (!model) {
       const error = { code: 'model_not_found', message: 'model_not_found', retryable: false };
-      call.write({ error: { request_id, error } });
-      call.end();
-      db.appendAudit({
+      const auditRef = db.appendAudit({
         event_type: 'ai.generate.denied',
         created_at_ms: nowMs(),
         severity: 'security',
@@ -3975,7 +6118,7 @@ export function makeServices({ db, bus }) {
         session_id: client.session_id ? String(client.session_id) : null,
         request_id,
         capability: 'unknown',
-        model_id: model_id || null,
+        model_id: requested_model_id || null,
         network_allowed: false,
         ok: false,
         error_code: error.code,
@@ -4002,6 +6145,28 @@ export function makeServices({ db, bus }) {
           }
         )),
       });
+      const inferredExecutionPath = model_id.includes('/') ? 'remote_error' : 'local_runtime';
+      try {
+        call.write({
+          error: {
+            request_id,
+            error,
+            model_id: requested_model_id || '',
+            runtime_provider: inferredExecutionPath === 'remote_error' ? 'Hub (Remote)' : 'Hub (Local)',
+            execution_path: inferredExecutionPath,
+            fallback_reason_code: error.code,
+            audit_ref: auditRef,
+            deny_code: error.code,
+          },
+        });
+      } catch {
+        // ignore
+      }
+      try {
+        call.end();
+      } catch {
+        // ignore
+      }
       bus.emitHubEvent(bus.requestStatus({ request_id, status: 'failed', error, client }));
       return;
     }
@@ -4037,14 +6202,77 @@ export function makeServices({ db, bus }) {
           usedTokensToday: 0,
         })
       : null;
-    const denyPaidModelWithContext = ({ code, message, ruleIds = [], phase = 'execute', optionsPresented = false, extraExt = {} } = {}) => {
-      const error = {
-        code: String(code || 'permission_denied'),
-        message: String(message || code || 'permission_denied'),
-        retryable: false,
-      };
+    const trustedAutomationProbe = { ...auth };
+    const trustedAutomationGateAllowed = trustedAutomationAllows(trustedAutomationProbe, trustedAutomationScope);
+    const trustedAutomationGateDenyCode = trustedAutomationGateAllowed
+      ? ''
+      : capabilityDenyCode(trustedAutomationProbe);
+    const governanceRuntimeReadiness = buildGenerateGovernanceRuntimeReadiness({
+      auth,
+      scope: trustedAutomationScope,
+      capabilityKey: capability,
+      capabilityAllowed,
+      capabilityDenyCode: capabilityDenyCode(auth),
+      localTaskGate,
+      trustedPaidAccess,
+      trustedAutomationAllowed: trustedAutomationGateAllowed,
+      trustedAutomationDenyCode: trustedAutomationGateDenyCode,
+      killSwitch,
+      routeSummary: isPaid ? 'hub_remote_route_ready' : 'hub_local_route_ready',
+      isPaid,
+    });
+    let executionRemoteMode = isPaid;
+    let executionModelId = model_id;
+    let responseRuntimeProvider = isPaid ? 'Hub (Remote)' : 'Hub (Local)';
+    let responseExecutionPath = isPaid ? 'remote_model' : 'local_runtime';
+    let responseFallbackReasonCode = '';
+    let responseAuditRef = '';
+    let responseDenyCode = '';
+    const normalizeGenerateMetaText = (value) => String(value || '').trim();
+    const updateGenerateRouteContext = ({
+      modelId,
+      runtimeProvider,
+      executionPath,
+      fallbackReasonCode,
+      auditRef,
+      denyCode,
+    } = {}) => {
+      const normalizedModelId = normalizeGenerateMetaText(modelId);
+      const normalizedRuntimeProvider = normalizeGenerateMetaText(runtimeProvider);
+      const normalizedExecutionPath = normalizeGenerateMetaText(executionPath);
+      const normalizedFallbackReason = normalizeGenerateMetaText(fallbackReasonCode);
+      const normalizedAuditRef = normalizeGenerateMetaText(auditRef);
+      const normalizedDenyCode = normalizeGenerateMetaText(denyCode);
+
+      if (normalizedModelId) executionModelId = normalizedModelId;
+      if (normalizedRuntimeProvider) responseRuntimeProvider = normalizedRuntimeProvider;
+      if (normalizedExecutionPath) responseExecutionPath = normalizedExecutionPath;
+      if (normalizedFallbackReason) responseFallbackReasonCode = normalizedFallbackReason;
+      if (normalizedAuditRef) responseAuditRef = normalizedAuditRef;
+      if (normalizedDenyCode) responseDenyCode = normalizedDenyCode;
+    };
+    const emitGenerateError = ({
+      error,
+      modelId = executionModelId || model_id || '',
+      runtimeProvider = responseRuntimeProvider,
+      executionPath = responseExecutionPath,
+      fallbackReasonCode = responseFallbackReasonCode || responseDenyCode || String(error?.code || ''),
+      auditRef = responseAuditRef,
+      denyCode = responseDenyCode || String(error?.code || ''),
+    } = {}) => {
       try {
-        call.write({ error: { request_id, error } });
+        call.write({
+          error: {
+            request_id,
+            error,
+            model_id: normalizeGenerateMetaText(modelId),
+            runtime_provider: normalizeGenerateMetaText(runtimeProvider),
+            execution_path: normalizeGenerateMetaText(executionPath),
+            fallback_reason_code: normalizeGenerateMetaText(fallbackReasonCode),
+            audit_ref: normalizeGenerateMetaText(auditRef),
+            deny_code: normalizeGenerateMetaText(denyCode),
+          },
+        });
       } catch {
         // ignore
       }
@@ -4053,7 +6281,58 @@ export function makeServices({ db, bus }) {
       } catch {
         // ignore
       }
-      db.appendAudit({
+    };
+    const finishGenerate = ({
+      ok,
+      reason,
+      usage,
+      finished_at_ms,
+      modelId = executionModelId || model_id || '',
+      runtimeProvider = responseRuntimeProvider,
+      executionPath = responseExecutionPath,
+      fallbackReasonCode = responseFallbackReasonCode,
+      auditRef = responseAuditRef,
+      denyCode = responseDenyCode,
+    } = {}) => {
+      sawDone = true;
+      const memoryPromptProjection = memoryRouteSnapshot?.retrieval?.prompt_projection || null;
+      try {
+        call.write({
+          done: {
+            request_id,
+            ok: !!ok,
+            reason: String(reason || (ok ? 'eos' : 'failed')),
+            usage: usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, cost_usd_estimate: 0 },
+            finished_at_ms: Number(finished_at_ms || nowMs()),
+            actual_model_id: normalizeGenerateMetaText(modelId),
+            runtime_provider: normalizeGenerateMetaText(runtimeProvider),
+            execution_path: normalizeGenerateMetaText(executionPath),
+            fallback_reason_code: normalizeGenerateMetaText(fallbackReasonCode),
+            audit_ref: normalizeGenerateMetaText(auditRef),
+            deny_code: normalizeGenerateMetaText(denyCode),
+            ...(memoryPromptProjection ? { memory_prompt_projection: memoryPromptProjection } : {}),
+          },
+        });
+      } catch {
+        // ignore
+      }
+      try {
+        call.end();
+      } catch {
+        // ignore
+      }
+    };
+    const denyPaidModelWithContext = ({ code, message, ruleIds = [], phase = 'execute', optionsPresented = false, extraExt = {} } = {}) => {
+      const error = {
+        code: String(code || 'permission_denied'),
+        message: String(message || code || 'permission_denied'),
+        retryable: false,
+      };
+      const resolvedExtraExt = {
+        governance_runtime_readiness: governanceRuntimeReadiness,
+        ...(extraExt && typeof extraExt === 'object' ? extraExt : {}),
+      };
+      const auditRef = db.appendAudit({
         event_type: 'ai.generate.denied',
         created_at_ms: nowMs(),
         severity: 'security',
@@ -4073,7 +6352,7 @@ export function makeServices({ db, bus }) {
           {
             created_at_ms,
             device_name: deviceDisplayName,
-            ...extraExt,
+            ...resolvedExtraExt,
           },
           {
             event_kind: 'ai.generate.denied',
@@ -4096,6 +6375,15 @@ export function makeServices({ db, bus }) {
           }
         )),
       });
+      updateGenerateRouteContext({
+        modelId: executionModelId || model_id || '',
+        runtimeProvider: isPaid ? 'Hub (Remote)' : 'Hub (Local)',
+        executionPath: isPaid ? 'remote_error' : 'local_runtime',
+        fallbackReasonCode: error.code,
+        auditRef,
+        denyCode: error.code,
+      });
+      emitGenerateError({ error, auditRef, denyCode: error.code });
       try {
         if (isPaid && model_id) {
           db.recordTerminalModelBlockedDaily({
@@ -4134,7 +6422,7 @@ export function makeServices({ db, bus }) {
         error_message: error.message,
         ext: {
           device_name: deviceDisplayName,
-          ...extraExt,
+          ...resolvedExtraExt,
         },
       });
       bus.emitHubEvent(bus.requestStatus({ request_id, status: 'failed', error, client }));
@@ -4155,6 +6443,7 @@ export function makeServices({ db, bus }) {
           local_provider: String(localTaskGate.provider || ''),
           local_blocked_by: String(localTaskGate.blocked_by || ''),
           raw_deny_code: String(localTaskGate.raw_deny_code || ''),
+          local_governance_component: String(localTaskGate.governance_component || ''),
         },
       });
       return;
@@ -4173,9 +6462,7 @@ export function makeServices({ db, bus }) {
     if (isPaid && !capabilityAllowed) {
       const denyCode = capabilityDenyCode(auth);
       const error = { code: denyCode, message: denyCode, retryable: false };
-      call.write({ error: { request_id, error } });
-      call.end();
-      db.appendAudit({
+      const auditRef = db.appendAudit({
         event_type: 'ai.generate.denied',
         created_at_ms: nowMs(),
         severity: 'security',
@@ -4192,7 +6479,10 @@ export function makeServices({ db, bus }) {
         error_code: error.code,
         error_message: error.message,
         ext_json: JSON.stringify(withMemoryMetricsExt(
-          { peer_ip: auth?.peer_ip || '' },
+          {
+            peer_ip: auth?.peer_ip || '',
+            governance_runtime_readiness: governanceRuntimeReadiness,
+          },
           {
             event_kind: 'ai.generate.denied',
             op: 'generate',
@@ -4213,6 +6503,14 @@ export function makeServices({ db, bus }) {
           }
         )),
       });
+      updateGenerateRouteContext({
+        runtimeProvider: 'Hub (Remote)',
+        executionPath: 'remote_error',
+        fallbackReasonCode: error.code,
+        auditRef,
+        denyCode: error.code,
+      });
+      emitGenerateError({ error, auditRef, denyCode: error.code });
       appendPolicyEvalAudit({
         created_at_ms: nowMs(),
         device_id,
@@ -4233,12 +6531,15 @@ export function makeServices({ db, bus }) {
         ok: false,
         error_code: error.code,
         error_message: error.message,
+        ext: {
+          governance_runtime_readiness: governanceRuntimeReadiness,
+        },
       });
       bus.emitHubEvent(bus.requestStatus({ request_id, status: 'failed', error, client }));
       return;
     }
-    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
-      const denyCode = capabilityDenyCode(auth);
+    if (!trustedAutomationGateAllowed) {
+      const denyCode = trustedAutomationGateDenyCode || capabilityDenyCode(auth);
       if (!isPaid) {
         const localPolicyFailure = buildLocalTaskFailure({
           taskKind: 'text_generate',
@@ -4261,6 +6562,7 @@ export function makeServices({ db, bus }) {
             local_provider: String(localPolicyFailure.provider || ''),
             local_blocked_by: String(localPolicyFailure.blocked_by || 'policy'),
             raw_deny_code: String(localPolicyFailure.raw_deny_code || denyCode),
+            local_governance_component: String(localPolicyFailure.governance_component || 'grant'),
             project_binding_checked: true,
             workspace_binding_checked: !!trustedAutomationScope.workspace_root,
           },
@@ -4284,9 +6586,7 @@ export function makeServices({ db, bus }) {
       const msg = killSwitch?.reason ? `kill_switch_active: ${killSwitch.reason}` : 'kill_switch_active';
       const error = { code: 'kill_switch_active', message: msg, retryable: false };
       const killSwitchRuleId = killSwitch?.models_disabled ? 'models_disabled' : 'network_disabled';
-      call.write({ error: { request_id, error } });
-      call.end();
-      db.appendAudit({
+      const auditRef = db.appendAudit({
         event_type: 'ai.generate.denied',
         created_at_ms: nowMs(),
         severity: 'security',
@@ -4303,7 +6603,10 @@ export function makeServices({ db, bus }) {
         error_code: error.code,
         error_message: error.message,
         ext_json: JSON.stringify(withMemoryMetricsExt(
-          { created_at_ms },
+          {
+            created_at_ms,
+            governance_runtime_readiness: governanceRuntimeReadiness,
+          },
           {
             event_kind: 'ai.generate.denied',
             op: 'generate',
@@ -4324,6 +6627,14 @@ export function makeServices({ db, bus }) {
           }
         )),
       });
+      updateGenerateRouteContext({
+        runtimeProvider: 'Hub (Remote)',
+        executionPath: 'remote_error',
+        fallbackReasonCode: error.code,
+        auditRef,
+        denyCode: error.code,
+      });
+      emitGenerateError({ error, auditRef, denyCode: error.code });
       appendPolicyEvalAudit({
         created_at_ms: nowMs(),
         device_id,
@@ -4344,6 +6655,9 @@ export function makeServices({ db, bus }) {
         ok: false,
         error_code: error.code,
         error_message: error.message,
+        ext: {
+          governance_runtime_readiness: governanceRuntimeReadiness,
+        },
       });
       bus.emitHubEvent(bus.requestStatus({ request_id, status: 'failed', error, client }));
       return;
@@ -4391,9 +6705,7 @@ export function makeServices({ db, bus }) {
         const used = db.getQuotaUsageDaily(quota_scope, quota_day);
         if (used >= cap) {
           const error = { code: 'quota_exceeded', message: `Daily quota exceeded (${used}/${cap})`, retryable: false };
-          call.write({ error: { request_id, error } });
-          call.end();
-          db.appendAudit({
+          const auditRef = db.appendAudit({
             event_type: 'ai.generate.denied',
             created_at_ms: nowMs(),
             severity: 'security',
@@ -4431,6 +6743,14 @@ export function makeServices({ db, bus }) {
               }
             )),
           });
+          updateGenerateRouteContext({
+            runtimeProvider: isPaid ? 'Hub (Remote)' : 'Hub (Local)',
+            executionPath: isPaid ? 'remote_error' : 'local_runtime',
+            fallbackReasonCode: error.code,
+            auditRef,
+            denyCode: error.code,
+          });
+          emitGenerateError({ error, auditRef, denyCode: error.code });
           appendPolicyEvalAudit({
             created_at_ms: nowMs(),
             device_id,
@@ -4560,9 +6880,7 @@ export function makeServices({ db, bus }) {
       const thread = db.getThread(thread_id);
       if (!thread) {
         const error = { code: 'thread_not_found', message: 'thread_not_found', retryable: false };
-        call.write({ error: { request_id, error } });
-        call.end();
-        db.appendAudit({
+        const auditRef = db.appendAudit({
           event_type: 'ai.generate.denied',
           created_at_ms: nowMs(),
           severity: 'security',
@@ -4601,15 +6919,21 @@ export function makeServices({ db, bus }) {
             }
           )),
         });
+        updateGenerateRouteContext({
+          runtimeProvider: executionRemoteMode ? 'Hub (Remote)' : 'Hub (Local)',
+          executionPath: executionRemoteMode ? 'remote_error' : 'local_runtime',
+          fallbackReasonCode: error.code,
+          auditRef,
+          denyCode: error.code,
+        });
+        emitGenerateError({ error, auditRef, denyCode: error.code });
         bus.emitHubEvent(bus.requestStatus({ request_id, status: 'failed', error, client }));
         cancels.delete(request_id);
         return;
       }
       if (String(thread.device_id || '') !== device_id || String(thread.app_id || '') !== app_id || String(thread.project_id || '') !== project_id) {
         const error = { code: 'permission_denied', message: 'permission_denied', retryable: false };
-        call.write({ error: { request_id, error } });
-        call.end();
-        db.appendAudit({
+        const auditRef = db.appendAudit({
           event_type: 'ai.generate.denied',
           created_at_ms: nowMs(),
           severity: 'security',
@@ -4648,6 +6972,14 @@ export function makeServices({ db, bus }) {
             }
           )),
         });
+        updateGenerateRouteContext({
+          runtimeProvider: executionRemoteMode ? 'Hub (Remote)' : 'Hub (Local)',
+          executionPath: executionRemoteMode ? 'remote_error' : 'local_runtime',
+          fallbackReasonCode: error.code,
+          auditRef,
+          denyCode: error.code,
+        });
+        emitGenerateError({ error, auditRef, denyCode: error.code });
         bus.emitHubEvent(bus.requestStatus({ request_id, status: 'failed', error, client }));
         cancels.delete(request_id);
         return;
@@ -4699,15 +7031,28 @@ export function makeServices({ db, bus }) {
           limit: 50,
         });
         const working = db.listTurns({ thread_id, limit: working_set_limit }).reverse();
+        const scopeRef = { device_id, user_id: userId, app_id, project_id, thread_id };
         const retrievalDocs = buildMemoryRetrievalDocs({
           canonicalProject: canonProject,
           canonicalThread: canonThread,
           workingRows: working,
-          scopeRef: { device_id, user_id: userId, app_id, project_id, thread_id },
+          scopeRef,
         });
+        const runtimeProjectRoot = resolveGrpcMemoryRetrievalProjectRoot({
+          request: req,
+          actor: client,
+          trustedAutomationScope,
+        });
+        const runtimeDocs = buildGrpcGovernedCodingRuntimeDocs({
+          projectRoot: runtimeProjectRoot,
+          scopeRef,
+          requestedKinds: [],
+          retrievalKind: 'search',
+        });
+        const mergedDocs = retrievalDocs.concat(runtimeDocs.docs);
 
         const routeResult = routeMemoryByTrustShards({
-          documents: retrievalDocs,
+          documents: mergedDocs,
           remote_mode: isPaid,
           allow_untrusted: false,
         });
@@ -4782,6 +7127,18 @@ export function makeServices({ db, bus }) {
             })
           : null;
 
+        const docById = new Map(mergedDocs.map((d) => [String(d.id || ''), d]));
+        let retrievalResultV1 = buildXTMemoryRetrievalResultV1({
+          requestId: request_id,
+          source: 'hub_memory_retrieval_grpc_v1',
+          resolvedScope: 'current_project',
+          retrieval,
+          documentsById: docById,
+          auditRef: `audit-memory-route-${request_id}`,
+          maxSnippetChars: 420,
+          redactedItems: runtimeDocs.redactedItems,
+        });
+
         memoryRouteSnapshot = {
           schema_version: 'xhub.memory.route.v1',
           remote_mode: isPaid,
@@ -4795,7 +7152,12 @@ export function makeServices({ db, bus }) {
               ok: !!localEmbeddingOutcome?.ok,
               fallback_mode: String(localEmbeddingOutcome?.fallback_mode || ''),
               deny_code: String(localEmbeddingOutcome?.deny_code || ''),
+              raw_deny_code: String(localEmbeddingOutcome?.raw_deny_code || ''),
+              blocked_by: String(localEmbeddingOutcome?.blocked_by || ''),
               provider: String(localEmbeddingOutcome?.provider || ''),
+              route_source: String(localEmbeddingOutcome?.route_source || ''),
+              route_reason_code: String(localEmbeddingOutcome?.route_reason_code || ''),
+              resolved_model_id: String(localEmbeddingOutcome?.resolved_model_id || ''),
               model_id: String(localEmbeddingOutcome?.model_id || ''),
               dims: Math.max(0, Number(localEmbeddingOutcome?.dims || 0)),
               vector_count: Math.max(0, Number(localEmbeddingOutcome?.vector_count || 0)),
@@ -4808,6 +7170,7 @@ export function makeServices({ db, bus }) {
               sanitized_change_count: Math.max(0, Number(localEmbeddingOutcome?.sanitized_change_count || 0)),
               sanitized_finding_count: Math.max(0, Number(localEmbeddingOutcome?.sanitized_finding_count || 0)),
             },
+            xt_memory_retrieval_result_v1: retrievalResultV1,
           },
           shard_hits: hitStats,
           debug: {
@@ -4819,7 +7182,6 @@ export function makeServices({ db, bus }) {
         if (scoreExplain) memoryRouteSnapshot.score_explain = scoreExplain;
 
         if (!retrieval.blocked && Array.isArray(retrieval.results) && retrieval.results.length > 0) {
-          const docById = new Map(retrievalDocs.map((d) => [String(d.id || ''), d]));
           const selectedDocs = retrieval.results
             .map((row) => docById.get(String(row?.id || '')))
             .filter(Boolean);
@@ -4828,6 +7190,8 @@ export function makeServices({ db, bus }) {
             const canonicalItems = [];
             const canonicalSeen = new Set();
             const workingRows = [];
+            const runtimeTruthDocs = [];
+            const runtimeTruthKinds = new Set();
             for (const doc of selectedDocs) {
               if (String(doc?.source_type || '') === 'canonical') {
                 const key = String(doc?.source_payload?.key || '').trim();
@@ -4848,18 +7212,47 @@ export function makeServices({ db, bus }) {
                   content,
                   created_at_ms: Number(doc?.source_payload?.created_at_ms || 0),
                 });
+                continue;
+              }
+              const sourceKind = grpcMemoryRetrievalSourceKind(doc);
+              if (GRPC_MEMORY_RUNTIME_SOURCE_KINDS.has(sourceKind)) {
+                runtimeTruthDocs.push(doc);
+                runtimeTruthKinds.add(sourceKind);
               }
             }
             workingRows.sort((a, b) => Number(a.created_at_ms || 0) - Number(b.created_at_ms || 0));
             const memPrompt = renderPromptFromHubMemory({
               canonicalItems,
               workingSetRows: workingRows,
+              runtimeTruthDocs,
             });
+            memoryRouteSnapshot.retrieval.prompt_projection = {
+              projection_source: 'hub_memory_route_prompt_projection',
+              canonical_item_count: canonicalItems.length,
+              working_set_turn_count: workingRows.length,
+              runtime_truth_item_count: runtimeTruthDocs.length,
+              runtime_truth_source_kinds: [...runtimeTruthKinds],
+            };
             if (memPrompt) promptText = memPrompt;
           } else {
             memoryRouteSnapshot.retrieval.blocked = true;
             memoryRouteSnapshot.retrieval.deny_reason = 'remote_secret_denied_defense_in_depth';
             memoryRouteSnapshot.retrieval.results_count = 0;
+            retrievalResultV1 = buildXTMemoryRetrievalResultV1({
+              requestId: request_id,
+              source: 'hub_memory_retrieval_grpc_v1',
+              resolvedScope: 'current_project',
+              retrieval: {
+                ...retrieval,
+                blocked: true,
+                deny_reason: 'remote_secret_denied_defense_in_depth',
+                results: [],
+              },
+              documentsById: new Map(),
+              auditRef: `audit-memory-route-${request_id}`,
+              maxSnippetChars: 420,
+            });
+            memoryRouteSnapshot.retrieval.xt_memory_retrieval_result_v1 = retrievalResultV1;
           }
         }
       } catch {
@@ -4923,6 +7316,8 @@ export function makeServices({ db, bus }) {
         });
         const embedSummary = memoryRouteSnapshot?.retrieval?.embedding || {};
         const embedProvider = String(embedSummary?.provider || '').trim();
+        const embedRouteSource = String(embedSummary?.route_source || '').trim();
+        const embedResolvedModelId = String(embedSummary?.resolved_model_id || '').trim();
         const embedModelId = String(embedSummary?.model_id || '').trim();
         const embedDenyCode = String(embedSummary?.deny_code || '').trim();
         const embedRawDenyCode = String(embedSummary?.raw_deny_code || '').trim();
@@ -4951,6 +7346,8 @@ export function makeServices({ db, bus }) {
                 source: 'memory_route',
                 task_kind: embedTaskKind,
                 provider: embedProvider,
+                route_source: embedRouteSource,
+                resolved_model_id: embedResolvedModelId,
                 raw_deny_code: embedRawDenyCode,
                 blocked_by: String(embedSummary?.blocked_by || ''),
                 dims: Math.max(0, Number(embedSummary?.dims || 0)),
@@ -4989,6 +7386,7 @@ export function makeServices({ db, bus }) {
                   deny_code: embedDenyCode,
                   raw_deny_code: embedRawDenyCode,
                   blocked_by: String(embedSummary?.blocked_by || ''),
+                  route_source: embedRouteSource,
                 },
               }
             )),
@@ -4999,8 +7397,6 @@ export function makeServices({ db, bus }) {
       }
     }
 
-    let executionRemoteMode = isPaid;
-    let executionModelId = model_id;
     let remoteExportGate = null;
     if (isPaid) {
       remoteExportGate = evaluatePromptRemoteExportGate({
@@ -5041,9 +7437,7 @@ export function makeServices({ db, bus }) {
           message: `remote_export_blocked:${gateDenyCode || 'unknown'}`,
           retryable: false,
         };
-        call.write({ error: { request_id, error } });
-        call.end();
-        db.appendAudit({
+        const auditRef = db.appendAudit({
           event_type: 'ai.generate.denied',
           created_at_ms: nowMs(),
           severity: 'security',
@@ -5082,6 +7476,19 @@ export function makeServices({ db, bus }) {
             }
           )),
         });
+        updateGenerateRouteContext({
+          runtimeProvider: 'Hub (Remote)',
+          executionPath: 'remote_error',
+          fallbackReasonCode: gateDenyCode,
+          auditRef,
+          denyCode: gateDenyCode,
+        });
+        emitGenerateError({
+          error,
+          auditRef,
+          denyCode: gateDenyCode,
+          fallbackReasonCode: gateDenyCode,
+        });
         appendPolicyEvalAudit({
           created_at_ms: nowMs(),
           device_id,
@@ -5116,9 +7523,7 @@ export function makeServices({ db, bus }) {
             message: 'remote_export_blocked:downgrade_local_model_unavailable',
             retryable: false,
           };
-          call.write({ error: { request_id, error } });
-          call.end();
-          db.appendAudit({
+          const auditRef = db.appendAudit({
             event_type: 'ai.generate.denied',
             created_at_ms: nowMs(),
             severity: 'security',
@@ -5157,6 +7562,14 @@ export function makeServices({ db, bus }) {
               }
             )),
           });
+          updateGenerateRouteContext({
+            runtimeProvider: 'Hub (Remote)',
+            executionPath: 'remote_error',
+            fallbackReasonCode: error.code,
+            auditRef,
+            denyCode: error.code,
+          });
+          emitGenerateError({ error, auditRef, denyCode: error.code });
           bus.emitHubEvent(bus.requestStatus({ request_id, status: 'failed', error, client }));
           cancels.delete(request_id);
           return;
@@ -5166,7 +7579,7 @@ export function makeServices({ db, bus }) {
         executionModelId = fallbackModelId;
         cancelState.use_runtime_cancel = true;
         const downgradeAuditAtMs = nowMs();
-        db.appendAudit({
+        const downgradeAuditRef = db.appendAudit({
           event_type: 'ai.generate.downgraded_to_local',
           created_at_ms: downgradeAuditAtMs,
           severity: 'warn',
@@ -5208,6 +7621,14 @@ export function makeServices({ db, bus }) {
               },
             }
           )),
+        });
+        updateGenerateRouteContext({
+          modelId: executionModelId,
+          runtimeProvider: 'Hub (Local)',
+          executionPath: 'hub_downgraded_to_local',
+          fallbackReasonCode: gateDenyCode,
+          auditRef: downgradeAuditRef,
+          denyCode: gateDenyCode,
         });
       }
     }
@@ -5251,17 +7672,7 @@ export function makeServices({ db, bus }) {
         message: String(message || code || 'local_runtime_unavailable'),
         retryable: false,
       };
-      try {
-        call.write({ error: { request_id, error } });
-      } catch {
-        // ignore
-      }
-      try {
-        call.end();
-      } catch {
-        // ignore
-      }
-      db.appendAudit({
+      const auditRef = db.appendAudit({
         event_type: 'ai.generate.denied',
         created_at_ms: nowMs(),
         severity: 'security',
@@ -5305,6 +7716,15 @@ export function makeServices({ db, bus }) {
           }
         )),
       });
+      updateGenerateRouteContext({
+        modelId: executionModelId || model_id || '',
+        runtimeProvider: 'Hub (Local)',
+        executionPath: responseExecutionPath || 'local_runtime',
+        fallbackReasonCode: error.code,
+        auditRef,
+        denyCode: error.code,
+      });
+      emitGenerateError({ error, auditRef, denyCode: error.code });
       bus.emitHubEvent(bus.requestStatus({ request_id, status: 'failed', error, client }));
       cancels.delete(request_id);
     };
@@ -5314,7 +7734,7 @@ export function makeServices({ db, bus }) {
       let executionModelMeta = null;
       try {
         executionModelMeta = executionModelId
-          ? (db.getModel(executionModelId) || runtimeModelMeta(runtimeBaseDir, executionModelId))
+          ? resolveServiceModelMeta({ db, runtimeBaseDir, modelId: executionModelId }).model
           : null;
       } catch {
         executionModelMeta = null;
@@ -5323,6 +7743,33 @@ export function makeServices({ db, bus }) {
       const localProviderId = localProviderForModel(runtimeBaseDir, executionModelId)
         || String(executionModelMeta?.backend || '').trim().toLowerCase()
         || 'mlx';
+      const providerStatus = runtimeStatusSnapshot.ok
+        ? runtimeStatusSnapshot.providers[String(localProviderId || '').trim().toLowerCase()] || null
+        : null;
+      const providerReady = localProviderId
+        ? isRuntimeProviderReady(runtimeBaseDir, localProviderId, 15_000)
+        : false;
+      const localExecutionDebugExt = {
+        requested_model_id: requested_model_id || '',
+        resolved_model_id: String(resolvedModel?.resolved_model_id || executionModelId || model_id || ''),
+        execution_model_id: String(executionModelId || model_id || ''),
+        resolved_model_source: String(resolvedModel?.source || ''),
+        resolved_model_reason: String(resolvedModel?.reason || ''),
+        runtime_base_dir: String(runtimeBaseDir || ''),
+        runtime_status_ok: !!runtimeStatusSnapshot.ok,
+        runtime_status_alive: !!runtimeStatusSnapshot.is_alive,
+        runtime_provider_ready: !!providerReady,
+        runtime_model_found: !!localRuntimeRecord,
+        runtime_model_backend: String(localRuntimeRecord?.backend || executionModelMeta?.backend || ''),
+        runtime_model_state: String(localRuntimeRecord?.state || ''),
+        runtime_model_offline_ready: localRuntimeRecord?.offlineReady === true,
+        provider_reason_code: String(providerStatus?.reason_code || providerStatus?.reasonCode || ''),
+        provider_import_error: String(providerStatus?.import_error || providerStatus?.importError || ''),
+        provider_runtime_version: String(providerStatus?.runtime_version || providerStatus?.runtimeVersion || ''),
+        provider_available_task_kinds: safeStringArray(
+          providerStatus?.available_task_kinds || providerStatus?.availableTaskKinds || []
+        ),
+      };
 
       if (localRuntimeRecord && !runtimeModelSupportsTask(runtimeBaseDir, executionModelId, localTaskKind)) {
         denyLocalExecution({
@@ -5332,22 +7779,24 @@ export function makeServices({ db, bus }) {
             local_provider: localProviderId,
             local_task_kind: localTaskKind,
             declared_task_kinds: localRuntimeRecord.task_kinds || [],
+            ...localExecutionDebugExt,
           },
         });
         return;
       }
 
-      const providerStatus = runtimeStatusSnapshot.ok
-        ? runtimeStatusSnapshot.providers[String(localProviderId || '').trim().toLowerCase()] || null
-        : null;
       if (
         runtimeStatusSnapshot.ok &&
         runtimeStatusSnapshot.is_alive &&
         localProviderId &&
-        !isRuntimeProviderReady(runtimeBaseDir, localProviderId, 15_000)
+        !providerReady
       ) {
-        const importError = String(providerStatus?.import_error || '').trim();
-        const reasonCode = String(providerStatus?.reason_code || 'unavailable').trim() || 'unavailable';
+        const importError = String(
+          providerStatus?.import_error || providerStatus?.importError || ''
+        ).trim();
+        const reasonCode = String(
+          providerStatus?.reason_code || providerStatus?.reasonCode || 'unavailable'
+        ).trim() || 'unavailable';
         denyLocalExecution({
           code: 'local_provider_unavailable',
           message: importError
@@ -5358,6 +7807,7 @@ export function makeServices({ db, bus }) {
             local_task_kind: localTaskKind,
             provider_reason_code: reasonCode,
             provider_import_error: importError,
+            ...localExecutionDebugExt,
           },
         });
         return;
@@ -5393,16 +7843,62 @@ export function makeServices({ db, bus }) {
               total_tokens: estimateTokens(promptText),
               cost_usd_estimate: 0,
             };
-            try {
-              call.write({ done: { request_id, ok: false, reason: 'canceled', usage, finished_at_ms: nowMs() } });
-            } catch {
-              // ignore
-            }
-            try {
-              call.end();
-            } catch {
-              // ignore
-            }
+            const finished_at_ms = nowMs();
+            const auditRef = db.appendAudit({
+              event_type: 'ai.generate.canceled',
+              created_at_ms: finished_at_ms,
+              severity: 'warn',
+              device_id,
+              user_id: client.user_id ? String(client.user_id) : null,
+              app_id,
+              project_id: project_id || null,
+              session_id: client.session_id ? String(client.session_id) : null,
+              request_id,
+              capability,
+              model_id: executionModelId || model_id || null,
+              network_allowed: true,
+              ok: false,
+              error_code: 'canceled',
+              error_message: 'canceled',
+              duration_ms: 0,
+              ext_json: JSON.stringify(withMemoryMetricsExt(
+                { created_at_ms, queue_wait_ms: 0, canceled_before_slot: true },
+                {
+                  event_kind: 'ai.generate.canceled',
+                  op: 'generate',
+                  job_type: 'ai_generate',
+                  channel: 'remote',
+                  remote_mode: true,
+                  scope: buildMetricsScope({
+                    scope_kind: thread_id ? 'thread' : 'project',
+                    device_id,
+                    user_id: client.user_id ? String(client.user_id) : '',
+                    app_id,
+                    project_id,
+                    thread_id,
+                  }),
+                  security: {
+                    blocked: false,
+                    deny_code: 'canceled',
+                  },
+                }
+              )),
+            });
+            updateGenerateRouteContext({
+              runtimeProvider: 'Hub (Remote)',
+              executionPath: 'remote_error',
+              fallbackReasonCode: 'canceled',
+              auditRef,
+              denyCode: 'canceled',
+            });
+            finishGenerate({
+              ok: false,
+              reason: 'canceled',
+              usage,
+              finished_at_ms,
+              auditRef,
+              denyCode: 'canceled',
+            });
             bus.emitHubEvent(bus.requestStatus({ request_id, status: 'canceled', error: null, client }));
             cancels.delete(request_id);
             return;
@@ -5412,17 +7908,7 @@ export function makeServices({ db, bus }) {
           if (lower.includes('queue_full')) code = 'hub_ai_queue_full';
           else if (lower.includes('queue_timeout')) code = 'hub_ai_queue_timeout';
           const error = { code, message: raw || code, retryable: true };
-          try {
-            call.write({ error: { request_id, error } });
-          } catch {
-            // ignore
-          }
-          try {
-            call.end();
-          } catch {
-            // ignore
-          }
-          db.appendAudit({
+          const auditRef = db.appendAudit({
             event_type: 'ai.generate.failed',
             created_at_ms: nowMs(),
             severity: 'warn',
@@ -5467,6 +7953,14 @@ export function makeServices({ db, bus }) {
               },
             })),
           });
+          updateGenerateRouteContext({
+            runtimeProvider: 'Hub (Remote)',
+            executionPath: 'remote_error',
+            fallbackReasonCode: error.code,
+            auditRef,
+            denyCode: error.code,
+          });
+          emitGenerateError({ error, auditRef, denyCode: error.code });
           bus.emitHubEvent(bus.requestStatus({ request_id, status: 'failed', error, client }));
           cancels.delete(request_id);
           return;
@@ -5477,17 +7971,7 @@ export function makeServices({ db, bus }) {
       const st0 = readBridgeStatus(bridgeBaseDir);
       if (!st0.alive) {
         const error = { code: 'bridge_unavailable', message: 'Bridge is not running', retryable: true };
-        try {
-          call.write({ error: { request_id, error } });
-        } catch {
-          // ignore
-        }
-        try {
-          call.end();
-        } catch {
-          // ignore
-        }
-        db.appendAudit({
+        const auditRef = db.appendAudit({
           event_type: 'ai.generate.failed',
           created_at_ms: nowMs(),
           severity: 'warn',
@@ -5529,6 +8013,14 @@ export function makeServices({ db, bus }) {
             }
           )),
         });
+        updateGenerateRouteContext({
+          runtimeProvider: 'Hub (Remote)',
+          executionPath: 'remote_error',
+          fallbackReasonCode: error.code,
+          auditRef,
+          denyCode: error.code,
+        });
+        emitGenerateError({ error, auditRef, denyCode: error.code });
         bus.emitHubEvent(bus.requestStatus({ request_id, status: 'failed', error, client }));
         cancels.delete(request_id);
         return;
@@ -5538,17 +8030,7 @@ export function makeServices({ db, bus }) {
       const st = st0.enabled ? st0 : await waitForBridgeEnabled(bridgeBaseDir, 1500);
       if (!st.enabled) {
         const error = { code: 'bridge_disabled', message: 'Bridge is disabled', retryable: true };
-        try {
-          call.write({ error: { request_id, error } });
-        } catch {
-          // ignore
-        }
-        try {
-          call.end();
-        } catch {
-          // ignore
-        }
-        db.appendAudit({
+        const auditRef = db.appendAudit({
           event_type: 'ai.generate.denied',
           created_at_ms: nowMs(),
           severity: 'security',
@@ -5590,6 +8072,14 @@ export function makeServices({ db, bus }) {
             }
           )),
         });
+        updateGenerateRouteContext({
+          runtimeProvider: 'Hub (Remote)',
+          executionPath: 'remote_error',
+          fallbackReasonCode: error.code,
+          auditRef,
+          denyCode: error.code,
+        });
+        emitGenerateError({ error, auditRef, denyCode: error.code });
         bus.emitHubEvent(bus.requestStatus({ request_id, status: 'failed', error, client }));
         cancels.delete(request_id);
         return;
@@ -5644,17 +8134,7 @@ export function makeServices({ db, bus }) {
           total_tokens: estimateTokens(promptText),
           cost_usd_estimate: 0,
         };
-        try {
-          call.write({ done: { request_id, ok: false, reason: 'canceled', usage, finished_at_ms } });
-        } catch {
-          // ignore
-        }
-        try {
-          call.end();
-        } catch {
-          // ignore
-        }
-        db.appendAudit({
+        const auditRef = db.appendAudit({
           event_type: 'ai.generate.canceled',
           created_at_ms: finished_at_ms,
           severity: 'warn',
@@ -5704,6 +8184,22 @@ export function makeServices({ db, bus }) {
             }
           )),
         });
+        updateGenerateRouteContext({
+          modelId: executionModelId || model_id || '',
+          runtimeProvider: responseRuntimeProvider,
+          executionPath: responseExecutionPath,
+          fallbackReasonCode: 'canceled',
+          auditRef,
+          denyCode: 'canceled',
+        });
+        finishGenerate({
+          ok: false,
+          reason: 'canceled',
+          usage,
+          finished_at_ms,
+          auditRef,
+          denyCode: 'canceled',
+        });
         bus.emitHubEvent(bus.requestStatus({ request_id, status: 'canceled', error: null, client }));
         cancels.delete(request_id);
         return;
@@ -5732,17 +8228,6 @@ export function makeServices({ db, bus }) {
       if (!completion_tokens) completion_tokens = Math.max(0, Math.ceil(completionCharCount / 3.2));
       if (!total_tokens) total_tokens = prompt_tokens + completion_tokens;
       const usage = { prompt_tokens, completion_tokens, total_tokens, cost_usd_estimate: 0 };
-
-      try {
-        call.write({ done: { request_id, ok: !!ok, reason, usage, finished_at_ms } });
-      } catch {
-        // ignore
-      }
-      try {
-        call.end();
-      } catch {
-        // ignore
-      }
 
       if (thread_id && ok) {
         try {
@@ -5798,7 +8283,7 @@ export function makeServices({ db, bus }) {
         }
       }
 
-      db.appendAudit({
+      const completionAuditRef = db.appendAudit({
         event_type: ok ? 'ai.generate.completed' : 'ai.generate.failed',
         created_at_ms: finished_at_ms,
         severity: ok ? 'info' : 'warn',
@@ -5851,6 +8336,22 @@ export function makeServices({ db, bus }) {
           }
         )),
       });
+      updateGenerateRouteContext({
+        modelId: executionModelId || model_id || '',
+        runtimeProvider: responseRuntimeProvider,
+        executionPath: ok ? responseExecutionPath : 'remote_error',
+        fallbackReasonCode: ok ? responseFallbackReasonCode : (responseFallbackReasonCode || 'bridge_failed'),
+        auditRef: responseAuditRef || completionAuditRef,
+        denyCode: ok ? responseDenyCode : (responseDenyCode || 'bridge_failed'),
+      });
+      finishGenerate({
+        ok: !!ok,
+        reason,
+        usage,
+        finished_at_ms,
+        auditRef: responseAuditRef || completionAuditRef,
+        denyCode: ok ? responseDenyCode : (responseDenyCode || 'bridge_failed'),
+      });
 
       bus.emitHubEvent(bus.requestStatus({ request_id, status: ok ? 'done' : 'failed', error: null, client }));
       cancels.delete(request_id);
@@ -5885,17 +8386,7 @@ export function makeServices({ db, bus }) {
       });
     } catch (e) {
       const error = { code: 'runtime_write_failed', message: String(e?.message || e || 'runtime_write_failed'), retryable: true };
-      try {
-        call.write({ error: { request_id, error } });
-      } catch {
-        // ignore
-      }
-      try {
-        call.end();
-      } catch {
-        // ignore
-      }
-      db.appendAudit({
+      const auditRef = db.appendAudit({
         event_type: 'ai.generate.failed',
         created_at_ms: nowMs(),
         severity: 'error',
@@ -5938,6 +8429,15 @@ export function makeServices({ db, bus }) {
           }
         )),
       });
+      updateGenerateRouteContext({
+        modelId: executionModelId || model_id || '',
+        runtimeProvider: responseRuntimeProvider,
+        executionPath: responseExecutionPath,
+        fallbackReasonCode: error.code,
+        auditRef,
+        denyCode: error.code,
+      });
+      emitGenerateError({ error, auditRef, denyCode: error.code });
       bus.emitHubEvent(bus.requestStatus({ request_id, status: 'failed', error, client }));
       cancels.delete(request_id);
       return;
@@ -5954,25 +8454,7 @@ export function makeServices({ db, bus }) {
     };
 
     const finish = ({ ok, reason, usage, finished_at_ms }) => {
-      sawDone = true;
-      try {
-        call.write({
-          done: {
-            request_id,
-            ok: !!ok,
-            reason: String(reason || (ok ? 'eos' : 'failed')),
-            usage: usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, cost_usd_estimate: 0 },
-            finished_at_ms: Number(finished_at_ms || nowMs()),
-          },
-        });
-      } catch {
-        // ignore
-      }
-      try {
-        call.end();
-      } catch {
-        // ignore
-      }
+      finishGenerate({ ok, reason, usage, finished_at_ms });
     };
 
     let runtime_error = null;
@@ -6011,8 +8493,6 @@ export function makeServices({ db, bus }) {
           if (!completion_tokens) completion_tokens = Math.max(0, Math.ceil(completionCharCount / 3.2));
           const total_tokens = prompt_tokens + completion_tokens;
           const usage = { prompt_tokens, completion_tokens, total_tokens, cost_usd_estimate: 0 };
-
-          finish({ ok, reason, usage, finished_at_ms });
 
           if (thread_id && ok) {
             try {
@@ -6070,7 +8550,7 @@ export function makeServices({ db, bus }) {
 
           const evType =
             ok ? 'ai.generate.completed' : reason.toLowerCase().includes('canceled') ? 'ai.generate.canceled' : 'ai.generate.failed';
-          db.appendAudit({
+          const completionAuditRef = db.appendAudit({
             event_type: evType,
             created_at_ms: finished_at_ms,
             severity: ok ? 'info' : 'warn',
@@ -6122,6 +8602,20 @@ export function makeServices({ db, bus }) {
               }
             )),
           });
+          updateGenerateRouteContext({
+            modelId: executionModelId || model_id || '',
+            runtimeProvider: responseRuntimeProvider,
+            executionPath: ok ? responseExecutionPath : (executionRemoteMode ? 'remote_error' : responseExecutionPath),
+            fallbackReasonCode: ok ? responseFallbackReasonCode : (responseFallbackReasonCode || (reason.toLowerCase().includes('canceled') ? 'canceled' : 'runtime_failed')),
+            auditRef: responseAuditRef || completionAuditRef,
+            denyCode: ok ? responseDenyCode : (responseDenyCode || (reason.toLowerCase().includes('canceled') ? 'canceled' : 'runtime_failed')),
+          });
+          finish({
+            ok,
+            reason,
+            usage,
+            finished_at_ms,
+          });
 
           bus.emitHubEvent(bus.requestStatus({ request_id, status: ok ? 'done' : reason === 'canceled' ? 'canceled' : 'failed', error: null, client }));
           break;
@@ -6138,14 +8632,8 @@ export function makeServices({ db, bus }) {
       const reason = cancelState.canceled ? 'canceled' : String(runtime_error?.message || 'runtime_failed');
       const error = { code: cancelState.canceled ? 'canceled' : 'runtime_failed', message: reason, retryable: !cancelState.canceled };
       writeStartIfNeeded(executionModelId);
-      finish({
-        ok,
-        reason,
-        usage: { prompt_tokens: estimateTokens(promptText), completion_tokens: 0, total_tokens: estimateTokens(promptText), cost_usd_estimate: 0 },
-        finished_at_ms,
-      });
-
-      db.appendAudit({
+      const fallbackUsage = { prompt_tokens: estimateTokens(promptText), completion_tokens: 0, total_tokens: estimateTokens(promptText), cost_usd_estimate: 0 };
+      const completionAuditRef = db.appendAudit({
         event_type: cancelState.canceled ? 'ai.generate.canceled' : 'ai.generate.failed',
         created_at_ms: finished_at_ms,
         severity: cancelState.canceled ? 'warn' : 'error',
@@ -6182,10 +8670,10 @@ export function makeServices({ db, bus }) {
               duration_ms: Math.max(0, finished_at_ms - hub_started_at_ms),
             },
             cost: {
-              prompt_tokens: estimateTokens(promptText),
-              completion_tokens: 0,
-              total_tokens: estimateTokens(promptText),
-              cost_usd_estimate: 0,
+              prompt_tokens: fallbackUsage.prompt_tokens,
+              completion_tokens: fallbackUsage.completion_tokens,
+              total_tokens: fallbackUsage.total_tokens,
+              cost_usd_estimate: fallbackUsage.cost_usd_estimate,
             },
             security: {
               blocked: false,
@@ -6193,6 +8681,20 @@ export function makeServices({ db, bus }) {
             },
           }
         )),
+      });
+      updateGenerateRouteContext({
+        modelId: executionModelId || model_id || '',
+        runtimeProvider: responseRuntimeProvider,
+        executionPath: executionRemoteMode ? 'remote_error' : responseExecutionPath,
+        fallbackReasonCode: error.code,
+        auditRef: responseAuditRef || completionAuditRef,
+        denyCode: responseDenyCode || error.code,
+      });
+      finish({
+        ok,
+        reason,
+        usage: fallbackUsage,
+        finished_at_ms,
       });
 
       bus.emitHubEvent(bus.requestStatus({ request_id, status: cancelState.canceled ? 'canceled' : 'failed', error: cancelState.canceled ? null : error, client }));
@@ -7052,11 +9554,32 @@ export function makeServices({ db, bus }) {
     };
   }
 
+  function grantRequestAllowedForChannelScope(grantRequestRow, gate, pendingGrant) {
+    if (!grantRequestRow || !gate) return false;
+    if (safeString(gate.scope_type) && safeString(gate.scope_type) !== 'project') {
+      return false;
+    }
+
+    const gateProjectId = safeString(gate.scope_id);
+    const requestedProjectId = safeString(pendingGrant?.project_id);
+    const grantProjectId = safeString(grantRequestRow.project_id);
+    if (requestedProjectId && grantProjectId && requestedProjectId !== grantProjectId) {
+      return false;
+    }
+    if (gateProjectId) {
+      if (!grantProjectId || grantProjectId !== gateProjectId) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   function executeOperatorChannelGrantAction({
     actor = {},
     action_name = '',
     pending_grant = null,
     note = '',
+    gate = null,
   } = {}) {
     const actionName = safeString(action_name).toLowerCase();
     const grant_request_id = safeString(pending_grant?.grant_request_id);
@@ -7097,8 +9620,17 @@ export function makeServices({ db, bus }) {
         grant_action: null,
       };
     }
+    if (!grantRequestAllowedForChannelScope(gr, gate, pending_grant)) {
+      return {
+        ok: false,
+        deny_code: 'pending_grant_scope_mismatch',
+        detail: 'pending grant scope mismatch',
+        grant_action: null,
+      };
+    }
 
     const identity_binding = getChannelIdentityBinding(db, {
+      stable_external_id: actor.stable_external_id,
       provider: actor.provider,
       external_user_id: actor.external_user_id,
       external_tenant_id: actor.external_tenant_id,
@@ -7475,15 +10007,70 @@ export function makeServices({ db, bus }) {
   }
 
   async function executeOperatorChannelHubCommandInternal(req = {}) {
+    const request_id = safeString(req.request_id);
     const action_name = safeString(req.action_name).toLowerCase();
+    const actor = req.actor && typeof req.actor === 'object' ? req.actor : {};
+    const channel = req.channel && typeof req.channel === 'object' ? req.channel : {};
     const pending_grant = req.pending_grant && typeof req.pending_grant === 'object'
       ? req.pending_grant
       : null;
     const runtimeBaseDir = resolveRuntimeBaseDir();
+    const auditClient = operatorChannelClientContext('hub_runtime_channel_execute');
+    const buildAuditFailure = (error, {
+      gate = null,
+      route = null,
+      xt_command = null,
+    } = {}) => ({
+      ok: false,
+      deny_code: 'audit_write_failed',
+      detail: safeString(error?.message || 'audit_write_failed'),
+      gate: gate ? makeProtoChannelCommandGateDecision(gate) : null,
+      route: route ? makeProtoSupervisorChannelRoute(route) : null,
+      query: null,
+      grant_action: null,
+      xt_command,
+      audit_logged: false,
+    });
+    const writeActionAudit = ({
+      phase,
+      gate = null,
+      route = null,
+      ok = true,
+      deny_code = '',
+      detail = '',
+      audit_ref = '',
+      ext = null,
+    } = {}) => appendOperatorChannelActionAudit({
+      db,
+      phase,
+      client: auditClient,
+      request_id,
+      action_name,
+      actor,
+      channel,
+      gate,
+      route,
+      pending_grant,
+      audit_ref,
+      ok,
+      deny_code,
+      detail,
+      ext,
+    });
+
+    try {
+      writeActionAudit({
+        phase: 'requested',
+        detail: 'operator channel action requested',
+      });
+    } catch (error) {
+      return buildAuditFailure(error);
+    }
+
     const gate = evaluateChannelCommandGateWithAudit({
       db,
-      actor: req.actor || {},
-      channel: req.channel || {},
+      actor,
+      channel,
       action: {
         binding_id: safeString(req.binding_id),
         action_name,
@@ -7491,10 +10078,21 @@ export function makeServices({ db, bus }) {
         scope_id: safeString(req.scope_id),
         pending_grant,
       },
-      client: operatorChannelClientContext('hub_runtime_channel_execute'),
-      request_id: safeString(req.request_id),
+      client: auditClient,
+      request_id,
     });
     if (gate.allowed === false) {
+      try {
+        writeActionAudit({
+          phase: 'denied',
+          gate,
+          ok: false,
+          deny_code: safeString(gate.deny_code || 'channel_command_denied'),
+          detail: safeString(gate.detail || gate.deny_code || 'channel_command_denied'),
+        });
+      } catch (error) {
+        return buildAuditFailure(error, { gate });
+      }
       return {
         ok: false,
         deny_code: safeString(gate.deny_code || 'channel_command_denied'),
@@ -7503,7 +10101,8 @@ export function makeServices({ db, bus }) {
         route: null,
         query: null,
         grant_action: null,
-        audit_logged: !!gate.audit_logged,
+        xt_command: null,
+        audit_logged: true,
       };
     }
 
@@ -7527,10 +10126,22 @@ export function makeServices({ db, bus }) {
     if (resolved && safeString(resolved.scope_id)) {
       const persisted = upsertSupervisorChannelSessionRoute(db, {
         route: resolved,
-        request_id: safeString(req.request_id),
+        request_id,
         audit: operatorChannelAuditActor('hub_runtime_channel_execute'),
       });
       if (!persisted.ok) {
+        try {
+          writeActionAudit({
+            phase: 'denied',
+            gate,
+            route: resolved,
+            ok: false,
+            deny_code: safeString(persisted.deny_code || 'channel_route_persist_failed'),
+            detail: safeString(persisted.deny_code || 'channel_route_persist_failed'),
+          });
+        } catch (error) {
+          return buildAuditFailure(error, { gate, route: resolved });
+        }
         return {
           ok: false,
           deny_code: safeString(persisted.deny_code || 'channel_route_persist_failed'),
@@ -7540,7 +10151,7 @@ export function makeServices({ db, bus }) {
           query: null,
           grant_action: null,
           xt_command: null,
-          audit_logged: !!gate.audit_logged,
+          audit_logged: true,
         };
       }
       routeAuditLogged = !!persisted.audit_logged;
@@ -7560,6 +10171,50 @@ export function makeServices({ db, bus }) {
         action_name,
         runtimeBaseDir,
       });
+      if (!queued?.ok) {
+        try {
+          writeActionAudit({
+            phase: 'denied',
+            gate,
+            route,
+            ok: false,
+            deny_code: safeString(queued?.deny_code || 'xt_command_failed'),
+            detail: safeString(queued?.detail || queued?.deny_code || 'xt command failed'),
+            audit_ref: safeString(queued?.xt_command?.audit_ref),
+            ext: {
+              command_id: safeString(queued?.xt_command?.command_id),
+              status: safeString(queued?.xt_command?.status),
+            },
+          });
+        } catch (error) {
+          return buildAuditFailure(error, {
+            gate,
+            route,
+            xt_command: queued?.xt_command || null,
+          });
+        }
+      } else {
+        try {
+          writeActionAudit({
+            phase: 'queued',
+            gate,
+            route,
+            detail: safeString(queued?.detail || 'xt command queued'),
+            audit_ref: safeString(queued?.xt_command?.audit_ref),
+            ext: {
+              command_id: safeString(queued?.xt_command?.command_id),
+              status: safeString(queued?.xt_command?.status),
+              resolved_device_id: safeString(queued?.xt_command?.resolved_device_id),
+            },
+          });
+        } catch (error) {
+          return buildAuditFailure(error, {
+            gate,
+            route,
+            xt_command: queued?.xt_command || null,
+          });
+        }
+      }
       const waitMs = parseIntInRange(process.env.HUB_OPERATOR_CHANNEL_XT_COMMAND_WAIT_MS, 4600, 0, 30_000);
       const commandId = safeString(queued?.xt_command?.command_id);
       const completed = commandId
@@ -7578,7 +10233,7 @@ export function makeServices({ db, bus }) {
           query: null,
           grant_action: null,
           xt_command: queued.xt_command || null,
-          audit_logged: !!gate.audit_logged || routeAuditLogged,
+          audit_logged: true,
         };
       }
 
@@ -7609,6 +10264,31 @@ export function makeServices({ db, bus }) {
           audit_ref: safeString(completedProto?.audit_ref),
         }),
       });
+      try {
+        writeActionAudit({
+          phase: 'executed',
+          gate,
+          route,
+          ok: completedOk,
+          deny_code: completedOk ? '' : safeString(completed?.deny_code || 'xt_command_failed'),
+          detail: completedOk
+            ? safeString(completed?.detail || 'xt command completed')
+            : safeString(completed?.detail || completed?.deny_code || 'xt command failed'),
+          audit_ref: safeString(completedProto?.audit_ref),
+          ext: {
+            command_id: safeString(completed?.command_id),
+            status: safeString(completed?.status),
+            run_id: safeString(completed?.run_id),
+            resolved_device_id: safeString(completed?.resolved_device_id),
+          },
+        });
+      } catch (error) {
+        return buildAuditFailure(error, {
+          gate,
+          route,
+          xt_command: completedProto,
+        });
+      }
 
       return {
         ok: completedOk,
@@ -7621,33 +10301,84 @@ export function makeServices({ db, bus }) {
         query: null,
         grant_action: null,
         xt_command: completedProto,
-        audit_logged: !!gate.audit_logged || routeAuditLogged,
+        audit_logged: true,
       };
     }
 
     if (route_mode !== 'hub_only_status') {
+      const deniedCode = safeString(route?.deny_code || 'hub_execution_requires_hub_only_route');
+      const deniedDetail = route_mode === 'xt_offline' || route_mode === 'runner_not_ready'
+        ? 'hub execution blocked by route'
+        : 'hub execution requires hub-only route';
+      try {
+        writeActionAudit({
+          phase: 'denied',
+          gate,
+          route,
+          ok: false,
+          deny_code: deniedCode,
+          detail: deniedDetail,
+          audit_ref: safeString(route?.audit_ref),
+        });
+      } catch (error) {
+        return buildAuditFailure(error, { gate, route });
+      }
       return {
         ok: false,
-        deny_code: safeString(route?.deny_code || 'hub_execution_requires_hub_only_route'),
-        detail: route_mode === 'xt_offline' || route_mode === 'runner_not_ready'
-          ? 'hub execution blocked by route'
-          : 'hub execution requires hub-only route',
+        deny_code: deniedCode,
+        detail: deniedDetail,
         gate: makeProtoChannelCommandGateDecision(gate),
         route: makeProtoSupervisorChannelRoute(route),
         query: null,
         grant_action: null,
         xt_command: null,
-        audit_logged: !!gate.audit_logged || routeAuditLogged,
+        audit_logged: true,
       };
     }
 
     if (action_name === 'grant.approve' || action_name === 'grant.reject') {
       const grantResult = executeOperatorChannelGrantAction({
-        actor: req.actor || {},
+        actor,
         action_name,
         pending_grant,
         note: safeString(req.note),
+        gate,
       });
+      if (!grantResult.ok) {
+        try {
+          writeActionAudit({
+            phase: 'denied',
+            gate,
+            route,
+            ok: false,
+            deny_code: safeString(grantResult.deny_code),
+            detail: safeString(grantResult.detail),
+          });
+        } catch (error) {
+          return buildAuditFailure(error, { gate, route });
+        }
+      } else {
+        try {
+          writeActionAudit({
+            phase: 'approved',
+            gate,
+            route,
+            detail: 'operator channel action approved',
+          });
+          writeActionAudit({
+            phase: 'executed',
+            gate,
+            route,
+            detail: safeString(grantResult.detail),
+            ext: {
+              decision: safeString(grantResult?.grant_action?.decision),
+              grant_request_id: safeString(grantResult?.grant_action?.grant_request_id),
+            },
+          });
+        } catch (error) {
+          return buildAuditFailure(error, { gate, route });
+        }
+      }
       return {
         ok: !!grantResult.ok,
         deny_code: safeString(grantResult.deny_code),
@@ -7657,7 +10388,7 @@ export function makeServices({ db, bus }) {
         query: null,
         grant_action: grantResult.grant_action,
         xt_command: null,
-        audit_logged: !!gate.audit_logged || routeAuditLogged,
+        audit_logged: true,
       };
     }
 
@@ -7670,6 +10401,40 @@ export function makeServices({ db, bus }) {
       route,
       pending_grant,
     });
+    if (!queryResult.ok) {
+      try {
+        writeActionAudit({
+          phase: 'denied',
+          gate,
+          route,
+          ok: false,
+          deny_code: safeString(queryResult.deny_code),
+          detail: safeString(queryResult.detail),
+        });
+      } catch (error) {
+        return buildAuditFailure(error, { gate, route });
+      }
+    } else {
+      try {
+        writeActionAudit({
+          phase: 'approved',
+          gate,
+          route,
+          detail: 'operator channel action approved',
+        });
+        writeActionAudit({
+          phase: 'executed',
+          gate,
+          route,
+          detail: safeString(queryResult.detail),
+          ext: {
+            query_kind: safeString(queryResult?.query?.action_name || action_name),
+          },
+        });
+      } catch (error) {
+        return buildAuditFailure(error, { gate, route });
+      }
+    }
     return {
       ok: !!queryResult.ok,
       deny_code: safeString(queryResult.deny_code),
@@ -7679,7 +10444,7 @@ export function makeServices({ db, bus }) {
       query: queryResult.query,
       grant_action: null,
       xt_command: null,
-      audit_logged: !!gate.audit_logged || routeAuditLogged,
+      audit_logged: true,
     };
   }
 
@@ -7741,6 +10506,48 @@ export function makeServices({ db, bus }) {
       limit,
     });
     callback(null, snapshot);
+  }
+
+  function GetSupervisorCandidateReviewQueue(call, callback) {
+    const auth = requireClientAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    if (!clientAllows(auth, 'events')) {
+      callback(new Error(capabilityDenyCode(auth)));
+      return;
+    }
+
+    const req = call.request || {};
+    const client = runtimeScopedClientFromRequest(req, auth);
+    const device_id = String(client.device_id || '').trim();
+    const app_id = String(client.app_id || '').trim();
+    if (!device_id || !app_id) {
+      callback(new Error('invalid_client_identity'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, client)) {
+      callback(new Error(capabilityDenyCode(auth)));
+      return;
+    }
+
+    const reqProjectId = String(req.project_id || '').trim();
+    const project_id = reqProjectId || String(client.project_id || '').trim();
+    const limit = parseIntInRange(req.limit, 200, 1, 500);
+
+    const snapshot = buildSupervisorCandidateReviewSnapshot({
+      deviceId: device_id,
+      appId: app_id,
+      projectId: project_id,
+      limit,
+    });
+    callback(null, {
+      updated_at_ms: Number(snapshot?.updated_at_ms || 0),
+      items: Array.isArray(snapshot?.items)
+        ? snapshot.items.map(makeProtoSupervisorCandidateReviewItem).filter(Boolean)
+        : [],
+    });
   }
 
   function GetConnectorIngressReceipts(call, callback) {
@@ -8094,6 +10901,7 @@ export function makeServices({ db, bus }) {
     const req = call.request || {};
     const rows = listChannelIdentityBindings(db, {
       provider: req.provider,
+      stable_external_id: req.stable_external_id,
       hub_user_id: req.hub_user_id,
       external_tenant_id: req.external_tenant_id,
       status: req.status,
@@ -8172,6 +10980,251 @@ export function makeServices({ db, bus }) {
       created: !!out.created,
       updated: !!out.updated,
     });
+  }
+
+  function ListChannelOnboardingDiscoveryTickets(call, callback) {
+    const auth = requireAdminAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+
+    const req = call.request || {};
+    const rows = listChannelOnboardingDiscoveryTickets(db, {
+      provider: req.provider,
+      account_id: req.account_id,
+      external_user_id: req.external_user_id,
+      external_tenant_id: req.external_tenant_id,
+      conversation_id: req.conversation_id,
+      status: req.status,
+      limit: req.limit,
+    });
+    callback(null, {
+      updated_at_ms: maxUpdatedAtMs(rows),
+      tickets: rows.map((row) => {
+        const ticketId = safeString(row?.ticket_id);
+        const latestDecision = ticketId
+          ? getLatestChannelOnboardingApprovalDecisionByTicketId(db, { ticket_id: ticketId })
+          : null;
+        const revocation = ticketId
+          ? getChannelOnboardingAutoBindRevocationByTicketId(db, { ticket_id: ticketId })
+          : null;
+        return makeProtoChannelOnboardingDiscoveryTicket(row, { latestDecision, revocation });
+      }).filter(Boolean),
+    });
+  }
+
+  function GetChannelOnboardingDiscoveryTicket(call, callback) {
+    const auth = requireAdminAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+
+    const req = call.request || {};
+    const ticket = getChannelOnboardingDiscoveryTicketById(db, {
+      ticket_id: req.ticket_id,
+    });
+    const latestDecision = ticket
+      ? getLatestChannelOnboardingApprovalDecisionByTicketId(db, { ticket_id: ticket.ticket_id })
+      : null;
+    const automationState = ticket
+      ? getChannelOnboardingAutomationState(db, { ticket_id: ticket.ticket_id })
+      : null;
+    const revocation = ticket
+      ? getChannelOnboardingAutoBindRevocationByTicketId(db, { ticket_id: ticket.ticket_id })
+      : null;
+    callback(null, {
+      ok: !!ticket,
+      deny_code: ticket ? '' : 'ticket_not_found',
+      ticket: makeProtoChannelOnboardingDiscoveryTicket(ticket, { latestDecision, revocation }),
+      latest_decision: makeProtoChannelOnboardingApprovalDecision(latestDecision),
+      automation_state: makeProtoChannelOnboardingAutomationState(automationState),
+      revocation: makeProtoChannelOnboardingRevocation(revocation),
+    });
+  }
+
+  function CreateOrTouchChannelOnboardingDiscoveryTicket(call, callback) {
+    const auth = requireOperatorChannelConnectorAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+
+    const req = call.request || {};
+    const out = createOrTouchChannelOnboardingDiscoveryTicket(db, {
+      ticket: req.ticket || {},
+      request_id: safeString(req.request_id),
+      audit: operatorChannelAuditActor('hub_runtime_channel_onboarding_discovery'),
+    });
+    callback(null, {
+      ok: !!out.ok,
+      deny_code: safeString(out.deny_code),
+      ticket: makeProtoChannelOnboardingDiscoveryTicket(out.ticket),
+      created: !!out.created,
+      updated: !!out.updated,
+      audit_logged: !!out.audit_logged,
+    });
+  }
+
+  function ReviewChannelOnboardingDiscoveryTicket(call, callback) {
+    const auth = requireAdminAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+
+    const req = call.request || {};
+    const request_id = safeString(req.request_id);
+    const reviewAudit = localAdminAuditActor(req.admin, 'hub_runtime_channel_onboarding_review');
+    const out = reviewChannelOnboardingDiscoveryTicket(db, {
+      ticket_id: safeString(req.ticket_id),
+      decision: req.decision || {},
+      request_id,
+      audit: reviewAudit,
+    });
+    if (out.ok && safeString(out.decision?.decision).toLowerCase() === 'approve') {
+      try {
+        const executed = runApprovedChannelOnboardingAutomation(db, {
+          ticket: out.ticket,
+          decision: out.decision,
+          auto_bind_receipt: out.auto_bind_receipt,
+          request_id,
+          runtimeBaseDir: resolveRuntimeBaseDir(),
+          audit: reviewAudit,
+        });
+        if (executed.ok !== false && safeString(out.ticket?.ticket_id)) {
+          Promise.resolve()
+            .then(() => flushChannelOutboxForTicket(db, {
+              ticket_id: safeString(out.ticket?.ticket_id),
+              request_id: `${request_id}:outbox_flush`,
+              audit: reviewAudit,
+            }))
+            .catch(() => {
+              // Delivery is best-effort and must not affect the review result.
+            });
+        }
+      } catch {
+        // First smoke/outbox automation must not fail the approval response.
+      }
+    }
+    const automationState = out.ok && out.ticket
+      ? getChannelOnboardingAutomationState(db, { ticket_id: out.ticket.ticket_id })
+      : null;
+    callback(null, {
+      ok: !!out.ok,
+      deny_code: safeString(out.deny_code),
+      ticket: makeProtoChannelOnboardingDiscoveryTicket(out.ticket, {
+        latestDecision: out.decision,
+        revocation: null,
+      }),
+      decision: makeProtoChannelOnboardingApprovalDecision(out.decision),
+      audit_logged: !!out.audit_logged,
+      automation_state: makeProtoChannelOnboardingAutomationState(automationState),
+    });
+  }
+
+  function RevokeChannelOnboardingDiscoveryTicket(call, callback) {
+    const auth = requireAdminAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+
+    const req = call.request || {};
+    const ticket = getChannelOnboardingDiscoveryTicketById(db, {
+      ticket_id: safeString(req.ticket_id),
+    });
+    if (!ticket) {
+      callback(null, {
+        ok: false,
+        deny_code: 'ticket_not_found',
+        ticket: null,
+        latest_decision: null,
+        audit_logged: false,
+        automation_state: null,
+        revocation: null,
+        idempotent: false,
+      });
+      return;
+    }
+
+    const latestDecision = getLatestChannelOnboardingApprovalDecisionByTicketId(db, {
+      ticket_id: safeString(ticket.ticket_id),
+    });
+    const revokeAudit = {
+      ...localAdminAuditActor(req.admin, 'hub_runtime_channel_onboarding_revoke'),
+      user_id: safeString(req.revoked_by_hub_user_id || req.approved_by_hub_user_id || req.user_id)
+        || safeString(req.admin?.user_id),
+      app_id: safeString(req.revoked_via || req.approved_via || req.app_id)
+        || safeString(req.admin?.app_id)
+        || 'hub_runtime_channel_onboarding_revoke',
+    };
+    const revoked = revokeApprovedChannelOnboardingAutoBind(db, {
+      ticket,
+      decision: latestDecision || {},
+      revocation: req,
+      request_id: safeString(req.request_id),
+      audit: revokeAudit,
+    });
+    const automationState = getChannelOnboardingAutomationState(db, {
+      ticket_id: safeString(ticket.ticket_id),
+    });
+    callback(null, {
+      ok: !!revoked.ok,
+      deny_code: safeString(revoked.deny_code),
+      ticket: makeProtoChannelOnboardingDiscoveryTicket(ticket, {
+        latestDecision,
+        revocation: revoked.revocation,
+      }),
+      latest_decision: makeProtoChannelOnboardingApprovalDecision(latestDecision),
+      audit_logged: !!revoked.audit_logged,
+      automation_state: makeProtoChannelOnboardingAutomationState(automationState),
+      revocation: makeProtoChannelOnboardingRevocation(revoked.revocation),
+      idempotent: !!revoked.idempotent,
+    });
+  }
+
+  async function RetryChannelOnboardingOutbox(call, callback) {
+    const auth = requireAdminAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+
+    const req = call.request || {};
+    const ticket = getChannelOnboardingDiscoveryTicketById(db, {
+      ticket_id: safeString(req.ticket_id),
+    });
+    if (!ticket) {
+      callback(null, {
+        ok: false,
+        deny_code: 'ticket_not_found',
+        ticket_id: safeString(req.ticket_id),
+        delivered_count: 0,
+        pending_count: 0,
+        automation_state: null,
+      });
+      return;
+    }
+
+    try {
+      const out = await retryChannelOnboardingOutbox(db, {
+        ticket,
+        request_id: safeString(req.request_id),
+        audit: localAdminAuditActor(req.admin, 'hub_runtime_channel_onboarding_outbox_retry'),
+      });
+      callback(null, {
+        ok: !!out.ok,
+        deny_code: safeString(out.deny_code),
+        ticket_id: safeString(ticket.ticket_id),
+        delivered_count: Number(out.delivered_count || 0),
+        pending_count: Number(out.pending_count || 0),
+        automation_state: makeProtoChannelOnboardingAutomationState(out.automation_state),
+      });
+    } catch (error) {
+      callback(new Error(safeString(error?.message || 'channel_onboarding_outbox_retry_failed')));
+    }
   }
 
   function EvaluateChannelCommandGate(call, callback) {
@@ -8500,6 +11553,381 @@ export function makeServices({ db, bus }) {
     return route;
   }
 
+  function buildSupervisorCandidateCarrierBriefSummary(project_id, {
+    limit = 4,
+  } = {}) {
+    const projectId = safeString(project_id);
+    if (!projectId) return null;
+    const snapshot = buildSupervisorCandidateReviewSnapshot({
+      projectId,
+      limit: parseIntInRange(limit, 4, 1, 16),
+    });
+    const items = Array.isArray(snapshot.items) ? snapshot.items : [];
+    if (items.length === 0) return null;
+
+    const requestIds = uniqueOrderedValues(items.map((item) => item.request_id));
+    const scopes = uniqueOrderedValues(items.flatMap((item) => Array.isArray(item.scopes) ? item.scopes : []));
+    const latest = items[0] || null;
+    const latestEmittedAtMs = Math.max(
+      0,
+      ...items.map((item) => Number(item?.latest_emitted_at_ms || item?.updated_at_ms || 0))
+    );
+    const evidenceRefs = uniqueOrderedValues(items.map((item) => item.evidence_ref)).slice(0, 3);
+    const scopeLabel = scopes.join(', ');
+    const rowCount = items.reduce(
+      (sum, item) => sum + Math.max(0, Number(item?.candidate_count || 0)),
+      0
+    );
+    const requestCount = items.length;
+    const pendingLine = `Hub has ${rowCount} mirrored durable candidate${rowCount === 1 ? '' : 's'} across ${scopeLabel || 'unknown_scope'} pending downstream promotion review.`;
+    const nextAction = `Review ${requestCount} mirrored candidate handoff${requestCount === 1 ? '' : 's'} before durable promotion.`;
+
+    return {
+      row_count: rowCount,
+      request_count: requestCount,
+      scopes,
+      latest_emitted_at_ms: latestEmittedAtMs,
+      latest_request_id: safeString(latest?.request_id),
+      latest_audit_ref: safeString(latest?.audit_ref),
+      pending_line: pendingLine,
+      next_action: nextAction,
+      evidence_refs: evidenceRefs,
+    };
+  }
+
+  function normalizeSupervisorBriefProjectionLookup(value = '') {
+    return safeString(value)
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function supervisorBriefProjectionCueIncludes(normalizedCombined = '', tokens = []) {
+    return tokens.some((token) => token && normalizedCombined.includes(token));
+  }
+
+  function buildSupervisorGovernedReviewAttentionBrief(project_id, heartbeat = null) {
+    const projectId = safeString(project_id);
+    if (!projectId || !heartbeat || typeof heartbeat !== 'object') return null;
+
+    const blockedReasons = Array.isArray(heartbeat.blocked_reason)
+      ? heartbeat.blocked_reason.map((item) => safeString(item)).filter(Boolean)
+      : [];
+    const nextActions = Array.isArray(heartbeat.next_actions)
+      ? heartbeat.next_actions.map((item) => safeString(item)).filter(Boolean)
+      : [];
+    const cues = [...blockedReasons, ...nextActions];
+    if (cues.length === 0) return null;
+
+    const normalizedCombined = cues
+      .map((item) => normalizeSupervisorBriefProjectionLookup(item))
+      .filter(Boolean)
+      .join(' ');
+    const hasQueuedCue = supervisorBriefProjectionCueIncludes(normalizedCombined, [
+      '已排队',
+      'status=queued',
+      ' queued ',
+      'queued governance',
+      'queued strategic',
+      'queued rescue',
+      'queued pulse',
+      '排队治理审查',
+      '排队战略审查',
+      '排队救援审查',
+      '排队脉冲审查',
+    ]) || normalizedCombined.startsWith('queued ');
+    const hasGovernanceCue = supervisorBriefProjectionCueIncludes(normalizedCombined, [
+      '治理审查',
+      '战略审查',
+      '救援审查',
+      '脉冲审查',
+      'governed review',
+      'governance review',
+      'strategic review',
+      'rescue review',
+      'pulse review',
+      'heartbeat_governed_review',
+      'review_level_hint=r1_pulse',
+      'review_level_hint=r2_strategic',
+      'review_level_hint=r3_rescue',
+    ]);
+    if (!(hasQueuedCue && hasGovernanceCue)
+      && !supervisorBriefProjectionCueIncludes(normalizedCombined, ['heartbeat_governed_review status=queued'])) {
+      return null;
+    }
+
+    const reviewLevel = supervisorBriefProjectionCueIncludes(normalizedCombined, [
+      '救援审查',
+      'r3_rescue',
+      'rescue_review',
+      'rescue governance review',
+      'queued rescue review',
+    ])
+      ? 'rescue'
+      : (supervisorBriefProjectionCueIncludes(normalizedCombined, [
+          '脉冲审查',
+          'r1_pulse',
+          'pulse_review',
+          'pulse governance review',
+          'queued pulse review',
+        ])
+          ? 'pulse'
+          : 'strategic');
+
+    const runKind = supervisorBriefProjectionCueIncludes(normalizedCombined, [
+      '无进展复盘',
+      'brainstorm',
+      'no_progress_window',
+      'no progress',
+    ])
+      ? 'brainstorm'
+      : (supervisorBriefProjectionCueIncludes(normalizedCombined, [
+          '手动请求',
+          'manual request',
+          'review_run_kind=manual',
+        ])
+          ? 'manual'
+          : (supervisorBriefProjectionCueIncludes(normalizedCombined, [
+              '周期脉冲',
+              'periodic pulse',
+              'pulse cadence',
+              'pulse window',
+              'periodic_pulse',
+              'review_run_kind=pulse',
+            ])
+              ? 'pulse'
+              : 'event_driven'));
+
+    const causeLabel = (() => {
+      if (supervisorBriefProjectionCueIncludes(normalizedCombined, [
+        '完成声明证据偏弱',
+        'weak_done_claim',
+      ])) return 'weak completion evidence';
+      if (supervisorBriefProjectionCueIncludes(normalizedCombined, [
+        'blocker 解释偏弱',
+        'weak_blocker',
+      ])) return 'weak blocker evidence';
+      if (supervisorBriefProjectionCueIncludes(normalizedCombined, [
+        '心跳缺失',
+        'missing_heartbeat',
+        'missing heartbeat',
+      ])) return 'missing heartbeat';
+      if (supervisorBriefProjectionCueIncludes(normalizedCombined, [
+        '长时间重复无新进展',
+        'stale_repeat',
+        'stale repeat',
+      ])) return 'repeated stale heartbeat';
+      if (supervisorBriefProjectionCueIncludes(normalizedCombined, [
+        '进展声明证据偏弱',
+        'hollow_progress',
+      ])) return 'weak progress evidence';
+      if (supervisorBriefProjectionCueIncludes(normalizedCombined, [
+        '队列卡住',
+        'queue_stall',
+        'queue stall',
+      ])) return 'queue stalled';
+      if (supervisorBriefProjectionCueIncludes(normalizedCombined, [
+        '模型路由抖动',
+        'route_flaky',
+        'route flaky',
+      ])) return 'model route instability';
+      if (supervisorBriefProjectionCueIncludes(normalizedCombined, [
+        '疑似偏航',
+        'drift_suspected',
+        'plan drift',
+      ])) return 'suspected drift';
+      if (supervisorBriefProjectionCueIncludes(normalizedCombined, [
+        'heartbeat 质量下降',
+        'heartbeat_quality_degraded',
+      ])) return 'degraded heartbeat quality';
+      if (supervisorBriefProjectionCueIncludes(normalizedCombined, [
+        '检测到 blocker',
+        'blocker_detected',
+        'blocker detected',
+      ])) return 'blocker detected';
+      if (supervisorBriefProjectionCueIncludes(normalizedCombined, [
+        '长时间无进展',
+        'no progress',
+      ])) return 'long no progress';
+      if (supervisorBriefProjectionCueIncludes(normalizedCombined, [
+        '高风险动作前复核',
+        'pre_high_risk_action',
+        'pre-high-risk',
+      ])) return 'pre-high-risk checkpoint';
+      if (supervisorBriefProjectionCueIncludes(normalizedCombined, [
+        '完成前复核',
+        'pre_done_summary',
+        'pre-done',
+      ])) return 'pre-done verification';
+      if (supervisorBriefProjectionCueIncludes(normalizedCombined, [
+        'heartbeat 周期到点',
+        'periodic heartbeat',
+      ])) return 'heartbeat cadence due';
+      if (supervisorBriefProjectionCueIncludes(normalizedCombined, [
+        '周期 pulse 到点',
+        'periodic pulse',
+      ])) return 'pulse cadence due';
+      if (supervisorBriefProjectionCueIncludes(normalizedCombined, [
+        '连续失败',
+        'failure streak',
+      ])) return 'repeated failures';
+      if (supervisorBriefProjectionCueIncludes(normalizedCombined, [
+        '显式 override',
+        'useroverride',
+        'user override',
+      ])) return 'explicit override';
+      if (runKind === 'brainstorm') return 'long no progress';
+      if (runKind === 'pulse') return 'periodic cadence due';
+      if (runKind === 'manual') return 'manual request';
+      return 'governance review signal detected';
+    })();
+
+    const levelLabel = reviewLevel === 'rescue'
+      ? 'rescue governance review'
+      : (reviewLevel === 'pulse' ? 'pulse governance review' : 'strategic governance review');
+    const runKindLabel = runKind === 'brainstorm'
+      ? 'no-progress brainstorm cadence'
+      : (runKind === 'pulse'
+          ? 'periodic pulse cadence'
+          : (runKind === 'manual' ? 'manual review request' : 'event-driven review trigger'));
+    const contextLine = `Supervisor heartbeat queued it via ${runKindLabel} because of ${causeLabel}.`;
+    const nextBestAction = reviewLevel === 'rescue'
+      ? 'Open the project and prioritize the queued rescue review before autonomous execution continues.'
+      : (reviewLevel === 'pulse'
+          ? 'Open the project and inspect why the queued pulse review was scheduled.'
+          : 'Open the project and inspect why the queued governance review was scheduled.');
+    const criticalBlocker = reviewLevel === 'rescue'
+      ? 'Queued rescue governance review requires prompt supervisor attention.'
+      : '';
+    const topline = `Project ${projectId} has queued ${levelLabel}. ${contextLine}`;
+
+    return {
+      status: 'attention_required',
+      critical_blocker: criticalBlocker,
+      topline,
+      next_best_action: nextBestAction,
+      tts_script: [
+        `Project ${projectId} has queued ${levelLabel}.`,
+        contextLine,
+        `Next best action: ${nextBestAction}.`,
+      ],
+      card_summary: `GOVERNANCE REVIEW: ${topline} Next: ${nextBestAction}.`,
+    };
+  }
+
+  function buildSupervisorRouteRepairAttentionBrief(project_id, heartbeat = null) {
+    const projectId = safeString(project_id);
+    if (!projectId || !heartbeat || typeof heartbeat !== 'object') return null;
+
+    const blockedReasons = Array.isArray(heartbeat.blocked_reason)
+      ? heartbeat.blocked_reason.map((item) => safeString(item)).filter(Boolean)
+      : [];
+    const nextActions = Array.isArray(heartbeat.next_actions)
+      ? heartbeat.next_actions.map((item) => safeString(item)).filter(Boolean)
+      : [];
+    const cues = [...blockedReasons, ...nextActions];
+    if (cues.length === 0) return null;
+
+    const normalizedCues = cues.map((item) => normalizeSupervisorBriefProjectionLookup(item));
+    const combined = normalizedCues.join(' ');
+    const rawCombined = cues.join(' ');
+    const routeReasonTokens = [
+      'remote_export_blocked',
+      'device_remote_export_denied',
+      'policy_remote_denied',
+      'budget_remote_denied',
+      'remote_disabled_by_user_pref',
+      'downgrade_to_local',
+      'blocked_waiting_upstream',
+      'provider_not_ready',
+      'grpc_route_unavailable',
+      'runtime_not_running',
+      'request_write_failed',
+      'response_timeout',
+      'remote_timeout',
+      'remote_unreachable',
+    ];
+    const hasRouteAttention = normalizedCues.some((item) => (
+      item.includes('route diagnose')
+      || item.includes('route repair')
+      || item.includes('model route')
+      || routeReasonTokens.some((token) => item.includes(token))
+    ))
+      || rawCombined.includes('/route diagnose')
+      || rawCombined.includes('模型路由')
+      || rawCombined.includes('路由诊断')
+      || rawCombined.includes('远端导出被拦截')
+      || rawCombined.includes('降到了本地')
+      || rawCombined.includes('切到本地')
+      || rawCombined.includes('上游远端链路');
+    if (!hasRouteAttention) return null;
+
+    const looksLikeExportGate = normalizedCues.some((item) => (
+      item.includes('remote_export_blocked')
+      || item.includes('device_remote_export_denied')
+      || item.includes('policy_remote_denied')
+      || item.includes('budget_remote_denied')
+      || item.includes('remote_disabled_by_user_pref')
+      || item.includes('hub export gate')
+      || item.includes('export gate')
+    ))
+      || rawCombined.includes('远端导出被拦截')
+      || rawCombined.includes('Hub export gate')
+      || rawCombined.includes('策略挡住远端');
+    const looksLikeDowngrade = normalizedCues.some((item) => (
+      item.includes('downgrade_to_local')
+      || item.includes('downgrade to local')
+      || item.includes('downgraded to local')
+    ))
+      || rawCombined.includes('降到了本地')
+      || rawCombined.includes('切到本地');
+    const looksLikeUpstream = normalizedCues.some((item) => (
+      item.includes('blocked_waiting_upstream')
+      || item.includes('provider_not_ready')
+      || item.includes('grpc_route_unavailable')
+      || item.includes('runtime_not_running')
+      || item.includes('request_write_failed')
+      || item.includes('response_timeout')
+      || item.includes('remote_timeout')
+      || item.includes('remote_unreachable')
+      || item.includes('upstream')
+    ))
+      || rawCombined.includes('上游远端链路')
+      || rawCombined.includes('先查 Hub')
+      || rawCombined.includes('先别急着改 XT 模型');
+
+    let criticalBlocker = 'Model route needs diagnosis before changing the XT model.';
+    let routeTruthHint = 'This looks more like Hub-side route handling than X-Terminal silently changing the model.';
+    let nextBestAction = 'Open route diagnose in XT before changing the XT model.';
+
+    if (looksLikeExportGate) {
+      criticalBlocker = 'Hub-side remote export gate or policy likely blocked the remote route.';
+      routeTruthHint = 'This looks more like a Hub export gate or remote policy block than X-Terminal silently changing the model.';
+      nextBestAction = 'Open route diagnose in XT and check Hub export gate / remote policy before changing the XT model.';
+    } else if (looksLikeDowngrade) {
+      criticalBlocker = 'Hub likely downgraded the remote route to local during execution.';
+      routeTruthHint = 'This looks more like Hub downgrading the remote route to local during execution, not X-Terminal silently changing the model.';
+      nextBestAction = 'Open route diagnose in XT and verify whether Hub downgraded the remote route to local during execution.';
+    } else if (looksLikeUpstream) {
+      criticalBlocker = 'Hub or upstream remote runtime is not ready for the requested model route.';
+      routeTruthHint = 'This looks more like a Hub or upstream remote runtime issue than X-Terminal silently changing the model.';
+      nextBestAction = 'Open route diagnose in XT and inspect Hub / upstream remote runtime health before changing the XT model.';
+    }
+
+    const topline = `Project ${projectId} needs model route diagnosis. ${routeTruthHint}`;
+    return {
+      critical_blocker: criticalBlocker,
+      topline,
+      next_best_action: nextBestAction,
+      tts_script: [
+        `Project ${projectId} needs model route diagnosis.`,
+        routeTruthHint,
+        `Next best action: ${nextBestAction}.`,
+      ].filter(Boolean),
+      card_summary: `MODEL ROUTE: ${topline} Next: ${nextBestAction}.`,
+    };
+  }
+
   function buildSupervisorBriefProjectionInternal(req = {}) {
     const project_id = safeString(req.project_id);
     if (!project_id) {
@@ -8518,6 +11946,9 @@ export function makeServices({ db, bus }) {
     const pendingItems = Array.isArray(pending.items) ? pending.items : [];
     const heartbeat = projectState.heartbeat || null;
     const dispatch = projectState.dispatch || null;
+    const candidateCarrier = buildSupervisorCandidateCarrierBriefSummary(project_id, {
+      limit: parseIntInRange(req.max_evidence_refs, 4, 1, 16),
+    });
     const blockers = [
       ...(Array.isArray(heartbeat?.blocked_reason) ? heartbeat.blocked_reason.map((item) => safeString(item)).filter(Boolean) : []),
     ];
@@ -8532,18 +11963,43 @@ export function makeServices({ db, bus }) {
       status = Number(heartbeat.queue_depth || 0) > 0 ? 'active' : 'idle';
     }
 
-    const next_best_action = pendingItems.length > 0
+    let next_best_action = pendingItems.length > 0
       ? `Review ${pendingItems.length} pending grant request${pendingItems.length === 1 ? '' : 's'}`
       : safeString(Array.isArray(heartbeat?.next_actions) ? heartbeat.next_actions[0] : '')
         || (dispatch ? `Continue ${safeString(dispatch.assigned_agent_profile) || 'current'} execution lane` : 'Collect fresh project heartbeat');
+    const routeRepairAttention = pendingItems.length === 0
+      ? buildSupervisorRouteRepairAttentionBrief(project_id, heartbeat)
+      : null;
+    const governedReviewAttention = pendingItems.length === 0 && !routeRepairAttention
+      ? buildSupervisorGovernedReviewAttentionBrief(project_id, heartbeat)
+      : null;
+    if (routeRepairAttention) {
+      status = 'attention_required';
+    } else if (governedReviewAttention) {
+      status = governedReviewAttention.status;
+    }
+    if (routeRepairAttention) {
+      next_best_action = routeRepairAttention.next_best_action;
+    } else if (governedReviewAttention) {
+      next_best_action = governedReviewAttention.next_best_action;
+    } else if (candidateCarrier && pendingItems.length === 0) {
+      next_best_action = candidateCarrier.next_action;
+    }
 
     const critical_blocker = safeString(blockers[0])
       || (!heartbeat ? 'project_heartbeat_missing' : '');
-    const topline = !heartbeat
+    let topline = !heartbeat
       ? `Project ${project_id} has no fresh heartbeat in hub memory.`
       : (critical_blocker
           ? `Project ${project_id} is blocked: ${critical_blocker}.`
           : `Project ${project_id} is ${status} with queue depth ${Math.max(0, Number(heartbeat.queue_depth || 0))}.`);
+    if (routeRepairAttention) {
+      topline = routeRepairAttention.topline;
+    } else if (governedReviewAttention) {
+      topline = governedReviewAttention.topline;
+    } else if (candidateCarrier) {
+      topline = `${topline} ${candidateCarrier.pending_line}`;
+    }
 
     const trigger = normalizeSupervisorTrigger(req.trigger, 'user_query');
     const projection_kind = normalizeSupervisorProjectionKind(req.projection_kind, 'progress_brief');
@@ -8551,6 +12007,7 @@ export function makeServices({ db, bus }) {
     const evidence_refs = [];
     if (heartbeat) evidence_refs.push(`heartbeat:${project_id}:${Math.max(0, Number(heartbeat.heartbeat_seq || 0))}`);
     if (dispatch) evidence_refs.push(`dispatch:${project_id}`);
+    if (candidateCarrier) evidence_refs.push(...candidateCarrier.evidence_refs);
     for (const item of pendingItems) {
       const grantId = safeString(item?.grant_request_id);
       if (grantId) evidence_refs.push(`grant_request:${grantId}`);
@@ -8565,20 +12022,33 @@ export function makeServices({ db, bus }) {
       mission_id: safeString(req.mission_id),
       trigger,
       status,
-      critical_blocker,
+      critical_blocker: routeRepairAttention
+        ? safeString(routeRepairAttention.critical_blocker)
+        : (governedReviewAttention
+            ? safeString(governedReviewAttention.critical_blocker)
+            : critical_blocker),
       topline,
       next_best_action,
       pending_grant_count: pendingItems.length,
       tts_script: req.include_tts_script === false
         ? []
-        : [
-            topline,
-            critical_blocker ? `Primary blocker: ${critical_blocker}.` : 'No critical blocker detected.',
-            `Next best action: ${next_best_action}.`,
-          ].filter(Boolean),
+        : (routeRepairAttention
+            ? routeRepairAttention.tts_script
+            : (governedReviewAttention
+                ? governedReviewAttention.tts_script
+                : [
+                    topline,
+                    critical_blocker ? `Primary blocker: ${critical_blocker}.` : 'No critical blocker detected.',
+                    candidateCarrier ? candidateCarrier.pending_line : '',
+                    `Next best action: ${next_best_action}.`,
+                  ].filter(Boolean))),
       card_summary: req.include_card_summary === false
         ? ''
-        : `${status.toUpperCase()}: ${topline} Next: ${next_best_action}.`,
+        : (routeRepairAttention
+            ? routeRepairAttention.card_summary
+            : (governedReviewAttention
+                ? governedReviewAttention.card_summary
+                : `${status.toUpperCase()}: ${topline} Next: ${next_best_action}.`)),
       evidence_refs: evidence_refs.slice(0, parseIntInRange(req.max_evidence_refs, 4, 1, 32)),
       generated_at_ms,
       expires_at_ms: generated_at_ms + (2 * 60 * 1000),
@@ -9006,10 +12476,21 @@ export function makeServices({ db, bus }) {
     }
 
     const req = call.request || {};
+    const normalizedIngress = normalizeSupervisorSurfaceIngress(req.ingress || {}, req.request_id);
+    const intent = normalizeSupervisorIntentType(normalizedIngress.normalized_intent_type, 'unknown');
+    const require_runner = req.require_runner === true;
+    const require_xt = req.require_xt === true || intent === 'directive';
     const route = resolveSupervisorRouteDecisionInternal({
       req,
       ingress: req.ingress || {},
       request_id: safeString(req.request_id),
+    });
+    const governanceRuntimeReadiness = buildSupervisorRouteGovernanceRuntimeReadiness({
+      access,
+      route,
+      intent,
+      require_xt,
+      require_runner,
     });
     const ok = safeString(route.deny_code) === '';
     const audit_logged = appendSupervisorAudit({
@@ -9028,13 +12509,18 @@ export function makeServices({ db, bus }) {
         resolved_device_id: route.resolved_device_id,
         preferred_device_id: route.preferred_device_id,
         runner_required: route.runner_required,
+        governance_runtime_readiness: governanceRuntimeReadiness,
       },
     });
     callback(null, {
       ok,
       deny_code: safeString(route.deny_code),
-      route: makeProtoSupervisorRouteDecision(route),
+      route: makeProtoSupervisorRouteDecision({
+        ...route,
+        governance_runtime_readiness: governanceRuntimeReadiness,
+      }),
       audit_logged,
+      governance_runtime_readiness: governanceRuntimeReadiness,
     });
   }
 
@@ -9334,11 +12820,140 @@ export function makeServices({ db, bus }) {
     }
 
     let appended = 0;
+    const isSupervisorCandidateCarrierThread = safeString(thread.thread_key) === SUPERVISOR_MEMORY_CANDIDATE_THREAD_KEY;
+    if (isSupervisorCandidateCarrierThread) {
+      const normalizedCarrier = normalizeSupervisorMemoryCandidateCarrierRequest({
+        thread,
+        request_id,
+        created_at_ms: baseTs,
+        messages: msgs,
+      });
+      if (!normalizedCarrier.ok) {
+        const denyCode = safeString(normalizedCarrier.deny_code || 'supervisor_candidate_ingest_failed');
+        db.appendAudit({
+          event_type: 'supervisor.memory_candidate_carrier.denied',
+          created_at_ms: nowMs(),
+          severity: 'warn',
+          device_id,
+          user_id: user_id || null,
+          app_id,
+          project_id: project_id || null,
+          session_id: client.session_id ? String(client.session_id) : null,
+          request_id: request_id || null,
+          capability: 'memory',
+          model_id: null,
+          ok: false,
+          error_code: denyCode,
+          error_message: denyCode,
+          ext_json: JSON.stringify({
+            thread_id,
+            thread_key: safeString(thread.thread_key),
+          }),
+        });
+        callback(new Error(denyCode));
+        return;
+      }
+
+      let carrierAppend = null;
+      try {
+        carrierAppend = db.appendSupervisorMemoryCandidateCarrierTurns({
+          thread,
+          request_id,
+          turns,
+          envelope: normalizedCarrier.envelope,
+          candidates: normalizedCarrier.candidates,
+        });
+      } catch (e) {
+        const errorCode = safeString(e?.message || e || 'supervisor_candidate_ingest_failed');
+        db.appendAudit({
+          event_type: 'supervisor.memory_candidate_carrier.denied',
+          created_at_ms: nowMs(),
+          severity: 'warn',
+          device_id,
+          user_id: user_id || null,
+          app_id,
+          project_id: project_id || null,
+          session_id: client.session_id ? String(client.session_id) : null,
+          request_id: request_id || null,
+          capability: 'memory',
+          model_id: null,
+          ok: false,
+          error_code: errorCode,
+          error_message: errorCode,
+          ext_json: JSON.stringify({
+            thread_id,
+            thread_key: safeString(thread.thread_key),
+            scope_count: normalizedCarrier.scopes.length,
+          }),
+        });
+        callback(new Error(errorCode));
+        return;
+      }
+
+      if (carrierAppend?.duplicate) {
+        db.appendAudit({
+          event_type: 'supervisor.memory_candidate_carrier.duplicate',
+          created_at_ms: nowMs(),
+          severity: 'info',
+          device_id,
+          user_id: user_id || null,
+          app_id,
+          project_id: project_id || null,
+          session_id: client.session_id ? String(client.session_id) : null,
+          request_id: request_id || null,
+          capability: 'memory',
+          model_id: null,
+          ok: true,
+          ext_json: JSON.stringify({
+            thread_id,
+            thread_key: safeString(thread.thread_key),
+            candidate_count: normalizedCarrier.candidates.length,
+            scopes: normalizedCarrier.scopes,
+          }),
+        });
+        callback(null, { thread_id, appended: 0 });
+        return;
+      }
+
+      appended = Number(carrierAppend?.appended_turns || 0);
+      db.appendAudit({
+        event_type: 'supervisor.memory_candidate_carrier.ingested',
+        created_at_ms: nowMs(),
+        severity: 'info',
+        device_id,
+        user_id: user_id || null,
+        app_id,
+        project_id: project_id || null,
+        session_id: client.session_id ? String(client.session_id) : null,
+        request_id: request_id || null,
+        capability: 'memory',
+        model_id: null,
+        ok: true,
+        ext_json: JSON.stringify({
+          thread_id,
+          thread_key: safeString(thread.thread_key),
+          candidate_count: normalizedCarrier.candidates.length,
+          inserted_candidates: Number(carrierAppend?.inserted_candidates || 0),
+          scopes: normalizedCarrier.scopes,
+          project_ids: normalizedCarrier.project_ids,
+          schema_version: normalizedCarrier.envelope.schema_version,
+          carrier_kind: normalizedCarrier.envelope.carrier_kind,
+          mirror_target: normalizedCarrier.envelope.mirror_target,
+          local_store_role: normalizedCarrier.envelope.local_store_role,
+        }),
+      });
+      try {
+        writeSupervisorCandidateReviewStatus(resolveRuntimeBaseDir());
+      } catch {
+        // ignore
+      }
+    } else {
     try {
       appended = db.appendTurns({ thread_id, request_id: request_id || null, turns });
     } catch (e) {
       callback(new Error(String(e?.message || e || 'append_failed')));
       return;
+    }
     }
 
     db.appendAudit({
@@ -9433,6 +13048,7 @@ export function makeServices({ db, bus }) {
     const key = String(req.key || '').trim();
     const value = String(req.value ?? '').trim();
     const pinned = !!req.pinned;
+    const request_id = safeString(req.request_id);
 
     if (!device_id || !app_id || !key) {
       callback(new Error('invalid request: missing device_id/app_id/key'));
@@ -9465,6 +13081,40 @@ export function makeServices({ db, bus }) {
       return;
     }
 
+    const itemId = String(row?.item_id || '').trim();
+    const writebackRef = itemId ? `canonical_memory_item:${itemId}` : '';
+    const auditRef = safeString(req.audit_ref) || `audit-memory-canonical-upsert-${request_id || itemId || uuid()}`;
+
+    try {
+      db.appendAudit({
+        event_type: 'memory.canonical.upserted',
+        created_at_ms: nowMs(),
+        severity: 'info',
+        device_id,
+        user_id: user_id || null,
+        app_id,
+        project_id: project_id || null,
+        session_id: client.session_id ? String(client.session_id) : null,
+        request_id: request_id || null,
+        capability: 'memory',
+        model_id: null,
+        ok: true,
+        ext_json: JSON.stringify({
+          scope,
+          thread_id,
+          key,
+          pinned,
+          item_id: itemId,
+          writeback_ref: writebackRef,
+          audit_ref: auditRef,
+          updated_at_ms: Number(row?.updated_at_ms || 0),
+          value_chars: value.length,
+        }),
+      });
+    } catch {
+      // Keep memory upsert non-blocking if audit sink is temporarily unavailable.
+    }
+
     callback(null, {
       item: {
         item_id: String(row?.item_id || ''),
@@ -9475,6 +13125,9 @@ export function makeServices({ db, bus }) {
         pinned: !!Number(row?.pinned || 0),
         updated_at_ms: Number(row?.updated_at_ms || 0),
       },
+      audit_ref: auditRef,
+      evidence_ref: writebackRef,
+      writeback_ref: writebackRef,
     });
   }
 
@@ -9526,6 +13179,135 @@ export function makeServices({ db, bus }) {
 	    callback(null, { items });
 	  }
 
+  function RetrieveMemory(call, callback) {
+    const auth = requireClientAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    if (!clientAllows(auth, 'memory')) {
+      callback(new Error(capabilityDenyCode(auth)));
+      return;
+    }
+
+    const req = call.request || {};
+    const client = effectiveClientIdentity(req.client || {}, auth);
+    const retrievalProjectId = safeString(req.project_id || client.project_id);
+    const requestId = safeString(req.request_id);
+    const auditRef = safeString(req.audit_ref);
+    const trustedAutomationScope = trustedAutomationScopeWithProject(
+      trustedAutomationScopeFromRequest(req, client),
+      retrievalProjectId
+    );
+    if (trustedAutomationScope.project_id) client.project_id = trustedAutomationScope.project_id;
+
+    const device_id = safeString(client.device_id);
+    const app_id = safeString(client.app_id);
+    const user_id = client.user_id ? String(client.user_id) : '';
+
+    if (!device_id || !app_id) {
+      callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      appendDeniedAudit({
+        event_type: 'memory.retrieval.denied',
+        error_message: 'memory_retrieval_denied',
+        op: 'retrieve_memory',
+        client,
+        request_id: requestId,
+        project_id: retrievalProjectId || null,
+        deny_code: capabilityDenyCode(auth),
+        ext: {
+          audit_ref: auditRef,
+          scope: safeString(req.scope || 'current_project'),
+          requester_role: safeString(req.requester_role),
+          mode: safeString(req.mode),
+          retrieval_kind: safeString(req.retrieval_kind),
+          explicit_refs: safeStringList(req.explicit_refs),
+          requested_kinds: safeStringList(req.requested_kinds),
+        },
+      });
+      callback(new Error(capabilityDenyCode(auth)));
+      return;
+    }
+
+    let built;
+    try {
+      built = buildHubMemoryRetrievalResponse({
+        db,
+        client,
+        req,
+        trustedAutomationScope,
+      });
+    } catch (error) {
+      callback(new Error(String(error?.message || error || 'memory_retrieval_failed')));
+      return;
+    }
+
+    const response = built?.response || {
+      schema_version: 'xt.memory_retrieval_result.v1',
+      request_id: safeString(req.request_id),
+      status: 'denied',
+      resolved_scope: 'current_project',
+      source: 'hub_memory_retrieval_grpc_v1',
+      scope: 'current_project',
+      audit_ref: safeString(req.audit_ref),
+      reason_code: 'memory_retrieval_failed',
+      deny_code: 'memory_retrieval_failed',
+      results: [],
+      truncated: false,
+      budget_used_chars: 0,
+      truncated_items: 0,
+      redacted_items: 0,
+    };
+
+    try {
+      db.appendAudit({
+        event_type: response.status === 'denied'
+          ? 'memory.retrieval.denied'
+          : 'memory.retrieval.performed',
+        created_at_ms: nowMs(),
+        severity: response.status === 'denied' ? 'warn' : 'info',
+        device_id,
+        user_id: user_id || null,
+        app_id,
+        project_id: built?.projectId ? String(built.projectId) : null,
+        session_id: client.session_id ? String(client.session_id) : null,
+        request_id: safeString(response.request_id || built?.requestId) || null,
+        capability: 'unknown',
+        model_id: null,
+        ok: response.status !== 'denied',
+        error_code: response.status === 'denied'
+          ? safeString(response.deny_code || response.reason_code || 'memory_retrieval_denied')
+          : null,
+        error_message: response.status === 'denied' ? 'memory_retrieval_denied' : null,
+        ext_json: JSON.stringify({
+          op: 'retrieve_memory',
+          scope: safeString(response.resolved_scope || response.scope || 'current_project'),
+          requester_role: safeString(req.requester_role),
+          mode: safeString(req.mode),
+          retrieval_kind: safeString(built?.retrievalKind || req.retrieval_kind),
+          requested_kinds: Array.isArray(built?.requestedKinds) ? built.requestedKinds : [],
+          allowed_layers: Array.isArray(built?.allowedLayers) ? built.allowedLayers : [],
+          explicit_refs: Array.isArray(built?.explicitRefs) ? built.explicitRefs : [],
+          query_chars: safeString(built?.query).length,
+          result_count: Array.isArray(response.results) ? response.results.length : 0,
+          truncated: !!response.truncated,
+          truncated_items: Math.max(0, Number(response.truncated_items || 0)),
+          redacted_items: Math.max(0, Number(response.redacted_items || 0)),
+          audit_ref: safeString(response.audit_ref || built?.auditRef),
+          reason_code: safeString(response.reason_code),
+          deny_code: safeString(response.deny_code),
+        }),
+      });
+    } catch {
+      // keep retrieval fail-closed semantics even if audit sink is temporarily unavailable
+    }
+
+    callback(null, response);
+  }
+
   function appendProjectRejectAudit({
     event_type,
     error_message,
@@ -9572,6 +13354,12 @@ export function makeServices({ db, bus }) {
     ext,
   } = {}) {
     const actor = client && typeof client === 'object' ? client : {};
+    const governanceRuntimeReadiness = buildGovernanceRuntimeReadinessFromDenyCode({
+      rawDenyCode: deny_code,
+      source: 'hub',
+      context: safeString(op || event_type || 'deny_audit'),
+      project_id: project_id,
+    });
     try {
       db.appendAudit({
         event_type: String(event_type || 'request.denied'),
@@ -9591,6 +13379,7 @@ export function makeServices({ db, bus }) {
         ext_json: JSON.stringify({
           op: String(op || ''),
           deny_code: String(deny_code || 'permission_denied'),
+          ...(governanceRuntimeReadiness ? { governance_runtime_readiness: governanceRuntimeReadiness } : {}),
           ...(ext && typeof ext === 'object' ? ext : {}),
         }),
       });
@@ -11543,6 +15332,12 @@ export function makeServices({ db, bus }) {
       workspace_root: trustedAutomationScope.workspace_root,
     })) {
       const denyCode = capabilityDenyCode(auth);
+      const governanceRuntimeReadiness = buildGovernanceRuntimeReadinessFromDenyCode({
+        rawDenyCode: denyCode,
+        source: 'hub',
+        context: 'agent_tool_request',
+        project_id: auditProjectId || '',
+      });
       try {
         db.appendAudit({
           event_type: 'grant.denied',
@@ -11563,6 +15358,7 @@ export function makeServices({ db, bus }) {
             op: 'agent_tool_request',
             deny_code: denyCode,
             project_binding_checked: true,
+            ...(governanceRuntimeReadiness ? { governance_runtime_readiness: governanceRuntimeReadiness } : {}),
           }),
         });
       } catch {
@@ -13474,6 +17270,117 @@ export function makeServices({ db, bus }) {
     });
   }
 
+  function renderSupervisorCandidateReviewMarkdown({
+    base_markdown,
+    review_item,
+    carrier_rows,
+  } = {}) {
+    const item = review_item && typeof review_item === 'object' ? review_item : {};
+    const rows = Array.isArray(carrier_rows) ? carrier_rows.slice() : [];
+    rows.sort((left, right) => {
+      const lts = Number(left?.created_at_ms || 0);
+      const rts = Number(right?.created_at_ms || 0);
+      if (lts !== rts) return lts - rts;
+      const lscope = safeString(left?.scope);
+      const rscope = safeString(right?.scope);
+      if (lscope !== rscope) return lscope.localeCompare(rscope);
+      return safeString(left?.record_type).localeCompare(safeString(right?.record_type));
+    });
+
+    const lines = [String(base_markdown ?? '').replace(/\s+$/, '')];
+    lines.push('');
+    lines.push('## Supervisor Candidate Review Handoff');
+    lines.push('');
+    lines.push('> Staged from supervisor durable-candidate carrier. Pending review only; not a canonical write.');
+    lines.push('');
+    lines.push(`- candidate_request_id: ${safeString(item.request_id)}`);
+    lines.push(`- evidence_ref: ${safeString(item.evidence_ref)}`);
+    lines.push(`- review_state: ${safeString(item.review_state) || 'pending_review'}`);
+    lines.push(`- durable_promotion_state: ${safeString(item.durable_promotion_state) || 'not_promoted'}`);
+    lines.push(`- promotion_boundary: ${safeString(item.promotion_boundary) || 'candidate_carrier_only'}`);
+    lines.push(`- candidate_count: ${Math.max(0, Number(item.candidate_count || rows.length))}`);
+    lines.push(`- scopes: ${uniqueOrderedValues(rows.map((row) => safeString(row?.scope))).join(', ') || '~'}`);
+    lines.push(`- record_types: ${uniqueOrderedValues(rows.map((row) => safeString(row?.record_type))).join(', ') || '~'}`);
+    lines.push(`- mirror_target: ${safeString(item.mirror_target) || '~'}`);
+    lines.push(`- local_store_role: ${safeString(item.local_store_role) || '~'}`);
+    lines.push(`- latest_emitted_at_ms: ${Math.max(0, Number(item.latest_emitted_at_ms || 0))}`);
+    lines.push('');
+    lines.push('### Candidate Rows');
+    if (rows.length === 0) {
+      lines.push('_No candidate rows were available for this request._');
+      return lines.join('\n').trim();
+    }
+
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index] || {};
+      lines.push('');
+      lines.push(`#### ${index + 1}. ${safeString(row.record_type) || 'unknown_record'} [${safeString(row.scope) || 'unknown_scope'}]`);
+      lines.push(`- confidence: ${Number(row.confidence || 0)}`);
+      lines.push(`- why_promoted: ${safeString(row.why_promoted) || '~'}`);
+      lines.push(`- source_ref: ${safeString(row.source_ref) || '~'}`);
+      lines.push(`- audit_ref: ${safeString(row.audit_ref) || '~'}`);
+      lines.push(`- idempotency_key: ${safeString(row.idempotency_key) || '~'}`);
+      lines.push(`- write_permission_scope: ${safeString(row.write_permission_scope) || '~'}`);
+      lines.push(`- payload_summary: ${safeString(row.payload_summary) || '~'}`);
+    }
+    return lines.join('\n').trim();
+  }
+
+  function loadSupervisorCandidateReviewStageInput({
+    device_id,
+    user_id,
+    app_id,
+    project_id,
+    candidate_request_id,
+  } = {}) {
+    const projectId = safeString(project_id);
+    const candidateRequestId = safeString(candidate_request_id);
+    if (!projectId || !candidateRequestId) {
+      return {
+        ok: false,
+        deny_code: !projectId ? 'missing_project_id' : 'missing_candidate_request_id',
+      };
+    }
+
+    const item = db.listSupervisorMemoryCandidateCarrierReviewQueue({
+      project_id: projectId,
+      request_id: candidateRequestId,
+      limit: 1,
+    })[0] || null;
+    if (!item) {
+      return { ok: false, deny_code: 'supervisor_candidate_review_not_found' };
+    }
+
+    const expectedDeviceId = safeString(item.device_id);
+    const expectedUserId = safeString(item.user_id);
+    const expectedAppId = safeString(item.app_id);
+    const expectedProjectId = safeString(item.project_id);
+    if (
+      expectedDeviceId !== safeString(device_id)
+      || expectedAppId !== safeString(app_id)
+      || expectedProjectId !== projectId
+      || (expectedUserId && expectedUserId !== safeString(user_id))
+    ) {
+      return { ok: false, deny_code: 'supervisor_candidate_review_scope_mismatch' };
+    }
+
+    const rows = db.listSupervisorMemoryCandidateCarrier({
+      device_id: expectedDeviceId,
+      app_id: expectedAppId,
+      request_id: candidateRequestId,
+      limit: 512,
+    });
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return { ok: false, deny_code: 'supervisor_candidate_review_rows_missing' };
+    }
+
+    return {
+      ok: true,
+      item,
+      rows,
+    };
+  }
+
   function markdownEditSessionOwnedByClient(session, clientScope = {}) {
     const s = session && typeof session === 'object' ? session : {};
     const c = clientScope && typeof clientScope === 'object' ? clientScope : {};
@@ -13864,6 +17771,370 @@ export function makeServices({ db, bus }) {
       max_patch_chars: editLimits.max_patch_chars,
       max_patch_lines: editLimits.max_patch_lines,
       max_edit_ttl_ms: editLimits.max_edit_ttl_ms,
+    });
+  }
+
+  function StageSupervisorCandidateReview(call, callback) {
+    const opStartedAtMs = nowMs();
+    const auth = requireClientAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    if (!clientAllows(auth, 'memory')) {
+      callback(new Error(capabilityDenyCode(auth)));
+      return;
+    }
+
+    const req = call.request || {};
+    const client = effectiveClientIdentity(req.client || {}, auth);
+    const device_id = String(client.device_id || '').trim();
+    const app_id = String(client.app_id || '').trim();
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
+    const user_id = client.user_id ? String(client.user_id) : '';
+    const candidate_request_id = String(req.candidate_request_id || '').trim();
+    const now = nowMs();
+    const editLimits = resolveMemoryMarkdownEditLimits();
+    const limit = 200;
+    const maxMarkdownChars = Math.max(
+      1024,
+      Math.min(512 * 1024, Number(process.env.HUB_MEMORY_MARKDOWN_EXPORT_MAX_CHARS || (48 * 1024)))
+    );
+
+    if (!device_id || !app_id) {
+      callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendDeniedAudit({
+        event_type: 'supervisor.memory_candidate_review.staged',
+        error_message: 'supervisor_candidate_review_stage_denied',
+        op: 'stage_supervisor_candidate_review',
+        client,
+        request_id: '',
+        project_id: project_id || null,
+        deny_code: denyCode,
+        ext: {
+          candidate_request_id,
+        },
+      });
+      callback(new Error(denyCode));
+      return;
+    }
+    if (!project_id) {
+      callback(new Error('missing_project_id'));
+      return;
+    }
+    if (!candidate_request_id) {
+      callback(new Error('missing_candidate_request_id'));
+      return;
+    }
+
+    const bundle = loadSupervisorCandidateReviewStageInput({
+      device_id,
+      user_id,
+      app_id,
+      project_id,
+      candidate_request_id,
+    });
+    if (!bundle.ok) {
+      callback(new Error(String(bundle.deny_code || 'supervisor_candidate_review_stage_failed')));
+      return;
+    }
+
+    const evidenceRef = safeString(bundle.item?.evidence_ref);
+    let existingChange = evidenceRef
+      ? db.findLatestMemoryMarkdownPendingChangeByProvenanceRef({
+          provenance_ref: evidenceRef,
+          created_by_device_id: device_id,
+          created_by_user_id: user_id || null,
+          created_by_app_id: app_id,
+          created_by_project_id: project_id,
+        })
+      : null;
+    if (String(bundle.item?.pending_change_id || '').trim() && !existingChange) {
+      existingChange = db.getMemoryMarkdownPendingChange({
+        change_id: String(bundle.item.pending_change_id || ''),
+      });
+    }
+
+    if (existingChange) {
+      const existingSession = db.getMemoryMarkdownEditSession({
+        edit_session_id: String(existingChange.edit_session_id || ''),
+      });
+      const existingItem = db.listSupervisorMemoryCandidateCarrierReviewQueue({
+        project_id,
+        request_id: candidate_request_id,
+        limit: 1,
+      })[0] || bundle.item;
+      db.appendAudit({
+        event_type: 'supervisor.memory_candidate_review.staged',
+        created_at_ms: nowMs(),
+        severity: 'info',
+        device_id,
+        user_id: user_id || null,
+        app_id,
+        project_id: project_id || null,
+        session_id: client.session_id ? String(client.session_id) : null,
+        request_id: null,
+        capability: 'memory',
+        model_id: null,
+        ok: true,
+        ext_json: JSON.stringify({
+          op: 'stage_supervisor_candidate_review',
+          candidate_request_id,
+          evidence_ref: evidenceRef,
+          pending_change_id: String(existingChange.change_id || ''),
+          edit_session_id: String(existingChange.edit_session_id || ''),
+          status: String(existingChange.status || ''),
+          idempotent: true,
+        }),
+      });
+      try {
+        writeSupervisorCandidateReviewStatus(resolveRuntimeBaseDir());
+      } catch {
+        // ignore
+      }
+      callback(null, {
+        staged: true,
+        idempotent: true,
+        review_state: safeString(existingItem?.review_state),
+        durable_promotion_state: safeString(existingItem?.durable_promotion_state),
+        promotion_boundary: safeString(existingItem?.promotion_boundary),
+        candidate_request_id,
+        evidence_ref: evidenceRef,
+        edit_session_id: String(existingChange.edit_session_id || ''),
+        pending_change_id: String(existingChange.change_id || ''),
+        doc_id: String(existingChange.doc_id || ''),
+        base_version: String(existingChange.base_version || existingSession?.base_version || ''),
+        working_version: String(existingChange.to_version || existingSession?.working_version || ''),
+        session_revision: Number(existingChange.session_revision || existingSession?.session_revision || 0),
+        status: String(existingChange.status || ''),
+        markdown: String(
+          existingChange.reviewed_markdown
+          || existingChange.patched_markdown
+          || existingSession?.working_markdown
+          || ''
+        ),
+        created_at_ms: Number(existingChange.created_at_ms || existingSession?.created_at_ms || now),
+        updated_at_ms: Number(existingChange.updated_at_ms || existingSession?.updated_at_ms || now),
+        expires_at_ms: Number(existingSession?.expires_at_ms || 0),
+      });
+      return;
+    }
+
+    let projection;
+    try {
+      projection = buildLongtermMarkdownProjectionForClient({
+        device_id,
+        user_id,
+        app_id,
+        project_id,
+        scope: 'project',
+        thread_id: '',
+        remote_mode: false,
+        allow_untrusted: false,
+        allowed_sensitivity: [],
+        limit,
+        max_markdown_chars: maxMarkdownChars,
+      });
+    } catch (e) {
+      callback(new Error(String(e?.message || e || 'markdown_export_failed')));
+      return;
+    }
+
+    const provenanceRefs = uniqueOrderedValues([
+      evidenceRef,
+      ...(Array.isArray(projection?.provenance_refs) ? projection.provenance_refs : []),
+    ]);
+    const routePolicy = {
+      ...(projection?.route_policy && typeof projection.route_policy === 'object' ? projection.route_policy : {}),
+      supervisor_candidate_review: {
+        candidate_request_id,
+        evidence_ref: evidenceRef,
+        review_state: safeString(bundle.item?.review_state),
+        promotion_boundary: safeString(bundle.item?.promotion_boundary),
+      },
+    };
+
+    let session;
+    try {
+      session = db.createMemoryMarkdownEditSession({
+        doc_id: String(projection?.doc_id || ''),
+        base_version: String(projection?.version || ''),
+        working_version: String(projection?.version || ''),
+        scope_filter: 'project',
+        scope_ref: {
+          device_id,
+          user_id,
+          app_id,
+          project_id,
+          thread_id: '',
+        },
+        route_policy: routePolicy,
+        route_stats: projection?.route_stats || {},
+        base_markdown: String(projection?.markdown || ''),
+        working_markdown: String(projection?.markdown || ''),
+        provenance_refs: provenanceRefs,
+        status: 'active',
+        created_by_device_id: device_id,
+        created_by_user_id: user_id || null,
+        created_by_app_id: app_id,
+        created_by_project_id: project_id || null,
+        created_by_session_id: client.session_id ? String(client.session_id) : null,
+        created_at_ms: now,
+        updated_at_ms: now,
+        expires_at_ms: now + editLimits.default_ttl_ms,
+      });
+    } catch (e) {
+      callback(new Error(String(e?.message || e || 'begin_edit_failed')));
+      return;
+    }
+
+    const stagedMarkdown = renderSupervisorCandidateReviewMarkdown({
+      base_markdown: String(projection?.markdown || ''),
+      review_item: bundle.item,
+      carrier_rows: bundle.rows,
+    });
+
+    let patchCandidate;
+    try {
+      patchCandidate = buildLongtermMarkdownPatchCandidate({
+        session,
+        patch_mode: 'replace',
+        patch_markdown: stagedMarkdown,
+        patch_note: `stage supervisor candidate review ${candidate_request_id}`,
+        max_patch_chars: editLimits.max_patch_chars,
+        max_patch_lines: editLimits.max_patch_lines,
+      });
+    } catch (e) {
+      const msg = String(e?.message || e || 'patch_apply_failed');
+      if (
+        msg === 'unsupported_patch_mode'
+        || msg === 'empty_patch'
+        || msg.startsWith('patch_limit_exceeded')
+      ) {
+        callback(new Error(msg));
+        return;
+      }
+      callback(new Error('patch_apply_failed'));
+      return;
+    }
+
+    let applied;
+    try {
+      applied = db.applyMemoryMarkdownPatchDraft({
+        edit_session_id: String(session?.edit_session_id || ''),
+        expected_revision: Number(session?.session_revision || 0),
+        working_version: String(patchCandidate.to_version || ''),
+        working_markdown: String(patchCandidate.patched_markdown || ''),
+        last_patch_at_ms: now,
+        updated_at_ms: now,
+        change: {
+          doc_id: String(session?.doc_id || ''),
+          base_version: String(session?.base_version || ''),
+          from_version: String(patchCandidate.from_version || ''),
+          to_version: String(patchCandidate.to_version || ''),
+          status: 'draft',
+          patch_mode: String(patchCandidate.patch_mode || 'replace'),
+          patch_note: String(patchCandidate.patch_note || ''),
+          patch_size_chars: Number(patchCandidate.patch_size_chars || 0),
+          patch_line_count: Number(patchCandidate.patch_line_count || 0),
+          patch_sha256: String(patchCandidate.patch_sha256 || ''),
+          patched_markdown: String(patchCandidate.patched_markdown || ''),
+          provenance_refs: provenanceRefs,
+          route_policy: routePolicy,
+          created_by_device_id: device_id,
+          created_by_user_id: user_id || null,
+          created_by_app_id: app_id,
+          created_by_project_id: project_id || null,
+          created_by_session_id: client.session_id ? String(client.session_id) : null,
+          created_at_ms: now,
+          updated_at_ms: now,
+        },
+      });
+    } catch (e) {
+      const msg = String(e?.message || e || 'patch_apply_failed');
+      if (
+        msg === 'version_conflict'
+        || msg === 'edit_session_expired'
+        || msg === 'edit_session_not_active'
+        || msg === 'edit_session_not_found'
+      ) {
+        callback(new Error(msg));
+        return;
+      }
+      callback(new Error('patch_apply_failed'));
+      return;
+    }
+
+    const nextSession = applied?.session || session || null;
+    const pendingChange = applied?.change || null;
+    if (!nextSession || !pendingChange) {
+      callback(new Error('patch_apply_failed'));
+      return;
+    }
+
+    const stageAuditAtMs = nowMs();
+    db.appendAudit({
+      event_type: 'supervisor.memory_candidate_review.staged',
+      created_at_ms: stageAuditAtMs,
+      severity: 'info',
+      device_id,
+      user_id: user_id || null,
+      app_id,
+      project_id: project_id || null,
+      session_id: client.session_id ? String(client.session_id) : null,
+      request_id: null,
+      capability: 'memory',
+      model_id: null,
+      ok: true,
+      ext_json: JSON.stringify({
+        op: 'stage_supervisor_candidate_review',
+        candidate_request_id,
+        pending_change_id: String(pendingChange.change_id || ''),
+        edit_session_id: String(nextSession.edit_session_id || ''),
+        doc_id: String(nextSession.doc_id || ''),
+        evidence_ref: evidenceRef,
+        review_state: safeString(bundle.item?.review_state),
+        promotion_boundary: safeString(bundle.item?.promotion_boundary),
+        latency_ms: Math.max(0, stageAuditAtMs - opStartedAtMs),
+      }),
+    });
+
+    try {
+      writeSupervisorCandidateReviewStatus(resolveRuntimeBaseDir());
+    } catch {
+      // ignore
+    }
+
+    const stagedItem = db.listSupervisorMemoryCandidateCarrierReviewQueue({
+      project_id,
+      request_id: candidate_request_id,
+      limit: 1,
+    })[0] || bundle.item;
+
+    callback(null, {
+      staged: true,
+      idempotent: false,
+      review_state: safeString(stagedItem?.review_state),
+      durable_promotion_state: safeString(stagedItem?.durable_promotion_state),
+      promotion_boundary: safeString(stagedItem?.promotion_boundary),
+      candidate_request_id,
+      evidence_ref: evidenceRef,
+      edit_session_id: String(nextSession.edit_session_id || ''),
+      pending_change_id: String(pendingChange.change_id || ''),
+      doc_id: String(nextSession.doc_id || ''),
+      base_version: String(nextSession.base_version || ''),
+      working_version: String(nextSession.working_version || ''),
+      session_revision: Number(nextSession.session_revision || 0),
+      status: String(pendingChange.status || 'draft'),
+      markdown: String(nextSession.working_markdown || ''),
+      created_at_ms: Number(nextSession.created_at_ms || now),
+      updated_at_ms: Number(nextSession.updated_at_ms || now),
+      expires_at_ms: Number(nextSession.expires_at_ms || 0),
     });
   }
 
@@ -14329,6 +18600,11 @@ export function makeServices({ db, bus }) {
       ok: true,
       ext_json: JSON.stringify(reviewExt),
     });
+    try {
+      writeSupervisorCandidateReviewStatus(resolveRuntimeBaseDir());
+    } catch {
+      // ignore
+    }
 
     callback(null, {
       pending_change_id: String(reviewed?.change_id || ''),
@@ -14525,6 +18801,11 @@ export function makeServices({ db, bus }) {
       ok: true,
       ext_json: JSON.stringify(writebackExt),
     });
+    try {
+      writeSupervisorCandidateReviewStatus(resolveRuntimeBaseDir());
+    } catch {
+      // ignore
+    }
 
     callback(null, {
       pending_change_id: String(nextChange?.change_id || pending_change_id),
@@ -14693,6 +18974,11 @@ export function makeServices({ db, bus }) {
       ok: true,
       ext_json: JSON.stringify(rollbackExt),
     });
+    try {
+      writeSupervisorCandidateReviewStatus(resolveRuntimeBaseDir());
+    } catch {
+      // ignore
+    }
 
     callback(null, {
       pending_change_id: String(nextChange?.change_id || pending_change_id),
@@ -14721,6 +19007,14 @@ export function makeServices({ db, bus }) {
     ext,
     severity,
   }) {
+    const governanceRuntimeReadiness = ok
+      ? null
+      : buildGovernanceRuntimeReadinessFromDenyCode({
+          rawDenyCode: error_code,
+          source: 'hub',
+          context: 'skills_audit',
+          project_id,
+        });
     db.appendAudit({
       event_type: String(event_type || 'skills.operation'),
       created_at_ms: nowMs(),
@@ -14735,7 +19029,10 @@ export function makeServices({ db, bus }) {
       model_id: null,
       ok: !!ok,
       error_code: error_code ? String(error_code) : null,
-      ext_json: JSON.stringify(ext && typeof ext === 'object' ? ext : {}),
+      ext_json: JSON.stringify({
+        ...(ext && typeof ext === 'object' ? ext : {}),
+        ...(governanceRuntimeReadiness ? { governance_runtime_readiness: governanceRuntimeReadiness } : {}),
+      }),
     });
   }
 
@@ -14804,6 +19101,10 @@ export function makeServices({ db, bus }) {
     const query = String(req.query || '').trim();
     const source_filter = String(req.source_filter || '').trim();
     const limit = Math.max(1, Math.min(100, Number(req.limit || 20)));
+    const officialChannelStatus = makeProtoOfficialSkillChannelStatus({
+      ...readOfficialSkillChannelState(runtimeBaseDir, { channelId: 'official-stable' }),
+      ...readOfficialSkillChannelMaintenanceStatus(runtimeBaseDir, { channelId: 'official-stable' }),
+    });
     const results = searchSkills(runtimeBaseDir, { query, sourceFilter: source_filter, limit })
       .map((r) => makeProtoSkillMeta(r))
       .filter(Boolean);
@@ -14822,13 +19123,14 @@ export function makeServices({ db, bus }) {
       model_id: null,
       ok: true,
       ext_json: JSON.stringify({
-        query,
-        source_filter,
-        result_count: results.length,
-      }),
+          query,
+          source_filter,
+          result_count: results.length,
+          official_channel_status: officialChannelStatus,
+        }),
     });
 
-    callback(null, { updated_at_ms: nowMs(), results });
+    callback(null, { updated_at_ms: nowMs(), results, official_channel_status: officialChannelStatus });
   }
 
   function UploadSkillPackage(call, callback) {
@@ -15059,6 +19361,13 @@ export function makeServices({ db, bus }) {
         skill_id: String(out.skill_id || ''),
         previous_package_sha256: String(out.previous_package_sha256 || ''),
         package_sha256: String(out.package_sha256 || ''),
+        review_kind: String(out.review_kind || ''),
+        review_status: String(out.review_status || ''),
+        review_overall_state: String(out.review_overall_state || ''),
+        review_package_state: String(out.review_package_state || ''),
+        review_audit_ref: String(out.review_audit_ref || ''),
+        review_doctor_bundle: String(out.review_doctor_bundle || ''),
+        review_generated_at_ms: Number(out.review_generated_at_ms || 0),
       }),
     });
 
@@ -15840,6 +20149,7 @@ export function makeServices({ db, bus }) {
     HubRuntime: {
       GetSchedulerStatus,
       GetPendingGrantRequests,
+      GetSupervisorCandidateReviewQueue,
       GetConnectorIngressReceipts,
       GetAutonomyPolicyOverrides,
       ApprovePendingGrantRequest,
@@ -15849,6 +20159,12 @@ export function makeServices({ db, bus }) {
       UpsertChannelIdentityBinding,
       ListSupervisorOperatorChannelBindings,
       UpsertSupervisorOperatorChannelBinding,
+      ListChannelOnboardingDiscoveryTickets,
+      GetChannelOnboardingDiscoveryTicket,
+      CreateOrTouchChannelOnboardingDiscoveryTicket,
+      ReviewChannelOnboardingDiscoveryTicket,
+      RevokeChannelOnboardingDiscoveryTicket,
+      RetryChannelOnboardingOutbox,
       EvaluateChannelCommandGate,
       ResolveSupervisorChannelRoute,
       ExecuteOperatorChannelHubCommand,
@@ -15867,6 +20183,7 @@ export function makeServices({ db, bus }) {
       GetWorkingSet,
       UpsertCanonicalMemory,
       ListCanonicalMemory,
+      RetrieveMemory,
       UpsertProjectLineage,
       GetProjectLineageTree,
       AttachDispatchContext,
@@ -15897,6 +20214,7 @@ export function makeServices({ db, bus }) {
       GetDispatchPlan,
       LongtermMarkdownExport,
       LongtermMarkdownBeginEdit,
+      StageSupervisorCandidateReview,
       LongtermMarkdownApplyPatch,
       LongtermMarkdownReview,
       LongtermMarkdownWriteback,

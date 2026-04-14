@@ -71,11 +71,12 @@ export function buildChannelOnboardingAcceptedReply({
   return buildChannelOnboardingSummaryReply({
     ticket,
     decision,
-    title: 'Operator Channel Connected',
-    status: 'connected_pending_smoke',
+    title: 'Approval Recorded',
+    status: 'approval_recorded_pending_smoke',
     project_id: projectId,
     lines: [
-      'This conversation is now bound to the governed Hub operator channel.',
+      'A local Hub admin approved this conversation for the governed operator path.',
+      'The binding is recorded, but the channel is only treated as live after the first smoke reply succeeds.',
       safeString(decision.scope_type) && safeString(decision.scope_id)
         ? `Scope: ${safeString(decision.scope_type)}/${safeString(decision.scope_id)}`
         : '',

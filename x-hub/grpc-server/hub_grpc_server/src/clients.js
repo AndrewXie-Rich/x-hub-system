@@ -238,6 +238,7 @@ function normalizeClientEntry(raw, fallbackDeviceId = '') {
   return {
     device_id,
     user_id: safeString(src.user_id || src.userId) || device_id,
+    app_id: safeString(src.app_id || src.appId || src.application_id || src.applicationId),
     name,
     token,
     enabled: safeBool(src.enabled, true),

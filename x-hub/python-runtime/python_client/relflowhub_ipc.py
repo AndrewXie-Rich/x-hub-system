@@ -77,12 +77,42 @@ def _discover_hub_status() -> dict[str, Any] | None:
         try:
             with open(sp, 'r', encoding='utf-8') as f:
                 obj = json.load(f)
+            if not _status_is_alive(obj):
+                continue
             ts = float(obj.get('updatedAt') or 0.0)
             if best is None or ts > best[0]:
                 best = (ts, obj)
         except Exception:
             continue
     return best[1] if best else None
+
+
+def _status_is_alive(obj: dict[str, Any], ttl_s: float = 5.0) -> bool:
+    try:
+        updated_at = float(obj.get('updatedAt') or obj.get('updated_at') or 0.0)
+    except Exception:
+        return False
+    if (time.time() - updated_at) >= ttl_s:
+        return False
+    return _pid_is_alive(obj.get('pid'))
+
+
+def _pid_is_alive(raw_pid: Any) -> bool:
+    try:
+        pid = int(raw_pid or 0)
+    except Exception:
+        return True
+    if pid <= 1:
+        return True
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except ProcessLookupError:
+        return False
+    except Exception:
+        return False
 
 
 def _discover_file_ipc_events_dir() -> str | None:

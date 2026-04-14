@@ -7,14 +7,14 @@ enum FloatingMode: String, Codable, CaseIterable {
 
     var title: String {
         switch self {
-        case .orb: return "Orb"
-        case .card: return "Card"
+        case .orb: return HubUIStrings.Settings.FloatingMode.orb
+        case .card: return HubUIStrings.Settings.FloatingMode.card
         }
     }
 
     var panelSize: CGSize {
         switch self {
-        case .orb: return CGSize(width: 198, height: 198)
+        case .orb: return CGSize(width: 396, height: 396)
         // Fixed-size card: closer to a square widget footprint.
         case .card: return CGSize(width: 176, height: 176)
         }

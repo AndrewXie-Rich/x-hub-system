@@ -307,3 +307,32 @@ run('FeishuCommandOrchestrator fails closed on unsupported input and exposes nor
   });
   assert.equal(String(classify.kind || ''), 'hub_grant_action');
 });
+
+run('FeishuCommandOrchestrator derives actor identity from stable Feishu ids, not display text', () => {
+  const normalized = normalizeFeishuCommandInput({
+    envelope_type: 'event_callback',
+    actor: {
+      external_user_id: 'ou_user_1',
+      external_tenant_id: 'tenant-ops',
+      display_name: 'Alice Visible',
+      name: 'Alice Ops',
+    },
+    channel: {
+      provider: 'feishu',
+      account_id: 'tenant-ops',
+      conversation_id: 'oc_room_1',
+      thread_key: 'omt_1',
+      channel_scope: 'group',
+    },
+    structured_action: {
+      action_name: 'deploy.plan',
+    },
+  }, {
+    now_ms: 1710000012000,
+  });
+
+  assert.equal(!!normalized.ok, true);
+  assert.equal(String(normalized.actor?.external_user_id || ''), 'ou_user_1');
+  assert.equal(String(normalized.actor?.external_tenant_id || ''), 'tenant-ops');
+  assert.equal(String(normalized.actor?.stable_external_id || ''), 'feishu/tenant-ops/ou_user_1');
+});

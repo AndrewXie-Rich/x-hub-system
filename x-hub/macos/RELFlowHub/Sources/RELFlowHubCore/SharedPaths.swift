@@ -6,6 +6,7 @@ public enum SharedPaths {
     public static let preferredRuntimeDirectoryName = "XHub"
     public static let legacyRuntimeDirectoryName = "RELFlowHub"
     public static let runtimeDirectoryAliases = [preferredRuntimeDirectoryName, legacyRuntimeDirectoryName]
+    private static let sourceRunHomeOverrideEnvKey = "XHUB_SOURCE_RUN_HOME"
 
     // Dev builds are often ad-hoc signed (no TeamIdentifier). On recent macOS versions,
     // touching App Group containers from such builds can trigger repeated
@@ -26,20 +27,82 @@ public enum SharedPaths {
         let key = kSecCodeInfoTeamIdentifier as String
         return dict[key] as? String
     }()
+
+    private static func sourceRunHomeOverride() -> URL? {
+        let rawValue = ProcessInfo.processInfo.environment[sourceRunHomeOverrideEnvKey]?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !rawValue.isEmpty else { return nil }
+        let expandedPath = NSString(string: rawValue).expandingTildeInPath
+        guard !expandedPath.isEmpty else { return nil }
+        return URL(fileURLWithPath: expandedPath, isDirectory: true)
+    }
+
+    private static func appendHomeCandidate(_ rawPath: String?, into candidates: inout [URL], seen: inout Set<String>) {
+        let trimmed = (rawPath ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let expanded = NSString(string: trimmed).expandingTildeInPath
+        guard !expanded.isEmpty else { return }
+        let url = URL(fileURLWithPath: expanded, isDirectory: true).standardizedFileURL
+        guard seen.insert(url.path).inserted else { return }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            return
+        }
+        candidates.append(url)
+    }
+
+    private static func isContainerizedHomePath(_ path: String) -> Bool {
+        path.contains("/Library/Containers/")
+    }
+
+    public static func guessedRealUserHomeDirectory() -> URL? {
+        let username = NSUserName().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !username.isEmpty else { return nil }
+        return URL(fileURLWithPath: "/Users/\(username)", isDirectory: true)
+    }
+
+    private static func realHomeDirectoryCandidates() -> [URL] {
+        var candidates: [URL] = []
+        var seen: Set<String> = []
+
+        appendHomeCandidate(NSHomeDirectoryForUser(NSUserName()), into: &candidates, seen: &seen)
+
+        if let pw = getpwuid(getuid()), let dir = pw.pointee.pw_dir {
+            appendHomeCandidate(String(cString: dir), into: &candidates, seen: &seen)
+        }
+
+        if let guessed = guessedRealUserHomeDirectory() {
+            appendHomeCandidate(guessed.path, into: &candidates, seen: &seen)
+        }
+
+        appendHomeCandidate(FileManager.default.homeDirectoryForCurrentUser.path, into: &candidates, seen: &seen)
+        return candidates
+    }
+
     // In App Sandbox, FileManager.homeDirectoryForCurrentUser points to the container.
     // For IPC with non-sandboxed tools, we need the real user home directory.
     public static func realHomeDirectory() -> URL {
-        // getpwuid(getuid()) returns the user record home (e.g. /Users/<username>).
-        if let pw = getpwuid(getuid()), let dir = pw.pointee.pw_dir {
-            return URL(fileURLWithPath: String(cString: dir), isDirectory: true)
+        if let override = sourceRunHomeOverride() {
+            return override
+        }
+        let candidates = realHomeDirectoryCandidates()
+        if let nonContainer = candidates.first(where: { !isContainerizedHomePath($0.path) }) {
+            return nonContainer
+        }
+        if let first = candidates.first {
+            return first
         }
         // Fallback: may still be container under sandbox, but better than crashing.
         return FileManager.default.homeDirectoryForCurrentUser
     }
 
     public static func sandboxHomeDirectory() -> URL {
+        if let override = sourceRunHomeOverride() {
+            return override
+        }
         // Under App Sandbox this is typically: ~/Library/Containers/<bundle-id>/Data
-        FileManager.default.homeDirectoryForCurrentUser
+        return FileManager.default.homeDirectoryForCurrentUser
     }
 
     public static func containerDataDirectory(bundleId: String? = Bundle.main.bundleIdentifier) -> URL? {
@@ -210,5 +273,27 @@ public enum SharedPaths {
         let dir = legacyRuntimeDirectory(in: realHomeDirectory())
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
+    }
+
+    /// The embedded Bridge runs inside the Hub app itself, so its heartbeat/control files
+    /// should prefer the Hub's own writable runtime directory instead of `/private/tmp`.
+    ///
+    /// This avoids sandbox write failures where the Hub can update its own launch status in
+    /// the app container but silently fails to publish bridge heartbeats to the public dir.
+    @discardableResult
+    public static func ensureEmbeddedBridgeDirectory(bundleId: String? = Bundle.main.bundleIdentifier) -> URL {
+        if let g = appGroupDirectory() {
+            try? FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
+            return g
+        }
+
+        if isSandboxedProcess(),
+           let container = containerDataDirectory(bundleId: bundleId) {
+            let dir = legacyRuntimeDirectory(in: container)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            return dir
+        }
+
+        return ensureHubDirectory()
     }
 }

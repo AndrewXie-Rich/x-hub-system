@@ -1,4 +1,5 @@
 import { normalizeChannelProviderId } from '../../channel_registry.js';
+import { buildChannelStableExternalId } from '../../channel_identity_store.js';
 import {
   classifyOperatorChannelCommandDispatch,
   createOperatorChannelCommandOrchestrator,
@@ -28,10 +29,18 @@ function normalizePendingGrant(input = null) {
 
 function normalizeFeishuActor(input = {}) {
   const actor = safeObject(input);
+  const external_user_id = safeString(actor.external_user_id || actor.open_id || actor.user_id || actor.id);
+  const external_tenant_id = safeString(actor.external_tenant_id || actor.tenant_key || actor.account_id);
   return {
     provider: 'feishu',
-    external_user_id: safeString(actor.external_user_id || actor.open_id || actor.user_id || actor.id),
-    external_tenant_id: safeString(actor.external_tenant_id || actor.tenant_key || actor.account_id),
+    stable_external_id: buildChannelStableExternalId({
+      provider: 'feishu',
+      stable_external_id: actor.stable_external_id,
+      external_user_id,
+      external_tenant_id,
+    }),
+    external_user_id,
+    external_tenant_id,
   };
 }
 

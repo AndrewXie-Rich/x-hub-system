@@ -5,7 +5,11 @@ import path from 'node:path';
 
 import { HubDB } from './db.js';
 import { upsertSupervisorOperatorChannelBinding } from './channel_bindings_store.js';
-import { evaluateChannelCommandGateWithAudit } from './channel_command_gate.js';
+import {
+  evaluateChannelCommandGateWithAudit,
+  getChannelActionPolicy,
+  listChannelActionPolicies,
+} from './channel_command_gate.js';
 import { upsertChannelIdentityBinding } from './channel_identity_store.js';
 
 function run(name, fn) {
@@ -61,6 +65,15 @@ function baseEnv(runtimeBaseDir) {
   };
 }
 
+run('XT-W3-24-N/channel action catalog freezes risk tier and grant scope metadata', () => {
+  const policies = listChannelActionPolicies();
+  assert.equal(policies.length, 11);
+  assert.equal(String(getChannelActionPolicy('grant.approve')?.risk_tier || ''), 'high');
+  assert.equal(String(getChannelActionPolicy('grant.approve')?.required_grant_scope || ''), 'project_approval');
+  assert.equal(String(getChannelActionPolicy('deploy.execute')?.risk_tier || ''), 'critical');
+  assert.equal(String(getChannelActionPolicy('device.doctor.get')?.required_grant_scope || ''), 'device_observe');
+});
+
 run('XT-W3-24-H/command gate allows approver to approve matching pending grant and audits the decision', () => {
   const runtimeBaseDir = makeTmp('runtime');
   const dbPath = makeTmp('db', '.db');
@@ -76,6 +89,7 @@ run('XT-W3-24-H/command gate allows approver to approve matching pending grant a
           external_tenant_id: 'tenant_001',
           hub_user_id: 'user_ops_alice',
           roles: ['approver'],
+          access_groups: ['group_allowlist', 'approval_only_identity'],
           status: 'active',
         },
       });
@@ -121,11 +135,14 @@ run('XT-W3-24-H/command gate allows approver to approve matching pending grant a
       });
       assert.equal(!!decision.allowed, true);
       assert.equal(!!decision.audit_logged, true);
+      assert.equal(String(decision.risk_tier || ''), 'high');
+      assert.equal(String(decision.required_grant_scope || ''), 'project_approval');
 
       const audit = db.listAuditEvents({ request_id: 'gate-allow-1' })
         .find((item) => String(item?.event_type || '') === 'channel.command.allowed');
       assert.ok(audit);
       assert.equal(String(audit?.app_id || ''), 'channel-command-tests');
+      assert.match(String(audit?.ext_json || ''), /"risk_tier":"high"/);
     } finally {
       db.close();
     }
@@ -149,6 +166,7 @@ run('XT-W3-24-H/command gate denies viewer approval, approval-only status query,
           external_user_id: 'U_viewer',
           hub_user_id: 'user_viewer',
           roles: ['viewer'],
+          access_groups: ['group_allowlist'],
           status: 'active',
         },
       });
@@ -158,6 +176,7 @@ run('XT-W3-24-H/command gate denies viewer approval, approval-only status query,
           external_user_id: 'U_approval_only',
           hub_user_id: 'user_approval',
           roles: ['approver'],
+          access_groups: ['group_allowlist', 'approval_only_identity'],
           approval_only: true,
           status: 'active',
         },
@@ -253,6 +272,166 @@ run('XT-W3-24-H/command gate denies viewer approval, approval-only status query,
   try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch {}
 });
 
+run('XT-W3-24-I/command gate enforces project-first action scopes and requires explicit device diagnostics binding', () => {
+  const runtimeBaseDir = makeTmp('runtime');
+  const dbPath = makeTmp('db', '.db');
+  fs.mkdirSync(runtimeBaseDir, { recursive: true });
+
+  withEnv(baseEnv(runtimeBaseDir), () => {
+    const db = new HubDB({ dbPath });
+    try {
+      upsertChannelIdentityBinding(db, {
+        binding: {
+          provider: 'slack',
+          external_user_id: 'U_operator_scope',
+          hub_user_id: 'user_operator_scope',
+          roles: ['operator'],
+          access_groups: ['group_allowlist'],
+          status: 'active',
+        },
+      });
+      upsertSupervisorOperatorChannelBinding(db, {
+        binding: {
+          provider: 'slack',
+          account_id: 'ops_bot',
+          conversation_id: 'CPROJ',
+          channel_scope: 'group',
+          scope_type: 'project',
+          scope_id: 'payments-prod',
+          allowed_actions: ['supervisor.status.get', 'deploy.plan', 'device.doctor.get'],
+          status: 'active',
+        },
+      });
+      upsertSupervisorOperatorChannelBinding(db, {
+        binding: {
+          provider: 'slack',
+          account_id: 'ops_bot',
+          conversation_id: 'CINC',
+          channel_scope: 'group',
+          scope_type: 'incident',
+          scope_id: 'incident-payments-p1',
+          allowed_actions: ['supervisor.status.get', 'deploy.plan'],
+          status: 'active',
+        },
+      });
+      upsertSupervisorOperatorChannelBinding(db, {
+        binding: {
+          provider: 'slack',
+          account_id: 'ops_bot',
+          conversation_id: 'CDEV',
+          channel_scope: 'group',
+          scope_type: 'device',
+          scope_id: 'xt-mac-mini-bj-01',
+          allowed_actions: ['device.doctor.get'],
+          status: 'active',
+        },
+      });
+
+      const projectStatus = evaluateChannelCommandGateWithAudit({
+        db,
+        actor: {
+          provider: 'slack',
+          external_user_id: 'U_operator_scope',
+        },
+        channel: {
+          provider: 'slack',
+          account_id: 'ops_bot',
+          conversation_id: 'CPROJ',
+          channel_scope: 'group',
+        },
+        action: {
+          action_name: 'deploy.plan',
+        },
+        request_id: 'gate-scope-project-ok',
+      });
+      assert.equal(!!projectStatus.allowed, true);
+
+      const projectDeviceDenied = evaluateChannelCommandGateWithAudit({
+        db,
+        actor: {
+          provider: 'slack',
+          external_user_id: 'U_operator_scope',
+        },
+        channel: {
+          provider: 'slack',
+          account_id: 'ops_bot',
+          conversation_id: 'CPROJ',
+          channel_scope: 'group',
+        },
+        action: {
+          action_name: 'device.doctor.get',
+        },
+        request_id: 'gate-scope-project-device-deny',
+      });
+      assert.equal(!!projectDeviceDenied.allowed, false);
+      assert.equal(String(projectDeviceDenied.deny_code || ''), 'scope_switch_required');
+
+      const incidentStatus = evaluateChannelCommandGateWithAudit({
+        db,
+        actor: {
+          provider: 'slack',
+          external_user_id: 'U_operator_scope',
+        },
+        channel: {
+          provider: 'slack',
+          account_id: 'ops_bot',
+          conversation_id: 'CINC',
+          channel_scope: 'group',
+        },
+        action: {
+          action_name: 'supervisor.status.get',
+        },
+        request_id: 'gate-scope-incident-status-ok',
+      });
+      assert.equal(!!incidentStatus.allowed, true);
+
+      const incidentDeployDenied = evaluateChannelCommandGateWithAudit({
+        db,
+        actor: {
+          provider: 'slack',
+          external_user_id: 'U_operator_scope',
+        },
+        channel: {
+          provider: 'slack',
+          account_id: 'ops_bot',
+          conversation_id: 'CINC',
+          channel_scope: 'group',
+        },
+        action: {
+          action_name: 'deploy.plan',
+        },
+        request_id: 'gate-scope-incident-deploy-deny',
+      });
+      assert.equal(!!incidentDeployDenied.allowed, false);
+      assert.equal(String(incidentDeployDenied.deny_code || ''), 'scope_switch_required');
+
+      const deviceDoctorAllowed = evaluateChannelCommandGateWithAudit({
+        db,
+        actor: {
+          provider: 'slack',
+          external_user_id: 'U_operator_scope',
+        },
+        channel: {
+          provider: 'slack',
+          account_id: 'ops_bot',
+          conversation_id: 'CDEV',
+          channel_scope: 'group',
+        },
+        action: {
+          action_name: 'device.doctor.get',
+        },
+        request_id: 'gate-scope-device-ok',
+      });
+      assert.equal(!!deviceDoctorAllowed.allowed, true);
+    } finally {
+      db.close();
+    }
+  });
+
+  cleanupDbArtifacts(dbPath);
+  try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch {}
+});
+
 run('XT-W3-24-H/command gate fails closed when audit append throws', () => {
   const runtimeBaseDir = makeTmp('runtime');
   const dbPath = makeTmp('db', '.db');
@@ -267,6 +446,7 @@ run('XT-W3-24-H/command gate fails closed when audit append throws', () => {
           external_user_id: 'u123',
           hub_user_id: 'user_ops',
           roles: ['approver'],
+          access_groups: ['group_allowlist', 'approval_only_identity'],
           status: 'active',
         },
       });

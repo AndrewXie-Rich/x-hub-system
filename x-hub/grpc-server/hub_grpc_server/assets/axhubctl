@@ -64,6 +64,53 @@ json_get_bool() {
   echo "$json" | tr -d '\n' | sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\\(false\\).*/\\1/p" | head -n 1
 }
 
+format_http_error_detail() {
+  context="$1"
+  body="$2"
+  code="$(trim "$(json_get_string code "$body")")"
+  msg="$(trim "$(json_get_string message "$body")")"
+
+  # Pairing HTTP commonly nests the real reason in error.message while the top-level
+  # code stays generic (for example forbidden/source_ip_not_allowed).
+  effective="$code"
+  if [ -n "$msg" ] && [ "$msg" != "$code" ]; then
+    effective="$msg"
+  fi
+
+  case "$effective" in
+    invite_token_required)
+      echo "$context failed (invite_token_required). Hub requires an invite token for this pairing request. Re-open the current Hub invite link in X-Terminal or pass --invite-token."
+      return 0
+      ;;
+    invite_token_invalid)
+      echo "$context failed (invite_token_invalid). The invite token is expired, rotated, or does not match this Hub. Re-copy the current Hub invite link/token and retry."
+      return 0
+      ;;
+    first_pair_requires_same_lan)
+      echo "$context failed (first_pair_requires_same_lan). First pairing must be requested from the same Wi-Fi/LAN as the Hub."
+      return 0
+      ;;
+    source_ip_not_allowed)
+      echo "$context failed (source_ip_not_allowed). This source IP is not allowed by the Hub pairing policy. Use the Hub LAN/VPN IP, or update HUB_PAIRING_ALLOWED_CIDRS on the Hub."
+      return 0
+      ;;
+  esac
+
+  if [ -n "$code" ] && [ -n "$msg" ] && [ "$code" != "$msg" ]; then
+    echo "$context failed ($code): $msg"
+    return 0
+  fi
+  if [ -n "$code" ]; then
+    echo "$context failed ($code)"
+    return 0
+  fi
+  if [ -n "$msg" ]; then
+    echo "$context failed: $msg"
+    return 0
+  fi
+  return 1
+}
+
 is_uint() {
   v="$(trim "${1:-}")"
   case "$v" in
@@ -91,6 +138,15 @@ json_quote_or_null() {
   echo "null"
 }
 
+json_uint_or_null() {
+  v="$(trim "${1:-}")"
+  if is_uint "$v"; then
+    echo "$v"
+    return 0
+  fi
+  echo "null"
+}
+
 random_secret() {
   if command -v openssl >/dev/null 2>&1; then
     # URL-safe base64 without padding.
@@ -107,7 +163,7 @@ axhubctl (MVP) - discover/pair/connect with AX Hub.
 
 Usage:
   axhubctl discover [--pairing-port 50052] [--timeout-sec 2] [--hints "host1,host2"] [--quiet]
-  axhubctl bootstrap [--hub auto|<host>] [--pairing-port 50052] [--grpc-port 50051] [--app-id ax_terminal] [--device-name NAME] [--requested-scopes "a,b,c"] [--require-client-kit|--skip-install-client]
+  axhubctl bootstrap [--hub auto|<host>] [--pairing-port 50052] [--grpc-port 50051] [--app-id ax_terminal] [--device-name NAME] [--requested-scopes "a,b,c"] [--invite-token TOKEN] [--require-client-kit|--skip-install-client]
   axhubctl knock [--hub auto|<host>] [--pairing-port 50052] [--grpc-port 50051] [--app-id ax_terminal] [--device-name NAME] [--requested-scopes "a,b,c"]
   axhubctl wait [--hub <host>] [--pairing-port 50052] [--grpc-port 50051] [--id <pairing_request_id>] [--secret <pairing_secret>] [--timeout-sec 900] [--interval-sec 2]
   axhubctl connect [--hub auto|<host>] [--grpc-port 50051] [--pairing-port 50052] [--auto-reconnect] [--max-backoff-sec 30] [--max-failures 0]
@@ -710,6 +766,48 @@ write_pairing_env_state() {
   w_device_name="$(trim "${5:-}")"
   w_rid="$(trim "${6:-}")"
   w_secret="$(trim "${7:-}")"
+  w_internet_host="$(trim "${8:-}")"
+  w_hub_instance_id="$(trim "${9:-}")"
+  w_lan_discovery_name="$(trim "${10:-}")"
+  w_pairing_profile_epoch="$(trim "${11:-}")"
+  w_route_pack_version="$(trim "${12:-}")"
+
+  if [ -z "$w_internet_host" ] && [ -n "$(trim "${AXHUB_INTERNET_HOST:-}")" ]; then
+    w_internet_host="$(trim "${AXHUB_INTERNET_HOST:-}")"
+  fi
+  if [ -z "$w_internet_host" ] && [ -f "$PAIRING_ENV" ]; then
+    # shellcheck disable=SC1090
+    . "$PAIRING_ENV"
+    w_internet_host="$(trim "${AXHUB_INTERNET_HOST:-}")"
+  fi
+  if [ -z "$w_hub_instance_id" ] && [ -n "$(trim "${AXHUB_HUB_INSTANCE_ID:-}")" ]; then
+    w_hub_instance_id="$(trim "${AXHUB_HUB_INSTANCE_ID:-}")"
+  fi
+  if [ -z "$w_lan_discovery_name" ] && [ -n "$(trim "${AXHUB_LAN_DISCOVERY_NAME:-}")" ]; then
+    w_lan_discovery_name="$(trim "${AXHUB_LAN_DISCOVERY_NAME:-}")"
+  fi
+  if [ -z "$w_pairing_profile_epoch" ] && [ -n "$(trim "${AXHUB_PAIRING_PROFILE_EPOCH:-}")" ]; then
+    w_pairing_profile_epoch="$(trim "${AXHUB_PAIRING_PROFILE_EPOCH:-}")"
+  fi
+  if [ -z "$w_route_pack_version" ] && [ -n "$(trim "${AXHUB_ROUTE_PACK_VERSION:-}")" ]; then
+    w_route_pack_version="$(trim "${AXHUB_ROUTE_PACK_VERSION:-}")"
+  fi
+  if [ -f "$PAIRING_ENV" ]; then
+    # shellcheck disable=SC1090
+    . "$PAIRING_ENV"
+    if [ -z "$w_hub_instance_id" ]; then
+      w_hub_instance_id="$(trim "${AXHUB_HUB_INSTANCE_ID:-}")"
+    fi
+    if [ -z "$w_lan_discovery_name" ]; then
+      w_lan_discovery_name="$(trim "${AXHUB_LAN_DISCOVERY_NAME:-}")"
+    fi
+    if [ -z "$w_pairing_profile_epoch" ]; then
+      w_pairing_profile_epoch="$(trim "${AXHUB_PAIRING_PROFILE_EPOCH:-}")"
+    fi
+    if [ -z "$w_route_pack_version" ]; then
+      w_route_pack_version="$(trim "${AXHUB_ROUTE_PACK_VERSION:-}")"
+    fi
+  fi
 
   mkdir -p "$STATE_DIR"
   umask 077
@@ -721,6 +819,11 @@ write_pairing_env_state() {
   w_device_name_esc="$(sh_escape_single_quotes "$w_device_name")"
   w_rid_esc="$(sh_escape_single_quotes "$w_rid")"
   w_secret_esc="$(sh_escape_single_quotes "$w_secret")"
+  w_internet_host_esc="$(sh_escape_single_quotes "$w_internet_host")"
+  w_hub_instance_id_esc="$(sh_escape_single_quotes "$w_hub_instance_id")"
+  w_lan_discovery_name_esc="$(sh_escape_single_quotes "$w_lan_discovery_name")"
+  w_pairing_profile_epoch_esc="$(sh_escape_single_quotes "$w_pairing_profile_epoch")"
+  w_route_pack_version_esc="$(sh_escape_single_quotes "$w_route_pack_version")"
 
   cat >"$PAIRING_ENV" <<EOF
 AXHUB_HUB_HOST='$w_hub_host_esc'
@@ -730,6 +833,11 @@ AXHUB_APP_ID='$w_app_id_esc'
 AXHUB_DEVICE_NAME='$w_device_name_esc'
 AXHUB_PAIRING_REQUEST_ID='$w_rid_esc'
 AXHUB_PAIRING_SECRET='$w_secret_esc'
+AXHUB_INTERNET_HOST='$w_internet_host_esc'
+AXHUB_HUB_INSTANCE_ID='$w_hub_instance_id_esc'
+AXHUB_LAN_DISCOVERY_NAME='$w_lan_discovery_name_esc'
+AXHUB_PAIRING_PROFILE_EPOCH='$w_pairing_profile_epoch_esc'
+AXHUB_ROUTE_PACK_VERSION='$w_route_pack_version_esc'
 EOF
   chmod 600 "$PAIRING_ENV" 2>/dev/null || true
 }
@@ -806,6 +914,8 @@ write_connection_profile() {
   c_ca_path="$(trim "${7:-}")"
   c_client_cert_path="$(trim "${8:-}")"
   c_client_key_path="$(trim "${9:-}")"
+  c_pairing_profile_epoch="$(trim "${10:-}")"
+  c_route_pack_version="$(trim "${11:-}")"
 
   c_now_s="$(date +%s)"
   c_now_ms=$((c_now_s * 1000))
@@ -821,6 +931,8 @@ write_connection_profile() {
   "grpc_port": $c_grpc_port,
   "pairing_port": $c_pairing_port,
   "device_id": $(json_quote_or_null "$c_device_id"),
+  "pairing_profile_epoch": $(json_uint_or_null "$c_pairing_profile_epoch"),
+  "route_pack_version": $(json_quote_or_null "$c_route_pack_version"),
   "tls_mode": $(json_quote_or_null "$c_tls_mode"),
   "tls_server_name": $(json_quote_or_null "$c_tls_server_name"),
   "ca_cert_path": $(json_quote_or_null "$c_ca_path"),
@@ -864,6 +976,38 @@ default_gateway_host() {
   return 1
 }
 
+discover_add_bonjour_candidates() {
+  d_timeout_sec="$(uint_or_default "${1:-2}" "2")"
+  have_cmd dns-sd || return 0
+
+  d_tmp="$(mktemp "${TMPDIR:-/tmp}/axhub_dns_sd.XXXXXX" 2>/dev/null || true)"
+  [ -n "$d_tmp" ] || return 0
+
+  dns-sd -B _axhub._tcp local. >"$d_tmp" 2>/dev/null &
+  d_pid=$!
+  d_started_at="$(date +%s)"
+
+  while :; do
+    while IFS= read -r d_line; do
+      case "$d_line" in
+        *" Add "*"_axhub._tcp."*)
+          d_service="$(printf '%s\n' "$d_line" | awk '{print $NF}' | head -n 1)"
+          d_service="$(trim "$d_service")"
+          [ -n "$d_service" ] && discover_append_unique "${d_service}.local"
+          ;;
+      esac
+    done <"$d_tmp"
+
+    d_now="$(date +%s)"
+    [ $((d_now - d_started_at)) -ge "$d_timeout_sec" ] && break
+    sleep 1
+  done
+
+  kill "$d_pid" >/dev/null 2>&1 || true
+  wait "$d_pid" >/dev/null 2>&1 || true
+  rm -f "$d_tmp" >/dev/null 2>&1 || true
+}
+
 discover_append_unique() {
   d_cand="$(trim "${1:-}")"
   [ -n "$d_cand" ] || return 0
@@ -895,6 +1039,11 @@ probe_pairing_discovery_endpoint() {
   p_pairing_port="$(uint_or_default "${2:-50052}" "50052")"
   p_timeout_sec="$(uint_or_default "${3:-2}" "2")"
   [ -n "$p_host" ] || return 1
+  AXHUB_DISCOVERY_LAST_INTERNET_HOST=""
+  AXHUB_DISCOVERY_LAST_HUB_INSTANCE_ID=""
+  AXHUB_DISCOVERY_LAST_LAN_DISCOVERY_NAME=""
+  AXHUB_DISCOVERY_LAST_PAIRING_PROFILE_EPOCH=""
+  AXHUB_DISCOVERY_LAST_ROUTE_PACK_VERSION=""
 
   p_resp="$(curl -fsS --connect-timeout "$p_timeout_sec" --max-time "$p_timeout_sec" "http://${p_host}:${p_pairing_port}/pairing/discovery" 2>/dev/null || true)"
   if [ -n "$p_resp" ]; then
@@ -914,7 +1063,12 @@ probe_pairing_discovery_endpoint() {
       p_grpc_port2="$(uint_or_default "$(json_get_number grpc_port "$p_resp")" "50051")"
       p_tls_mode="$(trim "$(json_get_string tls_mode "$p_resp")")"
       p_tls_name="$(trim "$(json_get_string tls_server_name "$p_resp")")"
-      echo "$p_hint|$p_pairing_port2|$p_grpc_port2|$p_tls_mode|$p_tls_name"
+      AXHUB_DISCOVERY_LAST_INTERNET_HOST="$(trim "$(json_get_string internet_host_hint "$p_resp")")"
+      AXHUB_DISCOVERY_LAST_HUB_INSTANCE_ID="$(trim "$(json_get_string hub_instance_id "$p_resp")")"
+      AXHUB_DISCOVERY_LAST_LAN_DISCOVERY_NAME="$(trim "$(json_get_string lan_discovery_name "$p_resp")")"
+      AXHUB_DISCOVERY_LAST_PAIRING_PROFILE_EPOCH="$(trim "$(json_get_number pairing_profile_epoch "$p_resp")")"
+      AXHUB_DISCOVERY_LAST_ROUTE_PACK_VERSION="$(trim "$(json_get_string route_pack_version "$p_resp")")"
+      echo "$p_hint|$p_pairing_port2|$p_grpc_port2|$p_tls_mode|$p_tls_name|$AXHUB_DISCOVERY_LAST_INTERNET_HOST|$AXHUB_DISCOVERY_LAST_HUB_INSTANCE_ID|$AXHUB_DISCOVERY_LAST_LAN_DISCOVERY_NAME|$AXHUB_DISCOVERY_LAST_PAIRING_PROFILE_EPOCH|$AXHUB_DISCOVERY_LAST_ROUTE_PACK_VERSION"
       return 0
     fi
   fi
@@ -925,7 +1079,7 @@ probe_pairing_discovery_endpoint() {
     p_ok2="$(json_get_bool ok "$p_health")"
     p_service2="$(json_get_string service "$p_health")"
     if [ "$p_ok2" = "true" ] && [ "$p_service2" = "pairing" ]; then
-      echo "$p_host|$p_pairing_port|50051||"
+      echo "$p_host|$p_pairing_port|50051|||||||"
       return 0
     fi
   fi
@@ -937,17 +1091,25 @@ discover_hub_endpoint() {
   d_pairing_port="$(uint_or_default "${1:-50052}" "50052")"
   d_timeout_sec="$(uint_or_default "${2:-2}" "2")"
   d_hints_csv="$(trim "${3:-}")"
+  d_pairing_port_explicit="$(trim "${4:-0}")"
 
   AXHUB_DISCOVERY_SEEN="|"
   AXHUB_DISCOVERY_LIST=""
+  AXHUB_DISCOVERY_LAST_INTERNET_HOST=""
+  AXHUB_DISCOVERY_LAST_HUB_INSTANCE_ID=""
+  AXHUB_DISCOVERY_LAST_LAN_DISCOVERY_NAME=""
+  AXHUB_DISCOVERY_LAST_PAIRING_PROFILE_EPOCH=""
+  AXHUB_DISCOVERY_LAST_ROUTE_PACK_VERSION=""
 
   # Priority:
   # 1) explicit hints
   # 2) HUB_DISCOVERY_HINTS env
   # 3) previously paired host(s)
-  # 4) axhub.local
-  # 5) default gateway
-  # 6) local machine
+  # 4) previously discovered Bonjour service name
+  # 5) Bonjour browse (_axhub._tcp)
+  # 6) axhub.local
+  # 7) default gateway
+  # 8) local machine
   discover_add_csv_candidates "$d_hints_csv"
   discover_add_csv_candidates "${HUB_DISCOVERY_HINTS:-}"
 
@@ -955,9 +1117,14 @@ discover_hub_endpoint() {
     # shellcheck disable=SC1090
     . "$PAIRING_ENV"
     discover_append_unique "${AXHUB_HUB_HOST:-}"
-    prev_pairing_port="$(trim "${AXHUB_PAIRING_PORT:-}")"
-    if [ -n "$prev_pairing_port" ]; then
-      d_pairing_port="$(uint_or_default "$prev_pairing_port" "$d_pairing_port")"
+    if [ -n "$(trim "${AXHUB_LAN_DISCOVERY_NAME:-}")" ]; then
+      discover_append_unique "${AXHUB_LAN_DISCOVERY_NAME}.local"
+    fi
+    if [ "$d_pairing_port_explicit" != "1" ]; then
+      prev_pairing_port="$(trim "${AXHUB_PAIRING_PORT:-}")"
+      if [ -n "$prev_pairing_port" ]; then
+        d_pairing_port="$(uint_or_default "$prev_pairing_port" "$d_pairing_port")"
+      fi
     fi
   fi
 
@@ -967,6 +1134,7 @@ discover_hub_endpoint() {
     discover_append_unique "${HUB_HOST:-}"
   fi
 
+  discover_add_bonjour_candidates "$d_timeout_sec"
   discover_append_unique "axhub.local"
   discover_append_unique "$(default_gateway_host || true)"
   discover_append_unique "127.0.0.1"
@@ -992,7 +1160,28 @@ persist_discovery_result() {
   p_host="$(trim "${1:-}")"
   p_pairing_port="$(uint_or_default "${2:-50052}" "50052")"
   p_grpc_port="$(uint_or_default "${3:-50051}" "50051")"
+  p_internet_host="$(trim "${4:-}")"
+  p_hub_instance_id="$(trim "${5:-}")"
+  p_lan_discovery_name="$(trim "${6:-}")"
+  p_pairing_profile_epoch="$(trim "${7:-}")"
+  p_route_pack_version="$(trim "${8:-}")"
   [ -n "$p_host" ] || return 1
+
+  if [ -z "$p_internet_host" ] && [ -n "$(trim "${AXHUB_DISCOVERY_LAST_INTERNET_HOST:-}")" ]; then
+    p_internet_host="$(trim "${AXHUB_DISCOVERY_LAST_INTERNET_HOST:-}")"
+  fi
+  if [ -z "$p_hub_instance_id" ] && [ -n "$(trim "${AXHUB_DISCOVERY_LAST_HUB_INSTANCE_ID:-}")" ]; then
+    p_hub_instance_id="$(trim "${AXHUB_DISCOVERY_LAST_HUB_INSTANCE_ID:-}")"
+  fi
+  if [ -z "$p_lan_discovery_name" ] && [ -n "$(trim "${AXHUB_DISCOVERY_LAST_LAN_DISCOVERY_NAME:-}")" ]; then
+    p_lan_discovery_name="$(trim "${AXHUB_DISCOVERY_LAST_LAN_DISCOVERY_NAME:-}")"
+  fi
+  if [ -z "$p_pairing_profile_epoch" ] && [ -n "$(trim "${AXHUB_DISCOVERY_LAST_PAIRING_PROFILE_EPOCH:-}")" ]; then
+    p_pairing_profile_epoch="$(trim "${AXHUB_DISCOVERY_LAST_PAIRING_PROFILE_EPOCH:-}")"
+  fi
+  if [ -z "$p_route_pack_version" ] && [ -n "$(trim "${AXHUB_DISCOVERY_LAST_ROUTE_PACK_VERSION:-}")" ]; then
+    p_route_pack_version="$(trim "${AXHUB_DISCOVERY_LAST_ROUTE_PACK_VERSION:-}")"
+  fi
 
   p_app_id="ax_terminal"
   p_device_name=""
@@ -1006,7 +1195,7 @@ persist_discovery_result() {
     p_rid="${AXHUB_PAIRING_REQUEST_ID:-$p_rid}"
     p_secret="${AXHUB_PAIRING_SECRET:-$p_secret}"
   fi
-  write_pairing_env_state "$p_host" "$p_pairing_port" "$p_grpc_port" "$p_app_id" "$p_device_name" "$p_rid" "$p_secret"
+  write_pairing_env_state "$p_host" "$p_pairing_port" "$p_grpc_port" "$p_app_id" "$p_device_name" "$p_rid" "$p_secret" "$p_internet_host" "$p_hub_instance_id" "$p_lan_discovery_name" "$p_pairing_profile_epoch" "$p_route_pack_version"
 }
 
 probe_pairing_health() {
@@ -1096,13 +1285,14 @@ case "$cmd" in
 
   discover)
     PAIRING_PORT="50052"
+    pairing_port_set="0"
     timeout_sec="2"
     hints_csv=""
     quiet="0"
 
     while [ "$#" -gt 0 ]; do
       case "$1" in
-        --pairing-port) PAIRING_PORT="${2:-}"; shift 2 ;;
+        --pairing-port) PAIRING_PORT="${2:-}"; pairing_port_set="1"; shift 2 ;;
         --timeout-sec) timeout_sec="${2:-}"; shift 2 ;;
         --hints) hints_csv="${2:-}"; shift 2 ;;
         --quiet) quiet="1"; shift 1 ;;
@@ -1113,7 +1303,7 @@ case "$cmd" in
     PAIRING_PORT="$(uint_or_default "$PAIRING_PORT" "50052")"
     timeout_sec="$(uint_or_default "$timeout_sec" "2")"
 
-    discovered="$(discover_hub_endpoint "$PAIRING_PORT" "$timeout_sec" "$hints_csv" || true)"
+    discovered="$(discover_hub_endpoint "$PAIRING_PORT" "$timeout_sec" "$hints_csv" "$pairing_port_set" || true)"
     [ -n "$discovered" ] || die "hub discovery failed (checked hints/axhub.local/default gateway/local host)"
 
     found_host="$(trim "${discovered%%|*}")"
@@ -1123,13 +1313,23 @@ case "$cmd" in
     found_grpc_port="$(trim "${tail2%%|*}")"
     tail3="${tail2#*|}"
     found_tls_mode="$(trim "${tail3%%|*}")"
-    found_tls_name="$(trim "${tail3#*|}")"
+    tail4="${tail3#*|}"
+    found_tls_name="$(trim "${tail4%%|*}")"
+    tail5="${tail4#*|}"
+    found_internet_host="$(trim "${tail5%%|*}")"
+    tail6="${tail5#*|}"
+    found_hub_instance_id="$(trim "${tail6%%|*}")"
+    tail7="${tail6#*|}"
+    found_lan_discovery_name="$(trim "${tail7%%|*}")"
+    tail8="${tail7#*|}"
+    found_pairing_profile_epoch="$(trim "${tail8%%|*}")"
+    found_route_pack_version="$(trim "${tail8#*|}")"
 
     found_pairing_port="$(uint_or_default "$found_pairing_port" "$PAIRING_PORT")"
     found_grpc_port="$(uint_or_default "$found_grpc_port" "50051")"
     [ -n "$found_host" ] || die "hub discovery returned empty host"
 
-    persist_discovery_result "$found_host" "$found_pairing_port" "$found_grpc_port" || true
+    persist_discovery_result "$found_host" "$found_pairing_port" "$found_grpc_port" "$found_internet_host" "$found_hub_instance_id" "$found_lan_discovery_name" "$found_pairing_profile_epoch" "$found_route_pack_version" || true
 
     if [ "$quiet" = "1" ]; then
       echo "$found_host"
@@ -1146,6 +1346,21 @@ case "$cmd" in
     if [ -n "$found_tls_name" ]; then
       echo "  tls_server   : $found_tls_name"
     fi
+    if [ -n "$found_internet_host" ]; then
+      echo "  internet_host: $found_internet_host"
+    fi
+    if [ -n "$found_hub_instance_id" ]; then
+      echo "  hub_instance_id: $found_hub_instance_id"
+    fi
+    if [ -n "$found_lan_discovery_name" ]; then
+      echo "  lan_discovery_name: $found_lan_discovery_name"
+    fi
+    if [ -n "$found_pairing_profile_epoch" ]; then
+      echo "  pairing_profile_epoch: $found_pairing_profile_epoch"
+    fi
+    if [ -n "$found_route_pack_version" ]; then
+      echo "  route_pack_version: $found_route_pack_version"
+    fi
     echo "Saved state: $PAIRING_ENV"
     ;;
 
@@ -1159,6 +1374,12 @@ case "$cmd" in
     APP_ID="ax_terminal"
     DEVICE_NAME=""
     REQUESTED_SCOPES=""
+    INVITE_TOKEN=""
+    found_internet_host=""
+    found_hub_instance_id=""
+    found_lan_discovery_name=""
+    found_pairing_profile_epoch=""
+    found_route_pack_version=""
     timeout_sec="900"
     interval_sec="2"
     client_kit_policy="best_effort"
@@ -1171,6 +1392,7 @@ case "$cmd" in
         --app-id) APP_ID="${2:-}"; shift 2 ;;
         --device-name) DEVICE_NAME="${2:-}"; shift 2 ;;
         --requested-scopes) REQUESTED_SCOPES="${2:-}"; shift 2 ;;
+        --invite-token) INVITE_TOKEN="${2:-}"; shift 2 ;;
         --timeout-sec) timeout_sec="${2:-}"; shift 2 ;;
         --interval-sec) interval_sec="${2:-}"; shift 2 ;;
         --require-client-kit) client_kit_policy="required"; shift 1 ;;
@@ -1185,13 +1407,24 @@ case "$cmd" in
     GRPC_PORT="$(uint_or_default "$GRPC_PORT" "50051")"
 
     if [ "$HUB_HOST" = "auto" ]; then
-      discovered="$(discover_hub_endpoint "$PAIRING_PORT" "2" "" || true)"
+      discovered="$(discover_hub_endpoint "$PAIRING_PORT" "2" "" "$pairing_port_set" || true)"
       [ -n "$discovered" ] || die "bootstrap discovery failed (use --hub <host> or set HUB_DISCOVERY_HINTS)"
       HUB_HOST="$(trim "${discovered%%|*}")"
       tail1="${discovered#*|}"
       found_pairing_port="$(trim "${tail1%%|*}")"
       tail2="${tail1#*|}"
       found_grpc_port="$(trim "${tail2%%|*}")"
+      tail3="${tail2#*|}"
+      tail4="${tail3#*|}"
+      tail5="${tail4#*|}"
+      found_internet_host="$(trim "${tail5%%|*}")"
+      tail6="${tail5#*|}"
+      found_hub_instance_id="$(trim "${tail6%%|*}")"
+      tail7="${tail6#*|}"
+      found_lan_discovery_name="$(trim "${tail7%%|*}")"
+      tail8="${tail7#*|}"
+      found_pairing_profile_epoch="$(trim "${tail8%%|*}")"
+      found_route_pack_version="$(trim "${tail8#*|}")"
       [ -n "$HUB_HOST" ] || die "bootstrap discovery returned empty host"
       if [ "$pairing_port_set" != "1" ]; then
         PAIRING_PORT="$(uint_or_default "$found_pairing_port" "$PAIRING_PORT")"
@@ -1199,12 +1432,19 @@ case "$cmd" in
       if [ "$grpc_port_set" != "1" ]; then
         GRPC_PORT="$(uint_or_default "$found_grpc_port" "$GRPC_PORT")"
       fi
-      persist_discovery_result "$HUB_HOST" "$PAIRING_PORT" "$GRPC_PORT" || true
+      if [ -n "$found_internet_host" ]; then
+        export AXHUB_INTERNET_HOST="$found_internet_host"
+      fi
+      persist_discovery_result "$HUB_HOST" "$PAIRING_PORT" "$GRPC_PORT" "$found_internet_host" "$found_hub_instance_id" "$found_lan_discovery_name" "$found_pairing_profile_epoch" "$found_route_pack_version" || true
       echo "Discovered Hub: ${HUB_HOST} (pairing=${PAIRING_PORT}, grpc=${GRPC_PORT})"
     fi
 
     self="$0"
-    run_self knock --hub "$HUB_HOST" --pairing-port "$PAIRING_PORT" --grpc-port "$GRPC_PORT" --app-id "$APP_ID" --device-name "$DEVICE_NAME" --requested-scopes "$REQUESTED_SCOPES"
+    if [ -n "$(trim "$INVITE_TOKEN")" ]; then
+      run_self knock --hub "$HUB_HOST" --pairing-port "$PAIRING_PORT" --grpc-port "$GRPC_PORT" --app-id "$APP_ID" --device-name "$DEVICE_NAME" --requested-scopes "$REQUESTED_SCOPES" --invite-token "$INVITE_TOKEN"
+    else
+      run_self knock --hub "$HUB_HOST" --pairing-port "$PAIRING_PORT" --grpc-port "$GRPC_PORT" --app-id "$APP_ID" --device-name "$DEVICE_NAME" --requested-scopes "$REQUESTED_SCOPES"
+    fi
     run_self wait --hub "$HUB_HOST" --pairing-port "$PAIRING_PORT" --grpc-port "$GRPC_PORT" --timeout-sec "$timeout_sec" --interval-sec "$interval_sec"
     if [ "$client_kit_policy" = "skip" ]; then
       echo "Skip downloading client kit (--skip-install-client)."
@@ -1243,19 +1483,23 @@ case "$cmd" in
   knock|pair)
     HUB_HOST="auto"
     PAIRING_PORT="50052"
+    pairing_port_set="0"
     GRPC_PORT="50051"
     APP_ID="ax_terminal"
     DEVICE_NAME=""
     REQUESTED_SCOPES=""
+    INVITE_TOKEN=""
+    found_internet_host=""
 
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --hub) HUB_HOST="${2:-}"; shift 2 ;;
-        --pairing-port) PAIRING_PORT="${2:-}"; shift 2 ;;
+        --pairing-port) PAIRING_PORT="${2:-}"; pairing_port_set="1"; shift 2 ;;
         --grpc-port) GRPC_PORT="${2:-}"; shift 2 ;;
         --app-id) APP_ID="${2:-}"; shift 2 ;;
         --device-name) DEVICE_NAME="${2:-}"; shift 2 ;;
         --requested-scopes) REQUESTED_SCOPES="${2:-}"; shift 2 ;;
+        --invite-token) INVITE_TOKEN="${2:-}"; shift 2 ;;
         *) die "unknown arg: $1" ;;
       esac
     done
@@ -1265,19 +1509,35 @@ case "$cmd" in
     PAIRING_PORT="$(uint_or_default "$PAIRING_PORT" "50052")"
     GRPC_PORT="$(uint_or_default "$GRPC_PORT" "50051")"
 
+    found_internet_host=""
+    found_hub_instance_id=""
+    found_lan_discovery_name=""
+    found_pairing_profile_epoch=""
+    found_route_pack_version=""
     if [ "$HUB_HOST" = "auto" ]; then
-      discovered="$(discover_hub_endpoint "$PAIRING_PORT" "2" "" || true)"
+      discovered="$(discover_hub_endpoint "$PAIRING_PORT" "2" "" "$pairing_port_set" || true)"
       [ -n "$discovered" ] || die "knock discovery failed (use --hub <host> or set HUB_DISCOVERY_HINTS)"
       HUB_HOST="$(trim "${discovered%%|*}")"
       tail1="${discovered#*|}"
       found_pairing_port="$(trim "${tail1%%|*}")"
       tail2="${tail1#*|}"
       found_grpc_port="$(trim "${tail2%%|*}")"
-      [ -n "$HUB_HOST" ] || die "knock discovery returned empty host"
-      PAIRING_PORT="$(uint_or_default "$found_pairing_port" "$PAIRING_PORT")"
-      GRPC_PORT="$(uint_or_default "$found_grpc_port" "$GRPC_PORT")"
-      echo "Discovered Hub: ${HUB_HOST} (pairing=${PAIRING_PORT}, grpc=${GRPC_PORT})"
-    fi
+      tail3="${tail2#*|}"
+      tail4="${tail3#*|}"
+    tail5="${tail4#*|}"
+    found_internet_host="$(trim "${tail5%%|*}")"
+    tail6="${tail5#*|}"
+    found_hub_instance_id="$(trim "${tail6%%|*}")"
+    tail7="${tail6#*|}"
+    found_lan_discovery_name="$(trim "${tail7%%|*}")"
+    tail8="${tail7#*|}"
+    found_pairing_profile_epoch="$(trim "${tail8%%|*}")"
+    found_route_pack_version="$(trim "${tail8#*|}")"
+    [ -n "$HUB_HOST" ] || die "knock discovery returned empty host"
+    PAIRING_PORT="$(uint_or_default "$found_pairing_port" "$PAIRING_PORT")"
+    GRPC_PORT="$(uint_or_default "$found_grpc_port" "$GRPC_PORT")"
+    echo "Discovered Hub: ${HUB_HOST} (pairing=${PAIRING_PORT}, grpc=${GRPC_PORT})"
+  fi
 
     secret="$(random_secret)"
     [ -n "$secret" ] || die "failed to generate pairing secret"
@@ -1308,6 +1568,9 @@ case "$cmd" in
     if [ -n "$scopes_json" ]; then
       payload="${payload},\"requested_scopes\":${scopes_json}"
     fi
+    if [ -n "$(trim "$INVITE_TOKEN")" ]; then
+      payload="${payload},\"invite_token\":\"$(json_escape "$INVITE_TOKEN")\""
+    fi
 
     # Optional: provide a CSR so the Hub can issue an mTLS client certificate.
     # This does not leak the private key (it stays on the terminal device).
@@ -1318,21 +1581,35 @@ case "$cmd" in
     payload="${payload}}"
 
     url="http://${HUB_HOST}:${PAIRING_PORT}/pairing/requests"
-    resp="$(curl -fsS -X POST "$url" -H 'Content-Type: application/json' -d "$payload" 2>&1)" || {
-      err="$resp"
+    req_tmpdir="$(mktemp_dir)"
+    req_body="$req_tmpdir/pairing_request.json"
+    req_err="$req_tmpdir/pairing_request.err"
+    http_code="$(curl -sS -o "$req_body" -w '%{http_code}' -X POST "$url" -H 'Content-Type: application/json' -d "$payload" 2>"$req_err")" || {
+      err="$(cat "$req_err" 2>/dev/null || true)"
+      rm -rf "$req_tmpdir" 2>/dev/null || true
       if echo "$err" | grep -q "HTTP/0\\.9"; then
         die "request failed (did you use the gRPC port? pairing port is usually HUB_PORT+1, e.g. 50052). curl: $err"
       fi
-      if echo "$err" | grep -q "error: 403"; then
-        die "request failed (403). Your source IP may not be allowed. Ensure you're on the Hub LAN/VPN and use --pairing-port 50052. curl: $err"
-      fi
       die "request failed: $err"
     }
+    resp="$(cat "$req_body" 2>/dev/null || true)"
+    case "$http_code" in
+      2??) ;;
+      *)
+        detail="$(format_http_error_detail "request" "$resp" || true)"
+        rm -rf "$req_tmpdir" 2>/dev/null || true
+        if [ -n "$(trim "$detail")" ]; then
+          die "$detail"
+        fi
+        die "request failed (HTTP $http_code): $(trim "$resp")"
+        ;;
+    esac
+    rm -rf "$req_tmpdir" 2>/dev/null || true
     rid="$(json_get_string pairing_request_id "$resp")"
     status="$(json_get_string status "$resp")"
     [ -n "$rid" ] || die "could not parse pairing_request_id (response: $resp)"
 
-    write_pairing_env_state "$HUB_HOST" "$PAIRING_PORT" "$GRPC_PORT" "$APP_ID" "$DEVICE_NAME" "$rid" "$secret"
+    write_pairing_env_state "$HUB_HOST" "$PAIRING_PORT" "$GRPC_PORT" "$APP_ID" "$DEVICE_NAME" "$rid" "$secret" "$found_internet_host" "$found_hub_instance_id" "$found_lan_discovery_name" "$found_pairing_profile_epoch" "$found_route_pack_version"
 
     echo "Pairing request created: $rid (status=${status:-pending})"
     echo "Saved state: $PAIRING_ENV"
@@ -1349,6 +1626,7 @@ case "$cmd" in
     secret=""
     timeout_sec="900"
     interval_sec="2"
+    pairing_port_set="0"
 
     if [ -f "$PAIRING_ENV" ]; then
       # shellcheck disable=SC1090
@@ -1363,7 +1641,7 @@ case "$cmd" in
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --hub) HUB_HOST="${2:-}"; shift 2 ;;
-        --pairing-port) PAIRING_PORT="${2:-}"; shift 2 ;;
+        --pairing-port) PAIRING_PORT="${2:-}"; pairing_port_set="1"; shift 2 ;;
         --grpc-port) GRPC_PORT="${2:-}"; shift 2 ;;
         --id) rid="${2:-}"; shift 2 ;;
         --secret) secret="${2:-}"; shift 2 ;;
@@ -1382,16 +1660,27 @@ case "$cmd" in
     [ "$interval_sec" -gt 0 ] || interval_sec="2"
 
     if [ "$HUB_HOST" = "auto" ]; then
-      discovered="$(discover_hub_endpoint "$PAIRING_PORT" "2" "" || true)"
+      discovered="$(discover_hub_endpoint "$PAIRING_PORT" "2" "" "$pairing_port_set" || true)"
       [ -n "$discovered" ] || die "wait discovery failed (use --hub <host> or run knock first)"
       HUB_HOST="$(trim "${discovered%%|*}")"
       tail1="${discovered#*|}"
       found_pairing_port="$(trim "${tail1%%|*}")"
       tail2="${tail1#*|}"
       found_grpc_port="$(trim "${tail2%%|*}")"
+      tail3="${tail2#*|}"
+      tail4="${tail3#*|}"
+      tail5="${tail4#*|}"
+      found_internet_host="$(trim "${tail5%%|*}")"
+      tail6="${tail5#*|}"
+      found_hub_instance_id="$(trim "${tail6%%|*}")"
+      tail7="${tail6#*|}"
+      found_lan_discovery_name="$(trim "${tail7%%|*}")"
+      tail8="${tail7#*|}"
+      found_pairing_profile_epoch="$(trim "${tail8%%|*}")"
+      found_route_pack_version="$(trim "${tail8#*|}")"
       PAIRING_PORT="$(uint_or_default "$found_pairing_port" "$PAIRING_PORT")"
       GRPC_PORT="$(uint_or_default "$found_grpc_port" "$GRPC_PORT")"
-      persist_discovery_result "$HUB_HOST" "$PAIRING_PORT" "$GRPC_PORT" || true
+      persist_discovery_result "$HUB_HOST" "$PAIRING_PORT" "$GRPC_PORT" "$found_internet_host" "$found_hub_instance_id" "$found_lan_discovery_name" "$found_pairing_profile_epoch" "$found_route_pack_version" || true
       echo "Discovered Hub: ${HUB_HOST} (pairing=${PAIRING_PORT}, grpc=${GRPC_PORT})"
     fi
 
@@ -1412,6 +1701,8 @@ case "$cmd" in
           tok="$(json_get_string client_token "$resp")"
           dev_id="$(json_get_string device_id "$resp")"
           user_id_from_resp="$(json_get_string user_id "$resp")"
+          pairing_profile_epoch="$(trim "$(json_get_number pairing_profile_epoch "$resp")")"
+          route_pack_version="$(trim "$(json_get_string route_pack_version "$resp")")"
           [ -n "$tok" ] || die "approved but missing client_token (response: $resp)"
 
           # Optional TLS bootstrap (Hub may be configured for TLS/mTLS).
@@ -1455,8 +1746,8 @@ case "$cmd" in
           fi
 
           write_hub_env_state "$HUB_HOST" "$GRPC_PORT" "$tok" "${dev_id:-}" "${user_id_from_resp:-}" "${AXHUB_APP_ID:-ax_terminal}" "$tls_mode" "$tls_server_name" "$profile_ca_path" "$profile_client_cert_path" "$profile_client_key_path"
-          write_connection_profile "$HUB_HOST" "$GRPC_PORT" "$PAIRING_PORT" "${dev_id:-}" "$tls_mode" "$tls_server_name" "$profile_ca_path" "$profile_client_cert_path" "$profile_client_key_path"
-          persist_discovery_result "$HUB_HOST" "$PAIRING_PORT" "$GRPC_PORT" || true
+          write_connection_profile "$HUB_HOST" "$GRPC_PORT" "$PAIRING_PORT" "${dev_id:-}" "$tls_mode" "$tls_server_name" "$profile_ca_path" "$profile_client_cert_path" "$profile_client_key_path" "$pairing_profile_epoch" "$route_pack_version"
+          persist_discovery_result "$HUB_HOST" "$PAIRING_PORT" "$GRPC_PORT" "${AXHUB_INTERNET_HOST:-}" "${AXHUB_HUB_INSTANCE_ID:-}" "${AXHUB_LAN_DISCOVERY_NAME:-}" "$pairing_profile_epoch" "$route_pack_version" || true
           echo "Approved."
           echo "Saved env: $HUB_ENV"
           echo "Saved connection profile: $CONNECTION_JSON"
@@ -1485,6 +1776,7 @@ case "$cmd" in
     HUB_HOST=""
     GRPC_PORT=""
     PAIRING_PORT="50052"
+    pairing_port_set="0"
     auto_reconnect="0"
     max_backoff_sec="30"
     max_failures="0" # 0 = infinite
@@ -1537,7 +1829,7 @@ case "$cmd" in
       case "$1" in
         --hub) HUB_HOST="${2:-}"; shift 2 ;;
         --grpc-port) GRPC_PORT="${2:-}"; grpc_port_set="1"; shift 2 ;;
-        --pairing-port) PAIRING_PORT="${2:-}"; shift 2 ;;
+        --pairing-port) PAIRING_PORT="${2:-}"; pairing_port_set="1"; shift 2 ;;
         --auto-reconnect) auto_reconnect="1"; shift 1 ;;
         --max-backoff-sec) max_backoff_sec="${2:-}"; shift 2 ;;
         --max-failures) max_failures="${2:-}"; shift 2 ;;
@@ -1577,7 +1869,7 @@ case "$cmd" in
       last_error="unknown"
 
       if [ "$target_host" = "auto" ]; then
-        discovered="$(discover_hub_endpoint "$target_pairing_port" "$timeout_sec" "" || true)"
+        discovered="$(discover_hub_endpoint "$target_pairing_port" "$timeout_sec" "" "$pairing_port_set" || true)"
         if [ -n "$discovered" ]; then
           target_host="$(trim "${discovered%%|*}")"
           tail1="${discovered#*|}"
@@ -1623,14 +1915,16 @@ case "$cmd" in
           fi
           if echo "$probe_err" | grep -Eiq "node_runtime_killed|node runtime killed|exit=137|exit=134"; then
             last_error="node_runtime_killed"
+          elif echo "$probe_err" | grep -Eiq "alert certificate required|tlsv13 alert certificate required|peer did not return a certificate|client certificate required|certificate required"; then
+            last_error="mtls_client_certificate_required"
           elif echo "$probe_err" | grep -Eiq "unauthenticated|invalid token|permission denied"; then
             last_error="unauthenticated"
           elif echo "$probe_err" | grep -Eiq "forbidden|permission_denied|not authorized"; then
             last_error="forbidden"
-          elif echo "$probe_err" | grep -Eiq "unavailable|failed to connect|connection refused|deadline exceeded|timeout"; then
-            last_error="grpc_unavailable"
           elif echo "$probe_err" | grep -Eiq "certificate|tls|ssl"; then
             last_error="tls_error"
+          elif echo "$probe_err" | grep -Eiq "unavailable|failed to connect|connection refused|deadline exceeded|timeout"; then
+            last_error="grpc_unavailable"
           else
             last_error="grpc_probe_failed"
           fi
@@ -1729,12 +2023,22 @@ case "$cmd" in
 
     echo "Downloading client kit…"
     echo "  $kit_url"
-    err="$(curl -fsSL "$kit_url" -o "$tmp_tgz" 2>&1)" || {
-      if echo "$err" | grep -q "error: 403"; then
-        die "download failed (403). Your source IP may not be allowed. Ensure you're on the Hub LAN/VPN and use --pairing-port 50052."
-      fi
+    dl_err="$tmpdir/axhub_client_kit.err"
+    http_code="$(curl -sS -L -o "$tmp_tgz" -w '%{http_code}' "$kit_url" 2>"$dl_err")" || {
+      err="$(cat "$dl_err" 2>/dev/null || true)"
       die "download failed: $err"
     }
+    case "$http_code" in
+      2??) ;;
+      *)
+        body="$(cat "$tmp_tgz" 2>/dev/null || true)"
+        detail="$(format_http_error_detail "download" "$body" || true)"
+        if [ -n "$(trim "$detail")" ]; then
+          die "$detail"
+        fi
+        die "download failed (HTTP $http_code): $(trim "$body")"
+        ;;
+    esac
 
     echo "Verifying sha256…"
     sha256_verify "$kit_sha" "$tmp_tgz" || die "sha256 mismatch (refusing to install)"

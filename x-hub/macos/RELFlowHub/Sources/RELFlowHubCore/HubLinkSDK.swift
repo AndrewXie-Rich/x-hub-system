@@ -64,6 +64,7 @@ public enum HubLinkIPCMode: String, Sendable {
 }
 
 public struct HubLinkStatus: Decodable, Sendable, Equatable {
+    public var pid: Int32?
     public var updatedAt: Double
     public var ipcMode: String?
     public var ipcPath: String?
@@ -72,6 +73,7 @@ public struct HubLinkStatus: Decodable, Sendable, Equatable {
     public var appBuild: String?
 
     public enum CodingKeys: String, CodingKey {
+        case pid
         case updatedAt = "updatedAt"
         case updated_at = "updated_at"
         case ipcMode = "ipcMode"
@@ -88,6 +90,13 @@ public struct HubLinkStatus: Decodable, Sendable, Equatable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        if let v = try? c.decode(Int32.self, forKey: .pid) {
+            self.pid = v
+        } else if let v = try? c.decode(Int.self, forKey: .pid) {
+            self.pid = Int32(v)
+        } else {
+            self.pid = nil
+        }
         if let v = try? c.decode(Double.self, forKey: .updatedAt) {
             self.updatedAt = v
         } else if let v = try? c.decode(Double.self, forKey: .updated_at) {
@@ -103,7 +112,14 @@ public struct HubLinkStatus: Decodable, Sendable, Equatable {
     }
 
     public func isAlive(ttl: Double) -> Bool {
-        (Date().timeIntervalSince1970 - updatedAt) < ttl
+        guard (Date().timeIntervalSince1970 - updatedAt) < ttl else { return false }
+        return Self.pidLooksAlive(pid)
+    }
+
+    private static func pidLooksAlive(_ pid: Int32?) -> Bool {
+        guard let pid, pid > 1 else { return true }
+        if Darwin.kill(pid_t(pid), 0) == 0 { return true }
+        return errno == EPERM
     }
 }
 

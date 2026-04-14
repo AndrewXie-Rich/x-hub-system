@@ -24,26 +24,26 @@ struct ImportRemoteCatalogSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Import Remote Catalog Models")
+            Text(HubUIStrings.Models.ImportRemoteCatalog.title)
                 .font(.headline)
 
-            Text("Fetches the curated model list from the remote catalog endpoint and registers it as remote models in REL Flow Hub.")
+            Text(HubUIStrings.Models.ImportRemoteCatalog.subtitle)
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Text("Base URL: \(RemoteCatalogClient.defaultBaseURL.absoluteString)")
+            Text(HubUIStrings.Models.ImportRemoteCatalog.baseURL(RemoteCatalogClient.defaultBaseURL.absoluteString))
                 .font(.caption2.monospaced())
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
 
-            TextField("Model ID prefix (e.g. remote_catalog/)", text: $idPrefix)
+            TextField(HubUIStrings.Models.ImportRemoteCatalog.idPrefixPlaceholder, text: $idPrefix)
                 .textFieldStyle(.roundedBorder)
 
-            SecureField("API Key", text: $apiKey)
+            SecureField(HubUIStrings.Models.ImportRemoteCatalog.apiKeyPlaceholder, text: $apiKey)
                 .textFieldStyle(.roundedBorder)
 
-            Toggle("Enable imported models (show as Loaded)", isOn: $enabled)
-            Toggle("Replace existing Remote Catalog models", isOn: $replaceExisting)
+            Toggle(HubUIStrings.Models.ImportRemoteCatalog.enabledToggle, isOn: $enabled)
+            Toggle(HubUIStrings.Models.ImportRemoteCatalog.replaceExistingToggle, isOn: $replaceExisting)
 
             if !errorText.isEmpty {
                 Text(errorText)
@@ -55,9 +55,9 @@ struct ImportRemoteCatalogSheet: View {
 
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
+                Button(HubUIStrings.Models.ImportRemoteCatalog.cancel) { dismiss() }
                     .disabled(isImporting)
-                Button(isImporting ? "Importing…" : "Import") {
+                Button(isImporting ? HubUIStrings.Models.ImportRemoteCatalog.importing : HubUIStrings.Models.ImportRemoteCatalog.importAction) {
                     startImport()
                 }
                 .keyboardShortcut(.defaultAction)
@@ -71,7 +71,7 @@ struct ImportRemoteCatalogSheet: View {
     private func startImport() {
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else {
-            errorText = "API Key is required."
+            errorText = HubUIStrings.Models.ImportRemoteCatalog.missingAPIKey
             return
         }
 
@@ -94,7 +94,7 @@ struct ImportRemoteCatalogSheet: View {
                 }
             } catch {
                 await MainActor.run {
-                    errorText = String(describing: error)
+                    errorText = error.localizedDescription
                     isImporting = false
                 }
             }

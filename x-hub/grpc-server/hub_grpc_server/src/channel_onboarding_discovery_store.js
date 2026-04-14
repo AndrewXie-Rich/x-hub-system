@@ -465,7 +465,7 @@ export function getChannelOnboardingDiscoveryTicketById(db, { ticket_id } = {}) 
      WHERE ticket_id = ?
      LIMIT 1`
   ).get(ticketId);
-  return parseRow(row);
+  return markExpiredIfNeeded(db, parseRow(row));
 }
 
 export function getLatestChannelOnboardingApprovalDecisionByTicketId(db, { ticket_id } = {}) {
@@ -488,7 +488,7 @@ export function listChannelOnboardingDiscoveryTickets(db, filters = {}) {
   const args = [];
   const ticket_id = safeString(filters.ticket_id);
   const provider = normalizeChannelProviderId(filters.provider) || '';
-  const status = safeString(filters.status).toLowerCase();
+  const status = normalizeChannelOnboardingDiscoveryStatus(filters.status, '');
   const external_tenant_id = safeString(filters.external_tenant_id);
   const external_user_id = safeString(filters.external_user_id);
   const conversation_id = safeString(filters.conversation_id);
@@ -531,7 +531,10 @@ export function listChannelOnboardingDiscoveryTickets(db, filters = {}) {
     ORDER BY updated_at_ms DESC
     LIMIT ?
   `;
-  return db.db.prepare(sql).all(...args, limit).map((row) => parseRow(row)).filter(Boolean);
+  return db.db.prepare(sql).all(...args, limit)
+    .map((row) => markExpiredIfNeeded(db, parseRow(row)))
+    .filter(Boolean)
+    .filter((row) => !status || row.status === status);
 }
 
 export function createOrTouchChannelOnboardingDiscoveryTicket(db, {

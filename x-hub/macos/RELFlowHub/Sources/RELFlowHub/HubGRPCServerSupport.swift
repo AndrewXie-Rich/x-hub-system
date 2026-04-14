@@ -1,6 +1,8 @@
 import Foundation
 import AppKit
+import CoreImage
 import Darwin
+import LocalAuthentication
 import Security
 import RELFlowHubCore
 
@@ -11,9 +13,9 @@ enum HubGRPCClientPolicyMode: String, Codable, CaseIterable, Equatable, Sendable
     var title: String {
         switch self {
         case .newProfile:
-            return "Policy Profile"
+            return HubUIStrings.Settings.GRPC.Runtime.clientPolicyProfile
         case .legacyGrant:
-            return "Legacy Grant"
+            return HubUIStrings.Settings.GRPC.Runtime.clientLegacyGrant
         }
     }
 }
@@ -26,11 +28,11 @@ enum HubPaidModelSelectionMode: String, Codable, CaseIterable, Equatable, Sendab
     var title: String {
         switch self {
         case .off:
-            return "Off"
+            return HubUIStrings.Settings.GRPC.Runtime.paidModelOff
         case .allPaidModels:
-            return "All Paid Models"
+            return HubUIStrings.Settings.GRPC.Runtime.paidModelAll
         case .customSelectedModels:
-            return "Custom Selected Models"
+            return HubUIStrings.Settings.GRPC.Runtime.paidModelCustomSelected
         }
     }
 }
@@ -138,6 +140,7 @@ struct HubPairedTerminalTrustProfile: Codable, Equatable, Sendable {
 struct HubGRPCClientEntry: Identifiable, Codable, Equatable, Sendable {
     var deviceId: String
     var userId: String
+    var appId: String
     var name: String
     var token: String
     var enabled: Bool
@@ -153,6 +156,7 @@ struct HubGRPCClientEntry: Identifiable, Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case deviceId = "device_id"
         case userId = "user_id"
+        case appId = "app_id"
         case name
         case token
         case enabled
@@ -167,6 +171,7 @@ struct HubGRPCClientEntry: Identifiable, Codable, Equatable, Sendable {
     init(
         deviceId: String,
         userId: String = "",
+        appId: String = "",
         name: String,
         token: String,
         enabled: Bool,
@@ -179,6 +184,7 @@ struct HubGRPCClientEntry: Identifiable, Codable, Equatable, Sendable {
     ) {
         self.deviceId = deviceId
         self.userId = userId
+        self.appId = appId
         self.name = name
         self.token = token
         self.enabled = enabled
@@ -194,6 +200,7 @@ struct HubGRPCClientEntry: Identifiable, Codable, Equatable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         deviceId = (try? c.decode(String.self, forKey: .deviceId)) ?? ""
         userId = (try? c.decode(String.self, forKey: .userId)) ?? ""
+        appId = (try? c.decode(String.self, forKey: .appId)) ?? ""
         name = (try? c.decode(String.self, forKey: .name)) ?? ""
         token = (try? c.decode(String.self, forKey: .token)) ?? ""
         enabled = (try? c.decode(Bool.self, forKey: .enabled)) ?? true
@@ -214,6 +221,7 @@ struct HubGRPCClientEntry: Identifiable, Codable, Equatable, Sendable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(deviceId, forKey: .deviceId)
         try c.encode(userId, forKey: .userId)
+        try c.encode(appId, forKey: .appId)
         try c.encode(name, forKey: .name)
         try c.encode(token, forKey: .token)
         try c.encode(enabled, forKey: .enabled)
@@ -321,6 +329,66 @@ struct HubGRPCClientsSnapshot: Codable, Equatable, Sendable {
     }
 }
 
+private func decodeNullTerminatedCString(_ buffer: [CChar]) -> String {
+    let bytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+    return String(decoding: bytes, as: UTF8.self)
+}
+
+struct HubLocalRuntimeWatchdogEvaluation: Equatable {
+    let nextFailureCount: Int
+    let withinStartupGrace: Bool
+    let inRestartCooldown: Bool
+    let shouldRestart: Bool
+}
+
+enum HubLocalRuntimeWatchdog {
+    static let startupGraceSec: Double = 12.0
+    static let unhealthyThreshold: Int = 3
+    static let restartCooldownSec: Double = 45.0
+
+    static func evaluate(
+        now: Double,
+        launchAt: Double,
+        consecutiveFailureCount: Int,
+        lastRestartAt: Double,
+        pairingHealthy: Bool
+    ) -> HubLocalRuntimeWatchdogEvaluation {
+        let withinStartupGrace = isWithinStartupGrace(now: now, launchAt: launchAt)
+        let inRestartCooldown = isInRestartCooldown(now: now, lastRestartAt: lastRestartAt)
+
+        if pairingHealthy || withinStartupGrace {
+            return HubLocalRuntimeWatchdogEvaluation(
+                nextFailureCount: 0,
+                withinStartupGrace: withinStartupGrace,
+                inRestartCooldown: inRestartCooldown,
+                shouldRestart: false
+            )
+        }
+
+        let nextFailureCount = min(
+            unhealthyThreshold,
+            max(0, consecutiveFailureCount) + 1
+        )
+        let shouldRestart = nextFailureCount >= unhealthyThreshold && !inRestartCooldown
+        return HubLocalRuntimeWatchdogEvaluation(
+            nextFailureCount: nextFailureCount,
+            withinStartupGrace: false,
+            inRestartCooldown: inRestartCooldown,
+            shouldRestart: shouldRestart
+        )
+    }
+
+    static func isWithinStartupGrace(now: Double, launchAt: Double) -> Bool {
+        guard launchAt > 0 else { return false }
+        return (now - launchAt) < startupGraceSec
+    }
+
+    static func isInRestartCooldown(now: Double, lastRestartAt: Double) -> Bool {
+        guard lastRestartAt > 0 else { return false }
+        return (now - lastRestartAt) < restartCooldownSec
+    }
+}
+
 // Runs the Node gRPC server (hub_grpc_server) from inside the Hub app so DMG installs
 // don't require a Terminal command to start LAN access.
 @MainActor
@@ -332,6 +400,7 @@ final class HubGRPCServerSupport: ObservableObject {
             UserDefaults.standard.set(autoStart, forKey: HubGRPCServerSupport.autoStartKey)
             if autoStart { autoStartIfNeeded() }
             else { stop() }
+            refreshServingPowerState()
         }
     }
 
@@ -373,14 +442,48 @@ final class HubGRPCServerSupport: ObservableObject {
         }
     }
 
-    @Published private(set) var statusText: String = "gRPC: unknown"
+    @Published var internetHostOverride: String = (UserDefaults.standard.string(forKey: HubGRPCServerSupport.internetHostOverrideKey) ?? "") {
+        didSet {
+            let trimmed = internetHostOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed != internetHostOverride {
+                internetHostOverride = trimmed
+                return
+            }
+            UserDefaults.standard.set(trimmed, forKey: HubGRPCServerSupport.internetHostOverrideKey)
+            if isRunning {
+                restart()
+            } else {
+                refresh()
+                autoStartIfNeeded()
+            }
+            refreshServingPowerState()
+        }
+    }
+
+    @Published var externalHubAlias: String = (UserDefaults.standard.string(forKey: HubGRPCServerSupport.externalHubAliasKey) ?? "") {
+        didSet {
+            let normalized = HubExternalAccessInviteSupport.normalizedExternalHubAlias(externalHubAlias) ?? ""
+            if normalized != externalHubAlias {
+                externalHubAlias = normalized
+                return
+            }
+            UserDefaults.standard.set(normalized, forKey: HubGRPCServerSupport.externalHubAliasKey)
+        }
+    }
+
+    @Published private(set) var statusText: String = HubUIStrings.Settings.GRPC.Runtime.statusUnknown
     @Published private(set) var lastError: String = ""
+    @Published private(set) var autoPortSwitchMessage: String = ""
     @Published private(set) var lanAddresses: [String] = []
     @Published private(set) var connectionGuide: String = ""
     @Published private(set) var allowedClients: [HubGRPCClientEntry] = []
+    @Published private(set) var externalInviteTokenRecord: HubExternalInviteTokenRecord? = HubExternalInviteTokenStore.load()
 
     var xtTerminalInternetHost: String? {
-        Self.firstNonLoopbackIPv4(from: lanAddresses)
+        Self.preferredXTTerminalInternetHost(
+            override: internetHostOverride,
+            interfaceRows: lanAddresses
+        )
     }
 
     var xtTerminalInternetHostFallback: String {
@@ -391,15 +494,82 @@ final class HubGRPCServerSupport: ObservableObject {
         Self.pairingPort(grpcPort: port)
     }
 
+    var preferredExternalHubAlias: String? {
+        HubExternalAccessInviteSupport.preferredExternalHubAlias(
+            override: externalHubAlias,
+            bonjourMetadata: bonjourAdvertiser.metadata,
+            externalHost: xtTerminalInternetHost
+        )
+    }
+
+    var externalInviteURL: URL? {
+        HubExternalAccessInviteSupport.externalInviteURL(
+            alias: preferredExternalHubAlias,
+            externalHost: xtTerminalInternetHost,
+            inviteToken: externalInviteTokenRecord?.tokenSecret,
+            pairingPort: xtTerminalPairingPort,
+            grpcPort: port,
+            hubInstanceID: bonjourAdvertiser.metadata?.hubInstanceID
+        )
+    }
+
+    var externalInviteLinkText: String {
+        externalInviteURL?.absoluteString ?? ""
+    }
+
+    var externalInviteQRCodeImage: NSImage? {
+        guard let inviteURL = externalInviteURL else { return nil }
+        return Self.qrCodeImage(for: inviteURL.absoluteString, side: 156)
+    }
+
+    var externalInviteUnavailableReason: String {
+        HubExternalAccessInviteSupport.externalInviteUnavailableReason(
+            externalHost: xtTerminalInternetHost,
+            hasInviteToken: externalInviteTokenRecord != nil
+        )
+    }
+
+    var canProvisionExternalInvite: Bool {
+        HubExternalAccessInviteSupport.normalizedInviteHost(xtTerminalInternetHost) != nil
+    }
+
+    var canProvisionSecureRemoteSetupPack: Bool {
+        HubExternalAccessInviteSupport.normalizedStableNamedExternalHost(xtTerminalInternetHost) != nil
+    }
+
+    var hasExternalInviteToken: Bool {
+        externalInviteTokenRecord != nil
+    }
+
+    var externalInviteTokenPreview: String {
+        externalInviteTokenRecord?.redactedSecret ?? ""
+    }
+
+    var secureRemoteSetupPackText: String {
+        HubSecureRemoteSetupPackBuilder.build(
+            externalHost: xtTerminalInternetHost,
+            alias: preferredExternalHubAlias,
+            inviteToken: externalInviteTokenRecord?.tokenSecret,
+            pairingPort: xtTerminalPairingPort,
+            grpcPort: port,
+            hubInstanceID: bonjourAdvertiser.metadata?.hubInstanceID
+        ) ?? ""
+    }
+
     private static let autoStartKey = "relflowhub_grpc_autostart"
     private static let portKey = "relflowhub_grpc_port"
     private static let tlsModeKey = "relflowhub_grpc_tls_mode"
+    private static let internetHostOverrideKey = "relflowhub_grpc_internet_host_override"
+    private static let externalHubAliasKey = "relflowhub_external_hub_alias"
 
     private static let defaultPort: Int = 50051
 
     private var proc: Process?
     private var logHandle: FileHandle?
     private var timer: Timer?
+    private var didEnsureClientsTemplate: Bool = false
+    private var cachedClientsSnapshot: HubGRPCClientsSnapshot = .empty()
+    private var cachedClientsSnapshotFingerprint: String = ""
     private var stopRequestedAt: Double = 0
 
     // If a Process is still running when it deinitializes, Foundation can throw an ObjC
@@ -410,6 +580,11 @@ final class HubGRPCServerSupport: ObservableObject {
     private var nextStartAttemptAt: Double = 0
     private var failCount: Int = 0
     private var externalPairingHealthy: Bool = false
+    private var localPairingHealthy: Bool = false
+    private var lastProcessLaunchAt: Double = 0
+    private var localPairingProbeFailureCount: Int = 0
+    private var lastLocalWatchdogRestartAt: Double = 0
+    private var lastLoggedLocalHealthSnapshot: String = ""
     private var recentFailureTimes: [Double] = []
     private var lastExitLogSignature: String = ""
     private var lastExitLogAt: Double = 0
@@ -420,12 +595,27 @@ final class HubGRPCServerSupport: ObservableObject {
     private static let failureBurstLimit: Int = 4
     private static let failureBurstCooldownSec: Double = 300.0
     private static let duplicateExitLogCooldownSec: Double = 12.0
+    private let bonjourAdvertiser = HubBonjourAdvertiser()
+    private static let qrContext = CIContext(options: nil)
 
     var isRunning: Bool {
         if let p = proc, p.isRunning {
             return true
         }
         return false
+    }
+
+    var isServingAvailable: Bool {
+        if isRunning {
+            if localPairingHealthy {
+                return true
+            }
+            return HubLocalRuntimeWatchdog.isWithinStartupGrace(
+                now: Date().timeIntervalSince1970,
+                launchAt: lastProcessLaunchAt
+            )
+        }
+        return externalPairingHealthy
     }
 
     private init() {
@@ -442,6 +632,7 @@ final class HubGRPCServerSupport: ObservableObject {
             }
         }
         tick()
+        refreshServingPowerState()
     }
 
     func refresh() {
@@ -465,12 +656,25 @@ final class HubGRPCServerSupport: ObservableObject {
             if pairingOk {
                 // No need to start a second copy; just surface status.
                 lastError = ""
+                autoPortSwitchMessage = ""
                 resetFailureBackoffState()
                 refresh()
                 return
             }
 
-            lastError = "Port \(port) is already in use. Stop the other process or change the port in Settings → LAN (gRPC) → Advanced."
+            if let freePort = Self.diagnosticsFindAvailablePort(startingAt: max(Self.defaultPort, port + 1)) {
+                let previousPort = port
+                autoPortSwitchMessage = HubUIStrings.Settings.GRPC.Runtime.autoPortSwitched(
+                    previousPort: previousPort,
+                    grpcPort: freePort,
+                    pairingPort: Self.pairingPort(grpcPort: freePort)
+                )
+                resetFailureBackoffState()
+                port = freePort
+                return
+            }
+
+            lastError = HubUIStrings.Settings.GRPC.Runtime.portInUse(port)
             failCount = max(failCount, 6)
             let now = Date().timeIntervalSince1970
             let sched = scheduleRetryAfterFailure(now: now)
@@ -496,16 +700,16 @@ final class HubGRPCServerSupport: ObservableObject {
         }
 
         guard let nodeLaunch = autoDetectNodeLaunch() else {
-            lastError = "Node not found. Please install Node.js (v22+) or set a custom Node path."
-            statusText = "gRPC: node missing"
+            lastError = HubUIStrings.Settings.GRPC.Runtime.missingNode
+            statusText = HubUIStrings.Settings.GRPC.Runtime.statusMissingNode
             failCount += 1
             _ = scheduleRetryAfterFailure(now: Date().timeIntervalSince1970)
             return
         }
 
         guard let serverJS = bundledServerJSURL() else {
-            lastError = "Bundled gRPC server not found in app Resources. Rebuild Hub with tools/build_hub_app.command."
-            statusText = "gRPC: missing server.js"
+            lastError = HubUIStrings.Settings.GRPC.Runtime.missingServerJS
+            statusText = HubUIStrings.Settings.GRPC.Runtime.statusMissingServerJS
             failCount += 1
             _ = scheduleRetryAfterFailure(now: Date().timeIntervalSince1970)
             return
@@ -536,6 +740,9 @@ final class HubGRPCServerSupport: ObservableObject {
         env["HUB_GRPC_TLS_MODE"] = tlsMode
         // Stable authority name for TLS host verification when clients connect by IP.
         env["HUB_GRPC_TLS_SERVER_NAME"] = "axhub"
+        if let publicHost = xtTerminalInternetHost {
+            env["HUB_PAIRING_PUBLIC_HOST"] = publicHost
+        }
         // Enforce token + client-cert pin in mTLS mode (defense-in-depth).
         env["HUB_GRPC_MTLS_REQUIRE_CERT_PIN"] = "1"
         // Pin base dir so Node uses the same filesystem IPC directories as the Hub runtime + Bridge.
@@ -560,6 +767,7 @@ final class HubGRPCServerSupport: ObservableObject {
         //
         // For remote mode (VPN), clients typically fall under "private" (10.x/172.16/192.168).
         let lanAllowed = Self.defaultLANAllowedCidrs()
+        let firstPairLANAllowed = Self.defaultFirstPairingLANAllowedCidrs()
         env["HUB_ALLOWED_CIDRS"] = lanAllowed.joined(separator: ",")
         // Help the embedded Node server generate a server TLS cert whose SAN includes current LAN IPs.
         // (This is best-effort; clients still use authority override with HUB_GRPC_TLS_SERVER_NAME.)
@@ -586,6 +794,7 @@ final class HubGRPCServerSupport: ObservableObject {
         env["HUB_PAIRING_HOST"] = "0.0.0.0"
         env["HUB_PAIRING_PORT"] = String(max(1, min(65535, port + 1)))
         env["HUB_PAIRING_ALLOWED_CIDRS"] = lanAllowed.joined(separator: ",")
+        env["HUB_PAIRING_FIRST_PAIR_ALLOWED_CIDRS"] = firstPairLANAllowed.joined(separator: ",")
         p.environment = env
 
         if let h = logHandle {
@@ -604,16 +813,17 @@ final class HubGRPCServerSupport: ObservableObject {
                 }
 
                 self.proc = nil
+                self.resetLocalRuntimeHealth(clearLaunchAt: true)
                 if proc.terminationStatus != 0 {
                     self.failCount += 1
                     let now = Date().timeIntervalSince1970
                     let portBusy = Self.isTCPPortInUse(self.port)
                     // If the port is occupied (common EADDRINUSE scenario), back off longer so we don't crash-loop.
                     if portBusy {
-                        self.lastError = "Port \(self.port) is already in use. Stop the other process or change the port in Settings → LAN (gRPC) → Advanced."
+                        self.lastError = HubUIStrings.Settings.GRPC.Runtime.portInUse(self.port)
                         self.failCount = max(self.failCount, 6)
                     } else if self.lastError.isEmpty {
-                        self.lastError = "gRPC server exited (code \(proc.terminationStatus)). Check hub_grpc.log for details."
+                        self.lastError = HubUIStrings.Settings.GRPC.Runtime.serverExited(code: proc.terminationStatus)
                     }
                     var sched = self.scheduleRetryAfterFailure(now: now)
                     if portBusy {
@@ -621,7 +831,11 @@ final class HubGRPCServerSupport: ObservableObject {
                         sched.delaySec = max(sched.delaySec, 300.0)
                     }
                     if sched.inCooldown {
-                        self.lastError = "gRPC crash-loop detected (\(sched.burstCount)x/\(Int(Self.failureBurstWindowSec))s). Auto-retry cooling down \(Int(sched.delaySec))s. Check hub_grpc.log or click Fix Now."
+                        self.lastError = HubUIStrings.Settings.GRPC.Runtime.crashLoopDetected(
+                            count: sched.burstCount,
+                            windowSec: Int(Self.failureBurstWindowSec),
+                            cooldownSec: Int(sched.delaySec)
+                        )
                     }
                     self.appendExitLogRateLimited(
                         code: proc.terminationStatus,
@@ -648,9 +862,11 @@ final class HubGRPCServerSupport: ObservableObject {
         do {
             try p.run()
             proc = p
+            lastProcessLaunchAt = Date().timeIntervalSince1970
+            resetLocalRuntimeHealth(clearLaunchAt: false)
             refresh()
         } catch {
-            lastError = "Failed to start gRPC server: \(error.localizedDescription)"
+            lastError = HubUIStrings.Settings.GRPC.Runtime.startFailed(error.localizedDescription)
             failCount += 1
             _ = scheduleRetryAfterFailure(now: Date().timeIntervalSince1970)
             refresh()
@@ -661,6 +877,7 @@ final class HubGRPCServerSupport: ObservableObject {
         lastError = ""
         resetFailureBackoffState()
         stopRequestedAt = Date().timeIntervalSince1970
+        bonjourAdvertiser.stop()
 
         guard let p = proc else {
             refresh()
@@ -684,7 +901,7 @@ final class HubGRPCServerSupport: ObservableObject {
         if p.isRunning {
             // Keep reference to prevent Foundation from crashing on deinit.
             leakRunningProcess(p)
-            lastError = "Failed to stop gRPC server (timeout). pid=\(p.processIdentifier)"
+            lastError = HubUIStrings.Settings.GRPC.Runtime.stopTimedOut(pid: p.processIdentifier)
         } else {
             proc = nil
             try? logHandle?.close()
@@ -714,15 +931,33 @@ final class HubGRPCServerSupport: ObservableObject {
     }
 
     func copyBootstrapCommandToClipboard() {
-        let pairingPort = xtTerminalPairingPort
-        let hostText = xtTerminalInternetHostFallback
+        let cmd = Self.bootstrapCommandText(
+            host: xtTerminalInternetHostFallback,
+            grpcPort: port,
+            pairingPort: xtTerminalPairingPort,
+            inviteToken: externalInviteTokenRecord?.tokenSecret
+        )
 
-        let cmd = """
-HUB_HOST='\(hostText)'
-GRPC_PORT=\(port)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(cmd, forType: .string)
+    }
+
+    static func bootstrapCommandText(
+        host: String,
+        grpcPort: Int,
+        pairingPort: Int,
+        inviteToken: String?
+    ) -> String {
+        let normalizedInviteToken = (inviteToken ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let inviteTokenLines = normalizedInviteToken.isEmpty ? "" : "INVITE_TOKEN='\(normalizedInviteToken)'\n\n"
+        let inviteTokenArg = normalizedInviteToken.isEmpty ? "" : " \\\n    --invite-token \"$INVITE_TOKEN\""
+
+        return """
+HUB_HOST='\(host)'
+GRPC_PORT=\(grpcPort)
 PAIRING_PORT=\(pairingPort)
 
-AXHUBCTL="$HOME/.local/bin/axhubctl"
+\(inviteTokenLines)AXHUBCTL="$HOME/.local/bin/axhubctl"
 mkdir -p "$(dirname "$AXHUBCTL")"
 
 curl -fsSL "http://${HUB_HOST}:${PAIRING_PORT}/install/axhubctl" -o "$AXHUBCTL" && \\
@@ -733,7 +968,8 @@ curl -fsSL "http://${HUB_HOST}:${PAIRING_PORT}/install/axhubctl" -o "$AXHUBCTL" 
   chmod +x "$AXHUBCTL" && \\
   "$AXHUBCTL" bootstrap --hub "$HUB_HOST" --pairing-port "$PAIRING_PORT" --grpc-port "$GRPC_PORT" \\
     --device-name \"<device_name>\" \\
-    --requested-scopes \"models,events,memory,skills,ai.generate.local\"
+    --requested-scopes \"models,events,memory,skills,ai.generate.local\" \\
+    --require-client-kit\(inviteTokenArg)
 
 # Verify (LAN):
 "$AXHUBCTL" list-models
@@ -743,9 +979,40 @@ curl -fsSL "http://${HUB_HOST}:${PAIRING_PORT}/install/axhubctl" -o "$AXHUBCTL" 
 # "$AXHUBCTL" tunnel --status
 # "$AXHUBCTL" remote list-models
 """
+    }
 
+    @discardableResult
+    func copyInviteLinkToClipboard() -> Bool {
+        guard canProvisionExternalInvite else { return false }
+        if externalInviteTokenRecord == nil {
+            rotateExternalInviteToken()
+        }
+        guard let inviteURL = externalInviteURL else { return false }
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(cmd, forType: .string)
+        NSPasteboard.general.setString(inviteURL.absoluteString, forType: .string)
+        return true
+    }
+
+    @discardableResult
+    func copySecureRemoteSetupPackToClipboard() -> Bool {
+        guard canProvisionSecureRemoteSetupPack else { return false }
+        if externalInviteTokenRecord == nil {
+            rotateExternalInviteToken()
+        }
+        let text = secureRemoteSetupPackText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return false }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        return true
+    }
+
+    func rotateExternalInviteToken() {
+        externalInviteTokenRecord = HubExternalInviteTokenStore.rotate()
+    }
+
+    func clearExternalInviteToken() {
+        HubExternalInviteTokenStore.clear()
+        externalInviteTokenRecord = nil
     }
 
     // For local control-plane calls (e.g. pairing approvals). Keep token private to Hub.
@@ -774,7 +1041,7 @@ curl -fsSL "http://${HUB_HOST}:${PAIRING_PORT}/install/axhubctl" -o "$AXHUBCTL" 
                 HubGRPCClientEntry(
                     deviceId: "terminal_device",
                     userId: "",
-                    name: "Terminal (default)",
+                    name: HubUIStrings.Settings.GRPC.Runtime.defaultTerminalName,
                     token: tok,
                     enabled: true,
                     createdAtMs: nowMs,
@@ -835,10 +1102,12 @@ curl -fsSL "http://${HUB_HOST}:${PAIRING_PORT}/install/axhubctl" -o "$AXHUBCTL" 
     }
 
     private func createClientsTemplateIfMissing() {
-        let url = clientsConfigURL()
-        if let data = try? Data(contentsOf: url),
-           let decoded = try? JSONDecoder().decode(HubGRPCClientsSnapshot.self, from: data),
-           !decoded.clients.isEmpty {
+        if didEnsureClientsTemplate {
+            return
+        }
+        let existing = loadClientsSnapshot()
+        if !existing.clients.isEmpty {
+            didEnsureClientsTemplate = true
             return
         }
 
@@ -849,11 +1118,22 @@ curl -fsSL "http://${HUB_HOST}:${PAIRING_PORT}/install/axhubctl" -o "$AXHUBCTL" 
     }
 
     private func loadClientsSnapshot() -> HubGRPCClientsSnapshot {
-        let url = clientsConfigURL()
-        guard let data = try? Data(contentsOf: url),
-              let obj = try? JSONDecoder().decode(HubGRPCClientsSnapshot.self, from: data) else {
+        guard let candidate = resolvedClientsConfigReadCandidate() else {
+            cachedClientsSnapshot = .empty()
+            cachedClientsSnapshotFingerprint = ""
             return .empty()
         }
+        if candidate.fingerprint == cachedClientsSnapshotFingerprint {
+            return cachedClientsSnapshot
+        }
+        guard let data = try? Data(contentsOf: candidate.url),
+              let obj = try? JSONDecoder().decode(HubGRPCClientsSnapshot.self, from: data) else {
+            cachedClientsSnapshot = .empty()
+            cachedClientsSnapshotFingerprint = candidate.fingerprint
+            return .empty()
+        }
+        cachedClientsSnapshot = obj
+        cachedClientsSnapshotFingerprint = candidate.fingerprint
         return obj
     }
 
@@ -877,6 +1157,58 @@ curl -fsSL "http://${HUB_HOST}:${PAIRING_PORT}/install/axhubctl" -o "$AXHUBCTL" 
         try? out.write(to: url, options: .atomic)
         // Contains bearer tokens; keep owner-readable only.
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        didEnsureClientsTemplate = true
+        cachedClientsSnapshot = cur
+        cachedClientsSnapshotFingerprint = clientsConfigFingerprint(for: url) ?? ""
+    }
+
+    private func clientsConfigReadCandidates() -> [URL] {
+        var out: [URL] = []
+        var seen: Set<String> = []
+
+        func append(_ url: URL) {
+            let path = url.standardizedFileURL.path
+            guard seen.insert(path).inserted else { return }
+            out.append(url)
+        }
+
+        if let group = SharedPaths.appGroupDirectory() {
+            append(group.appendingPathComponent("hub_grpc_clients.json"))
+        }
+        for base in SharedPaths.hubDirectoryCandidates() {
+            append(base.appendingPathComponent("hub_grpc_clients.json"))
+        }
+
+        return out
+    }
+
+    private func resolvedClientsConfigReadCandidate() -> (url: URL, fingerprint: String)? {
+        var bestURL: URL?
+        var bestDate: Date = .distantPast
+        var bestFingerprint: String = ""
+
+        for url in clientsConfigReadCandidates() {
+            guard let fingerprint = clientsConfigFingerprint(for: url) else { continue }
+            let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
+            let modifiedAt = values?.contentModificationDate ?? .distantPast
+            if bestURL == nil || modifiedAt >= bestDate {
+                bestURL = url
+                bestDate = modifiedAt
+                bestFingerprint = fingerprint
+            }
+        }
+
+        guard let bestURL else { return nil }
+        return (bestURL, bestFingerprint)
+    }
+
+    private func clientsConfigFingerprint(for url: URL) -> String? {
+        guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
+              let modifiedAt = values.contentModificationDate else {
+            return FileManager.default.fileExists(atPath: url.path) ? url.standardizedFileURL.path : nil
+        }
+        let fileSize = values.fileSize ?? 0
+        return "\(url.standardizedFileURL.path)#\(modifiedAt.timeIntervalSince1970)#\(fileSize)"
     }
 
     func openClientsConfig() {
@@ -919,7 +1251,7 @@ curl -fsSL "http://${HUB_HOST}:${PAIRING_PORT}/install/axhubctl" -o "$AXHUBCTL" 
         var snap = loadClientsSnapshot()
 
         let cleanedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let displayName = cleanedName.isEmpty ? "LAN Client" : cleanedName
+        let displayName = cleanedName.isEmpty ? HubUIStrings.Settings.GRPC.Runtime.defaultLANClientName : cleanedName
 
         // Generate a stable device_id for quota/policy. Keep it URL/filesystem friendly.
         let rawId = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
@@ -969,6 +1301,34 @@ curl -fsSL "http://${HUB_HOST}:${PAIRING_PORT}/install/axhubctl" -o "$AXHUBCTL" 
         refresh()
     }
 
+    func currentLANDefaultAllowedCidrs() -> [String] {
+        Self.defaultLANAllowedCidrs()
+    }
+
+    func adoptCurrentLANDefaults(deviceId: String) {
+        createClientsTemplateIfMissing()
+        var snap = loadClientsSnapshot()
+        let did = deviceId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !did.isEmpty else { return }
+
+        let defaults = Self.defaultLANAllowedCidrs()
+        guard !defaults.isEmpty else { return }
+
+        var changed = false
+        for i in snap.clients.indices where snap.clients[i].deviceId == did {
+            let normalizedCurrent = Self.orderedAllowedCidrs(Self.normalizeAllowedCidrs(snap.clients[i].allowedCidrs))
+            if normalizedCurrent != defaults {
+                snap.clients[i].allowedCidrs = defaults
+                changed = true
+            }
+        }
+
+        guard changed else { return }
+        snap.updatedAtMs = Int64(Date().timeIntervalSince1970 * 1000.0)
+        saveClientsSnapshot(snap)
+        refresh()
+    }
+
     func setClientEnabled(deviceId: String, enabled: Bool) {
         createClientsTemplateIfMissing()
         var snap = loadClientsSnapshot()
@@ -986,6 +1346,24 @@ curl -fsSL "http://${HUB_HOST}:${PAIRING_PORT}/install/axhubctl" -o "$AXHUBCTL" 
         guard changed else { return }
         snap.updatedAtMs = Int64(Date().timeIntervalSince1970 * 1000.0)
         saveClientsSnapshot(snap)
+        refresh()
+    }
+
+    func removeClient(deviceId: String) {
+        createClientsTemplateIfMissing()
+        let did = deviceId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !did.isEmpty else { return }
+        // Keep the Hub's built-in local/default terminal path intact.
+        guard did != "terminal_device" else { return }
+
+        var snap = loadClientsSnapshot()
+        let originalCount = snap.clients.count
+        snap.clients.removeAll { $0.deviceId == did }
+        guard snap.clients.count != originalCount else { return }
+
+        snap.updatedAtMs = Int64(Date().timeIntervalSince1970 * 1000.0)
+        saveClientsSnapshot(snap)
+        HubPairedTerminalLocalModelProfilesStorage.removeAll(deviceId: did)
         refresh()
     }
 
@@ -1061,9 +1439,39 @@ curl -fsSL "http://${HUB_HOST}:${PAIRING_PORT}/install/axhubctl" -o "$AXHUBCTL" 
 
     private func tick() {
         lanAddresses = Self.currentLANAddresses()
+        let pairingHealthy = Self.probeLocalPairingHealth(pairingPort: Self.pairingPort(grpcPort: port))
+
+        if isRunning {
+            externalPairingHealthy = false
+            localPairingHealthy = pairingHealthy
+            if applyLocalRuntimeWatchdog(pairingHealthy: pairingHealthy) {
+                return
+            }
+        } else {
+            externalPairingHealthy = pairingHealthy
+            resetLocalRuntimeHealth(clearLaunchAt: true)
+        }
+
         // Detect an already-running server on this machine (e.g. another Hub app instance)
         // so we don't crash-loop due to EADDRINUSE when autoStart is enabled.
-        externalPairingHealthy = Self.probeLocalPairingHealth(pairingPort: Self.pairingPort(grpcPort: port))
+        if !isRunning,
+           !externalPairingHealthy,
+           let externalGrpcPort = Self.detectNearbyLocalHubGRPCPort(configuredPort: port),
+           externalGrpcPort != port {
+            let externalPairingPort = Self.pairingPort(grpcPort: externalGrpcPort)
+            let message = HubUIStrings.Settings.GRPC.Runtime.externalHubDetected(
+                grpcPort: externalGrpcPort,
+                pairingPort: externalPairingPort
+            )
+            if autoPortSwitchMessage != message {
+                autoPortSwitchMessage = message
+                HubDiagnostics.log("hub_grpc.reconcile_external_port from=\(port) to=\(externalGrpcPort) pairing=\(externalPairingPort)")
+            }
+            port = externalGrpcPort
+            externalPairingHealthy = true
+            return
+        }
+        updateBonjourAdvertisement()
         updateStatusText()
         createClientsTemplateIfMissing()
         allowedClients = loadClientsSnapshot().clients.sorted { a, b in
@@ -1074,6 +1482,15 @@ curl -fsSL "http://${HUB_HOST}:${PAIRING_PORT}/install/axhubctl" -o "$AXHUBCTL" 
         }
         updateConnectionGuide()
         autoStartIfNeeded()
+        refreshServingPowerState()
+    }
+
+    private func refreshServingPowerState() {
+        HubServingPowerManager.shared.refreshServingState(
+            autoStartEnabled: autoStart,
+            serverRunning: isRunning || externalPairingHealthy,
+            externalHost: xtTerminalInternetHost
+        )
     }
 
     private static func canonicalAllowedCidrValue(_ value: String) -> String {
@@ -1133,19 +1550,38 @@ curl -fsSL "http://${HUB_HOST}:${PAIRING_PORT}/install/axhubctl" -o "$AXHUBCTL" 
         let tls = tlsMode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let tlsText = tls == "insecure" ? "insecure" : tls
         if isRunning, let p = proc {
-            statusText = "gRPC: running · tls \(tlsText) · pid \(p.processIdentifier) · 0.0.0.0:\(port)"
+            if !localPairingHealthy,
+               !HubLocalRuntimeWatchdog.isWithinStartupGrace(
+                now: Date().timeIntervalSince1970,
+                launchAt: lastProcessLaunchAt
+               ) {
+                statusText = HubUIStrings.Settings.GRPC.Runtime.statusRecovering(
+                    tlsText: tlsText,
+                    pid: p.processIdentifier,
+                    port: port
+                )
+                return
+            }
+            statusText = HubUIStrings.Settings.GRPC.Runtime.statusRunning(
+                tlsText: tlsText,
+                pid: p.processIdentifier,
+                port: port
+            )
             return
         }
         if externalPairingHealthy {
-            statusText = "gRPC: running (external) · tls \(tlsText) · 0.0.0.0:\(port)"
+            statusText = HubUIStrings.Settings.GRPC.Runtime.statusRunningExternal(
+                tlsText: tlsText,
+                port: port
+            )
             return
         }
         if let err = lastError.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : lastError {
-            statusText = "gRPC: error"
+            statusText = HubUIStrings.Settings.GRPC.Runtime.statusError
             lastError = err
             return
         }
-        statusText = "gRPC: off · tls \(tlsText)"
+        statusText = HubUIStrings.Settings.GRPC.Runtime.statusStopped(tlsText: tlsText)
     }
 
     private func updateConnectionGuide() {
@@ -1193,16 +1629,124 @@ HUB_CLIENT_TOKEN='\(tok)'
 """
     }
 
-    private static func firstNonLoopbackIPv4(from rows: [String]) -> String? {
-        for row in rows {
-            guard let idx = row.firstIndex(of: ":") else { continue }
-            let addr = row[row.index(after: idx)...].trimmingCharacters(in: .whitespacesAndNewlines)
-            if addr.isEmpty || addr == "127.0.0.1" {
-                continue
-            }
-            return String(addr)
+    private func updateBonjourAdvertisement() {
+        guard isRunning, localPairingHealthy else {
+            bonjourAdvertiser.stop()
+            return
         }
-        return nil
+
+        bonjourAdvertiser.publish(
+            runtimeBaseDir: SharedPaths.ensureHubDirectory(),
+            pairingPort: Self.pairingPort(grpcPort: port),
+            grpcPort: port,
+            internetHost: xtTerminalInternetHost
+        )
+    }
+
+    private static func firstNonLoopbackIPv4(from rows: [String]) -> String? {
+        preferredXTTerminalInternetHost(override: "", interfaceRows: rows)
+    }
+
+    static func preferredXTTerminalInternetHost(
+        override rawOverride: String,
+        interfaceRows rows: [String]
+    ) -> String? {
+        let trimmedOverride = rawOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedOverride.isEmpty {
+            return trimmedOverride
+        }
+
+        let parsed = rows.compactMap(parseInterfaceIPv4Row(_:))
+        guard !parsed.isEmpty else { return nil }
+        return parsed.min { lhs, rhs in
+            preferredXTTerminalInternetHostScore(lhs) < preferredXTTerminalInternetHostScore(rhs)
+        }?.ip
+    }
+
+    private static func preferredXTTerminalInternetHostScore(_ candidate: (ifname: String, ip: String)) -> Int {
+        let ifname = candidate.ifname.lowercased()
+        if isRemoteTunnelInterfaceName(ifname) {
+            return 0
+        }
+        if isCarrierGradeNatIPv4(candidate.ip) {
+            return 1
+        }
+        if isPubliclyRoutedIPv4(candidate.ip) {
+            return 2
+        }
+        if ifname.hasPrefix("en0") {
+            return 3
+        }
+        if ifname.hasPrefix("en1") {
+            return 4
+        }
+        if ifname.hasPrefix("en") {
+            return 5
+        }
+        return 6
+    }
+
+    private static func parseInterfaceIPv4Row(_ row: String) -> (ifname: String, ip: String)? {
+        guard let idx = row.firstIndex(of: ":") else { return nil }
+        let ifname = row[..<idx].trimmingCharacters(in: .whitespacesAndNewlines)
+        let ip = row[row.index(after: idx)...].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !ifname.isEmpty, !ip.isEmpty else { return nil }
+        return (ifname: String(ifname), ip: String(ip))
+    }
+
+    private static func isRemoteTunnelInterfaceName(_ rawIfname: String) -> Bool {
+        let ifname = rawIfname.lowercased()
+        return ifname.hasPrefix("utun")
+            || ifname.hasPrefix("tun")
+            || ifname.hasPrefix("tap")
+            || ifname.hasPrefix("wg")
+    }
+
+    private static func isCarrierGradeNatIPv4(_ ip: String) -> Bool {
+        guard let (a, b, _, _) = parseIPv4Octets(ip) else { return false }
+        return a == 100 && b >= 64 && b <= 127
+    }
+
+    private static func isPubliclyRoutedIPv4(_ ip: String) -> Bool {
+        guard let (a, b, _, _) = parseIPv4Octets(ip) else { return false }
+        if a == 10 { return false }
+        if a == 127 { return false }
+        if a == 169 && b == 254 { return false }
+        if a == 172 && b >= 16 && b <= 31 { return false }
+        if a == 192 && b == 168 { return false }
+        if isCarrierGradeNatIPv4(ip) { return false }
+        return true
+    }
+
+    private static func parseIPv4Octets(_ raw: String) -> (Int, Int, Int, Int)? {
+        let parts = raw.split(separator: ".")
+        guard parts.count == 4 else { return nil }
+        let octets = parts.compactMap { Int($0) }
+        guard octets.count == 4 else { return nil }
+        for value in octets where value < 0 || value > 255 {
+            return nil
+        }
+        return (octets[0], octets[1], octets[2], octets[3])
+    }
+
+    private static func qrCodeImage(for text: String, side: CGFloat) -> NSImage? {
+        guard let data = text.data(using: .utf8),
+              let filter = CIFilter(name: "CIQRCodeGenerator") else {
+            return nil
+        }
+        filter.setValue(data, forKey: "inputMessage")
+        filter.setValue("M", forKey: "inputCorrectionLevel")
+        guard let output = filter.outputImage else { return nil }
+        let extent = output.extent.integral
+        let scale = max(1, floor(side / max(extent.width, extent.height)))
+        let scaled = output.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        guard let cgImage = qrContext.createCGImage(scaled, from: scaled.extent) else {
+            return nil
+        }
+        return NSImage(
+            cgImage: cgImage,
+            size: NSSize(width: scaled.extent.width, height: scaled.extent.height)
+        )
     }
 
     private func preferredClientEntryForGuide() -> HubGRPCClientEntry? {
@@ -1272,7 +1816,11 @@ HUB_CLIENT_TOKEN='\(tok)'
             let remain = Int(max(1.0, nextStartAttemptAt - now))
             let lower = lastError.lowercased()
             if !lower.contains("already in use") {
-                lastError = "gRPC crash-loop detected (\(recentFailureTimes.count)x/\(Int(Self.failureBurstWindowSec))s). Auto-retry cooling down \(remain)s. Check hub_grpc.log or click Fix Now."
+                lastError = HubUIStrings.Settings.GRPC.Runtime.crashLoopDetected(
+                    count: recentFailureTimes.count,
+                    windowSec: Int(Self.failureBurstWindowSec),
+                    cooldownSec: remain
+                )
             }
             return
         }
@@ -1291,6 +1839,61 @@ HUB_CLIENT_TOKEN='\(tok)'
         }
     }
 
+    private func resetLocalRuntimeHealth(clearLaunchAt: Bool) {
+        localPairingHealthy = false
+        localPairingProbeFailureCount = 0
+        lastLoggedLocalHealthSnapshot = ""
+        if clearLaunchAt {
+            lastProcessLaunchAt = 0
+        }
+    }
+
+    private func applyLocalRuntimeWatchdog(pairingHealthy: Bool) -> Bool {
+        let now = Date().timeIntervalSince1970
+        let evaluation = HubLocalRuntimeWatchdog.evaluate(
+            now: now,
+            launchAt: lastProcessLaunchAt,
+            consecutiveFailureCount: localPairingProbeFailureCount,
+            lastRestartAt: lastLocalWatchdogRestartAt,
+            pairingHealthy: pairingHealthy
+        )
+
+        localPairingProbeFailureCount = evaluation.nextFailureCount
+        logLocalRuntimeHealthIfNeeded(evaluation: evaluation, pairingHealthy: pairingHealthy)
+
+        if pairingHealthy {
+            return false
+        }
+        guard evaluation.shouldRestart else { return false }
+
+        lastLocalWatchdogRestartAt = now
+        let reason = "local_pairing_health_failed"
+        let detail = "reason=\(reason) failures=\(HubLocalRuntimeWatchdog.unhealthyThreshold) port=\(port)"
+        appendLogLine("gRPC watchdog restart \(detail)")
+        HubDiagnostics.log("hub_grpc.watchdog_restart \(detail)")
+        restart()
+        return true
+    }
+
+    private func logLocalRuntimeHealthIfNeeded(
+        evaluation: HubLocalRuntimeWatchdogEvaluation,
+        pairingHealthy: Bool
+    ) {
+        let snapshot = [
+            "running=\(isRunning ? 1 : 0)",
+            "pairing_ok=\(pairingHealthy ? 1 : 0)",
+            "probe_failures=\(evaluation.nextFailureCount)",
+            "startup_grace=\(evaluation.withinStartupGrace ? 1 : 0)",
+            "restart_cooldown=\(evaluation.inRestartCooldown ? 1 : 0)",
+            "restart_due=\(evaluation.shouldRestart ? 1 : 0)",
+            "port=\(port)"
+        ].joined(separator: " ")
+
+        guard snapshot != lastLoggedLocalHealthSnapshot else { return }
+        lastLoggedLocalHealthSnapshot = snapshot
+        HubDiagnostics.log("hub_grpc.local_health \(snapshot)")
+    }
+
     private func leakRunningProcess(_ p: Process) {
         leakedProcs.append(p)
         if leakedProcs.count > 8 {
@@ -1299,11 +1902,7 @@ HUB_CLIENT_TOKEN='\(tok)'
     }
 
     private func waitForProcessExit(_ p: Process, timeoutSec: Double) -> Bool {
-        let deadline = Date().addingTimeInterval(max(0.1, timeoutSec))
-        while p.isRunning && Date() < deadline {
-            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.03))
-        }
-        return !p.isRunning
+        ProcessWaitSupport.waitForExit(p, timeoutSec: timeoutSec)
     }
 
     private static func pairingPort(grpcPort: Int) -> Int {
@@ -1353,14 +1952,43 @@ HUB_CLIENT_TOKEN='\(tok)'
         return nil
     }
 
-    private static func probeLocalPairingHealth(pairingPort: Int) -> Bool {
+    private static func detectNearbyLocalHubGRPCPort(configuredPort: Int, maxDistance: Int = 6) -> Int? {
+        let current = max(1024, min(65534, configuredPort))
+        let span = max(1, min(12, maxDistance))
+        var candidates: [Int] = []
+        var seen = Set<Int>()
+
+        func append(_ grpcPort: Int) {
+            let p = max(1024, min(65534, grpcPort))
+            if seen.contains(p) { return }
+            seen.insert(p)
+            candidates.append(p)
+        }
+
+        append(current)
+        for delta in 1...span {
+            append(current - delta)
+            append(current + delta)
+        }
+        append(defaultPort)
+        append(defaultPort + 1)
+
+        for grpcPort in candidates {
+            if probeLocalPairingHealth(pairingPort: pairingPort(grpcPort: grpcPort), timeoutUsec: 80_000) {
+                return grpcPort
+            }
+        }
+        return nil
+    }
+
+    private static func probeLocalPairingHealth(pairingPort: Int, timeoutUsec: Int = 200_000) -> Bool {
         let p = max(1, min(65535, pairingPort))
         let sock = socket(AF_INET, SOCK_STREAM, 0)
         if sock < 0 { return false }
         defer { close(sock) }
 
         // Ensure the probe never stalls the UI thread.
-        var tv = timeval(tv_sec: 0, tv_usec: 200_000) // 200ms
+        var tv = timeval(tv_sec: 0, tv_usec: __darwin_suseconds_t(max(10_000, min(1_000_000, timeoutUsec))))
         _ = setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
         _ = setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 
@@ -1408,6 +2036,10 @@ HUB_CLIENT_TOKEN='\(tok)'
             if fm.isExecutableFile(atPath: p) {
                 return NodeLaunchConfig(exePath: p, argsPrefix: [])
             }
+        }
+        if let p = Bundle.main.resourceURL?.appendingPathComponent("relflowhub_node").path,
+           fm.isExecutableFile(atPath: p) {
+            return NodeLaunchConfig(exePath: p, argsPrefix: [])
         }
 
         let candidates = [
@@ -1504,7 +2136,7 @@ HUB_CLIENT_TOKEN='\(tok)'
             }
             if ok != 0 { continue }
 
-            let ip = String(cString: host)
+            let ip = decodeNullTerminatedCString(host)
             if ip == "127.0.0.1" { continue }
             if ip.hasPrefix("169.254.") { continue } // link-local
 
@@ -1548,7 +2180,22 @@ HUB_CLIENT_TOKEN='\(tok)'
         return out
     }
 
-    private static func currentLANIPv4CoarseCidrs(prefix: Int) -> [String] {
+    private static func defaultFirstPairingLANAllowedCidrs() -> [String] {
+        var out: [String] = ["loopback"]
+        for cidr in currentLANIPv4Cidrs(maxBroadPrefix: 16, excludingRemoteTunnelInterfaces: true) {
+            if !out.contains(cidr) {
+                out.append(cidr)
+            }
+        }
+        for cidr in currentLANIPv4CoarseCidrs(prefix: 16, excludingRemoteTunnelInterfaces: true) {
+            if !out.contains(cidr) {
+                out.append(cidr)
+            }
+        }
+        return out
+    }
+
+    private static func currentLANIPv4CoarseCidrs(prefix: Int, excludingRemoteTunnelInterfaces: Bool = false) -> [String] {
         // Derive a coarse supernet CIDR from currently detected LAN IPv4 addresses without relying
         // on ifa_netmask parsing (which can vary between environments).
         //
@@ -1577,9 +2224,11 @@ HUB_CLIENT_TOKEN='\(tok)'
         var out: [String] = []
         var seen: Set<String> = []
         for row in currentLANAddresses() {
-            guard let idx = row.firstIndex(of: ":") else { continue }
-            let ip = row[row.index(after: idx)...].trimmingCharacters(in: .whitespacesAndNewlines)
-            guard let (a, b, _, _) = parseIPv4(String(ip)) else { continue }
+            guard let parsed = parseInterfaceIPv4Row(row) else { continue }
+            if excludingRemoteTunnelInterfaces && isRemoteTunnelInterfaceName(parsed.ifname) {
+                continue
+            }
+            guard let (a, b, _, _) = parseIPv4(parsed.ip) else { continue }
             if a == 127 { continue }
             if a == 169, b == 254 { continue } // link-local
             if isPrivate(a, b) { continue } // already covered by the "private" rule
@@ -1592,7 +2241,7 @@ HUB_CLIENT_TOKEN='\(tok)'
         return out
     }
 
-    private static func currentLANIPv4Cidrs(maxBroadPrefix: Int) -> [String] {
+    private static func currentLANIPv4Cidrs(maxBroadPrefix: Int, excludingRemoteTunnelInterfaces: Bool = false) -> [String] {
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifaddr) == 0, let first = ifaddr else {
             return []
@@ -1612,7 +2261,7 @@ HUB_CLIENT_TOKEN='\(tok)'
             var addr = in_addr(s_addr: hostOrder.bigEndian)
             var buf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
             guard inet_ntop(AF_INET, &addr, &buf, socklen_t(INET_ADDRSTRLEN)) != nil else { return nil }
-            return String(cString: buf)
+            return decodeNullTerminatedCString(buf)
         }
 
         func prefixLength(mask: UInt32) -> Int? {
@@ -1666,6 +2315,9 @@ HUB_CLIENT_TOKEN='\(tok)'
             guard let netS = ipv4String(hostOrder: netH) else { continue }
 
             let ifname = String(cString: p.pointee.ifa_name)
+            if excludingRemoteTunnelInterfaces && isRemoteTunnelInterfaceName(ifname) {
+                continue
+            }
             rows.append((ifname: ifname, cidr: "\(netS)/\(clampedPrefix)"))
         }
 
@@ -1728,7 +2380,7 @@ private enum HubGRPCClientsStore {
         let def = HubGRPCClientEntry(
             deviceId: "terminal_device",
             userId: "",
-            name: "Terminal (default)",
+            name: HubUIStrings.Settings.GRPC.Runtime.defaultTerminalName,
             token: tok.isEmpty ? generateToken(prefix: "axhub_client_") : tok,
             enabled: true,
             createdAtMs: nowMs,
@@ -1929,9 +2581,8 @@ private enum HubGRPCTokens {
             kSecAttrAccount as String: acct,
             kSecReturnData as String: kCFBooleanTrue as Any,
             kSecMatchLimit as String: kSecMatchLimitOne,
-            // Avoid repeatedly popping Keychain password dialogs.
-            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail,
         ]
+        query[kSecUseAuthenticationContext as String] = nonInteractiveAuthContext()
         if KeychainStore.hasSharedAccessGroup, let g = KeychainStore.sharedAccessGroup {
             query[kSecAttrAccessGroup as String] = g
         }
@@ -1955,9 +2606,8 @@ private enum HubGRPCTokens {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,
             kSecAttrAccount as String: acct,
-            // Avoid repeatedly popping Keychain password dialogs (best-effort persistence).
-            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail,
         ]
+        query[kSecUseAuthenticationContext as String] = nonInteractiveAuthContext()
         if KeychainStore.hasSharedAccessGroup, let g = KeychainStore.sharedAccessGroup {
             query[kSecAttrAccessGroup as String] = g
         }
@@ -1973,5 +2623,11 @@ private enum HubGRPCTokens {
             return st2 == errSecSuccess
         }
         return st == errSecSuccess
+    }
+
+    private static func nonInteractiveAuthContext() -> LAContext {
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        return context
     }
 }

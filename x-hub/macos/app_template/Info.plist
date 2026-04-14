@@ -33,17 +33,9 @@
 	<string>131</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
-	<key>LSUIElement</key>
-	<true/>
 	<key>NSAppSleepDisabled</key>
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Read local unread counts from Mail and Messages (counts only). X-Hub does not upload any data.</string>
-	<key>NSCalendarsFullAccessUsageDescription</key>
-	<string>Show upcoming meetings and local reminders.</string>
-	<key>NSCalendarsUsageDescription</key>
-	<string>Show upcoming meetings and local reminders.</string>
-	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>
-	<string>Create local reminders for upcoming meetings.</string>
 </dict>
 </plist>

@@ -2,6 +2,19 @@ import { normalizeChannelProviderId } from './channel_registry.js';
 import { nowMs, uuid } from './util.js';
 
 export const CHANNEL_IDENTITY_BINDING_SCHEMA = 'xhub.im_identity_binding.v1';
+export const CHANNEL_IDENTITY_ROLES = Object.freeze([
+  'viewer',
+  'operator',
+  'approval_only_identity',
+  'release_manager',
+  'ops_admin',
+]);
+export const CHANNEL_IDENTITY_ACCESS_GROUPS = Object.freeze([
+  'dm_allowlist',
+  'group_allowlist',
+  'thread_allowlist',
+  'approval_only_identity',
+]);
 
 export const CHANNEL_IDENTITY_STATUSES = Object.freeze([
   'active',
@@ -9,6 +22,8 @@ export const CHANNEL_IDENTITY_STATUSES = Object.freeze([
   'revoked',
 ]);
 
+const CHANNEL_IDENTITY_ROLE_SET = new Set(CHANNEL_IDENTITY_ROLES);
+const CHANNEL_IDENTITY_ACCESS_GROUP_SET = new Set(CHANNEL_IDENTITY_ACCESS_GROUPS);
 const CHANNEL_IDENTITY_STATUS_SET = new Set(CHANNEL_IDENTITY_STATUSES);
 const CHANNEL_IDENTITY_TABLES_INIT = new WeakSet();
 
@@ -43,10 +58,14 @@ function parseJsonArray(input) {
 }
 
 function normalizeRole(input) {
-  return safeString(input)
+  const key = safeString(input)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '');
+  if (!key) return '';
+  if (key === 'approver') return 'approval_only_identity';
+  if (key === 'admin' || key === 'opsadmin') return 'ops_admin';
+  return CHANNEL_IDENTITY_ROLE_SET.has(key) ? key : key;
 }
 
 export function normalizeChannelRoles(input) {
@@ -62,24 +81,64 @@ export function normalizeChannelRoles(input) {
   return out;
 }
 
+function normalizeAccessGroup(input) {
+  const key = safeString(input)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  if (!key) return '';
+  if (key === 'dm') return 'dm_allowlist';
+  if (key === 'group') return 'group_allowlist';
+  if (key === 'thread' || key === 'topic') return 'thread_allowlist';
+  if (key === 'approver' || key === 'approval_only') return 'approval_only_identity';
+  return CHANNEL_IDENTITY_ACCESS_GROUP_SET.has(key) ? key : '';
+}
+
+export function normalizeChannelAccessGroups(input) {
+  const rows = Array.isArray(input) ? input : [];
+  const out = [];
+  const seen = new Set();
+  for (const raw of rows) {
+    const group = normalizeAccessGroup(raw);
+    if (!group || seen.has(group)) continue;
+    seen.add(group);
+    out.push(group);
+  }
+  return out;
+}
+
+export function buildChannelStableExternalId({
+  provider,
+  stable_external_id = '',
+  external_user_id = '',
+  external_tenant_id = '',
+} = {}) {
+  const explicit = safeString(stable_external_id);
+  if (explicit) return explicit;
+  const providerId = normalizeChannelProviderId(provider) || '';
+  const externalUserId = safeString(external_user_id);
+  if (!providerId || !externalUserId) return '';
+  return `${providerId}/${safeString(external_tenant_id) || '_'}/${externalUserId}`;
+}
+
 export function normalizeChannelIdentityStatus(input, fallback = 'active') {
   const status = safeString(input).toLowerCase();
   return CHANNEL_IDENTITY_STATUS_SET.has(status) ? status : fallback;
 }
 
 export function makeChannelIdentityActorRef(binding) {
-  const provider = normalizeChannelProviderId(binding?.provider || binding?.channel || binding?.provider_id) || '';
-  const externalUserId = safeString(binding?.external_user_id || binding?.user_id);
-  if (!provider || !externalUserId) return '';
-  return `${CHANNEL_IDENTITY_BINDING_SCHEMA}:${provider}/${externalUserId}`;
+  const stableExternalId = buildChannelStableExternalId(binding);
+  return stableExternalId ? `${CHANNEL_IDENTITY_BINDING_SCHEMA}:${stableExternalId}` : '';
 }
 
-function identityKey({ provider, external_user_id, external_tenant_id }) {
-  return [
-    safeString(provider).toLowerCase(),
-    safeString(external_tenant_id),
-    safeString(external_user_id),
-  ].join('|');
+function identityKey({ stable_external_id }) {
+  return safeString(stable_external_id);
+}
+
+function ensureColumn(db, tableName, columnName, columnSql) {
+  if (db && typeof db._ensureColumn === 'function') {
+    db._ensureColumn(tableName, columnName, columnSql);
+  }
 }
 
 function ensureDb(db) {
@@ -91,10 +150,12 @@ function ensureDb(db) {
       identity_key TEXT PRIMARY KEY,
       schema_version TEXT NOT NULL,
       provider TEXT NOT NULL,
+      stable_external_id TEXT NOT NULL,
       external_user_id TEXT NOT NULL,
       external_tenant_id TEXT NOT NULL,
       hub_user_id TEXT NOT NULL,
       roles_json TEXT NOT NULL,
+      access_groups_json TEXT NOT NULL,
       approval_only INTEGER NOT NULL,
       status TEXT NOT NULL,
       synced_at_ms INTEGER NOT NULL,
@@ -108,6 +169,48 @@ function ensureDb(db) {
     CREATE INDEX IF NOT EXISTS idx_channel_identity_bindings_hub_user
       ON channel_identity_bindings(hub_user_id, status, updated_at_ms);
   `);
+  ensureColumn(db, 'channel_identity_bindings', 'stable_external_id', `TEXT NOT NULL DEFAULT ''`);
+  ensureColumn(db, 'channel_identity_bindings', 'access_groups_json', `TEXT NOT NULL DEFAULT '[]'`);
+  try {
+    db.db.exec(`
+      UPDATE channel_identity_bindings
+      SET stable_external_id = lower(trim(provider)) || '/' ||
+        CASE
+          WHEN trim(coalesce(external_tenant_id, '')) = '' THEN '_'
+          ELSE trim(external_tenant_id)
+        END || '/' || trim(external_user_id)
+      WHERE trim(coalesce(stable_external_id, '')) = ''
+    `);
+  } catch {
+    // best-effort migration
+  }
+  try {
+    db.db.exec(`
+      UPDATE channel_identity_bindings
+      SET identity_key = stable_external_id
+      WHERE trim(coalesce(stable_external_id, '')) <> ''
+        AND identity_key <> stable_external_id
+    `);
+  } catch {
+    // best-effort migration
+  }
+  try {
+    db.db.exec(`
+      UPDATE channel_identity_bindings
+      SET access_groups_json = '[]'
+      WHERE trim(coalesce(access_groups_json, '')) = ''
+    `);
+  } catch {
+    // best-effort migration
+  }
+  try {
+    db.db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_identity_bindings_stable_external
+        ON channel_identity_bindings(stable_external_id)
+    `);
+  } catch {
+    // best-effort migration
+  }
   CHANNEL_IDENTITY_TABLES_INIT.add(db);
 }
 
@@ -116,10 +219,12 @@ function parseIdentityRow(row) {
   const binding = {
     schema_version: safeString(row.schema_version) || CHANNEL_IDENTITY_BINDING_SCHEMA,
     provider: safeString(row.provider).toLowerCase(),
+    stable_external_id: safeString(row.stable_external_id),
     external_user_id: safeString(row.external_user_id),
     external_tenant_id: safeString(row.external_tenant_id),
     hub_user_id: safeString(row.hub_user_id),
     roles: normalizeChannelRoles(parseJsonArray(row.roles_json)),
+    access_groups: normalizeChannelAccessGroups(parseJsonArray(row.access_groups_json)),
     approval_only: !!Number(row.approval_only || 0),
     status: normalizeChannelIdentityStatus(row.status, 'disabled'),
     synced_at_ms: safeInt(row.synced_at_ms, 0),
@@ -137,18 +242,33 @@ export function normalizeChannelIdentityBinding(input = {}, options = {}) {
   const external_tenant_id = safeString(input.external_tenant_id || input.tenant_id);
   const hub_user_id = safeString(input.hub_user_id || input.user_ref);
   const roles = normalizeChannelRoles(input.roles || []);
-  const approval_only = parseBoolLike(input.approval_only, false);
+  const stable_external_id = buildChannelStableExternalId({
+    provider,
+    stable_external_id: input.stable_external_id,
+    external_user_id,
+    external_tenant_id,
+  });
+  const access_groups = normalizeChannelAccessGroups(input.access_groups || []);
+  const approval_only = parseBoolLike(
+    input.approval_only,
+    roles.includes('approval_only_identity') || access_groups.includes('approval_only_identity')
+  );
+  const normalizedAccessGroups = normalizeChannelAccessGroups(
+    approval_only ? [...access_groups, 'approval_only_identity'] : access_groups
+  );
   const status = normalizeChannelIdentityStatus(input.status, 'active');
   const synced_at_ms = safeInt(input.synced_at_ms, now) || now;
   const updated_at_ms = safeInt(input.updated_at_ms, now) || now;
   const binding = {
     schema_version: CHANNEL_IDENTITY_BINDING_SCHEMA,
     provider,
+    stable_external_id,
     external_user_id,
     external_tenant_id,
     hub_user_id,
     roles,
-    approval_only,
+    access_groups: normalizedAccessGroups,
+    approval_only: approval_only || roles.includes('approval_only_identity'),
     status,
     synced_at_ms,
     updated_at_ms,
@@ -203,10 +323,12 @@ function appendIdentityAudit({
     ext_json: JSON.stringify({
       schema_version: CHANNEL_IDENTITY_BINDING_SCHEMA,
       provider: binding.provider,
+      stable_external_id: binding.stable_external_id,
       external_user_id: binding.external_user_id,
       external_tenant_id: binding.external_tenant_id,
       hub_user_id: binding.hub_user_id,
       roles: binding.roles,
+      access_groups: binding.access_groups,
       approval_only: binding.approval_only,
       status: binding.status,
       created,
@@ -216,11 +338,24 @@ function appendIdentityAudit({
 }
 
 export function getChannelIdentityBinding(db, {
+  stable_external_id = '',
   provider,
   external_user_id,
   external_tenant_id = '',
 } = {}) {
   ensureDb(db);
+  const stableExternalId = safeString(stable_external_id);
+  if (stableExternalId) {
+    const row = db.db
+      .prepare(
+        `SELECT *
+         FROM channel_identity_bindings
+         WHERE stable_external_id = ?
+         LIMIT 1`
+      )
+      .get(stableExternalId);
+    return parseIdentityRow(row);
+  }
   const providerId = normalizeChannelProviderId(provider) || '';
   const externalUserId = safeString(external_user_id);
   const externalTenantId = safeString(external_tenant_id);
@@ -243,6 +378,7 @@ export function listChannelIdentityBindings(db, filters = {}) {
   const where = [];
   const args = [];
   const provider = normalizeChannelProviderId(filters.provider) || '';
+  const stableExternalId = safeString(filters.stable_external_id);
   const hubUserId = safeString(filters.hub_user_id);
   const externalTenantId = safeString(filters.external_tenant_id);
   const status = safeString(filters.status).toLowerCase();
@@ -250,6 +386,10 @@ export function listChannelIdentityBindings(db, filters = {}) {
   if (provider) {
     where.push('provider = ?');
     args.push(provider);
+  }
+  if (stableExternalId) {
+    where.push('stable_external_id = ?');
+    args.push(stableExternalId);
   }
   if (hubUserId) {
     where.push('hub_user_id = ?');
@@ -269,7 +409,7 @@ export function listChannelIdentityBindings(db, filters = {}) {
     SELECT *
     FROM channel_identity_bindings
     ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-    ORDER BY updated_at_ms DESC, provider ASC, external_user_id ASC
+    ORDER BY updated_at_ms DESC, provider ASC, stable_external_id ASC
     LIMIT ${limit}
   `;
   return db.db.prepare(sql).all(...args).map((row) => parseIdentityRow(row)).filter(Boolean);
@@ -317,14 +457,20 @@ export function upsertChannelIdentityBindingTx(db, {
   if (!normalized.provider) {
     return identityDeny('provider_unknown');
   }
+  if (!normalized.stable_external_id) {
+    return identityDeny('stable_external_id_missing', {}, normalized);
+  }
   if (!normalized.external_user_id) {
-    return identityDeny('external_user_id_missing');
+    return identityDeny('external_user_id_missing', {}, normalized);
   }
   if (!normalized.hub_user_id) {
     return identityDeny('hub_user_id_missing');
   }
   if (normalized.status === 'active' && !normalized.roles.length) {
     return identityDeny('roles_missing', {}, normalized);
+  }
+  if (normalized.status === 'active' && !normalized.access_groups.length) {
+    return identityDeny('access_groups_missing', {}, normalized);
   }
 
   const existing = getChannelIdentityBinding(db, normalized);
@@ -344,13 +490,15 @@ export function upsertChannelIdentityBindingTx(db, {
   db.db
     .prepare(
       `INSERT INTO channel_identity_bindings(
-         identity_key, schema_version, provider, external_user_id, external_tenant_id,
-         hub_user_id, roles_json, approval_only, status, synced_at_ms, updated_at_ms, audit_ref
-       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+         identity_key, schema_version, provider, stable_external_id, external_user_id, external_tenant_id,
+         hub_user_id, roles_json, access_groups_json, approval_only, status, synced_at_ms, updated_at_ms, audit_ref
+       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(identity_key) DO UPDATE SET
          schema_version = excluded.schema_version,
+         stable_external_id = excluded.stable_external_id,
          hub_user_id = excluded.hub_user_id,
          roles_json = excluded.roles_json,
+         access_groups_json = excluded.access_groups_json,
          approval_only = excluded.approval_only,
          status = excluded.status,
          synced_at_ms = excluded.synced_at_ms,
@@ -361,10 +509,12 @@ export function upsertChannelIdentityBindingTx(db, {
       normalized.identity_key,
       normalized.schema_version,
       normalized.provider,
+      normalized.stable_external_id,
       normalized.external_user_id,
       normalized.external_tenant_id,
       normalized.hub_user_id,
       JSON.stringify(normalized.roles),
+      JSON.stringify(normalized.access_groups),
       normalized.approval_only ? 1 : 0,
       normalized.status,
       normalized.synced_at_ms,

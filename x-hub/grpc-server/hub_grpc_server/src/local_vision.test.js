@@ -219,6 +219,9 @@ await run('ocrLocalImage normalizes successful runtime preview output with spans
         spans: [
           {
             index: 0,
+            pageIndex: 0,
+            pageCount: 1,
+            fileName: 'page.png',
             text: '[offline_ocr_preview:def456]',
             bbox: {
               x: 0,
@@ -246,6 +249,76 @@ await run('ocrLocalImage normalizes successful runtime preview output with spans
   assert.equal(out.model_id, 'hf-ocr');
   assert.equal(out.language, 'en');
   assert.equal(out.spans.length, 1);
+  assert.equal(out.spans[0].pageIndex, 0);
+  assert.equal(out.spans[0].pageCount, 1);
+  assert.equal(out.spans[0].fileName, 'page.png');
   assert.equal(out.spans[0].bbox.width, 96);
   assert.equal(out.usage.inputImagePixels, 3840);
+});
+
+await run('runLocalVisionTask honors routed model binding for OCR', async () => {
+  const runtimeBaseDir = makeTempRuntimeDir();
+  writeJson(path.join(runtimeBaseDir, 'models_state.json'), {
+    updatedAt: Date.now() / 1000.0,
+    models: [
+      {
+        id: 'hf-ocr-default',
+        name: 'HF OCR Default',
+        backend: 'transformers',
+        modelPath: '/models/hf-ocr-default',
+        taskKinds: ['ocr'],
+        inputModalities: ['image'],
+        outputModalities: ['text'],
+      },
+      {
+        id: 'hf-ocr-device',
+        name: 'HF OCR Device',
+        backend: 'transformers',
+        modelPath: '/models/hf-ocr-device',
+        taskKinds: ['ocr'],
+        inputModalities: ['image'],
+        outputModalities: ['text'],
+      },
+    ],
+  });
+  writeJson(path.join(runtimeBaseDir, 'routing_settings.json'), {
+    hubDefaultModelIdByTaskKind: {
+      ocr: 'hf-ocr-default',
+    },
+    devicePreferredModelIdByTaskKind: {
+      terminal_device: {
+        ocr: 'hf-ocr-device',
+      },
+    },
+  });
+  const imagePath = path.join(runtimeBaseDir, 'page.png');
+  writePng(imagePath, { width: 96, height: 40 });
+
+  const out = await ocrLocalImage({
+    runtimeBaseDir,
+    deviceId: 'terminal_device',
+    imagePath,
+    executor: async ({ request }) => {
+      assert.equal(String(request?.model_id || ''), 'hf-ocr-device');
+      return {
+        ok: true,
+        provider: 'transformers',
+        modelId: 'hf-ocr-device',
+        text: 'detected text',
+        spans: [],
+        latencyMs: 10,
+        usage: {
+          inputImageBytes: 33,
+          inputImageWidth: 96,
+          inputImageHeight: 40,
+          inputImagePixels: 3840,
+        },
+      };
+    },
+  });
+
+  assert.equal(out.ok, true);
+  assert.equal(out.model_id, 'hf-ocr-device');
+  assert.equal(out.route_source, 'device_override');
+  assert.equal(out.resolved_model_id, 'hf-ocr-device');
 });

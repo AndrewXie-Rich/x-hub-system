@@ -16,7 +16,7 @@ struct EditRolesSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Roles")
+            Text(HubUIStrings.Models.EditRoles.title)
                 .font(.headline)
 
             Text(model.name)
@@ -24,16 +24,16 @@ struct EditRolesSheet: View {
                 .foregroundStyle(.secondary)
 
             VStack(alignment: .leading, spacing: 10) {
-                Toggle("General", isOn: $isGeneral)
-                Toggle("Translate", isOn: $isTranslate)
-                Toggle("Summarize", isOn: $isSummarize)
-                Toggle("Extract", isOn: $isExtract)
-                Toggle("Refine", isOn: $isRefine)
-                Toggle("Classify", isOn: $isClassify)
-                TextField("Custom roles (comma-separated)", text: $customRolesText)
+                Toggle(HubUIStrings.Models.EditRoles.general, isOn: $isGeneral)
+                Toggle(HubUIStrings.Models.EditRoles.translate, isOn: $isTranslate)
+                Toggle(HubUIStrings.Models.EditRoles.summarize, isOn: $isSummarize)
+                Toggle(HubUIStrings.Models.EditRoles.extract, isOn: $isExtract)
+                Toggle(HubUIStrings.Models.EditRoles.refine, isOn: $isRefine)
+                Toggle(HubUIStrings.Models.EditRoles.classify, isOn: $isClassify)
+                TextField(HubUIStrings.Models.EditRoles.customRolesPlaceholder, text: $customRolesText)
             }
 
-            Text("Routing uses roles to pick a loaded model for each task type.")
+            Text(HubUIStrings.Models.EditRoles.routingHint)
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -41,8 +41,8 @@ struct EditRolesSheet: View {
 
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
-                Button("Save") { save() }
+                Button(HubUIStrings.Models.EditRoles.cancel) { dismiss() }
+                Button(HubUIStrings.Models.EditRoles.save) { save() }
             }
         }
         .padding(18)

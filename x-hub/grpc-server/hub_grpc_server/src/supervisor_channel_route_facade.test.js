@@ -186,6 +186,44 @@ run('XT-W3-24-I/route facade returns xt_offline when preferred device is offline
 
   assert.equal(String(route.route_mode || ''), 'xt_offline');
   assert.equal(String(route.deny_code || ''), 'preferred_device_offline');
+  assert.equal(Boolean(route?.governance_runtime_readiness?.runtime_ready), false);
+  assert.equal(
+    String(route?.governance_runtime_readiness?.components_by_xt_key?.route_ready?.deny_code || ''),
+    'preferred_device_offline'
+  );
+});
+
+run('XT-W3-24-I/route facade keeps device diagnostics off the project main thread until scope switches explicitly', () => {
+  const binding = {
+    provider: 'slack',
+    account_id: 'ops_bot',
+    conversation_id: 'C123',
+    thread_key: '1741770000.12345',
+    scope_type: 'project',
+    scope_id: 'payments-prod',
+    preferred_device_id: 'xt-mac-mini-bj-01',
+  };
+  const clients = [
+    makeClient({
+      device_id: 'xt-mac-mini-bj-01',
+      connected: true,
+      trusted_automation_mode: 'trusted_automation',
+      trusted_automation_state: 'armed',
+      xt_binding_required: true,
+      device_permission_owner_ref: 'owner-1',
+      allowed_project_ids: ['payments-prod'],
+    }),
+  ];
+  const route = resolveSupervisorChannelRoute({
+    binding,
+    action_name: 'device.doctor.get',
+    clients_snapshot: clients,
+    devices_status_snapshot: makeDevicesStatus(clients),
+  });
+
+  assert.equal(String(route.route_mode || ''), 'hub_only_status');
+  assert.equal(String(route.deny_code || ''), 'scope_switch_required');
+  assert.equal(String(route.resolved_device_id || ''), '');
 });
 
 run('XT-W3-24-I/route facade returns runner_not_ready when device diagnostics target lacks ready trusted runner', () => {
@@ -220,6 +258,72 @@ run('XT-W3-24-I/route facade returns runner_not_ready when device diagnostics ta
   assert.equal(String(route.deny_code || ''), 'device_permission_owner_missing');
   assert.equal(!!route.runner_required, true);
   assert.equal(!!route.xt_online, true);
+  assert.equal(Boolean(route?.governance_runtime_readiness?.runtime_ready), false);
+  assert.equal(
+    String(route?.governance_runtime_readiness?.components_by_xt_key?.grant_ready?.deny_code || ''),
+    'device_permission_owner_missing'
+  );
+  assert.ok(
+    Array.isArray(route?.governance_runtime_readiness?.missing_reason_codes)
+      && route.governance_runtime_readiness.missing_reason_codes.includes('permission_owner_not_ready')
+  );
+});
+
+run('XT-W3-24-I/route facade routes explicit device diagnostics scope to runner and keeps incident scope hub-only', () => {
+  const deviceBinding = {
+    provider: 'telegram',
+    account_id: 'ops_bot',
+    conversation_id: '-1001',
+    thread_key: 'topic:99',
+    scope_type: 'device',
+    scope_id: 'xt-mac-mini-bj-01',
+    preferred_device_id: '',
+  };
+  const clients = [
+    makeClient({
+      device_id: 'xt-mac-mini-bj-01',
+      connected: true,
+      trusted_automation_mode: 'trusted_automation',
+      trusted_automation_state: 'armed',
+      xt_binding_required: true,
+      device_permission_owner_ref: 'owner-1',
+      allowed_project_ids: ['payments-prod'],
+    }),
+  ];
+  const deviceRoute = resolveSupervisorChannelRoute({
+    binding: deviceBinding,
+    action_name: 'device.doctor.get',
+    clients_snapshot: clients,
+    devices_status_snapshot: makeDevicesStatus(clients),
+  });
+
+  assert.equal(String(deviceRoute.route_mode || ''), 'hub_to_runner');
+  assert.equal(String(deviceRoute.resolved_device_id || ''), 'xt-mac-mini-bj-01');
+  assert.equal(!!deviceRoute.runner_required, true);
+  assert.equal(!!deviceRoute.xt_online, true);
+  assert.equal(Boolean(deviceRoute?.governance_runtime_readiness?.runtime_ready), true);
+  assert.equal(
+    String(deviceRoute?.governance_runtime_readiness?.components_by_xt_key?.grant_ready?.state || ''),
+    'ready'
+  );
+
+  const incidentRoute = resolveSupervisorChannelRoute({
+    binding: {
+      provider: 'feishu',
+      account_id: 'default',
+      conversation_id: 'incident-room',
+      thread_key: '',
+      scope_type: 'incident',
+      scope_id: 'incident-payments-p1',
+      preferred_device_id: 'xt-mac-mini-bj-01',
+    },
+    action_name: 'supervisor.status.get',
+    clients_snapshot: clients,
+    devices_status_snapshot: makeDevicesStatus(clients),
+  });
+
+  assert.equal(String(incidentRoute.route_mode || ''), 'hub_only_status');
+  assert.equal(String(incidentRoute.deny_code || ''), '');
 });
 
 run('XT-W3-24-I/route facade persists resolved route and keeps project/device scopes isolated', () => {
@@ -262,6 +366,18 @@ run('XT-W3-24-I/route facade persists resolved route and keeps project/device sc
       });
       assert.equal(!!stored.ok, true);
       assert.equal(String(stored.route?.route_mode || ''), 'hub_to_xt');
+      assert.equal(typeof stored.route?.governance_runtime_readiness, 'object');
+      assert.equal(Boolean(stored.route?.governance_runtime_readiness?.runtime_ready), true);
+      const storedAudit = db.listAuditEvents({ request_id: 'route-store-1' })
+        .find((item) => String(item?.event_type || '') === 'channel.session_route.upserted');
+      assert.ok(storedAudit);
+      const storedExt = JSON.parse(String(storedAudit?.ext_json || '{}'));
+      assert.equal(typeof storedExt?.governance_runtime_readiness, 'object');
+      assert.equal(Boolean(storedExt?.governance_runtime_readiness?.runtime_ready), true);
+      assert.equal(
+        String(storedExt?.governance_runtime_readiness?.components_by_xt_key?.route_ready?.state || ''),
+        'ready'
+      );
 
       const denied = evaluateSupervisorChannelRouteWithStore({
         db,

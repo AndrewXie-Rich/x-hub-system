@@ -1,9 +1,9 @@
 import Foundation
 import Darwin
 import AppKit
-import EventKit
+import LocalAuthentication
+import Combine
 import SwiftUI
-@preconcurrency import UserNotifications
 import RELFlowHubCore
 
 private extension FileManager {
@@ -26,62 +26,427 @@ private extension FileManager {
 
 @MainActor
 private func runCapture(_ exe: String, _ args: [String], env: [String: String] = [:], timeoutSec: Double = 1.2) -> (code: Int32, out: String, err: String) {
-    let p = Process()
-    p.executableURL = URL(fileURLWithPath: exe)
-    p.arguments = args
-    var e = ProcessInfo.processInfo.environment
-    for (k, v) in env { e[k] = v }
-    p.environment = e
-    let outPipe = Pipe()
-    let errPipe = Pipe()
-    p.standardOutput = outPipe
-    p.standardError = errPipe
-    do {
-        try p.run()
-    } catch {
-        return (code: 127, out: "", err: String(describing: error))
+    ProcessCaptureSupport.runCapture(
+        exe,
+        args,
+        env: env,
+        timeoutSec: timeoutSec
+    )
+}
+
+private let suppressedHubNotificationDedupePrefixes = [
+    "x_terminal_supervisor_heartbeat",
+    "x_terminal_supervisor_memory_follow_up_",
+    "x_terminal_supervisor_incident_",
+    "x_terminal_supervisor_lane_health_",
+    "x_terminal_project_action_",
+    "x_terminal_operator_channel_xt_command_",
+    "x_terminal_hub_connector_ingress_",
+]
+
+private func shouldRetainHubNotification(_ notification: HubNotification) -> Bool {
+    let dedupeKey = (notification.dedupeKey ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    if !dedupeKey.isEmpty,
+       suppressedHubNotificationDedupePrefixes.contains(where: { dedupeKey.hasPrefix($0) }) {
+        return false
+    }
+    if hubNotificationUsesTerminalDeepLink(notification) {
+        return false
+    }
+    return true
+}
+
+private let genericLocalProviderImportProbeScript = """
+import importlib.util
+import sys
+
+ready = []
+errors = []
+
+if all(importlib.util.find_spec(name) is not None for name in ("mlx_lm", "mlx", "numpy")):
+    ready.append("mlx")
+else:
+    errors.append("mlx:missing_module")
+
+try:
+    import transformers  # type: ignore
+    import torch  # type: ignore
+    from PIL import Image  # type: ignore
+    _ = Image
+    ready.append("transformers")
+    ready.append("mlx_vlm")
+except Exception as exc:
+    errors.append(f"transformers:{type(exc).__name__}:{exc}")
+
+print("ready=" + ",".join(ready))
+if not ready and errors:
+    print("errors=" + " | ".join(errors[:2]))
+sys.exit(0 if ready else 1)
+"""
+
+private let mlxImportProbeScript = """
+import importlib.util
+import sys
+
+if all(importlib.util.find_spec(name) is not None for name in ("mlx_lm", "mlx", "numpy")):
+    print("ready=mlx")
+    sys.exit(0)
+
+print("errors=mlx:missing_module")
+sys.exit(1)
+"""
+
+private let transformersImportProbeScript = """
+import sys
+
+try:
+    import transformers  # type: ignore
+    import torch  # type: ignore
+    from PIL import Image  # type: ignore
+    _ = Image
+    print("ready=transformers,mlx_vlm")
+    sys.exit(0)
+except Exception as exc:
+    print(f"errors=transformers:{type(exc).__name__}:{exc}")
+    sys.exit(1)
+"""
+
+private func providerImportProbeScript(for preferredProviderID: String?) -> String {
+    switch preferredProviderID?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased() {
+    case "mlx":
+        return mlxImportProbeScript
+    case "transformers", "mlx_vlm":
+        return transformersImportProbeScript
+    default:
+        return genericLocalProviderImportProbeScript
+    }
+}
+
+private func hubRuntimeProbeEnv() -> [String: String] {
+    [
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "HF_DATASETS_OFFLINE": "1",
+        "TOKENIZERS_PARALLELISM": "false",
+    ]
+}
+
+private func pythonSnippetArgs(baseArgs: [String], code: String) -> [String] {
+    baseArgs.first == "python3" ? ["python3", "-c", code] : ["-c", code]
+}
+
+private func normalizeLocalRuntimePythonPath(_ path: String) -> String {
+    let expanded = (path as NSString).expandingTildeInPath
+    guard expanded.hasPrefix("/") else { return expanded }
+    return URL(fileURLWithPath: expanded).standardizedFileURL.path
+}
+
+private func localRuntimePythonPathLooksRunnable(_ path: String) -> Bool {
+    let normalized = normalizeLocalRuntimePythonPath(path)
+    guard !normalized.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        return false
+    }
+    if normalized.contains("/.lmstudio/extensions/backends/vendor/") {
+        return true
+    }
+    if FileManager.default.isExecutableFile(atPath: normalized) {
+        return true
+    }
+    guard FileManager.default.fileExists(atPath: normalized) else {
+        return false
+    }
+    let filename = URL(fileURLWithPath: normalized).lastPathComponent.lowercased()
+    guard filename == "env" || filename == "python" || filename.hasPrefix("python") else {
+        return false
     }
 
-    var timedOut = false
-    let deadline = Date().addingTimeInterval(timeoutSec)
-    while p.isRunning && Date() < deadline {
-        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.03))
+    // Sandboxed builds can occasionally report false negatives for executability on
+    // inherited LM Studio vendor runtimes even though Process can still launch them.
+    return false
+}
+
+private func isUnsafeLocalRuntimePythonPath(_ path: String) -> Bool {
+    let normalized = normalizeLocalRuntimePythonPath(path).lowercased()
+    guard !normalized.isEmpty else { return false }
+    if normalized == "/usr/bin/python3" || normalized == "/usr/bin/python" {
+        return true
     }
-    if p.isRunning {
-        timedOut = true
-        p.terminate()
-        // Give the process a moment to exit gracefully.
-        let termDeadline = Date().addingTimeInterval(0.6)
-        while p.isRunning && Date() < termDeadline {
-            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.03))
+    return normalized.contains("/applications/xcode.app/contents/developer/")
+        || normalized.contains("/library/developer/commandlinetools/")
+}
+
+private func readyProvidersFromProbeOutput(_ output: String) -> [String] {
+    let lines = output.split(whereSeparator: \.isNewline).map(String.init)
+    guard let readyLine = lines.first(where: { $0.hasPrefix("ready=") }) else { return [] }
+    return readyLine
+        .dropFirst("ready=".count)
+        .split(separator: ",")
+        .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+}
+
+private func prependingPythonPathEntries(
+    _ entries: [String],
+    to environment: [String: String]
+) -> [String: String] {
+    guard !entries.isEmpty else { return environment }
+    var updated = environment
+    let existing = (updated["PYTHONPATH"] ?? "")
+        .split(separator: ":")
+        .map(String.init)
+        .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    var ordered: [String] = []
+    var seen = Set<String>()
+
+    for entry in entries + existing {
+        let trimmed = entry.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { continue }
+        let normalized = URL(fileURLWithPath: (trimmed as NSString).expandingTildeInPath)
+            .standardizedFileURL
+            .path
+        guard seen.insert(normalized).inserted else { continue }
+        ordered.append(normalized)
+    }
+
+    updated["PYTHONPATH"] = ordered.joined(separator: ":")
+    return updated
+}
+
+private func managedOfflinePythonPathEntries(baseDir: URL? = nil) -> [String] {
+    let resolvedBase = baseDir ?? SharedPaths.ensureHubDirectory()
+    let offlineRoots: [URL] = [
+        SharedPaths.realHomeDirectory()
+            .appendingPathComponent(SharedPaths.legacyRuntimeDirectoryName, isDirectory: true)
+            .appendingPathComponent("py_deps", isDirectory: true),
+        resolvedBase.appendingPathComponent("py_deps", isDirectory: true),
+    ]
+
+    for root in offlineRoots {
+        let marker = root.appendingPathComponent("USE_PYTHONPATH")
+        let site = root.appendingPathComponent("site-packages", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: marker.path),
+              FileManager.default.directoryExists(atPath: site.path) else {
+            continue
         }
-        // Last resort: SIGKILL to guarantee we don't crash on Process dealloc.
-        if p.isRunning {
-            let pid = p.processIdentifier
-            if pid > 0 {
-                kill(pid, SIGKILL)
-            }
-            let killDeadline = Date().addingTimeInterval(0.6)
-            while p.isRunning && Date() < killDeadline {
-                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.03))
-            }
+        return [site.path]
+    }
+    return []
+}
+
+private func prependingManagedOfflinePythonPathEntries(
+    baseDir: URL? = nil,
+    to environment: [String: String]
+) -> [String: String] {
+    prependingPythonPathEntries(
+        managedOfflinePythonPathEntries(baseDir: baseDir),
+        to: environment
+    )
+}
+
+private typealias LocalPythonProbeResult = LocalPythonRuntimeCandidateStatus
+
+private final class LocalPythonProbeCacheEntry: NSObject {
+    let result: LocalPythonProbeResult?
+    let cachedAt: TimeInterval
+
+    init(result: LocalPythonProbeResult?, cachedAt: TimeInterval) {
+        self.result = result
+        self.cachedAt = cachedAt
+    }
+}
+
+private enum LocalPythonProbeCache {
+    nonisolated(unsafe) private static let cache = NSCache<NSString, LocalPythonProbeCacheEntry>()
+    private static let cacheTTLSeconds: TimeInterval = 20.0
+
+    @MainActor
+    static func cachedResult(
+        forPath path: String,
+        preferredProviderID: String? = nil
+    ) -> (hit: Bool, result: LocalPythonProbeResult?) {
+        let key = cacheKey(path: path, preferredProviderID: preferredProviderID)
+        let now = Date().timeIntervalSince1970
+        guard let entry = cache.object(forKey: key),
+              now - entry.cachedAt <= cacheTTLSeconds else {
+            return (false, nil)
+        }
+        return (true, entry.result)
+    }
+
+    @MainActor
+    static func store(
+        _ result: LocalPythonProbeResult?,
+        forPath path: String,
+        preferredProviderID: String? = nil
+    ) {
+        let key = cacheKey(path: path, preferredProviderID: preferredProviderID)
+        guard let result else {
+            cache.removeObject(forKey: key)
+            return
+        }
+        cache.setObject(
+            LocalPythonProbeCacheEntry(
+                result: result,
+                cachedAt: Date().timeIntervalSince1970
+            ),
+            forKey: key
+        )
+    }
+
+    @MainActor
+    static func clear() {
+        cache.removeAllObjects()
+    }
+
+    @MainActor
+    private static func cacheKey(
+        path: String,
+        preferredProviderID: String?
+    ) -> NSString {
+        let trimmedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedPath: String
+        if trimmedPath.contains("/") {
+            normalizedPath = URL(fileURLWithPath: (trimmedPath as NSString).expandingTildeInPath)
+                .standardizedFileURL
+                .path
+        } else {
+            normalizedPath = trimmedPath
+        }
+        let providerID = preferredProviderID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        return "\(normalizedPath)|\(providerID)" as NSString
+    }
+}
+
+private struct ResolvedLocalRuntimePythonLaunch {
+    var executable: String
+    var snippetArgumentsPrefix: [String]
+    var environment: [String: String]
+    var baseDirPath: String
+    var resolvedPythonPath: String
+}
+
+private func scorePythonProbe(version: String, readyProviders: [String], preferredProviderID: String? = nil) -> Int {
+    var score = 0
+    let preferredProvider = preferredProviderID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+    if !preferredProvider.isEmpty, readyProviders.contains(preferredProvider) {
+        score += 8
+    }
+    if readyProviders.contains("transformers") {
+        score += 6
+    }
+    if readyProviders.contains("mlx") {
+        score += 4
+    }
+    if version.hasPrefix("3.11") {
+        score += 2
+    } else if version.hasPrefix("3.") {
+        score += 1
+    }
+    return score
+}
+
+@MainActor
+private func runLocalPythonVersionProbe(_ path: String) -> (code: Int32, out: String, err: String) {
+    let args = ["-c", "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')"]
+    var lastResult = runCapture(path, args, timeoutSec: 1.2)
+    let lastOutput = { (result: (code: Int32, out: String, err: String)) in
+        (result.out.isEmpty ? result.err : result.out).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    if lastResult.code == 0, !lastOutput(lastResult).contains("xcrun") {
+        return lastResult
+    }
+
+    // Freshly-written wrappers can transiently miss the first probe under load.
+    usleep(80_000)
+    lastResult = runCapture(path, args, timeoutSec: 1.2)
+    return lastResult
+}
+
+@MainActor
+private func probeLocalPython(_ path: String, preferredProviderID: String? = nil) -> LocalPythonProbeResult? {
+    let normalized = (path as NSString).expandingTildeInPath
+    let cached = LocalPythonProbeCache.cachedResult(
+        forPath: normalized,
+        preferredProviderID: preferredProviderID
+    )
+    if cached.hit {
+        return cached.result
+    }
+    guard localRuntimePythonPathLooksRunnable(normalized) else {
+        LocalPythonProbeCache.store(nil, forPath: normalized, preferredProviderID: preferredProviderID)
+        return nil
+    }
+    guard !isUnsafeLocalRuntimePythonPath(normalized) else {
+        LocalPythonProbeCache.store(nil, forPath: normalized, preferredProviderID: preferredProviderID)
+        return nil
+    }
+
+    let versionResult = runLocalPythonVersionProbe(normalized)
+    let versionOutput = (versionResult.out.isEmpty ? versionResult.err : versionResult.out)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard versionResult.code == 0, !versionOutput.contains("xcrun") else {
+        LocalPythonProbeCache.store(nil, forPath: normalized, preferredProviderID: preferredProviderID)
+        return nil
+    }
+
+    let probeArgs = ["-c", providerImportProbeScript(for: preferredProviderID)]
+    let baseEnvironment = hubRuntimeProbeEnv()
+    var bestReadyProviders: [String] = []
+    var bestPythonPathEntries: [String] = []
+    var bestScore = Int.min
+
+    let supplementalEntries = LocalPythonRuntimeDiscovery.supplementalPythonPathEntries(
+        forPythonPath: normalized
+    )
+    let offlineEntries = managedOfflinePythonPathEntries()
+    var probeEnvironments: [([String: String], [String])] = []
+    var seenProbeSignatures: Set<String> = []
+
+    func appendProbeEnvironment(_ entries: [String]) {
+        let environment = prependingPythonPathEntries(entries, to: baseEnvironment)
+        let signature = environment["PYTHONPATH"] ?? ""
+        guard seenProbeSignatures.insert(signature).inserted else { return }
+        probeEnvironments.append((environment, entries))
+    }
+
+    appendProbeEnvironment([])
+    appendProbeEnvironment(supplementalEntries)
+    appendProbeEnvironment(offlineEntries)
+    appendProbeEnvironment(offlineEntries + supplementalEntries)
+
+    for (environment, pythonPathEntries) in probeEnvironments {
+        let probeResult = runCapture(
+            normalized,
+            probeArgs,
+            env: environment,
+            timeoutSec: 4.0
+        )
+        let readyProviders = readyProvidersFromProbeOutput(probeResult.out)
+        let score = scorePythonProbe(
+            version: versionOutput,
+            readyProviders: readyProviders,
+            preferredProviderID: preferredProviderID
+        )
+        if score > bestScore {
+            bestScore = score
+            bestReadyProviders = readyProviders
+            bestPythonPathEntries = pythonPathEntries
         }
     }
 
-    if p.isRunning {
-        // Avoid touching terminationStatus and avoid deinit-crash; keep it alive and fail fast.
-        leakRunningCaptureProcess(p)
-        return (code: 124, out: "", err: "timeout")
-    }
-
-    let outData = (try? outPipe.fileHandleForReading.readToEnd()) ?? Data()
-    let errData = (try? errPipe.fileHandleForReading.readToEnd()) ?? Data()
-    try? outPipe.fileHandleForReading.close()
-    try? errPipe.fileHandleForReading.close()
-    let out = String(data: outData, encoding: .utf8) ?? ""
-    let err = String(data: errData, encoding: .utf8) ?? ""
-    let code: Int32 = timedOut ? 124 : p.terminationStatus
-    return (code: code, out: out.trimmingCharacters(in: .whitespacesAndNewlines), err: err.trimmingCharacters(in: .whitespacesAndNewlines))
+    let result = LocalPythonProbeResult(
+        path: normalized,
+        version: versionOutput,
+        readyProviders: bestReadyProviders,
+        score: bestScore,
+        environmentPythonPathEntries: bestPythonPathEntries
+    )
+    LocalPythonProbeCache.store(result, forPath: normalized, preferredProviderID: preferredProviderID)
+    return result
 }
 
 @MainActor
@@ -191,11 +556,7 @@ INSERT OR IGNORE INTO audit_events(
 
 @MainActor
 private func waitForProcessExit(_ p: Process, timeoutSec: Double) -> Bool {
-    let deadline = Date().addingTimeInterval(max(0.1, timeoutSec))
-    while p.isRunning && Date() < deadline {
-        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.03))
-    }
-    return !p.isRunning
+    ProcessWaitSupport.waitForExit(p, timeoutSec: timeoutSec)
 }
 
 struct HubResolvedRoutingBinding: Equatable {
@@ -207,12 +568,296 @@ struct HubResolvedRoutingBinding: Equatable {
     var deviceOverrideModelId: String
 }
 
+enum HubStoreNotificationCopy {
+    static func pairingApprovedTitle() -> String {
+        HubUIStrings.Notifications.Delivery.pairingApprovedTitle
+    }
+
+    static func pairingApprovedBody(subject: String) -> String {
+        HubUIStrings.Notifications.Delivery.pairingApprovedBody(subject: subject)
+    }
+
+    static func pairingApproveFailedTitle() -> String {
+        HubUIStrings.Notifications.Delivery.pairingApproveFailedTitle
+    }
+
+    static func pairingDeniedTitle() -> String {
+        HubUIStrings.Notifications.Delivery.pairingDeniedTitle
+    }
+
+    static func pairingDeniedBody(subject: String) -> String {
+        HubUIStrings.Notifications.Delivery.pairingDeniedBody(subject: subject)
+    }
+
+    static func pairingDenyFailedTitle() -> String {
+        HubUIStrings.Notifications.Delivery.pairingDenyFailedTitle
+    }
+
+    static func operatorChannelReviewTitle(for decision: HubOperatorChannelOnboardingDecisionKind) -> String {
+        HubUIStrings.Notifications.Delivery.operatorChannelReviewTitle(for: decision)
+    }
+
+    static func operatorChannelReviewBody(provider: String, conversationId: String, status: String) -> String {
+        HubUIStrings.Notifications.Delivery.operatorChannelReviewBody(
+            provider: provider,
+            conversationId: conversationId,
+            status: status
+        )
+    }
+
+    static func operatorChannelRetryCompleteTitle() -> String {
+        HubUIStrings.Notifications.Delivery.operatorChannelRetryCompleteTitle
+    }
+
+    static func operatorChannelRetryCompleteBody(
+        ticketId: String,
+        deliveredCount: Int,
+        pendingCount: Int
+    ) -> String {
+        HubUIStrings.Notifications.Delivery.operatorChannelRetryCompleteBody(
+            ticketId: ticketId,
+            deliveredCount: deliveredCount,
+            pendingCount: pendingCount
+        )
+    }
+
+    static func operatorChannelReviewFailedTitle() -> String {
+        HubUIStrings.Notifications.Delivery.operatorChannelReviewFailedTitle
+    }
+
+    static func operatorChannelRevokedTitle() -> String {
+        HubUIStrings.Notifications.Delivery.operatorChannelRevokedTitle
+    }
+
+    static func operatorChannelRevokedBody(provider: String, conversationId: String, status: String) -> String {
+        HubUIStrings.Notifications.Delivery.operatorChannelRevokedBody(
+            provider: provider,
+            conversationId: conversationId,
+            status: status
+        )
+    }
+
+    static func operatorChannelRevokeFailedTitle() -> String {
+        HubUIStrings.Notifications.Delivery.operatorChannelRevokeFailedTitle
+    }
+
+    static func operatorChannelStatusLabel(_ status: String) -> String {
+        HubUIStrings.Notifications.Delivery.operatorChannelStatusLabel(status)
+    }
+}
+
+private enum HubPairingOwnerAuthenticationError: LocalizedError {
+    case unavailable(String)
+    case cancelled
+    case failed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .unavailable(let message):
+            let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty
+                ? "This Mac cannot verify the local Hub owner right now."
+                : trimmed
+        case .cancelled:
+            return "Local owner approval was cancelled. The pairing request stays pending."
+        case .failed(let message):
+            let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty
+                ? "Local owner authentication failed. The pairing request stays pending."
+                : trimmed
+        }
+    }
+
+    static func from(_ error: Error) -> HubPairingOwnerAuthenticationError {
+        if let authError = error as? HubPairingOwnerAuthenticationError {
+            return authError
+        }
+        if let laError = error as? LAError {
+            switch laError.code {
+            case .userCancel, .appCancel, .systemCancel:
+                return .cancelled
+            case .biometryNotAvailable, .passcodeNotSet, .biometryLockout:
+                return .unavailable(laError.localizedDescription)
+            default:
+                return .failed(laError.localizedDescription)
+            }
+        }
+        return .failed((error as NSError).localizedDescription)
+    }
+}
+
+func hubNormalizedPairedDeviceCapabilityFocusKey(_ raw: String?) -> String? {
+    let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !trimmed.isEmpty else { return nil }
+    let normalized = trimmed
+        .lowercased()
+        .replacingOccurrences(of: "-", with: ".")
+        .replacingOccurrences(of: "_", with: ".")
+        .replacingOccurrences(of: " ", with: "")
+
+    switch normalized {
+    case "web.fetch", "网页抓取":
+        return "web.fetch"
+    case "ai.generate.paid", "付费ai":
+        return "ai.generate.paid"
+    case "ai.generate.local", "本地ai":
+        return "ai.generate.local"
+    default:
+        return nil
+    }
+}
+
+func hubPairedDeviceCapabilityFocusTitle(_ capabilityKey: String?) -> String? {
+    switch hubNormalizedPairedDeviceCapabilityFocusKey(capabilityKey) {
+    case "web.fetch":
+        return HubUIStrings.MainPanel.PairingScope.webFetch
+    case "ai.generate.paid":
+        return HubUIStrings.MainPanel.PairingScope.paidAI
+    case "ai.generate.local":
+        return HubUIStrings.MainPanel.PairingScope.localAI
+    default:
+        return nil
+    }
+}
+
+enum HubSettingsNavigationTarget: Equatable {
+    case pairedDevices(deviceID: String?, capabilityKey: String?)
+}
+
+enum ModelTrialCategory: Equatable {
+    case running
+    case success
+    case quota
+    case rateLimit
+    case auth
+    case config
+    case network
+    case runtime
+    case unsupported
+    case timeout
+    case failed
+}
+
+struct ModelTrialStatus: Equatable {
+    enum State: Equatable {
+        case running
+        case success
+        case failure
+    }
+
+    var state: State
+    var category: ModelTrialCategory
+    var summary: String
+    var detail: String
+    var updatedAt: TimeInterval
+
+    var isRunning: Bool {
+        state == .running
+    }
+}
+
+func hubClassifyModelTrialFailure(_ message: String) -> ModelTrialCategory {
+    let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard !normalized.isEmpty else { return .failed }
+
+    if normalized.contains("quota")
+        || normalized.contains("insufficient quota")
+        || normalized.contains("insufficient_quota")
+        || normalized.contains("usage limit")
+        || normalized.contains("you've hit your usage limit")
+        || normalized.contains("rate limit resets")
+        || normalized.contains("resets on")
+        || normalized.contains("upgrade to plus")
+        || normalized.contains("额度")
+        || normalized.contains("余额")
+        || normalized.contains("billing")
+        || normalized.contains("credit balance") {
+        return .quota
+    }
+    if normalized.contains("rate limit")
+        || normalized.contains("too many requests")
+        || normalized.contains("rpm limit")
+        || normalized.contains("tpm limit")
+        || normalized.contains("requests per min")
+        || normalized.contains("限流") {
+        return .rateLimit
+    }
+    if normalized.contains("api key")
+        || normalized.contains("x-api-key")
+        || normalized.contains("unauthorized")
+        || normalized.contains("authentication")
+        || normalized.contains("forbidden")
+        || normalized.contains("401")
+        || normalized.contains("403") {
+        return .auth
+    }
+    if normalized.contains("base url")
+        || normalized.contains("model id")
+        || normalized.contains("model_not_found")
+        || normalized.contains("remote_model_not_found")
+        || normalized.contains("bad_req_id")
+        || normalized.contains("bad_json")
+        || normalized.contains("invalid response")
+        || normalized.contains("挂到可执行面")
+        || normalized.contains("load 再试")
+        || normalized.contains("配置")
+        || normalized.contains("未设置")
+        || normalized.contains("缺少模型") {
+        return .config
+    }
+    if normalized.contains("timeout")
+        || normalized.contains("timed out")
+        || normalized.contains("超时") {
+        return .timeout
+    }
+    if normalized.contains("network")
+        || normalized.contains("fetch_failed")
+        || normalized.contains("cannot connect")
+        || normalized.contains("could not connect")
+        || normalized.contains("connection")
+        || normalized.contains("offline")
+        || normalized.contains("dns")
+        || normalized.contains("socket") {
+        return .network
+    }
+    if normalized.contains("unsupported")
+        || normalized.contains("不支持") {
+        return .unsupported
+    }
+    if normalized.contains("runtime")
+        || normalized.contains("provider")
+        || normalized.contains("python")
+        || normalized.contains("quick bench")
+        || normalized.contains("运行时")
+        || normalized.contains("warmup")
+        || normalized.contains("text-generate") {
+        return .runtime
+    }
+    return .failed
+}
+
+private enum LocalModelTrialPath {
+    case textGenerate
+    case quickBench(taskKind: String, fixtureProfile: String)
+}
+
+private let modelTrialPrompt = "Reply with exactly HUB_OK. No extra words."
+
 @MainActor
 final class HubStore: ObservableObject {
     static let shared = HubStore()
+    private static let localModelHealthAutoScanScheduleKey = "relflowhub_local_model_health_auto_scan_schedule_v1"
+    private static let remoteKeyHealthAutoScanScheduleKey = "relflowhub_remote_key_health_auto_scan_schedule_v1"
+
+    var pairingApprovalAuthenticationOverride: ((HubPairingRequest, HubPairingApprovalDraft) async throws -> Void)? = nil
+    var pairingApprovalSubmitOverride: ((HubPairingRequest, HubPairingApprovalDraft, [String]) async throws -> String?)? = nil
 
     @Published private(set) var notifications: [HubNotification] = []
-    @Published var ipcStatus: String = "IPC: starting…"
+    @Published private(set) var pairingApprovalInFlightRequestIDs: Set<String> = []
+    @Published private(set) var latestPairingApprovalOutcome: HubPairingApprovalOutcomeSnapshot? = nil
+    @Published var settingsNavigationTarget: HubSettingsNavigationTarget? = nil
+    @Published var notificationInspectorTarget: HubNotification? = nil
+    @Published var ipcStatus: String = HubUIStrings.Menu.IPC.starting
     @Published var ipcPath: String = ""
 
     // Optional: launcher path for FA Tracker (either a .app bundle or a .command script).
@@ -237,6 +882,8 @@ final class HubStore: ObservableObject {
         }
     }
 
+    @Published var suppressFloatingContent: Bool = false
+
     @Published var meetingUrgentMinutes: Int = 5 {
         didSet {
             let v = max(1, min(30, meetingUrgentMinutes))
@@ -250,7 +897,7 @@ final class HubStore: ObservableObject {
             UserDefaults.standard.set(showModelsDrawer, forKey: "relflowhub_show_models_drawer")
         }
     }
-    @Published var calendarStatus: String = "Calendar: not enabled"
+    @Published var calendarStatus: String = HubUIStrings.Menu.calendarMigrated
     @Published private(set) var meetings: [HubMeeting] = []
     @Published private(set) var specialDaysToday: [String] = []
 
@@ -269,15 +916,49 @@ final class HubStore: ObservableObject {
     @Published var aiRuntimePython: String = UserDefaults.standard.string(forKey: "relflowhub_ai_runtime_python") ?? "" {
         didSet {
             UserDefaults.standard.set(aiRuntimePython, forKey: "relflowhub_ai_runtime_python")
+            LocalPythonProbeCache.clear()
         }
     }
-    @Published private(set) var aiRuntimeStatusText: String = "Runtime: unknown"
+    var localPythonCandidatePathsOverride: [String]? = nil {
+        didSet {
+            autoDetectedPythonCachePathByKey = [:]
+            autoDetectedPythonCacheAtByKey = [:]
+            pythonCandidateStatusCacheByKey = [:]
+            pythonCandidateStatusCacheAtByKey = [:]
+            LocalPythonProbeCache.clear()
+        }
+    }
+    private var autoDetectedPythonCachePathByKey: [String: String] = [:]
+    private var autoDetectedPythonCacheAtByKey: [String: TimeInterval] = [:]
+    private var pythonCandidateStatusCacheByKey: [String: [LocalPythonRuntimeCandidateStatus]] = [:]
+    private var pythonCandidateStatusCacheAtByKey: [String: TimeInterval] = [:]
+    @Published private(set) var aiRuntimeStatusSnapshot: AIRuntimeStatus? = AIRuntimeStatusStorage.load()
+    @Published private(set) var aiRuntimeStatusText: String = HubUIStrings.Settings.Advanced.Runtime.statusUnknown
     @Published private(set) var aiRuntimeLastError: String = ""
     @Published private(set) var aiRuntimeLastTestText: String = ""
+    @Published private(set) var modelTrialStatusByKey: [String: ModelTrialStatus] = [:]
+    @Published private(set) var localModelHealthSnapshot: LocalModelHealthSnapshot = LocalModelHealthStorage.load()
+    @Published private(set) var localModelHealthScanningModelIDs: Set<String> = []
+    @Published private(set) var localModelHealthScanInFlight: Bool = false
+    @Published private(set) var localModelHealthAutoScanSchedule: ModelHealthAutoScanSchedule = HubStore.loadModelHealthAutoScanSchedule(
+        key: HubStore.localModelHealthAutoScanScheduleKey
+    )
+    @Published private(set) var remoteKeyHealthSnapshot: RemoteKeyHealthSnapshot = RemoteKeyHealthStorage.load()
+    @Published private(set) var remoteKeyHealthScanningKeyReferences: Set<String> = []
+    @Published private(set) var remoteKeyHealthScanInFlight: Bool = false
+    @Published private(set) var remoteKeyHealthAutoScanSchedule: ModelHealthAutoScanSchedule = HubStore.loadModelHealthAutoScanSchedule(
+        key: HubStore.remoteKeyHealthAutoScanScheduleKey
+    )
     @Published private(set) var aiRuntimeProviderSummaryText: String = ""
     @Published private(set) var aiRuntimeDoctorSummaryText: String = ""
+    @Published private(set) var aiRuntimeInstallHintsText: String = ""
+    @Published private(set) var aiRuntimePythonCandidatesText: String = ""
+    @Published private(set) var aiRuntimeProviderHelpTextByProvider: [String: String] = [:]
 
     @Published private(set) var routingSettings: RoutingSettings = RoutingSettings()
+    private var localModelHealthAutoScanTimer: Timer? = nil
+    private var remoteKeyHealthAutoScanTimer: Timer? = nil
+    private var modelHealthAutoScanCancellables: Set<AnyCancellable> = []
 
     // Legacy alias kept in sync for existing UI flows that still bind to a task -> model map.
     @Published private(set) var routingPreferredModelIdByTask: [String: String] = [:]
@@ -287,95 +968,13 @@ final class HubStore: ObservableObject {
             let m = max(1, min(180, calendarRemindMinutes))
             if m != calendarRemindMinutes { calendarRemindMinutes = m }
             UserDefaults.standard.set(m, forKey: "relflowhub_calendar_remind_minutes")
-            calendar?.updateRemindMinutes(m)
-            refreshCalendar()
         }
     }
 
     private var server: UnixSocketServer?
     private var fileIPC: FileIPC?
-    private var calendar: CalendarPipeline?
 
     // -------------------- Integrations (counts-only) --------------------
-    // Calendar authorization state is queried via EventKit (not via calendarStatus text).
-    // IMPORTANT: avoid string matching for "enabled" because "not enabled" contains it.
-    var calendarAuthStatus: EKAuthorizationStatus {
-        EKEventStore.authorizationStatus(for: .event)
-    }
-
-    var calendarHasReadAccess: Bool {
-        let st = calendarAuthStatus
-        if #available(macOS 14.0, *) {
-            return st == .authorized || st == .fullAccess
-        }
-        return st == .authorized
-    }
-
-    var calendarDeniedOrRestricted: Bool {
-        let st = calendarAuthStatus
-        return st == .denied || st == .restricted
-    }
-
-    var calendarNotDetermined: Bool {
-        calendarAuthStatus == .notDetermined
-    }
-
-    // Default OFF: users explicitly opt-in to permissions.
-    @Published var integrationCalendarEnabled: Bool = UserDefaults.standard.object(forKey: "relflowhub_integration_calendar_enabled") as? Bool ?? false {
-        didSet {
-            UserDefaults.standard.set(integrationCalendarEnabled, forKey: "relflowhub_integration_calendar_enabled")
-
-            // Cancel any in-flight enable retry.
-            calendarEnableRetryTimer?.invalidate()
-            calendarEnableRetryTimer = nil
-
-            if integrationCalendarEnabled {
-                // Avoid the "request while inactive" issue.
-                calendarStatus = "Calendar: requesting access…"
-                NSApp.activate(ignoringOtherApps: true)
-
-                // Small delay so the toggle UI commits before the system permission prompt.
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 180_000_000)
-                    self.requestCalendarAccessAndStart()
-
-                    // Retry status refresh for a short window; TCC state can lag.
-                    self.calendarEnableRetryRemaining = 16
-                    self.calendarEnableRetryTimer?.invalidate()
-                    self.calendarEnableRetryTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-                        Task { @MainActor in
-                            guard let self else { return }
-                            self.calendarEnableRetryRemaining -= 1
-                            self.refreshCalendarStatusOnly()
-
-                            let st = EKEventStore.authorizationStatus(for: .event)
-                            if st == .denied || st == .restricted {
-                                self.calendarEnableRetryTimer?.invalidate()
-                                self.calendarEnableRetryTimer = nil
-                                return
-                            }
-                            if self.calendarHasReadAccess {
-                                self.calendarEnableRetryTimer?.invalidate()
-                                self.calendarEnableRetryTimer = nil
-                                self.refreshCalendar()
-                                return
-                            }
-                            if self.calendarEnableRetryRemaining <= 0 {
-                                self.calendarEnableRetryTimer?.invalidate()
-                                self.calendarEnableRetryTimer = nil
-                                return
-                            }
-                        }
-                    }
-                }
-            } else {
-                calendar?.stopPolling()
-                refreshCalendarStatusOnly()
-                meetings = []
-            }
-            updateIntegrationsPresence()
-        }
-    }
     @Published var integrationFATrackerEnabled: Bool = UserDefaults.standard.object(forKey: "relflowhub_integration_fatracker_enabled") as? Bool ?? true {
         didSet {
             UserDefaults.standard.set(integrationFATrackerEnabled, forKey: "relflowhub_integration_fatracker_enabled")
@@ -447,17 +1046,13 @@ final class HubStore: ObservableObject {
     @Published private(set) var integrationsStatusText: String = ""
     @Published private(set) var integrationsDebugText: String = ""
     @Published private(set) var pendingNetworkRequests: [HubNetworkRequest] = []
+    @Published private(set) var networkPolicySnapshot: HubNetworkPolicyList = HubNetworkPolicyStorage.load()
     @Published private(set) var pendingPairingRequests: [HubPairingRequest] = []
-
-    // Dock Agent (optional helper) status.
-    @Published private(set) var dockAgentStatusText: String = "Dock Agent: unknown"
-    @Published private(set) var dockAgentAutoStartText: String = "Auto-start: unknown"
-    private var dockAgentStatusTimer: Timer?
+    @Published private(set) var pendingOperatorChannelOnboardingTickets: [HubOperatorChannelOnboardingTicket] = []
+    @Published private(set) var recentOperatorChannelOnboardingTickets: [HubOperatorChannelOnboardingTicket] = []
 
     private var integrationsPollTimer: Timer?
     private var integrationsPresenceTimer: Timer?
-    private var calendarEnableRetryTimer: Timer?
-    private var calendarEnableRetryRemaining: Int = 0
 
     private var lastClientTouchById: [String: Double] = [:]
     // When an external agent pushes counts-only notifications (mail/messages/slack), we
@@ -473,6 +1068,7 @@ final class HubStore: ObservableObject {
     private var aiRuntimeMonitorTimer: Timer?
     private var networkRequestsTimer: Timer?
     private var pairingRequestsTimer: Timer?
+    private var operatorChannelOnboardingTimer: Timer?
     private var alwaysOnKeepaliveTimer: Timer?
     private var aiRuntimeLastLaunchAt: Double = 0
     private var aiRuntimeStopRequestedAt: Double = 0
@@ -490,12 +1086,23 @@ final class HubStore: ObservableObject {
 
     private static let defaultAlwaysOnSeconds: Int = 8 * 60 * 60
 
-    private init() {
-        HubDiagnostics.log("HubStore.init pid=\(getpid()) appPath=\(Bundle.main.bundleURL.path)")
-        // Default integrations OFF for new installs (opt-in permissions).
-        if UserDefaults.standard.object(forKey: "relflowhub_integration_calendar_enabled") == nil {
-            integrationCalendarEnabled = false
+    private static func loadModelHealthAutoScanSchedule(key: String) -> ModelHealthAutoScanSchedule {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let decoded = try? JSONDecoder().decode(ModelHealthAutoScanSchedule.self, from: data) else {
+            return ModelHealthAutoScanSchedule(mode: .disabled)
         }
+        return decoded.normalized()
+    }
+
+    private func saveModelHealthAutoScanSchedule(_ schedule: ModelHealthAutoScanSchedule, key: String) {
+        guard let data = try? JSONEncoder().encode(schedule.normalized()) else { return }
+        UserDefaults.standard.set(data, forKey: key)
+    }
+
+    init(startServices: Bool = true) {
+        HubDiagnostics.log("HubStore.init pid=\(getpid()) appPath=\(Bundle.main.bundleURL.path)")
+        // Hub-side calendar access is retired; clear any old opt-in so launch never prompts.
+        UserDefaults.standard.set(false, forKey: "relflowhub_integration_calendar_enabled")
         if UserDefaults.standard.object(forKey: "relflowhub_integration_mail_enabled") == nil {
             integrationMailEnabled = false
         }
@@ -526,36 +1133,35 @@ final class HubStore: ObservableObject {
 
         let m = UserDefaults.standard.integer(forKey: "relflowhub_calendar_remind_minutes")
         if m > 0 { calendarRemindMinutes = m }
-        startIPC()
-        startNetworkRequestsPolling()
-        startPairingRequestsPolling()
-        startAlwaysOnKeepalive()
-        setupNotificationsAuthorizationState()
-        refreshCalendarStatusOnly()
-
-        // If the user enabled Calendar integration, try to bring it up early.
-        // (The actual permission prompt is still user-controlled.)
-        if integrationCalendarEnabled {
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 250_000_000)
-                self.requestCalendarAccessAndStart()
-            }
+        if startServices {
+            startIPC()
+            startNetworkRequestsPolling()
+            startPairingRequestsPolling()
+            startOperatorChannelOnboardingPolling()
+            startAlwaysOnKeepalive()
+            setupNotificationsAuthorizationState()
+            refreshCalendarStatusOnly()
         }
 
         loadDismissedMeetings()
 
         if aiRuntimePython.isEmpty {
+            // Keep launch non-blocking. Full python/provider probing is expensive and can
+            // starve first-window creation if we do it during HubStore initialization.
             aiRuntimePython = defaultPythonPath()
         }
-        startAIRuntimeMonitoring()
+        if startServices {
+            startAIRuntimeMonitoring()
+        }
 
         loadRoutingSettings()
 
         // Counts-only integrations (Mail/Messages/Slack) are driven by Dock badges.
-        updateIntegrationsPolling()
-        updateIntegrationsPresence()
-
-        startDockAgentStatusPolling()
+        if startServices {
+            updateIntegrationsPolling()
+            updateIntegrationsPresence()
+            configureModelHealthAutoScanMonitoring()
+        }
 
         // Ensure derived state is correct after restoring notifications.
         sort()
@@ -569,67 +1175,6 @@ final class HubStore: ObservableObject {
         return group ?? container ?? SharedPaths.ensureHubDirectory()
     }
 
-    private func startDockAgentStatusPolling() {
-        dockAgentStatusTimer?.invalidate()
-        dockAgentStatusTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.refreshDockAgentStatus()
-            }
-        }
-        refreshDockAgentStatus()
-    }
-
-    func refreshDockAgentStatus() {
-        let base = hubBaseDirURL()
-        let f = base.appendingPathComponent("dock_agent_status.json")
-        guard let data = try? Data(contentsOf: f),
-              let st = try? JSONDecoder().decode(DockAgentStatusFile.self, from: data) else {
-            dockAgentStatusText = "Dock Agent: not detected"
-            dockAgentAutoStartText = "Auto-start: unknown"
-            return
-        }
-
-        let age = Date().timeIntervalSince1970 - st.updatedAt
-        let running = age < 130.0
-        dockAgentStatusText = running ? "Dock Agent: running" : "Dock Agent: not running"
-        dockAgentAutoStartText = st.autoStartLoaded ? "Auto-start: enabled" : (st.autoStartInstalled ? "Auto-start: installed" : "Auto-start: disabled")
-    }
-
-    func enableDockAgentAutoStart() {
-        openDockAgentWithArgs(["--install-launchagent"])
-    }
-
-    func disableDockAgentAutoStart() {
-        openDockAgentWithArgs(["--uninstall-launchagent"])
-    }
-
-    private func openDockAgentWithArgs(_ args: [String]) {
-        guard let url = dockAgentAppURL() else {
-            integrationsDebugText = (integrationsDebugText + "\nDockAgent: not found").trimmingCharacters(in: .whitespacesAndNewlines)
-            return
-        }
-        let cfg = NSWorkspace.OpenConfiguration()
-        cfg.arguments = args
-        cfg.activates = false
-        NSWorkspace.shared.openApplication(at: url, configuration: cfg) { _, _ in
-            // Best-effort; status file will update shortly if the agent ran.
-        }
-    }
-
-    private func dockAgentAppURL() -> URL? {
-        // Prefer LaunchServices lookup by bundle id.
-        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.rel.flowhub.dockagent") {
-            return url
-        }
-        // Fallback: common install location.
-        let apps = URL(fileURLWithPath: "/Applications", isDirectory: true)
-        let candidate = apps.appendingPathComponent("RELFlowHubDockAgent.app")
-        if FileManager.default.fileExists(atPath: candidate.path) {
-            return candidate
-        }
-        return nil
-    }
-
     func refreshIntegrationsNow() {
         updateIntegrationsPolling()
         pollDockBadgeIntegrations()
@@ -637,7 +1182,7 @@ final class HubStore: ObservableObject {
     }
 
     private func updateIntegrationsPresence() {
-        let any = integrationCalendarEnabled || integrationMailEnabled || integrationMessagesEnabled || integrationSlackEnabled
+        let any = integrationMailEnabled || integrationMessagesEnabled || integrationSlackEnabled
         if !any {
             integrationsPresenceTimer?.invalidate()
             integrationsPresenceTimer = nil
@@ -683,7 +1228,7 @@ final class HubStore: ObservableObject {
             }
         }
 
-        upsert(id: "sys_calendar", name: "Calendar", enabled: integrationCalendarEnabled)
+        upsert(id: "sys_calendar", name: "Calendar", enabled: false)
         upsert(id: "sys_mail", name: "Mail", enabled: integrationMailEnabled)
         upsert(id: "sys_messages", name: "Messages", enabled: integrationMessagesEnabled)
         upsert(id: "sys_slack", name: "Slack", enabled: integrationSlackEnabled)
@@ -697,7 +1242,7 @@ final class HubStore: ObservableObject {
         if !any {
             integrationsPollTimer?.invalidate()
             integrationsPollTimer = nil
-            integrationsStatusText = "Integrations: off"
+            integrationsStatusText = HubUIStrings.Settings.Doctor.legacyCountsOff
             return
         }
 
@@ -721,18 +1266,18 @@ final class HubStore: ObservableObject {
 
         let trusted = DockBadgeReader.ensureAccessibilityTrusted(prompt: false)
         if !trusted {
-            integrationsStatusText = "Integrations: need Accessibility permission"
+            integrationsStatusText = HubUIStrings.Settings.Doctor.legacyCountsAccessibilityRequired
             let bid = Bundle.main.bundleIdentifier ?? "(unknown)"
             let appPath = Bundle.main.bundleURL.path
             var dbg: [String] = [
-                "AXTrusted=false",
-                "bundleId=\(bid)",
-                "appPath=\(appPath)",
-                "Tip: the app you run must match the app you enabled in System Settings → Privacy & Security → Accessibility. Quit & relaunch after enabling.",
+                HubUIStrings.Settings.Doctor.legacyDebugAXTrusted(false),
+                HubUIStrings.Settings.Doctor.legacyDebugBundleID(bid),
+                HubUIStrings.Settings.Doctor.legacyDebugAppPath(appPath),
+                HubUIStrings.Settings.Doctor.legacyCountsAccessibilityHint,
             ]
-            if integrationMailEnabled { dbg.append("Mail: skipped") }
-            if integrationMessagesEnabled { dbg.append("Messages: skipped") }
-            if integrationSlackEnabled { dbg.append("Slack: skipped") }
+            if integrationMailEnabled { dbg.append(HubUIStrings.Settings.Doctor.legacyDebugSkipped(app: "Mail")) }
+            if integrationMessagesEnabled { dbg.append(HubUIStrings.Settings.Doctor.legacyDebugSkipped(app: "Messages")) }
+            if integrationSlackEnabled { dbg.append(HubUIStrings.Settings.Doctor.legacyDebugSkipped(app: "Slack")) }
             integrationsDebugText = dbg.joined(separator: "\n")
             return
         }
@@ -767,7 +1312,7 @@ final class HubStore: ObservableObject {
             return resolvedCounts(bundleId: "com.apple.mail", preferAppleScript: true)
         }()
 
-        // Messages: prefer the external Dock Agent on macOS 26 when Dock AX is inaccessible.
+        // Messages: if Dock AX traversal is unavailable, fall back to external counts feeds.
         // AppleScript support for Messages is inconsistent across OS versions.
         let msgDock = integrationMessagesEnabled ? DockBadgeReader.badgeCountForBundleId("com.apple.MobileSMS") : nil
         let msg: (ok: Bool, count: Int, debug: String)? = {
@@ -791,38 +1336,38 @@ final class HubStore: ObservableObject {
             return (slackDock.ok, slackDock.count, slackDock.debug)
         }()
 
-        var debugParts: [String] = ["AXTrusted=true"]
+        var debugParts: [String] = [HubUIStrings.Settings.Doctor.legacyDebugAXTrusted(true)]
         if integrationMailEnabled {
             if let mail {
-                debugParts.append("Mail:\(mail.debug)")
+                debugParts.append(HubUIStrings.Settings.Doctor.legacyDebugDetail(app: "Mail", detail: mail.debug))
             } else if hasRecentExternalUpdate("mail_unread") {
-                debugParts.append("Mail:use_dock_agent")
+                debugParts.append(HubUIStrings.Settings.Doctor.legacyDebugUseDockAgent(app: "Mail"))
             } else {
                 // Shouldn't happen, but keep it explicit.
-                debugParts.append("Mail:unknown")
+                debugParts.append(HubUIStrings.Settings.Doctor.legacyDebugUnknown(app: "Mail"))
             }
         }
         if integrationMessagesEnabled {
             if let msg {
-                debugParts.append("Messages:\(msg.debug)")
+                debugParts.append(HubUIStrings.Settings.Doctor.legacyDebugDetail(app: "Messages", detail: msg.debug))
             } else {
-                debugParts.append("Messages:use_dock_agent")
+                debugParts.append(HubUIStrings.Settings.Doctor.legacyDebugUseDockAgent(app: "Messages"))
             }
         }
         if integrationSlackEnabled {
             if let slack {
-                debugParts.append("Slack:\(slack.debug)")
+                debugParts.append(HubUIStrings.Settings.Doctor.legacyDebugDetail(app: "Slack", detail: slack.debug))
             } else {
-                debugParts.append("Slack:use_dock_agent")
+                debugParts.append(HubUIStrings.Settings.Doctor.legacyDebugUseDockAgent(app: "Slack"))
             }
         }
         integrationsDebugText = debugParts.joined(separator: "\n")
 
         var parts: [String] = []
-        if let mail { parts.append("Mail=\(mail.count)") }
-        if let msg { parts.append("Messages=\(msg.count)") }
-        if let slack { parts.append("Slack=\(slack.count)") }
-        integrationsStatusText = parts.isEmpty ? "Integrations: off" : ("Integrations: " + parts.joined(separator: " · "))
+        if let mail { parts.append(HubUIStrings.Settings.Doctor.legacyCountsItem(app: "Mail", count: mail.count)) }
+        if let msg { parts.append(HubUIStrings.Settings.Doctor.legacyCountsItem(app: "Messages", count: msg.count)) }
+        if let slack { parts.append(HubUIStrings.Settings.Doctor.legacyCountsItem(app: "Slack", count: slack.count)) }
+        integrationsStatusText = HubUIStrings.Settings.Doctor.legacyCountsSummary(parts)
 
         if let mail { upsertCountsOnlyNotification(source: "Mail", bundleId: "com.apple.mail", count: mail.count, dedupeKey: "mail_unread") }
         if let msg { upsertCountsOnlyNotification(source: "Messages", bundleId: "com.apple.MobileSMS", count: msg.count, dedupeKey: "messages_unread") }
@@ -910,6 +1455,34 @@ final class HubStore: ObservableObject {
             sort()
             schedulePersistNotifications()
         }
+    }
+
+    func removeNotification(dedupeKey: String?, id: String?) {
+        let normalizedDedupeKey = dedupeKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let normalizedID = id?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !normalizedDedupeKey.isEmpty || !normalizedID.isEmpty else { return }
+
+        let removedIDs = notifications
+            .filter { notification in
+                if !normalizedID.isEmpty, notification.id == normalizedID {
+                    return true
+                }
+                if !normalizedDedupeKey.isEmpty, notification.dedupeKey == normalizedDedupeKey {
+                    return true
+                }
+                return false
+            }
+            .map(\.id)
+
+        guard !removedIDs.isEmpty else { return }
+        notifications.removeAll { removedIDs.contains($0.id) }
+        if let inspector = notificationInspectorTarget,
+           removedIDs.contains(inspector.id) {
+            notificationInspectorTarget = nil
+        }
+        updateSummary()
+        sort()
+        schedulePersistNotifications()
     }
 
     private func removeNotificationsBySource(_ source: String) {
@@ -1052,15 +1625,17 @@ final class HubStore: ObservableObject {
     func routingSourceLabel(_ rawSource: String) -> String {
         switch normalizedRoutingToken(rawSource) {
         case "request_override":
-            return "Request Override"
+            return HubUIStrings.Settings.GRPC.EditDeviceSheet.requestOverride
         case "device_override":
-            return "Device Override"
+            return HubUIStrings.Settings.GRPC.EditDeviceSheet.deviceOverride
         case "hub_default":
-            return "Hub Default"
+            return HubUIStrings.Settings.GRPC.EditDeviceSheet.hubDefault
         case "auto_selected":
-            return "Auto Select"
+            return HubUIStrings.Settings.GRPC.EditDeviceSheet.autoSelected
         default:
-            return rawSource.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Auto Select" : rawSource
+            return rawSource.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? HubUIStrings.Settings.GRPC.EditDeviceSheet.autoSelected
+                : rawSource
         }
     }
 
@@ -1093,17 +1668,92 @@ final class HubStore: ObservableObject {
         }
     }
 
+    func refreshOperatorChannelOnboardingTickets() {
+        let adminToken = grpc.localAdminToken()
+        let grpcPort = grpc.port
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if self.operatorChannelOnboardingPollInFlight { return }
+            self.operatorChannelOnboardingPollInFlight = true
+            defer { self.operatorChannelOnboardingPollInFlight = false }
+
+            do {
+                let tickets = try await OperatorChannelsOnboardingHTTPClient.listTickets(
+                    adminToken: adminToken,
+                    grpcPort: grpcPort
+                )
+                self.pendingOperatorChannelOnboardingTickets = tickets
+                    .filter { $0.isOpen }
+                    .sorted { lhs, rhs in
+                        if lhs.displayStatus != rhs.displayStatus {
+                            return lhs.displayStatus == "pending"
+                        }
+                        return lhs.updatedAtMs > rhs.updatedAtMs
+                    }
+                self.recentOperatorChannelOnboardingTickets = tickets
+                    .filter { !$0.isOpen }
+                    .sorted { lhs, rhs in
+                        lhs.updatedAtMs > rhs.updatedAtMs
+                    }
+            } catch {
+                self.pendingOperatorChannelOnboardingTickets = []
+                self.recentOperatorChannelOnboardingTickets = []
+            }
+        }
+    }
+
     enum NetworkDecision {
         case queued
         case autoApproved(Int)
         case denied(String)
     }
 
-    func handleNetworkRequest(_ req: HubNetworkRequest) -> NetworkDecision {
-        let appId = policyAppId(req)
-        let projectId = policyProjectId(req)
+    func reloadNetworkPolicySnapshot() {
+        networkPolicySnapshot = HubNetworkPolicyStorage.load()
+    }
 
-        if let rule = HubNetworkPolicyStorage.match(appId: appId, projectId: projectId) {
+    private static func matchingNetworkPolicy(
+        appId: String,
+        projectId: String,
+        policies: [HubNetworkPolicyRule]
+    ) -> HubNetworkPolicyRule? {
+        let normalizedAppID = HubNetworkPolicyStorage.canonicalAppId(appId)
+        let normalizedProjectID = projectId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        func score(_ rule: HubNetworkPolicyRule) -> Int {
+            let ruleAppID = HubNetworkPolicyStorage.canonicalAppId(rule.appId)
+            let ruleProjectID = rule.projectId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let appMatches = ruleAppID == "*" || ruleAppID == normalizedAppID
+            let projectMatches = ruleProjectID == "*" || ruleProjectID == normalizedProjectID
+            if !appMatches || !projectMatches { return -1 }
+
+            var total = 0
+            if ruleAppID == normalizedAppID { total += 2 }
+            if ruleProjectID == normalizedProjectID { total += 1 }
+            return total
+        }
+
+        var bestRule: HubNetworkPolicyRule?
+        var bestScore = -1
+        for rule in policies {
+            let currentScore = score(rule)
+            if currentScore > bestScore {
+                bestScore = currentScore
+                bestRule = rule
+            }
+        }
+        return bestRule
+    }
+
+    func handleNetworkRequest(_ req: HubNetworkRequest) -> NetworkDecision {
+        let appId = Self.policyAppId(for: req)
+        let projectId = Self.policyProjectId(for: req)
+
+        if let rule = Self.matchingNetworkPolicy(
+            appId: appId,
+            projectId: projectId,
+            policies: networkPolicySnapshot.policies
+        ) {
             switch rule.mode {
             case .deny:
                 return .denied("denied_by_policy")
@@ -1123,8 +1773,15 @@ final class HubStore: ObservableObject {
                 grantNetwork(seconds: desired, openBridge: true)
                 return .autoApproved(desired)
             case .manual:
-                break
+                _ = HubNetworkRequestStorage.add(req)
+                refreshNetworkRequests()
+                return .queued
             }
+        }
+
+        if let seconds = Self.defaultAutoApproveSeconds(for: req, appId: appId) {
+            grantNetwork(seconds: seconds, openBridge: true)
+            return .autoApproved(seconds)
         }
 
         _ = HubNetworkRequestStorage.add(req)
@@ -1251,13 +1908,55 @@ INSERT OR IGNORE INTO audit_events(
     }
 
     func setNetworkPolicy(appId: String, projectId: String, mode: HubNetworkPolicyMode, maxSeconds: Int?) {
-        _ = HubNetworkPolicyStorage.upsert(appId: appId, projectId: projectId, mode: mode, maxSeconds: maxSeconds)
+        networkPolicySnapshot = HubNetworkPolicyStorage.upsert(
+            appId: appId,
+            projectId: projectId,
+            mode: mode,
+            maxSeconds: maxSeconds
+        )
     }
 
     func setNetworkPolicy(for req: HubNetworkRequest, mode: HubNetworkPolicyMode, maxSeconds: Int?) {
-        let appId = policyAppId(req)
-        let projectId = policyProjectId(req)
+        let appId = Self.policyAppId(for: req)
+        let projectId = Self.policyProjectId(for: req)
         setNetworkPolicy(appId: appId, projectId: projectId, mode: mode, maxSeconds: maxSeconds)
+    }
+
+    func currentNetworkPolicy(for req: HubNetworkRequest) -> HubNetworkPolicyRule? {
+        let appId = Self.policyAppId(for: req)
+        let projectId = Self.policyProjectId(for: req)
+        return Self.matchingNetworkPolicy(
+            appId: appId,
+            projectId: projectId,
+            policies: networkPolicySnapshot.policies
+        )
+    }
+
+    func clearNetworkPolicy(for req: HubNetworkRequest) {
+        guard let rule = currentNetworkPolicy(for: req) else { return }
+        networkPolicySnapshot = HubNetworkPolicyStorage.remove(id: rule.id)
+    }
+
+    func approveNetworkRequestUsingCurrentDefault(_ req: HubNetworkRequest) {
+        let appId = Self.policyAppId(for: req)
+        if let seconds = Self.defaultAutoApproveSeconds(for: req, appId: appId) {
+            approveNetworkRequest(req, seconds: seconds)
+        } else {
+            dismissNetworkRequest(req)
+        }
+    }
+
+    func approveNetworkRequestAsAlwaysOn(_ req: HubNetworkRequest) {
+        setNetworkPolicy(for: req, mode: .alwaysOn, maxSeconds: nil)
+        let requested = max(10, req.requestedSeconds ?? 900)
+        let desired = max(requested, Self.defaultAlwaysOnSeconds)
+        approveNetworkRequest(req, seconds: desired)
+    }
+
+    func approveNetworkRequestAsAutoApprove(_ req: HubNetworkRequest) {
+        let requested = max(10, req.requestedSeconds ?? 900)
+        setNetworkPolicy(for: req, mode: .autoApprove, maxSeconds: requested)
+        approveNetworkRequest(req, seconds: requested)
     }
 
     private func startNetworkRequestsPolling() {
@@ -1271,6 +1970,7 @@ INSERT OR IGNORE INTO audit_events(
     }
 
     private var pairingPollInFlight: Bool = false
+    private var operatorChannelOnboardingPollInFlight: Bool = false
 
     private func startPairingRequestsPolling() {
         refreshPairingRequests()
@@ -1282,32 +1982,63 @@ INSERT OR IGNORE INTO audit_events(
         }
     }
 
+    private func startOperatorChannelOnboardingPolling() {
+        refreshOperatorChannelOnboardingTickets()
+        operatorChannelOnboardingTimer?.invalidate()
+        operatorChannelOnboardingTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.refreshOperatorChannelOnboardingTickets()
+            }
+        }
+    }
+
     func approvePairingRequest(_ req: HubPairingRequest, approval: HubPairingApprovalDraft? = nil) {
         let id = req.pairingRequestId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !id.isEmpty else { return }
-        let adminToken = grpc.localAdminToken()
-        let grpcPort = grpc.port
-        let draft = approval ?? HubPairingApprovalDraft.suggested(for: req)
+        guard !pairingApprovalInFlightRequestIDs.contains(id) else { return }
+        let draft = approval ?? HubPairingApprovalDraft.recommended(for: req)
+        pairingApprovalInFlightRequestIDs.insert(id)
         Task { @MainActor in
+            defer {
+                pairingApprovalInFlightRequestIDs.remove(id)
+            }
             do {
-                let requestedScopes = req.requestedScopes
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
-                let caps = draft.effectiveCapabilities(requestedScopes: requestedScopes)
-                try await PairingHTTPClient.approve(
-                    pairingRequestId: id,
-                    approval: draft,
-                    capabilities: caps,
-                    allowedCidrs: nil,
-                    adminToken: adminToken,
-                    grpcPort: grpcPort
+                let approvedDeviceID = try await approvePairingRequestAfterOwnerAuthentication(req, approval: draft)
+                recordPairingApprovalOutcome(
+                    .approved,
+                    request: req,
+                    deviceTitle: draft.normalizedDeviceName,
+                    deviceID: approvedDeviceID,
+                    detail: draft.approvedOutcomeDetailText
                 )
+                dismissPendingPairingNotification(req.pairingRequestId)
                 refreshPairingRequests()
-                push(.make(source: "Hub", title: "Pairing Approved with Policy", body: "\(draft.normalizedDeviceName) approved.", dedupeKey: nil))
+                push(.make(
+                    source: "Hub",
+                    title: HubStoreNotificationCopy.pairingApprovedTitle(),
+                    body: HubStoreNotificationCopy.pairingApprovedBody(subject: draft.normalizedDeviceName),
+                    dedupeKey: nil,
+                    actionURL: Self.pairedDevicesSettingsActionURL(deviceID: approvedDeviceID)
+                ))
             } catch {
-                push(.make(source: "Hub", title: "Pairing Approve Failed", body: (error as NSError).localizedDescription, dedupeKey: nil))
+                recordPairingApprovalOutcome(
+                    pairingApprovalOutcomeKind(for: error),
+                    request: req,
+                    deviceTitle: draft.normalizedDeviceName,
+                    detail: (error as NSError).localizedDescription
+                )
+                push(.make(
+                    source: "Hub",
+                    title: HubStoreNotificationCopy.pairingApproveFailedTitle(),
+                    body: (error as NSError).localizedDescription,
+                    dedupeKey: nil
+                ))
             }
         }
+    }
+
+    func approvePairingRequestRecommended(_ req: HubPairingRequest) {
+        approvePairingRequest(req, approval: .recommended(for: req))
     }
 
     func denyPairingRequest(_ req: HubPairingRequest, reason: String? = nil) {
@@ -1318,10 +2049,31 @@ INSERT OR IGNORE INTO audit_events(
         Task { @MainActor in
             do {
                 try await PairingHTTPClient.deny(pairingRequestId: id, reason: reason, adminToken: adminToken, grpcPort: grpcPort)
+                recordPairingApprovalOutcome(
+                    .denied,
+                    request: req,
+                    detail: reason
+                )
+                dismissPendingPairingNotification(req.pairingRequestId)
                 refreshPairingRequests()
-                push(.make(source: "Hub", title: "Pairing Denied", body: "\(req.deviceName.isEmpty ? id : req.deviceName) denied.", dedupeKey: nil))
+                push(.make(
+                    source: "Hub",
+                    title: HubStoreNotificationCopy.pairingDeniedTitle(),
+                    body: HubStoreNotificationCopy.pairingDeniedBody(subject: req.deviceName.isEmpty ? id : req.deviceName),
+                    dedupeKey: nil
+                ))
             } catch {
-                push(.make(source: "Hub", title: "Pairing Deny Failed", body: (error as NSError).localizedDescription, dedupeKey: nil))
+                recordPairingApprovalOutcome(
+                    .denyFailed,
+                    request: req,
+                    detail: (error as NSError).localizedDescription
+                )
+                push(.make(
+                    source: "Hub",
+                    title: HubStoreNotificationCopy.pairingDenyFailedTitle(),
+                    body: (error as NSError).localizedDescription,
+                    dedupeKey: nil
+                ))
             }
         }
     }
@@ -1330,13 +2082,16 @@ INSERT OR IGNORE INTO audit_events(
     func approvePairingRequestId(_ pairingRequestId: String) {
         let id = pairingRequestId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !id.isEmpty else { return }
+        guard !pairingApprovalInFlightRequestIDs.contains(id) else { return }
         if let req = pendingPairingRequests.first(where: { $0.pairingRequestId == id }) {
             approvePairingRequest(req)
             return
         }
-        let adminToken = grpc.localAdminToken()
-        let grpcPort = grpc.port
+        pairingApprovalInFlightRequestIDs.insert(id)
         Task { @MainActor in
+            defer {
+                pairingApprovalInFlightRequestIDs.remove(id)
+            }
             do {
                 let fallbackReq = HubPairingRequest(
                     pairingRequestId: id,
@@ -1352,20 +2107,201 @@ INSERT OR IGNORE INTO audit_events(
                     denyReason: "",
                     requestedScopes: []
                 )
-                try await PairingHTTPClient.approve(
-                    pairingRequestId: id,
-                    approval: HubPairingApprovalDraft.suggested(for: fallbackReq),
-                    capabilities: nil,
-                    allowedCidrs: nil,
-                    adminToken: adminToken,
-                    grpcPort: grpcPort
+                let fallbackApproval = HubPairingApprovalDraft.recommended(for: fallbackReq)
+                let approvedDeviceID = try await approvePairingRequestAfterOwnerAuthentication(
+                    fallbackReq,
+                    approval: fallbackApproval
                 )
+                recordPairingApprovalOutcome(
+                    .approved,
+                    request: fallbackReq,
+                    deviceTitle: id,
+                    deviceID: approvedDeviceID,
+                    detail: fallbackApproval.approvedOutcomeDetailText
+                )
+                dismissPendingPairingNotification(id)
                 refreshPairingRequests()
-                push(.make(source: "Hub", title: "Pairing Approved with Policy", body: "\(id) approved.", dedupeKey: nil))
+                push(.make(
+                    source: "Hub",
+                    title: HubStoreNotificationCopy.pairingApprovedTitle(),
+                    body: HubStoreNotificationCopy.pairingApprovedBody(subject: id),
+                    dedupeKey: nil,
+                    actionURL: Self.pairedDevicesSettingsActionURL(deviceID: approvedDeviceID)
+                ))
             } catch {
-                push(.make(source: "Hub", title: "Pairing Approve Failed", body: (error as NSError).localizedDescription, dedupeKey: nil))
+                recordPairingApprovalOutcome(
+                    pairingApprovalOutcomeKind(for: error),
+                    request: fallbackReqForOutcome(id),
+                    deviceTitle: id,
+                    detail: (error as NSError).localizedDescription
+                )
+                push(.make(
+                    source: "Hub",
+                    title: HubStoreNotificationCopy.pairingApproveFailedTitle(),
+                    body: (error as NSError).localizedDescription,
+                    dedupeKey: nil
+                ))
             }
         }
+    }
+
+    func isPairingApprovalInFlight(_ req: HubPairingRequest) -> Bool {
+        pairingApprovalInFlightRequestIDs.contains(
+            req.pairingRequestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+    }
+
+    private func approvePairingRequestAfterOwnerAuthentication(
+        _ req: HubPairingRequest,
+        approval: HubPairingApprovalDraft
+    ) async throws -> String? {
+        try await authenticateLocalOwnerForPairingApproval(req, approval: approval)
+        let requestedScopes = req.requestedScopes
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let caps = approval.effectiveCapabilities(requestedScopes: requestedScopes)
+        if let override = pairingApprovalSubmitOverride {
+            return try await override(req, approval, caps)
+        }
+        return try await PairingHTTPClient.approve(
+            pairingRequestId: req.pairingRequestId,
+            approval: approval,
+            capabilities: caps,
+            allowedCidrs: nil,
+            adminToken: grpc.localAdminToken(),
+            grpcPort: grpc.port
+        )
+    }
+
+    private func authenticateLocalOwnerForPairingApproval(
+        _ req: HubPairingRequest,
+        approval: HubPairingApprovalDraft
+    ) async throws {
+        if let override = pairingApprovalAuthenticationOverride {
+            do {
+                try await override(req, approval)
+            } catch {
+                throw HubPairingOwnerAuthenticationError.from(error)
+            }
+            return
+        }
+
+        let context = LAContext()
+        context.localizedCancelTitle = "Cancel"
+        let reason = pairingApprovalAuthenticationReason(req, approval: approval)
+        var authError: NSError?
+        guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &authError) else {
+            throw HubPairingOwnerAuthenticationError.unavailable(
+                authError?.localizedDescription ?? "Local owner authentication is not available on this Mac."
+            )
+        }
+
+        do {
+            let approved: Bool = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Bool, Error>) in
+                context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { success, error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                    } else {
+                        continuation.resume(returning: success)
+                    }
+                }
+            }
+            if !approved {
+                throw HubPairingOwnerAuthenticationError.cancelled
+            }
+        } catch {
+            throw HubPairingOwnerAuthenticationError.from(error)
+        }
+    }
+
+    private func pairingApprovalAuthenticationReason(
+        _ req: HubPairingRequest,
+        approval: HubPairingApprovalDraft
+    ) -> String {
+        Self.pairingApprovalAuthenticationReasonForDisplay(req, approval: approval)
+    }
+
+    static func pairingApprovalAuthenticationReasonForDisplay(
+        _ req: HubPairingRequest,
+        approval: HubPairingApprovalDraft
+    ) -> String {
+        HubGRPCClientEntry.normalizedStrings([
+            approval.deviceName,
+            req.deviceName,
+            req.claimedDeviceId,
+            req.appId,
+        ]).first.map { "Approve first pairing for \($0)" } ?? "Approve first pairing for Paired Device"
+    }
+
+    private func pairingApprovalOutcomeKind(for error: Error) -> HubPairingApprovalOutcomeKind {
+        if let authError = error as? HubPairingOwnerAuthenticationError {
+            switch authError {
+            case .cancelled:
+                return .ownerAuthenticationCancelled
+            case .failed, .unavailable:
+                return .ownerAuthenticationFailed
+            }
+        }
+        return .approvalFailed
+    }
+
+    private func recordPairingApprovalOutcome(
+        _ kind: HubPairingApprovalOutcomeKind,
+        request: HubPairingRequest,
+        deviceTitle: String? = nil,
+        deviceID: String? = nil,
+        detail: String? = nil
+    ) {
+        let normalizedDeviceTitle = HubGRPCClientEntry.normalizedStrings([
+            deviceTitle ?? "",
+            request.deviceName,
+            request.claimedDeviceId,
+            request.appId,
+            request.pairingRequestId,
+            "Paired Device",
+        ]).first ?? "Paired Device"
+        let normalizedDeviceID = deviceID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedDetail = detail?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        latestPairingApprovalOutcome = HubPairingApprovalOutcomeSnapshot(
+            requestID: request.pairingRequestId.trimmingCharacters(in: .whitespacesAndNewlines),
+            deviceTitle: normalizedDeviceTitle,
+            deviceID: normalizedDeviceID?.isEmpty == true ? nil : normalizedDeviceID,
+            kind: kind,
+            detailText: normalizedDetail?.isEmpty == true ? nil : normalizedDetail,
+            occurredAt: Date().timeIntervalSince1970
+        )
+    }
+
+    private func fallbackReqForOutcome(_ pairingRequestId: String) -> HubPairingRequest {
+        HubPairingRequest(
+            pairingRequestId: pairingRequestId,
+            requestId: pairingRequestId,
+            status: "pending",
+            appId: "paired-terminal",
+            claimedDeviceId: "",
+            userId: "",
+            deviceName: "",
+            peerIp: "",
+            createdAtMs: 0,
+            decidedAtMs: 0,
+            denyReason: "",
+            requestedScopes: []
+        )
+    }
+
+    private func dismissPendingPairingNotification(_ pairingRequestId: String) {
+        let normalizedID = pairingRequestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedID.isEmpty else { return }
+        let originalCount = notifications.count
+        notifications.removeAll { notification in
+            let key = (notification.dedupeKey ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return key == "pairing_request:\(normalizedID)"
+        }
+        guard notifications.count != originalCount else { return }
+        updateSummary()
+        schedulePersistNotifications()
     }
 
     func denyPairingRequestId(_ pairingRequestId: String, reason: String? = nil) {
@@ -1380,10 +2316,156 @@ INSERT OR IGNORE INTO audit_events(
         Task { @MainActor in
             do {
                 try await PairingHTTPClient.deny(pairingRequestId: id, reason: reason, adminToken: adminToken, grpcPort: grpcPort)
+                recordPairingApprovalOutcome(
+                    .denied,
+                    request: fallbackReqForOutcome(id),
+                    deviceTitle: id,
+                    detail: reason
+                )
+                dismissPendingPairingNotification(id)
                 refreshPairingRequests()
-                push(.make(source: "Hub", title: "Pairing Denied", body: "\(id) denied.", dedupeKey: nil))
+                push(.make(
+                    source: "Hub",
+                    title: HubStoreNotificationCopy.pairingDeniedTitle(),
+                    body: HubStoreNotificationCopy.pairingDeniedBody(subject: id),
+                    dedupeKey: nil
+                ))
             } catch {
-                push(.make(source: "Hub", title: "Pairing Deny Failed", body: (error as NSError).localizedDescription, dedupeKey: nil))
+                recordPairingApprovalOutcome(
+                    .denyFailed,
+                    request: fallbackReqForOutcome(id),
+                    deviceTitle: id,
+                    detail: (error as NSError).localizedDescription
+                )
+                push(.make(
+                    source: "Hub",
+                    title: HubStoreNotificationCopy.pairingDenyFailedTitle(),
+                    body: (error as NSError).localizedDescription,
+                    dedupeKey: nil
+                ))
+            }
+        }
+    }
+
+    func submitOperatorChannelOnboardingReview(
+        _ ticket: HubOperatorChannelOnboardingTicket,
+        decision: HubOperatorChannelOnboardingDecisionKind,
+        draft: HubOperatorChannelOnboardingReviewDraft
+    ) async throws -> HubOperatorChannelOnboardingReviewResult {
+        let ticketId = ticket.ticketId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !ticketId.isEmpty else {
+            throw OperatorChannelsOnboardingHTTPClient.OnboardingError.apiError(
+                code: "ticket_id_missing",
+                message: HubUIStrings.Settings.OperatorChannels.Onboarding.ticketIDMissing
+            )
+        }
+        let adminToken = grpc.localAdminToken()
+        let grpcPort = grpc.port
+        let result = try await OperatorChannelsOnboardingHTTPClient.reviewTicket(
+            ticketId: ticketId,
+            decision: decision,
+            draft: draft,
+            adminToken: adminToken,
+            grpcPort: grpcPort
+        )
+        refreshOperatorChannelOnboardingTickets()
+        let title = HubStoreNotificationCopy.operatorChannelReviewTitle(for: decision)
+        let body = HubStoreNotificationCopy.operatorChannelReviewBody(
+            provider: result.ticket.provider,
+            conversationId: result.ticket.conversationId,
+            status: result.ticket.displayStatus
+        )
+        push(.make(source: "Hub", title: title, body: body, dedupeKey: nil))
+        return result
+    }
+
+    func retryOperatorChannelOnboardingOutbox(
+        ticketId: String,
+        adminUserId: String
+    ) async throws -> HubOperatorChannelOnboardingOutboxRetryResult {
+        let normalizedTicketId = ticketId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedTicketId.isEmpty else {
+            throw OperatorChannelsOnboardingHTTPClient.OnboardingError.apiError(
+                code: "ticket_id_missing",
+                message: HubUIStrings.Settings.OperatorChannels.Onboarding.ticketIDMissing
+            )
+        }
+        let adminToken = grpc.localAdminToken()
+        let grpcPort = grpc.port
+        let result = try await OperatorChannelsOnboardingHTTPClient.retryOutbox(
+            ticketId: normalizedTicketId,
+            userId: adminUserId,
+            adminToken: adminToken,
+            grpcPort: grpcPort
+        )
+        refreshOperatorChannelOnboardingTickets()
+        push(.make(
+            source: "Hub",
+            title: HubStoreNotificationCopy.operatorChannelRetryCompleteTitle(),
+            body: HubStoreNotificationCopy.operatorChannelRetryCompleteBody(
+                ticketId: normalizedTicketId,
+                deliveredCount: result.deliveredCount,
+                pendingCount: result.pendingCount
+            ),
+            dedupeKey: nil
+        ))
+        return result
+    }
+
+    func revokeOperatorChannelOnboardingTicket(
+        ticketId: String,
+        adminUserId: String,
+        note: String
+    ) async throws -> HubOperatorChannelOnboardingRevokeResult {
+        let normalizedTicketId = ticketId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedTicketId.isEmpty else {
+            throw OperatorChannelsOnboardingHTTPClient.OnboardingError.apiError(
+                code: "ticket_id_missing",
+                message: HubUIStrings.Settings.OperatorChannels.Onboarding.ticketIDMissing
+            )
+        }
+        let adminToken = grpc.localAdminToken()
+        let grpcPort = grpc.port
+        let result = try await OperatorChannelsOnboardingHTTPClient.revokeTicket(
+            ticketId: normalizedTicketId,
+            userId: adminUserId,
+            note: note,
+            adminToken: adminToken,
+            grpcPort: grpcPort
+        )
+        refreshOperatorChannelOnboardingTickets()
+        push(.make(
+            source: "Hub",
+            title: HubStoreNotificationCopy.operatorChannelRevokedTitle(),
+            body: HubStoreNotificationCopy.operatorChannelRevokedBody(
+                provider: result.ticket.provider,
+                conversationId: result.ticket.conversationId,
+                status: result.ticket.displayStatus
+            ),
+            dedupeKey: nil
+        ))
+        return result
+    }
+
+    func reviewOperatorChannelOnboardingTicket(
+        _ ticket: HubOperatorChannelOnboardingTicket,
+        decision: HubOperatorChannelOnboardingDecisionKind,
+        draft: HubOperatorChannelOnboardingReviewDraft
+    ) {
+        Task { @MainActor in
+            do {
+                _ = try await submitOperatorChannelOnboardingReview(
+                    ticket,
+                    decision: decision,
+                    draft: draft
+                )
+            } catch {
+                push(.make(
+                    source: "Hub",
+                    title: HubStoreNotificationCopy.operatorChannelReviewFailedTitle(),
+                    body: (error as NSError).localizedDescription,
+                    dedupeKey: nil
+                ))
             }
         }
     }
@@ -1401,7 +2483,7 @@ INSERT OR IGNORE INTO audit_events(
     }
 
     private func tickAlwaysOnKeepalive() {
-        let rules = HubNetworkPolicyStorage.load().policies.filter { $0.mode == .alwaysOn }
+        let rules = networkPolicySnapshot.policies.filter { $0.mode == .alwaysOn }
         guard !rules.isEmpty else { return }
 
         // Do not auto-launch the Bridge app. Only keep it enabled if it's already running.
@@ -1426,29 +2508,56 @@ INSERT OR IGNORE INTO audit_events(
     }
 
     private func grantNetwork(seconds: Int, openBridge: Bool) {
-        bridge.enable(seconds: seconds)
         if openBridge {
+            bridge.restore(seconds: seconds)
             bridge.openBridgeApp()
+            return
         }
+        bridge.enable(seconds: seconds)
     }
 
-    private func policyAppId(_ req: HubNetworkRequest) -> String {
+    nonisolated static func policyAppId(for req: HubNetworkRequest) -> String {
         let s = (req.source ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        return s.isEmpty ? "unknown" : s
+        let canonical = HubNetworkPolicyStorage.canonicalAppId(s)
+        return canonical.isEmpty ? "unknown" : canonical
     }
 
-    private func policyProjectId(_ req: HubNetworkRequest) -> String {
+    nonisolated static func policyProjectId(for req: HubNetworkRequest) -> String {
+        let source = (req.source ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let displayName = (req.displayName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let rootPath = (req.rootPath ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if source == "x_terminal",
+           !displayName.isEmpty,
+           isTransientXTerminalSupervisorWorkspace(rootPath) {
+            return displayName
+        }
         if let pid = req.projectId?.trimmingCharacters(in: .whitespacesAndNewlines), !pid.isEmpty {
             return pid
         }
-        if let name = req.displayName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
-            return name
+        if !displayName.isEmpty {
+            return displayName
         }
-        if let p = req.rootPath, !p.isEmpty {
-            let name = URL(fileURLWithPath: p).lastPathComponent
+        if !rootPath.isEmpty {
+            let name = URL(fileURLWithPath: rootPath).lastPathComponent
             if !name.isEmpty { return name }
         }
         return "unknown"
+    }
+
+    nonisolated static func defaultAutoApproveSeconds(for req: HubNetworkRequest, appId: String) -> Int? {
+        guard HubNetworkPolicyStorage.canonicalAppId(appId) == "x_terminal" else {
+            return nil
+        }
+        return max(10, req.requestedSeconds ?? 900)
+    }
+
+    nonisolated private static func isTransientXTerminalSupervisorWorkspace(_ rootPath: String) -> Bool {
+        guard !rootPath.isEmpty else { return false }
+        let normalizedRoot = URL(fileURLWithPath: rootPath).standardizedFileURL.path.lowercased()
+        let tempRoot = FileManager.default.temporaryDirectory.standardizedFileURL.path.lowercased()
+        guard normalizedRoot.hasPrefix(tempRoot) else { return false }
+        let leaf = URL(fileURLWithPath: normalizedRoot).lastPathComponent.lowercased()
+        return leaf.hasPrefix("xt-supervisor-call-")
     }
 
     private func notificationsPersistURL() -> URL {
@@ -1464,7 +2573,10 @@ INSERT OR IGNORE INTO audit_events(
         // (Today-new radars remain visible even if read; older items can be dropped.)
         let now = Date().timeIntervalSince1970
         let keepAfter = now - (4 * 24 * 60 * 60) // last 4 days
-        let trimmed = arr.filter { $0.createdAt >= keepAfter }.sorted { $0.createdAt > $1.createdAt }
+        let trimmed = arr
+            .filter { $0.createdAt >= keepAfter }
+            .filter { shouldRetainHubNotification($0) }
+            .sorted { $0.createdAt > $1.createdAt }
         notifications = Array(trimmed.prefix(200))
     }
 
@@ -1573,6 +2685,389 @@ INSERT OR IGNORE INTO audit_events(
         return dir.lastPathComponent == "python_service" ? dir : nil
     }
 
+    func localRuntimeCommandLaunchConfig(preferredProviderID: String? = nil) -> LocalRuntimeCommandLaunchConfig? {
+        let base = SharedPaths.ensureHubDirectory()
+        let installedServiceRoot = base
+            .appendingPathComponent("ai_runtime", isDirectory: true)
+            .appendingPathComponent("python_service", isDirectory: true)
+        let scriptURL = preferredAIRuntimeScriptURL(in: installedServiceRoot) ?? resolveAIRuntimeScriptURL()
+        let normalizedPreferredProviderID = preferredProviderID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        let pythonLaunch = resolvedLocalRuntimePythonLaunch(
+            base: base,
+            preferredProviderID: preferredProviderID
+        ) ?? (normalizedPreferredProviderID.isEmpty
+            ? nil
+            : resolvedLocalRuntimePythonLaunch(base: base, preferredProviderID: nil))
+        guard let scriptURL, let pythonLaunch else {
+            return nil
+        }
+
+        return LocalRuntimeCommandLaunchConfig(
+            executable: pythonLaunch.executable,
+            argumentsPrefix: pythonLaunch.snippetArgumentsPrefix + [scriptURL.path],
+            environment: pythonLaunch.environment,
+            baseDirPath: pythonLaunch.baseDirPath
+        )
+    }
+
+    func canResolveLocalRuntimeCommandLaunchConfig(preferredProviderID: String? = nil) -> Bool {
+        guard resolveAIRuntimeScriptURL() != nil else {
+            return false
+        }
+        return localRuntimePythonProbeLaunchConfig(preferredProviderID: preferredProviderID) != nil
+    }
+
+    func localRuntimePythonProbeLaunchConfig(preferredProviderID: String? = nil) -> LocalRuntimePythonProbeLaunchConfig? {
+        let base = SharedPaths.ensureHubDirectory()
+        let normalizedPreferredProviderID = preferredProviderID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        var resolvedPythonPath = knownReadyRuntimeSourcePythonPath(
+            preferredProviderID: normalizedPreferredProviderID
+        ) ?? activeRuntimeSourcePythonPath(
+            preferredProviderID: normalizedPreferredProviderID
+        )
+        if (resolvedPythonPath ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            resolvedPythonPath = preferredPythonPath(
+                current: currentRuntimePythonPath(),
+                preferredProviderID: normalizedPreferredProviderID
+            ) ?? lightweightResolvedLocalRuntimePythonPath(
+                preferredProviderID: preferredProviderID
+            )
+        }
+        if (resolvedPythonPath ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !normalizedPreferredProviderID.isEmpty {
+            resolvedPythonPath = activeRuntimeSourcePythonPath(preferredProviderID: nil)
+                ?? lightweightResolvedLocalRuntimePythonPath(preferredProviderID: nil)
+        }
+        guard let resolvedPythonPath,
+              !resolvedPythonPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+
+        let executable: String
+        let argumentsPrefix: [String]
+        let normalized: String
+        if resolvedPythonPath.contains("/") {
+            normalized = URL(fileURLWithPath: (resolvedPythonPath as NSString).expandingTildeInPath)
+                .standardizedFileURL
+                .path
+        } else {
+            normalized = resolvedPythonPath
+        }
+
+        if (normalized as NSString).lastPathComponent == "env" {
+            executable = normalized
+            argumentsPrefix = ["python3"]
+        } else if normalized.contains("/") {
+            executable = normalized
+            argumentsPrefix = []
+        } else {
+            executable = "/usr/bin/env"
+            argumentsPrefix = [normalized]
+        }
+
+        var environment = hubRuntimeProbeEnv()
+        if let probe = probeLocalPython(normalized, preferredProviderID: preferredProviderID) {
+            environment = prependingPythonPathEntries(
+                probe.environmentPythonPathEntries,
+                to: environment
+            )
+        }
+        environment = prependingManagedOfflinePythonPathEntries(
+            baseDir: base,
+            to: environment
+        )
+
+        return LocalRuntimePythonProbeLaunchConfig(
+            executable: executable,
+            argumentsPrefix: argumentsPrefix,
+            environment: environment,
+            resolvedPythonPath: normalized
+        )
+    }
+
+    func preferredLocalProviderPythonPath(preferredProviderID: String? = nil) -> String? {
+        localRuntimePythonProbeLaunchConfig(preferredProviderID: preferredProviderID)?.resolvedPythonPath
+    }
+
+    private func runtimeStatusSnapshots() -> [AIRuntimeStatus] {
+        var candidates: [URL] = []
+        var seen: Set<String> = []
+
+        func append(_ url: URL) {
+            let path = url.standardizedFileURL.path
+            guard seen.insert(path).inserted else { return }
+            candidates.append(url)
+        }
+
+        if let group = SharedPaths.appGroupDirectory() {
+            append(group.appendingPathComponent(AIRuntimeStatusStorage.fileName))
+        }
+        for base in SharedPaths.hubDirectoryCandidates() {
+            append(base.appendingPathComponent(AIRuntimeStatusStorage.fileName))
+        }
+        let shouldAddGuessedHome = SharedPaths.sandboxHomeDirectory()
+            .path
+            .contains("/Library/Containers/")
+        if shouldAddGuessedHome, let guessedHome = SharedPaths.guessedRealUserHomeDirectory() {
+            append(
+                guessedHome
+                    .appendingPathComponent(SharedPaths.preferredRuntimeDirectoryName, isDirectory: true)
+                    .appendingPathComponent(AIRuntimeStatusStorage.fileName)
+            )
+            append(
+                guessedHome
+                    .appendingPathComponent(SharedPaths.legacyRuntimeDirectoryName, isDirectory: true)
+                    .appendingPathComponent(AIRuntimeStatusStorage.fileName)
+            )
+        }
+
+        var snapshots: [AIRuntimeStatus] = []
+        for candidate in candidates {
+            let standardized = candidate.standardizedFileURL
+            let path = standardized.path
+            do {
+                let data = try Data(contentsOf: standardized)
+                let status = try JSONDecoder().decode(AIRuntimeStatus.self, from: data)
+                let providerSummary = status.providers.keys.sorted().map { providerID in
+                    let state = status.isProviderReady(providerID, ttl: AIRuntimeStatus.recommendedHeartbeatTTL)
+                        ? "ready"
+                        : (status.providerStatus(providerID)?.reasonCode ?? "down")
+                    return "\(providerID)=\(state)"
+                }.joined(separator: ",")
+                appendAIRuntimeLogLine(
+                    "Runtime status snapshot loaded: path=\(path) updated_at=\(status.updatedAt) providers=\(providerSummary.isEmpty ? "(none)" : providerSummary)"
+                )
+                snapshots.append(status)
+            } catch {
+                let nsError = error as NSError
+                appendAIRuntimeLogLine(
+                    "Runtime status snapshot skipped: path=\(path) error=\(nsError.domain)#\(nsError.code) \(nsError.localizedDescription)"
+                )
+            }
+        }
+        return snapshots
+    }
+
+    private func knownReadyRuntimeSourcePythonPath(preferredProviderID: String?) -> String? {
+        let normalizedPreferredProviderID = preferredProviderID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        let snapshots = runtimeStatusSnapshots()
+        guard !snapshots.isEmpty else {
+            return nil
+        }
+
+        if !normalizedPreferredProviderID.isEmpty {
+            let sorted = snapshots.sorted { lhs, rhs in
+                let lhsUpdatedAt = lhs.providerStatus(normalizedPreferredProviderID)?.updatedAt ?? lhs.updatedAt
+                let rhsUpdatedAt = rhs.providerStatus(normalizedPreferredProviderID)?.updatedAt ?? rhs.updatedAt
+                return lhsUpdatedAt > rhsUpdatedAt
+            }
+            for snapshot in sorted {
+                if let path = activeRuntimeSourcePythonPath(
+                    providerID: normalizedPreferredProviderID,
+                    runtimeStatus: snapshot
+                ) {
+                    return path
+                }
+            }
+        }
+
+        let preferredOrder = ["transformers", "mlx", "mlx_vlm", "llama.cpp"]
+        let sortedSnapshots = snapshots.sorted { $0.updatedAt > $1.updatedAt }
+        for providerID in preferredOrder {
+            for snapshot in sortedSnapshots {
+                if let path = activeRuntimeSourcePythonPath(providerID: providerID, runtimeStatus: snapshot) {
+                    return path
+                }
+            }
+        }
+        for snapshot in sortedSnapshots {
+            for providerID in snapshot.providers.keys.sorted() {
+                if let path = activeRuntimeSourcePythonPath(providerID: providerID, runtimeStatus: snapshot) {
+                    return path
+                }
+            }
+        }
+        return nil
+    }
+
+    private func activeRuntimeSourcePythonPath(
+        preferredProviderID: String?,
+        runtimeStatus: AIRuntimeStatus? = AIRuntimeStatusStorage.load()
+    ) -> String? {
+        guard let runtimeStatus,
+              runtimeStatus.isAlive(ttl: AIRuntimeStatus.recommendedHeartbeatTTL) else {
+            return nil
+        }
+
+        let normalizedPreferredProviderID = preferredProviderID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+
+        if !normalizedPreferredProviderID.isEmpty {
+            return activeRuntimeSourcePythonPath(
+                providerID: normalizedPreferredProviderID,
+                runtimeStatus: runtimeStatus
+            )
+        }
+
+        let preferredOrder = ["transformers", "mlx", "mlx_vlm", "llama.cpp"]
+        for providerID in preferredOrder {
+            if let path = activeRuntimeSourcePythonPath(providerID: providerID, runtimeStatus: runtimeStatus) {
+                return path
+            }
+        }
+        for providerID in runtimeStatus.providers.keys.sorted() {
+            if let path = activeRuntimeSourcePythonPath(providerID: providerID, runtimeStatus: runtimeStatus) {
+                return path
+            }
+        }
+        return nil
+    }
+
+    private func activeRuntimeSourcePythonPath(
+        providerID: String,
+        runtimeStatus: AIRuntimeStatus
+    ) -> String? {
+        let normalizedProviderID = providerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalizedProviderID.isEmpty else {
+            appendAIRuntimeLogLine("Known-ready runtime source rejected: provider=(empty)")
+            return nil
+        }
+        guard runtimeStatus.isProviderReady(normalizedProviderID, ttl: AIRuntimeStatus.recommendedHeartbeatTTL),
+              let providerStatus = runtimeStatus.providerStatus(normalizedProviderID) else {
+            let reason = runtimeStatus.providerStatus(normalizedProviderID)?.reasonCode ?? "missing_provider_status"
+            appendAIRuntimeLogLine(
+                "Known-ready runtime source rejected: provider=\(normalizedProviderID) reason=\(reason) runtime_alive=\(runtimeStatus.isAlive(ttl: AIRuntimeStatus.recommendedHeartbeatTTL) ? "1" : "0")"
+            )
+            return nil
+        }
+
+        let runtimeSourcePath = providerStatus.runtimeSourcePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !runtimeSourcePath.isEmpty else {
+            appendAIRuntimeLogLine(
+                "Known-ready runtime source rejected: provider=\(normalizedProviderID) reason=empty_runtime_source_path"
+            )
+            return nil
+        }
+
+        let normalizedRuntimeSourcePath = normalizeLocalRuntimePythonPath(runtimeSourcePath)
+        let executableName = URL(fileURLWithPath: normalizedRuntimeSourcePath).lastPathComponent.lowercased()
+        guard executableName == "env"
+                || executableName == "python"
+                || executableName.hasPrefix("python") else {
+            appendAIRuntimeLogLine(
+                "Known-ready runtime source rejected: provider=\(normalizedProviderID) reason=unsupported_executable path=\(normalizedRuntimeSourcePath)"
+            )
+            return nil
+        }
+        guard localRuntimePythonPathLooksRunnable(normalizedRuntimeSourcePath) else {
+            appendAIRuntimeLogLine(
+                "Known-ready runtime source rejected: provider=\(normalizedProviderID) reason=not_runnable path=\(normalizedRuntimeSourcePath)"
+            )
+            return nil
+        }
+        appendAIRuntimeLogLine(
+            "Known-ready runtime source accepted: provider=\(normalizedProviderID) path=\(normalizedRuntimeSourcePath)"
+        )
+        return normalizedRuntimeSourcePath
+    }
+
+    private func resolvedLocalRuntimePythonLaunch(
+        base: URL,
+        preferredProviderID: String? = nil
+    ) -> ResolvedLocalRuntimePythonLaunch? {
+        var py = aiRuntimePython.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let preferred = preferredPythonPath(current: py, preferredProviderID: preferredProviderID), preferred != py {
+            py = preferred
+            let currentStored = aiRuntimePython.trimmingCharacters(in: .whitespacesAndNewlines)
+            let providerToken = preferredProviderID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+            if providerToken.isEmpty || currentStored.isEmpty {
+                aiRuntimePython = preferred
+            }
+        }
+
+        let executable: String
+        let snippetArgumentsPrefix: [String]
+        let resolvedPythonPath: String
+        if py.isEmpty {
+            let fallback = defaultPythonPath()
+            executable = fallback
+            if (fallback as NSString).lastPathComponent == "env" {
+                snippetArgumentsPrefix = ["python3"]
+                resolvedPythonPath = "python3"
+            } else {
+                snippetArgumentsPrefix = []
+                resolvedPythonPath = fallback
+            }
+        } else if py.contains("/") {
+            let normalized = (py as NSString).expandingTildeInPath
+            guard !FileManager.default.directoryExists(atPath: normalized) else {
+                return nil
+            }
+            guard FileManager.default.isExecutableFile(atPath: normalized) else {
+                return nil
+            }
+            executable = normalized
+            if (normalized as NSString).lastPathComponent == "env" {
+                snippetArgumentsPrefix = ["python3"]
+                resolvedPythonPath = "python3"
+            } else {
+                snippetArgumentsPrefix = []
+                resolvedPythonPath = normalized
+            }
+        } else {
+            executable = "/usr/bin/env"
+            snippetArgumentsPrefix = [py]
+            resolvedPythonPath = py
+        }
+
+        var env = ProcessInfo.processInfo.environment
+        env["REL_FLOW_HUB_BASE_DIR"] = base.path
+        env["PYTHONUNBUFFERED"] = "1"
+        env["HF_HUB_OFFLINE"] = "1"
+        env["TRANSFORMERS_OFFLINE"] = "1"
+        env["HF_DATASETS_OFFLINE"] = "1"
+        env["TOKENIZERS_PARALLELISM"] = "false"
+        if let probe = probeLocalPython(resolvedPythonPath, preferredProviderID: preferredProviderID) {
+            env = prependingPythonPathEntries(
+                probe.environmentPythonPathEntries,
+                to: env
+            )
+        }
+
+        let offlineRoots: [URL] = [
+            SharedPaths.realHomeDirectory()
+                .appendingPathComponent("RELFlowHub", isDirectory: true)
+                .appendingPathComponent("py_deps", isDirectory: true),
+            base.appendingPathComponent("py_deps", isDirectory: true),
+        ]
+        for root in offlineRoots {
+            let marker = root.appendingPathComponent("USE_PYTHONPATH")
+            let site = root.appendingPathComponent("site-packages", isDirectory: true)
+            guard FileManager.default.fileExists(atPath: marker.path),
+                  FileManager.default.directoryExists(atPath: site.path) else {
+                continue
+            }
+            let previous = env["PYTHONPATH"] ?? ""
+            env["PYTHONPATH"] = site.path + (previous.isEmpty ? "" : ":" + previous)
+            break
+        }
+
+        return ResolvedLocalRuntimePythonLaunch(
+            executable: executable,
+            snippetArgumentsPrefix: snippetArgumentsPrefix,
+            environment: env,
+            baseDirPath: base.path,
+            resolvedPythonPath: resolvedPythonPath
+        )
+    }
+
     private func installAIRuntimeServiceRoot(from sourceRoot: URL, to destinationRoot: URL) throws {
         let fm = FileManager.default
         if fm.fileExists(atPath: destinationRoot.path) {
@@ -1596,7 +3091,11 @@ INSERT OR IGNORE INTO audit_events(
 
     func previewItems() -> [HubNotification] {
         let now = Date().timeIntervalSince1970
-        return notifications.filter { $0.unread && ($0.snoozedUntil ?? 0) <= now }.prefix(5).map { $0 }
+        return notifications
+            .filter { $0.unread && ($0.snoozedUntil ?? 0) <= now }
+            .filter { hubNotificationPresentation(for: $0).group != .background }
+            .prefix(5)
+            .map { $0 }
     }
 
     func topAlert(now: Date = Date()) -> TopAlert {
@@ -1672,7 +3171,10 @@ INSERT OR IGNORE INTO audit_events(
         }
 
         // 5) Today tasks due: treat other unread items as tasks for now.
-        let others = unread.filter { !["FAtracker", "Messages", "Mail", "Slack"].contains($0.source) }
+        let others = unread.filter {
+            !["FAtracker", "Messages", "Mail", "Slack"].contains($0.source)
+                && hubNotificationPresentation(for: $0).group != .background
+        }
         if !others.isEmpty {
             return TopAlert(kind: .task, count: others.count, urgentSecondsToMeeting: nil, urgentWindowSeconds: nil)
         }
@@ -1695,23 +3197,19 @@ INSERT OR IGNORE INTO audit_events(
 
     private func refreshAIRuntimeStatus() {
         let st = AIRuntimeStatusStorage.load()
+        aiRuntimeStatusSnapshot = st
         if let s = st {
-            let alive = s.isAlive(ttl: 3.0) || (findRunningAIRuntimePid(status: st) != nil)
-            let heartbeatAlive = s.isAlive(ttl: 3.0)
-            let readyProviders = s.readyProviderIDs(ttl: 3.0)
-            let mlxReady = s.isProviderReady("mlx", ttl: 3.0)
-            aiRuntimeProviderSummaryText = s.providerOperatorSummary(ttl: 3.0)
-            aiRuntimeDoctorSummaryText = s.providerDoctorText(ttl: 3.0)
-            var v = "stale"
+            let alive = s.isAlive(ttl: AIRuntimeStatus.recommendedHeartbeatTTL) || (findRunningAIRuntimePid(status: st) != nil)
+            let heartbeatAlive = s.isAlive(ttl: AIRuntimeStatus.recommendedHeartbeatTTL)
+            let readyProviders = s.readyProviderIDs(ttl: AIRuntimeStatus.recommendedHeartbeatTTL)
+            aiRuntimeProviderSummaryText = s.providerOperatorSummary(ttl: AIRuntimeStatus.recommendedHeartbeatTTL)
+            aiRuntimeDoctorSummaryText = s.providerDoctorText(ttl: AIRuntimeStatus.recommendedHeartbeatTTL)
+            var v = HubUIStrings.Settings.Advanced.Runtime.staleKeyword
             if alive {
                 if readyProviders.isEmpty {
-                    v = "running (no providers ready)"
-                } else if readyProviders == ["mlx"] {
-                    v = "running (mlx ready)"
-                } else if mlxReady {
-                    v = "running (providers: \(readyProviders.joined(separator: ", ")))"
+                    v = HubUIStrings.Settings.Advanced.Runtime.runningNoProviderReady
                 } else {
-                    v = "running (partial: \(readyProviders.joined(separator: ", ")); mlx unavailable)"
+                    v = HubUIStrings.Settings.Advanced.Runtime.runningProviders(readyProviders.joined(separator: ", "))
                 }
             }
             if heartbeatAlive {
@@ -1719,7 +3217,7 @@ INSERT OR IGNORE INTO audit_events(
                 // Treat missing runtimeVersion as mismatch (older scripts didn't write it).
                 if let exp = expected {
                     if (s.runtimeVersion ?? "") != exp {
-                        v = "running (needs refresh)"
+                        v = HubUIStrings.Settings.Advanced.Runtime.runningRefreshNeeded
                     } else {
                         didForceRestartRuntimeForVersionMismatch = false
                     }
@@ -1728,11 +3226,11 @@ INSERT OR IGNORE INTO audit_events(
                 }
             } else if alive {
                 // Runtime can be alive but the heartbeat stale during long inference; avoid spurious "stale".
-                v = "running (heartbeat stale)"
+                v = HubUIStrings.Settings.Advanced.Runtime.runningHeartbeatStale
             } else {
                 didForceRestartRuntimeForVersionMismatch = false
             }
-            aiRuntimeStatusText = "Runtime: \(v) · pid \(s.pid)"
+            aiRuntimeStatusText = HubUIStrings.Settings.Advanced.Runtime.statusLine(status: v, pid: s.pid)
 
             // Only reset backoff when the runtime is truly alive.
             if heartbeatAlive && !readyProviders.isEmpty {
@@ -1740,73 +3238,37 @@ INSERT OR IGNORE INTO audit_events(
                 aiRuntimeNextStartAttemptAt = 0
             }
 
-            // Surface actionable guidance when MLX is unavailable.
-            if alive && !mlxReady {
-                let ie = (s.importError ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                let base = mlxUnavailableHelp(importError: ie)
-                let doctorLead = s.providerDoctorText(ttl: 3.0).trimmingCharacters(in: .whitespacesAndNewlines)
+            // Surface actionable guidance only when no local provider is actually ready.
+            if alive && readyProviders.isEmpty {
+                let base = unavailableProvidersHelp(status: s)
+                let doctorLead = s.providerDoctorText(ttl: AIRuntimeStatus.recommendedHeartbeatTTL).trimmingCharacters(in: .whitespacesAndNewlines)
                 let prefix = doctorLead.isEmpty ? "" : doctorLead + "\n\n"
                 let msg = prefix + base
                 if !msg.isEmpty {
                     // Don't overwrite unrelated errors (e.g. python path selection).
                     if aiRuntimeLastError.isEmpty
-                        || aiRuntimeLastError.hasPrefix("MLX is unavailable")
-                        || aiRuntimeLastError.hasPrefix("Local runtime is partially ready") {
+                        || HubUIStrings.Settings.Advanced.Runtime.matchesAvailabilityHint(aiRuntimeLastError) {
                         aiRuntimeLastError = msg
                     }
                 }
-            } else if mlxReady {
-                // Clear stale MLX-unavailable hints once we recover.
-                if aiRuntimeLastError.hasPrefix("MLX is unavailable")
-                    || aiRuntimeLastError.hasPrefix("Local runtime is partially ready") {
+            } else if !readyProviders.isEmpty {
+                // Clear stale availability hints once any provider is usable.
+                if HubUIStrings.Settings.Advanced.Runtime.matchesAvailabilityHint(aiRuntimeLastError) {
                     aiRuntimeLastError = ""
                 }
             }
         } else {
             didForceRestartRuntimeForVersionMismatch = false
-            aiRuntimeStatusText = "Runtime: not running"
-            aiRuntimeProviderSummaryText = "runtime_alive=0\nready_providers=none\nproviders:\ncapabilities:"
-            aiRuntimeDoctorSummaryText = "Local runtime is not running."
+            aiRuntimeStatusText = HubUIStrings.Settings.Advanced.Runtime.statusNotRunning
+            aiRuntimeProviderSummaryText = HubUIStrings.Settings.Advanced.Runtime.providerSummaryNotRunning
+            aiRuntimeDoctorSummaryText = HubUIStrings.Settings.Advanced.Runtime.doctorNotStarted
+            aiRuntimeInstallHintsText = ""
+            aiRuntimeStatusSnapshot = nil
         }
     }
 
     private func mlxUnavailableHelp(importError: String) -> String {
-        let ie = importError.trimmingCharacters(in: .whitespacesAndNewlines)
-        let low = ie.lowercased()
-
-        var hint = ""
-        if low.contains("incompatible architecture") || low.contains("wrong architecture") || low.contains("mach-o") {
-            hint =
-                "This usually means the machine is Intel (x86_64) or the installed MLX binaries don't match the CPU arch.\n\n" +
-                "Fix:\n" +
-                "1) If this is an Intel Mac: MLX local models are not supported. Use remote/paid models instead.\n" +
-                "2) If this is Apple Silicon: reinstall MLX deps for the correct architecture.\n"
-        } else if low.contains("no module named") || low.contains("modulenotfounderror") {
-            hint =
-                "This usually means MLX deps are not installed into the Python that Hub is using.\n\n" +
-                "Fix (offline):\n" +
-                "1) Run: offline_mlx_deps_py311/install_relflowhub_mlx_deps.command\n" +
-                "2) If macOS blocks dlopen/system policy: run install_relflowhub_mlx_deps_system_python311.command instead\n" +
-                "3) Hub Settings -> AI Runtime -> Stop, then Start\n\n" +
-                "Note: Hub sets PYTHONNOUSERSITE=1, so pip --user (~/Library/Python/...) won't be used.\n"
-        } else if low.contains("library load disallowed by system policy") || low.contains("not valid for use in process") {
-            hint =
-                "macOS blocked loading native extensions from the current install location.\n\n" +
-                "Fix:\n" +
-                "1) Run: offline_mlx_deps_py311/install_relflowhub_mlx_deps_system_python311.command\n" +
-                "2) Hub Settings -> AI Runtime -> Stop, then Start\n"
-        } else {
-            hint =
-                "Fix:\n" +
-                "1) Ensure you're on Apple Silicon (MLX requires it)\n" +
-                "2) Install MLX deps for Python 3.11 (offline installers in offline_mlx_deps_py311/)\n" +
-                "3) Hub Settings -> AI Runtime -> Stop, then Start\n"
-        }
-
-        if ie.isEmpty {
-            return "MLX is unavailable.\n\n" + hint
-        }
-        return "MLX is unavailable.\n\nImport error:\n\(ie)\n\n" + hint
+        HubUIStrings.Settings.Advanced.Runtime.mlxUnavailableHelp(importError: importError)
     }
 
     private func findRunningAIRuntimePid(status: AIRuntimeStatus?) -> Int32? {
@@ -1869,9 +3331,10 @@ INSERT OR IGNORE INTO audit_events(
         if !aiRuntimeAutoStart {
             return
         }
+        let hasPendingRequests = pendingAIRuntimeRequests()
         // If already alive, do nothing *unless* the running runtime is an older version.
         let st = AIRuntimeStatusStorage.load()
-        if let st, st.isAlive(ttl: 3.0) {
+        if let st, st.isAlive(ttl: AIRuntimeStatus.recommendedHeartbeatTTL) {
             let expected = bundledRuntimeVersion()
             if let exp = expected, (st.runtimeVersion ?? "") != exp {
                 if !didForceRestartRuntimeForVersionMismatch {
@@ -1885,7 +3348,7 @@ INSERT OR IGNORE INTO audit_events(
             return
         }
         let now = Date().timeIntervalSince1970
-        if now < aiRuntimeNextStartAttemptAt {
+        if now < aiRuntimeNextStartAttemptAt && !hasPendingRequests {
             return
         }
         // If a runtime process is already running (even with a stale heartbeat), do not auto-start another.
@@ -1895,23 +3358,70 @@ INSERT OR IGNORE INTO audit_events(
         }
         // Backoff on repeated failures. Minimum delay avoids spamming TCC prompts.
         let exp = Double(min(6, max(0, aiRuntimeFailCount)))
-        let delay = min(300.0, 15.0 * pow(2.0, exp))
+        let delay = hasPendingRequests ? 0.0 : min(300.0, 15.0 * pow(2.0, exp))
         aiRuntimeNextStartAttemptAt = now + delay
         startAIRuntime()
+    }
+
+    func ensureAIRuntimeRunningIfNeeded() {
+        autoStartAIRuntimeIfNeeded()
+    }
+
+    private func pendingAIRuntimeRequests(baseDir: URL) -> Bool {
+        let reqDir = baseDir.appendingPathComponent("ai_requests", isDirectory: true)
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: reqDir,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else {
+            return false
+        }
+        return entries.contains { url in
+            let name = url.lastPathComponent
+            return name.hasPrefix("req_") && name.hasSuffix(".json")
+        }
+    }
+
+    private func pendingAIRuntimeRequests() -> Bool {
+        var candidates: [URL] = []
+        var seen: Set<String> = []
+
+        func append(_ url: URL?) {
+            guard let url else { return }
+            let path = url.standardizedFileURL.path
+            guard seen.insert(path).inserted else { return }
+            candidates.append(url)
+        }
+
+        append(SharedPaths.appGroupDirectory())
+        for base in SharedPaths.hubDirectoryCandidates() {
+            append(base)
+        }
+
+        for candidate in candidates {
+            if pendingAIRuntimeRequests(baseDir: candidate) {
+                return true
+            }
+        }
+        return false
     }
 
     func startAIRuntime() {
         aiRuntimeLastError = ""
         aiRuntimeStopRequestedAt = 0
 
+        let base = SharedPaths.appGroupDirectory() ?? SharedPaths.ensureHubDirectory()
+        if LocalProviderPackRegistry.syncAutoManagedPacks(baseDir: base) {
+            appendAIRuntimeLogLine("Updated provider pack registry for local helper bridge.")
+        }
+
         // If a previous Hub instance left the runtime running, stop it first so we don't
         // end up with multiple runtimes racing on the same file IPC directories.
-        if let st = AIRuntimeStatusStorage.load(), st.isAlive(ttl: 3.0) {
+        if let st = AIRuntimeStatusStorage.load(), st.isAlive(ttl: AIRuntimeStatus.recommendedHeartbeatTTL) {
             stopAIRuntime()
         }
 
         // Keep logging useful even when we fail early (e.g. lock busy).
-        let base = SharedPaths.appGroupDirectory() ?? SharedPaths.ensureHubDirectory()
         let logURL = base.appendingPathComponent("ai_runtime.log")
         if !FileManager.default.fileExists(atPath: logURL.path) {
             FileManager.default.createFile(atPath: logURL.path, contents: nil)
@@ -1950,7 +3460,7 @@ INSERT OR IGNORE INTO audit_events(
         let serviceRoot = resolveAIRuntimeServiceRootURL()
         let scriptURL: URL? = resolved.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
         guard let scriptURL else {
-            aiRuntimeLastError = "AI runtime script is missing from this build. Please rebuild/reinstall Hub (it should bundle python_service/relflowhub_local_runtime.py, with relflowhub_mlx_runtime.py kept as fallback)."
+            aiRuntimeLastError = HubUIStrings.Settings.Advanced.Runtime.packagedRuntimeScriptMissing
             aiRuntimeFailCount += 1
             return
         }
@@ -1972,7 +3482,7 @@ INSERT OR IGNORE INTO audit_events(
                         domain: "relflowhub",
                         code: 1,
                         userInfo: [
-                            NSLocalizedDescriptionKey: "Installed python_service is missing relflowhub_local_runtime.py and relflowhub_mlx_runtime.py."
+                            NSLocalizedDescriptionKey: HubUIStrings.Settings.Advanced.Runtime.installedRuntimeScriptsMissing
                         ]
                     )
                 }
@@ -1988,23 +3498,31 @@ INSERT OR IGNORE INTO audit_events(
                 }
             }
         } catch {
-            aiRuntimeLastError = "Failed to install runtime into base dir.\n\n\(error.localizedDescription)"
+            aiRuntimeLastError = HubUIStrings.Settings.Advanced.Runtime.installRuntimeToBaseFailed(error.localizedDescription)
             aiRuntimeFailCount += 1
             return
         }
 
         let p = Process()
         var py = aiRuntimePython.trimmingCharacters(in: .whitespacesAndNewlines)
+        let bootstrapProviderID = runtimeBootstrapPreferredProviderID()
+        let knownReadyPythonPath = knownReadyRuntimeSourcePythonPath(preferredProviderID: bootstrapProviderID)
+        let preferredPythonSelection = preferredPythonPath(
+            current: py,
+            preferredProviderID: bootstrapProviderID
+        )
         let exe: String
         var args: [String] = []
 
-        // Auto-detect a usable python if missing.
-        // Do not override a user-provided path (even if wrong); we'll surface a clear error below.
-        if py.isEmpty {
-            if let best = autoDetectPython() {
-                py = best
-                aiRuntimePython = best
-            }
+        appendAIRuntimeLogLine(
+            "Runtime python selection: configured=\(py.isEmpty ? "(auto)" : py) provider=\(bootstrapProviderID ?? "(none)") known_ready=\(knownReadyPythonPath ?? "(none)") preferred=\(preferredPythonSelection ?? "(none)")"
+        )
+
+        // Prefer a python that can actually satisfy the available local providers. If the stored
+        // path still points at an old default interpreter, auto-promote to a better local venv.
+        if let preferred = preferredPythonSelection, preferred != py {
+            py = preferred
+            aiRuntimePython = preferred
         }
         if py.isEmpty {
             // Fall back to a reasonable python. If the fallback is /usr/bin/env, we must
@@ -2019,12 +3537,12 @@ INSERT OR IGNORE INTO audit_events(
             // Absolute path: must be an executable file, not a directory like site-packages.
             let norm = (py as NSString).expandingTildeInPath
             if FileManager.default.directoryExists(atPath: norm) {
-                aiRuntimeLastError = "Python path points to a directory (site-packages). Please set it to a python3 executable, e.g. /Library/Frameworks/Python.framework/Versions/3.11/bin/python3."
+                aiRuntimeLastError = HubUIStrings.Settings.Advanced.Runtime.pythonPathDirectory
                 aiRuntimeFailCount += 1
                 return
             }
-            if !FileManager.default.isExecutableFile(atPath: norm) {
-                aiRuntimeLastError = "Python path is not executable. Please set it to a python3 executable, e.g. /Library/Frameworks/Python.framework/Versions/3.11/bin/python3."
+            if !localRuntimePythonPathLooksRunnable(norm) {
+                aiRuntimeLastError = HubUIStrings.Settings.Advanced.Runtime.pythonPathNotExecutable
                 aiRuntimeFailCount += 1
                 return
             }
@@ -2042,9 +3560,18 @@ INSERT OR IGNORE INTO audit_events(
 
         // Preflight: reject xcrun stub python which cannot run inside App Sandbox.
         do {
-            let test = runCapture(exe, (args.first == "python3" ? ["python3", "-c", "import sys; print(sys.version)"] : ["-c", "import sys; print(sys.version)"]), timeoutSec: 1.2)
-            if test.out.contains("xcrun") || test.err.contains("xcrun") {
-                aiRuntimeLastError = "The selected python appears to be an xcrun stub (cannot run in App Sandbox). Please install a real Python 3.11 (python.org installer recommended) and set Python to /Library/Frameworks/Python.framework/Versions/3.11/bin/python3."
+            let probeArgs = args.first == "python3"
+                ? ["python3", "-c", "import sys; print(sys.executable); print(sys.version)"]
+                : ["-c", "import sys; print(sys.executable); print(sys.version)"]
+            let test = runCapture(exe, probeArgs, timeoutSec: 1.2)
+            let testOutputLines = (test.out.isEmpty ? test.err : test.out)
+                .split(whereSeparator: \.isNewline)
+                .map(String.init)
+            let resolvedPython = testOutputLines.first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if test.out.contains("xcrun")
+                || test.err.contains("xcrun")
+                || isUnsafeLocalRuntimePythonPath(resolvedPython) {
+                aiRuntimeLastError = HubUIStrings.Settings.Advanced.Runtime.pythonPathXcrunStub
                 aiRuntimeFailCount += 1
                 return
             }
@@ -2055,12 +3582,19 @@ INSERT OR IGNORE INTO audit_events(
         var env = ProcessInfo.processInfo.environment
         env["REL_FLOW_HUB_BASE_DIR"] = base.path
         env["PYTHONUNBUFFERED"] = "1"
-        // Avoid importing from ~/Library/Python/... which can be quarantined or policy-blocked on some machines.
-        env["PYTHONNOUSERSITE"] = "1"
-        env["HF_HUB_OFFLINE"] = "1"
-        env["TRANSFORMERS_OFFLINE"] = "1"
-        env["HF_DATASETS_OFFLINE"] = "1"
-        env["TOKENIZERS_PARALLELISM"] = "false"
+        for (key, value) in hubRuntimeProbeEnv() {
+            env[key] = value
+        }
+        let launchPythonPath = args.first == "python3"
+            ? ""
+            : normalizeLocalRuntimePythonPath(py.isEmpty ? exe : py)
+        if !launchPythonPath.isEmpty,
+           let probe = probeLocalPython(launchPythonPath, preferredProviderID: bootstrapProviderID) {
+            env = prependingPythonPathEntries(
+                probe.environmentPythonPathEntries,
+                to: env
+            )
+        }
 
         // Offline deps: optionally add Hub-local site-packages to PYTHONPATH.
         //
@@ -2073,10 +3607,13 @@ INSERT OR IGNORE INTO audit_events(
         // - Only use offline PYTHONPATH if explicitly opted-in AND required
 
         // 1) Preflight import WITHOUT offline PYTHONPATH.
-        // If that works, ignore any offline marker (it would just make things worse).
-        let basicImportTest = "import mlx_lm; import mlx; import numpy; print('OK')"
+        // If any local provider runtime already works, ignore any offline marker.
+        let probeArgs = pythonSnippetArgs(
+            baseArgs: args,
+            code: providerImportProbeScript(for: bootstrapProviderID)
+        )
         do {
-            let t = runCapture(exe, (args.first == "python3" ? ["python3", "-c", basicImportTest] : ["-c", basicImportTest]), env: env, timeoutSec: 6.0)
+            let t = runCapture(exe, probeArgs, env: env, timeoutSec: 6.0)
             if t.code == 0 {
                 // No-op: system/user deps already work.
             } else {
@@ -2098,14 +3635,14 @@ INSERT OR IGNORE INTO audit_events(
                     let prev = env2["PYTHONPATH"] ?? ""
                     env2["PYTHONPATH"] = site.path + (prev.isEmpty ? "" : ":" + prev)
 
-                    let t2 = runCapture(exe, (args.first == "python3" ? ["python3", "-c", basicImportTest] : ["-c", basicImportTest]), env: env2, timeoutSec: 6.0)
+                    let t2 = runCapture(exe, probeArgs, env: env2, timeoutSec: 6.0)
                     if t2.code == 0 {
                         env = env2
                         break
                     }
                     let err = (t2.err + "\n" + t2.out)
                     if err.contains("library load disallowed by system policy") || err.contains("not valid for use in process") {
-                        aiRuntimeLastError = "Offline deps were detected but macOS blocked loading native extensions from this location (system policy).\n\nFix:\n1) Run the *system* installer: install_relflowhub_mlx_deps_system_python311.command\n2) Restart Hub -> Models -> Stop/Start\n\nIf the error persists, delete the marker file USE_PYTHONPATH under the py_deps folder."
+                        aiRuntimeLastError = HubUIStrings.Settings.Advanced.Runtime.offlineDepsBlocked
                         aiRuntimeFailCount += 1
                         return
                     }
@@ -2115,7 +3652,13 @@ INSERT OR IGNORE INTO audit_events(
         p.environment = env
 
         appendAIRuntimeLogLine(
-            "Starting runtime: \(exe) \(args.joined(separator: " ")) (script=\(scriptURL.path) -> \(rtScript.path)) (REL_FLOW_HUB_BASE_DIR=\(base.path))"
+            HubUIStrings.Settings.Advanced.Runtime.runtimeLaunchLog(
+                executable: exe,
+                arguments: args.joined(separator: " "),
+                scriptPath: scriptURL.path,
+                runtimeScriptPath: rtScript.path,
+                basePath: base.path
+            )
         )
         if let h = aiRuntimeLogHandle {
             p.standardOutput = h
@@ -2128,7 +3671,12 @@ INSERT OR IGNORE INTO audit_events(
 
                 // Avoid clobbering a newer runtime if we restarted quickly.
                 if let cur = self.aiRuntimeProcess, cur !== proc {
-                    self.appendAIRuntimeLogLine("Runtime exited (stale proc ignored): pid=\(proc.processIdentifier) code=\(proc.terminationStatus)")
+                    self.appendAIRuntimeLogLine(
+                        HubUIStrings.Settings.Advanced.Runtime.runtimeExitIgnored(
+                            pid: proc.processIdentifier,
+                            code: proc.terminationStatus
+                        )
+                    )
                     return
                 }
 
@@ -2143,17 +3691,19 @@ INSERT OR IGNORE INTO audit_events(
                     let elapsed = launchedAt > 0 ? max(0, now - launchedAt) : 0
                     if proc.terminationStatus != 0 {
                         if self.aiRuntimeLastError.isEmpty {
-                            self.aiRuntimeLastError = "Runtime exited (code \(proc.terminationStatus)). If you see 'xcrun: error: cannot be used within an App Sandbox', set Python to a real interpreter (e.g. /opt/homebrew/bin/python3)."
+                            self.aiRuntimeLastError = HubUIStrings.Settings.Advanced.Runtime.runtimeExited(code: proc.terminationStatus)
                         }
                         self.aiRuntimeFailCount += 1
                     } else if elapsed > 0 && elapsed < 2.0 {
                         if self.aiRuntimeLastError.isEmpty {
-                            self.aiRuntimeLastError = "Runtime exited immediately (code 0). This usually means another runtime already holds the lock (ai_runtime.lock). Try: Settings → AI Runtime → Stop, then Start."
+                            self.aiRuntimeLastError = HubUIStrings.Settings.Advanced.Runtime.runtimeExitedLockBusy
                         }
                         self.aiRuntimeFailCount += 1
                     }
                 }
-                self.appendAIRuntimeLogLine("Runtime exited: code=\(proc.terminationStatus)")
+                self.appendAIRuntimeLogLine(
+                    HubUIStrings.Settings.Advanced.Runtime.runtimeExitLog(code: proc.terminationStatus)
+                )
             }
         }
 
@@ -2163,34 +3713,349 @@ INSERT OR IGNORE INTO audit_events(
             aiRuntimeProcess = p
             refreshAIRuntimeStatus()
         } catch {
-            aiRuntimeLastError = "Failed to start runtime: \(error.localizedDescription)"
+            aiRuntimeLastError = HubUIStrings.Settings.Advanced.Runtime.runtimeStartFailed(error.localizedDescription)
             aiRuntimeFailCount += 1
         }
     }
 
-    private func autoDetectPython() -> String? {
-        // Prefer real python binaries. /usr/bin/python3 may be a stub on some macOS setups.
-        let candidates = [
-            "/Library/Frameworks/Python.framework/Versions/3.11/bin/python3",
-            "/Library/Frameworks/Python.framework/Versions/Current/bin/python3",
-            "/opt/homebrew/bin/python3",
-            "/usr/local/bin/python3",
-            "/usr/bin/python3",
-        ]
-        let fm = FileManager.default
-        var bestAny: String? = nil
-        for c in candidates {
-            if !fm.isExecutableFile(atPath: c) { continue }
-            let r = runCapture(c, ["-c", "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')"], timeoutSec: 1.2)
-            let s = (r.out.isEmpty ? r.err : r.out)
-            if r.code != 0 { continue }
-            if s.contains("xcrun") { continue }
-            if bestAny == nil { bestAny = c }
-            if s.hasPrefix("3.11") {
-                return c
+    private func autoManagedPythonPathCandidates() -> Set<String> {
+        var paths = Set(LocalPythonRuntimeDiscovery.builtinCandidates)
+        paths.formUnion(LocalPythonRuntimeDiscovery.lmStudioVendorCandidatePaths())
+        paths.formUnion(LocalPythonRuntimeDiscovery.hubManagedRuntimeCandidatePaths())
+        paths.insert("/usr/bin/env")
+        return Set(paths.map { URL(fileURLWithPath: $0).standardizedFileURL.path })
+    }
+
+    private func preferredPythonPath(current: String, preferredProviderID: String? = nil) -> String? {
+        let trimmedCurrent = current.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedCurrent = trimmedCurrent.contains("/")
+            ? URL(fileURLWithPath: (trimmedCurrent as NSString).expandingTildeInPath).standardizedFileURL.path
+            : trimmedCurrent
+        let normalizedPreferredProviderID = preferredProviderID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        let best = knownReadyRuntimeSourcePythonPath(preferredProviderID: preferredProviderID)
+            ?? autoDetectPython(preferredProviderID: preferredProviderID)
+
+        guard !normalizedCurrent.isEmpty else {
+            return best
+        }
+        guard let best, best != normalizedCurrent else {
+            return normalizedCurrent
+        }
+        if normalizedCurrent == "/usr/bin/env" {
+            return best
+        }
+
+        let bestProbe = probeLocalPython(best, preferredProviderID: preferredProviderID)
+        if !normalizedPreferredProviderID.isEmpty,
+           let bestProbe,
+           bestProbe.supports(providerID: normalizedPreferredProviderID) {
+            guard let currentProbe = probeLocalPython(normalizedCurrent, preferredProviderID: preferredProviderID) else {
+                return best
+            }
+            if !currentProbe.supports(providerID: normalizedPreferredProviderID) {
+                return best
             }
         }
-        return bestAny
+
+        let currentLooksAutoManaged = !normalizedCurrent.contains("/")
+            || autoManagedPythonPathCandidates().contains(normalizedCurrent)
+        guard currentLooksAutoManaged else {
+            return normalizedCurrent
+        }
+
+        guard let bestProbe else {
+            return normalizedCurrent
+        }
+        guard let currentProbe = probeLocalPython(normalizedCurrent, preferredProviderID: preferredProviderID) else {
+            return best
+        }
+        return bestProbe.score > currentProbe.score ? best : normalizedCurrent
+    }
+
+    private func autoDetectPython(preferredProviderID: String? = nil) -> String? {
+        let cacheKey = (preferredProviderID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "").isEmpty
+            ? "default"
+            : (preferredProviderID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "default")
+        let now = Date().timeIntervalSince1970
+        if let cachedAt = autoDetectedPythonCacheAtByKey[cacheKey],
+           now - cachedAt <= 8.0 {
+            let cached = (autoDetectedPythonCachePathByKey[cacheKey] ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return cached.isEmpty ? nil : cached
+        }
+
+        let candidates = discoveredLocalPythonCandidatePaths()
+        var bestAny: String? = nil
+        var bestProbe: LocalPythonProbeResult? = nil
+        for candidate in candidates {
+            guard let probe = probeLocalPython(candidate, preferredProviderID: preferredProviderID) else { continue }
+            if bestAny == nil {
+                bestAny = probe.path
+            }
+            if let currentBest = bestProbe {
+                if probe.score > currentBest.score {
+                    bestProbe = probe
+                }
+            } else {
+                bestProbe = probe
+            }
+        }
+        let resolved = bestProbe?.score ?? Int.min > 0 ? bestProbe?.path : bestAny
+        if let resolved, !resolved.isEmpty {
+            autoDetectedPythonCachePathByKey[cacheKey] = resolved
+            autoDetectedPythonCacheAtByKey[cacheKey] = now
+        } else {
+            autoDetectedPythonCachePathByKey.removeValue(forKey: cacheKey)
+            autoDetectedPythonCacheAtByKey.removeValue(forKey: cacheKey)
+        }
+        return resolved
+    }
+
+    private func localPythonCandidateStatuses(preferredProviderID: String? = nil) -> [LocalPythonRuntimeCandidateStatus] {
+        let cacheKey = (preferredProviderID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "").isEmpty
+            ? "default"
+            : (preferredProviderID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "default")
+        let now = Date().timeIntervalSince1970
+        if let cachedAt = pythonCandidateStatusCacheAtByKey[cacheKey],
+           now - cachedAt <= 8.0 {
+            return pythonCandidateStatusCacheByKey[cacheKey] ?? []
+        }
+
+        let rows = discoveredLocalPythonCandidatePaths()
+            .compactMap { probeLocalPython($0, preferredProviderID: preferredProviderID) }
+            .sorted {
+                if $0.score != $1.score {
+                    return $0.score > $1.score
+                }
+                if $0.version != $1.version {
+                    return $0.version > $1.version
+                }
+                return $0.path < $1.path
+            }
+
+        pythonCandidateStatusCacheByKey[cacheKey] = rows
+        pythonCandidateStatusCacheAtByKey[cacheKey] = now
+        return rows
+    }
+
+    private func discoveredLocalPythonCandidatePaths() -> [String] {
+        if let override = localPythonCandidatePathsOverride {
+            return override
+        }
+        return LocalPythonRuntimeDiscovery.candidatePaths()
+    }
+
+    private func currentRuntimePythonPath() -> String {
+        let configured = aiRuntimePython.trimmingCharacters(in: .whitespacesAndNewlines)
+        if configured.contains("/") {
+            return URL(fileURLWithPath: (configured as NSString).expandingTildeInPath).standardizedFileURL.path
+        }
+        return configured.isEmpty ? defaultPythonPath() : configured
+    }
+
+    func runtimeBootstrapPreferredProviderID(
+        catalog: ModelCatalogSnapshot = ModelCatalogStorage.load()
+    ) -> String? {
+        let localProviders = Set(
+            catalog.models.compactMap { entry -> String? in
+                guard !entry.modelPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    return nil
+                }
+                let providerID = LocalModelExecutionProviderResolver.preferredRuntimeProviderID(for: entry)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+                return providerID.isEmpty ? nil : providerID
+            }
+        )
+        guard !localProviders.isEmpty else {
+            return nil
+        }
+
+        let priority = ["transformers", "mlx", "mlx_vlm", "llama.cpp"]
+        if let prioritized = priority.first(where: { localProviders.contains($0) }) {
+            return prioritized
+        }
+        return localProviders.sorted().first
+    }
+
+    private func pythonCacheKey(preferredProviderID: String? = nil) -> String {
+        let normalized = preferredProviderID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        return normalized.isEmpty ? "default" : normalized
+    }
+
+    private func cachedAutoDetectedPythonPath(preferredProviderID: String? = nil) -> String? {
+        let cacheKey = pythonCacheKey(preferredProviderID: preferredProviderID)
+        let cached = (autoDetectedPythonCachePathByKey[cacheKey] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return cached.isEmpty ? nil : cached
+    }
+
+    private func lightweightResolvedLocalRuntimePythonPath(preferredProviderID: String? = nil) -> String {
+        let current = currentRuntimePythonPath()
+        let normalizedCurrent = current.trimmingCharacters(in: .whitespacesAndNewlines)
+        let currentLooksAutoManaged = normalizedCurrent.isEmpty
+            || !normalizedCurrent.contains("/")
+            || autoManagedPythonPathCandidates().contains(normalizedCurrent)
+        guard currentLooksAutoManaged else {
+            return current
+        }
+        if let cached = cachedAutoDetectedPythonPath(preferredProviderID: preferredProviderID) {
+            return cached
+        }
+        return autoDetectPython(preferredProviderID: preferredProviderID) ?? current
+    }
+
+    private func currentResolvedRuntimePythonPath() -> String {
+        localRuntimePythonProbeLaunchConfig(preferredProviderID: nil)?.resolvedPythonPath
+            ?? currentRuntimePythonPath()
+    }
+
+    private func runtimeRecoveryAction(
+        for providerID: String,
+        runtimeStatus: AIRuntimeStatus? = nil
+    ) -> LocalRuntimeProviderRecoveryAction {
+        let normalizedProvider = providerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalizedProvider.isEmpty else {
+            return .none
+        }
+        let status = runtimeStatus ?? AIRuntimeStatusStorage.load()
+        let runtimeAlive = (status?.isAlive(ttl: AIRuntimeStatus.recommendedHeartbeatTTL) ?? false) || (findRunningAIRuntimePid(status: status) != nil)
+        let providerReady = status?.isProviderReady(normalizedProvider, ttl: AIRuntimeStatus.recommendedHeartbeatTTL) ?? false
+        let currentPythonPath = currentResolvedRuntimePythonPath()
+        let targetPythonPath = preferredLocalProviderPythonPath(preferredProviderID: normalizedProvider) ?? currentPythonPath
+        let targetProbe = probeLocalPython(targetPythonPath, preferredProviderID: normalizedProvider)
+        let targetSupportsProvider = targetProbe?.supports(providerID: normalizedProvider) ?? false
+        return LocalRuntimeProviderRecoveryPlanner.plan(
+            runtimeAlive: runtimeAlive,
+            providerReady: providerReady,
+            currentPythonPath: currentPythonPath,
+            targetPythonPath: targetPythonPath,
+            targetSupportsProvider: targetSupportsProvider
+        )
+    }
+
+    func canAutoRecoverRuntime(for providerID: String, runtimeStatus: AIRuntimeStatus? = nil) -> Bool {
+        runtimeRecoveryAction(for: providerID, runtimeStatus: runtimeStatus) != .none
+    }
+
+    func ensureRuntimeReady(for providerID: String, waitUpToSec: Double = 12.0) async -> Bool {
+        let normalizedProvider = providerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalizedProvider.isEmpty else {
+            return false
+        }
+
+        let base = SharedPaths.ensureHubDirectory()
+        let providerPackUpdated = LocalProviderPackRegistry.syncAutoManagedPacks(baseDir: base)
+        if providerPackUpdated, normalizedProvider == "transformers" {
+            appendAIRuntimeLogLine("Restarting runtime after local helper pack update for provider \(normalizedProvider)")
+            if AIRuntimeStatusStorage.load()?.isAlive(ttl: AIRuntimeStatus.recommendedHeartbeatTTL) == true {
+                stopAIRuntime()
+            }
+            startAIRuntime()
+            let restartDeadline = Date().addingTimeInterval(max(1.0, waitUpToSec))
+            while Date() < restartDeadline {
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                refreshAIRuntimeStatus()
+                if AIRuntimeStatusStorage.load()?.isProviderReady(normalizedProvider, ttl: AIRuntimeStatus.recommendedHeartbeatTTL) == true {
+                    return true
+                }
+            }
+            refreshAIRuntimeStatus()
+        }
+
+        let action = runtimeRecoveryAction(for: normalizedProvider, runtimeStatus: AIRuntimeStatusStorage.load())
+        switch action {
+        case .none:
+            return AIRuntimeStatusStorage.load()?.isProviderReady(normalizedProvider, ttl: AIRuntimeStatus.recommendedHeartbeatTTL) ?? false
+        case .start(let targetPythonPath):
+            appendAIRuntimeLogLine("Auto-starting runtime for provider \(normalizedProvider) with python \(targetPythonPath)")
+            aiRuntimePython = targetPythonPath
+            startAIRuntime()
+        case .restart(let targetPythonPath):
+            appendAIRuntimeLogLine("Restarting runtime for provider \(normalizedProvider) with python \(targetPythonPath)")
+            aiRuntimePython = targetPythonPath
+            stopAIRuntime()
+            startAIRuntime()
+        }
+
+        let deadline = Date().addingTimeInterval(max(1.0, waitUpToSec))
+        while Date() < deadline {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            refreshAIRuntimeStatus()
+            if AIRuntimeStatusStorage.load()?.isProviderReady(normalizedProvider, ttl: AIRuntimeStatus.recommendedHeartbeatTTL) == true {
+                return true
+            }
+        }
+        refreshAIRuntimeStatus()
+        return AIRuntimeStatusStorage.load()?.isProviderReady(normalizedProvider, ttl: AIRuntimeStatus.recommendedHeartbeatTTL) ?? false
+    }
+
+    private func refreshAIRuntimeGuidance(status: AIRuntimeStatus?) {
+        let selectedPythonPath = currentResolvedRuntimePythonPath()
+        aiRuntimePythonCandidatesText = LocalRuntimeProviderGuidance.pythonCandidatesSummary(
+            selectedPythonPath: selectedPythonPath,
+            preferredProviderPaths: [
+                "mlx": preferredLocalProviderPythonPath(preferredProviderID: "mlx") ?? "",
+                "mlx_vlm": preferredLocalProviderPythonPath(preferredProviderID: "mlx_vlm") ?? "",
+                "transformers": preferredLocalProviderPythonPath(preferredProviderID: "transformers") ?? "",
+            ],
+            candidates: localPythonCandidateStatuses()
+        )
+
+        guard let status else {
+            aiRuntimeInstallHintsText = ""
+            aiRuntimeProviderHelpTextByProvider = [:]
+            return
+        }
+
+        var perProvider: [String: String] = [:]
+        var lines: [String] = []
+        for diagnosis in status.providerDiagnoses(ttl: AIRuntimeStatus.recommendedHeartbeatTTL) where diagnosis.state == .down {
+            let providerID = diagnosis.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !providerID.isEmpty else { continue }
+            let providerStatus = status.providerStatus(providerID)
+            let hint: String
+            if providerID == "mlx" {
+                hint = mlxUnavailableHelp(importError: diagnosis.importError)
+            } else {
+                hint = LocalRuntimeProviderGuidance.providerHint(
+                    providerID: providerID,
+                    reasonCode: diagnosis.reasonCode,
+                    importError: diagnosis.importError,
+                    runtimeResolutionState: providerStatus?.runtimeResolutionState ?? diagnosis.runtimeResolutionState,
+                    runtimeSource: providerStatus?.runtimeSource ?? diagnosis.runtimeSource,
+                    runtimeSourcePath: providerStatus?.runtimeSourcePath ?? diagnosis.runtimeSourcePath,
+                    runtimeReasonCode: providerStatus?.runtimeReasonCode ?? diagnosis.runtimeReasonCode,
+                    runtimeHint: providerStatus?.runtimeHint ?? "",
+                    fallbackUsed: providerStatus?.fallbackUsed ?? diagnosis.fallbackUsed,
+                    selectedPythonPath: selectedPythonPath,
+                    preferredPythonPath: preferredLocalProviderPythonPath(preferredProviderID: providerID),
+                    candidates: localPythonCandidateStatuses(preferredProviderID: providerID)
+                )
+            }
+            let normalized = hint.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalized.isEmpty else { continue }
+            perProvider[providerID] = normalized
+            lines.append("[\(providerID)] \(normalized)")
+        }
+        aiRuntimeProviderHelpTextByProvider = perProvider
+        aiRuntimeInstallHintsText = lines.joined(separator: "\n\n")
+    }
+
+    private func unavailableProvidersHelp(status: AIRuntimeStatus) -> String {
+        let hints = status.providerDiagnoses(ttl: AIRuntimeStatus.recommendedHeartbeatTTL)
+            .filter { $0.state == .down }
+            .compactMap { diagnosis -> String? in
+                let providerID = diagnosis.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let hint = aiRuntimeProviderHelpTextByProvider[providerID] ?? ""
+                let normalized = hint.trimmingCharacters(in: .whitespacesAndNewlines)
+                return normalized.isEmpty ? nil : normalized
+            }
+        return hints.joined(separator: "\n\n")
     }
 
     struct AIRuntimeUnlockResult {
@@ -2328,12 +4193,12 @@ INSERT OR IGNORE INTO audit_events(
 
         if !isAIRuntimeLockBusy(baseDir: base) {
             result.lockReleased = true
-            result.detail = "Runtime lock is already free."
+            result.detail = HubUIStrings.Settings.Diagnostics.FixNow.runtimeLockAlreadyReleased
             return result
         }
 
         guard let lsofExe = resolvedLsofPath() else {
-            result.detail = "lsof is not available at /usr/sbin/lsof or /usr/bin/lsof."
+            result.detail = HubUIStrings.Settings.Diagnostics.FixNow.lsofNotFound
             return result
         }
         let lsofCandidates = [lsofExe]
@@ -2364,14 +4229,16 @@ INSERT OR IGNORE INTO audit_events(
                 result.holderPids = fallbackPids
                 result.command = aiRuntimePsKillCommandHint(pids: fallbackPids)
                 if lsofBlocked {
-                    result.detail = "lsof is blocked by sandbox; used ps fallback."
+                    result.detail = HubUIStrings.Settings.Diagnostics.FixNow.lsofSandboxFallback
                 }
             } else if lsofCode != 0 {
                 if lsofBlocked {
                     result.command = aiRuntimePsKillCommandHint()
-                    result.detail = "lsof is blocked by sandbox (Operation not permitted), and no runtime pid was found via ps."
+                    result.detail = HubUIStrings.Settings.Diagnostics.FixNow.lsofSandboxNoPid
                 } else {
-                    result.detail = lsofTail.isEmpty ? "lsof failed with code \(lsofCode)." : "lsof failed: \(lsofTail)"
+                    result.detail = lsofTail.isEmpty
+                        ? HubUIStrings.Settings.Diagnostics.FixNow.lsofFailed(code: lsofCode)
+                        : HubUIStrings.Settings.Diagnostics.FixNow.lsofFailed(detail: lsofTail)
                 }
                 return result
             }
@@ -2383,10 +4250,10 @@ INSERT OR IGNORE INTO audit_events(
         if result.holderPids.isEmpty {
             result.lockReleased = !isAIRuntimeLockBusy(baseDir: base)
             if result.lockReleased {
-                result.detail = "Runtime lock released."
+                result.detail = HubUIStrings.Settings.Diagnostics.FixNow.runtimeLockReleased
             } else {
                 if result.detail.isEmpty {
-                    result.detail = "Runtime lock is busy but no holder pid was found."
+                    result.detail = HubUIStrings.Settings.Diagnostics.FixNow.runtimeLockBusyNoPid
                 }
             }
             return result
@@ -2419,7 +4286,7 @@ INSERT OR IGNORE INTO audit_events(
                 }
             }
             if alivePid(pid) {
-                result.detail = "Failed to kill lock holder pid \(pidNum)."
+                result.detail = HubUIStrings.Settings.Diagnostics.FixNow.unableToKillLockHolder(pid: pidNum)
             } else {
                 result.killedPids.append(pidNum)
             }
@@ -2433,26 +4300,34 @@ INSERT OR IGNORE INTO audit_events(
 
         if result.lockReleased {
             if result.killedPids.isEmpty {
-                result.detail = "Runtime lock released."
+                result.detail = HubUIStrings.Settings.Diagnostics.FixNow.runtimeLockReleased
             } else {
                 let pids = result.killedPids.map(String.init).joined(separator: ",")
-                result.detail = "Runtime lock released. killed=\(pids)"
+                result.detail = HubUIStrings.Settings.Diagnostics.FixNow.runtimeLockReleasedKilled(pids)
             }
             return result
         }
 
         var parts: [String] = []
         if !result.killedPids.isEmpty {
-            parts.append("killed=\(result.killedPids.map(String.init).joined(separator: ","))")
+            parts.append(
+                HubUIStrings.Settings.Diagnostics.FixNow.killedProcesses(
+                    result.killedPids.map(String.init).joined(separator: ",")
+                )
+            )
         }
         if !result.skippedPids.isEmpty {
-            parts.append("skipped=\(result.skippedPids.map(String.init).joined(separator: ","))")
+            parts.append(
+                HubUIStrings.Settings.Diagnostics.FixNow.skippedProcesses(
+                    result.skippedPids.map(String.init).joined(separator: ",")
+                )
+            )
         }
-        parts.append("lock_still_busy=1")
+        parts.append(HubUIStrings.Settings.Diagnostics.FixNow.lockStillBusyFlag)
         if !result.detail.isEmpty {
             parts.append(result.detail)
         }
-        result.detail = parts.joined(separator: " · ")
+        result.detail = HubUIStrings.Settings.Diagnostics.FixNow.lockCleanupSummary(parts)
         return result
     }
 
@@ -2595,13 +4470,11 @@ INSERT OR IGNORE INTO audit_events(
         if isAIRuntimeLockBusy(baseDir: base) {
             let lockURL = base.appendingPathComponent("ai_runtime.lock")
             let pidHint = (AIRuntimeStatusStorage.load()?.pid ?? 0)
-            aiRuntimeLastError =
-                "Stop requested, but the runtime lock is still busy.\n\n" +
-                "Lock: \(lockURL.path)\n\n" +
-                "Try Diagnostics → Fix Now (Kill runtime lock holder).\n\n" +
-                "If no other Hub instance is running, kill the lock holder from Terminal:\n" +
-                "  \(aiRuntimeLockKillCommandHint())\n" +
-                (pidHint > 1 ? "\nPID hint (from ai_runtime_status.json): \(pidHint)\n  kill -9 \(pidHint)\n" : "")
+            aiRuntimeLastError = HubUIStrings.Settings.Diagnostics.FixNow.stopRequestedButLockBusy(
+                lockPath: lockURL.path,
+                command: aiRuntimeLockKillCommandHint(),
+                pidHint: pidHint
+            )
         }
 
         refreshAIRuntimeStatus()
@@ -2646,13 +4519,13 @@ INSERT OR IGNORE INTO audit_events(
         aiRuntimeLastTestText = ""
 
         // Fast preflight checks.
-        if !(AIRuntimeStatusStorage.load()?.isAlive(ttl: 3.0) ?? false) {
-            aiRuntimeLastTestText = "AI test: runtime is not running"
+        if !(AIRuntimeStatusStorage.load()?.isAlive(ttl: AIRuntimeStatus.recommendedHeartbeatTTL) ?? false) {
+            aiRuntimeLastTestText = HubUIStrings.Settings.Advanced.Runtime.testNotRunning
             return
         }
         let loaded = ModelStore.shared.snapshot.models.filter { $0.state == .loaded }
         if loaded.isEmpty {
-            aiRuntimeLastTestText = "AI test: no loaded model (load one in Models)"
+            aiRuntimeLastTestText = HubUIStrings.Settings.Advanced.Runtime.testNoLoadedModels
             return
         }
 
@@ -2680,13 +4553,13 @@ INSERT OR IGNORE INTO audit_events(
         ]
 
         guard let data = try? JSONSerialization.data(withJSONObject: obj, options: []) else {
-            aiRuntimeLastTestText = "AI test: failed to encode request"
+            aiRuntimeLastTestText = HubUIStrings.Settings.Advanced.Runtime.testEncodeRequestFailed
             return
         }
         do {
             try data.write(to: reqURL, options: .atomic)
         } catch {
-            aiRuntimeLastTestText = "AI test: cannot write request (\(error.localizedDescription))"
+            aiRuntimeLastTestText = HubUIStrings.Settings.Advanced.Runtime.testWriteRequestFailed(error.localizedDescription)
             return
         }
 
@@ -2732,14 +4605,631 @@ INSERT OR IGNORE INTO audit_events(
                 if let d = done {
                     if d.ok {
                         let t = buf.trimmingCharacters(in: .whitespacesAndNewlines)
-                        return t.isEmpty ? "AI test: OK (empty response)" : "AI test: OK — \(t.prefix(120))"
+                        return t.isEmpty
+                            ? HubUIStrings.Settings.Advanced.Runtime.testSuccessEmpty
+                            : HubUIStrings.Settings.Advanced.Runtime.testSuccess(String(t.prefix(120)))
                     }
-                    return "AI test: FAILED — \(d.reason)"
+                    return HubUIStrings.Settings.Advanced.Runtime.testFailure(d.reason)
                 }
-                return "AI test: timeout"
+                return HubUIStrings.Settings.Advanced.Runtime.testTimeout
             }.value
 
             self.aiRuntimeLastTestText = finalText
+        }
+    }
+
+    func localModelTrialStatus(for modelId: String) -> ModelTrialStatus? {
+        modelTrialStatusByKey[localModelTrialKey(modelId)]
+    }
+
+    func localModelHealth(for modelId: String) -> LocalModelHealthRecord? {
+        let normalized = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return nil }
+        return localModelHealthSnapshot.records.first { record in
+            record.modelId == normalized
+        }
+    }
+
+    func isLocalModelHealthScanInProgress(for modelId: String) -> Bool {
+        let normalized = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return false }
+        return localModelHealthScanningModelIDs.contains(normalized)
+    }
+
+    func updateLocalModelHealthAutoScanSchedule(_ schedule: ModelHealthAutoScanSchedule) {
+        let normalized = schedule.normalized()
+        guard normalized != localModelHealthAutoScanSchedule else { return }
+        localModelHealthAutoScanSchedule = normalized
+        saveModelHealthAutoScanSchedule(normalized, key: Self.localModelHealthAutoScanScheduleKey)
+        refreshLocalModelHealthAutoScanTimer()
+    }
+
+    func preflightAllLocalModelHealth() {
+        requestLocalModelHealthScan(limitingTo: nil, mode: .preflightOnly, updatesTrialStatus: false)
+    }
+
+    func preflightLocalModelHealth(for modelIds: [String]) {
+        let normalized = Set(
+            modelIds
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        )
+        guard !normalized.isEmpty else { return }
+        requestLocalModelHealthScan(limitingTo: normalized, mode: .preflightOnly, updatesTrialStatus: false)
+    }
+
+    func scanAllLocalModelHealth() {
+        requestLocalModelHealthScan(limitingTo: nil, mode: .full, updatesTrialStatus: true)
+    }
+
+    func scanLocalModelHealth(for modelIds: [String]) {
+        let normalized = Set(
+            modelIds
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        )
+        guard !normalized.isEmpty else { return }
+        requestLocalModelHealthScan(limitingTo: normalized, mode: .full, updatesTrialStatus: true)
+    }
+
+    func remoteModelTrialStatus(for modelId: String) -> ModelTrialStatus? {
+        modelTrialStatusByKey[remoteModelTrialKey(modelId)]
+    }
+
+    func remoteKeyHealth(for keyReference: String) -> RemoteKeyHealthRecord? {
+        let normalized = keyReference.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return nil }
+        return remoteKeyHealthSnapshot.records.first { record in
+            record.keyReference == normalized
+        }
+    }
+
+    func isRemoteKeyHealthScanInProgress(for keyReference: String) -> Bool {
+        let normalized = keyReference.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return false }
+        return remoteKeyHealthScanningKeyReferences.contains(normalized)
+    }
+
+    func updateRemoteKeyHealthAutoScanSchedule(_ schedule: ModelHealthAutoScanSchedule) {
+        let normalized = schedule.normalized()
+        guard normalized != remoteKeyHealthAutoScanSchedule else { return }
+        remoteKeyHealthAutoScanSchedule = normalized
+        saveModelHealthAutoScanSchedule(normalized, key: Self.remoteKeyHealthAutoScanScheduleKey)
+        refreshRemoteKeyHealthAutoScanTimer()
+    }
+
+    func scanAllRemoteKeyHealth() {
+        requestRemoteKeyHealthScan(limitingTo: nil)
+    }
+
+    func scanRemoteKeyHealth(for keyReferences: [String]) {
+        let normalized = Set(
+            keyReferences
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        )
+        guard !normalized.isEmpty else { return }
+        requestRemoteKeyHealthScan(limitingTo: normalized)
+    }
+
+    func testLocalModelConnectivity(_ model: HubModel) {
+        let key = localModelTrialKey(model.id)
+        modelTrialStatusByKey[key] = ModelTrialStatus(
+            state: .running,
+            category: .running,
+            summary: HubUIStrings.Models.Trial.running,
+            detail: "",
+            updatedAt: Date().timeIntervalSince1970
+        )
+
+        Task { @MainActor in
+            let startedAt = Date().timeIntervalSince1970
+            do {
+                let detail = try await runLocalModelTrial(model)
+                let duration = HubUIStrings.Models.Trial.duration(Date().timeIntervalSince1970 - startedAt)
+                modelTrialStatusByKey[key] = ModelTrialStatus(
+                    state: .success,
+                    category: .success,
+                    summary: HubUIStrings.Models.Trial.success,
+                    detail: HubUIStrings.Models.Trial.detailSummary([duration, detail]),
+                    updatedAt: Date().timeIntervalSince1970
+                )
+            } catch {
+                let duration = HubUIStrings.Models.Trial.duration(Date().timeIntervalSince1970 - startedAt)
+                let failureMessage = error.localizedDescription
+                modelTrialStatusByKey[key] = ModelTrialStatus(
+                    state: .failure,
+                    category: hubClassifyModelTrialFailure(failureMessage),
+                    summary: HubUIStrings.Models.Trial.failed,
+                    detail: HubUIStrings.Models.Trial.detailSummary([duration, failureMessage]),
+                    updatedAt: Date().timeIntervalSince1970
+                )
+            }
+        }
+    }
+
+    private func requestLocalModelHealthScan(
+        limitingTo modelIDs: Set<String>?,
+        mode: LocalModelHealthScanMode,
+        updatesTrialStatus: Bool
+    ) {
+        guard !localModelHealthScanInFlight else { return }
+
+        let models = ModelStore.shared.snapshot.models
+            .filter { !LocalModelRuntimeActionPlanner.isRemoteModel($0) }
+        let filteredModels = models
+            .filter { model in
+                guard let modelIDs else { return true }
+                return modelIDs.contains(model.id)
+            }
+        let validModelIDs = Set(models.map(\.id))
+
+        guard !filteredModels.isEmpty else {
+            let pruned = LocalModelHealthSnapshot(
+                records: localModelHealthSnapshot.records.filter { validModelIDs.contains($0.modelId) },
+                updatedAt: Date().timeIntervalSince1970
+            )
+            localModelHealthSnapshot = pruned
+            LocalModelHealthStorage.save(pruned)
+            refreshLocalModelHealthAutoScanTimer()
+            return
+        }
+
+        localModelHealthScanInFlight = true
+        localModelHealthScanningModelIDs = Set(filteredModels.map(\.id))
+
+        Task { @MainActor in
+            var recordsByModelID = Dictionary(
+                uniqueKeysWithValues: localModelHealthSnapshot.records.map { ($0.modelId, $0) }
+            )
+            let orderedModels = orderedLocalModelHealthScanModels(filteredModels)
+            let scanJobs = LocalModelHealthScanPlanner.jobs(
+                for: orderedModels,
+                requestedMode: mode,
+                explicitlyLimited: modelIDs != nil,
+                healthByModelID: recordsByModelID,
+                preferredModelIDByTask: routingPreferredModelIdByTask,
+                requestedTrialStatusUpdates: updatesTrialStatus
+            )
+            let runtimeScriptAvailable = resolveAIRuntimeScriptURL() != nil
+            let readinessSession = LocalLibraryRuntimeReadinessSession { [weak self] providerID in
+                guard let self else {
+                    return LocalLibraryRuntimeProviderProbe(
+                        launchConfigAvailable: false,
+                        probeLaunchConfig: nil,
+                        pythonPath: nil
+                    )
+                }
+                let probeLaunchConfig = runtimeScriptAvailable
+                    ? self.localRuntimePythonProbeLaunchConfig(preferredProviderID: providerID)
+                    : nil
+                return LocalLibraryRuntimeProviderProbe(
+                    launchConfigAvailable: runtimeScriptAvailable && probeLaunchConfig != nil,
+                    probeLaunchConfig: probeLaunchConfig,
+                    pythonPath: probeLaunchConfig?.resolvedPythonPath
+                )
+            }
+
+            for job in scanJobs {
+                let model = job.model
+                let key = localModelTrialKey(model.id)
+                if job.updatesTrialStatus {
+                    modelTrialStatusByKey[key] = ModelTrialStatus(
+                        state: .running,
+                        category: .running,
+                        summary: HubUIStrings.Models.Trial.running,
+                        detail: "",
+                        updatedAt: Date().timeIntervalSince1970
+                    )
+                }
+
+                let startedAt = Date().timeIntervalSince1970
+                let record = await LocalModelHealthScanner.scan(
+                    model: model,
+                    mode: job.mode,
+                    previous: recordsByModelID[model.id],
+                    readinessResolver: { scanModel in
+                        readinessSession.readiness(for: scanModel)
+                    },
+                    trialRunner: { scanModel in
+                        try await self.runLocalModelTrial(scanModel)
+                    }
+                )
+                recordsByModelID[model.id] = record
+                localModelHealthScanningModelIDs.remove(model.id)
+
+                if job.updatesTrialStatus {
+                    let duration = HubUIStrings.Models.Trial.duration(Date().timeIntervalSince1970 - startedAt)
+                    if record.state == .healthy {
+                        modelTrialStatusByKey[key] = ModelTrialStatus(
+                            state: .success,
+                            category: .success,
+                            summary: HubUIStrings.Models.Trial.success,
+                            detail: HubUIStrings.Models.Trial.detailSummary([duration, record.detail]),
+                            updatedAt: Date().timeIntervalSince1970
+                        )
+                    } else {
+                        modelTrialStatusByKey[key] = ModelTrialStatus(
+                            state: .failure,
+                            category: localModelTrialCategory(for: record),
+                            summary: HubUIStrings.Models.Trial.failed,
+                            detail: HubUIStrings.Models.Trial.detailSummary([duration, record.detail]),
+                            updatedAt: Date().timeIntervalSince1970
+                        )
+                    }
+                }
+
+                let snapshot = LocalModelHealthSnapshot(
+                    records: filteredLocalModelHealthRecords(recordsByModelID, validModelIDs: validModelIDs),
+                    updatedAt: Date().timeIntervalSince1970
+                )
+                localModelHealthSnapshot = snapshot
+                LocalModelHealthStorage.save(snapshot)
+            }
+
+            localModelHealthScanInFlight = false
+            localModelHealthScanningModelIDs = []
+            let finalSnapshot = LocalModelHealthSnapshot(
+                records: filteredLocalModelHealthRecords(recordsByModelID, validModelIDs: validModelIDs),
+                updatedAt: Date().timeIntervalSince1970
+            )
+            localModelHealthSnapshot = finalSnapshot
+            LocalModelHealthStorage.save(finalSnapshot)
+            refreshLocalModelHealthAutoScanTimer()
+        }
+    }
+
+    private func requestRemoteKeyHealthScan(limitingTo keyReferences: Set<String>?) {
+        guard !remoteKeyHealthScanInFlight else { return }
+
+        let models = RemoteModelStorage.load().models
+        let groups = RemoteKeyHealthScanner.groups(from: models, limitingTo: keyReferences)
+        let validKeys = Set(
+            models
+                .map { RemoteModelStorage.keyReference(for: $0) }
+                .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        )
+
+        guard !groups.isEmpty else {
+            let pruned = RemoteKeyHealthSnapshot(
+                records: remoteKeyHealthSnapshot.records.filter { validKeys.contains($0.keyReference) },
+                updatedAt: Date().timeIntervalSince1970
+            )
+            remoteKeyHealthSnapshot = pruned
+            RemoteKeyHealthStorage.save(pruned)
+            refreshRemoteKeyHealthAutoScanTimer()
+            return
+        }
+
+        remoteKeyHealthScanInFlight = true
+        remoteKeyHealthScanningKeyReferences = Set(groups.map(\.keyReference))
+
+        Task { @MainActor in
+            var recordsByKey = Dictionary(
+                uniqueKeysWithValues: remoteKeyHealthSnapshot.records.map { ($0.keyReference, $0) }
+            )
+
+            for group in groups {
+                let scanned = await RemoteKeyHealthScanner.scan(
+                    group: group,
+                    previous: recordsByKey[group.keyReference]
+                )
+                recordsByKey[group.keyReference] = scanned
+                remoteKeyHealthScanningKeyReferences.remove(group.keyReference)
+
+                let snapshot = RemoteKeyHealthSnapshot(
+                    records: filteredRemoteKeyHealthRecords(recordsByKey, validKeys: validKeys),
+                    updatedAt: Date().timeIntervalSince1970
+                )
+                remoteKeyHealthSnapshot = snapshot
+                RemoteKeyHealthStorage.save(snapshot)
+            }
+
+            remoteKeyHealthScanInFlight = false
+            remoteKeyHealthScanningKeyReferences = []
+            let finalSnapshot = RemoteKeyHealthSnapshot(
+                records: filteredRemoteKeyHealthRecords(recordsByKey, validKeys: validKeys),
+                updatedAt: Date().timeIntervalSince1970
+            )
+            remoteKeyHealthSnapshot = finalSnapshot
+            RemoteKeyHealthStorage.save(finalSnapshot)
+            refreshRemoteKeyHealthAutoScanTimer()
+        }
+    }
+
+    private func orderedLocalModelHealthScanModels(_ models: [HubModel]) -> [HubModel] {
+        let healthByModelID = Dictionary(
+            uniqueKeysWithValues: localModelHealthSnapshot.records.map { ($0.modelId, $0) }
+        )
+
+        return models.sorted { lhs, rhs in
+            let lhsHealth = healthByModelID[lhs.id]
+            let rhsHealth = healthByModelID[rhs.id]
+            let lhsPriority = LocalModelHealthSupport.sortPriority(for: lhsHealth)
+            let rhsPriority = LocalModelHealthSupport.sortPriority(for: rhsHealth)
+            if lhsPriority != rhsPriority {
+                return lhsPriority < rhsPriority
+            }
+
+            let lhsState = stateRank(lhs.state)
+            let rhsState = stateRank(rhs.state)
+            if lhsState != rhsState {
+                return lhsState < rhsState
+            }
+
+            let lhsRecency = LocalModelHealthSupport.recency(for: lhsHealth)
+            let rhsRecency = LocalModelHealthSupport.recency(for: rhsHealth)
+            if lhsRecency != rhsRecency {
+                return lhsRecency > rhsRecency
+            }
+
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
+    }
+
+    private func filteredLocalModelHealthRecords(
+        _ recordsByModelID: [String: LocalModelHealthRecord],
+        validModelIDs: Set<String>
+    ) -> [LocalModelHealthRecord] {
+        recordsByModelID.values
+            .filter { validModelIDs.contains($0.modelId) }
+            .sorted { lhs, rhs in
+                let lhsPriority = LocalModelHealthSupport.sortPriority(for: lhs)
+                let rhsPriority = LocalModelHealthSupport.sortPriority(for: rhs)
+                if lhsPriority != rhsPriority {
+                    return lhsPriority < rhsPriority
+                }
+                let lhsRecency = LocalModelHealthSupport.recency(for: lhs)
+                let rhsRecency = LocalModelHealthSupport.recency(for: rhs)
+                if lhsRecency != rhsRecency {
+                    return lhsRecency > rhsRecency
+                }
+                return lhs.modelId.localizedCaseInsensitiveCompare(rhs.modelId) == .orderedAscending
+            }
+    }
+
+    private func localModelTrialCategory(for record: LocalModelHealthRecord) -> ModelTrialCategory {
+        switch LocalModelHealthSupport.effectiveState(for: record) ?? record.state {
+        case .healthy:
+            return .success
+        case .degraded, .unknownStale:
+            return .failed
+        case .blockedReadiness:
+            return .config
+        case .blockedRuntime:
+            return .runtime
+        }
+    }
+
+    private func stateRank(_ state: HubModelState) -> Int {
+        switch state {
+        case .loaded:
+            return 0
+        case .sleeping:
+            return 1
+        case .available:
+            return 2
+        }
+    }
+
+    private func filteredRemoteKeyHealthRecords(
+        _ recordsByKey: [String: RemoteKeyHealthRecord],
+        validKeys: Set<String>
+    ) -> [RemoteKeyHealthRecord] {
+        recordsByKey.values
+            .filter { validKeys.contains($0.keyReference) }
+            .sorted { lhs, rhs in
+                let lhsPriority = RemoteKeyHealthSupport.sortPriority(for: lhs)
+                let rhsPriority = RemoteKeyHealthSupport.sortPriority(for: rhs)
+                if lhsPriority != rhsPriority {
+                    return lhsPriority < rhsPriority
+                }
+                let lhsRecency = RemoteKeyHealthSupport.recency(for: lhs)
+                let rhsRecency = RemoteKeyHealthSupport.recency(for: rhs)
+                if lhsRecency != rhsRecency {
+                    return lhsRecency > rhsRecency
+                }
+                return lhs.keyReference.localizedCaseInsensitiveCompare(rhs.keyReference) == .orderedAscending
+            }
+    }
+
+    private func configureModelHealthAutoScanMonitoring() {
+        guard modelHealthAutoScanCancellables.isEmpty else {
+            refreshLocalModelHealthAutoScanTimer()
+            refreshRemoteKeyHealthAutoScanTimer()
+            return
+        }
+
+        ModelStore.shared.$snapshot
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.refreshLocalModelHealthAutoScanTimer()
+            }
+            .store(in: &modelHealthAutoScanCancellables)
+
+        NotificationCenter.default.publisher(for: .relflowhubRemoteModelsChanged)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.refreshRemoteKeyHealthAutoScanTimer()
+            }
+            .store(in: &modelHealthAutoScanCancellables)
+
+        refreshLocalModelHealthAutoScanTimer()
+        refreshRemoteKeyHealthAutoScanTimer()
+    }
+
+    private func refreshLocalModelHealthAutoScanTimer(now: TimeInterval = Date().timeIntervalSince1970) {
+        localModelHealthAutoScanTimer?.invalidate()
+        localModelHealthAutoScanTimer = nil
+
+        guard let dueAt = nextLocalModelHealthAutoScanDueAt(now: now) else { return }
+        let delay = max(1.0, dueAt - now)
+        localModelHealthAutoScanTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.runDueLocalModelHealthAutoScan()
+            }
+        }
+    }
+
+    private func refreshRemoteKeyHealthAutoScanTimer(now: TimeInterval = Date().timeIntervalSince1970) {
+        remoteKeyHealthAutoScanTimer?.invalidate()
+        remoteKeyHealthAutoScanTimer = nil
+
+        guard let dueAt = nextRemoteKeyHealthAutoScanDueAt(now: now) else { return }
+        let delay = max(1.0, dueAt - now)
+        remoteKeyHealthAutoScanTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.runDueRemoteKeyHealthAutoScan()
+            }
+        }
+    }
+
+    private func nextLocalModelHealthAutoScanDueAt(now: TimeInterval) -> TimeInterval? {
+        guard localModelHealthAutoScanSchedule.isEnabled else { return nil }
+        let models = ModelStore.shared.snapshot.models
+            .filter { !LocalModelRuntimeActionPlanner.isRemoteModel($0) }
+        guard !models.isEmpty else { return nil }
+
+        let healthByModelID = Dictionary(
+            uniqueKeysWithValues: localModelHealthSnapshot.records.map { ($0.modelId, $0) }
+        )
+
+        return models.compactMap { model in
+            localModelHealthAutoScanSchedule.nextDueAt(
+                lastCheckedAt: healthByModelID[model.id]?.lastCheckedAt,
+                now: now
+            )
+        }
+        .min()
+    }
+
+    private func nextRemoteKeyHealthAutoScanDueAt(now: TimeInterval) -> TimeInterval? {
+        guard remoteKeyHealthAutoScanSchedule.isEnabled else { return nil }
+        let groups = RemoteKeyHealthScanner.groups(from: RemoteModelStorage.load().models)
+        guard !groups.isEmpty else { return nil }
+
+        let healthByKey = Dictionary(
+            uniqueKeysWithValues: remoteKeyHealthSnapshot.records.map { ($0.keyReference, $0) }
+        )
+
+        return groups.compactMap { group in
+            remoteKeyHealthAutoScanSchedule.nextDueAt(
+                lastCheckedAt: healthByKey[group.keyReference]?.lastCheckedAt,
+                now: now
+            )
+        }
+        .min()
+    }
+
+    private func dueLocalModelHealthModelIDs(now: TimeInterval) -> Set<String> {
+        guard localModelHealthAutoScanSchedule.isEnabled else { return [] }
+        let models = ModelStore.shared.snapshot.models
+            .filter { !LocalModelRuntimeActionPlanner.isRemoteModel($0) }
+        guard !models.isEmpty else { return [] }
+
+        let healthByModelID = Dictionary(
+            uniqueKeysWithValues: localModelHealthSnapshot.records.map { ($0.modelId, $0) }
+        )
+
+        return Set(
+            models.compactMap { model in
+                return localModelHealthAutoScanSchedule.isDue(
+                    lastCheckedAt: healthByModelID[model.id]?.lastCheckedAt,
+                    now: now
+                ) ? model.id : nil
+            }
+        )
+    }
+
+    private func dueRemoteKeyHealthReferences(now: TimeInterval) -> Set<String> {
+        guard remoteKeyHealthAutoScanSchedule.isEnabled else { return [] }
+        let groups = RemoteKeyHealthScanner.groups(from: RemoteModelStorage.load().models)
+        guard !groups.isEmpty else { return [] }
+
+        let healthByKey = Dictionary(
+            uniqueKeysWithValues: remoteKeyHealthSnapshot.records.map { ($0.keyReference, $0) }
+        )
+
+        return Set(
+            groups.compactMap { group in
+                return remoteKeyHealthAutoScanSchedule.isDue(
+                    lastCheckedAt: healthByKey[group.keyReference]?.lastCheckedAt,
+                    now: now
+                ) ? group.keyReference : nil
+            }
+        )
+    }
+
+    private func runDueLocalModelHealthAutoScan() {
+        let now = Date().timeIntervalSince1970
+        let modelIDs = dueLocalModelHealthModelIDs(now: now)
+        guard !modelIDs.isEmpty, !localModelHealthScanInFlight else {
+            refreshLocalModelHealthAutoScanTimer(now: now)
+            return
+        }
+        requestLocalModelHealthScan(
+            limitingTo: modelIDs,
+            mode: .preflightOnly,
+            updatesTrialStatus: false
+        )
+    }
+
+    private func runDueRemoteKeyHealthAutoScan() {
+        let now = Date().timeIntervalSince1970
+        let keyReferences = dueRemoteKeyHealthReferences(now: now)
+        guard !keyReferences.isEmpty, !remoteKeyHealthScanInFlight else {
+            refreshRemoteKeyHealthAutoScanTimer(now: now)
+            return
+        }
+        requestRemoteKeyHealthScan(limitingTo: keyReferences)
+    }
+
+    func testRemoteModelConnectivity(_ entry: RemoteModelEntry) {
+        let key = remoteModelTrialKey(entry.id)
+        modelTrialStatusByKey[key] = ModelTrialStatus(
+            state: .running,
+            category: .running,
+            summary: HubUIStrings.Models.Trial.running,
+            detail: "",
+            updatedAt: Date().timeIntervalSince1970
+        )
+
+        Task { @MainActor in
+            let startedAt = Date().timeIntervalSince1970
+            do {
+                let result = await RemoteModelTrialRunner.generate(
+                    modelId: entry.id,
+                    allowDisabledModelLookup: !entry.enabled,
+                    prompt: modelTrialPrompt,
+                    timeoutSec: 20.0
+                )
+                guard result.ok else {
+                    let detail = humanizedRemoteModelTrialError(status: result.status, error: result.error)
+                    throw NSError(domain: "relflowhub", code: 21, userInfo: [NSLocalizedDescriptionKey: detail])
+                }
+                let response = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                let responseSummary = response.isEmpty
+                    ? HubUIStrings.Models.Trial.emptyResponse
+                    : "\(HubUIStrings.Models.Trial.responsePrefix) \(String(response.prefix(80)))"
+                let duration = HubUIStrings.Models.Trial.duration(Date().timeIntervalSince1970 - startedAt)
+                modelTrialStatusByKey[key] = ModelTrialStatus(
+                    state: .success,
+                    category: .success,
+                    summary: HubUIStrings.Models.Trial.success,
+                    detail: HubUIStrings.Models.Trial.detailSummary([duration, responseSummary]),
+                    updatedAt: Date().timeIntervalSince1970
+                )
+            } catch {
+                let duration = HubUIStrings.Models.Trial.duration(Date().timeIntervalSince1970 - startedAt)
+                let failureMessage = error.localizedDescription
+                modelTrialStatusByKey[key] = ModelTrialStatus(
+                    state: .failure,
+                    category: hubClassifyModelTrialFailure(failureMessage),
+                    summary: HubUIStrings.Models.Trial.failed,
+                    detail: HubUIStrings.Models.Trial.detailSummary([duration, failureMessage]),
+                    updatedAt: Date().timeIntervalSince1970
+                )
+            }
         }
     }
 
@@ -2765,7 +5255,7 @@ INSERT OR IGNORE INTO audit_events(
             return descriptor.title
         }
         let normalized = normalizedRoutingToken(taskType)
-        guard !normalized.isEmpty else { return "Auto Select" }
+        guard !normalized.isEmpty else { return HubUIStrings.Settings.GRPC.EditDeviceSheet.autoSelected }
         return normalized
             .split(separator: "_")
             .map { token in
@@ -2782,32 +5272,74 @@ INSERT OR IGNORE INTO audit_events(
     func aiGenerate(
         prompt: String,
         taskType: String,
+        preferredModelIDOverride: String? = nil,
+        requiredProviderID: String? = nil,
+        requiredModelID: String? = nil,
         maxTokens: Int = 768,
         temperature: Double = 0.2,
         topP: Double = 0.95,
         autoLoad: Bool = true,
         timeoutSec: Double = 25
     ) async throws -> String {
-        // Preflight.
-        guard let st = AIRuntimeStatusStorage.load(), st.isAlive(ttl: 3.0) else {
-            throw NSError(domain: "relflowhub", code: 1, userInfo: [NSLocalizedDescriptionKey: "AI runtime is not running. Open Settings → AI Runtime and click Start."])
-        }
-        if !st.isProviderReady("mlx", ttl: 3.0) {
-            let doctor = st.providerDoctorText(ttl: 3.0).trimmingCharacters(in: .whitespacesAndNewlines)
-            let fallback = (st.providerStatus("mlx")?.importError?.isEmpty == false)
-                ? (st.providerStatus("mlx")?.importError ?? "")
-                : ((st.importError?.isEmpty == false) ? (st.importError ?? "") : "MLX provider unavailable")
-            let msg = doctor.isEmpty ? fallback : doctor
-            throw NSError(domain: "relflowhub", code: 2, userInfo: [NSLocalizedDescriptionKey: "AI runtime is not ready: \(msg)"])
-        }
+        let normalizedRequiredModelID = requiredModelID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let localTextModels = ModelStore.shared.snapshot.models.filter { model in
             let path = (model.modelPath ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            return !path.isEmpty
-                && model.backend.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "mlx"
-                && model.taskKinds.contains("text_generate")
+            guard !path.isEmpty else { return false }
+            guard model.taskKinds.contains("text_generate") else { return false }
+            if !normalizedRequiredModelID.isEmpty {
+                return model.id == normalizedRequiredModelID
+            }
+            return true
         }
         if localTextModels.isEmpty {
-            throw NSError(domain: "relflowhub", code: 3, userInfo: [NSLocalizedDescriptionKey: "No local text-generate model is registered. Open Models → Add Model… and import an MLX text model."])
+            throw NSError(
+                domain: "relflowhub",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: HubUIStrings.Settings.Advanced.Runtime.noLocalTextGenerateModels]
+            )
+        }
+
+        let preferredOverride = preferredModelIDOverride?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let preferred = preferredOverride.isEmpty ? preferredModelIdForTask(taskType) : preferredOverride
+        let targetModel = localTextModels.first(where: { $0.id == preferred }) ?? localTextModels.first
+        let providerID = {
+            let explicit = requiredProviderID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+            if !explicit.isEmpty {
+                return explicit
+            }
+            if let targetModel {
+                return LocalModelRuntimeActionPlanner.providerID(for: targetModel)
+            }
+            return "mlx"
+        }()
+        var status = AIRuntimeStatusStorage.load()
+        if autoLoad || aiRuntimeAutoStart {
+            if status?.isProviderReady(providerID, ttl: AIRuntimeStatus.recommendedHeartbeatTTL) != true {
+                let recoveryWindow = min(12.0, max(4.0, timeoutSec * 0.4))
+                _ = await ensureRuntimeReady(for: providerID, waitUpToSec: recoveryWindow)
+                status = AIRuntimeStatusStorage.load()
+            }
+        }
+
+        // Preflight.
+        guard let st = status, st.isAlive(ttl: AIRuntimeStatus.recommendedHeartbeatTTL) else {
+            throw NSError(
+                domain: "relflowhub",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: HubUIStrings.Settings.Advanced.Runtime.generateNotStarted]
+            )
+        }
+        if !st.isProviderReady(providerID, ttl: AIRuntimeStatus.recommendedHeartbeatTTL) {
+            let doctor = st.providerDoctorText(ttl: AIRuntimeStatus.recommendedHeartbeatTTL).trimmingCharacters(in: .whitespacesAndNewlines)
+            let fallback = (st.providerStatus(providerID)?.importError?.isEmpty == false)
+                ? (st.providerStatus(providerID)?.importError ?? "")
+                : ((st.importError?.isEmpty == false) ? (st.importError ?? "") : HubUIStrings.Settings.Advanced.Runtime.mlxProviderUnavailable)
+            let msg = doctor.isEmpty ? fallback : doctor
+            throw NSError(
+                domain: "relflowhub",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: HubUIStrings.Settings.Advanced.Runtime.generateNotReady(msg)]
+            )
         }
 
         let base = SharedPaths.ensureHubDirectory()
@@ -2819,7 +5351,6 @@ INSERT OR IGNORE INTO audit_events(
         let reqId = UUID().uuidString
         let reqURL = reqDir.appendingPathComponent("req_\(reqId).json")
         let respURL = respDir.appendingPathComponent("resp_\(reqId).jsonl")
-        let preferred = preferredModelIdForTask(taskType)
 
         let obj: [String: Any] = [
             "type": "generate",
@@ -2836,12 +5367,20 @@ INSERT OR IGNORE INTO audit_events(
         ]
 
         guard let data = try? JSONSerialization.data(withJSONObject: obj, options: []) else {
-            throw NSError(domain: "relflowhub", code: 4, userInfo: [NSLocalizedDescriptionKey: "Failed to encode AI request"])
+            throw NSError(
+                domain: "relflowhub",
+                code: 4,
+                userInfo: [NSLocalizedDescriptionKey: HubUIStrings.Settings.Advanced.Runtime.encodeGenerateRequestFailed]
+            )
         }
         do {
             try data.write(to: reqURL, options: .atomic)
         } catch {
-            throw NSError(domain: "relflowhub", code: 5, userInfo: [NSLocalizedDescriptionKey: "Cannot write AI request (\(error.localizedDescription))"])
+            throw NSError(
+                domain: "relflowhub",
+                code: 5,
+                userInfo: [NSLocalizedDescriptionKey: HubUIStrings.Settings.Advanced.Runtime.writeGenerateRequestFailed(error.localizedDescription)]
+            )
         }
 
         let finalText: String = try await Task.detached(priority: .userInitiated) {
@@ -2887,10 +5426,130 @@ INSERT OR IGNORE INTO audit_events(
                 }
                 throw NSError(domain: "relflowhub", code: 6, userInfo: [NSLocalizedDescriptionKey: d.reason])
             }
-            throw NSError(domain: "relflowhub", code: 7, userInfo: [NSLocalizedDescriptionKey: "AI request timed out"])
+            throw NSError(
+                domain: "relflowhub",
+                code: 7,
+                userInfo: [NSLocalizedDescriptionKey: HubUIStrings.Settings.Advanced.Runtime.generateTimeout]
+            )
         }.value
 
         return finalText
+    }
+
+    private func localModelTrialKey(_ modelId: String) -> String {
+        "local::\(modelId.trimmingCharacters(in: .whitespacesAndNewlines))"
+    }
+
+    private func remoteModelTrialKey(_ modelId: String) -> String {
+        "remote::\(modelId.trimmingCharacters(in: .whitespacesAndNewlines))"
+    }
+
+    private func runLocalModelTrial(_ model: HubModel) async throws -> String {
+        guard let trialPath = localModelTrialPath(for: model) else {
+            throw NSError(
+                domain: "relflowhub",
+                code: 30,
+                userInfo: [NSLocalizedDescriptionKey: HubUIStrings.Models.Review.Bench.noRegisteredTasks]
+            )
+        }
+
+        switch trialPath {
+        case .textGenerate:
+            let response = try await aiGenerate(
+                prompt: modelTrialPrompt,
+                taskType: "text_generate",
+                preferredModelIDOverride: model.id,
+                requiredProviderID: LocalModelRuntimeActionPlanner.providerID(for: model),
+                requiredModelID: model.id,
+                maxTokens: 24,
+                temperature: 0.0,
+                topP: 1.0,
+                autoLoad: true,
+                timeoutSec: 35
+            )
+            let normalized = response.trimmingCharacters(in: .whitespacesAndNewlines)
+            if normalized.isEmpty {
+                return HubUIStrings.Models.Trial.emptyResponse
+            }
+            return "\(HubUIStrings.Models.Trial.responsePrefix) \(String(normalized.prefix(80)))"
+        case .quickBench(let taskKind, let fixtureProfile):
+            return try await runQuickBenchTrial(model: model, taskKind: taskKind, fixtureProfile: fixtureProfile)
+        }
+    }
+
+    private func localModelTrialPath(for model: HubModel) -> LocalModelTrialPath? {
+        guard (model.modelPath ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+            return nil
+        }
+        if model.taskKinds.contains("text_generate") {
+            return .textGenerate
+        }
+        let providerID = LocalModelRuntimeActionPlanner.providerID(for: model)
+        guard let taskKind = ModelStore.shared.availableBenchTaskDescriptors(for: model).first?.taskKind,
+              let fixtureProfile = LocalBenchFixtureCatalog.defaultFixtureID(for: taskKind, providerID: providerID) else {
+            return nil
+        }
+        return .quickBench(taskKind: taskKind, fixtureProfile: fixtureProfile)
+    }
+
+    private func runQuickBenchTrial(
+        model: HubModel,
+        taskKind: String,
+        fixtureProfile: String
+    ) async throws -> String {
+        let startedAt = Date().timeIntervalSince1970
+        ModelStore.shared.runBench(
+            modelId: model.id,
+            taskKind: taskKind,
+            fixtureProfile: fixtureProfile
+        )
+        let result = try await waitForLocalBenchTrialResult(
+            modelId: model.id,
+            requestedAfter: startedAt,
+            timeoutSec: 65.0
+        )
+        if !result.ok {
+            throw NSError(domain: "relflowhub", code: 31, userInfo: [NSLocalizedDescriptionKey: result.msg])
+        }
+        let taskTitle = LocalTaskRoutingCatalog.title(for: taskKind)
+        return HubUIStrings.Models.Trial.detailSummary([
+            HubUIStrings.Models.Trial.usingQuickBench,
+            taskTitle,
+            result.msg,
+        ])
+    }
+
+    private func waitForLocalBenchTrialResult(
+        modelId: String,
+        requestedAfter: TimeInterval,
+        timeoutSec: Double
+    ) async throws -> ModelCommandResult {
+        let deadline = Date().addingTimeInterval(timeoutSec)
+        while Date() < deadline {
+            if let result = ModelStore.shared.lastResultByModelId[modelId],
+               result.action == "bench",
+               result.finishedAt >= requestedAfter,
+               ModelStore.shared.pendingAction(for: modelId) != "bench" {
+                return result
+            }
+            try? await Task.sleep(nanoseconds: 150_000_000)
+        }
+        throw NSError(
+            domain: "relflowhub",
+            code: 32,
+            userInfo: [NSLocalizedDescriptionKey: HubUIStrings.Settings.Advanced.Runtime.generateTimeout]
+        )
+    }
+
+    private func humanizedRemoteModelTrialError(status: Int, error: String) -> String {
+        let normalizedError = error.trimmingCharacters(in: .whitespacesAndNewlines)
+        if status > 0 {
+            return RemoteProviderClient.userFacingHTTPError(status: status, body: normalizedError)
+        }
+        if !normalizedError.isEmpty {
+            return RemoteProviderClient.humanizedBridgeFailureReason(normalizedError)
+        }
+        return HubUIStrings.Settings.Networking.BridgeIPC.invalidResponse
     }
 
     // -------------------- Today New (FA) batch summarization --------------------
@@ -2974,7 +5633,11 @@ INSERT OR IGNORE INTO audit_events(
         let active = notifications.filter { ($0.snoozedUntil ?? 0) <= now }
         let todayFA = active.filter { isFATrackerRadarNotification($0) && $0.createdAt >= todayStart }
         if todayFA.isEmpty {
-            throw NSError(domain: "relflowhub", code: 20, userInfo: [NSLocalizedDescriptionKey: "No new FA radars today."])
+            throw NSError(
+                domain: "relflowhub",
+                code: 20,
+                userInfo: [NSLocalizedDescriptionKey: HubUIStrings.MainPanel.FASummary.noNewRadarToday]
+            )
         }
 
         // Group by project name.
@@ -2996,7 +5659,11 @@ INSERT OR IGNORE INTO audit_events(
         }
 
         if itemsByProject.isEmpty {
-            throw NSError(domain: "relflowhub", code: 21, userInfo: [NSLocalizedDescriptionKey: "No matching project radars found."])
+            throw NSError(
+                domain: "relflowhub",
+                code: 21,
+                userInfo: [NSLocalizedDescriptionKey: HubUIStrings.MainPanel.FASummary.noMatchingProjectRadar]
+            )
         }
 
         let projects = itemsByProject.keys.sorted()
@@ -3017,27 +5684,7 @@ INSERT OR IGNORE INTO audit_events(
             input += "\n"
         }
 
-        let prompt = (
-            "你是失效分析(FA)每日雷达汇总助理。\n"
-            + "请根据下面的‘今日新增 radars（按 project 分组）’，输出一个可执行的简短摘要。\n"
-            + "注意：你只能基于给定的 radar id + title 做归纳，不要编造具体细节。\n\n"
-            + "输出格式（纯文本，不要 markdown）：\n"
-            + "Overall:\n"
-            + "- Total radars: <N>\n"
-            + "- Top themes: <2-4 bullets>\n"
-            + "- Suggested next actions: <2-4 bullets>\n\n"
-            + "Per project:\n"
-            + "<Project name> (N):\n"
-            + "- Themes: ...\n"
-            + "- Attention radars: <up to 5 ids> (why)\n"
-            + "- Next actions: ...\n\n"
-            + "Rules:\n"
-            + "- 如果 title 信息不足，请写 ‘信息不足：缺少 title/上下文’。\n"
-            + "- Next actions 要具体（找谁/查什么/跑什么/补什么证据）。\n"
-            + "- 保持简短（整体 25 行以内）。\n\n"
-            + "Today New radars:\n"
-            + input
-        )
+        let prompt = HubUIStrings.MainPanel.FASummary.dailyRadarPrompt(input)
 
         return try await aiGenerate(prompt: prompt, taskType: "summarize", maxTokens: 900, temperature: 0.2, autoLoad: true, timeoutSec: 35)
     }
@@ -3069,6 +5716,20 @@ INSERT OR IGNORE INTO audit_events(
             }
             dir.deleteLastPathComponent()
         }
+
+        let sourceTreeCandidate = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("python-runtime", isDirectory: true)
+            .appendingPathComponent("python_service", isDirectory: true)
+        if FileManager.default.directoryExists(atPath: sourceTreeCandidate.path),
+           preferredAIRuntimeScriptURL(in: sourceTreeCandidate) != nil {
+            return sourceTreeCandidate.path
+        }
+
         return ""
     }
 
@@ -3084,6 +5745,13 @@ INSERT OR IGNORE INTO audit_events(
     }
 
     private func defaultPythonPath() -> String {
+        // Prefer the Hub-managed wrapper first. It lets packaged builds reuse the
+        // container-local runtime bridge even when UserDefaults drift back to a framework
+        // interpreter between launches.
+        for path in LocalPythonRuntimeDiscovery.hubManagedRuntimeCandidatePaths() {
+            return path
+        }
+
         // Prefer a real python binary. `/usr/bin/python3` and `env python3` can be a
         // CommandLineTools stub that shells out to xcrun, which fails under App Sandbox.
         let cands = [
@@ -3110,11 +5778,11 @@ INSERT OR IGNORE INTO audit_events(
             self.fileIPC = f
             do {
                 try f.start()
-                ipcStatus = "IPC: file"
+                ipcStatus = HubUIStrings.Menu.IPC.fileMode
                 ipcPath = f.ipcPathText()
                 HubDiagnostics.log("startIPC ok mode=file path=\(ipcPath)")
             } catch {
-                ipcStatus = "IPC: file failed (\(error))"
+                ipcStatus = HubUIStrings.Menu.IPC.fileFailed(String(describing: error))
                 ipcPath = f.ipcPathText()
                 HubDiagnostics.log("startIPC failed mode=file err=\(error)")
             }
@@ -3125,11 +5793,11 @@ INSERT OR IGNORE INTO audit_events(
         self.server = srv
         do {
             try srv.start()
-            ipcStatus = "IPC: socket"
+            ipcStatus = HubUIStrings.Menu.IPC.socketMode
             ipcPath = SharedPaths.ipcSocketPath()
             HubDiagnostics.log("startIPC ok mode=socket path=\(ipcPath)")
         } catch {
-            ipcStatus = "IPC: socket failed (\(error))"
+            ipcStatus = HubUIStrings.Menu.IPC.socketFailed(String(describing: error))
             ipcPath = SharedPaths.ipcSocketPath()
             HubDiagnostics.log("startIPC failed mode=socket err=\(error)")
         }
@@ -3261,6 +5929,12 @@ INSERT OR IGNORE INTO audit_events(
         // before apps implement explicit heartbeat writes.
         touchClientPresence(from: n)
 
+        guard shouldRetainHubNotification(n) else {
+            return
+        }
+
+        let shouldOpenMainForPairing = Self.shouldPromotePendingPairingNotification(n)
+
         // Dedupe/update on dedupeKey when provided.
         if let key = n.dedupeKey, !key.isEmpty {
             if let idx = notifications.firstIndex(where: { $0.dedupeKey == key }) {
@@ -3277,6 +5951,15 @@ INSERT OR IGNORE INTO audit_events(
         sort()
         updateSummary()
         schedulePersistNotifications()
+        if shouldOpenMainForPairing {
+            NotificationCenter.default.post(name: .relflowhubOpenMain, object: nil)
+        }
+    }
+
+    static func shouldPromotePendingPairingNotification(_ notification: HubNotification) -> Bool {
+        guard notification.source == "Hub" else { return false }
+        let key = (notification.dedupeKey ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return key.hasPrefix("pairing_request:")
     }
 
     private func touchClientPresence(from n: HubNotification) {
@@ -3320,6 +6003,11 @@ INSERT OR IGNORE INTO audit_events(
     }
 
     private func normalizedClientId(_ s: String) -> String {
+        let canonical = HubNetworkPolicyStorage.canonicalAppId(s)
+        if canonical == "x_terminal" {
+            return canonical
+        }
+
         let lower = s.lowercased()
         var out = ""
         out.reserveCapacity(lower.count)
@@ -3377,34 +6065,6 @@ INSERT OR IGNORE INTO audit_events(
         }
     }
 
-    func requestCalendarAccessAndStart() {
-        // Calendar permission prompts can fail to appear if the app is not active.
-        NSApp.activate(ignoringOtherApps: true)
-        if calendar == nil {
-            calendar = CalendarPipeline(remindMinutesBefore: calendarRemindMinutes)
-        }
-        Task { @MainActor in
-            guard let cal = calendar else { return }
-            let ok = await cal.requestAccessIfNeeded()
-            refreshCalendarStatusOnly()
-            if ok {
-                await requestNotificationAuthorizationIfNeeded()
-                cal.startPolling { [weak self] meetings, specialDays in
-                    self?.handleCalendarMeetingsUpdate(meetings, specialDays: specialDays)
-                }
-                // Force an immediate refresh after access transitions to granted.
-                self.refreshCalendar()
-            }
-        }
-    }
-
-    func refreshCalendar() {
-        guard let cal = calendar else { return }
-        let ms = cal.fetchNext12HoursMeetings()
-        let special = cal.fetchTodaySpecialDays()
-        handleCalendarMeetingsUpdate(ms, specialDays: special)
-    }
-
     func markRead(_ id: String) {
         if let idx = notifications.firstIndex(where: { $0.id == id }) {
             notifications[idx].unread = false
@@ -3413,8 +6073,39 @@ INSERT OR IGNORE INTO audit_events(
         }
     }
 
+    func presentNotificationInspector(_ notification: HubNotification) {
+        notificationInspectorTarget = notification
+        NotificationCenter.default.post(name: .relflowhubOpenMain, object: nil)
+    }
+
+    func dismissNotificationInspector() {
+        notificationInspectorTarget = nil
+    }
+
+    func openPairedDevicesSettings(deviceID: String? = nil, capabilityKey: String? = nil) {
+        let normalizedDeviceID = deviceID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedCapabilityKey = hubNormalizedPairedDeviceCapabilityFocusKey(capabilityKey)
+        settingsNavigationTarget = .pairedDevices(
+            deviceID: normalizedDeviceID?.isEmpty == true ? nil : normalizedDeviceID,
+            capabilityKey: normalizedCapabilityKey
+        )
+        NotificationCenter.default.post(name: .relflowhubOpenMain, object: nil)
+    }
+
+    func consumeSettingsNavigationTarget(_ target: HubSettingsNavigationTarget) {
+        if settingsNavigationTarget == target {
+            settingsNavigationTarget = nil
+        }
+    }
+
     func openNotificationAction(_ n: HubNotification) {
         guard let s = n.actionURL, !s.isEmpty, let url = URL(string: s) else {
+            return
+        }
+
+        if (url.scheme ?? "").lowercased() == "xterminal" {
+            NotificationCenter.default.post(name: .relflowhubOpenMain, object: nil)
             return
         }
 
@@ -3466,6 +6157,28 @@ INSERT OR IGNORE INTO audit_events(
         return openFATrackerLauncherIfConfigured()
     }
 
+    private static func pairedDevicesSettingsActionURL(
+        deviceID: String? = nil,
+        capabilityKey: String? = nil
+    ) -> String {
+        var components = URLComponents()
+        components.scheme = "relflowhub"
+        components.host = "settings"
+        components.path = "/paired-devices"
+        let normalizedDeviceID = deviceID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedCapabilityKey = hubNormalizedPairedDeviceCapabilityFocusKey(capabilityKey)
+        var queryItems: [URLQueryItem] = []
+        if let normalizedDeviceID, !normalizedDeviceID.isEmpty {
+            queryItems.append(URLQueryItem(name: "device_id", value: normalizedDeviceID))
+        }
+        if let normalizedCapabilityKey {
+            queryItems.append(URLQueryItem(name: "capability", value: normalizedCapabilityKey))
+        }
+        components.queryItems = queryItems.isEmpty ? nil : queryItems
+        return components.string ?? "relflowhub://settings/paired-devices"
+    }
+
     private func handleLocalActionURL(_ url: URL) -> Bool {
         // relflowhub://handoff/fatracker?radars=123,456&fallback=rdar://123
         let scheme = (url.scheme ?? "").lowercased()
@@ -3493,6 +6206,14 @@ INSERT OR IGNORE INTO audit_events(
             let projectId = Int(items.first(where: { $0.name == "project_id" })?.value ?? "")
             let ids = radarsRaw.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
             openInFATracker(radarIds: ids, projectId: projectId, fallbackURL: fallback)
+            return true
+        }
+
+        if host == "settings" && (path == "/paired-devices" || path == "/paired_devices" || path == "/devices") {
+            let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let deviceID = items.first(where: { $0.name == "device_id" })?.value
+            let capabilityKey = items.first(where: { $0.name == "capability" })?.value
+            openPairedDevicesSettings(deviceID: deviceID, capabilityKey: capabilityKey)
             return true
         }
         return false
@@ -3641,9 +6362,7 @@ exit 1
     }
 
     func dismiss(_ id: String) {
-        notifications.removeAll(where: { $0.id == id })
-        updateSummary()
-        schedulePersistNotifications()
+        removeNotification(dedupeKey: nil, id: id)
     }
 
     func dismissAll() {
@@ -3685,7 +6404,7 @@ exit 1
         if n.source != "FAtracker" { return false }
 
         // Agent notifications use a stable title format.
-        if n.title.hasPrefix("New radars:") { return true }
+        if HubUIStrings.Notifications.FATracker.parsePrefixes.contains(where: { n.title.hasPrefix($0) }) { return true }
 
         // Or a relflowhub local handoff action.
         if let s = n.actionURL, let u = URL(string: s), (u.scheme ?? "").lowercased() == "relflowhub" {
@@ -3699,51 +6418,28 @@ exit 1
         let now = Date().timeIntervalSince1970
         if let m = meetings.first(where: { $0.isMeeting && !$0.id.isEmpty && !isMeetingDismissed($0, now: now) }) {
             let f = DateFormatter()
-            f.dateFormat = "HH:mm"
+            f.dateFormat = HubUIStrings.Formatting.timeOnly
             if now >= m.startAt && now < m.endAt {
-                return "Now: \(m.title)"
+                return HubUIStrings.MainPanel.Meeting.inProgressSummary(m.title)
             }
-            return "Next: \(f.string(from: m.startDate)) \(m.title)"
+            return HubUIStrings.MainPanel.Meeting.nextSummary(time: f.string(from: m.startDate), title: m.title)
         }
         // Keep default consistent with widget template.
-        return "No events today"
-    }
-
-    private func handleCalendarMeetingsUpdate(_ ms: [HubMeeting], specialDays: [String]) {
-        meetings = ms
-        specialDaysToday = specialDays
-        pruneDismissedMeetings(now: Date().timeIntervalSince1970)
-        updateSummary()
+        return HubUIStrings.MainPanel.Meeting.noScheduleToday
     }
 
     private func refreshCalendarStatusOnly() {
-        if calendar == nil {
-            calendar = CalendarPipeline(remindMinutesBefore: calendarRemindMinutes)
-        }
-        calendarStatus = calendar?.currentStatusText() ?? "Calendar: unknown"
+        disableHubCalendarIntegration()
+    }
+
+    private func disableHubCalendarIntegration() {
+        meetings = []
+        specialDaysToday = []
+        calendarStatus = HubUIStrings.Menu.calendarMigrated
+        updateSummary()
     }
 
     private func setupNotificationsAuthorizationState() {
         // No-op for now; kept as a hook for future UI.
     }
-
-    private func requestNotificationAuthorizationIfNeeded() async {
-        guard NotificationSupport.isAvailable else { return }
-        let center = UNUserNotificationCenter.current()
-        let settings = await center.notificationSettings()
-        if settings.authorizationStatus == .notDetermined {
-            _ = try? await center.requestAuthorization(options: [.alert, .sound])
-        }
-    }
-}
-
-private struct DockAgentStatusFile: Codable {
-    var updatedAt: Double
-    var pid: Int32
-    var appVersion: String
-    var appBuild: String
-    var appPath: String
-    var axTrusted: Bool
-    var autoStartInstalled: Bool
-    var autoStartLoaded: Bool
 }

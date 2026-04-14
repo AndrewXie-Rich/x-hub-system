@@ -180,3 +180,68 @@ await run('transcribeLocalAudio normalizes successful runtime output', async () 
   assert.equal(out.latency_ms, 12);
   assert.equal(executorCalls, 1);
 });
+
+await run('transcribeLocalAudio honors routed device override model selection', async () => {
+  const runtimeBaseDir = makeTempRuntimeDir();
+  writeJson(path.join(runtimeBaseDir, 'models_state.json'), {
+    updatedAt: Date.now() / 1000.0,
+    models: [
+      {
+        id: 'hf-asr-default',
+        name: 'HF ASR Default',
+        backend: 'transformers',
+        modelPath: '/models/hf-asr-default',
+        taskKinds: ['speech_to_text'],
+        inputModalities: ['audio'],
+        outputModalities: ['text'],
+      },
+      {
+        id: 'hf-asr-device',
+        name: 'HF ASR Device',
+        backend: 'transformers',
+        modelPath: '/models/hf-asr-device',
+        taskKinds: ['speech_to_text'],
+        inputModalities: ['audio'],
+        outputModalities: ['text'],
+      },
+    ],
+  });
+  writeJson(path.join(runtimeBaseDir, 'routing_settings.json'), {
+    hubDefaultModelIdByTaskKind: {
+      speech_to_text: 'hf-asr-default',
+    },
+    devicePreferredModelIdByTaskKind: {
+      terminal_device: {
+        speech_to_text: 'hf-asr-device',
+      },
+    },
+  });
+  const audioPath = path.join(runtimeBaseDir, 'clip.wav');
+  writeWav(audioPath, { durationSec: 0.25 });
+
+  const out = await transcribeLocalAudio({
+    runtimeBaseDir,
+    deviceId: 'terminal_device',
+    audioPath,
+    executor: async ({ request }) => {
+      assert.equal(String(request?.model_id || ''), 'hf-asr-device');
+      return {
+        ok: true,
+        provider: 'transformers',
+        modelId: 'hf-asr-device',
+        text: 'buy water',
+        segments: [],
+        latencyMs: 8,
+        usage: {
+          inputAudioBytes: 8044,
+          inputAudioSec: 0.25,
+        },
+      };
+    },
+  });
+
+  assert.equal(out.ok, true);
+  assert.equal(out.model_id, 'hf-asr-device');
+  assert.equal(out.route_source, 'device_override');
+  assert.equal(out.resolved_model_id, 'hf-asr-device');
+});

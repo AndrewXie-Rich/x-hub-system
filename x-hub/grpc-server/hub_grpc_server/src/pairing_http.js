@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { nowMs, uuid } from './util.js';
 import { resolveRuntimeBaseDir } from './local_runtime_ipc.js';
 import { pushHubNotification } from './hub_ipc.js';
+import { findClientByToken } from './clients.js';
+import { upsertDevicePresence } from './device_presence.js';
 import {
   ensureHubTlsMaterial,
   readHubCaCertPem,
@@ -16,6 +18,10 @@ import {
   tlsServerNameFromEnv,
 } from './tls_support.js';
 import {
+  resolveHubIdentity,
+  resolveHubInternetHostHint,
+} from './hub_identity.js';
+import {
   buildNonMessageIngressGateSnapshot,
   buildNonMessageIngressGateSnapshotFromAuditRows,
   buildNonMessageIngressScanStats,
@@ -24,9 +30,46 @@ import {
 import { createConnectorReconnectOrchestrator } from './connector_reconnect_orchestrator.js';
 import { createConnectorTargetOrderingGuard } from './connector_target_ordering_guard.js';
 import { createConnectorDeliveryReceiptCompensator } from './connector_delivery_receipt_compensator.js';
+import {
+  getChannelOnboardingDiscoveryTicketById,
+  getLatestChannelOnboardingApprovalDecisionByTicketId,
+  listChannelOnboardingDiscoveryTickets,
+  reviewChannelOnboardingDiscoveryTicket,
+} from './channel_onboarding_discovery_store.js';
+import { buildChannelRuntimeStatusSnapshot } from './channel_runtime_snapshot.js';
+import {
+  flushChannelOutboxForTicket,
+  retryChannelOnboardingOutbox,
+  runApprovedChannelOnboardingAutomation,
+} from './channel_onboarding_automation.js';
+import { listChannelOnboardingDeliveryReadiness } from './channel_onboarding_delivery_readiness.js';
+import { getChannelOnboardingAutomationState } from './channel_onboarding_status_view.js';
+import {
+  getChannelOnboardingAutoBindRevocationByTicketId,
+  revokeApprovedChannelOnboardingAutoBind,
+} from './channel_onboarding_transaction.js';
+import {
+  getSkillPackageDoctorReport,
+  listOfficialSkillPackageLifecycleRows,
+} from './skills_store.js';
+import {
+  buildOperatorChannelLiveTestEvidenceReport,
+  operatorChannelLiveTestProviderRow,
+} from './operator_channel_live_test_evidence.js';
 
 function safeString(v) {
   return String(v ?? '').trim();
+}
+
+function safeTimingEqual(left, right) {
+  const lhs = Buffer.from(String(left || ''), 'utf8');
+  const rhs = Buffer.from(String(right || ''), 'utf8');
+  if (lhs.length !== rhs.length) return false;
+  try {
+    return crypto.timingSafeEqual(lhs, rhs);
+  } catch {
+    return false;
+  }
 }
 
 function safeShellValue(v) {
@@ -52,6 +95,274 @@ function safeStringArray(v) {
     .split(',')
     .map((x) => safeString(x))
     .filter(Boolean);
+}
+
+function deriveEffectiveChannelOnboardingStatus(ticket, {
+  latestDecision = null,
+  revocation = null,
+} = {}) {
+  const revoked = safeString(revocation?.status).toLowerCase();
+  if (revoked === 'revoked') return 'revoked';
+  const latest = safeString(latestDecision?.decision).toLowerCase();
+  if (latest === 'approve') return 'approved';
+  if (latest === 'hold') return 'held';
+  if (latest === 'reject') return 'rejected';
+  return safeString(ticket?.status).toLowerCase();
+}
+
+function toHttpChannelOnboardingTicket(ticket, {
+  latestDecision = null,
+  revocation = null,
+} = {}) {
+  if (!ticket || typeof ticket !== 'object') return null;
+  return {
+    schema_version: safeString(ticket.schema_version),
+    ticket_id: safeString(ticket.ticket_id),
+    provider: safeString(ticket.provider),
+    account_id: safeString(ticket.account_id),
+    external_user_id: safeString(ticket.external_user_id),
+    external_tenant_id: safeString(ticket.external_tenant_id),
+    conversation_id: safeString(ticket.conversation_id),
+    thread_key: safeString(ticket.thread_key),
+    ingress_surface: safeString(ticket.ingress_surface),
+    first_message_preview: safeString(ticket.first_message_preview),
+    proposed_scope_type: safeString(ticket.proposed_scope_type),
+    proposed_scope_id: safeString(ticket.proposed_scope_id),
+    recommended_binding_mode: safeString(ticket.recommended_binding_mode),
+    status: safeString(ticket.status),
+    effective_status: deriveEffectiveChannelOnboardingStatus(ticket, {
+      latestDecision,
+      revocation,
+    }),
+    event_count: Math.max(0, Number(ticket.event_count || 0)),
+    first_seen_at_ms: Math.max(0, Number(ticket.first_seen_at_ms || 0)),
+    last_seen_at_ms: Math.max(0, Number(ticket.last_seen_at_ms || 0)),
+    created_at_ms: Math.max(0, Number(ticket.created_at_ms || 0)),
+    updated_at_ms: Math.max(0, Number(ticket.updated_at_ms || 0)),
+    expires_at_ms: Math.max(0, Number(ticket.expires_at_ms || 0)),
+    last_request_id: safeString(ticket.last_request_id),
+    audit_ref: safeString(ticket.audit_ref),
+  };
+}
+
+function toHttpChannelOnboardingDecision(decision) {
+  if (!decision || typeof decision !== 'object') return null;
+  return {
+    schema_version: safeString(decision.schema_version),
+    decision_id: safeString(decision.decision_id),
+    ticket_id: safeString(decision.ticket_id),
+    decision: safeString(decision.decision),
+    approved_by_hub_user_id: safeString(decision.approved_by_hub_user_id),
+    approved_via: safeString(decision.approved_via),
+    hub_user_id: safeString(decision.hub_user_id),
+    scope_type: safeString(decision.scope_type),
+    scope_id: safeString(decision.scope_id),
+    binding_mode: safeString(decision.binding_mode),
+    preferred_device_id: safeString(decision.preferred_device_id),
+    allowed_actions: Array.isArray(decision.allowed_actions)
+      ? decision.allowed_actions.map((item) => safeString(item)).filter(Boolean)
+      : [],
+    grant_profile: safeString(decision.grant_profile),
+    note: safeString(decision.note),
+    created_at_ms: Math.max(0, Number(decision.created_at_ms || 0)),
+    audit_ref: safeString(decision.audit_ref),
+  };
+}
+
+function toHttpChannelOnboardingRevocation(revocation) {
+  if (!revocation || typeof revocation !== 'object') return null;
+  return {
+    schema_version: safeString(revocation.schema_version),
+    revocation_id: safeString(revocation.revocation_id),
+    ticket_id: safeString(revocation.ticket_id),
+    receipt_id: safeString(revocation.receipt_id),
+    decision_id: safeString(revocation.decision_id),
+    status: safeString(revocation.status),
+    provider: safeString(revocation.provider),
+    account_id: safeString(revocation.account_id),
+    external_user_id: safeString(revocation.external_user_id),
+    external_tenant_id: safeString(revocation.external_tenant_id),
+    conversation_id: safeString(revocation.conversation_id),
+    thread_key: safeString(revocation.thread_key),
+    hub_user_id: safeString(revocation.hub_user_id),
+    scope_type: safeString(revocation.scope_type),
+    scope_id: safeString(revocation.scope_id),
+    identity_actor_ref: safeString(revocation.identity_actor_ref),
+    channel_binding_id: safeString(revocation.channel_binding_id),
+    revoked_by_hub_user_id: safeString(revocation.revoked_by_hub_user_id),
+    revoked_via: safeString(revocation.revoked_via),
+    note: safeString(revocation.note),
+    created_at_ms: Math.max(0, Number(revocation.created_at_ms || 0)),
+    updated_at_ms: Math.max(0, Number(revocation.updated_at_ms || 0)),
+    audit_ref: safeString(revocation.audit_ref),
+  };
+}
+
+function toHttpChannelOnboardingAutomationState(state) {
+  if (!state || typeof state !== 'object') return null;
+  const heartbeatGovernanceSnapshot = (() => {
+    const raw = safeString(state?.first_smoke?.heartbeat_governance_snapshot_json);
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  })();
+  const firstSmoke = state.first_smoke && typeof state.first_smoke === 'object'
+    ? {
+        schema_version: safeString(state.first_smoke.schema_version),
+        receipt_id: safeString(state.first_smoke.receipt_id),
+        ticket_id: safeString(state.first_smoke.ticket_id),
+        decision_id: safeString(state.first_smoke.decision_id),
+        provider: safeString(state.first_smoke.provider),
+        action_name: safeString(state.first_smoke.action_name),
+        status: safeString(state.first_smoke.status),
+        route_mode: safeString(state.first_smoke.route_mode),
+        deny_code: safeString(state.first_smoke.deny_code),
+        detail: safeString(state.first_smoke.detail),
+        remediation_hint: safeString(state.first_smoke.remediation_hint),
+        project_id: safeString(state.first_smoke.project_id),
+        binding_id: safeString(state.first_smoke.binding_id),
+        ack_outbox_item_id: safeString(state.first_smoke.ack_outbox_item_id),
+        smoke_outbox_item_id: safeString(state.first_smoke.smoke_outbox_item_id),
+        created_at_ms: Math.max(0, Number(state.first_smoke.created_at_ms || 0)),
+        updated_at_ms: Math.max(0, Number(state.first_smoke.updated_at_ms || 0)),
+        audit_ref: safeString(state.first_smoke.audit_ref),
+        heartbeat_governance_snapshot_json: safeString(state.first_smoke.heartbeat_governance_snapshot_json),
+        heartbeat_governance_snapshot: heartbeatGovernanceSnapshot,
+      }
+    : null;
+  const deliveryReadiness = state.delivery_readiness && typeof state.delivery_readiness === 'object'
+    ? {
+        provider: safeString(state.delivery_readiness.provider),
+        ready: !!state.delivery_readiness.ready,
+        reply_enabled: !!state.delivery_readiness.reply_enabled,
+        credentials_configured: !!state.delivery_readiness.credentials_configured,
+        deny_code: safeString(state.delivery_readiness.deny_code),
+        remediation_hint: safeString(state.delivery_readiness.remediation_hint),
+        repair_hints: Array.isArray(state.delivery_readiness.repair_hints)
+          ? state.delivery_readiness.repair_hints.map((item) => safeString(item)).filter(Boolean)
+          : [],
+      }
+    : null;
+  return {
+    schema_version: safeString(state.schema_version),
+    ticket_id: safeString(state.ticket_id),
+    first_smoke: firstSmoke,
+    outbox_items: Array.isArray(state.outbox_items)
+      ? state.outbox_items.map((item) => ({
+          schema_version: safeString(item?.schema_version),
+          item_id: safeString(item?.item_id),
+          provider: safeString(item?.provider),
+          item_kind: safeString(item?.item_kind),
+          status: safeString(item?.status),
+          ticket_id: safeString(item?.ticket_id),
+          decision_id: safeString(item?.decision_id),
+          receipt_id: safeString(item?.receipt_id),
+          attempt_count: Math.max(0, Number(item?.attempt_count || 0)),
+          last_error_code: safeString(item?.last_error_code),
+          last_error_message: safeString(item?.last_error_message),
+          provider_message_ref: safeString(item?.provider_message_ref),
+          created_at_ms: Math.max(0, Number(item?.created_at_ms || 0)),
+          updated_at_ms: Math.max(0, Number(item?.updated_at_ms || 0)),
+          delivered_at_ms: Math.max(0, Number(item?.delivered_at_ms || 0)),
+          audit_ref: safeString(item?.audit_ref),
+        }))
+      : [],
+    outbox_pending_count: Math.max(0, Number(state.outbox_pending_count || 0)),
+    outbox_delivered_count: Math.max(0, Number(state.outbox_delivered_count || 0)),
+    delivery_readiness: deliveryReadiness,
+  };
+}
+
+function toHttpChannelOnboardingDeliveryReadiness(readiness) {
+  if (!readiness || typeof readiness !== 'object') return null;
+  return {
+    provider: safeString(readiness.provider),
+    ready: !!readiness.ready,
+    reply_enabled: !!readiness.reply_enabled,
+    credentials_configured: !!readiness.credentials_configured,
+    deny_code: safeString(readiness.deny_code),
+    remediation_hint: safeString(readiness.remediation_hint),
+    repair_hints: Array.isArray(readiness.repair_hints)
+      ? readiness.repair_hints.map((item) => safeString(item)).filter(Boolean)
+      : [],
+  };
+}
+
+function loadChannelRuntimeStatusSnapshot(runtimeBaseDir = '') {
+  const base = safeString(runtimeBaseDir || resolveRuntimeBaseDir());
+  const filePath = path.join(base, 'channel_runtime_accounts_status.json');
+  let parsed = null;
+  try {
+    parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    parsed = null;
+  }
+  return buildChannelRuntimeStatusSnapshot(Array.isArray(parsed?.rows) ? parsed.rows : [], {
+    updated_at_ms: Math.max(0, Number(parsed?.updated_at_ms || 0)),
+  });
+}
+
+function toHttpChannelProviderRuntimeStatus(row) {
+  if (!row || typeof row !== 'object') return null;
+  return {
+    provider: safeString(row.provider),
+    label: safeString(row.label),
+    detail_label: safeString(row.detail_label),
+    release_stage: safeString(row.release_stage),
+    automation_path: safeString(row.automation_path),
+    threading_mode: safeString(row.threading_mode),
+    approval_surface: safeString(row.approval_surface),
+    capabilities: Array.isArray(row.capabilities) ? row.capabilities.map((item) => safeString(item)).filter(Boolean) : [],
+    endpoint_visibility: safeString(row.endpoint_visibility),
+    operator_surface: safeString(row.operator_surface),
+    allow_direct_xt: !!row.allow_direct_xt,
+    require_real_evidence: !!row.require_real_evidence,
+    release_blocked: !!row.release_blocked,
+    runtime_state: safeString(row.runtime_state),
+    account_count: Math.max(0, Number(row.account_count || 0)),
+    configured_accounts: Math.max(0, Number(row.configured_accounts || 0)),
+    ready_accounts: Math.max(0, Number(row.ready_accounts || 0)),
+    degraded_accounts: Math.max(0, Number(row.degraded_accounts || 0)),
+    active_binding_count: Math.max(0, Number(row.active_binding_count || 0)),
+    delivery_ready: !!row.delivery_ready,
+    command_entry_ready: !!row.command_entry_ready,
+    last_error_code: safeString(row.last_error_code),
+    updated_at_ms: Math.max(0, Number(row.updated_at_ms || 0)),
+    repair_hints: Array.isArray(row.repair_hints)
+      ? row.repair_hints.map((item) => safeString(item)).filter(Boolean)
+      : [],
+  };
+}
+
+function buildHttpOperatorChannelLiveTestEvidenceReport({
+  provider = '',
+  verdict = '',
+  summary = '',
+  performedAt = '',
+  evidenceRefs = [],
+  readinessRows = [],
+  runtimeRows = [],
+  ticketDetail = null,
+  adminBaseUrl = '',
+  requiredNextStep = '',
+} = {}) {
+  return buildOperatorChannelLiveTestEvidenceReport({
+    provider,
+    verdict,
+    summary,
+    performedAt,
+    evidenceRefs,
+    readiness: operatorChannelLiveTestProviderRow({ providers: readinessRows }, provider),
+    runtimeStatus: operatorChannelLiveTestProviderRow({ providers: runtimeRows }, provider),
+    ticketDetail,
+    adminBaseUrl,
+    outputPath: '',
+    requiredNextStep,
+  });
 }
 
 function jsonResponse(res, status, obj) {
@@ -207,6 +518,164 @@ function writeJsonAtomic(dirPath, fileName, obj) {
     }
     return false;
   }
+}
+
+function firstForwardedForIp(req) {
+  const raw = safeString(req?.headers?.['x-forwarded-for']);
+  if (!raw) return '';
+  return safeString(raw.split(',')[0]);
+}
+
+function inviteTokenConfigPath(runtimeBaseDir) {
+  const base = safeString(runtimeBaseDir);
+  if (!base) return '';
+  return path.join(base, 'hub_external_invite_token.json');
+}
+
+function loadInviteTokenRecord(runtimeBaseDir) {
+  const obj = readJsonSafe(inviteTokenConfigPath(runtimeBaseDir));
+  if (!obj || typeof obj !== 'object') return null;
+  const token_id = safeString(obj.token_id);
+  const token_secret = safeString(obj.token_secret);
+  if (!token_id || !token_secret) return null;
+  return {
+    token_id,
+    token_secret,
+    created_at_ms: Math.max(0, Number(obj.created_at_ms || 0)),
+  };
+}
+
+function pairingProfileEpochFromSnapshot(snapshot) {
+  return Math.max(0, Number(snapshot?.updated_at_ms || 0));
+}
+
+function buildRoutePackVersion({
+  hubIdentity,
+  internetHostHint,
+  pairingPort,
+  grpcPort,
+  inviteRecord,
+  tlsMode,
+  tlsServerName,
+} = {}) {
+  const ingredients = [
+    safeString(hubIdentity?.hub_instance_id),
+    safeString(internetHostHint),
+    String(Number(pairingPort || 0) || 50052),
+    String(Number(grpcPort || 0) || 50051),
+    safeString(inviteRecord?.token_id),
+    String(Math.max(0, Number(inviteRecord?.created_at_ms || 0))),
+    safeString(tlsMode),
+    safeString(tlsServerName),
+  ];
+  return `route_pack_${sha256Hex(ingredients.join('|')).slice(0, 24)}`;
+}
+
+function buildPairingRouteMetadata({
+  runtimeBaseDir,
+  hubIdentity,
+  internetHostHint,
+  pairingPort,
+  grpcPort,
+  tlsMode,
+  tlsServerName,
+  clientsSnapshot = null,
+} = {}) {
+  const snapshot = clientsSnapshot || readClientsSnapshot(runtimeBaseDir);
+  const inviteRecord = loadInviteTokenRecord(runtimeBaseDir);
+  return {
+    pairing_profile_epoch: pairingProfileEpochFromSnapshot(snapshot),
+    route_pack_version: buildRoutePackVersion({
+      hubIdentity,
+      internetHostHint,
+      pairingPort,
+      grpcPort,
+      inviteRecord,
+      tlsMode,
+      tlsServerName,
+    }),
+  };
+}
+
+export function shouldRequireInviteTokenForPairingRequest({
+  peer_ip = '',
+  forwarded_for = '',
+  env = process.env,
+} = {}) {
+  const force = safeString(env?.HUB_PAIRING_REQUIRE_INVITE_TOKEN);
+  if (force === '1' || force.toLowerCase() === 'true') {
+    return true;
+  }
+  const peerIp = safeString(peer_ip);
+  const forwarded = safeString(forwarded_for);
+  const policyPeerIp = forwarded && (isLoopbackIp(peerIp) || isPrivateIPv4(peerIp))
+    ? forwarded
+    : peerIp;
+  return !(isLoopbackIp(policyPeerIp) || isPrivateIPv4(policyPeerIp));
+}
+
+function effectivePeerIpForPairingSourcePolicy({
+  peer_ip = '',
+  forwarded_for = '',
+} = {}) {
+  const peerIp = safeString(peer_ip);
+  const forwarded = safeString(forwarded_for);
+  if (forwarded && (isLoopbackIp(peerIp) || isPrivateIPv4(peerIp))) {
+    return forwarded;
+  }
+  return peerIp;
+}
+
+export function resolveFirstPairSameLanAllowedCidrs(env = process.env) {
+  const explicit = safeStringArray(env?.HUB_PAIRING_FIRST_PAIR_ALLOWED_CIDRS || '');
+  const source = explicit.length
+    ? explicit
+    : safeStringArray(env?.HUB_ALLOWED_CIDRS || env?.HUB_PAIRING_ALLOWED_CIDRS || '');
+  const out = [];
+  const seen = new Set();
+  for (const raw of source) {
+    const rule = safeString(raw);
+    if (!rule) continue;
+    const lower = rule.toLowerCase();
+    if (lower === 'any' || lower === '*' || lower === 'private' || lower === 'localhost') {
+      continue;
+    }
+    if (seen.has(lower)) continue;
+    seen.add(lower);
+    out.push(rule);
+  }
+  if (out.length === 0) {
+    out.push('loopback');
+  }
+  return out;
+}
+
+export function evaluateFirstPairSameLanRequirement({
+  peer_ip = '',
+  forwarded_for = '',
+  env = process.env,
+} = {}) {
+  const force = safeString(env?.HUB_PAIRING_REQUIRE_SAME_LAN);
+  const sameLanRequired = !(force === '0' || force.toLowerCase() === 'false');
+  const effectivePeerIp = effectivePeerIpForPairingSourcePolicy({
+    peer_ip,
+    forwarded_for,
+  });
+  const allowed_cidrs = resolveFirstPairSameLanAllowedCidrs(env);
+  if (!sameLanRequired) {
+    return {
+      ok: true,
+      required: false,
+      effective_peer_ip: effectivePeerIp,
+      allowed_cidrs,
+    };
+  }
+  return {
+    ok: peerAllowedByRules(effectivePeerIp, allowed_cidrs),
+    required: true,
+    effective_peer_ip: effectivePeerIp,
+    allowed_cidrs,
+  };
 }
 
 function connectorIngressReceiptsFileName() {
@@ -481,6 +950,32 @@ function requireHttpAdmin(req) {
     }
   }
   return { ok: true };
+}
+
+function requireHttpClient(req) {
+  const runtimeBaseDir = resolveRuntimeBaseDir();
+  const tok = bearerTokenFromReq(req);
+  if (!tok) {
+    return { ok: false, status: 401, code: 'unauthenticated', message: 'Missing/invalid client token' };
+  }
+
+  const client = findClientByToken(runtimeBaseDir, tok);
+  if (!client || !client.enabled) {
+    return { ok: false, status: 401, code: 'unauthenticated', message: 'Missing/invalid client token' };
+  }
+
+  const peerIp = peerIpFromReq(req);
+  const allowedCidrs = Array.isArray(client.allowed_cidrs) ? client.allowed_cidrs : [];
+  if (allowedCidrs.length > 0 && !peerAllowedByRules(peerIp, allowedCidrs)) {
+    return { ok: false, status: 403, code: 'permission_denied', message: 'Client source IP is not allowed' };
+  }
+
+  return {
+    ok: true,
+    runtimeBaseDir,
+    peerIp,
+    client,
+  };
 }
 
 function parseQuery(urlObj) {
@@ -1198,24 +1693,41 @@ function loadAxhubctlAsset() {
 }
 
 let axhubClientKitAssetCache = null;
+function resolveAxhubClientKitAssetPath() {
+  const overridePath = safeString(process.env.HUB_PAIRING_CLIENT_KIT_ASSET_PATH);
+  if (overridePath) return path.resolve(overridePath);
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  return path.resolve(here, '..', 'assets', 'axhub_client_kit.tgz');
+}
+
 function loadAxhubClientKitAsset() {
   // NOTE: This asset is usually injected into the .app bundle by tools/build_hub_app.command.
   // Repo/dev runs may not have it.
-  if (axhubClientKitAssetCache) return axhubClientKitAssetCache;
   try {
-    const here = path.dirname(fileURLToPath(import.meta.url));
-    const assetPath = path.resolve(here, '..', 'assets', 'axhub_client_kit.tgz');
-    if (!fs.existsSync(assetPath)) return null;
-    const sha256 = sha256FileHex(assetPath);
-    let size_bytes = 0;
-    try {
-      size_bytes = Number(fs.statSync(assetPath)?.size || 0) || 0;
-    } catch {
-      size_bytes = 0;
+    const assetPath = resolveAxhubClientKitAssetPath();
+    if (!fs.existsSync(assetPath)) {
+      axhubClientKitAssetCache = null;
+      return null;
     }
-    axhubClientKitAssetCache = { path: assetPath, sha256, size_bytes };
+    const stats = fs.statSync(assetPath);
+    const size_bytes = Number(stats?.size || 0) || 0;
+    const mtimeMs = Number(stats?.mtimeMs || 0) || 0;
+    const ctimeMs = Number(stats?.ctimeMs || 0) || 0;
+    const cached = axhubClientKitAssetCache;
+    if (
+      cached
+      && cached.path === assetPath
+      && cached.size_bytes === size_bytes
+      && cached.mtimeMs === mtimeMs
+      && cached.ctimeMs === ctimeMs
+    ) {
+      return cached;
+    }
+    const sha256 = sha256FileHex(assetPath);
+    axhubClientKitAssetCache = { path: assetPath, sha256, size_bytes, mtimeMs, ctimeMs };
     return axhubClientKitAssetCache;
   } catch {
+    axhubClientKitAssetCache = null;
     return null;
   }
 }
@@ -1279,6 +1791,15 @@ export function startPairingHTTPServer({
   const port = Number(process.env.HUB_PAIRING_PORT || (Number.isFinite(grpcPort) ? grpcPort + 1 : 50052));
   const schemeFallback = safeString(process.env.HUB_PAIRING_PUBLIC_SCHEME || '') || 'http';
   const hostFallback = safeString(process.env.HUB_PAIRING_PUBLIC_HOST || '') || safeString(process.env.HUB_HOST || '');
+  const runtimeBaseDir = resolveRuntimeBaseDir();
+  const hubIdentity = resolveHubIdentity({
+    runtimeBaseDir,
+    env: process.env,
+  });
+  const internetHostHint = resolveHubInternetHostHint({
+    runtimeBaseDir,
+    env: process.env,
+  });
 
   const allowedCidrs = safeStringArray(process.env.HUB_PAIRING_ALLOWED_CIDRS || 'private,loopback');
   const preauthBodyMaxBytes = boundedInt(process.env.HUB_PREAUTH_BODY_MAX_BYTES, {
@@ -2006,18 +2527,32 @@ export function startPairingHTTPServer({
     if (method === 'GET' && pathname === '/pairing/discovery') {
       const tlsMode = tlsModeFromEnv(process.env);
       const tlsServerName = tlsMode === 'insecure' ? '' : tlsServerNameFromEnv(process.env);
+      const pairingRouteMetadata = buildPairingRouteMetadata({
+        runtimeBaseDir,
+        hubIdentity,
+        internetHostHint,
+        pairingPort: port,
+        grpcPort,
+        tlsMode,
+        tlsServerName,
+      });
       const payload = {
         ok: true,
         service: 'pairing',
         version: 'pairing.v1',
         now_ms: nowMs(),
         pairing_enabled: true,
+        hub_instance_id: safeString(hubIdentity.hub_instance_id),
+        lan_discovery_name: safeString(hubIdentity.lan_discovery_name),
         hub_host_hint: hostHintFromReq(req, { hostFallback, peerIp }),
         grpc_port: Number(grpcPort || 0) || 50051,
         pairing_port: Number(port || 0) || 50052,
         tls_mode: tlsMode,
         tls_server_name: tlsServerName,
+        pairing_profile_epoch: pairingRouteMetadata.pairing_profile_epoch,
+        route_pack_version: pairingRouteMetadata.route_pack_version,
       };
+      if (internetHostHint) payload.internet_host_hint = internetHostHint;
       const pairingWindowSec = positiveIntOrZero(process.env.HUB_PAIRING_WINDOW_SEC);
       if (pairingWindowSec > 0) payload.pairing_window_sec = pairingWindowSec;
       if (safeString(process.env.HUB_PAIRING_DISCOVERY_INCLUDE_RUNTIME) === '1') {
@@ -2030,6 +2565,92 @@ export function startPairingHTTPServer({
     // Health.
     if (method === 'GET' && pathname === '/health') {
       jsonResponse(res, 200, { ok: true, service: 'pairing', now_ms: nowMs() });
+      return;
+    }
+
+    if (method === 'POST' && pathname === '/clients/presence') {
+      const auth = requireHttpClient(req);
+      if (!auth.ok) {
+        jsonResponse(res, auth.status || 403, {
+          ok: false,
+          error: {
+            code: auth.code || 'permission_denied',
+            message: auth.message || 'permission_denied',
+            retryable: false,
+          },
+        });
+        return;
+      }
+
+      const body = await readBodyJson(req, { maxBytes: 8 * 1024 });
+      if (!body.ok) {
+        jsonResponse(res, 400, {
+          ok: false,
+          error: {
+            code: body.error || 'bad_json',
+            message: body.error || 'bad_json',
+            retryable: false,
+          },
+        });
+        return;
+      }
+
+      const payload = body.json && typeof body.json === 'object' ? body.json : {};
+      const client = auth.client || {};
+      const boundDeviceId = safeString(client.device_id);
+      const boundAppId = safeString(client.app_id);
+      const requestedDeviceId = safeString(payload.device_id);
+      const requestedAppId = safeString(payload.app_id);
+
+      if (requestedDeviceId && requestedDeviceId !== boundDeviceId) {
+        jsonResponse(res, 403, {
+          ok: false,
+          error: {
+            code: 'client_identity_mismatch',
+            message: 'device_id does not match authenticated client token',
+            retryable: false,
+          },
+        });
+        return;
+      }
+
+      if (requestedAppId && boundAppId && requestedAppId !== boundAppId) {
+        jsonResponse(res, 403, {
+          ok: false,
+          error: {
+            code: 'client_identity_mismatch',
+            message: 'app_id does not match authenticated client token',
+            retryable: false,
+          },
+        });
+        return;
+      }
+
+      const deviceName = safeString(
+        payload.device_name
+          || payload.name
+          || client.name
+          || client.trust_profile?.device_name
+          || boundDeviceId
+      ) || boundDeviceId;
+
+      const entry = upsertDevicePresence(auth.runtimeBaseDir, {
+        device_id: boundDeviceId,
+        app_id: boundAppId || requestedAppId,
+        name: deviceName,
+        peer_ip: auth.peerIp,
+        route: safeString(payload.route),
+        transport_mode: safeString(payload.transport_mode),
+        source: 'pairing_http_presence',
+        last_seen_at_ms: nowMs(),
+      });
+
+      jsonResponse(res, 200, {
+        ok: true,
+        device_id: safeString(entry?.device_id || boundDeviceId),
+        app_id: safeString(entry?.app_id || boundAppId || requestedAppId),
+        last_seen_at_ms: Math.max(0, Number(entry?.last_seen_at_ms || 0)),
+      });
       return;
     }
 
@@ -2838,6 +3459,78 @@ export function startPairingHTTPServer({
         return;
       }
 
+      const firstPairSameLanGate = evaluateFirstPairSameLanRequirement({
+        peer_ip: peerIp,
+        forwarded_for: firstForwardedForIp(req),
+        env: process.env,
+      });
+      if (!firstPairSameLanGate.ok) {
+        const denyCode = 'first_pair_requires_same_lan';
+        appendIngressAudit({
+          event_type: 'pairing.same_lan.rejected',
+          severity: 'warn',
+          ok: false,
+          deny_code: denyCode,
+          error_message: denyCode,
+          ext: {
+            op: 'pairing_request_ingress',
+            app_id,
+            peer_ip: peerIp || '',
+            effective_peer_ip: safeString(firstPairSameLanGate.effective_peer_ip || ''),
+            forwarded_for: firstForwardedForIp(req),
+            allowed_cidrs: firstPairSameLanGate.allowed_cidrs,
+          },
+        });
+        jsonResponse(res, 403, {
+          ok: false,
+          error: {
+            code: denyCode,
+            message: denyCode,
+            retryable: false,
+            peer_ip: safeString(firstPairSameLanGate.effective_peer_ip || peerIp || ''),
+            allowed_cidrs: firstPairSameLanGate.allowed_cidrs,
+            hint: 'First pairing must be requested from the same Wi-Fi or local LAN as the Hub.',
+          },
+        });
+        return;
+      }
+
+      const inviteTokenRequired = shouldRequireInviteTokenForPairingRequest({
+        peer_ip: peerIp,
+        forwarded_for: firstForwardedForIp(req),
+        env: process.env,
+      });
+      if (inviteTokenRequired) {
+        const inviteToken = safeString(
+          obj.invite_token
+          || req?.headers?.['x-hub-invite-token']
+          || req?.headers?.['x-invite-token']
+          || q.invite_token
+        );
+        const inviteRecord = loadInviteTokenRecord(runtimeBaseDir);
+        const denyCode = !inviteRecord || !inviteToken
+          ? 'invite_token_required'
+          : (safeTimingEqual(inviteRecord.token_secret, inviteToken) ? '' : 'invite_token_invalid');
+        if (denyCode) {
+          appendIngressAudit({
+            event_type: 'pairing.invite.rejected',
+            severity: 'warn',
+            ok: false,
+            deny_code: denyCode,
+            error_message: denyCode,
+            ext: {
+              op: 'pairing_request_ingress',
+              invite_token_present: !!inviteToken,
+              invite_token_id: safeString(inviteRecord?.token_id || ''),
+              peer_ip: peerIp || '',
+              forwarded_for: firstForwardedForIp(req),
+            },
+          });
+          jsonResponse(res, 403, { ok: false, error: { code: denyCode, message: denyCode, retryable: false } });
+          return;
+        }
+      }
+
       // Pairing secret (client-generated). This is used to prevent token leakage via request-id guessing.
       const pairing_secret = safeString(obj.pairing_secret);
       if (!pairing_secret || pairing_secret.length < 12) {
@@ -2943,6 +3636,19 @@ export function startPairingHTTPServer({
         approved: null,
       };
       if (status === 'approved') {
+        const tlsMode = tlsModeFromEnv(process.env);
+        const tlsServerName = tlsMode === 'insecure' ? '' : tlsServerNameFromEnv(process.env);
+        const routeMetadata = buildPairingRouteMetadata({
+          runtimeBaseDir,
+          hubIdentity,
+          internetHostHint,
+          pairingPort: port,
+          grpcPort,
+          tlsMode,
+          tlsServerName,
+        });
+        out.pairing_profile_epoch = routeMetadata.pairing_profile_epoch;
+        out.route_pack_version = routeMetadata.route_pack_version;
         let caps = [];
         let cidrs = [];
         try {
@@ -2970,9 +3676,7 @@ export function startPairingHTTPServer({
         // TLS bootstrap material (optional):
         // - Provide the Hub CA cert so clients can verify the server cert.
         // - Provide the issued client cert (mTLS mode only).
-        const tlsMode = tlsModeFromEnv(process.env);
         if (tlsMode !== 'insecure') {
-          const runtimeBaseDir = resolveRuntimeBaseDir();
           // Ensure CA/server cert exist if TLS is enabled.
           try {
             ensureHubTlsMaterial(runtimeBaseDir, { env: process.env });
@@ -3000,8 +3704,7 @@ export function startPairingHTTPServer({
             hub_host: hubHostGuess,
             hub_port: Number(grpcPort || 0) || 50051,
           };
-          const tlsMode = tlsModeFromEnv(process.env);
-          const serverName = tlsMode !== 'insecure' ? tlsServerNameFromEnv(process.env) : '';
+          const serverName = tlsMode !== 'insecure' ? tlsServerName : '';
           const tlsEnv =
             tlsMode === 'insecure'
               ? ''
@@ -3487,6 +4190,474 @@ export function startPairingHTTPServer({
       return;
     }
 
+    if (pathname === '/admin/operator-channels/onboarding/tickets' && method === 'GET') {
+      const admin = requireHttpAdmin(req);
+      if (!admin.ok) {
+        jsonResponse(res, admin.status || 403, { ok: false, error: { code: admin.code || 'permission_denied', message: admin.message || 'permission_denied', retryable: false } });
+        return;
+      }
+
+      const provider = safeString(q.provider);
+      const status = safeString(q.status);
+      const limit = Math.max(1, Math.min(200, Number(q.limit || 100) || 100));
+      const rows = listChannelOnboardingDiscoveryTickets(db, {
+        provider,
+        status,
+        limit,
+      });
+      jsonResponse(res, 200, {
+        ok: true,
+        tickets: rows.map((row) => {
+          const ticketId = safeString(row?.ticket_id);
+          const latestDecision = ticketId
+            ? getLatestChannelOnboardingApprovalDecisionByTicketId(db, { ticket_id: ticketId })
+            : null;
+          const revocation = ticketId
+            ? getChannelOnboardingAutoBindRevocationByTicketId(db, { ticket_id: ticketId })
+            : null;
+          return toHttpChannelOnboardingTicket(row, { latestDecision, revocation });
+        }).filter(Boolean),
+      });
+      return;
+    }
+
+    if (pathname === '/admin/operator-channels/readiness' && method === 'GET') {
+      const admin = requireHttpAdmin(req);
+      if (!admin.ok) {
+        jsonResponse(res, admin.status || 403, { ok: false, error: { code: admin.code || 'permission_denied', message: admin.message || 'permission_denied', retryable: false } });
+        return;
+      }
+
+      jsonResponse(res, 200, {
+        ok: true,
+        providers: listChannelOnboardingDeliveryReadiness({
+          env: process.env,
+        }).map((item) => toHttpChannelOnboardingDeliveryReadiness(item)).filter(Boolean),
+      });
+      return;
+    }
+
+    if (pathname === '/admin/operator-channels/runtime-status' && method === 'GET') {
+      const admin = requireHttpAdmin(req);
+      if (!admin.ok) {
+        jsonResponse(res, admin.status || 403, { ok: false, error: { code: admin.code || 'permission_denied', message: admin.message || 'permission_denied', retryable: false } });
+        return;
+      }
+
+      const snapshot = loadChannelRuntimeStatusSnapshot(resolveRuntimeBaseDir());
+      jsonResponse(res, 200, {
+        ok: true,
+        schema_version: safeString(snapshot.schema_version),
+        updated_at_ms: Math.max(0, Number(snapshot.updated_at_ms || 0)),
+        providers: Array.isArray(snapshot.providers)
+          ? snapshot.providers.map((item) => toHttpChannelProviderRuntimeStatus(item)).filter(Boolean)
+          : [],
+      });
+      return;
+    }
+
+    if (pathname === '/admin/operator-channels/live-test/evidence' && method === 'GET') {
+      const admin = requireHttpAdmin(req);
+      if (!admin.ok) {
+        jsonResponse(res, admin.status || 403, { ok: false, error: { code: admin.code || 'permission_denied', message: admin.message || 'permission_denied', retryable: false } });
+        return;
+      }
+
+      const provider = safeString(q.provider).toLowerCase();
+      if (!provider) {
+        jsonResponse(res, 400, {
+          ok: false,
+          error: {
+            code: 'provider_required',
+            message: 'provider_required',
+            retryable: false,
+          },
+        });
+        return;
+      }
+
+      const ticket_id = safeString(q.ticket_id || q.ticketId);
+      let ticketDetail = null;
+      if (ticket_id) {
+        const ticket = getChannelOnboardingDiscoveryTicketById(db, { ticket_id });
+        if (!ticket) {
+          jsonResponse(res, 404, {
+            ok: false,
+            error: {
+              code: 'ticket_not_found',
+              message: 'ticket_not_found',
+              retryable: false,
+            },
+          });
+          return;
+        }
+        const latestDecision = getLatestChannelOnboardingApprovalDecisionByTicketId(db, { ticket_id });
+        const automationState = getChannelOnboardingAutomationState(db, { ticket_id });
+        const revocation = getChannelOnboardingAutoBindRevocationByTicketId(db, { ticket_id });
+        ticketDetail = {
+          ticket: toHttpChannelOnboardingTicket(ticket, { latestDecision, revocation }),
+          latest_decision: toHttpChannelOnboardingDecision(latestDecision),
+          revocation: toHttpChannelOnboardingRevocation(revocation),
+          automation_state: toHttpChannelOnboardingAutomationState(automationState),
+        };
+      }
+
+      const evidenceRefs = urlObj.searchParams.getAll('evidence_ref')
+        .map((value) => safeString(value))
+        .filter(Boolean);
+      const readinessRows = listChannelOnboardingDeliveryReadiness({
+        env: process.env,
+      }).map((item) => toHttpChannelOnboardingDeliveryReadiness(item)).filter(Boolean);
+      const runtimeSnapshot = loadChannelRuntimeStatusSnapshot(resolveRuntimeBaseDir());
+      const runtimeRows = Array.isArray(runtimeSnapshot.providers)
+        ? runtimeSnapshot.providers.map((item) => toHttpChannelProviderRuntimeStatus(item)).filter(Boolean)
+        : [];
+
+      let report = null;
+      try {
+        report = buildHttpOperatorChannelLiveTestEvidenceReport({
+          provider,
+          verdict: safeString(q.verdict),
+          summary: safeString(q.summary),
+          performedAt: safeString(q.performed_at || q.performedAt),
+          evidenceRefs,
+          readinessRows,
+          runtimeRows,
+          ticketDetail,
+          adminBaseUrl: publicBaseFromReq(req, {
+            hostFallback: host,
+            portFallback: port,
+            schemeFallback: 'http',
+          }),
+          requiredNextStep: safeString(q.required_next_step || q.next_step),
+        });
+      } catch (error) {
+        jsonResponse(res, 400, {
+          ok: false,
+          error: {
+            code: 'provider_invalid',
+            message: safeString(error?.message || 'provider_invalid') || 'provider_invalid',
+            retryable: false,
+          },
+        });
+        return;
+      }
+
+      jsonResponse(res, 200, {
+        ok: true,
+        report,
+      });
+      return;
+    }
+
+    if (pathname === '/admin/official-skills/doctor' && method === 'GET') {
+      const admin = requireHttpAdmin(req);
+      if (!admin.ok) {
+        jsonResponse(res, admin.status || 403, { ok: false, error: { code: admin.code || 'permission_denied', message: admin.message || 'permission_denied', retryable: false } });
+        return;
+      }
+
+      const package_sha256 = safeString(q.package_sha256).toLowerCase();
+      if (!package_sha256) {
+        jsonResponse(res, 400, {
+          ok: false,
+          error: {
+            code: 'missing_package_sha256',
+            message: 'missing_package_sha256',
+            retryable: false,
+          },
+        });
+        return;
+      }
+
+      const report = getSkillPackageDoctorReport(resolveRuntimeBaseDir(), {
+        packageSha256: package_sha256,
+        userId: safeString(q.user_id),
+        projectId: safeString(q.project_id),
+        surface: safeString(q.surface || 'hub_ui') || 'hub_ui',
+        xtVersion: safeString(q.xt_version),
+      });
+      jsonResponse(res, 200, {
+        ok: true,
+        report,
+      });
+      return;
+    }
+
+    if (pathname === '/admin/official-skills/packages' && method === 'GET') {
+      const admin = requireHttpAdmin(req);
+      if (!admin.ok) {
+        jsonResponse(res, admin.status || 403, { ok: false, error: { code: admin.code || 'permission_denied', message: admin.message || 'permission_denied', retryable: false } });
+        return;
+      }
+
+      const runtimeBaseDir = resolveRuntimeBaseDir();
+      const lifecycle = listOfficialSkillPackageLifecycleRows(runtimeBaseDir, {
+        surface: safeString(q.surface || 'hub_ui') || 'hub_ui',
+        xtVersion: safeString(q.xt_version),
+        overallState: safeString(q.overall_state),
+        packageState: safeString(q.package_state),
+        skillId: safeString(q.skill_id),
+        limit: Math.max(1, Math.min(500, Number(q.limit || 200) || 200)),
+        refresh: safeString(q.refresh) !== '0',
+      });
+      jsonResponse(res, 200, {
+        ok: true,
+        schema_version: safeString(lifecycle.snapshot?.schema_version),
+        updated_at_ms: Math.max(0, Number(lifecycle.snapshot?.updated_at_ms || 0)),
+        totals: lifecycle.snapshot?.totals || {},
+        packages: lifecycle.packages,
+      });
+      return;
+    }
+
+    if (pathname.startsWith('/admin/operator-channels/onboarding/tickets/') && method === 'GET') {
+      const admin = requireHttpAdmin(req);
+      if (!admin.ok) {
+        jsonResponse(res, admin.status || 403, { ok: false, error: { code: admin.code || 'permission_denied', message: admin.message || 'permission_denied', retryable: false } });
+        return;
+      }
+
+      const ticket_id = safeString(pathname.slice('/admin/operator-channels/onboarding/tickets/'.length)).split('/')[0];
+      if (!ticket_id) {
+        jsonResponse(res, 404, { ok: false, error: { code: 'not_found', message: 'not_found', retryable: false } });
+        return;
+      }
+      const ticket = getChannelOnboardingDiscoveryTicketById(db, { ticket_id });
+      if (!ticket) {
+        jsonResponse(res, 404, { ok: false, error: { code: 'ticket_not_found', message: 'ticket_not_found', retryable: false } });
+        return;
+      }
+      const latestDecision = getLatestChannelOnboardingApprovalDecisionByTicketId(db, { ticket_id });
+      const automationState = getChannelOnboardingAutomationState(db, { ticket_id });
+      const revocation = getChannelOnboardingAutoBindRevocationByTicketId(db, { ticket_id });
+      jsonResponse(res, 200, {
+        ok: true,
+        ticket: toHttpChannelOnboardingTicket(ticket, { latestDecision, revocation }),
+        latest_decision: toHttpChannelOnboardingDecision(latestDecision),
+        revocation: toHttpChannelOnboardingRevocation(revocation),
+        automation_state: toHttpChannelOnboardingAutomationState(automationState),
+      });
+      return;
+    }
+
+    if (pathname.startsWith('/admin/operator-channels/onboarding/tickets/') && method === 'POST') {
+      const admin = requireHttpAdmin(req);
+      if (!admin.ok) {
+        jsonResponse(res, admin.status || 403, { ok: false, error: { code: admin.code || 'permission_denied', message: admin.message || 'permission_denied', retryable: false } });
+        return;
+      }
+
+      const tail = pathname.slice('/admin/operator-channels/onboarding/tickets/'.length);
+      const parts = tail.split('/').filter(Boolean);
+      const ticket_id = safeString(parts[0]);
+      const action = safeString(parts[1]);
+      if (!ticket_id || (action !== 'review' && action !== 'retry-outbox' && action !== 'revoke')) {
+        jsonResponse(res, 404, { ok: false, error: { code: 'not_found', message: 'not_found', retryable: false } });
+        return;
+      }
+
+      const body = await readBodyJson(req, { maxBytes: 64 * 1024 });
+      if (!body.ok) {
+        jsonResponse(res, 400, { ok: false, error: { code: body.error, message: body.error, retryable: false } });
+        return;
+      }
+      const obj = body.json || {};
+      if (action === 'retry-outbox') {
+        const ticket = getChannelOnboardingDiscoveryTicketById(db, { ticket_id });
+        if (!ticket) {
+          jsonResponse(res, 404, {
+            ok: false,
+            error: {
+              code: 'ticket_not_found',
+              message: 'ticket_not_found',
+              retryable: false,
+            },
+          });
+          return;
+        }
+        const latestDecision = getLatestChannelOnboardingApprovalDecisionByTicketId(db, { ticket_id });
+        const revocation = getChannelOnboardingAutoBindRevocationByTicketId(db, { ticket_id });
+        const request_id = safeString(obj.request_id || `http:onboarding:${ticket_id}:${action}:${nowMs()}`);
+        const retryAudit = {
+          device_id: 'hub_admin_local_http',
+          user_id: safeString(obj.approved_by_hub_user_id || obj.hub_user_id || obj.user_id),
+          app_id: safeString(obj.approved_via || obj.app_id || 'hub_local_ui') || 'hub_local_ui',
+        };
+        const retried = await retryChannelOnboardingOutbox(db, {
+          ticket,
+          request_id,
+          audit: retryAudit,
+        });
+        if (!retried.ok) {
+          jsonResponse(res, 400, {
+            ok: false,
+            error: {
+              code: safeString(retried.deny_code || 'channel_onboarding_outbox_retry_rejected'),
+              message: safeString(retried.deny_code || 'channel_onboarding_outbox_retry_rejected'),
+              retryable: false,
+            },
+            ticket: toHttpChannelOnboardingTicket(ticket, { latestDecision, revocation }),
+            automation_state: toHttpChannelOnboardingAutomationState(retried.automation_state),
+          });
+          return;
+        }
+        jsonResponse(res, 200, {
+          ok: true,
+          ticket: toHttpChannelOnboardingTicket(ticket, { latestDecision, revocation }),
+          delivered_count: Math.max(0, Number(retried.delivered_count || 0)),
+          pending_count: Math.max(0, Number(retried.pending_count || 0)),
+          automation_state: toHttpChannelOnboardingAutomationState(retried.automation_state),
+        });
+        return;
+      }
+      if (action === 'revoke') {
+        const ticket = getChannelOnboardingDiscoveryTicketById(db, { ticket_id });
+        if (!ticket) {
+          jsonResponse(res, 404, {
+            ok: false,
+            error: {
+              code: 'ticket_not_found',
+              message: 'ticket_not_found',
+              retryable: false,
+            },
+          });
+          return;
+        }
+        const request_id = safeString(obj.request_id || `http:onboarding:${ticket_id}:${action}:${nowMs()}`);
+        const latestDecision = getLatestChannelOnboardingApprovalDecisionByTicketId(db, { ticket_id });
+        const revokeAudit = {
+          device_id: 'hub_admin_local_http',
+          user_id: safeString(obj.revoked_by_hub_user_id || obj.approved_by_hub_user_id || obj.user_id),
+          app_id: safeString(obj.revoked_via || obj.approved_via || obj.app_id || 'hub_local_ui') || 'hub_local_ui',
+        };
+        const revoked = revokeApprovedChannelOnboardingAutoBind(db, {
+          ticket,
+          decision: latestDecision || {},
+          revocation: obj,
+          request_id,
+          audit: revokeAudit,
+        });
+        if (!revoked.ok) {
+          jsonResponse(res, 400, {
+            ok: false,
+            error: {
+              code: safeString(revoked.deny_code || 'channel_onboarding_revoke_rejected'),
+              message: safeString(revoked.deny_code || 'channel_onboarding_revoke_rejected'),
+              retryable: false,
+            },
+            ticket: toHttpChannelOnboardingTicket(ticket, {
+              latestDecision,
+              revocation: revoked.revocation,
+            }),
+            latest_decision: toHttpChannelOnboardingDecision(latestDecision),
+            revocation: toHttpChannelOnboardingRevocation(revoked.revocation),
+            automation_state: toHttpChannelOnboardingAutomationState(
+              getChannelOnboardingAutomationState(db, { ticket_id })
+            ),
+          });
+          return;
+        }
+        jsonResponse(res, 200, {
+          ok: true,
+          ticket: toHttpChannelOnboardingTicket(ticket, {
+            latestDecision,
+            revocation: revoked.revocation,
+          }),
+          latest_decision: toHttpChannelOnboardingDecision(latestDecision),
+          revocation: toHttpChannelOnboardingRevocation(revoked.revocation),
+          automation_state: toHttpChannelOnboardingAutomationState(
+            getChannelOnboardingAutomationState(db, { ticket_id })
+          ),
+        });
+        return;
+      }
+      const request_id = safeString(obj.request_id || `http:onboarding:${ticket_id}:${action}:${nowMs()}`);
+      const reviewAudit = {
+        device_id: 'hub_admin_local_http',
+        user_id: safeString(obj.approved_by_hub_user_id),
+        app_id: safeString(obj.approved_via || 'hub_local_ui') || 'hub_local_ui',
+      };
+      const out = reviewChannelOnboardingDiscoveryTicket(db, {
+        ticket_id,
+        decision: obj,
+        request_id,
+        audit: reviewAudit,
+      });
+      if (!out.ok) {
+        jsonResponse(res, 400, {
+          ok: false,
+          error: {
+            code: safeString(out.deny_code || 'channel_onboarding_review_rejected') || 'channel_onboarding_review_rejected',
+            message: safeString(out.deny_code || 'channel_onboarding_review_rejected') || 'channel_onboarding_review_rejected',
+            retryable: false,
+          },
+          ticket: toHttpChannelOnboardingTicket(out.ticket, {
+            latestDecision: out.decision,
+            revocation: null,
+          }),
+          decision: toHttpChannelOnboardingDecision(out.decision),
+        });
+        return;
+      }
+      let automation = null;
+      let outbox_flush_scheduled = false;
+      if (safeString(out.decision?.decision).toLowerCase() === 'approve') {
+        try {
+          const executed = runApprovedChannelOnboardingAutomation(db, {
+            ticket: out.ticket,
+            decision: out.decision,
+            auto_bind_receipt: out.auto_bind_receipt,
+            request_id,
+            runtimeBaseDir: resolveRuntimeBaseDir(),
+            audit: reviewAudit,
+          });
+          automation = {
+            ok: executed.ok !== false,
+            deny_code: safeString(executed.deny_code),
+            ack_outbox_item_id: safeString(executed.ack_item?.item_id),
+            first_smoke_receipt_id: safeString(executed.receipt?.receipt_id),
+            first_smoke_outbox_item_id: safeString(executed.smoke_item?.item_id),
+          };
+          if (executed.ok !== false && safeString(out.ticket?.ticket_id)) {
+            outbox_flush_scheduled = true;
+            Promise.resolve()
+              .then(() => flushChannelOutboxForTicket(db, {
+                ticket_id: safeString(out.ticket?.ticket_id),
+                request_id: `${request_id}:outbox_flush`,
+                audit: reviewAudit,
+              }))
+              .catch(() => {
+                // Delivery is best-effort and must not affect the approval result.
+              });
+          }
+        } catch (error) {
+          automation = {
+            ok: false,
+            deny_code: safeString(error?.message || 'channel_onboarding_automation_failed') || 'channel_onboarding_automation_failed',
+            ack_outbox_item_id: '',
+            first_smoke_receipt_id: '',
+            first_smoke_outbox_item_id: '',
+          };
+        }
+      }
+      jsonResponse(res, 200, {
+        ok: true,
+        ticket: toHttpChannelOnboardingTicket(out.ticket, {
+          latestDecision: out.decision,
+          revocation: null,
+        }),
+        decision: toHttpChannelOnboardingDecision(out.decision),
+        audit_logged: out.audit_logged === true,
+        automation,
+        automation_state: toHttpChannelOnboardingAutomationState(
+          getChannelOnboardingAutomationState(db, { ticket_id: safeString(out.ticket?.ticket_id) })
+        ),
+        outbox_flush_scheduled,
+      });
+      return;
+    }
+
     if (pathname === '/admin/pairing/requests' && method === 'GET') {
       const admin = requireHttpAdmin(req);
       if (!admin.ok) {
@@ -3691,6 +4862,7 @@ export function startPairingHTTPServer({
       const entry = {
         device_id: approved_device_id,
         user_id: boundUserId || approved_device_id,
+        app_id: safeString(obj.app_id || rowBeforeApprove.app_id),
         name: device_name,
         token: approved_client_token,
         enabled: true,
@@ -3728,6 +4900,18 @@ export function startPairingHTTPServer({
         return;
       }
 
+      const tlsServerName = tlsMode === 'insecure' ? '' : tlsServerNameFromEnv(process.env);
+      const routeMetadata = buildPairingRouteMetadata({
+        runtimeBaseDir,
+        hubIdentity,
+        internetHostHint,
+        pairingPort: port,
+        grpcPort,
+        tlsMode,
+        tlsServerName,
+        clientsSnapshot: snap1,
+      });
+
       jsonResponse(res, 200, {
         ok: true,
         pairing_request_id,
@@ -3736,6 +4920,8 @@ export function startPairingHTTPServer({
         client_token: approved_client_token,
         policy_mode: requested_policy_mode,
         approved_trust_profile: approvedTrustProfile,
+        pairing_profile_epoch: routeMetadata.pairing_profile_epoch,
+        route_pack_version: routeMetadata.route_pack_version,
       });
       return;
     }

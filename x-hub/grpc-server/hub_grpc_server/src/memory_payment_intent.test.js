@@ -1259,6 +1259,11 @@ run('M3-W2-04/payment confirm idempotent commit + abort idempotency', () => {
       const createdIntent = created.res?.intent || {};
       const intentId = String(created.res?.intent?.intent_id || '');
       assert.ok(intentId.length > 0);
+      assert.equal(Number(createdIntent.preview_fee_minor || 0), 0);
+      assert.equal(String(createdIntent.preview_risk_level || ''), 'high');
+      assert.ok(Number(createdIntent.preview_undo_window_ms || 0) >= 0);
+      assert.ok(String(createdIntent.preview_card_hash || '').length > 0);
+      assert.equal(String(createdIntent.two_phase_state || ''), 'prepared');
 
       const evidence = invokeHubMemoryUnary(impl, 'AttachPaymentEvidence', {
         request_id: 'req-pay3-evidence',
@@ -1308,6 +1313,10 @@ run('M3-W2-04/payment confirm idempotent commit + abort idempotency', () => {
       assert.equal(!!confirmed.res?.idempotent, false);
       const commitTxnId = String(confirmed.res?.intent?.commit_txn_id || '');
       assert.ok(commitTxnId.length > 0);
+      assert.equal(String(confirmed.res?.intent?.two_phase_state || ''), 'acked');
+      assert.ok(Number(confirmed.res?.intent?.approved_at_ms || 0) > 0);
+      assert.ok(Number(confirmed.res?.intent?.dispatched_at_ms || 0) > 0);
+      assert.ok(Number(confirmed.res?.intent?.acked_at_ms || 0) > 0);
       assertAuditEvent(db, {
         device_id: client.device_id,
         user_id: client.user_id,
@@ -1368,6 +1377,143 @@ run('M3-W2-04/payment confirm idempotent commit + abort idempotency', () => {
       assert.equal(abortedAgain.err, null);
       assert.equal(!!abortedAgain.res?.aborted, true);
       assert.equal(!!abortedAgain.res?.idempotent, true);
+    } finally {
+      db.close();
+    }
+  });
+
+  cleanupDbArtifacts(dbPath);
+  try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch { /* ignore */ }
+});
+
+run('SI-W1-03/payment preview contract is machine-readable and preview drift fails closed as request_tampered', () => {
+  const runtimeBaseDir = makeTmp('runtime');
+  const dbPath = makeTmp('db', '.db');
+  fs.mkdirSync(runtimeBaseDir, { recursive: true });
+
+  withEnv(baseEnv(runtimeBaseDir), () => {
+    const db = new HubDB({ dbPath });
+    try {
+      const impl = makeServices({ db, bus: new HubEventBus() });
+      const client = makeClient('proj-payment-preview-contract');
+
+      const created = invokeHubMemoryUnary(impl, 'CreatePaymentIntent', {
+        request_id: 'req-pay-preview-create',
+        client,
+        amount_minor: 1180,
+        currency: 'CNY',
+        merchant_id: 'merchant-preview',
+        source_terminal_id: 'robot-kiosk-preview',
+        allowed_mobile_terminal_id: 'mobile-preview',
+        expected_photo_hash: 'photo-preview',
+        expected_geo_hash: 'geo-preview',
+        expected_qr_payload_hash: 'qr-preview',
+        ttl_ms: 120000,
+        challenge_ttl_ms: 30000,
+      });
+      assert.equal(created.err, null);
+      assert.equal(!!created.res?.accepted, true);
+      const createdIntent = created.res?.intent || {};
+      const intentId = String(createdIntent.intent_id || '');
+      assert.ok(intentId.length > 0);
+      assert.equal(Number(createdIntent.amount_minor || 0), 1180);
+      assert.equal(String(createdIntent.merchant_id || ''), 'merchant-preview');
+      assert.equal(Number(createdIntent.preview_fee_minor || 0), 0);
+      assert.equal(String(createdIntent.preview_risk_level || ''), 'high');
+      assert.ok(Number(createdIntent.preview_undo_window_ms || 0) >= 0);
+      assert.ok(String(createdIntent.preview_card_hash || '').length > 0);
+      assert.equal(String(createdIntent.two_phase_state || ''), 'prepared');
+
+      const evidence = invokeHubMemoryUnary(impl, 'AttachPaymentEvidence', {
+        request_id: 'req-pay-preview-evidence',
+        client,
+        intent_id: intentId,
+        evidence: withEvidenceSignature({
+          client,
+          intent: createdIntent,
+          evidence: {
+            photo_hash: 'photo-preview',
+            price_amount_minor: 1180,
+            currency: 'CNY',
+            merchant_id: 'merchant-preview',
+            geo_hash: 'geo-preview',
+            qr_payload_hash: 'qr-preview',
+            nonce: 'nonce-pay-preview-evidence',
+            captured_at_ms: 1730000003200,
+          },
+        }),
+      });
+      assert.equal(evidence.err, null);
+      assert.equal(!!evidence.res?.accepted, true);
+
+      const issued = invokeHubMemoryUnary(impl, 'IssuePaymentChallenge', {
+        request_id: 'req-pay-preview-issue',
+        client,
+        intent_id: intentId,
+        mobile_terminal_id: 'mobile-preview',
+        challenge_nonce: 'nonce-pay-preview-challenge',
+      });
+      assert.equal(issued.err, null);
+      assert.equal(!!issued.res?.issued, true);
+      const challengeId = String(issued.res?.challenge_id || '');
+      assert.ok(challengeId.length > 0);
+
+      db.db
+        .prepare(
+          `UPDATE memory_payment_intents
+           SET preview_card_hash = ''
+           WHERE intent_id = ?`
+        )
+        .run(intentId);
+
+      const noPreviewDirectPay = invokeHubMemoryUnary(impl, 'ConfirmPaymentIntent', {
+        request_id: 'req-pay-preview-confirm-no-preview',
+        client,
+        intent_id: intentId,
+        challenge_id: challengeId,
+        mobile_terminal_id: 'mobile-preview',
+        auth_factor: 'tap_only',
+        confirm_nonce: 'nonce-pay-preview-confirm-1',
+      });
+      assert.equal(noPreviewDirectPay.err, null);
+      assert.equal(!!noPreviewDirectPay.res?.committed, false);
+      assert.equal(String(noPreviewDirectPay.res?.deny_code || ''), 'request_tampered');
+      assertAuditEvent(db, {
+        device_id: client.device_id,
+        user_id: client.user_id,
+        request_id: 'req-pay-preview-confirm-no-preview',
+        event_type: 'payment.confirmed',
+        error_code: 'request_tampered',
+      });
+
+      db.db
+        .prepare(
+          `UPDATE memory_payment_intents
+           SET preview_card_hash = ?,
+               amount_minor = ?
+           WHERE intent_id = ?`
+        )
+        .run(String(createdIntent.preview_card_hash || ''), 1181, intentId);
+
+      const tampered = invokeHubMemoryUnary(impl, 'ConfirmPaymentIntent', {
+        request_id: 'req-pay-preview-confirm-tampered',
+        client,
+        intent_id: intentId,
+        challenge_id: challengeId,
+        mobile_terminal_id: 'mobile-preview',
+        auth_factor: 'tap_only',
+        confirm_nonce: 'nonce-pay-preview-confirm-2',
+      });
+      assert.equal(tampered.err, null);
+      assert.equal(!!tampered.res?.committed, false);
+      assert.equal(String(tampered.res?.deny_code || ''), 'request_tampered');
+      assertAuditEvent(db, {
+        device_id: client.device_id,
+        user_id: client.user_id,
+        request_id: 'req-pay-preview-confirm-tampered',
+        event_type: 'payment.confirmed',
+        error_code: 'request_tampered',
+      });
     } finally {
       db.close();
     }
@@ -1604,6 +1750,7 @@ await runAsync('M3-W2-04/payment receipt undo window + compensation worker close
       assert.equal(confirmed.err, null);
       assert.equal(!!confirmed.res?.committed, true);
       assert.equal(String(confirmed.res?.intent?.receipt_delivery_state || ''), 'committed');
+      assert.equal(String(confirmed.res?.intent?.two_phase_state || ''), 'acked');
 
       const abortReq = invokeHubMemoryUnary(impl, 'AbortPaymentIntent', {
         request_id: 'req-pay-receipt-abort',
@@ -1673,6 +1820,7 @@ await runAsync('M3-W2-04/payment receipt undo window + compensation worker close
       assert.equal(!!abortAfterCompensated.res?.compensation_pending, false);
       assert.equal(String(abortAfterCompensated.res?.intent?.status || ''), 'aborted');
       assert.equal(String(abortAfterCompensated.res?.intent?.receipt_delivery_state || ''), 'compensated');
+      assert.equal(String(abortAfterCompensated.res?.intent?.two_phase_state || ''), 'compensated');
 
       const audits = db.listAuditEvents({
         project_id: client.project_id,

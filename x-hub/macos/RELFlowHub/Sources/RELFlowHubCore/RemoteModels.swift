@@ -1,8 +1,18 @@
 import Foundation
 
+public extension Notification.Name {
+    static let relflowhubRemoteModelsChanged = Notification.Name("relflowhub.remoteModelsChanged")
+}
+
+public enum RemoteModelKnownContextSource: String, Codable, Equatable, Sendable {
+    case providerReported = "provider_reported"
+    case catalogEstimate = "catalog_estimate"
+}
+
 public struct RemoteModelEntry: Identifiable, Codable, Equatable, Sendable {
     public var id: String
     public var name: String
+    public var groupDisplayName: String?
     public var backend: String
     public var contextLength: Int
     public var enabled: Bool
@@ -12,51 +22,127 @@ public struct RemoteModelEntry: Identifiable, Codable, Equatable, Sendable {
     public var apiKeyRef: String?
     // Local alias used by Hub/Coder. Upstream provider calls use this value when set.
     public var upstreamModelId: String?
+    // Optional protocol hint for OpenAI-compatible providers, e.g. "responses".
+    public var wireAPI: String?
     // Decrypted API key in memory only. It is never persisted to disk.
     public var apiKey: String?
     // Encrypted API key payload for disk persistence fallback.
     public var apiKeyCiphertext: String?
     public var note: String?
+    public var knownContextLength: Int?
+    public var knownContextSource: RemoteModelKnownContextSource?
 
     public init(
         id: String,
         name: String,
+        groupDisplayName: String? = nil,
         backend: String,
         contextLength: Int = 8192,
         enabled: Bool = true,
         baseURL: String? = nil,
         apiKeyRef: String? = nil,
         upstreamModelId: String? = nil,
+        wireAPI: String? = nil,
         apiKey: String? = nil,
         apiKeyCiphertext: String? = nil,
-        note: String? = nil
+        note: String? = nil,
+        knownContextLength: Int? = nil,
+        knownContextSource: RemoteModelKnownContextSource? = nil
     ) {
         self.id = id
         self.name = name
+        self.groupDisplayName = groupDisplayName
         self.backend = backend
         self.contextLength = contextLength
         self.enabled = enabled
         self.baseURL = baseURL
         self.apiKeyRef = apiKeyRef
         self.upstreamModelId = upstreamModelId
+        self.wireAPI = wireAPI
         self.apiKey = apiKey
         self.apiKeyCiphertext = apiKeyCiphertext
         self.note = note
+        if let knownContextLength, knownContextLength > 0 {
+            self.knownContextLength = max(512, knownContextLength)
+            self.knownContextSource = knownContextSource
+        } else {
+            self.knownContextLength = nil
+            self.knownContextSource = nil
+        }
     }
 
     public enum CodingKeys: String, CodingKey {
         case id
         case name
+        case groupDisplayName
         case backend
         case contextLength
         case enabled
         case baseURL
         case apiKeyRef
         case upstreamModelId
+        case wireAPI
         case apiKey
         case apiKeyCiphertext
         case note
+        case knownContextLength
+        case knownContextSource
     }
+}
+
+public extension RemoteModelEntry {
+    var effectiveProviderModelID: String {
+        let upstream = (upstreamModelId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !upstream.isEmpty {
+            return upstream
+        }
+        return id.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var effectiveGroupDisplayName: String? {
+        let explicit = (groupDisplayName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !explicit.isEmpty {
+            return explicit
+        }
+
+        let candidate = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if candidate.isEmpty {
+            return nil
+        }
+
+        let providerModel = effectiveProviderModelID
+        let normalizedCandidate = normalizedRemoteModelDisplayToken(candidate)
+        if normalizedCandidate == normalizedRemoteModelDisplayToken(providerModel)
+            || normalizedCandidate == normalizedRemoteModelDisplayToken(id.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            return nil
+        }
+        return candidate
+    }
+
+    var nestedDisplayName: String {
+        let candidate = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let providerModel = effectiveProviderModelID
+        let alias = (effectiveGroupDisplayName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if !candidate.isEmpty,
+           normalizedRemoteModelDisplayToken(candidate) != normalizedRemoteModelDisplayToken(alias) {
+            return candidate
+        }
+        if !providerModel.isEmpty {
+            return providerModel
+        }
+        return id.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+private func normalizedRemoteModelDisplayToken(_ raw: String) -> String {
+    raw
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+        .unicodeScalars
+        .filter(CharacterSet.alphanumerics.contains)
+        .map(String.init)
+        .joined()
 }
 
 public struct RemoteModelSnapshot: Codable, Sendable, Equatable {
@@ -82,7 +168,10 @@ public enum RemoteModelStorage {
     }
 
     public static func exportableEnabledModels() -> [RemoteModelEntry] {
-        exportableEnabledModels(from: load())
+        exportableEnabledModels(
+            from: load(),
+            healthSnapshot: RemoteKeyHealthStorage.load()
+        )
     }
 
     public static func exportableEnabledModels(from snap: RemoteModelSnapshot) -> [RemoteModelEntry] {
@@ -112,10 +201,18 @@ public enum RemoteModelStorage {
                 apiKey: apiKey
             ) != nil
         default:
-            return RemoteProviderEndpoints.openAIChatCompletionsURL(
-                baseURL: model.baseURL,
-                backend: backend
-            ) != nil
+            switch RemoteProviderEndpoints.resolvedOpenAIWireAPI(model.wireAPI, backend: backend) {
+            case .responses:
+                return RemoteProviderEndpoints.openAIResponsesURL(
+                    baseURL: model.baseURL,
+                    backend: backend
+                ) != nil
+            case .chatCompletions:
+                return RemoteProviderEndpoints.openAIChatCompletionsURL(
+                    baseURL: model.baseURL,
+                    backend: backend
+                ) != nil
+            }
         }
     }
 
@@ -146,6 +243,12 @@ public enum RemoteModelStorage {
             let account = keyReference(for: m)
             let fileKey = trimmed(m.apiKey)
             let ciphertext = trimmed(m.apiKeyCiphertext)
+            let groupDisplayName = trimmed(m.groupDisplayName)
+
+            if groupDisplayName.isEmpty, let legacyAlias = m.effectiveGroupDisplayName {
+                m.groupDisplayName = legacyAlias
+                needsResave = true
+            }
 
             var resolvedKey = ""
             // Prefer the encrypted-on-disk ciphertext first so startup/refresh loops don't
@@ -239,12 +342,14 @@ public enum RemoteModelStorage {
         // Keep models_state.json authoritative for both local and remote models.
         // This makes headless operation (gRPC-only Hub) work even when the UI isn't refreshing ModelStore.
         syncEnabledRemoteModelsIntoModelState(cur)
+        NotificationCenter.default.post(name: .relflowhubRemoteModelsChanged, object: nil)
     }
 
     public static func upsert(_ entry: RemoteModelEntry) -> RemoteModelSnapshot {
         var cur = load()
-        if let idx = cur.models.firstIndex(where: { $0.id == entry.id }) {
-            var merged = entry
+        let prepared = disambiguatedEntryForUpsert(entry, existing: cur.models)
+        if let idx = cur.models.firstIndex(where: { normalizedLookupToken($0.id) == normalizedLookupToken(prepared.id) }) {
+            var merged = prepared
             let hasIncomingKey = !trimmed(entry.apiKey).isEmpty
             if !hasIncomingKey {
                 merged.apiKey = cur.models[idx].apiKey
@@ -255,12 +360,18 @@ public enum RemoteModelStorage {
                     merged.apiKeyRef = cur.models[idx].apiKeyRef
                 }
             }
+            if trimmed(merged.groupDisplayName).isEmpty {
+                merged.groupDisplayName = cur.models[idx].groupDisplayName
+            }
             if trimmed(merged.upstreamModelId).isEmpty {
                 merged.upstreamModelId = cur.models[idx].upstreamModelId
             }
+            if trimmed(merged.wireAPI).isEmpty {
+                merged.wireAPI = cur.models[idx].wireAPI
+            }
             cur.models[idx] = merged
         } else {
-            cur.models.append(entry)
+            cur.models.append(prepared)
         }
         save(cur)
         return load()
@@ -303,6 +414,30 @@ public enum RemoteModelStorage {
         return load()
     }
 
+    public static func remove(ids rawIDs: [String]) -> RemoteModelSnapshot {
+        let ids = Set(rawIDs.map(trimmed).filter { !$0.isEmpty })
+        guard !ids.isEmpty else { return load() }
+
+        var cur = load()
+        let removed = cur.models.filter { ids.contains(trimmed($0.id)) }
+        guard !removed.isEmpty else { return cur }
+
+        cur.models.removeAll { ids.contains(trimmed($0.id)) }
+        save(cur)
+
+        if KeychainStore.hasSharedAccessGroup {
+            let removedAccounts = Set(removed.map { keyReference(for: $0) }.filter { !$0.isEmpty })
+            for account in removedAccounts {
+                let stillUsed = cur.models.contains { keyReference(for: $0) == account }
+                if !stillUsed {
+                    _ = KeychainStore.delete(account: account)
+                }
+            }
+        }
+
+        return load()
+    }
+
     public static func keyReference(for model: RemoteModelEntry?) -> String {
         guard let model else { return "" }
         return trimmed(model.apiKeyRef).isEmpty ? trimmed(model.id) : trimmed(model.apiKeyRef)
@@ -328,7 +463,10 @@ public enum RemoteModelStorage {
 
     private static func syncEnabledRemoteModelsIntoModelState(_ snap: RemoteModelSnapshot) {
         // Only include enabled remote models that can actually be executed now.
-        let enabled = exportableEnabledModels(from: snap)
+        let enabled = exportableEnabledModels(
+            from: snap,
+            healthSnapshot: RemoteKeyHealthStorage.load()
+        )
         if enabled.isEmpty {
             // Best-effort: prune any stale remote entries.
             let base = ModelStateStorage.load()
@@ -349,51 +487,73 @@ public enum RemoteModelStorage {
             }
         }
 
-        let remoteSorted = enabled.sorted {
-            let ab = $0.backend.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            let bb = $1.backend.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            if ab != bb { return ab < bb }
-            let an = $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            let bn = $1.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            if an != bn { return an < bn }
-            let ai = $0.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            let bi = $1.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            return ai < bi
-        }
-
         var remoteEntries: [HubModel] = []
-        for r in remoteSorted {
+        for r in enabled {
             let rid = r.id.trimmingCharacters(in: .whitespacesAndNewlines)
             if rid.isEmpty { continue }
             if seenIds.contains(rid) {
                 // Prefer a local entry when ids collide.
                 continue
             }
-            let backend = r.backend.trimmingCharacters(in: .whitespacesAndNewlines)
-            if backend.isEmpty { continue }
-            let name = r.name.trimmingCharacters(in: .whitespacesAndNewlines)
-            remoteEntries.append(
-                HubModel(
-                    id: rid,
-                    name: name.isEmpty ? rid : name,
-                    backend: backend,
-                    quant: "remote",
-                    contextLength: max(512, r.contextLength),
-                    paramsB: 0.0,
-                    roles: nil,
-                    state: .loaded,
-                    memoryBytes: nil,
-                    tokensPerSec: nil,
-                    modelPath: nil,
-                    note: r.note
-                )
-            )
+            if let projectedModel = hubStateModel(for: r) {
+                remoteEntries.append(projectedModel)
+            }
         }
 
         let merged = localOnly + remoteEntries
         if merged != base.models {
             ModelStateStorage.save(ModelStateSnapshot(models: merged, updatedAt: Date().timeIntervalSince1970))
         }
+    }
+
+    static func exportableEnabledModels(
+        from snap: RemoteModelSnapshot,
+        healthSnapshot: RemoteKeyHealthSnapshot?
+    ) -> [RemoteModelEntry] {
+        let healthByKey = Dictionary(
+            uniqueKeysWithValues: (healthSnapshot?.records ?? []).map { ($0.keyReference, $0) }
+        )
+
+        return snap.models
+            .filter(isExecutionReadyRemoteModel)
+            .sorted { lhs, rhs in
+                let lhsKey = keyReference(for: lhs)
+                let rhsKey = keyReference(for: rhs)
+                let lhsHealth = healthByKey[lhsKey]
+                let rhsHealth = healthByKey[rhsKey]
+                let lhsPriority = RemoteKeyHealthSupport.sortPriority(for: lhsHealth)
+                let rhsPriority = RemoteKeyHealthSupport.sortPriority(for: rhsHealth)
+                if lhsPriority != rhsPriority {
+                    return lhsPriority < rhsPriority
+                }
+
+                if (lhsHealth != nil || rhsHealth != nil), lhsKey != rhsKey {
+                    let lhsRecency = RemoteKeyHealthSupport.recency(for: lhsHealth)
+                    let rhsRecency = RemoteKeyHealthSupport.recency(for: rhsHealth)
+                    if lhsRecency != rhsRecency {
+                        return lhsRecency > rhsRecency
+                    }
+                    if lhsKey.localizedCaseInsensitiveCompare(rhsKey) != .orderedSame {
+                        return lhsKey.localizedCaseInsensitiveCompare(rhsKey) == .orderedAscending
+                    }
+                }
+
+                let lhsBackend = lhs.backend.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let rhsBackend = rhs.backend.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if lhsBackend != rhsBackend {
+                    return lhsBackend < rhsBackend
+                }
+
+                let lhsName = lhs.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let rhsName = rhs.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if lhsName != rhsName {
+                    return lhsName < rhsName
+                }
+
+                let lhsID = lhs.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let rhsID = rhs.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                return lhsID < rhsID
+            }
     }
 
     private static func isRemoteStateModel(_ m: HubModel) -> Bool {
@@ -433,6 +593,149 @@ public enum RemoteModelStorage {
         (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private static func normalizedLookupToken(_ raw: String?) -> String {
+        trimmed(raw).lowercased()
+    }
+
+    private static func disambiguatedEntryForUpsert(
+        _ entry: RemoteModelEntry,
+        existing models: [RemoteModelEntry]
+    ) -> RemoteModelEntry {
+        var prepared = entry
+        let resolvedKeyReference = disambiguatedKeyReference(for: prepared, existing: models)
+        let requestedKeyReference = trimmed(prepared.apiKeyRef)
+        if !resolvedKeyReference.isEmpty,
+           !requestedKeyReference.isEmpty || normalizedLookupToken(resolvedKeyReference) != normalizedLookupToken(prepared.id) {
+            prepared.apiKeyRef = resolvedKeyReference
+        }
+
+        let resolvedModelID = disambiguatedModelID(for: prepared, existing: models)
+        if !resolvedModelID.isEmpty {
+            prepared.id = resolvedModelID
+        }
+        return prepared
+    }
+
+    private static func disambiguatedKeyReference(
+        for entry: RemoteModelEntry,
+        existing models: [RemoteModelEntry]
+    ) -> String {
+        let requested = keyReference(for: entry)
+        guard !requested.isEmpty else { return "" }
+
+        let requestedToken = normalizedLookupToken(requested)
+        let incomingKey = trimmed(entry.apiKey)
+        let exactMatches = models.filter { normalizedLookupToken(keyReference(for: $0)) == requestedToken }
+        if exactMatches.isEmpty {
+            return requested
+        }
+        if !incomingKey.isEmpty,
+           exactMatches.contains(where: { trimmed($0.apiKey) == incomingKey }) {
+            return requested
+        }
+
+        let namespaceBase = numericDisambiguationBase(requested)
+        let namespaceToken = normalizedLookupToken(namespaceBase)
+        let namespaceMatches = models.filter {
+            normalizedLookupToken(numericDisambiguationBase(keyReference(for: $0))) == namespaceToken
+        }
+        if !incomingKey.isEmpty,
+           let existingMatch = namespaceMatches.first(where: { trimmed($0.apiKey) == incomingKey }) {
+            return keyReference(for: existingMatch)
+        }
+
+        let used = Set(namespaceMatches.map { keyReference(for: $0) })
+        return nextDisambiguatedValue(base: namespaceBase, used: used)
+    }
+
+    private static func disambiguatedModelID(
+        for entry: RemoteModelEntry,
+        existing models: [RemoteModelEntry]
+    ) -> String {
+        let requested = trimmed(entry.id)
+        guard !requested.isEmpty else { return UUID().uuidString }
+
+        let requestedToken = normalizedLookupToken(requested)
+        let exactMatches = models.filter { normalizedLookupToken($0.id) == requestedToken }
+        if exactMatches.isEmpty {
+            return requested
+        }
+        if exactMatches.contains(where: { sameRemoteUpsertSlot($0, entry) }) {
+            return requested
+        }
+
+        let namespaceBase = numericDisambiguationBase(requested)
+        let namespaceToken = normalizedLookupToken(namespaceBase)
+        let namespaceMatches = models.filter {
+            normalizedLookupToken(numericDisambiguationBase($0.id)) == namespaceToken
+        }
+        if let existingMatch = namespaceMatches.first(where: { sameRemoteUpsertSlot($0, entry) }) {
+            return trimmed(existingMatch.id)
+        }
+
+        let used = Set(namespaceMatches.map(\.id))
+        return nextDisambiguatedValue(base: namespaceBase, used: used)
+    }
+
+    private static func sameRemoteUpsertSlot(_ lhs: RemoteModelEntry, _ rhs: RemoteModelEntry) -> Bool {
+        if normalizedLookupToken(RemoteProviderEndpoints.canonicalBackend(lhs.backend))
+            != normalizedLookupToken(RemoteProviderEndpoints.canonicalBackend(rhs.backend)) {
+            return false
+        }
+        if normalizedLookupToken(normalizedBaseURL(lhs.baseURL))
+            != normalizedLookupToken(normalizedBaseURL(rhs.baseURL)) {
+            return false
+        }
+        if normalizedLookupToken(providerModelId(for: lhs))
+            != normalizedLookupToken(providerModelId(for: rhs)) {
+            return false
+        }
+        return normalizedLookupToken(keyReference(for: lhs))
+            == normalizedLookupToken(keyReference(for: rhs))
+    }
+
+    private static func normalizedBaseURL(_ raw: String?) -> String {
+        var value = trimmed(raw)
+        while value.hasSuffix("/") {
+            value.removeLast()
+        }
+        return value
+    }
+
+    private static func numericDisambiguationBase(_ raw: String) -> String {
+        let value = trimmed(raw)
+        guard !value.isEmpty,
+              let hashIndex = value.lastIndex(of: "#"),
+              hashIndex < value.index(before: value.endIndex) else {
+            return value
+        }
+
+        let suffix = value[value.index(after: hashIndex)...]
+        guard !suffix.isEmpty, suffix.allSatisfy(\.isNumber) else {
+            return value
+        }
+        return String(value[..<hashIndex])
+    }
+
+    private static func nextDisambiguatedValue(base rawBase: String, used: Set<String>) -> String {
+        let base = trimmed(rawBase)
+        guard !base.isEmpty else { return UUID().uuidString }
+
+        let usedTokens = Set(used.map(normalizedLookupToken))
+        if !usedTokens.contains(normalizedLookupToken(base)) {
+            return base
+        }
+
+        var index = 2
+        while true {
+            let candidate = "\(base)#\(index)"
+            if !usedTokens.contains(normalizedLookupToken(candidate)) {
+                return candidate
+            }
+            index += 1
+        }
+    }
+
     private static func hasValidExplicitBaseURL(_ raw: String?) -> Bool {
         let trimmedBase = trimmed(raw)
         guard !trimmedBase.isEmpty else { return true }
@@ -456,5 +759,57 @@ public enum RemoteModelStorage {
             return RemoteProviderEndpoints.stripModelRef(model)
         }
         return model
+    }
+
+    static func endpointHost(for remote: RemoteModelEntry) -> String? {
+        guard let raw = remote.baseURL?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty,
+              let url = URL(string: raw) else {
+            return nil
+        }
+        let host = (url.host ?? url.absoluteString).trimmingCharacters(in: .whitespacesAndNewlines)
+        return host.isEmpty ? nil : host
+    }
+
+    static func hubStateModel(for remote: RemoteModelEntry) -> HubModel? {
+        let rid = remote.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rid.isEmpty else { return nil }
+
+        let backend = remote.backend.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !backend.isEmpty else { return nil }
+
+        let configuredContextLength = max(512, remote.contextLength)
+        let knownContextLength = {
+            guard let known = remote.knownContextLength, known > 0 else { return nil as Int? }
+            return max(configuredContextLength, known)
+        }()
+        let nestedDisplayName = remote.nestedDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let providerModelID = providerModelId(for: remote)
+        let groupDisplayName = trimmed(remote.effectiveGroupDisplayName)
+        let keyReference = keyReference(for: remote)
+        let note = trimmed(remote.note)
+
+        return HubModel(
+            id: rid,
+            name: nestedDisplayName.isEmpty ? rid : nestedDisplayName,
+            backend: backend,
+            quant: "remote",
+            contextLength: configuredContextLength,
+            maxContextLength: knownContextLength ?? configuredContextLength,
+            paramsB: 0.0,
+            roles: nil,
+            state: .loaded,
+            memoryBytes: nil,
+            tokensPerSec: nil,
+            modelPath: nil,
+            note: note.isEmpty ? nil : note,
+            remoteConfiguredContextLength: configuredContextLength,
+            remoteKnownContextLength: knownContextLength,
+            remoteKnownContextSource: remote.knownContextSource?.rawValue,
+            remoteGroupDisplayName: groupDisplayName.isEmpty ? nil : groupDisplayName,
+            remoteProviderModelID: providerModelID.isEmpty ? nil : providerModelID,
+            remoteKeyReference: keyReference.isEmpty ? nil : keyReference,
+            remoteEndpointHost: endpointHost(for: remote)
+        )
     }
 }

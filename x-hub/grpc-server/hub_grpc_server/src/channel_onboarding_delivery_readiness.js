@@ -2,6 +2,7 @@ import { createSlackApiClient, slackBotTokenFromEnv } from './channel_adapters/s
 import { createTelegramApiClient, telegramBotTokenFromEnv } from './channel_adapters/telegram/TelegramApiClient.js';
 import { createFeishuApiClient, feishuBotCredentialsFromEnv } from './channel_adapters/feishu/FeishuApiClient.js';
 import { createWhatsAppCloudApiClient, whatsappCloudReplyCredentialsFromEnv } from './channel_adapters/whatsapp_cloud_api/WhatsAppCloudApiClient.js';
+import { buildOperatorChannelDeliveryRepairHints } from './channel_operator_repair_hints.js';
 
 export const OPERATOR_CHANNEL_PROVIDER_IDS = Object.freeze([
   'slack',
@@ -30,6 +31,13 @@ function buildReadiness({
   deny_code = '',
   remediation_hint = '',
 } = {}) {
+  const repair_hints = buildOperatorChannelDeliveryRepairHints({
+    provider,
+    reply_enabled,
+    credentials_configured,
+    deny_code,
+    remediation_hint,
+  });
   return {
     provider: safeString(provider).toLowerCase(),
     ready: !!reply_enabled && !!credentials_configured && !safeString(deny_code),
@@ -37,6 +45,7 @@ function buildReadiness({
     credentials_configured: !!credentials_configured,
     deny_code: safeString(deny_code),
     remediation_hint: safeString(remediation_hint),
+    repair_hints,
   };
 }
 

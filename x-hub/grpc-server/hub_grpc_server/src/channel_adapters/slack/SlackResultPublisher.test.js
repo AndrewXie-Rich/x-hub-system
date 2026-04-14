@@ -173,6 +173,10 @@ run('SlackResultPublisher renders supervisor brief projection summaries when pro
   assert.match(String(out.payload?.text || ''), /Next: Review 1 pending grant request/);
   assert.match(String(out.payload?.text || ''), /Pending grants: 1/);
   assert.match(String(out.payload?.text || ''), /Device: xt-alpha-1/);
+  const fieldTexts = Array.isArray(out.payload?.blocks)
+    ? out.payload.blocks.flatMap((block) => Array.isArray(block?.fields) ? block.fields.map((field) => String(field?.text || '')) : [])
+    : [];
+  assert.ok(fieldTexts.some((text) => /\*Project State\*\nawaiting authorization/.test(text)));
   assert.equal(String(out.payload?.metadata?.event_payload?.audit_ref || ''), 'audit-projection-1');
 });
 
@@ -195,6 +199,16 @@ run('SlackResultPublisher renders legacy Hub blocker query summaries when execut
       query: {
         action_name: 'supervisor.blockers.get',
         project_id: 'project_alpha',
+        heartbeat_governance_snapshot_json: JSON.stringify({
+          status_digest: 'Core loop advancing',
+          latest_quality_band: 'usable',
+          open_anomaly_types: ['stale_repeat'],
+          next_review_due: {
+            kind: 'review_pulse',
+            due: true,
+            due_at_ms: 1710000600000,
+          },
+        }),
         heartbeat: {
           queue_depth: 3,
           oldest_wait_ms: 9000,
@@ -212,6 +226,8 @@ run('SlackResultPublisher renders legacy Hub blocker query summaries when execut
   assert.match(String(out.payload?.text || ''), /status=supervisor_blockers/);
   assert.match(String(out.payload?.text || ''), /Blockers: awaiting security review/);
   assert.match(String(out.payload?.text || ''), /Next actions: approve release grant/);
+  assert.match(String(out.payload?.text || ''), /Review pressure: quality=usable anomalies=stale_repeat/);
+  assert.match(String(out.payload?.text || ''), /Next review: review_pulse due=yes at_ms=1710000600000/);
 });
 
 run('SlackResultPublisher renders governed XT command execution summaries when execution data is present', () => {

@@ -180,7 +180,7 @@ final class FileIPC: @unchecked Sendable {
 
         // Mark AI ready only when a real runtime is alive; avoids "loaded" UI lying.
         let rt = AIRuntimeStatusStorage.load()
-        let runtimeAlive = (rt?.isAlive(ttl: 3.0) ?? false) && (rt?.hasReadyProvider(ttl: 3.0) ?? false)
+        let runtimeAlive = (rt?.isAlive(ttl: AIRuntimeStatus.recommendedHeartbeatTTL) ?? false) && (rt?.hasReadyProvider(ttl: AIRuntimeStatus.recommendedHeartbeatTTL) ?? false)
 
         let appVersion = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? ""
         let appBuild = (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String) ?? ""
@@ -197,7 +197,10 @@ final class FileIPC: @unchecked Sendable {
             appVersion: appVersion,
             appBuild: appBuild,
             appPath: appPath,
-            aiReady: runtimeAlive && loaded > 0,
+            // `aiReady` is a coarse "can the Hub serve AI requests now" signal.
+            // Keep loaded-model detail separate in `loadedModelCount` so on-demand runtimes
+            // do not look unavailable just because nothing is preloaded yet.
+            aiReady: runtimeAlive,
             loadedModelCount: loaded,
             modelsUpdatedAt: ms.updatedAt
         )
@@ -250,6 +253,16 @@ final class FileIPC: @unchecked Sendable {
                 Task { @MainActor in
                     self.store.push(n)
                 }
+            }
+            return
+        }
+        if req.type == "remove_notification" {
+            let payload = req.notificationDismiss
+            Task { @MainActor in
+                self.store.removeNotification(
+                    dedupeKey: payload?.dedupeKey,
+                    id: payload?.id
+                )
             }
             return
         }
@@ -342,6 +355,66 @@ final class FileIPC: @unchecked Sendable {
             }
             let profile = HubVoiceWakeProfileStorage.update(profile: payload)
             writeResponse(IPCResponse(type: "voice_wake_profile_ack", reqId: rid, ok: true, id: profile.profileID, error: nil, voiceWakeProfile: profile))
+            return
+        }
+        if req.type == "voice_tts_readiness" {
+            let rid = (req.reqId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !rid.isEmpty else { return }
+            guard let payload = req.voiceTTSReadiness else {
+                writeResponse(IPCResponse(type: "voice_tts_readiness_ack", reqId: rid, ok: false, id: nil, error: "missing_voice_tts_readiness"))
+                return
+            }
+            let result = HubVoiceTTSSynthesisService.playbackReadiness(payload)
+            writeResponse(
+                IPCResponse(
+                    type: "voice_tts_readiness_ack",
+                    reqId: rid,
+                    ok: result.ok,
+                    id: result.modelID,
+                    error: result.ok ? nil : result.reasonCode,
+                    voiceTTSReadiness: result
+                )
+            )
+            return
+        }
+        if req.type == "voice_tts_synthesize" {
+            let rid = (req.reqId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !rid.isEmpty else { return }
+            guard let payload = req.voiceTTS else {
+                writeResponse(IPCResponse(type: "voice_tts_synthesize_ack", reqId: rid, ok: false, id: nil, error: "missing_voice_tts"))
+                return
+            }
+            let result = HubVoiceTTSSynthesisService.synthesize(payload)
+            writeResponse(
+                IPCResponse(
+                    type: "voice_tts_synthesize_ack",
+                    reqId: rid,
+                    ok: result.ok,
+                    id: result.modelID,
+                    error: result.ok ? nil : (result.reasonCode ?? result.error),
+                    voiceTTS: result
+                )
+            )
+            return
+        }
+        if req.type == "local_task_execute" {
+            let rid = (req.reqId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !rid.isEmpty else { return }
+            guard let payload = req.localTask else {
+                writeResponse(IPCResponse(type: "local_task_execute_ack", reqId: rid, ok: false, id: nil, error: "missing_local_task"))
+                return
+            }
+            let result = HubLocalTaskExecutionService.execute(payload)
+            writeResponse(
+                IPCResponse(
+                    type: "local_task_execute_ack",
+                    reqId: rid,
+                    ok: result.ok,
+                    id: result.modelID,
+                    error: result.ok ? nil : (result.reasonCode ?? result.error),
+                    localTask: result
+                )
+            )
             return
         }
         if req.type == "secret_vault_list" {

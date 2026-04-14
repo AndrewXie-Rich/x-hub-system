@@ -83,12 +83,26 @@ run('XT-W3-24-I/session store upserts and resolves a route by exact provider/acc
           route_mode: 'hub_to_xt',
           xt_online: true,
           same_project_scope: true,
+          governance_runtime_readiness: {
+            schema_version: 'xhub.governance_runtime_readiness.v1',
+            runtime_ready: false,
+            blocked_component_keys: ['grant_ready'],
+            missing_reason_codes: ['permission_owner_not_ready'],
+            components_by_xt_key: {
+              grant_ready: {
+                state: 'blocked',
+                deny_code: 'device_permission_owner_missing',
+              },
+            },
+          },
         },
         request_id: 'session-route-upsert-1',
       });
       assert.equal(!!upserted.ok, true);
       assert.equal(String(upserted.route?.route_mode || ''), 'hub_to_xt');
       assert.equal(String(upserted.route?.supervisor_session_id || ''), String(upserted.route?.route_id || ''));
+      assert.equal(typeof upserted.route?.governance_runtime_readiness, 'object');
+      assert.equal(Boolean(upserted.route?.governance_runtime_readiness?.runtime_ready), false);
 
       const resolved = resolveSupervisorChannelSessionRoute(db, {
         provider: 'lark',
@@ -103,6 +117,14 @@ run('XT-W3-24-I/session store upserts and resolves a route by exact provider/acc
       const audit = db.listAuditEvents({ request_id: 'session-route-upsert-1' })
         .find((item) => String(item?.event_type || '') === 'channel.session_route.upserted');
       assert.ok(audit);
+      const ext = JSON.parse(String(audit?.ext_json || '{}'));
+      assert.equal(typeof ext?.governance_runtime_readiness, 'object');
+      assert.equal(Boolean(ext?.governance_runtime_readiness?.runtime_ready), false);
+      assert.deepEqual(ext?.governance_runtime_readiness?.blocked_component_keys, ['grant_ready']);
+      assert.equal(
+        String(ext?.governance_runtime_readiness?.components_by_xt_key?.grant_ready?.deny_code || ''),
+        'device_permission_owner_missing'
+      );
     } finally {
       db.close();
     }

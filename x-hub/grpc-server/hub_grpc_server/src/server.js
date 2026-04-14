@@ -7,6 +7,7 @@ import { HubDB } from './db.js';
 import { HubEventBus } from './event_bus.js';
 import { makeServices } from './services.js';
 import { startModelsWatcher } from './models_watcher.js';
+import { startOfficialSkillChannelMaintenance } from './official_skill_channel_maintenance.js';
 import { startPairingHTTPServer } from './pairing_http.js';
 import { makeServerCredentials, tlsModeFromEnv } from './tls_support.js';
 import { resolveHubProtoPath } from './proto_path.js';
@@ -53,6 +54,7 @@ function main() {
   const bus = new HubEventBus();
   const impl = makeServices({ db, bus });
   const stopModelsWatcher = startModelsWatcher({ bus });
+  const stopOfficialSkillChannelMaintenance = startOfficialSkillChannelMaintenance();
   const stopPairingHTTP = startPairingHTTPServer({ db });
 
   const maxMsg = grpcMaxMessageBytesFromEnv(process.env);
@@ -96,6 +98,11 @@ function main() {
     try {
       try {
         stopModelsWatcher?.();
+      } catch {
+        // ignore
+      }
+      try {
+        stopOfficialSkillChannelMaintenance?.();
       } catch {
         // ignore
       }

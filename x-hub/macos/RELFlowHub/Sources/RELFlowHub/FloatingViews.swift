@@ -8,22 +8,59 @@ extension Notification.Name {
 
 struct FloatingRootView: View {
     @EnvironmentObject var store: HubStore
-    @ObservedObject private var clientStore = ClientStore.shared
+    @State private var grpcDevicesStatus: GRPCDevicesStatusSnapshot = .empty()
+    @State private var grpcDevicesStatusRefreshInFlight: Bool = false
+    @StateObject private var clientStore = ClientStore.shared
 
     var body: some View {
         Group {
-            switch store.floatingMode {
-            case .orb:
-                // Pass all clients; the orb filters by TTL during animation so satellites
-                // disappear even if the client list doesn't refresh.
-                let sats = clientStore.clients
-                OrbFloatingView(alert: store.topAlert(), satellites: sats)
-                    .onTapGesture {
-                        // Orb should not react to hover; only a single click action is supported.
-                        NotificationCenter.default.post(name: .relflowhubOpenMain, object: nil)
-                    }
-            case .card:
-                CardFloatingView(summary: SummaryStorage.load())
+            if store.suppressFloatingContent {
+                Color.clear
+            } else {
+                switch store.floatingMode {
+                case .orb:
+                    OrbFloatingView(
+                        alert: store.topAlert(),
+                        devices: grpcDevicesStatus.devices,
+                        pairedSurfaceClients: pairedSurfaceClients,
+                        snapshotUpdatedAtMs: grpcDevicesStatus.updatedAtMs
+                    )
+                        .onTapGesture {
+                            // Orb should not react to hover; only a single click action is supported.
+                            NotificationCenter.default.post(name: .relflowhubOpenMain, object: nil)
+                        }
+                case .card:
+                    CardFloatingView(summary: SummaryStorage.load())
+                }
+            }
+        }
+        .onAppear {
+            refreshGRPCDevicesStatus()
+        }
+        .onReceive(Timer.publish(every: 2.0, on: .main, in: .common).autoconnect()) { _ in
+            refreshGRPCDevicesStatus()
+        }
+    }
+
+    private var pairedSurfaceClients: [HubClientHeartbeat] {
+        clientStore.liveClients().filter { client in
+            let appID = client.appId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !appID.isEmpty else { return false }
+            if appID.hasPrefix("sys_") { return false }
+            if appID == "hub" || appID == "relflowhub" { return false }
+            return true
+        }
+    }
+
+    private func refreshGRPCDevicesStatus() {
+        guard !grpcDevicesStatusRefreshInFlight else { return }
+        grpcDevicesStatusRefreshInFlight = true
+
+        Task.detached(priority: .utility) {
+            let snapshot = GRPCDevicesStatusStorage.load()
+            await MainActor.run {
+                grpcDevicesStatus = snapshot
+                grpcDevicesStatusRefreshInFlight = false
             }
         }
     }
@@ -31,18 +68,131 @@ struct FloatingRootView: View {
 
 struct OrbFloatingView: View {
     let alert: TopAlert
-    let satellites: [HubClientHeartbeat]
+    let devices: [GRPCDeviceStatusEntry]
+    let pairedSurfaceClients: [HubClientHeartbeat]
+    let snapshotUpdatedAtMs: Int64
 
     fileprivate struct SatelliteVisual: Identifiable, Equatable {
         let id: String
-        let appName: String
-        let activity: HubClientActivity
-        let aiEnabled: Bool
+        let kind: SatellitePresenceKind
+        let deviceName: String
+        let loadUnit: Double
+        let recentTokens15m: Int64
         let seed: Double
+        let orbitPhaseOffset: Double
         // Visual arrangement: each satellite gets a stable "orbit plane".
         // This is a cheap 2D projection (rotated ellipse) that reads as multi-plane orbits.
         let orbitPlaneAngle: Double
-        let orbitRadiusMul: Double
+        let orbitRadiusFactor: Double
+        let sizeTier: CGFloat
+    }
+
+    fileprivate enum SatellitePresenceKind: Int, CaseIterable {
+        case pairedSurfaceLocal = 0
+        case xTerminalRemote = 1
+        case genericRemote = 2
+
+        var laneCapacity: Int {
+            switch self {
+            case .pairedSurfaceLocal:
+                return 6
+            case .xTerminalRemote:
+                return 8
+            case .genericRemote:
+                return 10
+            }
+        }
+
+        var sizeScale: CGFloat {
+            switch self {
+            case .pairedSurfaceLocal:
+                return 1.08
+            case .xTerminalRemote:
+                return 0.96
+            case .genericRemote:
+                return 0.86
+            }
+        }
+
+        var fillOpacityBoost: Double {
+            switch self {
+            case .pairedSurfaceLocal:
+                return 0.08
+            case .xTerminalRemote:
+                return 0.04
+            case .genericRemote:
+                return 0.02
+            }
+        }
+
+        var haloOpacity: Double {
+            switch self {
+            case .pairedSurfaceLocal:
+                return 0.18
+            case .xTerminalRemote:
+                return 0.12
+            case .genericRemote:
+                return 0.06
+            }
+        }
+
+        var ringOpacity: Double {
+            switch self {
+            case .pairedSurfaceLocal:
+                return 0.22
+            case .xTerminalRemote:
+                return 0.12
+            case .genericRemote:
+                return 0.05
+            }
+        }
+
+        var ringPaddingFactor: CGFloat {
+            switch self {
+            case .pairedSurfaceLocal:
+                return 0.46
+            case .xTerminalRemote:
+                return 0.28
+            case .genericRemote:
+                return 0.18
+            }
+        }
+
+        var brightnessBoost: Double {
+            switch self {
+            case .pairedSurfaceLocal:
+                return 0.04
+            case .xTerminalRemote:
+                return 0.02
+            case .genericRemote:
+                return 0.0
+            }
+        }
+    }
+
+    private enum PresenceSource {
+        case grpcDevice(GRPCDeviceStatusEntry)
+        case pairedSurface(HubClientHeartbeat)
+
+        var stableID: String {
+            switch self {
+            case .grpcDevice(let device):
+                return device.deviceId
+            case .pairedSurface(let client):
+                return client.appId
+            }
+        }
+
+        var displayName: String {
+            switch self {
+            case .grpcDevice(let device):
+                let name = device.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                return name.isEmpty ? device.deviceId : name
+            case .pairedSurface(let client):
+                let name = client.appName.trimmingCharacters(in: .whitespacesAndNewlines)
+                return name.isEmpty ? client.appId : name
+            }
+        }
     }
 
     @State private var fromRGBA: (Double, Double, Double, Double) = (0.0, 0.78, 0.59, 1.0)
@@ -57,17 +207,34 @@ struct OrbFloatingView: View {
     @State private var satOmegaRef: Double = 0.18
     @State private var satPhaseBase: Double = 0.0
     @State private var satPhaseStartT: Double = 0.0
+    @State private var cachedSatellites: [SatelliteVisual] = []
+    @State private var cachedSatelliteLastSeenAt: [String: Double] = [:]
 
-    private let satPresenceTTL: Double = 12.0
+    private let devicePresenceTTL: Double = 18.0
+    private let deviceRecentActivityPresenceTTL: Double = 300.0
+    private let deviceSoftPresenceTTL: Double = 90.0
+    private let pairedSurfacePresenceTTL: Double = 12.0
+    private let snapshotFreshnessTTL: Double = 20.0
+    private let satellitePersistenceTTL: Double = 10.0
 
-    private let points = ParticleCloud.points(count: 900, seed: 1)
+    private let points = ParticleCloud.points(count: 2520, seed: 1)
 
     var body: some View {
-        // Low-resource: keep the orb smooth when urgent, but run at a lower tick rate when idle/normal.
-        let minInterval = (alert.kind == .meetingUrgent) ? (1.0 / 60.0) : (1.0 / 30.0)
+        // Keep the orb readable without burning the main thread.
+        let minInterval: Double = {
+            switch alert.kind {
+            case .meetingUrgent:
+                return 1.0 / 30.0
+            case .meetingHot, .meetingSoon:
+                return 1.0 / 26.0
+            case .idle:
+                return 1.0 / 20.0
+            default:
+                return 1.0 / 22.0
+            }
+        }()
         TimelineView(.animation(minimumInterval: minInterval, paused: false)) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate
-            let nowTs = ctx.date.timeIntervalSince1970
             let color = currentColor(now: ctx.date)
 
             let omegaTarget = orbOmegaTarget()
@@ -77,8 +244,6 @@ struct OrbFloatingView: View {
             let ay = orbPhaseBase + (t - orbPhaseStartT) * orbOmegaRef
             let ax = ay * 0.67
             let orbitPhase = satPhaseBase + (t - satPhaseStartT) * satOmegaRef
-
-            let sat = satelliteVisuals(now: nowTs)
 
             let key = phaseKey(omegaTarget: omegaTarget, orbitOmegaTarget: orbitOmegaTarget)
 
@@ -90,19 +255,19 @@ struct OrbFloatingView: View {
                     // square coordinate space. Otherwise, if the hosting view isn't perfectly
                     // square, the canvas draws in the top-left while satellites stay centered.
                     ZStack {
-                        Canvas { context, _ in
+                        // Transparent floating panels can exhibit temporal tearing when multiple
+                        // async canvases race each other. Keep orb rendering on the main render path.
+                        Canvas(opaque: false, colorMode: .linear, rendersAsynchronously: false) { context, _ in
                             draw(context: &context, side: side, t: t, ay: ay, ax: ax, rgba: color)
                         }
                         .frame(width: side, height: side)
                         .allowsHitTesting(false)
 
-                        if !sat.shown.isEmpty {
+                        if !cachedSatellites.isEmpty {
                             SatellitesOrbitLayer(
-                                satellites: sat.shown,
-                                extraCount: sat.extra,
+                                satellites: cachedSatellites,
                                 t: t,
                                 orbitPhase: orbitPhase,
-                                rgba: color,
                                 side: side
                             )
                             .frame(width: side, height: side)
@@ -157,6 +322,16 @@ struct OrbFloatingView: View {
             fromRGBA = c
             toRGBA = c
             transitionStart = Date()
+            refreshSatellites()
+        }
+        .onChange(of: devices) { _ in
+            refreshSatellites()
+        }
+        .onChange(of: pairedSurfaceClients) { _ in
+            refreshSatellites()
+        }
+        .onChange(of: snapshotUpdatedAtMs) { _ in
+            refreshSatellites()
         }
     }
 
@@ -167,67 +342,128 @@ struct OrbFloatingView: View {
         return "k=\(alert.kind.rawValue)|c=\(alert.count)|r=\(alert.urgentSecondsToMeeting ?? -1)|w=\(alert.urgentWindowSeconds ?? -1)|o=\(a)|so=\(b)"
     }
 
-    private func satelliteVisuals(now: Double) -> (shown: [SatelliteVisual], extra: Int) {
-        // Filter with TTL here so satellites disappear even if the client store does not publish.
-        let live = satellites.filter { hb in
-            if hb.updatedAt > now + 2.0 { return false }
-            return (now - hb.updatedAt) < satPresenceTTL
+    private func satelliteVisuals(now: Double) -> [SatelliteVisual] {
+        let liveDevices = devices.filter { device in
+            deviceCountsAsLive(device, now: now)
+        }
+        let livePairedSurfaces = pairedSurfaceClients.filter { client in
+            let updatedAt = client.updatedAt
+            if updatedAt > now + 2.0 { return false }
+            if updatedAt <= 0 { return false }
+            return (now - updatedAt) < pairedSurfacePresenceTTL
         }
 
-        let ordered = live
-            .map { ($0, stableUnitSeed($0.appId)) }
+        let ordered = (liveDevices.map(PresenceSource.grpcDevice) + livePairedSurfaces.map(PresenceSource.pairedSurface))
+            .map { source in
+                (
+                    source: source,
+                    kind: satellitePresenceKind(for: source),
+                    seed: stableUnitSeed(source.stableID)
+                )
+            }
             .sorted { a, b in
-                if a.1 != b.1 { return a.1 < b.1 }
-                return a.0.appName < b.0.appName
+                if a.kind.rawValue != b.kind.rawValue {
+                    return a.kind.rawValue < b.kind.rawValue
+                }
+                if a.seed != b.seed { return a.seed < b.seed }
+                return a.source.displayName < b.source.displayName
             }
 
-        let shownCount = min(6, ordered.count)
-        let planes = orbitPlanes(count: shownCount)
-        let radiusMuls = orbitRadiusMultipliers(count: shownCount)
-
         var out: [SatelliteVisual] = []
-        out.reserveCapacity(shownCount)
-        for i in 0..<shownCount {
-            let (hb, seed) = ordered[i]
-            out.append(
-                SatelliteVisual(
-                    id: hb.appId,
-                    appName: hb.appName,
-                    activity: hb.activity,
-                    aiEnabled: hb.aiEnabled,
-                    seed: seed,
-                    orbitPlaneAngle: planes[i],
-                    orbitRadiusMul: radiusMuls[i]
+        out.reserveCapacity(ordered.count)
+
+        let grouped = Dictionary(grouping: ordered) { $0.kind }
+        let orderedKinds = SatellitePresenceKind.allCases.sorted { $0.rawValue < $1.rawValue }
+        let totalLaneCount = max(1, orderedKinds.reduce(into: 0) { partial, kind in
+            partial += orbitLaneCount(itemCount: grouped[kind]?.count ?? 0, kind: kind)
+        })
+        let radiusFactors = orbitRadiusFactors(totalLaneCount: totalLaneCount)
+
+        var laneCursor = 0
+        for kind in orderedKinds {
+            let items = grouped[kind] ?? []
+            guard !items.isEmpty else { continue }
+
+            let laneCount = orbitLaneCount(itemCount: items.count, kind: kind)
+            for (index, item) in items.enumerated() {
+                let laneInKind = index / max(1, kind.laneCapacity)
+                let slotInLane = index % max(1, kind.laneCapacity)
+                let globalLane = min(radiusFactors.count - 1, laneCursor + laneInKind)
+                let phaseOffset = (item.seed * 2.0 * Double.pi)
+                    + (2.0 * Double.pi * Double(slotInLane) / Double(max(1, kind.laneCapacity)))
+                out.append(
+                    SatelliteVisual(
+                        id: item.source.stableID,
+                        kind: kind,
+                        deviceName: item.source.displayName,
+                        loadUnit: presenceLoadUnit(item.source, now: now),
+                        recentTokens15m: presenceRecentTokens15m(item.source, now: now),
+                        seed: item.seed,
+                        orbitPhaseOffset: phaseOffset,
+                        orbitPlaneAngle: orbitPlaneAngle(kind: kind, laneInKind: laneInKind, globalLane: globalLane),
+                        orbitRadiusFactor: radiusFactors[globalLane],
+                        sizeTier: satelliteSizeTier(for: item.seed)
+                    )
                 )
-            )
+            }
+            laneCursor += laneCount
         }
-        return (shown: out, extra: max(0, ordered.count - out.count))
+        return out
     }
 
-    private func orbitPlanes(count: Int) -> [Double] {
-        // Match your mental model:
-        // - 1: horizontal
-        // - 2: 0°, +45°
-        // - 3: 0°, +45°, -45°
-        // - 4-6: add +22.5°, -22.5°, then a second 0° (different radius) to keep all planes in
-        //        the 0/±45/±22.5 family and avoid a vertical orbit.
+    private func satelliteSizeTier(for seed: Double) -> CGFloat {
+        switch seed {
+        case ..<0.18:
+            return 0.72
+        case ..<0.42:
+            return 0.88
+        case ..<0.68:
+            return 1.06
+        case ..<0.88:
+            return 1.28
+        default:
+            return 1.52
+        }
+    }
+
+    private func orbitPlaneAngle(kind: SatellitePresenceKind, laneInKind: Int, globalLane: Int) -> Double {
         let d2r = Double.pi / 180.0
-        let base: [Double] = [
-            0.0 * d2r,
-            45.0 * d2r,
-            -45.0 * d2r,
-            22.5 * d2r,
-            -22.5 * d2r,
-            0.0 * d2r,
-        ]
-        return Array(base.prefix(max(0, min(6, count))))
+        let baseAngles: [Double]
+        switch kind {
+        case .pairedSurfaceLocal:
+            baseAngles = [0.0, 28.0, -28.0, 54.0, -54.0]
+        case .xTerminalRemote:
+            baseAngles = [16.0, -16.0, 42.0, -42.0, 68.0, -68.0]
+        case .genericRemote:
+            baseAngles = [8.0, -8.0, 24.0, -24.0, 40.0, -40.0, 58.0, -58.0]
+        }
+        let base = baseAngles[laneInKind % max(1, baseAngles.count)] * d2r
+        let laneWave = Double((globalLane / max(1, baseAngles.count)) % 3) * 6.0 * d2r
+        let laneSign: Double = (globalLane % 2 == 0) ? 1.0 : -1.0
+        return base + laneWave * laneSign
     }
 
-    private func orbitRadiusMultipliers(count: Int) -> [Double] {
-        // Slight stagger avoids visual collisions at orbit intersections.
-        // Keep max radius conservative so satellites stay within the 198x198 panel bounds.
-        let base: [Double] = [1.00, 0.97, 1.03, 0.94, 1.01, 0.91]
-        return Array(base.prefix(max(0, min(6, count))))
+    private func orbitLaneCount(itemCount: Int, kind: SatellitePresenceKind) -> Int {
+        guard itemCount > 0 else { return 0 }
+        return Int(ceil(Double(itemCount) / Double(max(1, kind.laneCapacity))))
+    }
+
+    private func orbitRadiusFactors(totalLaneCount: Int) -> [Double] {
+        let count = max(1, totalLaneCount)
+        if count == 1 {
+            return [0.458]
+        }
+
+        let minFactor = 0.424
+        let maxFactor = 0.486
+        let step = (maxFactor - minFactor) / Double(max(1, count - 1))
+        let wobble: [Double] = [0.0, -0.003, 0.004, -0.001, 0.002, -0.002]
+
+        return (0..<count).map { index in
+            let base = minFactor + (Double(index) * step)
+            let adjusted = base + wobble[index % wobble.count]
+            return max(minFactor, min(maxFactor, adjusted))
+        }
     }
 
     private func stableUnitSeed(_ s: String) -> Double {
@@ -240,6 +476,138 @@ struct OrbFloatingView: View {
         // Use top 53 bits for a stable unit double.
         let v = Double((h >> 11) & ((1 << 53) - 1))
         return v / Double(1 << 53)
+    }
+
+    private func snapshotAgeSeconds(now: Double) -> Double {
+        guard snapshotUpdatedAtMs > 0 else { return Double.greatestFiniteMagnitude }
+        let updatedAt = Double(snapshotUpdatedAtMs) / 1000.0
+        return max(0.0, now - updatedAt)
+    }
+
+    private func deviceCountsAsLive(_ device: GRPCDeviceStatusEntry, now: Double) -> Bool {
+        let lastSeen = Double(device.lastSeenAtMs) / 1000.0
+        let recentActivityFresh = deviceRecentActivityAgeSeconds(device, now: now).map {
+            $0 < deviceRecentActivityPresenceTTL
+        } ?? false
+
+        if lastSeen > now + 2.0 { return false }
+
+        if device.connected {
+            if lastSeen <= 0 {
+                return recentActivityFresh || snapshotAgeSeconds(now: now) < snapshotFreshnessTTL
+            }
+            return (now - lastSeen) < devicePresenceTTL || recentActivityFresh
+        }
+
+        if lastSeen > 0, (now - lastSeen) < deviceSoftPresenceTTL {
+            return true
+        }
+
+        return recentActivityFresh
+    }
+
+    private func deviceRecentActivityAgeSeconds(_ device: GRPCDeviceStatusEntry, now: Double) -> Double? {
+        guard let activity = device.lastActivity, activity.createdAtMs > 0 else { return nil }
+        let ageSec = max(0.0, now - (Double(activity.createdAtMs) / 1000.0))
+        return ageSec > (deviceRecentActivityPresenceTTL * 6.0) ? nil : ageSec
+    }
+
+    private func deviceDisplayName(_ device: GRPCDeviceStatusEntry) -> String {
+        let name = device.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? device.deviceId : name
+    }
+
+    private func satellitePresenceKind(for source: PresenceSource) -> SatellitePresenceKind {
+        switch source {
+        case .pairedSurface(let client):
+            if isPairedSurfaceAppID(client.appId) {
+                return .pairedSurfaceLocal
+            }
+            return isXTerminalAppID(client.appId) ? .xTerminalRemote : .genericRemote
+        case .grpcDevice(let device):
+            return isXTerminalAppID(device.appId) ? .xTerminalRemote : .genericRemote
+        }
+    }
+
+    private func isPairedSurfaceAppID(_ appID: String) -> Bool {
+        normalizedAppID(appID).hasPrefix("pairedsurface")
+    }
+
+    private func isXTerminalAppID(_ appID: String) -> Bool {
+        let normalized = normalizedAppID(appID)
+        guard !normalized.isEmpty else { return false }
+        if normalized.hasPrefix("xterminal") || normalized.hasPrefix("axterminal") {
+            return true
+        }
+        if normalized.contains("xterminal") || normalized.contains("axterminal") {
+            return true
+        }
+        return normalized.hasPrefix("xt")
+    }
+
+    private func normalizedAppID(_ value: String) -> String {
+        value
+            .lowercased()
+            .unicodeScalars
+            .filter { CharacterSet.alphanumerics.contains($0) }
+            .map(String.init)
+            .joined()
+    }
+
+    private func presenceRecentTokens15m(_ source: PresenceSource, now: Double) -> Int64 {
+        switch source {
+        case .grpcDevice(let device):
+            return recentTokens15m(device, now: now)
+        case .pairedSurface:
+            return 0
+        }
+    }
+
+    private func presenceLoadUnit(_ source: PresenceSource, now: Double) -> Double {
+        switch source {
+        case .grpcDevice(let device):
+            return deviceLoadUnit(device, now: now)
+        case .pairedSurface(let client):
+            return pairedSurfaceLoadUnit(client, now: now)
+        }
+    }
+
+    private func recentTokens15m(_ device: GRPCDeviceStatusEntry, now: Double) -> Int64 {
+        guard let series = device.tokenSeries5m1h, !series.points.isEmpty else {
+            return max(0, device.lastActivity?.totalTokens ?? 0)
+        }
+        let cutoffMs = Int64((now - (15.0 * 60.0)) * 1000.0)
+        return series.points.reduce(into: 0) { partial, point in
+            let bucketEnd = point.tMs + max(1, series.bucketMs)
+            guard bucketEnd >= cutoffMs else { return }
+            partial += max(0, point.tokens)
+        }
+    }
+
+    private func deviceLoadUnit(_ device: GRPCDeviceStatusEntry, now: Double) -> Double {
+        let tokens15m = recentTokens15m(device, now: now)
+        let tokenUnit = min(1.0, Double(tokens15m) / 12_000.0)
+        let streamUnit = min(0.18, Double(max(0, device.activeEventSubscriptions)) * 0.06)
+        let freshActivityBoost: Double = {
+            guard let activity = device.lastActivity, activity.createdAtMs > 0 else { return 0.0 }
+            let ageSec = max(0.0, now - (Double(activity.createdAtMs) / 1000.0))
+            guard ageSec < 180.0 else { return 0.0 }
+            let freshness = ageSec < 30.0 ? 1.0 : (ageSec < 60.0 ? 0.65 : 0.28)
+            let tokenMagnitude = max(0.08, min(0.34, Double(max(0, activity.totalTokens)) / 5_000.0))
+            return freshness * tokenMagnitude
+        }()
+        return min(1.0, tokenUnit + streamUnit + freshActivityBoost)
+    }
+
+    private func pairedSurfaceLoadUnit(_ client: HubClientHeartbeat, now: Double) -> Double {
+        let ageSec = max(0.0, now - client.updatedAt)
+        let freshnessBoost = ageSec < 2.0 ? 0.06 : 0.0
+        switch client.activity {
+        case .active:
+            return min(1.0, 0.84 + freshnessBoost)
+        case .idle:
+            return min(1.0, 0.18 + freshnessBoost)
+        }
     }
 
     private func currentColor(now: Date) -> (Double, Double, Double, Double) {
@@ -303,11 +671,21 @@ struct OrbFloatingView: View {
         }
     }
 
+    private func pointStride() -> Int {
+        switch alert.kind {
+        case .meetingUrgent, .meetingHot, .meetingSoon, .idle:
+            return 1
+        default:
+            return 1
+        }
+    }
+
     private func draw(context: inout GraphicsContext, side: CGFloat, t: Double, ay: Double, ax: Double, rgba: (Double, Double, Double, Double)) {
         let cx = side / 2
         let cy = side / 2
-        // Leave a bit of margin for satellites to orbit within the 198x198 panel.
-        let radius = side * 0.43
+        // Leave a bit of margin for device planets to orbit around the orb.
+        let radius = side * 0.352
+        let pointScale = max(0.40, side / 470.0)
 
         let u = urgencyUnit()
 
@@ -327,54 +705,131 @@ struct OrbFloatingView: View {
             pulse = 0.0
         }
 
-        for p in points {
-            // Rotate around Y.
-            let x1 = p.x * cosY + p.z * sinY
-            let z1 = -p.x * sinY + p.z * cosY
-            // Rotate around X.
-            let y2 = p.y * cosX - z1 * sinX
-            let z2 = p.y * sinX + z1 * cosX
+        let strideValue = max(1, pointStride())
+        context.withCGContext { cg in
+            cg.setShouldAntialias(true)
+            cg.setAllowsAntialiasing(true)
 
-            // Perspective projection.
-            let depth = 1.9
-            let denom = max(0.25, depth - z2)
-            let s = 1.0 / denom
+            for index in stride(from: 0, to: points.count, by: strideValue) {
+                let p = points[index]
+                // Rotate around Y.
+                let x1 = p.x * cosY + p.z * sinY
+                let z1 = -p.x * sinY + p.z * cosY
+                // Rotate around X.
+                let y2 = p.y * cosX - z1 * sinX
+                let z2 = p.y * sinX + z1 * cosX
 
-            let px = cx + CGFloat(x1 * s) * radius
-            let py = cy + CGFloat(y2 * s) * radius
+                // Perspective projection.
+                let depth = 1.92
+                let denom = max(0.28, depth - z2)
+                let s = 1.0 / denom
 
-            // Depth-based alpha/size.
-            let zN = max(-1.0, min(1.0, z2))
-            let depthL = (zN + 1.0) / 2.0
+                let px = cx + CGFloat(x1 * s) * radius
+                let py = cy + CGFloat(y2 * s) * radius
 
-            var a = 0.12 + 0.75 * depthL
-            if alert.kind == .meetingUrgent || alert.kind == .meetingHot {
-                a = min(1.0, a + 0.10 * pulse)
+                // Depth-based alpha/size.
+                let zN = max(-1.0, min(1.0, z2))
+                let depthL = (zN + 1.0) / 2.0
+
+                var alpha = 0.15 + 0.76 * depthL
+                if alert.kind == .meetingUrgent || alert.kind == .meetingHot {
+                    alpha = min(1.0, alpha + 0.08 * pulse)
+                }
+
+                // Brightness increases for front points.
+                let brightness = 0.62 + 0.46 * depthL + ((alert.kind == .meetingUrgent || alert.kind == .meetingHot) ? 0.12 * pulse : 0.0)
+                let red = min(1.0, rgba.0 * brightness)
+                let green = min(1.0, rgba.1 * brightness)
+                let blue = min(1.0, rgba.2 * brightness)
+
+                let sizeP = CGFloat(0.24 + 0.48 * depthL)
+                    * pointScale
+                    * ((alert.kind == .meetingUrgent || alert.kind == .meetingHot) ? CGFloat(1.0 + 0.04 * pulse) : 1.0)
+                let rect = CGRect(x: px - sizeP / 2, y: py - sizeP / 2, width: sizeP, height: sizeP)
+
+                // Soften the silhouette to avoid a visible "outer ring".
+                let dx = Double((px - cx) / radius)
+                let dy = Double((py - cy) / radius)
+                let dist = min(1.0, sqrt(dx * dx + dy * dy))
+                let edgeFade = smoothstep(1.0, 0.72, dist)
+                let alpha2 = alpha * edgeFade
+
+                cg.setFillColor(
+                    red: red,
+                    green: green,
+                    blue: blue,
+                    alpha: alpha2
+                )
+                cg.fillEllipse(in: rect)
             }
-
-            // Brightness increases for front points.
-            let bright = 0.55 + 0.55 * depthL + ((alert.kind == .meetingUrgent || alert.kind == .meetingHot) ? 0.15 * pulse : 0.0)
-            let r = min(1.0, rgba.0 * bright)
-            let g = min(1.0, rgba.1 * bright)
-            let b = min(1.0, rgba.2 * bright)
-
-            let sizeP = CGFloat(0.75 + 1.45 * depthL) * ((alert.kind == .meetingUrgent || alert.kind == .meetingHot) ? CGFloat(1.0 + 0.05 * pulse) : 1.0)
-            let rect = CGRect(x: px - sizeP / 2, y: py - sizeP / 2, width: sizeP, height: sizeP)
-            // Soften the silhouette to avoid a visible "outer ring".
-            let dx = Double((px - cx) / radius)
-            let dy = Double((py - cy) / radius)
-            let dist = min(1.0, sqrt(dx * dx + dy * dy))
-            let edgeFade = smoothstep(1.0, 0.82, dist)
-
-            // Very light "local flow" noise: modulate alpha slightly based on position + time.
-            // This keeps the gaps transparent while avoiding a static "printed" look.
-            let f1 = 0.5 + 0.5 * sin((x1 * 7.1 + y2 * 9.2 + z2 * 5.7) + t * 0.9)
-            let f2 = 0.5 + 0.5 * sin((x1 * 13.7 - y2 * 8.6 + z2 * 11.4) - t * 0.6)
-            let flow = 0.88 + 0.12 * (0.65 * f1 + 0.35 * f2)
-
-            let a2 = a * edgeFade * flow
-            context.fill(Path(ellipseIn: rect), with: .color(Color(.sRGB, red: r, green: g, blue: b, opacity: a2)))
         }
+    }
+
+    private func refreshSatellites(now: Double = Date().timeIntervalSince1970) {
+        let freshSatellites = satelliteVisuals(now: now)
+        let previousByID = Dictionary(uniqueKeysWithValues: cachedSatellites.map { ($0.id, $0) })
+        let freshIDs = Set(freshSatellites.map(\.id))
+
+        var merged: [SatelliteVisual] = []
+        merged.reserveCapacity(max(cachedSatellites.count, freshSatellites.count))
+
+        var retainedLastSeenAt: [String: Double] = [:]
+
+        for satellite in freshSatellites {
+            let mergedSatellite: SatelliteVisual
+            if let previous = previousByID[satellite.id] {
+                // Preserve each satellite's orbital geometry across snapshot refreshes so the
+                // orbit stays continuous even when device presence data jitters.
+                mergedSatellite = SatelliteVisual(
+                    id: satellite.id,
+                    kind: satellite.kind,
+                    deviceName: satellite.deviceName,
+                    loadUnit: previous.loadUnit * 0.72 + satellite.loadUnit * 0.28,
+                    recentTokens15m: satellite.recentTokens15m,
+                    seed: previous.seed,
+                    orbitPhaseOffset: previous.orbitPhaseOffset,
+                    orbitPlaneAngle: previous.orbitPlaneAngle,
+                    orbitRadiusFactor: previous.orbitRadiusFactor,
+                    sizeTier: previous.sizeTier
+                )
+            } else {
+                mergedSatellite = satellite
+            }
+            merged.append(mergedSatellite)
+            retainedLastSeenAt[satellite.id] = now
+        }
+
+        for satellite in cachedSatellites where !freshIDs.contains(satellite.id) {
+            let lastSeenAt = cachedSatelliteLastSeenAt[satellite.id] ?? now
+            guard (now - lastSeenAt) <= satellitePersistenceTTL else { continue }
+
+            merged.append(
+                SatelliteVisual(
+                    id: satellite.id,
+                    kind: satellite.kind,
+                    deviceName: satellite.deviceName,
+                    loadUnit: max(0.10, satellite.loadUnit * 0.92),
+                    recentTokens15m: satellite.recentTokens15m,
+                    seed: satellite.seed,
+                    orbitPhaseOffset: satellite.orbitPhaseOffset,
+                    orbitPlaneAngle: satellite.orbitPlaneAngle,
+                    orbitRadiusFactor: satellite.orbitRadiusFactor,
+                    sizeTier: satellite.sizeTier
+                )
+            )
+            retainedLastSeenAt[satellite.id] = lastSeenAt
+        }
+
+        cachedSatellites = merged.sorted { lhs, rhs in
+            if lhs.kind.rawValue != rhs.kind.rawValue {
+                return lhs.kind.rawValue < rhs.kind.rawValue
+            }
+            if lhs.seed != rhs.seed {
+                return lhs.seed < rhs.seed
+            }
+            return lhs.id < rhs.id
+        }
+        cachedSatelliteLastSeenAt = retainedLastSeenAt
     }
 
     private func smoothstep(_ edge0: Double, _ edge1: Double, _ x: Double) -> Double {
@@ -403,7 +858,8 @@ private struct ParticlePoint {
 private enum ParticleCloud {
     static func points(count: Int, seed: UInt64) -> [ParticlePoint] {
         // Deterministic "random-ish" volume distribution.
-        // This removes the hard silhouette you get from points strictly on a sphere surface.
+        // Keep most points near the outer shell so the orb reads dense without needing
+        // an excessive point count, but retain some inner depth so it doesn't look flat.
         let n = max(64, count)
         let ga = Double.pi * (3.0 - sqrt(5.0))
         var pts: [ParticlePoint] = []
@@ -420,7 +876,7 @@ private enum ParticleCloud {
             var z = sin(theta) * r0
 
             // Add small deterministic jitter.
-            let j = 0.05
+            let j = 0.04
             x += (rng.nextUnit() - 0.5) * j
             y += (rng.nextUnit() - 0.5) * j
             z += (rng.nextUnit() - 0.5) * j
@@ -431,8 +887,15 @@ private enum ParticleCloud {
             y /= len
             z /= len
             let u = rng.nextUnit()
-            // Uniform in volume: r = u^(1/3). Bias slightly outward for a "shell" feel.
-            let rr = pow(u, 1.0 / 3.0) * 0.96 + 0.04
+            let shellMix = rng.nextUnit()
+            let rr: Double
+            if shellMix < 0.78 {
+                rr = 0.80 + pow(u, 0.28) * 0.16
+            } else if shellMix < 0.95 {
+                rr = 0.46 + pow(u, 0.70) * 0.28
+            } else {
+                rr = 0.18 + pow(u, 1.02) * 0.16
+            }
             pts.append(ParticlePoint(x: x * rr, y: y * rr, z: z * rr))
         }
         return pts
@@ -458,91 +921,215 @@ private struct SplitMix64 {
 
 private struct SatellitesOrbitLayer: View {
     let satellites: [OrbFloatingView.SatelliteVisual]
-    let extraCount: Int
     let t: Double
     let orbitPhase: Double
-    let rgba: (Double, Double, Double, Double)
     let side: CGFloat
-    private let orbitSquash: CGFloat = 0.62
+    private let orbitSquash: CGFloat = 0.68
 
     var body: some View {
         let shown = satellites
-        // Keep satellites fully inside the panel bounds.
-        let rActive: CGFloat = side * 0.46
-        let rIdle: CGFloat = side * 0.43
 
-        let hue0 = baseHue(from: rgba)
+        Canvas(opaque: false, colorMode: .linear, rendersAsynchronously: false) { context, _ in
+            draw(
+                context: &context,
+                satellites: shown
+            )
+        }
+    }
 
-        return ZStack {
-            // No explicit orbit guide rings: keep the design clean.
-            ForEach(Array(shown.enumerated()), id: \.element.id) { i, s in
-                SatelliteDotView(
-                    s: s,
-                    t: t,
-                    orbitPhase: orbitPhase,
-                    orbitSquash: orbitSquash,
-                    rActive: rActive,
-                    rIdle: rIdle,
-                    color: satelliteColor(index: i, baseHue: hue0)
+    private struct SatelliteRenderState {
+        let x: CGFloat
+        let y: CGFloat
+        let size: CGFloat
+        let baseOpacity: Double
+        let depth: Double
+    }
+
+    private struct SatelliteDrawNode {
+        let id: String
+        let rect: CGRect
+        let palette: SatellitePalette
+        let baseOpacity: Double
+        let depth: Double
+    }
+
+    private struct SatellitePalette {
+        let base: NSColor
+        let bright: NSColor
+        let shadow: NSColor
+    }
+
+    private func satellitePalette(for satellite: OrbFloatingView.SatelliteVisual, index: Int) -> SatellitePalette {
+        let load = max(0.0, min(1.0, satellite.loadUnit))
+        let bucket = min(5, max(0, Int((load * 6.0).rounded(.down))))
+
+        let palette: (base: NSColor, bright: NSColor, shadow: NSColor)
+        switch bucket {
+        case 0:
+            palette = (
+                NSColor(deviceRed: 0.36, green: 0.93, blue: 0.66, alpha: 1.0),
+                NSColor(deviceRed: 0.78, green: 1.0, blue: 0.90, alpha: 1.0),
+                NSColor(deviceRed: 0.06, green: 0.33, blue: 0.21, alpha: 1.0)
+            )
+        case 1:
+            palette = (
+                NSColor(deviceRed: 0.24, green: 0.82, blue: 0.48, alpha: 1.0),
+                NSColor(deviceRed: 0.72, green: 0.98, blue: 0.82, alpha: 1.0),
+                NSColor(deviceRed: 0.08, green: 0.30, blue: 0.18, alpha: 1.0)
+            )
+        case 2:
+            palette = (
+                NSColor(deviceRed: 0.90, green: 0.74, blue: 0.24, alpha: 1.0),
+                NSColor(deviceRed: 1.0, green: 0.92, blue: 0.62, alpha: 1.0),
+                NSColor(deviceRed: 0.45, green: 0.28, blue: 0.08, alpha: 1.0)
+            )
+        case 3:
+            palette = (
+                NSColor(deviceRed: 0.98, green: 0.58, blue: 0.22, alpha: 1.0),
+                NSColor(deviceRed: 1.0, green: 0.84, blue: 0.58, alpha: 1.0),
+                NSColor(deviceRed: 0.43, green: 0.18, blue: 0.06, alpha: 1.0)
+            )
+        case 4:
+            palette = (
+                NSColor(deviceRed: 0.95, green: 0.38, blue: 0.22, alpha: 1.0),
+                NSColor(deviceRed: 1.0, green: 0.76, blue: 0.62, alpha: 1.0),
+                NSColor(deviceRed: 0.40, green: 0.12, blue: 0.08, alpha: 1.0)
+            )
+        default:
+            palette = (
+                NSColor(deviceRed: 0.86, green: 0.22, blue: 0.24, alpha: 1.0),
+                NSColor(deviceRed: 1.0, green: 0.66, blue: 0.70, alpha: 1.0),
+                NSColor(deviceRed: 0.34, green: 0.08, blue: 0.11, alpha: 1.0)
+            )
+        }
+
+        let brightnessBoost = CGFloat((Double(index % 3) * 0.010) + satellite.kind.brightnessBoost)
+        return SatellitePalette(
+            base: palette.base.blended(withFraction: brightnessBoost, of: .white) ?? palette.base,
+            bright: palette.bright.blended(withFraction: brightnessBoost * 0.32, of: .white) ?? palette.bright,
+            shadow: palette.shadow
+        )
+    }
+
+    private func draw(
+        context: inout GraphicsContext,
+        satellites: [OrbFloatingView.SatelliteVisual]
+    ) {
+        let center = CGPoint(x: side / 2, y: side / 2)
+        context.withCGContext { cg in
+            cg.setShouldAntialias(true)
+            cg.setAllowsAntialiasing(true)
+
+            let drawNodes = satellites.enumerated().map { index, satellite in
+                let render = satelliteRenderState(
+                    satellite,
+                    satelliteCount: satellites.count
+                )
+                let palette = satellitePalette(for: satellite, index: index)
+                return SatelliteDrawNode(
+                    id: satellite.id,
+                    rect: CGRect(
+                        x: center.x + render.x - render.size / 2,
+                        y: center.y + render.y - render.size / 2,
+                        width: render.size,
+                        height: render.size
+                    ),
+                    palette: palette,
+                    baseOpacity: render.baseOpacity,
+                    depth: render.depth
                 )
             }
+            .sorted { lhs, rhs in
+                if abs(lhs.depth - rhs.depth) > 0.0001 {
+                    return lhs.depth < rhs.depth
+                }
+                return lhs.id < rhs.id
+            }
 
-            if extraCount > 0 {
-                extraBadge(extraCount, y: -rActive)
+            for node in drawNodes {
+                drawPlanet(
+                    cg: cg,
+                    rect: node.rect,
+                    palette: node.palette,
+                    baseOpacity: node.baseOpacity
+                )
             }
         }
     }
 
-    private func extraBadge(_ n: Int, y: CGFloat) -> some View {
-        Text("+\(n)")
-            .font(.system(size: 10, weight: .semibold, design: .rounded))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(Color.black.opacity(0.22))
-            .clipShape(Capsule())
-            .offset(x: 0, y: y)
+    private func drawPlanet(
+        cg: CGContext,
+        rect: CGRect,
+        palette: SatellitePalette,
+        baseOpacity: Double
+    ) {
+        let fillColor = palette.base.withAlphaComponent(baseOpacity)
+        cg.setFillColor(fillColor.cgColor)
+        cg.fillEllipse(in: rect)
+
+        // Keep just a whisper of edge definition so the dot stays readable on bright orb states.
+        cg.setStrokeColor(palette.shadow.withAlphaComponent(baseOpacity * 0.06).cgColor)
+        cg.setLineWidth(max(0.28, rect.width * 0.010))
+        cg.strokeEllipse(in: rect.insetBy(dx: rect.width * 0.022, dy: rect.height * 0.022))
     }
 
-    private func baseHue(from rgba: (Double, Double, Double, Double)) -> Double {
-        // Derive a hue from the orb color so the satellites feel related,
-        // then offset each satellite hue slightly.
-        let c = NSColor(deviceRed: CGFloat(rgba.0), green: CGFloat(rgba.1), blue: CGFloat(rgba.2), alpha: 1.0)
-        let rgb = c.usingColorSpace(.deviceRGB) ?? c
-        var h: CGFloat = 0
-        var s: CGFloat = 0
-        var b: CGFloat = 0
-        var a: CGFloat = 0
-        rgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
-        return Double(h)
-    }
+    private func satelliteRenderState(
+        _ satellite: OrbFloatingView.SatelliteVisual,
+        satelliteCount: Int
+    ) -> SatelliteRenderState {
+        let dir: Double = (satellite.seed < 0.5) ? 1.0 : -1.0
+        let speedMul: Double = 0.92 + 0.36 * satellite.seed
+        let angle = satellite.orbitPhaseOffset + orbitPhase * speedMul * dir
+        let rr: CGFloat = side * CGFloat(satellite.orbitRadiusFactor)
 
-    private func satelliteColor(index: Int, baseHue: Double) -> Color {
-        // Fixed offsets keep the system readable (avoid random rainbow).
-        let offsets: [Double] = [0.00, 0.10, -0.10, 0.20, -0.20, 0.30]
-        let off = offsets[max(0, min(offsets.count - 1, index))]
-        var h = baseHue + off
-        if h < 0 { h += 1 }
-        if h > 1 { h -= 1 }
-        return Color(hue: h, saturation: 0.72, brightness: 1.0, opacity: 0.95)
+        let x0 = CGFloat(cos(angle)) * rr
+        let y0 = CGFloat(sin(angle)) * rr * orbitSquash
+        let ca = CGFloat(cos(satellite.orbitPlaneAngle))
+        let sa = CGFloat(sin(satellite.orbitPlaneAngle))
+        let x = x0 * ca - y0 * sa
+        let y = x0 * sa + y0 * ca
+
+        let baseOpacity = min(0.88, max(0.32, 0.48 + (0.16 * satellite.loadUnit) + satellite.kind.fillOpacityBoost))
+        let breatheHz: Double = 0.32 + (0.72 * satellite.loadUnit)
+        let breathe: Double = 0.94 + (0.06 * ((sin(t * 2.0 * Double.pi * breatheHz + satellite.seed * 10.0) + 1.0) / 2.0))
+
+        let densityScale = max(0.52, 1.0 - (Double(max(0, satelliteCount - 10)) * 0.016))
+        let baseSize = max(4.2, side * 0.0118 * densityScale)
+        let loadSizeBoost = side * 0.0022 * CGFloat(satellite.loadUnit) * densityScale
+        let size = max(
+            baseSize,
+            min(
+                side * 0.026,
+                (baseSize + loadSizeBoost) * satellite.kind.sizeScale * satellite.sizeTier
+            )
+        )
+        return SatelliteRenderState(
+            x: x,
+            y: y,
+            size: size,
+            baseOpacity: baseOpacity * breathe,
+            depth: Double(sin(angle))
+        )
     }
 }
 
 private struct SatelliteDotView: View {
     let s: OrbFloatingView.SatelliteVisual
+    let satelliteCount: Int
     let t: Double
     let orbitPhase: Double
     let orbitSquash: CGFloat
-    let rActive: CGFloat
-    let rIdle: CGFloat
+    let side: CGFloat
     let color: Color
 
     var body: some View {
-        // Mix directions + per-satellite speed for a more "alive" system without extra GPU work.
+        // Keep orbital mechanics stable per satellite.
+        // Transient load should only affect color/shine, not angular position,
+        // otherwise each snapshot refresh can look like a backward jump.
         let dir: Double = (s.seed < 0.5) ? 1.0 : -1.0
-        let speedMul: Double = 0.85 + 0.55 * s.seed // stable range [0.85, 1.40]
-        let a = s.seed * 2.0 * Double.pi + orbitPhase * speedMul * dir
-        let rr: CGFloat = ((s.activity == .active) ? rActive : rIdle) * CGFloat(s.orbitRadiusMul)
+        let speedMul: Double = 0.92 + 0.36 * s.seed
+        let a = s.orbitPhaseOffset + orbitPhase * speedMul * dir
+        let rr: CGFloat = side * CGFloat(s.orbitRadiusFactor)
 
         // Project a tilted orbit as a rotated ellipse.
         let x0 = CGFloat(cos(a)) * rr
@@ -552,35 +1139,43 @@ private struct SatelliteDotView: View {
         let x = x0 * ca - y0 * sa
         let y = x0 * sa + y0 * ca
 
-        let baseOpacity: Double = (s.activity == .active) ? 1.0 : 0.5
-        let breathe: Double = (s.activity == .active)
-            ? (0.78 + 0.22 * ((sin(t * 2.0 * Double.pi * 0.8 + s.seed * 10.0) + 1.0) / 2.0))
-            : 1.0
+        let baseOpacity = min(1.0, max(0.46, 0.62 + (0.26 * s.loadUnit) + s.kind.fillOpacityBoost))
+        let breatheHz: Double = 0.32 + (0.72 * s.loadUnit)
+        let breathe: Double = 0.78 + (0.22 * ((sin(t * 2.0 * Double.pi * breatheHz + s.seed * 10.0) + 1.0) / 2.0))
 
-        // Subtle size variance: reads more organic, but doesn't distract.
-        let baseSize: Double = (s.activity == .active) ? 6.2 : 5.4
-        let size = CGFloat(max(4.9, min(6.9, baseSize + (s.seed - 0.5) * 0.75)))
-
-        // Use a light radial gradient for a more "designed" satellite while staying GPU-cheap.
-        let fill = RadialGradient(
-            colors: [Color.white.opacity(0.82), color, color.opacity(0.55)],
-            center: .topLeading,
-            startRadius: 0,
-            endRadius: Double(size) * 1.25
+        let densityScale = max(0.52, 1.0 - (Double(max(0, satelliteCount - 10)) * 0.018))
+        let baseSize = max(4.8, side * 0.015 * densityScale)
+        let loadSizeBoost = side * 0.0045 * CGFloat(s.loadUnit) * densityScale
+        let size = max(
+            baseSize,
+            min(
+                side * 0.028,
+                (baseSize + loadSizeBoost + CGFloat((s.seed - 0.5) * 0.8)) * s.kind.sizeScale
+            )
         )
+        let ringSize = size * (1.0 + s.kind.ringPaddingFactor)
 
-        return Circle()
-            .fill(fill)
-            .opacity(baseOpacity * breathe)
-            .frame(width: size, height: size)
-            .shadow(color: .black.opacity(0.18), radius: 1.2, x: 0, y: 0)
-            .overlay {
-                if s.aiEnabled {
-                    Circle()
-                        .stroke(Color.white.opacity(0.28), lineWidth: 1)
-                }
+        return ZStack {
+            if s.kind.haloOpacity > 0.01 {
+                Circle()
+                    .fill(color.opacity(s.kind.haloOpacity * breathe))
+                    .frame(width: size * 1.85, height: size * 1.85)
             }
-            .offset(x: x, y: y)
+            Circle()
+                .fill(color)
+                .opacity(baseOpacity * breathe)
+                .frame(width: size, height: size)
+            if s.kind.ringOpacity > 0.01 {
+                Circle()
+                    .stroke(Color.white.opacity(s.kind.ringOpacity), lineWidth: max(0.7, side * 0.0017))
+                    .frame(width: ringSize, height: ringSize)
+            }
+            Circle()
+                .fill(Color.white.opacity(0.10 + (0.07 * s.loadUnit)))
+                .frame(width: size * 0.28, height: size * 0.28)
+                .offset(x: -size * 0.12, y: -size * 0.12)
+        }
+        .offset(x: x, y: y)
     }
 }
 
@@ -622,22 +1217,10 @@ struct CardFloatingView: View {
     private var lunarText: String {
         let cal = Calendar(identifier: .chinese)
         let dc = cal.dateComponents([.month, .day], from: Date())
-        let m = dc.month ?? 0
-        let d = dc.day ?? 0
-
-        let monthNames = ["", "正月", "二月", "三月", "四月", "五月", "六月", "七月", "八月", "九月", "十月", "冬月", "腊月"]
-        let dayNames = [
-            "", "初一", "初二", "初三", "初四", "初五", "初六", "初七", "初八", "初九", "初十",
-            "十一", "十二", "十三", "十四", "十五", "十六", "十七", "十八", "十九", "二十",
-            "廿一", "廿二", "廿三", "廿四", "廿五", "廿六", "廿七", "廿八", "廿九", "三十",
-        ]
-
-        let mm = (m >= 1 && m < monthNames.count) ? monthNames[m] : ""
-        let dd = (d >= 1 && d < dayNames.count) ? dayNames[d] : ""
-        if mm.isEmpty || dd.isEmpty {
-            return ""
-        }
-        return "\(mm)\(dd)"
+        return HubUIStrings.FloatingCard.Lunar.label(
+            month: dc.month ?? 0,
+            day: dc.day ?? 0
+        )
     }
 
     private var monthDayText: String {
@@ -707,27 +1290,28 @@ struct CardFloatingView: View {
 
     private func meetingCountdownMinutes(startAt: Double, now: Double) -> String {
         let dt = startAt - now
-        if dt <= 0 { return "Now" }
+        if dt <= 0 { return HubUIStrings.MainPanel.Meeting.inProgress }
         let mins = max(1, Int(ceil(dt / 60.0)))
         if mins >= 60 {
             let h = mins / 60
             let m = mins % 60
-            // Display as 2h:17m (more readable than 137m).
-            return String(format: "%dh:%02dm", h, m)
+            return m == 0
+                ? HubUIStrings.FloatingCard.compactHours(h)
+                : HubUIStrings.FloatingCard.compactHoursMinutes(hours: h, minutes: m)
         }
-        return "\(mins)m"
+        return HubUIStrings.FloatingCard.compactMinutes(mins)
     }
 
     private func notificationAgeText(createdAt: Double, now: Double) -> String {
         let dt = max(0, now - createdAt)
         let mins = Int(dt / 60.0)
         if mins >= 120 {
-            return "\(mins / 60)h"
+            return HubUIStrings.FloatingCard.compactHours(mins / 60)
         }
         if mins >= 60 {
-            return "\(mins / 60)h \(mins % 60)m"
+            return HubUIStrings.FloatingCard.compactHoursMinutes(hours: mins / 60, minutes: mins % 60)
         }
-        return "\(max(1, mins))m"
+        return HubUIStrings.FloatingCard.compactMinutes(max(1, mins))
     }
 
     private func notificationsSnapshot() -> [HubNotification] {
@@ -751,6 +1335,69 @@ struct CardFloatingView: View {
         return []
     }
 
+    private func openNotificationFromFloating(_ notification: HubNotification) {
+        let presentation = hubNotificationPresentation(for: notification)
+        switch presentation.primaryAction {
+        case .inspect, .none:
+            store.presentNotificationInspector(notification)
+            store.markRead(notification.id)
+        case .openTarget:
+            store.openNotificationAction(notification)
+            store.markRead(notification.id)
+        }
+    }
+
+    private func floatingNotificationHeader(_ notification: HubNotification) -> String {
+        let presentation = hubNotificationPresentation(for: notification)
+        if let badge = presentation.badge?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !badge.isEmpty {
+            return badge
+        }
+        let source = hubNotificationDisplaySource(notification)
+        return source.isEmpty ? HubUIStrings.FloatingCard.defaultNotificationHeader : source
+    }
+
+    private func floatingNotificationLine2(_ notification: HubNotification) -> String {
+        let presentation = hubNotificationPresentation(for: notification)
+        let title = (presentation.displayTitle ?? notification.title).trimmingCharacters(in: .whitespacesAndNewlines)
+        if !title.isEmpty {
+            return title
+        }
+        if !presentation.subline.isEmpty {
+            return presentation.subline
+        }
+        return HubUIStrings.FloatingCard.defaultHubUpdate
+    }
+
+    private func floatingNotificationLine3(_ notification: HubNotification) -> String {
+        let presentation = hubNotificationPresentation(for: notification)
+        if let nextStep = presentation.recommendedNextStep, !nextStep.isEmpty {
+            return "\(HubUIStrings.Menu.NotificationRow.nextStepPrefix)\(nextStep)"
+        }
+        if let executionSurface = presentation.executionSurface, !executionSurface.isEmpty {
+            return "\(HubUIStrings.Menu.NotificationRow.executionSurfacePrefix)\(executionSurface)"
+        }
+        if !presentation.subline.isEmpty {
+            return presentation.subline
+        }
+        if let relevance = presentation.relevance, !relevance.isEmpty {
+            return relevance
+        }
+        return ""
+    }
+
+    private func floatingNotificationTint(_ notification: HubNotification) -> Color {
+        let presentation = hubNotificationPresentation(for: notification)
+        switch presentation.group {
+        case .actionRequired:
+            return Color(red: 0.30, green: 0.58, blue: 1.0)
+        case .advisory:
+            return Color(red: 0.23, green: 0.70, blue: 0.74)
+        case .background:
+            return Color.secondary.opacity(0.72)
+        }
+    }
+
     private func cardPages(now: Double) -> [CardPage] {
         // 0) Urgent meeting breaks rotation.
         if let m = store.meetings
@@ -764,8 +1411,8 @@ struct CardFloatingView: View {
                     id: "urgent_\(m.id)|\(Int(m.startAt))",
                     kind: .meeting,
                     tint: Color(red: 1.0, green: 0.32, blue: 0.32),
-                    headerLeft: "MEETING",
-                    headerRight: (now >= m.startAt) ? "Now" : meetingCountdownMinutes(startAt: m.startAt, now: now),
+                    headerLeft: HubUIStrings.MainPanel.Inbox.meetingsSection,
+                    headerRight: (now >= m.startAt) ? HubUIStrings.MainPanel.Meeting.inProgress : meetingCountdownMinutes(startAt: m.startAt, now: now),
                     line2: m.title,
                     line3: formatMeetingTimeRange(start: m.startAt, end: m.endAt),
                     action: { store.openMeeting(m) }
@@ -803,7 +1450,7 @@ struct CardFloatingView: View {
                     id: "m_\(m.id)|\(Int(m.startAt))",
                     kind: .meeting,
                     tint: meetingTint(m),
-                    headerLeft: "MEETING",
+                    headerLeft: HubUIStrings.MainPanel.Inbox.meetingsSection,
                     headerRight: meetingCountdownMinutes(startAt: m.startAt, now: now),
                     line2: m.title,
                     line3: formatMeetingTimeRange(start: m.startAt, end: m.endAt),
@@ -835,7 +1482,7 @@ struct CardFloatingView: View {
             for n in shownFA {
                 let bodyLines = n.body.split(separator: "\n", omittingEmptySubsequences: false).map { String($0) }
                 let pn = (bodyLines.first ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                let project = pn.isEmpty ? "(Unknown)" : pn
+                let project = pn.isEmpty ? HubUIStrings.FloatingCard.unnamedProject : pn
 
                 var ids: [Int] = []
                 if let s = n.actionURL, let u = URL(string: s), (u.scheme ?? "").lowercased() == "relflowhub" {
@@ -886,7 +1533,7 @@ struct CardFloatingView: View {
                         let s = String(pn ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                         return s.isEmpty ? nil : s
                     }.first
-                    ps = [P(name: firstProj ?? "(Unknown)", ids: [], unreadCount: shownFA.filter { $0.unread }.count)]
+                    ps = [P(name: firstProj ?? HubUIStrings.FloatingCard.unnamedProject, ids: [], unreadCount: shownFA.filter { $0.unread }.count)]
                 }
                 ps.sort { a, b in
                     if a.ids.count != b.ids.count { return a.ids.count > b.ids.count }
@@ -898,7 +1545,7 @@ struct CardFloatingView: View {
                     let shownIds = p.ids.prefix(5).map { String($0) }.joined(separator: ", ")
                     let idsText: String = {
                         if p.ids.isEmpty {
-                            return "Tap to open FA Tracker"
+                            return HubUIStrings.FloatingCard.openFATracker
                         }
                         return (total <= 5) ? shownIds : "\(shownIds)  +\(total - 5)"
                     }()
@@ -909,7 +1556,7 @@ struct CardFloatingView: View {
                         id: "rad_\(p.name)",
                         kind: .radar,
                         tint: tint,
-                        headerLeft: "NEW RADAR",
+                        headerLeft: HubUIStrings.FloatingCard.radarHeader,
                         headerRight: (p.unreadCount > 0) ? "\(p.unreadCount)" : (total > 0 ? "\(total)" : ""),
                         line2: p.name,
                         line3: idsText,
@@ -944,9 +1591,20 @@ struct CardFloatingView: View {
             if rows.isEmpty { return nil }
             let items: [CardItem] = rows.prefix(2).map { n in
                 let isCountsOnly = (n.dedupeKey == "mail_unread" || n.dedupeKey == "messages_unread" || n.dedupeKey == "slack_updates")
+                let presentation = hubNotificationPresentation(for: n)
                 let headerRight = isCountsOnly ? n.body : notificationAgeText(createdAt: n.createdAt, now: now)
-                let line2 = isCountsOnly ? "Tap to open \(source)" : n.title
-                let line3 = isCountsOnly ? "" : n.body
+                let line2 = isCountsOnly
+                    ? HubUIStrings.FloatingCard.openSource(source)
+                    : ((presentation.displayTitle?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+                        ? presentation.displayTitle!.trimmingCharacters(in: .whitespacesAndNewlines)
+                        : n.title)
+                let line3 = isCountsOnly
+                    ? ""
+                    : floatingNotificationSummaryLine(
+                        subline: presentation.subline,
+                        nextStep: presentation.recommendedNextStep,
+                        fallbackBody: n.body
+                    )
                 return CardItem(
                     id: "n_\(n.id)",
                     kind: (source == "Messages" ? .message : (source == "Mail" ? .mail : .slack)),
@@ -955,7 +1613,7 @@ struct CardFloatingView: View {
                     headerRight: headerRight,
                     line2: line2,
                     line3: line3,
-                    action: { store.openNotificationAction(n); store.markRead(n.id) }
+                    action: { openNotificationFromFloating(n) }
                 )
             }
             return CardPage(id: "page_\(source)", kind: kind, items: items)
@@ -972,18 +1630,44 @@ struct CardFloatingView: View {
         }
 
         // Other unread notifications (excluding FAtracker + Messages/Mail/Slack).
-        let other = activeNotifs.filter { !["FAtracker", "Messages", "Mail", "Slack"].contains($0.source) }
-        if !other.isEmpty {
-            let items: [CardItem] = other.prefix(2).map { n in
-                CardItem(
+        let otherPresented = activeNotifs
+            .filter { !["FAtracker", "Messages", "Mail", "Slack"].contains($0.source) }
+            .map { ($0, hubNotificationPresentation(for: $0)) }
+            .sorted { lhs, rhs in
+                let lGroup = lhs.1.group
+                let rGroup = rhs.1.group
+                let rank: (HubNotificationPresentationGroup) -> Int = { group in
+                    switch group {
+                    case .actionRequired:
+                        return 0
+                    case .advisory:
+                        return 1
+                    case .background:
+                        return 2
+                    }
+                }
+                if rank(lGroup) != rank(rGroup) {
+                    return rank(lGroup) < rank(rGroup)
+                }
+                return lhs.0.createdAt > rhs.0.createdAt
+            }
+
+        let priorityOther = otherPresented.filter { $0.1.group != .background }
+        let backgroundOther = otherPresented.filter { $0.1.group == .background }
+        let shownOther = priorityOther.isEmpty ? Array(backgroundOther.prefix(1)) : Array(priorityOther.prefix(2))
+
+        if !shownOther.isEmpty {
+            let items: [CardItem] = shownOther.map { entry in
+                let n = entry.0
+                return CardItem(
                     id: "n2_\(n.id)",
                     kind: .other,
-                    tint: Color(red: 0.30, green: 0.58, blue: 1.0),
-                    headerLeft: n.source.uppercased(),
+                    tint: floatingNotificationTint(n),
+                    headerLeft: floatingNotificationHeader(n),
                     headerRight: notificationAgeText(createdAt: n.createdAt, now: now),
-                    line2: n.title,
-                    line3: n.body,
-                    action: { store.openNotificationAction(n); store.markRead(n.id) }
+                    line2: floatingNotificationLine2(n),
+                    line3: floatingNotificationLine3(n),
+                    action: { openNotificationFromFloating(n) }
                 )
             }
             pages.append(CardPage(id: "page_other", kind: .other, items: items))
@@ -997,7 +1681,7 @@ struct CardFloatingView: View {
                 tint: .secondary,
                 headerLeft: "",
                 headerRight: "",
-                line2: "All clear",
+                line2: HubUIStrings.FloatingCard.allClear,
                 line3: "",
                 action: { NotificationCenter.default.post(name: .relflowhubOpenMain, object: nil) }
             )
@@ -1005,6 +1689,26 @@ struct CardFloatingView: View {
         }
 
         return pages
+    }
+
+    private func floatingNotificationSummaryLine(
+        subline: String,
+        nextStep: String?,
+        fallbackBody: String
+    ) -> String {
+        let trimmedSubline = subline.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedSubline.isEmpty {
+            return trimmedSubline
+        }
+
+        let trimmedNextStep = (nextStep ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedNextStep.isEmpty {
+            return trimmedNextStep
+        }
+
+        return fallbackBody
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\n", with: " ")
     }
 
     private func itemBox(_ item: CardItem) -> some View {

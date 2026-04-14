@@ -30,27 +30,29 @@ enum AppInstallDoctor {
         guard shouldWarn() else { return }
 
         let p = Bundle.main.bundleURL.path
+        HubDiagnostics.log("app.install_doctor alert_shown path=\(p)")
 
         NSApp.activate(ignoringOtherApps: true)
 
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "Install X-Hub in Applications"
-        alert.informativeText = "X-Hub is running from:\n\n\(p)\n\nFor stable Calendar/Accessibility permissions (avoid repeated prompts), drag X-Hub.app (and X-Hub Dock Agent.app / X-Hub Bridge.app) into /Applications, then relaunch from there."
+        alert.messageText = HubUIStrings.InstallDoctor.title
+        alert.informativeText = HubUIStrings.InstallDoctor.currentLocation(p)
 
         // Prefer offering to open the installed copy if it exists.
         let installedURL = installedCopyURL(bundleId: Bundle.main.bundleIdentifier ?? "")
         if let installedURL, installedURL.standardizedFileURL.path != Bundle.main.bundleURL.standardizedFileURL.path {
-            alert.addButton(withTitle: "Open Installed Copy")
+            alert.addButton(withTitle: HubUIStrings.InstallDoctor.openInstalledCopy)
         } else {
-            alert.addButton(withTitle: "Open Applications")
+            alert.addButton(withTitle: HubUIStrings.InstallDoctor.openApplications)
         }
-        alert.addButton(withTitle: "Reveal This App")
-        alert.addButton(withTitle: "Quit")
+        alert.addButton(withTitle: HubUIStrings.InstallDoctor.revealCurrentApp)
+        alert.addButton(withTitle: HubUIStrings.InstallDoctor.quit)
 
         let r = alert.runModal()
         switch r {
         case .alertFirstButtonReturn:
+            HubDiagnostics.log("app.install_doctor choice=primary")
             if let installedURL, installedURL.standardizedFileURL.path != Bundle.main.bundleURL.standardizedFileURL.path {
                 NSWorkspace.shared.open(installedURL)
                 NSApp.terminate(nil)
@@ -58,8 +60,10 @@ enum AppInstallDoctor {
                 NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications"))
             }
         case .alertSecondButtonReturn:
+            HubDiagnostics.log("app.install_doctor choice=reveal_current")
             NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
         default:
+            HubDiagnostics.log("app.install_doctor choice=quit")
             NSApp.terminate(nil)
         }
     }

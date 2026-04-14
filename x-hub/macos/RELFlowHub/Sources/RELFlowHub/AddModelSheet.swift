@@ -2,18 +2,19 @@ import AppKit
 import SwiftUI
 import RELFlowHubCore
 
-private enum LocalBackendOption: String, CaseIterable, Identifiable {
+private enum LocalBackendOption: String {
     case mlx
     case transformers
-
-    var id: String { rawValue }
+    case llamaCpp = "llama.cpp"
 
     var title: String {
         switch self {
         case .mlx:
-            return "MLX"
+            return HubUIStrings.Models.AddLocal.backendTitle(rawValue)
         case .transformers:
-            return "Transformers"
+            return HubUIStrings.Models.AddLocal.backendTitle(rawValue)
+        case .llamaCpp:
+            return HubUIStrings.Models.AddLocal.backendTitle(rawValue)
         }
     }
 }
@@ -58,144 +59,99 @@ private struct DetectedLocalModelMetadata {
 struct AddModelSheet: View {
     @Environment(\.dismiss) private var dismiss
 
-    @State private var backend: LocalBackendOption = .mlx
+    @State private var autoDetectedBackend: LocalBackendOption = .mlx
+    @State private var autoDetectedRuntimeProviderID: String = ""
+    @State private var backendDetectionSource: String = "backend default"
     @State private var modelPath: String = ""
     @State private var modelId: String = ""
     @State private var modelName: String = ""
     @State private var quant: String = ""
     @State private var ctx: Int = 8192
     @State private var paramsBText: String = ""
-    @State private var role: String = "general"
-    @State private var extraRolesText: String = ""
     @State private var showAdvanced: Bool = false
     @State private var errorText: String = ""
+    @State private var warningText: String = ""
     @State private var isAdding: Bool = false
     @State private var progressText: String = ""
     @State private var detectedMetadata: DetectedLocalModelMetadata = .defaults(backend: "mlx")
+    @State private var importRuntimeReadiness: LocalModelImportRuntimeReadiness = .empty(providerID: "mlx")
+    @State private var folderIntegrityIssue: LocalModelFolderIntegrityIssue?
+
+    private var resolvedBackend: LocalBackendOption {
+        autoDetectedBackend
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Add Model")
-                .font(.headline)
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Backend")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Picker("Backend", selection: $backend) {
-                            ForEach(LocalBackendOption.allCases) { option in
-                                Text(option.title).tag(option)
-                            }
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                        .frame(width: 160, alignment: .leading)
-                    }
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Folder")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        HStack(spacing: 10) {
-                            Button("Select Folder…") {
-                                pickFolder()
-                            }
-
-                            Text(modelPath.isEmpty ? "No folder selected" : modelPath)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                    }
-                }
-
-                HStack {
-                    TextField("Model ID", text: $modelId)
-                    TextField("Name", text: $modelName)
-                }
-
-                HStack(spacing: 10) {
-                    Text("Detected: \(backend.title) · \(detectedMetadata.modelFormat) · \(taskSummary())")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    Spacer()
-                    Button(showAdvanced ? "Hide Advanced" : "Advanced...") {
-                        showAdvanced.toggle()
-                    }
-                    .buttonStyle(.link)
-                }
-
-                HStack(spacing: 10) {
-                    Text("Resources: \(quantText()) · ctx \(ctx) · \(paramsText()) · \(detectedMetadata.resourceProfile.preferredDevice)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    Spacer()
-                    Text("Source: \(detectedMetadata.sourceSummary)")
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(HubUIStrings.Models.AddLocal.title)
+                        .font(.headline)
+                    Text(HubUIStrings.Models.AddLocal.subtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-
-                if showAdvanced {
-                    HStack {
-                        TextField("Quant (e.g. int4/bf16/fp16)", text: $quant)
-                        Stepper("ctx \(ctx)", value: $ctx, in: 512...131072, step: 512)
-                    }
-
-                    TextField("ParamsB (e.g. 8.0)", text: $paramsBText)
-                }
-
-                HStack(alignment: .top, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Role")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Picker("Role", selection: $role) {
-                            Text("General").tag("general")
-                            Text("Translate").tag("translate")
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                        .frame(width: 160, alignment: .leading)
-                    }
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Extra Roles")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        TextField("comma-separated", text: $extraRolesText)
-                    }
-                }
-            }
-
-            if !errorText.isEmpty {
-                Text(errorText)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
-
-            if isAdding {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(progressText.isEmpty ? "Working..." : progressText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-
-            Spacer(minLength: 0)
-
-            HStack {
                 Spacer()
-                Button("Cancel") {
+                if isAdding {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text(progressText.isEmpty ? HubUIStrings.Models.AddLocal.processing : progressText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color.white.opacity(0.06))
+                    .clipShape(Capsule())
+                }
+            }
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    summaryCard
+                    folderCard
+                    identityCard
+                    readinessCard
+
+                    if !errorText.isEmpty {
+                        issueBanner(errorText, tint: .red)
+                    }
+
+                    if !warningText.isEmpty {
+                        issueBanner(warningText, tint: .orange)
+                    }
+
+                    if showAdvanced {
+                        advancedCard
+                    }
+                }
+                .padding(.bottom, 6)
+            }
+
+            HStack(spacing: 10) {
+                Button(showAdvanced ? HubUIStrings.Models.AddLocal.hideAdvanced : HubUIStrings.Models.AddLocal.showAdvanced) {
+                    showAdvanced.toggle()
+                }
+                .buttonStyle(.plain)
+                .font(.caption.weight(.medium))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(Color.white.opacity(0.06))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                Spacer()
+
+                Button(HubUIStrings.Models.AddLocal.cancel) {
                     dismiss()
                 }
-                Button("Add") {
+
+                Button(HubUIStrings.Models.AddLocal.add) {
                     Task { @MainActor in
                         await addModelAsync()
                     }
@@ -205,11 +161,238 @@ struct AddModelSheet: View {
             }
         }
         .padding(18)
-        .frame(width: 560)
-        .onChange(of: backend) { _ in
-            guard !modelPath.isEmpty else { return }
-            detectMetadata(for: URL(fileURLWithPath: modelPath, isDirectory: true))
+        .frame(width: 620, height: 660)
+    }
+
+    private var summaryCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                summaryPill(HubUIStrings.Models.AddLocal.format, value: "\(resolvedBackend.title) · \(detectedMetadata.modelFormat)", tint: .blue)
+                summaryPill(HubUIStrings.Models.AddLocal.runtime, value: executionSummary(), tint: importRuntimeReadiness.canLoadNow ? .green : .orange)
+                summaryPill(HubUIStrings.Models.AddLocal.directory, value: folderStatusSummary(), tint: folderIntegrityIssue == nil ? .green : .orange)
+            }
+
+            HStack(spacing: 6) {
+                ForEach(summaryTags(), id: \.self) { tag in
+                    Text(tag)
+                        .font(.caption2)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.white.opacity(0.06))
+                        .clipShape(Capsule())
+                }
+            }
+
+            Text(HubUIStrings.Models.AddLocal.resourceSummary(context: ctx, quant: quantText(), params: paramsText(), preferredDevice: detectedMetadata.resourceProfile.preferredDevice))
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
+        .padding(14)
+        .background(Color.white.opacity(0.05))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private var folderCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(HubUIStrings.Models.AddLocal.folderSection)
+                        .font(.subheadline.weight(.semibold))
+                    Text(modelPath.isEmpty ? HubUIStrings.Models.AddLocal.folderHint : folderPathSummary())
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                Spacer()
+                Button(HubUIStrings.Models.AddLocal.chooseDirectory) {
+                    pickFolder()
+                }
+            }
+
+            if !modelPath.isEmpty {
+                Text(modelPath)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .lineLimit(2)
+            }
+        }
+        .padding(14)
+        .background(Color.white.opacity(0.05))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private var identityCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(HubUIStrings.Models.AddLocal.identitySection)
+                .font(.subheadline.weight(.semibold))
+
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(HubUIStrings.Models.AddLocal.modelID)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextField(HubUIStrings.Models.AddLocal.modelIDPlaceholder, text: $modelId)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(HubUIStrings.Models.AddLocal.displayName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextField(HubUIStrings.Models.AddLocal.displayNamePlaceholder, text: $modelName)
+                        .textFieldStyle(.roundedBorder)
+                }
+            }
+        }
+        .padding(14)
+        .background(Color.white.opacity(0.05))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private var readinessCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(HubUIStrings.Models.AddLocal.readinessSection)
+                .font(.subheadline.weight(.semibold))
+
+            keyValueRow(label: HubUIStrings.Models.AddLocal.task, value: taskSummary())
+            keyValueRow(label: HubUIStrings.Models.AddLocal.runtime, value: executionSummary())
+            keyValueRow(label: HubUIStrings.Models.AddLocal.source, value: detectionSourceSummary())
+
+            if !importRuntimeReadiness.statusSummary.isEmpty {
+                keyValueRow(
+                    label: HubUIStrings.Models.AddLocal.runtime,
+                    value: importRuntimeReadiness.statusSummary,
+                    tint: importRuntimeReadiness.canLoadNow ? .secondary : .orange
+                )
+            }
+
+            if let folderIntegrityIssue {
+                keyValueRow(label: HubUIStrings.Models.AddLocal.directory, value: folderIntegrityIssue.userMessage, tint: .orange)
+            }
+        }
+        .padding(14)
+        .background(Color.white.opacity(0.05))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private var advancedCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(HubUIStrings.Models.AddLocal.advancedSection)
+                .font(.subheadline.weight(.semibold))
+
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(HubUIStrings.Models.AddLocal.quant)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextField(HubUIStrings.Models.AddLocal.quantPlaceholder, text: $quant)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(HubUIStrings.Models.AddLocal.context)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Stepper(HubUIStrings.Models.AddLocal.contextStepper(ctx), value: $ctx, in: 512...131072, step: 512)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(HubUIStrings.Models.AddLocal.paramsB)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextField(HubUIStrings.Models.AddLocal.paramsBPlaceholder, text: $paramsBText)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            Text(HubUIStrings.Models.AddLocal.runtimeEngine(technicalRuntimeProviderSummary()))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .background(Color.white.opacity(0.05))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private func summaryPill(_ label: String, value: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.caption.weight(.semibold))
+                .lineLimit(2)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tint.opacity(0.12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(tint.opacity(0.22), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private func keyValueRow(label: String, value: String, tint: Color = .secondary) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 74, alignment: .leading)
+            Text(value)
+                .font(.caption)
+                .foregroundStyle(tint)
+                .multilineTextAlignment(.leading)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func issueBanner(_ text: String, tint: Color) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(tint)
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(tint.opacity(0.10))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(tint.opacity(0.18), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func summaryTags() -> [String] {
+        var tags: [String] = []
+        tags.append(contentsOf: detectedMetadata.taskKinds.map { LocalTaskRoutingCatalog.shortTitle(for: $0) })
+        tags.append(contentsOf: detectedMetadata.inputModalities.prefix(2).map(HubUIStrings.Models.AddLocal.inputTag))
+        tags.append(contentsOf: detectedMetadata.outputModalities.prefix(2).map(HubUIStrings.Models.AddLocal.outputTag))
+        return Array(NSOrderedSet(array: tags)) as? [String] ?? tags
+    }
+
+    private func folderPathSummary() -> String {
+        URL(fileURLWithPath: modelPath).lastPathComponent
     }
 
     private func pickFolder() {
@@ -220,7 +403,7 @@ struct AddModelSheet: View {
         p.canChooseFiles = false
         p.canChooseDirectories = true
         p.allowsMultipleSelection = false
-        p.prompt = "Select"
+        p.prompt = HubUIStrings.Models.AddLocal.choosePrompt
         if p.runModal() == .OK, let url = p.url {
             modelPath = url.path
 
@@ -234,16 +417,21 @@ struct AddModelSheet: View {
 
     private func detectMetadata(for url: URL) {
         errorText = ""
+        warningText = ""
+        autoDetectedRuntimeProviderID = ""
+        folderIntegrityIssue = LocalModelFolderIntegrityPolicy.issue(modelPath: url.path)
         let folder = url.lastPathComponent
         let config = readConfigJSON(dir: url)
         let manifest = XHubLocalModelManifestLoader.load(from: url)
-
-        if let manifest,
-           let manifestBackend = LocalBackendOption(rawValue: manifest.backend.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()),
-           manifestBackend != backend {
-            backend = manifestBackend
-            return
+        let backendDetection = LocalModelImportDetector.detectBackend(
+            for: url,
+            manifest: manifest,
+            config: config
+        )
+        if let detectedBackend = LocalBackendOption(rawValue: backendDetection.backend) {
+            autoDetectedBackend = detectedBackend
         }
+        backendDetectionSource = backendDetection.sourceSummary
 
         if let manifestDefaultContext = manifest?.defaultLoadProfile?.contextLength, manifestDefaultContext > 0 {
             ctx = manifestDefaultContext
@@ -267,14 +455,136 @@ struct AddModelSheet: View {
         let resolved = resolveMetadata(for: url, config: config, paramsB: pb, surfaceErrors: false)
         if let metadata = resolved.metadata {
             detectedMetadata = metadata
+            let helperBinaryPath = LocalHelperBridgeDiscovery.discoverHelperBinary()
+            let runtimeProviderID = resolvedRuntimeProviderID(
+                backend: resolvedBackend.rawValue,
+                modelPath: url.path,
+                taskKinds: metadata.taskKinds,
+                helperBinaryPath: helperBinaryPath
+            )
+            autoDetectedRuntimeProviderID = runtimeProviderID
+            let effectiveProviderID = runtimeProviderID.isEmpty ? resolvedBackend.rawValue : runtimeProviderID
+            let previewCatalog = previewCatalogSnapshot(
+                modelURL: url,
+                backend: resolvedBackend.rawValue,
+                runtimeProviderID: effectiveProviderID,
+                quant: quant,
+                contextLength: ctx,
+                paramsB: pb,
+                metadata: metadata
+            )
+            let runtimeStatus = AIRuntimeStatusStorage.load()
+            let importWarning = LocalModelRuntimeCompatibilityPolicy.importWarning(
+                modelPath: url.path,
+                backend: resolvedBackend.rawValue,
+                taskKinds: metadata.taskKinds,
+                executionProviderID: effectiveProviderID,
+                catalogSnapshot: previewCatalog,
+                helperBinaryPath: helperBinaryPath,
+                probeLaunchConfig: HubStore.shared.localRuntimePythonProbeLaunchConfig(
+                    preferredProviderID: effectiveProviderID
+                ),
+                pythonPath: HubStore.shared.preferredLocalProviderPythonPath(
+                    preferredProviderID: effectiveProviderID
+                )
+            ) ?? ""
+            let providerHint = (HubStore.shared.aiRuntimeProviderHelpTextByProvider[effectiveProviderID] ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            importRuntimeReadiness = LocalModelImportDetector.detectRuntimeReadiness(
+                for: effectiveProviderID,
+                runtimeStatus: runtimeStatus,
+                importWarning: importWarning,
+                providerHint: providerHint,
+                autoRecoveryAvailable: HubStore.shared.canAutoRecoverRuntime(
+                    for: effectiveProviderID,
+                    runtimeStatus: runtimeStatus
+                )
+            )
+            warningText = visibleIssueText(
+                from: importRuntimeReadiness.issueText,
+                folderIntegrityIssue: folderIntegrityIssue
+            )
         } else if let error = resolved.error {
             detectedMetadata = DetectedLocalModelMetadata.defaults(
-                backend: backend.rawValue,
+                backend: resolvedBackend.rawValue,
                 quant: quant,
                 paramsB: pb
             )
+            autoDetectedRuntimeProviderID = ""
+            importRuntimeReadiness = .empty(providerID: resolvedBackend.rawValue)
+            folderIntegrityIssue = LocalModelFolderIntegrityPolicy.issue(modelPath: url.path)
             errorText = error
         }
+    }
+
+    private func resolvedRuntimeProviderID(
+        backend: String,
+        modelPath: String,
+        taskKinds: [String],
+        helperBinaryPath: String
+    ) -> String {
+        LocalModelExecutionProviderResolver.suggestedRuntimeProviderID(
+            backend: backend,
+            modelPath: modelPath,
+            taskKinds: taskKinds,
+            helperBinaryPath: helperBinaryPath
+        ) ?? ""
+    }
+
+    private func previewCatalogSnapshot(
+        modelURL: URL,
+        backend: String,
+        runtimeProviderID: String,
+        quant: String,
+        contextLength: Int,
+        paramsB: Double,
+        metadata: DetectedLocalModelMetadata
+    ) -> ModelCatalogSnapshot {
+        var catalog = ModelCatalogStorage.load()
+        let normalizedModelPath = modelURL.path.trimmingCharacters(in: .whitespacesAndNewlines)
+        catalog.models.removeAll {
+            $0.modelPath.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedModelPath
+        }
+
+        let normalizedBackend = backend.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedRuntimeProviderID = runtimeProviderID
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let explicitRuntimeProviderID: String? =
+            normalizedRuntimeProviderID.isEmpty || normalizedRuntimeProviderID == normalizedBackend
+            ? nil
+            : normalizedRuntimeProviderID
+        let candidateID = modelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "preview-\(modelURL.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())"
+            : modelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let candidateName = modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? modelURL.lastPathComponent
+            : modelName.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        catalog.models.append(
+            ModelCatalogEntry(
+                id: candidateID,
+                name: candidateName,
+                backend: normalizedBackend,
+                runtimeProviderID: explicitRuntimeProviderID,
+                quant: quant,
+                contextLength: contextLength,
+                maxContextLength: metadata.maxContextLength,
+                paramsB: paramsB,
+                modelPath: normalizedModelPath,
+                modelFormat: metadata.modelFormat,
+                defaultLoadProfile: metadata.defaultLoadProfile,
+                taskKinds: metadata.taskKinds,
+                inputModalities: metadata.inputModalities,
+                outputModalities: metadata.outputModalities,
+                offlineReady: metadata.offlineReady,
+                resourceProfile: metadata.resourceProfile,
+                trustProfile: metadata.trustProfile,
+                processorRequirements: metadata.processorRequirements
+            )
+        )
+        catalog.updatedAt = Date().timeIntervalSince1970
+        return catalog
     }
 
     private func readConfigJSON(dir: URL) -> [String: Any]? {
@@ -371,17 +681,75 @@ struct AddModelSheet: View {
         if s.contains("int8") || s.contains("8bit") || s.contains("_8") { return "int8" }
         if s.contains("bf16") { return "bf16" }
         if s.contains("fp16") { return "fp16" }
-        return backend == .mlx ? "int4" : "fp16"
+        return resolvedBackend == .mlx || resolvedBackend == .llamaCpp ? "int4" : "fp16"
     }
 
     private func taskSummary() -> String {
-        let taskKinds = detectedMetadata.taskKinds.isEmpty ? ["unknown"] : detectedMetadata.taskKinds
-        return taskKinds.joined(separator: ", ")
+        let taskKinds = detectedMetadata.taskKinds.isEmpty ? [HubUIStrings.Models.AddLocal.unknownTask] : detectedMetadata.taskKinds
+        return taskKinds
+            .map { LocalTaskRoutingCatalog.shortTitle(for: $0) }
+            .joined(separator: ", ")
+    }
+
+    private func effectiveRuntimeProviderID() -> String {
+        let providerID = autoDetectedRuntimeProviderID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if !providerID.isEmpty {
+            return providerID
+        }
+        return resolvedBackend.rawValue
+    }
+
+    private func executionSummary() -> String {
+        guard !modelPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return HubUIStrings.Models.AddLocal.waitingFolderScan
+        }
+        switch effectiveRuntimeProviderID() {
+        case "mlx":
+            return HubUIStrings.Models.AddLocal.builtinMLXRuntime
+        case "mlx_vlm":
+            return HubUIStrings.Models.AddLocal.localAuxRuntime
+        case "llama.cpp":
+            return HubUIStrings.Models.AddLocal.localAuxRuntime
+        case "transformers":
+            return HubUIStrings.Models.AddLocal.localAuxRuntime
+        default:
+            return HubUIStrings.Models.AddLocal.automatic
+        }
+    }
+
+    private func technicalRuntimeProviderSummary() -> String {
+        switch effectiveRuntimeProviderID() {
+        case "mlx":
+            return "mlx"
+        case "llama.cpp":
+            return "llama.cpp"
+        case "transformers":
+            return "transformers"
+        default:
+            return effectiveRuntimeProviderID()
+        }
+    }
+
+    private func folderStatusSummary() -> String {
+        guard !modelPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return HubUIStrings.Models.AddLocal.notSelected
+        }
+        return folderIntegrityIssue == nil ? HubUIStrings.Models.AddLocal.ready : HubUIStrings.Models.AddLocal.incomplete
+    }
+
+    private func visibleIssueText(
+        from issueText: String,
+        folderIntegrityIssue: LocalModelFolderIntegrityIssue?
+    ) -> String {
+        let trimmed = issueText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        guard let folderIntegrityIssue else { return trimmed }
+        return trimmed == folderIntegrityIssue.userMessage ? "" : trimmed
     }
 
     private func quantText() -> String {
         let q = quant.trimmingCharacters(in: .whitespacesAndNewlines)
-        return q.isEmpty ? "(quant unknown)" : q
+        return q.isEmpty ? HubUIStrings.Models.AddLocal.unknownQuant : q
     }
 
     private func paramsText() -> String {
@@ -389,7 +757,20 @@ struct AddModelSheet: View {
         if let v = Double(s), v > 0 {
             return String(format: "%.1fB", v)
         }
-        return "paramsB unknown"
+        return HubUIStrings.Models.AddLocal.unknownParams
+    }
+
+    private func detectionSourceSummary() -> String {
+        let parts = [
+            humanizedDetectionSource(backendDetectionSource),
+            humanizedDetectionSource(detectedMetadata.sourceSummary),
+        ].filter { !$0.isEmpty }
+        return HubUIStrings.Formatting.middleDotSeparated(parts)
+    }
+
+    private func humanizedDetectionSource(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return HubUIStrings.Models.AddLocal.humanizedDetectionSource(trimmed) ?? trimmed
     }
 
     private func sanitizeId(_ s: String) -> String {
@@ -414,24 +795,37 @@ struct AddModelSheet: View {
         surfaceErrors: Bool
     ) -> (metadata: DetectedLocalModelMetadata?, error: String?) {
         let manifest = XHubLocalModelManifestLoader.load(from: url)
-        let normalizedBackend = (manifest?.backend ?? backend.rawValue).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard normalizedBackend == LocalBackendOption.mlx.rawValue || normalizedBackend == LocalBackendOption.transformers.rawValue else {
-            return (nil, "Unsupported local backend '\(normalizedBackend)'. v1 only accepts MLX or Transformers.")
+        let normalizedBackend = (
+            manifest?.backend
+            ?? autoDetectedBackend.rawValue
+        )
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard normalizedBackend == LocalBackendOption.mlx.rawValue
+            || normalizedBackend == LocalBackendOption.transformers.rawValue
+            || normalizedBackend == LocalBackendOption.llamaCpp.rawValue else {
+            return (nil, HubUIStrings.Models.AddLocal.unsupportedBackend(normalizedBackend))
         }
 
         if normalizedBackend == LocalBackendOption.mlx.rawValue {
             let cfg = url.appendingPathComponent("config.json")
             guard FileManager.default.fileExists(atPath: cfg.path) else {
-                return (nil, "Selected folder is not a valid MLX model folder (missing config.json).")
+                return (nil, HubUIStrings.Models.AddLocal.invalidMLXDirectory)
             }
+            let capability = LocalModelImportDetector.detectCapabilities(
+                for: url,
+                backend: normalizedBackend,
+                manifest: manifest,
+                config: config
+            )
             return (
                 DetectedLocalModelMetadata(
-                    modelFormat: manifest?.modelFormat ?? "mlx",
+                    modelFormat: capability?.modelFormat ?? manifest?.modelFormat ?? "mlx",
                     maxContextLength: manifest?.maxContextLength ?? detectContextLength(config: config),
                     defaultLoadProfile: manifest?.defaultLoadProfile ?? LocalModelLoadProfile(contextLength: max(512, ctx)),
-                    taskKinds: manifest?.taskKinds ?? ["text_generate"],
-                    inputModalities: manifest?.inputModalities ?? ["text"],
-                    outputModalities: manifest?.outputModalities ?? ["text"],
+                    taskKinds: capability?.taskKinds ?? manifest?.taskKinds ?? ["text_generate"],
+                    inputModalities: capability?.inputModalities ?? manifest?.inputModalities ?? ["text"],
+                    outputModalities: capability?.outputModalities ?? manifest?.outputModalities ?? ["text"],
                     offlineReady: manifest?.offlineReady ?? true,
                     resourceProfile: manifest?.resourceProfile ?? LocalModelCapabilityDefaults.defaultResourceProfile(
                         backend: normalizedBackend,
@@ -439,12 +833,55 @@ struct AddModelSheet: View {
                         paramsB: paramsB
                     ),
                     trustProfile: manifest?.trustProfile ?? LocalModelCapabilityDefaults.defaultTrustProfile(),
-                    processorRequirements: manifest?.processorRequirements ?? ModelProcessorRequirements(
+                    processorRequirements: capability?.processorRequirements ?? manifest?.processorRequirements ?? ModelProcessorRequirements(
                         tokenizerRequired: true,
                         processorRequired: false,
                         featureExtractorRequired: false
                     ),
-                    sourceSummary: manifest == nil ? "inferred" : XHubLocalModelManifestLoader.fileName
+                    sourceSummary: capability?.sourceSummary ?? (manifest == nil ? "inferred" : XHubLocalModelManifestLoader.fileName)
+                ),
+                nil
+            )
+        }
+
+        if normalizedBackend == LocalBackendOption.llamaCpp.rawValue {
+            let hasGGUFFile = (
+                try? FileManager.default.contentsOfDirectory(atPath: url.path)
+            )?.contains(where: { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasSuffix(".gguf") }) ?? false
+            guard manifest != nil || hasGGUFFile else {
+                return (nil, HubUIStrings.Models.AddLocal.invalidGGUFDirectory)
+            }
+
+            let capability = LocalModelImportDetector.detectCapabilities(
+                for: url,
+                backend: normalizedBackend,
+                manifest: manifest,
+                config: config
+            )
+            let resolvedModelFormat = capability?.modelFormat ?? manifest?.modelFormat ?? "gguf"
+            let resolvedTaskKinds = capability?.taskKinds ?? manifest?.taskKinds ?? ["text_generate"]
+            let maxContextLength = manifest?.maxContextLength ?? detectContextLength(config: config)
+            return (
+                DetectedLocalModelMetadata(
+                    modelFormat: resolvedModelFormat,
+                    maxContextLength: maxContextLength,
+                    defaultLoadProfile: manifest?.defaultLoadProfile ?? LocalModelLoadProfile(contextLength: max(512, maxContextLength ?? ctx)),
+                    taskKinds: resolvedTaskKinds,
+                    inputModalities: capability?.inputModalities ?? manifest?.inputModalities ?? ["text"],
+                    outputModalities: capability?.outputModalities ?? manifest?.outputModalities ?? ["text"],
+                    offlineReady: manifest?.offlineReady ?? true,
+                    resourceProfile: manifest?.resourceProfile ?? LocalModelCapabilityDefaults.defaultResourceProfile(
+                        backend: normalizedBackend,
+                        quant: quant,
+                        paramsB: paramsB
+                    ),
+                    trustProfile: manifest?.trustProfile ?? LocalModelCapabilityDefaults.defaultTrustProfile(),
+                    processorRequirements: capability?.processorRequirements ?? manifest?.processorRequirements ?? LocalModelCapabilityDefaults.defaultProcessorRequirements(
+                        backend: normalizedBackend,
+                        modelFormat: resolvedModelFormat,
+                        taskKinds: resolvedTaskKinds
+                    ),
+                    sourceSummary: capability?.sourceSummary ?? (manifest == nil ? "inferred" : XHubLocalModelManifestLoader.fileName)
                 ),
                 nil
             )
@@ -452,7 +889,7 @@ struct AddModelSheet: View {
 
         let cfg = url.appendingPathComponent("config.json")
         guard manifest != nil || FileManager.default.fileExists(atPath: cfg.path) else {
-            return (nil, "Transformers import requires config.json or xhub_model_manifest.json in the selected folder.")
+            return (nil, HubUIStrings.Models.AddLocal.invalidTransformersDirectory)
         }
 
         if let manifest {
@@ -474,129 +911,48 @@ struct AddModelSheet: View {
             )
         }
 
-        guard let inferred = inferTransformersMetadata(folder: url.lastPathComponent, config: config, paramsB: paramsB) else {
-            let msg = "Transformers folder is missing xhub_model_manifest.json, and task kind could not be inferred from config.json. Add a manifest to declare embedding / speech_to_text / vision_understand / ocr."
-            return (nil, msg)
+        guard let inferred = LocalModelImportDetector.detectCapabilities(
+            for: url,
+            backend: normalizedBackend,
+            manifest: nil,
+            config: config
+        ) else {
+            return (nil, HubUIStrings.Models.AddLocal.transformersNeedManifest)
         }
-        return (inferred, nil)
-    }
-
-    private func inferTransformersMetadata(
-        folder: String,
-        config: [String: Any]?,
-        paramsB: Double
-    ) -> DetectedLocalModelMetadata? {
-        let architectures = ((config?["architectures"] as? [String]) ?? []).joined(separator: " ").lowercased()
-        let modelType = (config?["model_type"] as? String ?? "").lowercased()
-        let nameSignal = folder.lowercased()
-        let haystack = [architectures, modelType, nameSignal].joined(separator: " ")
-
-        let modelFormat = "hf_transformers"
-        let trustProfile = LocalModelCapabilityDefaults.defaultTrustProfile()
+        let maxContextLength = detectContextLength(config: config)
+        let defaultLoadProfile = LocalModelLoadProfile(contextLength: max(512, maxContextLength ?? ctx))
         let baseProfile = LocalModelCapabilityDefaults.defaultResourceProfile(
-            backend: LocalBackendOption.transformers.rawValue,
+            backend: normalizedBackend,
             quant: quant,
             paramsB: paramsB
         )
-        let maxContextLength = detectContextLength(config: config)
-        let defaultLoadProfile = LocalModelLoadProfile(contextLength: max(512, maxContextLength ?? ctx))
-
-        if containsAny(haystack, keywords: ["whisper", "wav2vec", "hubert", "speech", "asr", "ctc"]) {
-            return DetectedLocalModelMetadata(
-                modelFormat: modelFormat,
+        return (
+            DetectedLocalModelMetadata(
+                modelFormat: inferred.modelFormat,
                 maxContextLength: maxContextLength,
                 defaultLoadProfile: defaultLoadProfile,
-                taskKinds: ["speech_to_text"],
-                inputModalities: ["audio"],
-                outputModalities: ["text", "segments"],
+                taskKinds: inferred.taskKinds,
+                inputModalities: inferred.inputModalities,
+                outputModalities: inferred.outputModalities,
                 offlineReady: true,
                 resourceProfile: baseProfile,
-                trustProfile: trustProfile,
-                processorRequirements: ModelProcessorRequirements(
-                    tokenizerRequired: false,
-                    processorRequired: true,
-                    featureExtractorRequired: true
-                ),
-                sourceSummary: "inferred: config/audio"
-            )
-        }
-
-        if containsAny(haystack, keywords: ["trocr", "donut", "ocr"]) {
-            return DetectedLocalModelMetadata(
-                modelFormat: modelFormat,
-                maxContextLength: maxContextLength,
-                defaultLoadProfile: defaultLoadProfile,
-                taskKinds: ["ocr"],
-                inputModalities: ["image"],
-                outputModalities: ["text", "spans"],
-                offlineReady: true,
-                resourceProfile: baseProfile,
-                trustProfile: trustProfile,
-                processorRequirements: ModelProcessorRequirements(
-                    tokenizerRequired: true,
-                    processorRequired: true,
-                    featureExtractorRequired: true
-                ),
-                sourceSummary: "inferred: config/ocr"
-            )
-        }
-
-        if containsAny(haystack, keywords: ["llava", "blip", "siglip", "clip", "florence", "pix2struct", "vision", "glm4v", "qwen3_vl", "qwen2_vl", "pixtral", "mistral3"]) {
-            return DetectedLocalModelMetadata(
-                modelFormat: modelFormat,
-                maxContextLength: maxContextLength,
-                defaultLoadProfile: defaultLoadProfile,
-                taskKinds: ["vision_understand"],
-                inputModalities: ["image"],
-                outputModalities: ["text"],
-                offlineReady: true,
-                resourceProfile: baseProfile,
-                trustProfile: trustProfile,
-                processorRequirements: ModelProcessorRequirements(
-                    tokenizerRequired: true,
-                    processorRequired: true,
-                    featureExtractorRequired: true
-                ),
-                sourceSummary: "inferred: config/vision"
-            )
-        }
-
-        if containsAny(haystack, keywords: ["bge", "gte", "e5", "mpnet", "sentence", "jina", "embed"]) {
-            return DetectedLocalModelMetadata(
-                modelFormat: modelFormat,
-                maxContextLength: maxContextLength,
-                defaultLoadProfile: defaultLoadProfile,
-                taskKinds: ["embedding"],
-                inputModalities: ["text"],
-                outputModalities: ["embedding"],
-                offlineReady: true,
-                resourceProfile: baseProfile,
-                trustProfile: trustProfile,
-                processorRequirements: ModelProcessorRequirements(
-                    tokenizerRequired: true,
-                    processorRequired: false,
-                    featureExtractorRequired: false
-                ),
-                sourceSummary: "inferred: config/embedding"
-            )
-        }
-
-        return nil
-    }
-
-    private func containsAny(_ haystack: String, keywords: [String]) -> Bool {
-        keywords.contains { haystack.contains($0) }
+                trustProfile: LocalModelCapabilityDefaults.defaultTrustProfile(),
+                processorRequirements: inferred.processorRequirements,
+                sourceSummary: inferred.sourceSummary
+            ),
+            nil
+        )
     }
 
     private func validateAndBuildEntry() -> ModelCatalogEntry? {
         errorText = ""
         let id = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
         if id.isEmpty {
-            errorText = "Model ID is required."
+            errorText = HubUIStrings.Models.AddLocal.modelIDRequired
             return nil
         }
         if modelPath.isEmpty {
-            errorText = "Please select a model folder."
+            errorText = HubUIStrings.Models.AddLocal.directoryRequired
             return nil
         }
 
@@ -610,45 +966,27 @@ struct AddModelSheet: View {
         if let metadata = result.metadata {
             resolved = metadata
         } else {
-            let error = result.error ?? "Model capabilities could not be resolved."
+            let error = result.error ?? HubUIStrings.Models.AddLocal.cannotResolveCapabilities
             errorText = error
             return nil
         }
 
         if resolved.taskKinds.isEmpty {
-            errorText = "Model capabilities could not be determined. Add xhub_model_manifest.json with task_kinds/input_modalities/output_modalities."
+            errorText = HubUIStrings.Models.AddLocal.missingTaskKinds
             return nil
-        }
-
-        var roles: [String] = []
-        let baseRole = role.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !baseRole.isEmpty {
-            roles.append(baseRole)
-        }
-        let extra = extraRolesText
-            .split(separator: ",")
-            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-            .filter { !$0.isEmpty }
-        roles.append(contentsOf: extra)
-
-        var uniq: [String] = []
-        var seen: Set<String> = []
-        for r in roles {
-            if seen.contains(r) { continue }
-            seen.insert(r)
-            uniq.append(r)
         }
 
         return ModelCatalogEntry(
             id: id,
             name: name.isEmpty ? id : name,
-            backend: backend.rawValue,
+            backend: resolvedBackend.rawValue,
+            runtimeProviderID: autoDetectedRuntimeProviderID.isEmpty ? nil : autoDetectedRuntimeProviderID,
             quant: q.isEmpty ? inferQuant(modelURL.lastPathComponent) : q,
             contextLength: max(512, ctx),
             maxContextLength: resolved.maxContextLength,
             paramsB: max(0.0, pb),
             modelPath: modelPath,
-            roles: uniq,
+            roles: nil,
             note: "catalog",
             modelFormat: resolved.modelFormat,
             defaultLoadProfile: resolved.defaultLoadProfile,
@@ -656,6 +994,13 @@ struct AddModelSheet: View {
             inputModalities: resolved.inputModalities,
             outputModalities: resolved.outputModalities,
             offlineReady: resolved.offlineReady,
+            voiceProfile: LocalModelCapabilityDefaults.defaultVoiceProfile(
+                modelID: id,
+                name: name.isEmpty ? id : name,
+                note: "catalog",
+                taskKinds: resolved.taskKinds,
+                outputModalities: resolved.outputModalities
+            ),
             resourceProfile: resolved.resourceProfile,
             trustProfile: resolved.trustProfile,
             processorRequirements: resolved.processorRequirements
@@ -665,7 +1010,7 @@ struct AddModelSheet: View {
     private func addModelAsync() async {
         if isAdding { return }
         isAdding = true
-        progressText = "Preparing..."
+        progressText = HubUIStrings.Models.AddLocal.preparing
         defer {
             isAdding = false
             progressText = ""
@@ -676,10 +1021,8 @@ struct AddModelSheet: View {
         }
 
         if SharedPaths.isSandboxedProcess() {
-            progressText = "Importing model into Hub storage..."
+            progressText = HubUIStrings.Models.AddLocal.importingIntoHubStorage
             let base = SharedPaths.ensureHubDirectory()
-            let dst = base.appendingPathComponent("models", isDirectory: true)
-                .appendingPathComponent(entry.id, isDirectory: true)
             let src = URL(fileURLWithPath: entry.modelPath, isDirectory: true)
 
             var accessed = false
@@ -693,23 +1036,21 @@ struct AddModelSheet: View {
             }
 
             do {
-                try await Task.detached(priority: .userInitiated) {
-                    let fm = FileManager.default
-                    try fm.createDirectory(at: dst.deletingLastPathComponent(), withIntermediateDirectories: true)
-                    if fm.fileExists(atPath: dst.path) {
-                        try fm.removeItem(at: dst)
-                    }
-                    try fm.copyItem(at: src, to: dst)
+                let sourceEntry = entry
+                entry = try await Task.detached(priority: .userInitiated) {
+                    try LocalModelManagedStorage.preparedCatalogEntryIfNeeded(
+                        sourceEntry,
+                        sandboxed: true,
+                        baseDir: base
+                    )
                 }.value
-                entry.modelPath = dst.path
-                entry.note = "managed_copy"
             } catch {
-                errorText = "Model import failed (sandbox).\n\n\(error.localizedDescription)"
+                errorText = HubUIStrings.Models.AddLocal.sandboxImportFailed(error.localizedDescription)
                 return
             }
         }
 
-        progressText = "Saving..."
+        progressText = HubUIStrings.Models.AddLocal.saving
         var cat = ModelCatalogStorage.load()
         if let idx = cat.models.firstIndex(where: { $0.id == entry.id }) {
             cat.models[idx] = entry

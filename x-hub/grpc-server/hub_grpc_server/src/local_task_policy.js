@@ -20,13 +20,25 @@ function safeStringList(values) {
   return out;
 }
 
+const LEGACY_LOCAL_AUDIO_CAPABILITY = 'ai.audio.local';
+const LOCAL_TTS_CAPABILITY = 'ai.audio.tts.local';
+
 export const LOCAL_TASK_CAPABILITY_BY_KIND = Object.freeze({
   text_generate: 'ai.generate.local',
   embedding: 'ai.embed.local',
-  speech_to_text: 'ai.audio.local',
+  speech_to_text: LEGACY_LOCAL_AUDIO_CAPABILITY,
+  text_to_speech: LOCAL_TTS_CAPABILITY,
   vision_understand: 'ai.vision.local',
   ocr: 'ai.vision.local',
 });
+
+function capabilityKillSwitchAliases(capability) {
+  const normalized = safeString(capability);
+  if (normalized === LOCAL_TTS_CAPABILITY) {
+    return [LOCAL_TTS_CAPABILITY, LEGACY_LOCAL_AUDIO_CAPABILITY];
+  }
+  return normalized ? [normalized] : [];
+}
 
 export function localTaskCapabilityKey(taskKind) {
   const key = safeString(taskKind).toLowerCase();
@@ -98,8 +110,18 @@ export function normalizeLocalTaskDenyCode(rawCode) {
   if (
     raw === 'local_embedding_model_unavailable'
     || raw === 'local_asr_model_unavailable'
+    || raw === 'local_tts_model_unavailable'
+    || raw === 'text_to_speech_runtime_unavailable'
+    || raw === 'tts_native_engine_not_supported'
+    || raw === 'tts_native_runtime_failed'
+    || raw === 'tts_native_audio_missing'
+    || raw === 'tts_native_speaker_unavailable'
+    || raw === 'native_dependency_error'
+    || raw === 'local_tts_runtime_failed'
+    || raw === 'tts_audio_output_missing'
     || raw === 'provider_not_ready'
     || raw === 'provider_unavailable'
+    || raw.startsWith('task_not_implemented:')
     || /_model_unavailable$/.test(raw)
   ) {
     return 'provider_unavailable';
@@ -113,6 +135,38 @@ export function normalizeLocalTaskDenyCode(rawCode) {
     return 'task_blocked';
   }
   return raw;
+}
+
+export function localTaskGovernanceComponentForFailure({
+  denyCode = '',
+  rawDenyCode = '',
+  blockedBy = '',
+} = {}) {
+  const deny = safeString(denyCode);
+  const raw = safeString(rawDenyCode);
+  const blocked = safeString(blockedBy);
+
+  if (
+    raw === 'models_disabled'
+    || raw.startsWith('kill_switch_')
+    || deny === 'policy_blocked'
+    || blocked === 'policy'
+  ) {
+    return 'grant';
+  }
+
+  if ([
+    'capability_blocked',
+    'provider_blocked',
+    'task_blocked',
+    'provider_unavailable',
+    'modality_unsupported',
+    'input_too_large',
+  ].includes(deny)) {
+    return 'capability';
+  }
+
+  return '';
 }
 
 export function buildLocalTaskFailure({
@@ -132,6 +186,11 @@ export function buildLocalTaskFailure({
   const resolvedRuleIds = Array.isArray(ruleIds) && ruleIds.length > 0
     ? ruleIds.map((item) => safeString(item)).filter(Boolean)
     : [raw || denyCode];
+  const governanceComponent = localTaskGovernanceComponentForFailure({
+    denyCode,
+    rawDenyCode: raw,
+    blockedBy,
+  });
   return {
     ok: false,
     task_kind: normalizedTaskKind,
@@ -142,6 +201,7 @@ export function buildLocalTaskFailure({
     message: safeString(message) || raw || denyCode,
     blocked_by: safeString(blockedBy),
     rule_ids: resolvedRuleIds,
+    governance_component: governanceComponent,
   };
 }
 
@@ -195,15 +255,17 @@ export function evaluateLocalTaskPolicyGate({
       ruleIds: ['models_disabled'],
     });
   }
-  if (disabledCapabilities.includes(capability)) {
+  const blockedCapability = capabilityKillSwitchAliases(capability)
+    .find((candidate) => disabledCapabilities.includes(candidate));
+  if (blockedCapability) {
     return buildLocalTaskFailure({
       taskKind: normalizedTaskKind,
       provider: normalizedProvider,
       capability,
-      rawDenyCode: `kill_switch_capability:${capability}`,
-      message: reason ? `capability_blocked:${reason}` : `capability_blocked:${capability}`,
+      rawDenyCode: `kill_switch_capability:${blockedCapability}`,
+      message: reason ? `capability_blocked:${reason}` : `capability_blocked:${blockedCapability}`,
       blockedBy: 'capability',
-      ruleIds: [`kill_switch_capability:${capability}`],
+      ruleIds: [`kill_switch_capability:${blockedCapability}`],
     });
   }
   if (normalizedProvider && disabledProviders.includes(normalizedProvider)) {
@@ -228,5 +290,6 @@ export function evaluateLocalTaskPolicyGate({
     message: '',
     blocked_by: '',
     rule_ids: [],
+    governance_component: '',
   };
 }

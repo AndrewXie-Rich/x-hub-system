@@ -130,6 +130,13 @@ await runAsync('SlackCommandOrchestrator resolves deploy plan to XT dispatch via
           scope_type: 'project',
           scope_id: 'project_alpha',
           xt_online: true,
+          governance_runtime_readiness: {
+            runtime_ready: true,
+            blocked_component_keys: [],
+            components_by_xt_key: {
+              route_ready: { state: 'ready' },
+            },
+          },
         },
       };
     },
@@ -146,6 +153,12 @@ await runAsync('SlackCommandOrchestrator resolves deploy plan to XT dispatch via
   assert.equal(String(out.dispatch?.kind || ''), 'xt_command');
   assert.equal(String(out.route?.route_mode || ''), 'hub_to_xt');
   assert.equal(String(out.route?.resolved_device_id || ''), 'xt-alpha-1');
+  assert.equal(typeof out.route?.governance_runtime_readiness, 'object');
+  assert.equal(Boolean(out.route?.governance_runtime_readiness?.runtime_ready), true);
+  assert.equal(
+    String(out.route?.governance_runtime_readiness?.components_by_xt_key?.route_ready?.state || ''),
+    'ready'
+  );
   assert.equal(calls.length, 2);
   assert.equal(String(calls[0].req.channel?.conversation_id || ''), 'C456');
   assert.equal(String(calls[1].req.binding_id || ''), 'binding-deploy-1');
@@ -338,4 +351,32 @@ run('SlackCommandOrchestrator fails closed on unsupported local input and expose
     route: { route_mode: 'hub_only_status' },
   });
   assert.equal(String(classify.kind || ''), 'hub_grant_action');
+});
+
+run('SlackCommandOrchestrator derives actor identity from stable Slack ids, not display text', () => {
+  const normalized = normalizeSlackCommandInput({
+    envelope_type: 'event_callback',
+    actor: {
+      team_id: 'T001',
+      user_id: 'U123',
+      display_name: 'Alice Visible',
+      real_name: 'Alice Ops',
+    },
+    channel: {
+      provider: 'slack',
+      account_id: 'ops-slack',
+      conversation_id: 'C999',
+      channel_scope: 'group',
+    },
+    structured_action: {
+      action_name: 'deploy.plan',
+    },
+  }, {
+    now_ms: 1710000012000,
+  });
+
+  assert.equal(!!normalized.ok, true);
+  assert.equal(String(normalized.actor?.external_user_id || ''), 'U123');
+  assert.equal(String(normalized.actor?.external_tenant_id || ''), 'T001');
+  assert.equal(String(normalized.actor?.stable_external_id || ''), 'slack/T001/U123');
 });

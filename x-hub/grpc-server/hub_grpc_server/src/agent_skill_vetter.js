@@ -175,6 +175,36 @@ function shouldSkipEntry(name) {
   return name.startsWith('.');
 }
 
+function resolveIncludedScanPath(rootDir, rawPath) {
+  const input = String(rawPath || '').trim();
+  if (!input) return '';
+  const resolved = path.resolve(rootDir, input);
+  const relative = path.relative(rootDir, resolved);
+  if (!relative || relative === '') return '';
+  if (relative.startsWith('..') || path.isAbsolute(relative)) return '';
+  return resolved;
+}
+
+function collectIncludedFiles(rootDir, includeFiles, maxFiles) {
+  const files = [];
+  const seen = new Set();
+  for (const rawPath of Array.isArray(includeFiles) ? includeFiles : []) {
+    if (files.length >= maxFiles) break;
+    const resolvedPath = resolveIncludedScanPath(rootDir, rawPath);
+    if (!resolvedPath || seen.has(resolvedPath) || !isAgentSkillScannable(resolvedPath)) continue;
+    let stat = null;
+    try {
+      stat = fs.statSync(resolvedPath);
+    } catch {
+      continue;
+    }
+    if (!stat?.isFile()) continue;
+    seen.add(resolvedPath);
+    files.push(resolvedPath);
+  }
+  return { files, seen };
+}
+
 function scanFileWithFindings(filePath, maxFileBytes) {
   const stat = fs.statSync(filePath);
   if (!stat.isFile()) return { scanned: false, findings: [] };
@@ -191,7 +221,9 @@ export function scanAgentSkillDirectoryWithSummary(rootDir, options = {}) {
   const maxFiles = Math.max(1, safeNumber(options.maxFiles, DEFAULT_MAX_SCAN_FILES));
   const maxFileBytes = Math.max(1, safeNumber(options.maxFileBytes, DEFAULT_MAX_FILE_BYTES));
   const pending = [resolvedRoot];
-  const files = [];
+  const included = collectIncludedFiles(resolvedRoot, options.includeFiles, maxFiles);
+  const files = [...included.files];
+  const seenFiles = included.seen;
 
   while (pending.length > 0 && files.length < maxFiles) {
     const current = pending.pop();
@@ -211,7 +243,9 @@ export function scanAgentSkillDirectoryWithSummary(rootDir, options = {}) {
       }
       if (!entry.isFile()) continue;
       if (!isAgentSkillScannable(fullPath)) continue;
+      if (seenFiles.has(fullPath)) continue;
       files.push(fullPath);
+      seenFiles.add(fullPath);
       if (files.length >= maxFiles) break;
     }
   }

@@ -5,11 +5,15 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { startPairingHTTPServer } from './pairing_http.js';
+import { evaluateChannelCommandGateWithAudit } from './channel_command_gate.js';
 import { resolveSupervisorOperatorChannelBinding } from './channel_bindings_store.js';
 import { HubDB } from './db.js';
 import { createOrTouchChannelOnboardingDiscoveryTicket } from './channel_onboarding_discovery_store.js';
 import { getChannelIdentityBinding } from './channel_identity_store.js';
-import { getChannelOnboardingAutoBindReceiptByTicketId } from './channel_onboarding_transaction.js';
+import {
+  getChannelOnboardingAutoBindReceiptByTicketId,
+  getChannelOnboardingAutoBindRevocationByTicketId,
+} from './channel_onboarding_transaction.js';
 import { getChannelOnboardingFirstSmokeReceiptByTicketId } from './channel_onboarding_first_smoke.js';
 import { listChannelOutboxItems } from './channel_outbox.js';
 
@@ -206,6 +210,10 @@ await runAsync('XT-W3-24/http admin readiness endpoint reports provider setup st
           String(feishu?.remediation_hint || '').includes('HUB_FEISHU_OPERATOR_REPLY_ENABLE=1'),
           true
         );
+        assert.equal(
+          (feishu?.repair_hints || []).some((item) => String(item || '').includes('HUB_FEISHU_OPERATOR_REPLY_ENABLE=1')),
+          true
+        );
       });
     });
   } finally {
@@ -269,12 +277,245 @@ await runAsync('XT-W3-24/http admin runtime status endpoint reports command entr
         assert.equal(String(feishu?.runtime_state || ''), 'ingress_ready');
         assert.equal(feishu?.command_entry_ready, false);
         assert.equal(String(feishu?.last_error_code || ''), 'verification_token_missing');
+        assert.equal(
+          (feishu?.repair_hints || []).some((item) => String(item || '').includes('HUB_FEISHU_OPERATOR_VERIFICATION_TOKEN')),
+          true
+        );
       });
     });
   } finally {
     db.close();
     cleanupDbArtifacts(dbPath);
     try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+});
+
+await runAsync('XT-W3-24/http admin live-test evidence endpoint returns a Hub-built report with repair hints and onboarding snapshot', async () => {
+  const dbPath = makeTmp('db', '.db');
+  const runtimeBaseDir = makeTmp('runtime');
+  const db = new HubDB({ dbPath });
+  const runtimeRepairHintNeedle = 'HUB_TELEGRAM_OPERATOR_BOT_TOKEN';
+  try {
+    fs.mkdirSync(runtimeBaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(runtimeBaseDir, 'channel_runtime_accounts_status.json'),
+      JSON.stringify({
+        schema_version: 'xhub.channel_runtime_accounts_status.v1',
+        updated_at_ms: 1710000010000,
+        rows: [
+          {
+            provider: 'telegram',
+            account_id: 'ops_telegram',
+            label: 'Telegram Ops',
+            release_stage: 'wave1',
+            release_blocked: false,
+            require_real_evidence: false,
+            runtime_state: 'degraded',
+            delivery_ready: false,
+            command_entry_ready: false,
+            last_error_code: 'bot_token_missing',
+            updated_at_ms: 1710000010000,
+          },
+        ],
+      }),
+      'utf8'
+    );
+
+    const seeded = createOrTouchChannelOnboardingDiscoveryTicket(db, {
+      request_id: 'disc-http-live-test-create-1',
+      ticket: {
+        provider: 'telegram',
+        account_id: 'ops_telegram',
+        external_user_id: 'user_telegram_1',
+        external_tenant_id: 'tenant_telegram',
+        conversation_id: 'chat_telegram_1',
+        thread_key: '',
+        ingress_surface: 'dm',
+        first_message_preview: 'status',
+        proposed_scope_type: 'project',
+        proposed_scope_id: 'project_alpha',
+      },
+      audit: {
+        app_id: 'test',
+      },
+    });
+    assert.equal(!!seeded.ok, true);
+
+    await withEnvAsync({
+      HUB_RUNTIME_BASE_DIR: runtimeBaseDir,
+      HUB_TELEGRAM_OPERATOR_REPLY_ENABLE: '1',
+    }, async () => {
+      await withPairingServer(db, async ({ baseUrl }) => {
+        const headers = {
+          authorization: 'Bearer admin-token-onboarding-http',
+        };
+        const query = new URLSearchParams({
+          provider: 'telegram',
+          ticket_id: seeded.ticket.ticket_id,
+          verdict: 'partial',
+          summary: 'Telegram onboarding is still blocked by missing runtime config.',
+        });
+        query.append('evidence_ref', 'captures/telegram-live-1.png');
+        query.append('evidence_ref', 'captures/telegram-live-1.png');
+        const out = await requestJson({
+          url: `${baseUrl}/admin/operator-channels/live-test/evidence?${query.toString()}`,
+          headers,
+        });
+        assert.equal(out.status, 200);
+        assert.equal(out.json?.ok, true);
+        assert.equal(String(out.json?.report?.provider || ''), 'telegram');
+        assert.equal(String(out.json?.report?.operator_verdict || ''), 'partial');
+        assert.equal(String(out.json?.report?.derived_status || ''), 'attention');
+        assert.equal(out.json?.report?.live_test_success, false);
+        assert.equal(String(out.json?.report?.admin_base_url || ''), baseUrl);
+        assert.equal(String(out.json?.report?.machine_readable_evidence_path || ''), '');
+        assert.deepEqual(out.json?.report?.evidence_refs || [], ['captures/telegram-live-1.png']);
+        assert.equal(String(out.json?.report?.runtime_snapshot?.runtime_state || ''), 'degraded');
+        assert.equal(out.json?.report?.runtime_snapshot?.command_entry_ready, false);
+        assert.equal(out.json?.report?.readiness_snapshot?.ready, false);
+        assert.equal(
+          (out.json?.report?.repair_hints || []).some((item) => String(item || '').includes(runtimeRepairHintNeedle)),
+          true
+        );
+        assert.equal(
+          String(out.json?.report?.required_next_step || '').includes(runtimeRepairHintNeedle),
+          true
+        );
+        assert.equal(
+          String(out.json?.report?.onboarding_snapshot?.ticket?.ticket_id || ''),
+          String(seeded.ticket.ticket_id || '')
+        );
+        assert.equal(String(out.json?.report?.checks?.[2]?.name || ''), 'release_ready_boundary');
+        assert.equal(String(out.json?.report?.checks?.[6]?.name || ''), 'heartbeat_governance_visible');
+        assert.equal(String(out.json?.report?.checks?.[6]?.status || ''), 'pending');
+      });
+    });
+  } finally {
+    db.close();
+    cleanupDbArtifacts(dbPath);
+    try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+});
+
+await runAsync('XT-W3-24/http admin live-test evidence endpoint promotes Slack signature mismatch repair hints', async () => {
+  const dbPath = makeTmp('db', '.db');
+  const runtimeBaseDir = makeTmp('runtime');
+  const db = new HubDB({ dbPath });
+  try {
+    fs.mkdirSync(runtimeBaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(runtimeBaseDir, 'channel_runtime_accounts_status.json'),
+      JSON.stringify({
+        schema_version: 'xhub.channel_runtime_accounts_status.v1',
+        updated_at_ms: 1710000012000,
+        rows: [
+          {
+            provider: 'slack',
+            account_id: 'ops_slack',
+            label: 'Slack Ops',
+            release_stage: 'wave1',
+            release_blocked: false,
+            require_real_evidence: false,
+            runtime_state: 'degraded',
+            delivery_ready: false,
+            command_entry_ready: false,
+            last_error_code: 'signature_invalid',
+            updated_at_ms: 1710000012000,
+          },
+        ],
+      }),
+      'utf8'
+    );
+
+    const seeded = createOrTouchChannelOnboardingDiscoveryTicket(db, {
+      request_id: 'disc-http-live-test-signature-1',
+      ticket: {
+        provider: 'slack',
+        account_id: 'ops_slack',
+        external_user_id: 'U_signature',
+        external_tenant_id: 'T_signature',
+        conversation_id: 'C_signature',
+        thread_key: '171.99',
+        ingress_surface: 'thread',
+        first_message_preview: 'status',
+        proposed_scope_type: 'project',
+        proposed_scope_id: 'project_alpha',
+      },
+      audit: {
+        app_id: 'test',
+      },
+    });
+    assert.equal(!!seeded.ok, true);
+
+    await withEnvAsync({
+      HUB_RUNTIME_BASE_DIR: runtimeBaseDir,
+      HUB_SLACK_OPERATOR_REPLY_ENABLE: '1',
+      HUB_SLACK_OPERATOR_BOT_TOKEN: 'xoxb-live-test-signature',
+    }, async () => {
+      await withPairingServer(db, async ({ baseUrl }) => {
+        const headers = {
+          authorization: 'Bearer admin-token-onboarding-http',
+        };
+        const query = new URLSearchParams({
+          provider: 'slack',
+          ticket_id: seeded.ticket.ticket_id,
+          verdict: 'partial',
+          summary: 'Slack onboarding is still blocked by signature verification.',
+        });
+        const out = await requestJson({
+          url: `${baseUrl}/admin/operator-channels/live-test/evidence?${query.toString()}`,
+          headers,
+        });
+        assert.equal(out.status, 200);
+        assert.equal(out.json?.ok, true);
+        assert.equal(String(out.json?.report?.provider || ''), 'slack');
+        assert.equal(String(out.json?.report?.derived_status || ''), 'attention');
+        assert.equal(out.json?.report?.live_test_success, false);
+        assert.equal(String(out.json?.report?.runtime_snapshot?.last_error_code || ''), 'signature_invalid');
+        assert.equal(out.json?.report?.readiness_snapshot?.ready, true);
+        assert.equal(
+          (out.json?.report?.repair_hints || []).some((item) => String(item || '').includes('HUB_SLACK_OPERATOR_SIGNING_SECRET')),
+          true
+        );
+        assert.equal(
+          (out.json?.report?.repair_hints || []).some((item) => String(item || '').includes('/slack/events')),
+          true
+        );
+        assert.equal(
+          String(out.json?.report?.required_next_step || '').includes('HUB_SLACK_OPERATOR_SIGNING_SECRET'),
+          true
+        );
+        assert.equal(
+          String(out.json?.report?.checks?.[0]?.remediation || '').includes('/slack/events'),
+          true
+        );
+      });
+    });
+  } finally {
+    db.close();
+    cleanupDbArtifacts(dbPath);
+    try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+});
+
+await runAsync('XT-W3-24/http admin live-test evidence endpoint returns ticket_not_found when the requested onboarding ticket is missing', async () => {
+  const dbPath = makeTmp('db', '.db');
+  const db = new HubDB({ dbPath });
+  try {
+    await withPairingServer(db, async ({ baseUrl }) => {
+      const headers = {
+        authorization: 'Bearer admin-token-onboarding-http',
+      };
+      const out = await requestJson({
+        url: `${baseUrl}/admin/operator-channels/live-test/evidence?provider=slack&ticket_id=ticket_missing_live_test`,
+        headers,
+      });
+      assert.equal(out.status, 404);
+      assert.equal(String(out.json?.error?.code || ''), 'ticket_not_found');
+    });
+  } finally {
+    db.close();
+    cleanupDbArtifacts(dbPath);
   }
 });
 
@@ -301,6 +542,80 @@ await runAsync('XT-W3-24/http admin onboarding endpoints list detail and approve
       },
     });
     assert.equal(!!seeded.ok, true);
+
+    const now = Date.now();
+    const lineage = db.upsertProjectLineage({
+      request_id: 'disc-http-lineage-1',
+      device_id: 'xt-alpha-1',
+      user_id: 'xt-owner',
+      app_id: 'x_terminal',
+      root_project_id: 'project_alpha',
+      parent_project_id: '',
+      project_id: 'project_alpha',
+      status: 'active',
+      created_at_ms: now - 4_000,
+    });
+    assert.equal(!!lineage.accepted, true);
+    const heartbeat = db.upsertProjectHeartbeat({
+      request_id: 'disc-http-heartbeat-1',
+      device_id: 'xt-alpha-1',
+      user_id: 'xt-owner',
+      app_id: 'x_terminal',
+      root_project_id: 'project_alpha',
+      parent_project_id: '',
+      project_id: 'project_alpha',
+      queue_depth: 2,
+      oldest_wait_ms: 6_000,
+      blocked_reason: ['awaiting_security_review'],
+      next_actions: ['approve release grant'],
+      risk_tier: 'medium',
+      heartbeat_seq: 1,
+      sent_at_ms: now,
+    });
+    assert.equal(!!heartbeat.accepted, true);
+    const heartbeatGovernance = db.upsertCanonicalItem({
+      scope: 'project',
+      device_id: 'xt-alpha-1',
+      user_id: 'xt-owner',
+      app_id: 'x_terminal',
+      project_id: 'project_alpha',
+      key: 'xterminal.project.heartbeat.summary_json',
+      value: JSON.stringify({
+        schema_version: 'xt.project_heartbeat.v1',
+        project_id: 'project_alpha',
+        project_name: 'Alpha',
+        updated_at_ms: now,
+        last_heartbeat_at_ms: now,
+        status_digest: 'Core loop advancing',
+        current_state_summary: 'Project is actively moving through the build lane.',
+        next_step_summary: 'Queue the next governed pulse review.',
+        blocker_summary: 'awaiting_security_review',
+        latest_quality_band: 'usable',
+        latest_quality_score: 71,
+        weak_reasons: ['evidence_thin'],
+        open_anomaly_types: ['stale_repeat'],
+        project_phase: 'build',
+        execution_status: 'active',
+        risk_tier: 'medium',
+        cadence: {
+          reviewPulse: {
+            dimension: 'review_pulse',
+            configuredSeconds: 900,
+            recommendedSeconds: 600,
+            effectiveSeconds: 600,
+            effectiveReasonCodes: ['quality_usable'],
+            nextDueAtMs: now + 600_000,
+            nextDueReasonCodes: ['pulse_due_window'],
+            isDue: true,
+          },
+        },
+        next_review_kind: 'review_pulse',
+        next_review_due_at_ms: now + 600_000,
+        next_review_due: true,
+      }),
+      pinned: false,
+    });
+    assert.equal(String(heartbeatGovernance?.key || ''), 'xterminal.project.heartbeat.summary_json');
 
     await withPairingServer(db, async ({ baseUrl }) => {
       const headers = {
@@ -352,6 +667,18 @@ await runAsync('XT-W3-24/http admin onboarding endpoints list detail and approve
         String(reviewed.json?.automation_state?.first_smoke?.receipt_id || ''),
         String(reviewed.json?.automation?.first_smoke_receipt_id || '')
       );
+      assert.equal(
+        String(reviewed.json?.automation_state?.first_smoke?.heartbeat_governance_snapshot?.project_id || ''),
+        'project_alpha'
+      );
+      assert.equal(
+        String(reviewed.json?.automation_state?.first_smoke?.heartbeat_governance_snapshot?.latest_quality_band || ''),
+        'usable'
+      );
+      assert.equal(
+        String(reviewed.json?.automation_state?.first_smoke?.heartbeat_governance_snapshot_json || '').includes('"next_review_due"'),
+        true
+      );
       assert.deepEqual(
         (reviewed.json?.automation_state?.outbox_items || []).map((item) => String(item?.item_kind || '')).sort(),
         ['onboarding_ack', 'onboarding_first_smoke']
@@ -374,6 +701,14 @@ await runAsync('XT-W3-24/http admin onboarding endpoints list detail and approve
       assert.equal(String(after.json?.latest_decision?.approved_by_hub_user_id || ''), 'user_ops_admin');
       assert.equal(String(after.json?.automation_state?.ticket_id || ''), String(seeded.ticket.ticket_id || ''));
       assert.equal(String(after.json?.automation_state?.first_smoke?.status || ''), 'query_executed');
+      assert.equal(
+        String(after.json?.automation_state?.first_smoke?.heartbeat_governance_snapshot?.project_id || ''),
+        'project_alpha'
+      );
+      assert.deepEqual(
+        after.json?.automation_state?.first_smoke?.heartbeat_governance_snapshot?.open_anomaly_types || [],
+        ['stale_repeat']
+      );
       assert.deepEqual(
         (after.json?.automation_state?.outbox_items || []).map((item) => String(item?.item_kind || '')).sort(),
         ['onboarding_ack', 'onboarding_first_smoke']
@@ -488,6 +823,101 @@ await runAsync('XT-W3-24/http admin onboarding endpoints fail closed on unsafe a
   }
 });
 
+await runAsync('XT-W3-24/http admin onboarding review fails closed when a newer identity route ticket supersedes the stale one', async () => {
+  const dbPath = makeTmp('db', '.db');
+  const db = new HubDB({ dbPath });
+  try {
+    const stale = createOrTouchChannelOnboardingDiscoveryTicket(db, {
+      request_id: 'disc-http-create-drift-1',
+      ticket: {
+        provider: 'slack',
+        account_id: 'T_HTTP_DRIFT',
+        external_user_id: 'U_HTTP_DRIFT',
+        external_tenant_id: 'T_HTTP_DRIFT',
+        conversation_id: 'C_HTTP_STALE',
+        thread_key: '171.1',
+        ingress_surface: 'group',
+        first_message_preview: 'status',
+        proposed_scope_type: 'project',
+        proposed_scope_id: 'project_alpha',
+      },
+      audit: {
+        app_id: 'test',
+      },
+    });
+    assert.equal(!!stale.ok, true);
+
+    await sleep(10);
+
+    const latest = createOrTouchChannelOnboardingDiscoveryTicket(db, {
+      request_id: 'disc-http-create-drift-2',
+      ticket: {
+        provider: 'slack',
+        account_id: 'T_HTTP_DRIFT',
+        external_user_id: 'U_HTTP_DRIFT',
+        external_tenant_id: 'T_HTTP_DRIFT',
+        conversation_id: 'C_HTTP_LATEST',
+        thread_key: '171.2',
+        ingress_surface: 'group',
+        first_message_preview: 'status',
+        proposed_scope_type: 'project',
+        proposed_scope_id: 'project_alpha',
+      },
+      audit: {
+        app_id: 'test',
+      },
+    });
+    assert.equal(!!latest.ok, true);
+
+    await withPairingServer(db, async ({ baseUrl }) => {
+      const headers = {
+        authorization: 'Bearer admin-token-onboarding-http',
+      };
+      const reviewed = await requestJson({
+        method: 'POST',
+        url: `${baseUrl}/admin/operator-channels/onboarding/tickets/${stale.ticket.ticket_id}/review`,
+        headers,
+        body: {
+          decision: 'approve',
+          approved_by_hub_user_id: 'user_ops_admin',
+          approved_via: 'hub_local_ui',
+          hub_user_id: 'user_ops_alice',
+          scope_type: 'project',
+          scope_id: 'project_alpha',
+          binding_mode: 'thread_binding',
+          allowed_actions: ['supervisor.status.get'],
+        },
+      });
+      assert.equal(reviewed.status, 400);
+      assert.equal(String(reviewed.json?.error?.code || ''), 'identity_route_drift_detected');
+
+      const identityBinding = getChannelIdentityBinding(db, {
+        provider: 'slack',
+        external_user_id: 'U_HTTP_DRIFT',
+        external_tenant_id: 'T_HTTP_DRIFT',
+      });
+      assert.equal(identityBinding, null);
+
+      const staleRouteBinding = resolveSupervisorOperatorChannelBinding(db, {
+        provider: 'slack',
+        account_id: 'T_HTTP_DRIFT',
+        conversation_id: 'C_HTTP_STALE',
+        thread_key: '171.1',
+        channel_scope: 'group',
+      });
+      assert.equal(staleRouteBinding.binding, null);
+
+      const autoBindReceipt = getChannelOnboardingAutoBindReceiptByTicketId(db, {
+        ticket_id: stale.ticket.ticket_id,
+      });
+      assert.equal(autoBindReceipt, null);
+    });
+  } finally {
+    db.close();
+    cleanupDbArtifacts(dbPath);
+  }
+});
+
 await runAsync('XT-W3-24/http admin onboarding retry endpoint delivers pending outbox after credentials are configured', async () => {
   const dbPath = makeTmp('db', '.db');
   const db = new HubDB({ dbPath });
@@ -590,6 +1020,230 @@ await runAsync('XT-W3-24/http admin onboarding retry endpoint delivers pending o
       assert.equal(outboxItems.length, 2);
       assert.equal(outboxItems.every((item) => String(item.status || '') === 'delivered'), true);
       assert.equal(outboxItems.every((item) => Number(item.attempt_count || 0) === 2), true);
+    });
+  } finally {
+    db.close();
+    cleanupDbArtifacts(dbPath);
+  }
+});
+
+await runAsync('XT-W3-24/http admin onboarding revoke endpoint revokes approved bindings and blocks later gate', async () => {
+  const dbPath = makeTmp('db', '.db');
+  const db = new HubDB({ dbPath });
+  try {
+    const seeded = createOrTouchChannelOnboardingDiscoveryTicket(db, {
+      request_id: 'disc-http-revoke-create-1',
+      ticket: {
+        provider: 'slack',
+        account_id: 'T_REVOKE',
+        external_user_id: 'U_REVOKE',
+        external_tenant_id: 'T_REVOKE',
+        conversation_id: 'C_REVOKE',
+        thread_key: '171.9',
+        ingress_surface: 'group',
+        first_message_preview: 'status',
+        proposed_scope_type: 'project',
+        proposed_scope_id: 'project_alpha',
+      },
+      audit: {
+        app_id: 'test',
+      },
+    });
+    assert.equal(!!seeded.ok, true);
+
+    await withPairingServer(db, async ({ baseUrl }) => {
+      const headers = {
+        authorization: 'Bearer admin-token-onboarding-http',
+      };
+      const reviewed = await requestJson({
+        method: 'POST',
+        url: `${baseUrl}/admin/operator-channels/onboarding/tickets/${seeded.ticket.ticket_id}/review`,
+        headers,
+        body: {
+          decision: 'approve',
+          approved_by_hub_user_id: 'user_ops_admin',
+          approved_via: 'hub_local_ui',
+          hub_user_id: 'user_ops_alice',
+          scope_type: 'project',
+          scope_id: 'project_alpha',
+          binding_mode: 'thread_binding',
+          preferred_device_id: 'xt-alpha-1',
+          allowed_actions: ['supervisor.status.get', 'supervisor.blockers.get'],
+        },
+      });
+      assert.equal(reviewed.status, 200);
+
+      const revoked = await requestJson({
+        method: 'POST',
+        url: `${baseUrl}/admin/operator-channels/onboarding/tickets/${seeded.ticket.ticket_id}/revoke`,
+        headers,
+        body: {
+          request_id: 'disc-http-revoke-1',
+          revoked_by_hub_user_id: 'user_ops_admin',
+          revoked_via: 'hub_local_ui',
+          note: 'retired route',
+        },
+      });
+      assert.equal(revoked.status, 200);
+      assert.equal(revoked.json?.ok, true);
+      assert.equal(String(revoked.json?.latest_decision?.decision || ''), 'approve');
+      assert.equal(String(revoked.json?.revocation?.status || ''), 'revoked');
+      assert.equal(String(revoked.json?.revocation?.revoked_by_hub_user_id || ''), 'user_ops_admin');
+      assert.equal(String(revoked.json?.revocation?.note || ''), 'retired route');
+      assert.equal(String(revoked.json?.ticket?.effective_status || ''), 'revoked');
+
+      const detailed = await requestJson({
+        url: `${baseUrl}/admin/operator-channels/onboarding/tickets/${seeded.ticket.ticket_id}`,
+        headers,
+      });
+      assert.equal(detailed.status, 200);
+      assert.equal(
+        String(detailed.json?.revocation?.revocation_id || ''),
+        String(revoked.json?.revocation?.revocation_id || '')
+      );
+      assert.equal(String(detailed.json?.revocation?.status || ''), 'revoked');
+      assert.equal(String(detailed.json?.ticket?.effective_status || ''), 'revoked');
+
+      const listed = await requestJson({
+        url: `${baseUrl}/admin/operator-channels/onboarding/tickets`,
+        headers,
+      });
+      const listedTicket = (listed.json?.tickets || []).find((item) => String(item?.ticket_id || '') === String(seeded.ticket.ticket_id || ''));
+      assert.equal(String(listedTicket?.effective_status || ''), 'revoked');
+    });
+
+    const identityBinding = getChannelIdentityBinding(db, {
+      provider: 'slack',
+      external_user_id: 'U_REVOKE',
+      external_tenant_id: 'T_REVOKE',
+    });
+    assert.equal(String(identityBinding?.status || ''), 'revoked');
+
+    const routeBinding = resolveSupervisorOperatorChannelBinding(db, {
+      provider: 'slack',
+      account_id: 'T_REVOKE',
+      conversation_id: 'C_REVOKE',
+      thread_key: '171.9',
+      channel_scope: 'group',
+    });
+    assert.equal(String(routeBinding.binding?.status || ''), 'revoked');
+
+    const autoBindReceipt = getChannelOnboardingAutoBindReceiptByTicketId(db, {
+      ticket_id: seeded.ticket.ticket_id,
+    });
+    assert.equal(String(autoBindReceipt?.status || ''), 'revoked');
+
+    const revocation = getChannelOnboardingAutoBindRevocationByTicketId(db, {
+      ticket_id: seeded.ticket.ticket_id,
+    });
+    assert.equal(String(revocation?.status || ''), 'revoked');
+    assert.equal(String(revocation?.revoked_by_hub_user_id || ''), 'user_ops_admin');
+
+    const denied = evaluateChannelCommandGateWithAudit({
+      db,
+      actor: {
+        provider: 'slack',
+        external_user_id: 'U_REVOKE',
+        external_tenant_id: 'T_REVOKE',
+      },
+      channel: {
+        provider: 'slack',
+        account_id: 'T_REVOKE',
+        conversation_id: 'C_REVOKE',
+        thread_key: '171.9',
+        channel_scope: 'group',
+      },
+      action: {
+        action_name: 'supervisor.status.get',
+      },
+      request_id: 'gate-deny-revoked-binding',
+    });
+    assert.equal(denied.allowed, false);
+    assert.equal(String(denied.deny_code || ''), 'identity_binding_inactive');
+  } finally {
+    db.close();
+    cleanupDbArtifacts(dbPath);
+  }
+});
+
+await runAsync('XT-W3-24/http admin onboarding revoke endpoint fails closed for unapproved tickets', async () => {
+  const dbPath = makeTmp('db', '.db');
+  const db = new HubDB({ dbPath });
+  try {
+    const seeded = createOrTouchChannelOnboardingDiscoveryTicket(db, {
+      request_id: 'disc-http-revoke-pending-1',
+      ticket: {
+        provider: 'feishu',
+        account_id: 'tenant_pending',
+        external_user_id: 'ou_pending',
+        external_tenant_id: 'tenant_pending',
+        conversation_id: 'oc_pending',
+        thread_key: 'om_pending',
+        ingress_surface: 'group',
+        first_message_preview: 'status',
+        proposed_scope_type: 'project',
+        proposed_scope_id: 'project_alpha',
+      },
+      audit: {
+        app_id: 'test',
+      },
+    });
+    assert.equal(!!seeded.ok, true);
+
+    await withPairingServer(db, async ({ baseUrl }) => {
+      const headers = {
+        authorization: 'Bearer admin-token-onboarding-http',
+      };
+      const revoked = await requestJson({
+        method: 'POST',
+        url: `${baseUrl}/admin/operator-channels/onboarding/tickets/${seeded.ticket.ticket_id}/revoke`,
+        headers,
+        body: {
+          request_id: 'disc-http-revoke-pending-2',
+          revoked_by_hub_user_id: 'user_ops_admin',
+        },
+      });
+      assert.equal(revoked.status, 400);
+      assert.equal(String(revoked.json?.error?.code || ''), 'auto_bind_receipt_missing');
+      assert.equal(revoked.json?.revocation, null);
+    });
+
+    assert.equal(getChannelIdentityBinding(db, {
+      provider: 'feishu',
+      external_user_id: 'ou_pending',
+      external_tenant_id: 'tenant_pending',
+    }), null);
+    assert.equal(getChannelOnboardingAutoBindReceiptByTicketId(db, {
+      ticket_id: seeded.ticket.ticket_id,
+    }), null);
+    assert.equal(getChannelOnboardingAutoBindRevocationByTicketId(db, {
+      ticket_id: seeded.ticket.ticket_id,
+    }), null);
+  } finally {
+    db.close();
+    cleanupDbArtifacts(dbPath);
+  }
+});
+
+await runAsync('XT-W3-24/http admin onboarding revoke endpoint returns ticket_not_found for missing tickets', async () => {
+  const dbPath = makeTmp('db', '.db');
+  const db = new HubDB({ dbPath });
+  try {
+    await withPairingServer(db, async ({ baseUrl }) => {
+      const headers = {
+        authorization: 'Bearer admin-token-onboarding-http',
+      };
+      const revoked = await requestJson({
+        method: 'POST',
+        url: `${baseUrl}/admin/operator-channels/onboarding/tickets/ticket_missing_http/revoke`,
+        headers,
+        body: {
+          request_id: 'disc-http-revoke-missing-1',
+          revoked_by_hub_user_id: 'user_ops_admin',
+        },
+      });
+      assert.equal(revoked.status, 404);
+      assert.equal(String(revoked.json?.error?.code || ''), 'ticket_not_found');
     });
   } finally {
     db.close();

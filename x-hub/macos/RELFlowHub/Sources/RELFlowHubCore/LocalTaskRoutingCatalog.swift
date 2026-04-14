@@ -16,10 +16,11 @@ public struct LocalTaskRoutingDescriptor: Equatable, Sendable, Identifiable {
 
 public enum LocalTaskRoutingCatalog {
     public static let descriptors: [LocalTaskRoutingDescriptor] = [
-        LocalTaskRoutingDescriptor(taskKind: "text_generate", title: "Text Generation", shortTitle: "Generate"),
-        LocalTaskRoutingDescriptor(taskKind: "embedding", title: "Embeddings", shortTitle: "Embedding"),
-        LocalTaskRoutingDescriptor(taskKind: "speech_to_text", title: "Speech to Text", shortTitle: "Speech"),
-        LocalTaskRoutingDescriptor(taskKind: "vision_understand", title: "Vision Understanding", shortTitle: "Vision"),
+        LocalTaskRoutingDescriptor(taskKind: "text_generate", title: "文本生成", shortTitle: "生成"),
+        LocalTaskRoutingDescriptor(taskKind: "embedding", title: "向量", shortTitle: "向量"),
+        LocalTaskRoutingDescriptor(taskKind: "speech_to_text", title: "语音转文字", shortTitle: "转写"),
+        LocalTaskRoutingDescriptor(taskKind: "text_to_speech", title: "文本转语音", shortTitle: "语音"),
+        LocalTaskRoutingDescriptor(taskKind: "vision_understand", title: "视觉理解", shortTitle: "视觉"),
         LocalTaskRoutingDescriptor(taskKind: "ocr", title: "OCR", shortTitle: "OCR"),
     ]
 

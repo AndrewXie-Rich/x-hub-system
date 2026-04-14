@@ -111,7 +111,17 @@ await runAsync('SlackHubConnectorClient wraps HubRuntime governance RPCs with co
     },
     ResolveSupervisorRoute(req, md, cb) {
       calls.push({ method: 'ResolveSupervisorRoute', req, md });
-      cb(null, { ok: true, route: { decision: 'hub_only', project_id: req.ingress?.project_id || '' } });
+      cb(null, {
+        ok: true,
+        route: {
+          decision: 'hub_only',
+          project_id: req.ingress?.project_id || '',
+          governance_runtime_readiness: {
+            runtime_ready: false,
+            blocked_component_keys: ['route_ready'],
+          },
+        },
+      });
     },
     GetSupervisorBriefProjection(req, md, cb) {
       calls.push({ method: 'GetSupervisorBriefProjection', req, md });
@@ -127,7 +137,19 @@ await runAsync('SlackHubConnectorClient wraps HubRuntime governance RPCs with co
     },
     ResolveSupervisorChannelRoute(req, md, cb) {
       calls.push({ method: 'ResolveSupervisorChannelRoute', req, md });
-      cb(null, { ok: true, route: { route_mode: 'hub_to_xt', resolved_device_id: 'xt-1' } });
+      cb(null, {
+        ok: true,
+        route: {
+          route_mode: 'hub_to_xt',
+          resolved_device_id: 'xt-1',
+          governance_runtime_readiness: {
+            runtime_ready: true,
+            components_by_xt_key: {
+              route_ready: { state: 'ready' },
+            },
+          },
+        },
+      });
     },
     ExecuteOperatorChannelHubCommand(req, md, cb) {
       calls.push({ method: 'ExecuteOperatorChannelHubCommand', req, md });
@@ -199,6 +221,8 @@ await runAsync('SlackHubConnectorClient wraps HubRuntime governance RPCs with co
       });
       assert.equal(!!route.ok, true);
       assert.equal(String(route.route?.resolved_device_id || ''), 'xt-1');
+      assert.equal(typeof route.route?.governance_runtime_readiness, 'object');
+      assert.equal(Boolean(route.route?.governance_runtime_readiness?.runtime_ready), true);
 
       const execution = await client.executeOperatorChannelHubCommand({
         request_id: 'exec-1',
@@ -231,6 +255,8 @@ await runAsync('SlackHubConnectorClient wraps HubRuntime governance RPCs with co
         },
       });
       assert.equal(!!supervisorRoute.ok, true);
+      assert.equal(typeof supervisorRoute.route?.governance_runtime_readiness, 'object');
+      assert.equal(Boolean(supervisorRoute.route?.governance_runtime_readiness?.runtime_ready), false);
 
       const projection = await client.getSupervisorBriefProjection({
         request_id: 'brief-1',
