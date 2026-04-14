@@ -79,6 +79,33 @@ enum HubRouteStateMachine {
         return false
     }
 
+    static func shouldFallbackToFileForPendingGrantSnapshot(
+        routeDecision: HubRouteDecision,
+        remoteReasonCode: String?
+    ) -> Bool {
+        guard routeDecision.mode == .auto else { return false }
+        guard routeDecision.allowFileFallback && !routeDecision.requiresRemote else { return false }
+        return shouldFallbackToFile(afterRemoteReasonCode: remoteReasonCode)
+    }
+
+    static func pendingGrantSnapshotFallbackSource(
+        localSource rawLocalSource: String,
+        routeDecision: HubRouteDecision,
+        remoteReasonCode: String?
+    ) -> String {
+        let localSource = rawLocalSource.trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseSource = localSource.isEmpty ? "hub_pending_grants_file" : localSource
+
+        guard routeDecision.mode == .auto,
+              routeDecision.allowFileFallback,
+              !routeDecision.requiresRemote else {
+            return baseSource
+        }
+
+        let reason = normalizedReasonToken(remoteReasonCode) ?? "remote_snapshot_unavailable"
+        return "\(baseSource)|transport=auto|remote_snapshot_unavailable=1|fallback_used=1|fallback_reason=\(reason)"
+    }
+
     static func normalizedReasonToken(_ raw: String?) -> String? {
         guard let raw else { return nil }
         var token = raw
@@ -153,6 +180,26 @@ enum HubRouteStateMachine {
             "no_fallback_on_api_key_missing",
             !shouldFallbackToFile(afterRemoteReasonCode: "api_key_missing"),
             "api_key_missing should surface error without fallback"
+        )
+        let pendingGrantFallbackSource = pendingGrantSnapshotFallbackSource(
+            localSource: "hub_pending_grants_file",
+            routeDecision: autoWithRemote,
+            remoteReasonCode: "hub_env_missing"
+        )
+        add(
+            "pending_grants_auto_fallback_truth",
+            pendingGrantFallbackSource.contains("fallback_used=1")
+                && pendingGrantFallbackSource.contains("remote_snapshot_unavailable=1")
+                && pendingGrantFallbackSource.contains("fallback_reason=hub_env_missing"),
+            "pending grant source truth should disclose auto fallback + remote unavailable reason"
+        )
+        add(
+            "pending_grants_grpc_fail_closed_truth",
+            !shouldFallbackToFileForPendingGrantSnapshot(
+                routeDecision: grpcWithRemote,
+                remoteReasonCode: "hub_env_missing"
+            ),
+            "pending grant snapshot should stay fail-closed in grpc mode"
         )
 
         return checks

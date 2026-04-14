@@ -52,6 +52,58 @@ struct HubModelInteractiveRoutingEligibilityTests {
     }
 
     @Test
+    func visionOnlyModelIsNotSelectableForInteractiveRouting() {
+        let model = HubModel(
+            id: "qwen2-vl-ocr-only",
+            name: "Qwen2 VL OCR",
+            backend: "transformers",
+            quant: "bf16",
+            contextLength: 32_768,
+            paramsB: 7.0,
+            roles: nil,
+            state: .loaded,
+            memoryBytes: nil,
+            tokensPerSec: nil,
+            modelPath: "/models/qwen2-vl-ocr",
+            note: nil,
+            taskKinds: ["vision_understand", "ocr"],
+            inputModalities: ["image"],
+            outputModalities: ["text", "spans"]
+        )
+
+        #expect(!model.supportsInteractiveTextGeneration)
+        #expect(model.isNonInteractiveOnlyModel)
+        #expect(!model.isSelectableForInteractiveRouting)
+        #expect(model.interactiveRoutingDisabledReason?.contains("任务专用链路") == true)
+    }
+
+    @Test
+    func speechToTextOnlyModelIsNotSelectableForInteractiveRouting() {
+        let model = HubModel(
+            id: "whisper-large-v3",
+            name: "Whisper Large V3",
+            backend: "transformers",
+            quant: "bf16",
+            contextLength: 8_192,
+            paramsB: 1.5,
+            roles: nil,
+            state: .available,
+            memoryBytes: nil,
+            tokensPerSec: nil,
+            modelPath: "/models/whisper-large-v3",
+            note: nil,
+            taskKinds: ["speech_to_text"],
+            inputModalities: ["audio"],
+            outputModalities: ["text", "segments"]
+        )
+
+        #expect(!model.supportsInteractiveTextGeneration)
+        #expect(model.isNonInteractiveOnlyModel)
+        #expect(!model.isSelectableForInteractiveRouting)
+        #expect(model.interactiveRoutingDisabledReason?.contains("任务专用链路") == true)
+    }
+
+    @Test
     func voiceOnlyModelIsNotSelectableForInteractiveRouting() {
         let model = HubModel(
             id: "hexgrad/kokoro-82m",

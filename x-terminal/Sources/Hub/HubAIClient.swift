@@ -119,7 +119,7 @@ enum XTPaidModelAccessExplainability {
                 rawReasonCode: raw,
                 policyRefOverride: parsed.policyRef,
                 whyItHappened: "device_name=\(resolvedDeviceName) 的 paid model 策略当前为关闭或缺少可用 paid model policy，因此 model_id=\(resolvedModelId) 被设备策略直接拦截。",
-                nextAction: "到 Hub Settings → Pairing & Device Trust 为该设备开启 paid model 访问，或切换到本地/已授权模型后重试。"
+                nextAction: "到 REL Flow Hub → Pairing & Device Trust 为该设备开启 paid model 访问，或切换到本地/已授权模型后重试。"
             )
         case XTPaidModelAccessResolution.State.blockedModelNotInCustomAllowlist.rawValue?, "device_paid_model_not_allowed":
             return makeResolution(
@@ -131,7 +131,7 @@ enum XTPaidModelAccessExplainability {
                 rawReasonCode: raw,
                 policyRefOverride: parsed.policyRef,
                 whyItHappened: "device_name=\(resolvedDeviceName) 当前走自定义 paid model 白名单策略，但 model_id=\(resolvedModelId) 不在 allowed_model_ids 中，因此被 fail-closed 阻断。",
-                nextAction: "到 Hub Settings → Pairing & Device Trust 把该模型加入 allowlist，或切换到该设备已授权的 paid/local model 后重试。"
+                nextAction: "到 REL Flow Hub → Pairing & Device Trust 把该模型加入 allowlist，或切换到该设备已授权的 paid/local model 后重试。"
             )
         case XTPaidModelAccessResolution.State.blockedDailyBudgetExceeded.rawValue?, "device_daily_token_budget_exceeded":
             return makeResolution(
@@ -143,7 +143,7 @@ enum XTPaidModelAccessExplainability {
                 rawReasonCode: raw,
                 policyRefOverride: parsed.policyRef,
                 whyItHappened: "device_name=\(resolvedDeviceName) 的每日 paid model token 额度已经耗尽，因此 model_id=\(resolvedModelId) 被当日预算硬门槛阻断。",
-                nextAction: "到 Hub Settings → Models & Paid Access 查看并提升 daily_token_limit，或等待下一个日配额窗口后重试。"
+                nextAction: "到 REL Flow Hub → Models & Paid Access 查看并提升 daily_token_limit，或等待下一个日配额窗口后重试。"
             )
         case XTPaidModelAccessResolution.State.blockedSingleRequestBudgetExceeded.rawValue?, "device_single_request_token_exceeded":
             return makeResolution(
@@ -155,7 +155,7 @@ enum XTPaidModelAccessExplainability {
                 rawReasonCode: raw,
                 policyRefOverride: parsed.policyRef,
                 whyItHappened: "当前请求对 device_name=\(resolvedDeviceName) 来说超出了单次 paid model token 上限，因此 model_id=\(resolvedModelId) 在提交前被预算策略拒绝。",
-                nextAction: "缩小本次请求、降低 max tokens，或到 Hub Settings → Models & Paid Access 提升 single_request_token_limit 后再试。"
+                nextAction: "缩小本次请求、降低 max tokens，或到 REL Flow Hub → Models & Paid Access 提升 single_request_token_limit 后再试。"
             )
         case XTPaidModelAccessResolution.State.legacyGrantFlowRequired.rawValue?, "legacy_grant_flow_required", "grant_required", "grant_pending", "grant_denied", "permission_denied", "forbidden", "denied":
             return makeResolution(
@@ -167,7 +167,7 @@ enum XTPaidModelAccessExplainability {
                 rawReasonCode: raw,
                 policyRefOverride: parsed.policyRef,
                 whyItHappened: "device_name=\(resolvedDeviceName) 仍在旧的 capability/grant 路径上，尚未由新 trust profile 直接接管；因此 model_id=\(resolvedModelId) 这次仍按 legacy grant 语义处理。",
-                nextAction: "若只是临时放行，可先到 Hub Settings → Grants & Permissions 完成 legacy grant；若想消除重复审批，请到 Hub Settings → Pairing & Device Trust 将该设备升级到新 trust profile。"
+                nextAction: "若只是临时放行，可先到 REL Flow Hub → Grants & Permissions 完成 legacy grant；若想消除重复审批，请到 REL Flow Hub → Pairing & Device Trust 将该设备升级到新 trust profile。"
             )
         default:
             return nil
@@ -508,16 +508,16 @@ enum HubAIError: Error, LocalizedError {
                 return "Hub gRPC is unavailable. If you want to keep using local models, switch XT to `/hub route auto` or `/hub route file`. Otherwise reopen Hub and confirm Hub gRPC is running."
             }
             if r == "model_path_missing" {
-                return "Hub could not auto-load a model (model_path_missing). Open Hub -> Models, register a model with a valid modelPath, then try again."
+                return "Hub could not auto-load a model (model_path_missing). Open REL Flow Hub → Models & Paid Access, register a model with a valid modelPath, then try again."
             }
             if r == "no_models_registered" || r == "no_model_routed" {
-                return "Hub has no loadable model for this task. Open Hub -> Models and register/load at least one model."
+                return "Hub has no loadable model for this task. Open REL Flow Hub → Models & Paid Access and register/load at least one model."
             }
             if r == "model_not_loaded" {
-                return "No model is loaded. Open Hub -> Models and load a model (or enable auto-load)."
+                return "No model is loaded. Open REL Flow Hub → Models & Paid Access and load a model (or enable auto-load)."
             }
             if r == "model_not_found" {
-                return "The selected model id is not found in Hub state. Open Hub -> Models, confirm the model is loaded, then run `/models` and `/model <id>` in X-Terminal to reselect."
+                return "The selected model id is not found in Hub state. Open REL Flow Hub → Models & Paid Access, confirm the model is loaded, then run `/models` and `/model <id>` in X-Terminal to reselect."
             }
             if r == "bridge_disabled" {
                 return "Selected model is remote/paid, but Hub Bridge is not enabled. In X-Terminal input box, run `/network 30m` (or `need network 30m`) and approve in Hub if required."
@@ -531,6 +531,12 @@ enum HubAIError: Error, LocalizedError {
             if r == "base_url_invalid" {
                 return "Remote model base URL is invalid. Check Base URL in Hub -> Settings -> Remote Models."
             }
+            if r == "provider_token_expired" {
+                return "Remote model access token is expired. Open REL Flow Hub → Settings → Remote Models / Models & Paid Access, refresh the provider token or API key, then retry."
+            }
+            if quotaOrBillingExhaustedReason(r) {
+                return "The selected paid-model provider is out of quota or balance. In REL Flow Hub → Models & Paid Access / Remote Models, top up or switch to another configured provider for the same model and retry."
+            }
             if r == "node_missing" {
                 return "This X-Terminal install cannot find a usable Node runtime for the Hub client kit. Re-run Hub pairing One-Click / install-client, or install Node.js on this Mac. If you distribute X-Terminal as a packaged app, bundle relflowhub_node to avoid this dependency."
             }
@@ -542,6 +548,29 @@ enum HubAIError: Error, LocalizedError {
             }
             return "AI failed: \(r.isEmpty ? "unknown" : r)"
         }
+    }
+
+    private func quotaOrBillingExhaustedReason(_ rawReason: String) -> Bool {
+        let normalized = rawReason.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return false }
+        let lowered = normalized.lowercased()
+        if normalized.contains("额度不足") || normalized.contains("余额不足") {
+            return true
+        }
+        let quotaSignals = [
+            "insufficient quota",
+            "quota exceeded",
+            "quota_exceeded",
+            "insufficient_balance",
+            "insufficient balance",
+            "insufficient funds",
+            "out of credits",
+            "credit balance",
+            "billing hard limit",
+            "billing_limit",
+            "payment required"
+        ]
+        return quotaSignals.contains { lowered.contains($0) }
     }
 }
 
@@ -555,10 +584,22 @@ actor HubAIClient {
     private static let legacyHubGrpcPortKey = "xterminal_hub_grpc_port"
     private static let hubInternetHostKey = "xterminal_hub_internet_host"
     private static let legacyHubInternetHostKey = "xterminal_hub_internet_host"
+    private static let hubInviteTokenKey = "xterminal_hub_invite_token"
+    private static let legacyHubInviteTokenKey = "xterminal_hub_invite_token"
+    private static let hubInviteAliasKey = "xterminal_hub_invite_alias"
+    private static let legacyHubInviteAliasKey = "xterminal_hub_invite_alias"
+    private static let hubInviteInstanceIDKey = "xterminal_hub_invite_instance_id"
+    private static let legacyHubInviteInstanceIDKey = "xterminal_hub_invite_instance_id"
     private static let hubAxhubctlPathKey = "xterminal_hub_axhubctl_path"
     private static let legacyHubAxhubctlPathKey = "xterminal_hub_axhubctl_path"
+    private static let hubRemoteEndpointOverridePendingKey = "xterminal_hub_remote_endpoint_override_pending"
+    private static let legacyHubRemoteEndpointOverridePendingKey = "xterminal_hub_remote_endpoint_override_pending"
     private static let testingOverrideLock = NSLock()
+    private static let activeRemoteGenerateLifecycleLock = NSLock()
+    private static var activeRemoteGenerateLifecycleCount: Int = 0
     private static var remoteGenerateOverrideForTesting: (@Sendable (RemoteGenerateInvocation) async -> HubRemoteGenerateResult)?
+    private static var remoteReconnectOverrideForTesting: (@Sendable (HubRemoteConnectOptions, RemoteReconnectPlan) async -> HubRemoteConnectReport)?
+    private static var remoteModelsOverrideForTesting: (@Sendable (HubRemoteConnectOptions) async -> HubRemoteModelsResult)?
     private static var cancelWriteOverrideForTesting: (@Sendable (Data, URL, URL) throws -> Void)?
 
     struct CachedRemoteProfile: Equatable, Sendable {
@@ -568,6 +609,8 @@ actor HubAIClient {
         var grpcPort: Int?
         var hubInstanceID: String?
         var lanDiscoveryName: String?
+        var pairingProfileEpoch: Int? = nil
+        var routePackVersion: String? = nil
     }
 
     struct RemoteGenerateInvocation: Equatable, Sendable {
@@ -575,6 +618,7 @@ actor HubAIClient {
         var modelId: String?
         var prompt: String
         var maxTokens: Int
+        var timeoutSec: Double
         var temperature: Double
         var topP: Double
         var taskType: String
@@ -593,6 +637,13 @@ actor HubAIClient {
         var remoteRetryFromModelId: String?
         var remoteRetryToModelId: String?
         var remoteRetryReasonCode: String?
+    }
+
+    struct ResolvedRemoteEndpointDefaults: Equatable, Sendable {
+        var pairingPort: Int
+        var grpcPort: Int
+        var internetHost: String
+        var endpointOverridePending: Bool
     }
 
     struct CancelRequestStatus: Equatable, Sendable {
@@ -630,9 +681,11 @@ actor HubAIClient {
 
     private struct PendingRemoteGenerate {
         var prompt: String
+        var remotePrompt: String?
         var preferredModelId: String?
         var explicitModelId: String?
         var maxTokens: Int
+        var timeoutSec: Double
         var temperature: Double
         var topP: Double
         var taskType: String
@@ -671,13 +724,22 @@ actor HubAIClient {
 
     private var pendingRemoteGenerates: [String: PendingRemoteGenerate] = [:]
     private var pendingGenerateContexts: [String: PendingGenerateContext] = [:]
+    private var activeRemoteGenerateRequestIDs: Set<String> = []
     private var remoteModelsCache: ModelStateSnapshot = .empty()
+    private var remotePaidAccessSnapshotCache: HubRemotePaidAccessSnapshot?
     private var remoteModelsLastFetchAt: Date = .distantPast
+    private var remoteModelsLastFetchSucceeded: Bool = false
 
     private static func withTestingOverrideLock<T>(_ body: () -> T) -> T {
         testingOverrideLock.lock()
         defer { testingOverrideLock.unlock() }
         return body()
+    }
+
+    private static func updateActiveRemoteGenerateLifecycleCount(delta: Int) {
+        activeRemoteGenerateLifecycleLock.lock()
+        defer { activeRemoteGenerateLifecycleLock.unlock() }
+        activeRemoteGenerateLifecycleCount = max(0, activeRemoteGenerateLifecycleCount + delta)
     }
 
     private static func writeCancelData(_ data: Data, tmp: URL, out: URL) throws {
@@ -706,6 +768,13 @@ actor HubAIClient {
         let d = UserDefaults.standard
         d.set(mode.rawValue, forKey: hubTransportModeKey)
         d.set(mode.rawValue, forKey: legacyHubTransportModeKey)
+        Task {
+            await HubIPCClient.invalidateProjectRemoteMemorySnapshotCache(
+                projectId: nil,
+                reason: .routeOrModelPreferenceChanged
+            )
+            await HubIPCClient.noteSupervisorRemoteMemoryRouteOrModelPreferenceChanged()
+        }
     }
 
     static func parseTransportModeToken(_ token: String) -> HubTransportMode? {
@@ -725,38 +794,92 @@ actor HubAIClient {
         let d = UserDefaults.standard
         let effectiveStateDir = stateDir ?? defaultAxhubStateDir()
         let cached = cachedRemoteProfile(stateDir: effectiveStateDir)
-        let pairing = d.object(forKey: hubPairingPortKey) as? Int
-            ?? d.object(forKey: legacyHubPairingPortKey) as? Int
-            ?? cached.pairingPort
-            ?? 50052
-        let grpc = d.object(forKey: hubGrpcPortKey) as? Int
-            ?? d.object(forKey: legacyHubGrpcPortKey) as? Int
-            ?? cached.grpcPort
-            ?? 50051
-        let explicitInternetHost = normalizedNonEmpty(
-            d.string(forKey: hubInternetHostKey)
-                ?? d.string(forKey: legacyHubInternetHostKey)
-                ?? ""
+        let endpoint = resolvedRemoteEndpointDefaults(
+            cachedProfile: cached,
+            defaults: d
         )
-        let internetHost = explicitInternetHost
-            ?? cached.internetHost
-            ?? inferredReusableInternetHost(
-                from: cached.host,
-                hubInstanceID: cached.hubInstanceID,
-                lanDiscoveryName: cached.lanDiscoveryName
-            )
-            ?? ""
         let axhubctlPath = d.string(forKey: hubAxhubctlPathKey)
             ?? d.string(forKey: legacyHubAxhubctlPathKey)
             ?? ""
+        let inviteToken = (d.string(forKey: hubInviteTokenKey)
+            ?? d.string(forKey: legacyHubInviteTokenKey)
+            ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let inviteAlias = (d.string(forKey: hubInviteAliasKey)
+            ?? d.string(forKey: legacyHubInviteAliasKey)
+            ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let inviteInstanceID = (cached.hubInstanceID
+            ?? d.string(forKey: hubInviteInstanceIDKey)
+            ?? d.string(forKey: legacyHubInviteInstanceIDKey)
+            ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
 
         return HubRemoteConnectOptions(
-            grpcPort: max(1, min(65_535, grpc)),
-            pairingPort: max(1, min(65_535, pairing)),
+            grpcPort: endpoint.grpcPort,
+            pairingPort: endpoint.pairingPort,
             deviceName: Host.current().localizedName ?? "X-Terminal",
-            internetHost: internetHost,
+            internetHost: endpoint.internetHost,
+            inviteToken: inviteToken,
+            inviteAlias: inviteAlias,
+            inviteInstanceID: inviteInstanceID,
             axhubctlPath: axhubctlPath,
+            configuredEndpointIsAuthoritative: endpoint.endpointOverridePending,
             stateDir: effectiveStateDir
+        )
+    }
+
+    static func resolvedRemoteEndpointDefaults(
+        cachedProfile: CachedRemoteProfile,
+        defaults: UserDefaults = .standard
+    ) -> ResolvedRemoteEndpointDefaults {
+        let explicitPairing = defaults.object(forKey: hubPairingPortKey) as? Int
+            ?? defaults.object(forKey: legacyHubPairingPortKey) as? Int
+        let explicitGrpc = defaults.object(forKey: hubGrpcPortKey) as? Int
+            ?? defaults.object(forKey: legacyHubGrpcPortKey) as? Int
+        let explicitInternetHost = HubRemoteHostPolicy.normalizedNonEmpty(
+            defaults.string(forKey: hubInternetHostKey)
+                ?? defaults.string(forKey: legacyHubInternetHostKey)
+                ?? ""
+        )
+        let endpointOverridePending: Bool = {
+            if defaults.object(forKey: hubRemoteEndpointOverridePendingKey) != nil {
+                return defaults.bool(forKey: hubRemoteEndpointOverridePendingKey)
+            }
+            return defaults.bool(forKey: legacyHubRemoteEndpointOverridePendingKey)
+        }()
+
+        let pairing: Int = {
+            let raw = endpointOverridePending
+                ? (explicitPairing ?? cachedProfile.pairingPort ?? 50052)
+                : (cachedProfile.pairingPort ?? explicitPairing ?? 50052)
+            return max(1, min(65_535, raw))
+        }()
+        let grpc: Int = {
+            let raw = endpointOverridePending
+                ? (explicitGrpc ?? cachedProfile.grpcPort ?? 50051)
+                : (cachedProfile.grpcPort ?? explicitGrpc ?? 50051)
+            return max(1, min(65_535, raw))
+        }()
+        let internetHost: String = {
+            if endpointOverridePending, let explicitInternetHost {
+                return explicitInternetHost
+            }
+            return cachedProfile.internetHost
+                ?? explicitInternetHost
+                ?? inferredReusableInternetHost(
+                    from: cachedProfile.host,
+                    hubInstanceID: cachedProfile.hubInstanceID,
+                    lanDiscoveryName: cachedProfile.lanDiscoveryName
+                )
+                ?? ""
+        }()
+
+        return ResolvedRemoteEndpointDefaults(
+            pairingPort: pairing,
+            grpcPort: grpc,
+            internetHost: internetHost,
+            endpointOverridePending: endpointOverridePending
         )
     }
 
@@ -764,20 +887,49 @@ actor HubAIClient {
         let base = stateDir ?? defaultAxhubStateDir()
         let pairingEnv = base.appendingPathComponent("pairing.env")
         let hubEnv = base.appendingPathComponent("hub.env")
+        let connectionJSON = base.appendingPathComponent("connection.json")
 
+        let connection = readConnectionRecord(from: connectionJSON)
+        let hostFromConnection = normalizedNonEmpty(connection?.hubHost)
         let hostFromPairing = normalizedNonEmpty(readEnvValue(from: pairingEnv, key: "AXHUB_HUB_HOST"))
         let hostFromHub = normalizedNonEmpty(readEnvValue(from: hubEnv, key: "HUB_HOST"))
+        let hubPortFromConnection = normalizePort(connection?.grpcPort)
+        let pairingPortFromConnection = normalizePort(connection?.pairingPort)
+        let pairingProfileEpochFromConnection = normalizePositiveInt(connection?.pairingProfileEpoch)
+        let routePackVersionFromConnection = normalizedNonEmpty(connection?.routePackVersion)
+        let hubPortFromHub = normalizePort(readEnvValue(from: hubEnv, key: "HUB_PORT"))
         let internetFromPairing = normalizedNonEmpty(readEnvValue(from: pairingEnv, key: "AXHUB_INTERNET_HOST"))
         let hubInstanceID = normalizedNonEmpty(readEnvValue(from: pairingEnv, key: "AXHUB_HUB_INSTANCE_ID"))
         let lanDiscoveryName = normalizedNonEmpty(readEnvValue(from: pairingEnv, key: "AXHUB_LAN_DISCOVERY_NAME"))
-        let host = hostFromPairing ?? hostFromHub
-        let pairingPort = normalizePort(readEnvValue(from: pairingEnv, key: "AXHUB_PAIRING_PORT"))
+        let pairingProfileEpochFromPairing = normalizePositiveInt(
+            readEnvValue(from: pairingEnv, key: "AXHUB_PAIRING_PROFILE_EPOCH")
+        )
+        let routePackVersionFromPairing = normalizedNonEmpty(
+            readEnvValue(from: pairingEnv, key: "AXHUB_ROUTE_PACK_VERSION")
+        )
+        let host = hostFromConnection ?? hostFromHub ?? hostFromPairing
+        let trustPairingMetadata = shouldTrustPairingMetadata(
+            pairingHost: hostFromPairing,
+            authoritativeHost: host
+        )
+        let trustPairingInternetHost = HubRemoteHostPolicy.shouldTrustPairingInternetHost(
+            pairingHost: hostFromPairing,
+            authoritativeHost: host,
+            pairingInternetHost: internetFromPairing
+        )
+        let trustedInternetFromPairing = trustPairingInternetHost ? internetFromPairing : nil
+        let trustedHubInstanceID = trustPairingMetadata ? hubInstanceID : nil
+        let trustedLanDiscoveryName = trustPairingMetadata ? lanDiscoveryName : nil
+        let trustedPairingProfileEpoch = trustPairingMetadata ? pairingProfileEpochFromPairing : nil
+        let trustedRoutePackVersion = trustPairingMetadata ? routePackVersionFromPairing : nil
+        let pairingPort = pairingPortFromConnection
+            ?? normalizePort(readEnvValue(from: pairingEnv, key: "AXHUB_PAIRING_PORT"))
         let grpcFromPairing = normalizePort(readEnvValue(from: pairingEnv, key: "AXHUB_GRPC_PORT"))
-        let grpcPort = grpcFromPairing ?? normalizePort(readEnvValue(from: hubEnv, key: "HUB_PORT"))
-        let reusableInternetHost = internetFromPairing ?? inferredReusableInternetHost(
+        let grpcPort = hubPortFromConnection ?? hubPortFromHub ?? grpcFromPairing
+        let reusableInternetHost = trustedInternetFromPairing ?? inferredReusableInternetHost(
             from: host,
-            hubInstanceID: hubInstanceID,
-            lanDiscoveryName: lanDiscoveryName
+            hubInstanceID: trustedHubInstanceID,
+            lanDiscoveryName: trustedLanDiscoveryName
         )
 
         return CachedRemoteProfile(
@@ -785,8 +937,10 @@ actor HubAIClient {
             internetHost: reusableInternetHost,
             pairingPort: pairingPort,
             grpcPort: grpcPort,
-            hubInstanceID: hubInstanceID,
-            lanDiscoveryName: lanDiscoveryName
+            hubInstanceID: trustedHubInstanceID,
+            lanDiscoveryName: trustedLanDiscoveryName,
+            pairingProfileEpoch: pairingProfileEpochFromConnection ?? trustedPairingProfileEpoch,
+            routePackVersion: routePackVersionFromConnection ?? trustedRoutePackVersion
         )
     }
 
@@ -818,10 +972,279 @@ actor HubAIClient {
         return port
     }
 
+    private static func normalizePort(_ raw: Int?) -> Int? {
+        guard let raw, (1...65_535).contains(raw) else { return nil }
+        return raw
+    }
+
+    private static func normalizePositiveInt(_ raw: String?) -> Int? {
+        guard let value = normalizedNonEmpty(raw), let number = Int(value), number > 0 else {
+            return nil
+        }
+        return number
+    }
+
+    private static func normalizePositiveInt(_ raw: Int?) -> Int? {
+        guard let raw, raw > 0 else { return nil }
+        return raw
+    }
+
     private static func normalizedNonEmpty(_ raw: String?) -> String? {
         guard let raw else { return nil }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    func hasActiveRemoteGenerateRequests() -> Bool {
+        !activeRemoteGenerateRequestIDs.isEmpty
+    }
+
+    nonisolated static func hasActiveRemoteGenerateRequestsForLifecycleGates() -> Bool {
+        activeRemoteGenerateLifecycleLock.lock()
+        defer { activeRemoteGenerateLifecycleLock.unlock() }
+        return activeRemoteGenerateLifecycleCount > 0
+    }
+
+    private func markRemoteGenerateActive(reqId: String) {
+        if activeRemoteGenerateRequestIDs.insert(reqId).inserted {
+            Self.updateActiveRemoteGenerateLifecycleCount(delta: 1)
+        }
+    }
+
+    private func markRemoteGenerateFinished(reqId: String) {
+        if activeRemoteGenerateRequestIDs.remove(reqId) != nil {
+            Self.updateActiveRemoteGenerateLifecycleCount(delta: -1)
+        }
+    }
+
+    struct RemoteReconnectPlan: Equatable, Sendable {
+        var preferredRoute: XTHubRouteCandidate?
+        var candidateRoutes: [XTHubRouteCandidate]
+        var handoffReason: String?
+    }
+
+    private struct RemoteRoutePreparationResult: Sendable {
+        var ok: Bool
+        var reasonCode: String?
+        var logLines: [String]
+    }
+
+    static func automaticRemoteReconnectCandidateRoutes(
+        internetHost rawInternetHost: String
+    ) -> [XTHubRouteCandidate] {
+        let internetHost = rawInternetHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        if internetHost.isEmpty {
+            return [.lanDirect]
+        }
+        return [.lanDirect, .stableNamedRemote]
+    }
+
+    static func preferredRemoteReconnectRoute(
+        cachedProfile: CachedRemoteProfile,
+        internetHost rawInternetHost: String
+    ) -> XTHubRouteCandidate? {
+        let configuredInternetHost = HubRemoteHostPolicy.normalizedNonEmpty(rawInternetHost)
+        let effectiveInternetHost = configuredInternetHost
+            ?? cachedProfile.internetHost
+            ?? HubRemoteHostPolicy.inferredReusableInternetHost(
+                from: cachedProfile.host,
+                hubInstanceID: cachedProfile.hubInstanceID,
+                lanDiscoveryName: cachedProfile.lanDiscoveryName
+            )
+
+        if let host = HubRemoteHostPolicy.normalizedNonEmpty(cachedProfile.host) {
+            if HubRemoteHostPolicy.isLoopbackHost(host),
+               let effectiveInternetHost,
+               HubRemoteHostPolicy.isStableNamedRemoteHost(effectiveInternetHost) {
+                // Background reconnect must not install or refresh a managed tunnel,
+                // because that can flap system VPN/network state on macOS.
+                return .stableNamedRemote
+            }
+            if HubRemoteHostPolicy.isStableNamedRemoteHost(host) {
+                return .stableNamedRemote
+            }
+            if HubRemoteHostPolicy.isDirectLocalFallbackHost(host) {
+                return .lanDirect
+            }
+        }
+
+        if let effectiveInternetHost,
+           HubRemoteHostPolicy.isStableNamedRemoteHost(effectiveInternetHost) {
+            return .stableNamedRemote
+        }
+
+        return nil
+    }
+
+    static func automaticRemoteReconnectPlan(
+        cachedProfile: CachedRemoteProfile,
+        internetHost rawInternetHost: String
+    ) -> RemoteReconnectPlan {
+        let internetHost = rawInternetHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveInternetHost = HubRemoteHostPolicy.normalizedNonEmpty(internetHost)
+            ?? cachedProfile.internetHost
+            ?? HubRemoteHostPolicy.inferredReusableInternetHost(
+                from: cachedProfile.host,
+                hubInstanceID: cachedProfile.hubInstanceID,
+                lanDiscoveryName: cachedProfile.lanDiscoveryName
+            )
+        let hasFormalRemoteHost =
+            effectiveInternetHost.map(HubRemoteHostPolicy.isStableNamedRemoteHost) == true
+        let preferredRoute = preferredRemoteReconnectRoute(
+            cachedProfile: cachedProfile,
+            internetHost: internetHost
+        )
+        var candidateRoutes = automaticRemoteReconnectCandidateRoutes(
+            internetHost: internetHost
+        )
+
+        if hasFormalRemoteHost {
+            switch preferredRoute {
+            case .managedTunnelFallback, .stableNamedRemote:
+                candidateRoutes = uniqueReconnectRoutes([
+                    .stableNamedRemote,
+                    .lanDirect
+                ])
+            case .lanDirect:
+                candidateRoutes = uniqueReconnectRoutes([
+                    .lanDirect,
+                    .stableNamedRemote
+                ])
+            case nil:
+                break
+            }
+        }
+
+        let handoffReason: String? = {
+            guard let preferredRoute else { return nil }
+            switch preferredRoute {
+            case .lanDirect:
+                return "remote_generate_reconnect_prefer_lan_route"
+            case .stableNamedRemote:
+                return "remote_generate_reconnect_prefer_stable_remote"
+            case .managedTunnelFallback:
+                return "remote_generate_reconnect_prefer_tunnel_route"
+            }
+        }()
+
+        return RemoteReconnectPlan(
+            preferredRoute: preferredRoute,
+            candidateRoutes: candidateRoutes,
+            handoffReason: handoffReason
+        )
+    }
+
+    static func requiresRemoteRoutePreflightRepair(
+        cachedProfile: CachedRemoteProfile,
+        internetHost rawInternetHost: String
+    ) -> Bool {
+        let configuredInternetHost = HubRemoteHostPolicy.normalizedNonEmpty(rawInternetHost)
+        let effectiveInternetHost = configuredInternetHost
+            ?? cachedProfile.internetHost
+            ?? HubRemoteHostPolicy.inferredReusableInternetHost(
+                from: cachedProfile.host,
+                hubInstanceID: cachedProfile.hubInstanceID,
+                lanDiscoveryName: cachedProfile.lanDiscoveryName
+            )
+
+        if effectiveInternetHost.map(HubRemoteHostPolicy.isStableNamedRemoteHost) == true {
+            return false
+        }
+
+        guard let host = HubRemoteHostPolicy.normalizedNonEmpty(cachedProfile.host) else {
+            return false
+        }
+        return HubRemoteHostPolicy.isPublicIPv4Host(host)
+    }
+
+    static func followupRemoteReconnectPlan(
+        after reconnectReport: HubRemoteConnectReport,
+        primaryPlan: RemoteReconnectPlan
+    ) -> RemoteReconnectPlan? {
+        guard reconnectReport.ok else { return nil }
+
+        let attemptedRoutes: [XTHubRouteCandidate] = {
+            if !reconnectReport.attemptedRoutes.isEmpty {
+                return reconnectReport.attemptedRoutes
+            }
+            if let selectedRoute = reconnectReport.selectedRoute {
+                return [selectedRoute]
+            }
+            if let derivedRoute = XTHubRouteCandidate.from(remoteRoute: reconnectReport.route) {
+                return [derivedRoute]
+            }
+            return []
+        }()
+
+        guard !attemptedRoutes.isEmpty else { return nil }
+
+        let remainingCandidates = primaryPlan.candidateRoutes.filter { candidate in
+            !attemptedRoutes.contains(candidate)
+        }
+        guard !remainingCandidates.isEmpty else { return nil }
+
+        let preferredRoute: XTHubRouteCandidate? = {
+            if let preferred = primaryPlan.preferredRoute,
+               remainingCandidates.contains(preferred) {
+                return preferred
+            }
+            return remainingCandidates.first
+        }()
+
+        let handoffReason: String = {
+            let attempted = attemptedRoutes.map(\.rawValue).joined(separator: ",")
+            return "remote_generate_retry_after_route_attempts:\(attempted)"
+        }()
+
+        return RemoteReconnectPlan(
+            preferredRoute: preferredRoute,
+            candidateRoutes: remainingCandidates,
+            handoffReason: handoffReason
+        )
+    }
+
+    private static func uniqueReconnectRoutes(
+        _ routes: [XTHubRouteCandidate]
+    ) -> [XTHubRouteCandidate] {
+        var ordered: [XTHubRouteCandidate] = []
+        for route in routes where !ordered.contains(route) {
+            ordered.append(route)
+        }
+        return ordered
+    }
+
+    private struct ConnectionRecord: Decodable {
+        var hubHost: String?
+        var grpcPort: Int?
+        var pairingPort: Int?
+        var pairingProfileEpoch: Int?
+        var routePackVersion: String?
+
+        enum CodingKeys: String, CodingKey {
+            case hubHost = "hub_host"
+            case grpcPort = "grpc_port"
+            case pairingPort = "pairing_port"
+            case pairingProfileEpoch = "pairing_profile_epoch"
+            case routePackVersion = "route_pack_version"
+        }
+    }
+
+    private static func readConnectionRecord(from fileURL: URL) -> ConnectionRecord? {
+        guard let data = try? Data(contentsOf: fileURL) else { return nil }
+        return try? JSONDecoder().decode(ConnectionRecord.self, from: data)
+    }
+
+    private static func shouldTrustPairingMetadata(
+        pairingHost: String?,
+        authoritativeHost: String?
+    ) -> Bool {
+        guard let pairing = normalizedHostToken(pairingHost) else { return true }
+        guard let authoritative = normalizedHostToken(authoritativeHost) else { return true }
+        return pairing == authoritative
+    }
+
+    private static func normalizedHostToken(_ raw: String?) -> String? {
+        HubRemoteHostPolicy.normalizedHostToken(raw)
     }
 
     private static func inferredReusableInternetHost(
@@ -829,53 +1252,32 @@ actor HubAIClient {
         hubInstanceID: String? = nil,
         lanDiscoveryName: String? = nil
     ) -> String? {
-        guard let host = normalizedNonEmpty(host) else { return nil }
-        let lowered = host.lowercased()
-        if lowered == "localhost" || lowered == "127.0.0.1" || lowered.hasSuffix(".local") {
-            return nil
-        }
-        if isPrivateIPv4Host(lowered) {
-            return nil
-        }
-        if isIPv4Host(lowered),
-           normalizedNonEmpty(hubInstanceID) != nil || normalizedNonEmpty(lanDiscoveryName) != nil {
-            return nil
-        }
-        return host
+        HubRemoteHostPolicy.inferredReusableInternetHost(
+            from: host,
+            hubInstanceID: hubInstanceID,
+            lanDiscoveryName: lanDiscoveryName
+        )
     }
 
     private static func isIPv4Host(_ host: String) -> Bool {
-        let parts = host.split(separator: ".")
-        guard parts.count == 4 else { return false }
-        let octets = parts.compactMap { Int($0) }
-        guard octets.count == 4 else { return false }
-        return octets.allSatisfy { (0...255).contains($0) }
+        HubRemoteHostPolicy.isIPv4Host(host)
     }
 
     private static func isPrivateIPv4Host(_ host: String) -> Bool {
-        guard isIPv4Host(host) else { return false }
-        let octets = host.split(separator: ".").compactMap { Int($0) }
-        let a = octets[0]
-        let b = octets[1]
-        if a == 10 { return true }
-        if a == 127 { return true }
-        if a == 169, b == 254 { return true }
-        if a == 172, b >= 16, b <= 31 { return true }
-        if a == 192, b == 168 { return true }
-        return false
+        HubRemoteHostPolicy.isPrivateIPv4Host(host)
     }
 
     func loadRuntimeStatus() -> AIRuntimeStatus? {
         let url = HubPaths.runtimeStatusURL()
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? jsonDecoder.decode(AIRuntimeStatus.self, from: data)
+        return AIRuntimeStatus.load(from: url)
     }
 
     static func resolveRouteDecisionModelsSnapshot(
         mode: HubTransportMode,
         hasRemoteProfile: Bool,
         remoteSnapshot: ModelStateSnapshot?,
-        localSnapshot: ModelStateSnapshot
+        localSnapshot: ModelStateSnapshot,
+        localRuntimeAlive: Bool = false
     ) -> ModelStateSnapshot {
         let decision = HubRouteStateMachine.resolve(mode: mode, hasRemoteProfile: hasRemoteProfile)
         switch decision.mode {
@@ -885,8 +1287,40 @@ actor HubAIClient {
         case .fileIPC:
             return localSnapshot
         case .auto:
+            if shouldPreferLocalRuntimeInAutoMode(
+                localRuntimeAlive: localRuntimeAlive,
+                localSnapshot: localSnapshot
+            ) {
+                return localSnapshot
+            }
             if hasRemoteProfile {
                 return remoteSnapshot ?? .empty()
+            }
+            return localSnapshot
+        }
+    }
+
+    static func resolveAuthoritativeModelsSnapshot(
+        mode: HubTransportMode,
+        hasRemoteProfile: Bool,
+        remoteSnapshot: ModelStateSnapshot?,
+        localSnapshot: ModelStateSnapshot,
+        localRuntimeAlive: Bool = false
+    ) -> ModelStateSnapshot {
+        switch mode {
+        case .grpc:
+            guard hasRemoteProfile else { return .empty() }
+            return remoteSnapshot ?? .empty()
+        case .fileIPC:
+            return localSnapshot
+        case .auto:
+            // Picker/settings inventory should reflect the authoritative Hub catalog
+            // when a paired remote profile is available, even if auto routing would
+            // still prefer a healthy local runtime for execution.
+            if hasRemoteProfile,
+               let remoteSnapshot,
+               !remoteSnapshot.models.isEmpty {
+                return remoteSnapshot
             }
             return localSnapshot
         }
@@ -896,42 +1330,69 @@ actor HubAIClient {
         let mode = transportOverride ?? Self.transportMode()
         let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
         let decision = HubRouteStateMachine.resolve(mode: mode, hasRemoteProfile: hasRemote)
+        let localSnapshot = loadLocalModelsState()
+        let runtimeAlive = (loadRuntimeStatus()?.isAlive(ttl: 3.0) == true)
         switch decision.mode {
         case .grpc:
             guard hasRemote else { return .empty() }
             return await loadRemoteModelsThrottled() ?? .empty()
         case .fileIPC:
-            return loadLocalModelsState()
+            return localSnapshot
         case .auto:
+            if Self.shouldPreferLocalRuntimeInAutoMode(
+                localRuntimeAlive: runtimeAlive,
+                localSnapshot: localSnapshot
+            ) {
+                return localSnapshot
+            }
             if hasRemote, let remote = await loadRemoteModelsThrottled() {
                 return remote
             }
-            let local = loadLocalModelsState()
-            if !local.models.isEmpty {
-                return local
+            if !localSnapshot.models.isEmpty {
+                return localSnapshot
             }
             if hasRemote, let remote = await loadRemoteModelsThrottled() {
                 return remote
             }
-            return local
+            return localSnapshot
         }
+    }
+
+    func loadAuthoritativeModelsState(
+        transportOverride: HubTransportMode? = nil
+    ) async -> ModelStateSnapshot {
+        let mode = transportOverride ?? Self.transportMode()
+        let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
+        let localSnapshot = loadLocalModelsState()
+        let runtimeAlive = (loadRuntimeStatus()?.isAlive(ttl: 3.0) == true)
+        let remoteSnapshot = hasRemote ? await loadRemoteModelsThrottled() : nil
+        return Self.resolveAuthoritativeModelsSnapshot(
+            mode: mode,
+            hasRemoteProfile: hasRemote,
+            remoteSnapshot: remoteSnapshot,
+            localSnapshot: localSnapshot,
+            localRuntimeAlive: runtimeAlive
+        )
     }
 
     func loadRouteDecisionModelsState(transportOverride: HubTransportMode? = nil) async -> ModelStateSnapshot {
         let mode = transportOverride ?? Self.transportMode()
         let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
         let localSnapshot = loadLocalModelsState()
+        let runtimeAlive = (loadRuntimeStatus()?.isAlive(ttl: 3.0) == true)
         let remoteSnapshot = hasRemote ? await loadRemoteModelsThrottled() : nil
         return Self.resolveRouteDecisionModelsSnapshot(
             mode: mode,
             hasRemoteProfile: hasRemote,
             remoteSnapshot: remoteSnapshot,
-            localSnapshot: localSnapshot
+            localSnapshot: localSnapshot,
+            localRuntimeAlive: runtimeAlive
         )
     }
 
     func enqueueGenerate(
         prompt: String,
+        remotePromptOverride: String? = nil,
         taskType: String,
         preferredModelId: String? = nil,
         explicitModelId: String? = nil,
@@ -942,12 +1403,18 @@ actor HubAIClient {
         temperature: Double = 0.2,
         topP: Double = 0.95,
         autoLoad: Bool = true,
-        transportOverride: HubTransportMode? = nil
+        transportOverride: HubTransportMode? = nil,
+        timeoutSec: Double = 120.0
     ) async throws -> String {
         let mode = transportOverride ?? Self.transportMode()
         let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
         let decision = HubRouteStateMachine.resolve(mode: mode, hasRemoteProfile: hasRemote)
         let runtimeAlive = (loadRuntimeStatus()?.isAlive(ttl: 3.0) == true)
+        let localSnapshot = loadLocalModelsState()
+        let preferLocalRuntime = Self.shouldPreferLocalRuntimeInAutoMode(
+            localRuntimeAlive: runtimeAlive,
+            localSnapshot: localSnapshot
+        )
         let modelSnapshot = await loadModelsState(transportOverride: transportOverride)
         let resolvedPreferredModelId = Self.sanitizedInteractiveGenerateModelID(
             preferredModelId,
@@ -967,12 +1434,14 @@ actor HubAIClient {
             projectId: projectId
         )
 
-        if decision.preferRemote {
+        if decision.preferRemote && !preferLocalRuntime {
             return enqueueRemoteGenerate(
                 prompt: prompt,
+                remotePromptOverride: remotePromptOverride,
                 preferredModelId: resolvedPreferredModelId,
                 explicitModelId: resolvedExplicitModelId,
                 maxTokens: maxTokens,
+                timeoutSec: timeoutSec,
                 temperature: temperature,
                 topP: topP,
                 taskType: taskType,
@@ -1075,9 +1544,11 @@ actor HubAIClient {
 
     private func enqueueRemoteGenerate(
         prompt: String,
+        remotePromptOverride: String?,
         preferredModelId: String?,
         explicitModelId: String?,
         maxTokens: Int,
+        timeoutSec: Double,
         temperature: Double,
         topP: Double,
         taskType: String,
@@ -1091,9 +1562,11 @@ actor HubAIClient {
         let rid = UUID().uuidString
         pendingRemoteGenerates[rid] = PendingRemoteGenerate(
             prompt: prompt,
+            remotePrompt: remotePromptOverride?.trimmingCharacters(in: .whitespacesAndNewlines),
             preferredModelId: preferredModelId,
             explicitModelId: explicitModelId,
             maxTokens: max(1, min(8192, maxTokens)),
+            timeoutSec: timeoutSec,
             temperature: temperature,
             topP: topP,
             taskType: taskType,
@@ -1130,24 +1603,102 @@ actor HubAIClient {
         return .empty()
     }
 
+    private static func shouldPreferLocalRuntimeInAutoMode(
+        localRuntimeAlive: Bool,
+        localSnapshot: ModelStateSnapshot
+    ) -> Bool {
+        localRuntimeAlive && !localSnapshot.models.isEmpty
+    }
+
     private func loadRemoteModelsThrottled() async -> ModelStateSnapshot? {
         let now = Date()
-        if now.timeIntervalSince(remoteModelsLastFetchAt) < 8.0, !remoteModelsCache.models.isEmpty {
-            return remoteModelsCache
+        let refreshInterval: TimeInterval = remoteModelsLastFetchSucceeded ? 20.0 : 12.0
+        if now.timeIntervalSince(remoteModelsLastFetchAt) < refreshInterval {
+            if !remoteModelsCache.models.isEmpty || remotePaidAccessSnapshotCache != nil {
+                return remoteModelsCache
+            }
+            return nil
         }
 
         remoteModelsLastFetchAt = now
-        let report = await HubPairingCoordinator.shared.fetchRemoteModels(options: loadRemoteConnectOptions())
+        let reconnectOptions = loadRemoteConnectOptions()
+        let cachedProfile = Self.cachedRemoteProfile(stateDir: reconnectOptions.stateDir)
+        let primaryReconnectPlan = Self.automaticRemoteReconnectPlan(
+            cachedProfile: cachedProfile,
+            internetHost: reconnectOptions.internetHost
+        )
+        let routePreparation = await prepareRemoteRouteForUse(
+            options: reconnectOptions,
+            reconnectPlan: primaryReconnectPlan,
+            cachedProfile: cachedProfile
+        )
+        if !routePreparation.ok {
+            remoteModelsLastFetchSucceeded = false
+            if !remoteModelsCache.models.isEmpty || remotePaidAccessSnapshotCache != nil {
+                return remoteModelsCache
+            }
+            return nil
+        }
+
+        var report: HubRemoteModelsResult
+        if let override = Self.withTestingOverrideLock({ Self.remoteModelsOverrideForTesting }) {
+            report = await override(reconnectOptions)
+        } else {
+            report = await HubPairingCoordinator.shared.fetchRemoteModels(options: reconnectOptions)
+        }
+
+        if !report.ok,
+           Self.shouldAttemptRemoteRouteReconnect(
+                afterRemoteReasonCode: report.reasonCode,
+                transportMode: .auto
+           ) {
+            let reconnectReport = await reconnectRemoteRoute(
+                options: reconnectOptions,
+                reconnectPlan: primaryReconnectPlan
+            )
+            if reconnectReport.ok {
+                if let override = Self.withTestingOverrideLock({ Self.remoteModelsOverrideForTesting }) {
+                    report = await override(reconnectOptions)
+                } else {
+                    report = await HubPairingCoordinator.shared.fetchRemoteModels(options: reconnectOptions)
+                }
+            }
+        }
+
         if report.ok {
+            remoteModelsLastFetchSucceeded = true
             let snap = ModelStateSnapshot(models: report.models, updatedAt: Date().timeIntervalSince1970)
             remoteModelsCache = snap
+            remotePaidAccessSnapshotCache = report.paidAccessSnapshot
             return snap
         }
+
+        remoteModelsLastFetchSucceeded = false
 
         if !remoteModelsCache.models.isEmpty {
             return remoteModelsCache
         }
         return nil
+    }
+
+    func currentRemotePaidAccessSnapshot(
+        refreshIfNeeded: Bool = true
+    ) async -> HubRemotePaidAccessSnapshot? {
+        if refreshIfNeeded {
+            let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
+            if hasRemote {
+                _ = await loadRemoteModelsThrottled()
+            }
+        }
+        return remotePaidAccessSnapshotCache
+    }
+
+    func currentRemoteSingleRequestBudgetTokens(
+        refreshIfNeeded: Bool = true
+    ) async -> Int? {
+        let snapshot = await currentRemotePaidAccessSnapshot(refreshIfNeeded: refreshIfNeeded)
+        let value = snapshot?.singleRequestTokenLimit ?? 0
+        return value > 0 ? value : nil
     }
 
     func cancel(reqId: String) -> CancelRequestStatus {
@@ -1187,6 +1738,7 @@ actor HubAIClient {
     ) -> AsyncThrowingStream<HubAIResponseEvent, Error> {
         let context = pendingGenerateContexts.removeValue(forKey: reqId)
         if let remote = pendingRemoteGenerates.removeValue(forKey: reqId) {
+            markRemoteGenerateActive(reqId: reqId)
             return remoteStreamResponse(reqId: reqId, pending: remote, context: context, timeoutSec: timeoutSec, pollMs: pollMs)
         }
         return localFileStreamResponse(reqId: reqId, context: context, timeoutSec: timeoutSec, pollMs: pollMs)
@@ -1203,7 +1755,8 @@ actor HubAIClient {
         remoteRetryAttempted: Bool = false,
         remoteRetryFromModelId: String? = nil,
         remoteRetryToModelId: String? = nil,
-        remoteRetryReasonCode: String? = nil
+        remoteRetryReasonCode: String? = nil,
+        memoryPromptProjection: HubMemoryPromptProjectionSnapshot? = nil
     ) -> [String: JSONValue] {
         var raw: [String: JSONValue] = [:]
         if !requestedModelId.isEmpty {
@@ -1244,6 +1797,9 @@ actor HubAIClient {
            !reason.isEmpty {
             raw["remote_retry_reason_code"] = .string(reason)
         }
+        if let memoryPromptProjection {
+            raw["memory_prompt_projection"] = memoryPromptProjection.jsonValue
+        }
         return raw
     }
 
@@ -1259,7 +1815,8 @@ actor HubAIClient {
         remoteRetryAttempted: Bool = false,
         remoteRetryFromModelId: String? = nil,
         remoteRetryToModelId: String? = nil,
-        remoteRetryReasonCode: String? = nil
+        remoteRetryReasonCode: String? = nil,
+        memoryPromptProjection: HubMemoryPromptProjectionSnapshot? = nil
     ) -> HubAIResponseEvent {
         var merged = event
         let metadata = Self.responseMetadata(
@@ -1273,7 +1830,8 @@ actor HubAIClient {
             remoteRetryAttempted: remoteRetryAttempted,
             remoteRetryFromModelId: remoteRetryFromModelId,
             remoteRetryToModelId: remoteRetryToModelId,
-            remoteRetryReasonCode: remoteRetryReasonCode
+            remoteRetryReasonCode: remoteRetryReasonCode,
+            memoryPromptProjection: memoryPromptProjection
         )
         if metadata.isEmpty {
             return merged
@@ -1414,6 +1972,9 @@ actor HubAIClient {
     ) -> AsyncThrowingStream<HubAIResponseEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
+                defer {
+                    Task { self.markRemoteGenerateFinished(reqId: reqId) }
+                }
                 let preferred = pending.explicitModelId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
                     ? pending.explicitModelId
                     : pending.preferredModelId
@@ -1454,7 +2015,8 @@ actor HubAIClient {
                         remoteRetryAttempted: resolution.retryMetadata.attempted,
                         remoteRetryFromModelId: resolution.retryMetadata.fromModelId,
                         remoteRetryToModelId: resolution.retryMetadata.toModelId,
-                        remoteRetryReasonCode: resolution.retryMetadata.reasonCode
+                        remoteRetryReasonCode: resolution.retryMetadata.reasonCode,
+                        memoryPromptProjection: report.memoryPromptProjection
                     )
                     continuation.yield(
                         HubAIResponseEvent(
@@ -1539,6 +2101,7 @@ actor HubAIClient {
 
             continuation.onTermination = { _ in
                 task.cancel()
+                Task { await self.markRemoteGenerateFinished(reqId: reqId) }
             }
         }
     }
@@ -1547,16 +2110,26 @@ actor HubAIClient {
         Self.remoteConnectOptionsFromDefaults(stateDir: nil)
     }
 
+    static func effectiveRemotePrompt(prompt: String, remotePromptOverride: String?) -> String {
+        let normalizedOverride = remotePromptOverride?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return normalizedOverride.isEmpty ? prompt : normalizedOverride
+    }
+
     private func performRemoteGenerate(
         reqId: String,
         pending: PendingRemoteGenerate,
         modelId: String?
     ) async -> HubRemoteGenerateResult {
+        let effectiveRemotePrompt = Self.effectiveRemotePrompt(
+            prompt: pending.prompt,
+            remotePromptOverride: pending.remotePrompt
+        )
         let invocation = RemoteGenerateInvocation(
             requestId: reqId,
             modelId: modelId,
-            prompt: pending.prompt,
+            prompt: effectiveRemotePrompt,
             maxTokens: pending.maxTokens,
+            timeoutSec: pending.timeoutSec,
             temperature: pending.temperature,
             topP: pending.topP,
             taskType: pending.taskType,
@@ -1571,7 +2144,7 @@ actor HubAIClient {
         return await HubPairingCoordinator.shared.generateRemoteText(
             options: loadRemoteConnectOptions(),
             modelId: modelId,
-            prompt: pending.prompt,
+            prompt: effectiveRemotePrompt,
             maxTokens: pending.maxTokens,
             temperature: pending.temperature,
             topP: pending.topP,
@@ -1579,32 +2152,246 @@ actor HubAIClient {
             appId: pending.appId,
             projectId: pending.projectId,
             sessionId: pending.sessionId,
+            timeoutSec: pending.timeoutSec,
             failClosedOnDowngrade: false,
             requestId: reqId
         )
     }
 
+    private func reconnectRemoteRoute(
+        options: HubRemoteConnectOptions,
+        reconnectPlan: RemoteReconnectPlan? = nil
+    ) async -> HubRemoteConnectReport {
+        let reconnectPlan = reconnectPlan ?? Self.automaticRemoteReconnectPlan(
+            cachedProfile: Self.cachedRemoteProfile(stateDir: options.stateDir),
+            internetHost: options.internetHost
+        )
+        if let override = Self.withTestingOverrideLock({ Self.remoteReconnectOverrideForTesting }) {
+            return await override(options, reconnectPlan)
+        }
+        return await HubPairingCoordinator.shared.ensureConnected(
+            options: options,
+            allowBootstrap: false,
+            preferredRoute: reconnectPlan.preferredRoute,
+            candidateRoutes: reconnectPlan.candidateRoutes,
+            handoffReason: reconnectPlan.handoffReason,
+            onProgress: nil
+        )
+    }
+
+    private static func hasRemoteRouteTestingOverrideInstalled() -> Bool {
+        withTestingOverrideLock {
+            remoteGenerateOverrideForTesting != nil
+                || remoteReconnectOverrideForTesting != nil
+                || remoteModelsOverrideForTesting != nil
+        }
+    }
+
+    private func prepareRemoteRouteForUse(
+        options: HubRemoteConnectOptions,
+        reconnectPlan: RemoteReconnectPlan,
+        cachedProfile: CachedRemoteProfile
+    ) async -> RemoteRoutePreparationResult {
+        // Keep unit tests hermetic even if the host machine has stale real pairing state.
+        guard !Self.hasRemoteRouteTestingOverrideInstalled() else {
+            return RemoteRoutePreparationResult(ok: true, reasonCode: nil, logLines: [])
+        }
+        let stateSyncLogLines = await HubPairingCoordinator.shared
+            .synchronizeAuthoritativeRemoteEndpointArtifacts(options: options)
+        let effectiveCachedProfile = stateSyncLogLines.isEmpty
+            ? cachedProfile
+            : Self.cachedRemoteProfile(stateDir: options.stateDir)
+        guard Self.requiresRemoteRoutePreflightRepair(
+            cachedProfile: effectiveCachedProfile,
+            internetHost: options.internetHost
+        ) else {
+            return RemoteRoutePreparationResult(ok: true, reasonCode: nil, logLines: stateSyncLogLines)
+        }
+
+        var logLines = stateSyncLogLines + [
+            "[route-repair] stale raw IPv4 remote profile detected; pruning transient tunnel state and promoting repair reconnect to bootstrap-capable flow."
+        ]
+        logLines.append(
+            contentsOf: await HubPairingCoordinator.shared.uninstallManagedTunnelService(
+                options: options
+            )
+        )
+        logLines.append(
+            contentsOf: await HubPairingCoordinator.shared.pruneTransientRemoteRouteArtifacts(
+                stateDir: options.stateDir
+            )
+        )
+
+        let reconnectReport = await HubPairingCoordinator.shared.ensureConnected(
+            options: options,
+            allowBootstrap: true,
+            preferredRoute: reconnectPlan.preferredRoute,
+            candidateRoutes: reconnectPlan.candidateRoutes,
+            handoffReason: reconnectPlan.handoffReason,
+            onProgress: nil
+        )
+        logLines.append(contentsOf: reconnectReport.logLines)
+        return RemoteRoutePreparationResult(
+            ok: reconnectReport.ok,
+            reasonCode: reconnectReport.reasonCode,
+            logLines: logLines
+        )
+    }
+
+    private func noteRemotePaidGrantStateChangedIfNeeded(
+        report: HubRemoteGenerateResult,
+        projectId: String?
+    ) async {
+        guard let decision = report.grantDecision else { return }
+        switch decision {
+        case .approved, .queued, .denied:
+            remotePaidAccessSnapshotCache = nil
+            remoteModelsLastFetchAt = .distantPast
+            await HubIPCClient.noteRemoteMemoryGrantStateChanged(projectId: projectId)
+        case .failed:
+            break
+        }
+    }
+
+    static func shouldAttemptRemoteRouteReconnect(
+        afterRemoteReasonCode rawReason: String?,
+        transportMode: HubTransportMode
+    ) -> Bool {
+        guard transportMode != .fileIPC else { return false }
+        guard let token = HubRouteStateMachine.normalizedReasonToken(rawReason) else { return false }
+
+        if token == "hub_env_missing" || token == "grpc_route_unavailable" {
+            return true
+        }
+        if token.contains("grpc_unavailable")
+            || token.contains("14_unavailable")
+            || token.contains("no_connection_established")
+            || token.contains("failed_to_connect_to_all_addresses") {
+            return true
+        }
+        if token.contains("connect_failed") || token.contains("connection_refused") {
+            return true
+        }
+        if token.contains("tcp_timeout") || token.contains("hub_unreachable") {
+            return true
+        }
+        if token.contains("network_unreachable")
+            || token.contains("network_unavailable")
+            || token.contains("service_unavailable") {
+            return true
+        }
+        // A slow remote model can surface timeout-ish reasons on an otherwise healthy
+        // same-LAN path. Reconnecting the route in that case amplifies latency into
+        // visible connection churn, so only transport-layer security failures still
+        // force a reconnect here.
+        if token.contains("tls_error") || token.contains("ssl") {
+            return true
+        }
+        return false
+    }
+
     private func resolveRemoteGenerateWithRetry(
         reqId: String,
         pending: PendingRemoteGenerate,
-        preferredModelId: String?
+        preferredModelId: String?,
+        reconnectPlanOverride: RemoteReconnectPlan? = nil
     ) async -> RemoteAttemptResolution {
         let requestedModelId = preferredModelId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let initialReport = await performRemoteGenerate(
-            reqId: reqId,
-            pending: pending,
-            modelId: preferredModelId
+        let reconnectOptions = loadRemoteConnectOptions()
+        let cachedProfile = Self.cachedRemoteProfile(stateDir: reconnectOptions.stateDir)
+        let primaryReconnectPlan = reconnectPlanOverride ?? Self.automaticRemoteReconnectPlan(
+            cachedProfile: cachedProfile,
+            internetHost: reconnectOptions.internetHost
         )
+        var routeRepairLogLines: [String] = []
+        let routePreparation = await prepareRemoteRouteForUse(
+            options: reconnectOptions,
+            reconnectPlan: primaryReconnectPlan,
+            cachedProfile: cachedProfile
+        )
+        routeRepairLogLines.append(contentsOf: routePreparation.logLines)
+
+        var initialReport: HubRemoteGenerateResult
+        if routePreparation.ok {
+            initialReport = await performRemoteGenerate(
+                reqId: reqId,
+                pending: pending,
+                modelId: preferredModelId
+            )
+            if !initialReport.ok,
+               Self.shouldAttemptRemoteRouteReconnect(
+                    afterRemoteReasonCode: initialReport.reasonCode,
+                    transportMode: pending.transportMode
+               ) {
+                let reconnectReport = await reconnectRemoteRoute(
+                    options: reconnectOptions,
+                    reconnectPlan: primaryReconnectPlan
+                )
+                routeRepairLogLines.append(contentsOf: reconnectReport.logLines)
+                if reconnectReport.ok {
+                    initialReport = await performRemoteGenerate(
+                        reqId: reqId,
+                        pending: pending,
+                        modelId: preferredModelId
+                    )
+                    if !initialReport.ok,
+                       Self.shouldAttemptRemoteRouteReconnect(
+                            afterRemoteReasonCode: initialReport.reasonCode,
+                            transportMode: pending.transportMode
+                       ),
+                       let followupReconnectPlan = Self.followupRemoteReconnectPlan(
+                            after: reconnectReport,
+                            primaryPlan: primaryReconnectPlan
+                       ) {
+                        let followupReconnectReport = await reconnectRemoteRoute(
+                            options: reconnectOptions,
+                            reconnectPlan: followupReconnectPlan
+                        )
+                        routeRepairLogLines.append(contentsOf: followupReconnectReport.logLines)
+                        if followupReconnectReport.ok {
+                            initialReport = await performRemoteGenerate(
+                                reqId: reqId,
+                                pending: pending,
+                                modelId: preferredModelId
+                            )
+                        } else if let reconnectReason = followupReconnectReport.reasonCode?.trimmingCharacters(in: .whitespacesAndNewlines),
+                                  !reconnectReason.isEmpty {
+                            initialReport.reasonCode = reconnectReason
+                        }
+                    }
+                } else if let reconnectReason = reconnectReport.reasonCode?.trimmingCharacters(in: .whitespacesAndNewlines),
+                          !reconnectReason.isEmpty {
+                    initialReport.reasonCode = reconnectReason
+                }
+            }
+        } else {
+            initialReport = HubRemoteGenerateResult(
+                ok: false,
+                text: "",
+                modelId: preferredModelId,
+                reasonCode: routePreparation.reasonCode ?? "grpc_route_unavailable",
+                logLines: []
+            )
+        }
+        if !routeRepairLogLines.isEmpty {
+            initialReport.logLines.insert(contentsOf: routeRepairLogLines, at: 0)
+        }
         let backupModelId = pending.remoteBackupModelId?.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let retryReasonCode = Self.retryableRemoteBackupReasonCode(
             report: initialReport,
+            requestedModelId: requestedModelId,
             backupModelId: backupModelId
         ) else {
-            return RemoteAttemptResolution(
+            let resolution = RemoteAttemptResolution(
                 requestedModelId: requestedModelId,
                 report: initialReport,
                 retryMetadata: .none
             )
+            await noteRemotePaidGrantStateChangedIfNeeded(
+                report: resolution.report,
+                projectId: pending.projectId
+            )
+            return resolution
         }
 
         let retriedReport = await performRemoteGenerate(
@@ -1612,7 +2399,7 @@ actor HubAIClient {
             pending: pending,
             modelId: backupModelId
         )
-        return RemoteAttemptResolution(
+        let resolution = RemoteAttemptResolution(
             requestedModelId: requestedModelId,
             report: retriedReport,
             retryMetadata: RemoteRetryMetadata(
@@ -1622,6 +2409,11 @@ actor HubAIClient {
                 reasonCode: retryReasonCode
             )
         )
+        await noteRemotePaidGrantStateChangedIfNeeded(
+            report: resolution.report,
+            projectId: pending.projectId
+        )
+        return resolution
     }
 
     static func normalizeConfiguredModelID(
@@ -1689,7 +2481,15 @@ actor HubAIClient {
         let normalized = taskType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !normalized.isEmpty else { return true }
         switch normalized {
-        case "embedding", "embed", "retrieval_embedding":
+        case "embedding",
+             "embed",
+             "retrieval_embedding",
+             "speech_to_text",
+             "text_to_speech",
+             "vision_understand",
+             "ocr",
+             "rerank",
+             "classify":
             return false
         default:
             return true
@@ -1702,15 +2502,22 @@ actor HubAIClient {
         transportMode: HubTransportMode,
         projectId: String?
     ) -> String? {
-        guard transportMode == .auto else { return nil }
-        let trimmedProjectId = projectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !trimmedProjectId.isEmpty else { return nil }
-
         let requestedModelId = normalizeConfiguredModelID(
             rawRequestedModelId,
             availableModels: snapshot.models
         ) ?? rawRequestedModelId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !requestedModelId.isEmpty else { return nil }
+
+        if let equivalentRemote = preferredEquivalentRemoteRetryModelID(
+            requestedModelId: requestedModelId,
+            snapshot: snapshot
+        ) {
+            return equivalentRemote
+        }
+
+        guard transportMode == .auto else { return nil }
+        let trimmedProjectId = projectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmedProjectId.isEmpty else { return nil }
 
         return HubModelSelectionAdvisor.remoteLoadedFallbackCandidates(
             requestedId: requestedModelId,
@@ -1720,12 +2527,49 @@ actor HubAIClient {
         ).first?.id.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private static func preferredEquivalentRemoteRetryModelID(
+        requestedModelId rawRequestedModelId: String,
+        snapshot: ModelStateSnapshot
+    ) -> String? {
+        let requestedModelId = normalizedRetryModelID(rawRequestedModelId)
+        guard !requestedModelId.isEmpty else { return nil }
+
+        let candidates = snapshot.models
+            .filter { model in
+                model.isSelectableForInteractiveRouting
+                    && isRemoteRetryCandidate(model)
+                    && normalizedRetryModelID(model.id) != requestedModelId
+                    && sameBaseModelID(model.id, requestedModelId)
+            }
+            .sorted { lhs, rhs in
+                if lhs.state != rhs.state {
+                    return retryModelStateRank(lhs.state) < retryModelStateRank(rhs.state)
+                }
+                let leftBackend = normalizedRetryModelID(lhs.backend)
+                let rightBackend = normalizedRetryModelID(rhs.backend)
+                if leftBackend != rightBackend {
+                    return leftBackend < rightBackend
+                }
+                return normalizedRetryModelID(lhs.id) < normalizedRetryModelID(rhs.id)
+            }
+
+        return candidates.first?.id.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     static func shouldRetryRemoteWithBackup(
         afterRemoteReasonCode rawReason: String?,
+        requestedModelId: String?,
         backupModelId: String?
     ) -> Bool {
         let backup = backupModelId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !backup.isEmpty else { return false }
+        let sameBaseBackup = sameBaseModelID(requestedModelId, backup)
+
+        if sameBaseBackup,
+           equivalentRemoteProviderFailure(rawReason) {
+            return true
+        }
+
         guard let token = HubRouteStateMachine.normalizedReasonToken(rawReason) else { return false }
 
         if token == "model_not_found" || token == "requested_model_not_found" {
@@ -1760,12 +2604,14 @@ actor HubAIClient {
 
     private static func retryableRemoteBackupReasonCode(
         report: HubRemoteGenerateResult,
+        requestedModelId: String,
         backupModelId: String?
     ) -> String? {
         if !report.ok {
             let reason = report.reasonCode ?? "remote_chat_failed"
             return shouldRetryRemoteWithBackup(
                 afterRemoteReasonCode: reason,
+                requestedModelId: requestedModelId,
                 backupModelId: backupModelId
             ) ? reason : nil
         }
@@ -1777,8 +2623,71 @@ actor HubAIClient {
         let reason = fallbackReason.isEmpty ? "downgrade_to_local" : fallbackReason
         return shouldRetryRemoteWithBackup(
             afterRemoteReasonCode: reason,
+            requestedModelId: requestedModelId,
             backupModelId: backupModelId
         ) ? reason : nil
+    }
+
+    private static func equivalentRemoteProviderFailure(_ rawReason: String?) -> Bool {
+        let normalized = rawReason?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !normalized.isEmpty else { return false }
+        let lowered = normalized.lowercased()
+        if normalized.contains("额度不足") || normalized.contains("余额不足") {
+            return true
+        }
+        let retryableSignals = [
+            "insufficient quota",
+            "quota exceeded",
+            "quota_exceeded",
+            "insufficient_balance",
+            "insufficient balance",
+            "insufficient funds",
+            "out of credits",
+            "credit balance",
+            "billing hard limit",
+            "billing_limit",
+            "payment required",
+            "api_key_missing",
+            "provider_token_expired",
+            "invalid_api_key",
+            "authentication_error"
+        ]
+        return retryableSignals.contains { lowered.contains($0) }
+    }
+
+    private static func sameBaseModelID(_ lhs: String?, _ rhs: String?) -> Bool {
+        let left = retryBaseModelID(lhs)
+        let right = retryBaseModelID(rhs)
+        guard !left.isEmpty, !right.isEmpty else { return false }
+        return left == right
+    }
+
+    private static func retryBaseModelID(_ raw: String?) -> String {
+        let normalized = normalizedRetryModelID(raw)
+        return normalized.split(separator: "/").last.map(String.init) ?? normalized
+    }
+
+    private static func normalizedRetryModelID(_ raw: String?) -> String {
+        (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func isRemoteRetryCandidate(_ model: HubModel) -> Bool {
+        let path = model.modelPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !path.isEmpty {
+            return false
+        }
+        return normalizedRetryModelID(model.backend) != "mlx"
+    }
+
+    private static func retryModelStateRank(_ state: HubModelState) -> Int {
+        switch state {
+        case .loaded:
+            return 0
+        case .available:
+            return 1
+        case .sleeping:
+            return 2
+        }
     }
 
     func generateText(
@@ -1808,7 +2717,8 @@ actor HubAIClient {
             temperature: temperature,
             topP: topP,
             autoLoad: autoLoad,
-            transportOverride: transportOverride
+            transportOverride: transportOverride,
+            timeoutSec: timeoutSec
         )
         _ = rid
         return text
@@ -1841,7 +2751,8 @@ actor HubAIClient {
             temperature: temperature,
             topP: topP,
             autoLoad: autoLoad,
-            transportOverride: transportOverride
+            transportOverride: transportOverride,
+            timeoutSec: timeoutSec
         )
 
         var out = ""
@@ -1866,7 +2777,8 @@ actor HubAIClient {
                         remoteRetryAttempted: ev.remoteRetryAttemptedFromMetadata,
                         remoteRetryFromModelId: ev.remoteRetryFromModelIdFromMetadata,
                         remoteRetryToModelId: ev.remoteRetryToModelIdFromMetadata,
-                        remoteRetryReasonCode: ev.remoteRetryReasonCodeFromMetadata
+                        remoteRetryReasonCode: ev.remoteRetryReasonCodeFromMetadata,
+                        memoryPromptProjection: ev.memoryPromptProjectionFromMetadata
                     )
                 }
             }
@@ -1877,18 +2789,23 @@ actor HubAIClient {
     func remoteRetryResolutionForTesting(
         reqId: String = "test-request",
         prompt: String = "test prompt",
+        remotePromptOverride: String? = nil,
         preferredModelId: String?,
         explicitModelId: String? = nil,
         remoteBackupModelId: String?,
         projectId: String? = "test-project",
         sessionId: String? = nil,
-        transportMode: HubTransportMode = .auto
+        transportMode: HubTransportMode = .auto,
+        timeoutSec: Double = 120.0,
+        reconnectPlanOverride: RemoteReconnectPlan? = nil
     ) async -> RemoteRetryResolutionForTesting {
         let pending = PendingRemoteGenerate(
             prompt: prompt,
+            remotePrompt: remotePromptOverride,
             preferredModelId: preferredModelId,
             explicitModelId: explicitModelId,
             maxTokens: 128,
+            timeoutSec: timeoutSec,
             temperature: 0.2,
             topP: 0.95,
             taskType: "chat_plan",
@@ -1905,7 +2822,8 @@ actor HubAIClient {
         let resolution = await resolveRemoteGenerateWithRetry(
             reqId: reqId,
             pending: pending,
-            preferredModelId: preferred
+            preferredModelId: preferred,
+            reconnectPlanOverride: reconnectPlanOverride
         )
         return RemoteRetryResolutionForTesting(
             requestedModelId: resolution.requestedModelId,
@@ -1931,6 +2849,55 @@ actor HubAIClient {
         withTestingOverrideLock {
             remoteGenerateOverrideForTesting = nil
         }
+    }
+
+    static func installRemoteReconnectOverrideForTesting(
+        _ override: (@Sendable (HubRemoteConnectOptions, RemoteReconnectPlan) async -> HubRemoteConnectReport)?
+    ) {
+        withTestingOverrideLock {
+            remoteReconnectOverrideForTesting = override
+        }
+    }
+
+    static func resetRemoteReconnectOverrideForTesting() {
+        withTestingOverrideLock {
+            remoteReconnectOverrideForTesting = nil
+        }
+    }
+
+    static func requiresRemoteRoutePreflightRepairForTesting(
+        cachedProfile: CachedRemoteProfile,
+        internetHost: String
+    ) -> Bool {
+        requiresRemoteRoutePreflightRepair(
+            cachedProfile: cachedProfile,
+            internetHost: internetHost
+        )
+    }
+
+    static func installRemoteModelsOverrideForTesting(
+        _ override: (@Sendable (HubRemoteConnectOptions) async -> HubRemoteModelsResult)?
+    ) {
+        withTestingOverrideLock {
+            remoteModelsOverrideForTesting = override
+        }
+    }
+
+    static func resetRemoteModelsOverrideForTesting() {
+        withTestingOverrideLock {
+            remoteModelsOverrideForTesting = nil
+        }
+    }
+
+    static func resetRemoteModelSnapshotCacheForTesting() async {
+        await shared.resetRemoteModelSnapshotCacheForTesting()
+    }
+
+    private func resetRemoteModelSnapshotCacheForTesting() {
+        remoteModelsCache = .empty()
+        remotePaidAccessSnapshotCache = nil
+        remoteModelsLastFetchAt = .distantPast
+        remoteModelsLastFetchSucceeded = false
     }
 
     static func installCancelWriteOverrideForTesting(

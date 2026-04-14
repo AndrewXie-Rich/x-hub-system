@@ -86,6 +86,90 @@ enum XTMemoryUseMode: String, CaseIterable, Sendable {
     }
 }
 
+enum XTMemoryLocalStorageRole: String, CaseIterable, Sendable {
+    case hotContinuityCache = "hot_continuity_cache"
+}
+
+struct XTMemoryHotWindowContract: Equatable, Sendable {
+    static let `default` = XTMemoryHotWindowContract(
+        turnLimit: 30,
+        idleTTLSeconds: 86_400,
+        storageRole: .hotContinuityCache
+    )
+
+    var turnLimit: Int
+    var idleTTLSeconds: Int
+    var storageRole: XTMemoryLocalStorageRole
+}
+
+enum XTMemoryFastPathSource: String, CaseIterable, Sendable {
+    case xtHotWindow = "xt_hot_window"
+    case xtRemoteSnapshotCache = "xt_remote_snapshot_cache"
+    case hubProjectionFastPath = "hub_projection_fast_path"
+    case hubFreshBuild = "hub_fresh_build"
+}
+
+enum XTMemoryFastPathBypassReason: String, CaseIterable, Sendable {
+    case highRiskAct = "high_risk_act"
+    case remotePromptBundle = "remote_prompt_bundle"
+    case grantChanged = "grant_changed"
+    case scopeChanged = "scope_changed"
+    case routeChanged = "route_changed"
+    case policyChanged = "policy_changed"
+    case killSwitchOrClampChanged = "kill_switch_or_clamp_changed"
+    case attachmentBlobDeepRead = "attachment_blob_deep_read"
+    case crossScopeSensitiveMemory = "cross_scope_sensitive_memory"
+    case governanceUpgrade = "governance_upgrade"
+    case constitutionHashMismatch = "constitution_hash_mismatch"
+
+    static let freshHubRecheckSet: Set<Self> = [
+        .highRiskAct,
+        .remotePromptBundle,
+        .grantChanged,
+        .scopeChanged,
+        .routeChanged,
+        .policyChanged,
+        .killSwitchOrClampChanged,
+        .attachmentBlobDeepRead,
+        .crossScopeSensitiveMemory,
+        .governanceUpgrade,
+        .constitutionHashMismatch,
+    ]
+}
+
+struct XTMemoryFastPathContract: Equatable, Sendable {
+    static let defaultLadder: [XTMemoryFastPathSource] = [
+        .xtHotWindow,
+        .xtRemoteSnapshotCache,
+        .hubProjectionFastPath,
+        .hubFreshBuild,
+    ]
+
+    var sourceLadder: [XTMemoryFastPathSource]
+    var staticBypassReasonCodes: Set<XTMemoryFastPathBypassReason>
+
+    var requiresFreshHubRecheck: Bool {
+        !staticBypassReasonCodes.isEmpty
+    }
+}
+
+enum XTMemoryRemoteSnapshotCachePosture: String, CaseIterable, Sendable {
+    case continuitySafe = "continuity_safe"
+    case resumeSafe = "resume_safe"
+    case freshRequired = "fresh_required"
+}
+
+enum XTMemoryRemoteSnapshotInvalidationReason: String, CaseIterable, Sendable {
+    case newTurnAppend = "new_turn_append"
+    case projectCanonicalSave = "project_canonical_save"
+    case reviewGuidanceCarryForwardChanged = "review_guidance_carry_forward_changed"
+    case grantStateChanged = "grant_state_changed"
+    case routeOrModelPreferenceChanged = "route_or_model_preference_changed"
+    case heartbeatAnomalyEscalated = "heartbeat_anomaly_escalated"
+    case manualRefresh = "manual_refresh"
+    case remoteFetchFailed = "remote_fetch_failed"
+}
+
 enum XTMemoryServingProfile: String, CaseIterable, Sendable {
     case m0Heartbeat = "m0_heartbeat"
     case m1Execute = "m1_execute"
@@ -228,6 +312,7 @@ struct XTMemoryUseContract: Sendable {
 
 struct XTMemoryRouteDecision: Sendable {
     var contract: XTMemoryUseContract
+    var fastPathContract: XTMemoryFastPathContract
     var servingProfile: XTMemoryServingProfile
     var payload: HubIPCClient.MemoryContextPayload
     var denyCode: XTMemoryUseDenyCode?
@@ -236,6 +321,19 @@ struct XTMemoryRouteDecision: Sendable {
 }
 
 enum XTMemoryRoleScopedRouter {
+    static func remoteSnapshotCachePosture(
+        for mode: XTMemoryUseMode
+    ) -> XTMemoryRemoteSnapshotCachePosture {
+        switch mode {
+        case .sessionResume:
+            return .resumeSafe
+        case .toolActHighRisk, .laneHandoff, .remotePromptBundle:
+            return .freshRequired
+        case .projectChat, .supervisorOrchestration, .toolPlan, .toolActLowRisk:
+            return .continuitySafe
+        }
+    }
+
     static func route(
         role: XTMemoryRequesterRole,
         mode: XTMemoryUseMode,
@@ -247,42 +345,47 @@ enum XTMemoryRoleScopedRouter {
             mode: mode,
             payload: payload
         )
+        let fastPathContract = fastPathContract(for: mode)
         let contract = adjustedContract(
             contract(for: mode),
             for: mode,
             servingProfile: selectedProfile
         )
+        let bypassRemoteCache = contract.bypassRemoteCache || fastPathContract.requiresFreshHubRecheck
 
         if let directUseDenyCode = contract.directUseDenyCode {
             return XTMemoryRouteDecision(
                 contract: contract,
+                fastPathContract: fastPathContract,
                 servingProfile: selectedProfile,
                 payload: payload,
                 denyCode: directUseDenyCode,
                 downgradeCode: nil,
-                bypassRemoteCache: contract.bypassRemoteCache
+                bypassRemoteCache: bypassRemoteCache
             )
         }
 
         guard contract.allowedRequesterRoles.contains(role) else {
             return XTMemoryRouteDecision(
                 contract: contract,
+                fastPathContract: fastPathContract,
                 servingProfile: selectedProfile,
                 payload: payload,
                 denyCode: .memoryRoutePolicyMismatch,
                 downgradeCode: nil,
-                bypassRemoteCache: contract.bypassRemoteCache
+                bypassRemoteCache: bypassRemoteCache
             )
         }
 
         if remoteExportRequested, contract.remoteExportPolicy == .localOnly {
             return XTMemoryRouteDecision(
                 contract: contract,
+                fastPathContract: fastPathContract,
                 servingProfile: selectedProfile,
                 payload: payload,
                 denyCode: .rawEvidenceRemoteExportDenied,
                 downgradeCode: nil,
-                bypassRemoteCache: contract.bypassRemoteCache
+                bypassRemoteCache: bypassRemoteCache
             )
         }
 
@@ -309,8 +412,10 @@ enum XTMemoryRoleScopedRouter {
         )
         sanitized.focusedProjectAnchorPackText = XTMemorySanitizer.sanitizeText(
             payload.focusedProjectAnchorPackText,
-            maxChars: max(contract.workingSetMaxChars, min(1_600, contract.canonicalMaxChars)),
-            lineCap: max(10, contract.lineCap)
+            // Anchor pack carries compact structured facts; keep enough lines so
+            // current_step / verification / blocker / retry continuity survives sanitization.
+            maxChars: max(2_400, min(max(contract.canonicalMaxChars * 2, 2_400), 4_200)),
+            lineCap: max(48, contract.lineCap * 4)
         )
         sanitized.longtermOutlineText = XTMemorySanitizer.sanitizeText(
             payload.longtermOutlineText,
@@ -374,11 +479,12 @@ enum XTMemoryRoleScopedRouter {
 
         return XTMemoryRouteDecision(
             contract: contract,
+            fastPathContract: fastPathContract,
             servingProfile: selectedProfile,
             payload: sanitized,
             denyCode: nil,
             downgradeCode: nil,
-            bypassRemoteCache: contract.bypassRemoteCache
+            bypassRemoteCache: bypassRemoteCache
         )
     }
 
@@ -550,7 +656,7 @@ enum XTMemoryRoleScopedRouter {
                 mode: mode,
                 allowedRequesterRoles: [.remoteExport],
                 allowedLayers: [.l0Constitution, .l1Canonical, .l2Observations, .l3WorkingSet],
-                freshnessPolicy: .allowShortTTLCache,
+                freshnessPolicy: .requireFreshRemoteSnapshot,
                 userMemoryPolicy: .defaultOff,
                 longtermPolicy: .summaryOnly,
                 remoteExportPolicy: .sanitizedOnly,
@@ -569,6 +675,26 @@ enum XTMemoryRoleScopedRouter {
                     l4Tokens: 60
                 ),
                 directUseDenyCode: nil
+            )
+        }
+    }
+
+    static func fastPathContract(for mode: XTMemoryUseMode) -> XTMemoryFastPathContract {
+        switch mode {
+        case .toolActHighRisk:
+            return XTMemoryFastPathContract(
+                sourceLadder: XTMemoryFastPathContract.defaultLadder,
+                staticBypassReasonCodes: [.highRiskAct]
+            )
+        case .remotePromptBundle:
+            return XTMemoryFastPathContract(
+                sourceLadder: XTMemoryFastPathContract.defaultLadder,
+                staticBypassReasonCodes: [.remotePromptBundle]
+            )
+        default:
+            return XTMemoryFastPathContract(
+                sourceLadder: XTMemoryFastPathContract.defaultLadder,
+                staticBypassReasonCodes: []
             )
         }
     }

@@ -89,6 +89,100 @@ struct HubModelSelectionAdvisorTests {
     }
 
     @Test
+    func brokenLocalCandidatesAreExcludedFromInventorySuggestions() throws {
+        let snapshot = ModelStateSnapshot(
+            models: [
+                makeModel(
+                    id: "qwen3-1.7b-mlx",
+                    name: "Qwen 3 1.7B",
+                    state: .available,
+                    backend: "mlx",
+                    modelPath: "/models/qwen3-1.7b",
+                    offlineReady: false
+                ),
+                makeModel(id: "openai/gpt-4.1", name: "GPT 4.1", state: .loaded)
+            ],
+            updatedAt: 1_776_200_225
+        )
+
+        let assessment = try #require(
+            HubModelSelectionAdvisor.assess(
+                requestedId: "qwen3-1.7b-mlx",
+                snapshot: snapshot
+            )
+        )
+
+        #expect(assessment.exactMatch?.id == "qwen3-1.7b-mlx")
+        #expect(assessment.inventoryCandidates.isEmpty)
+        #expect(assessment.loadedCandidates.map(\.id) == ["openai/gpt-4.1"])
+        #expect(HubModelSelectionAdvisor.suggestedModelIDs(from: assessment) == ["openai/gpt-4.1"])
+    }
+
+    @Test
+    func localTaskResolutionAutoSelectsRunnableTaskCompatibleLocalModel() {
+        let snapshot = ModelStateSnapshot(
+            models: [
+                makeModel(
+                    id: "nomic-embed-text-v1",
+                    name: "Nomic Embed Text",
+                    state: .available,
+                    backend: "transformers",
+                    modelPath: "/models/nomic-embed-text-v1",
+                    offlineReady: true,
+                    taskKinds: ["embedding"]
+                )
+            ],
+            updatedAt: 1_776_200_240
+        )
+
+        let resolution = HubModelSelectionAdvisor.resolveLocalTaskModel(
+            taskKind: "embedding",
+            snapshot: snapshot
+        )
+
+        #expect(resolution.resolvedModel?.id == "nomic-embed-text-v1")
+        #expect(resolution.reasonCode == "task_kind_auto")
+        #expect(resolution.fallbackUsed == false)
+    }
+
+    @Test
+    func localTaskResolutionFallsBackFromBrokenPreferredModelToRunnableCandidate() {
+        let snapshot = ModelStateSnapshot(
+            models: [
+                makeModel(
+                    id: "qwen-ocr-broken",
+                    name: "Qwen OCR Broken",
+                    state: .available,
+                    backend: "mlx",
+                    modelPath: "/models/qwen-ocr-broken",
+                    offlineReady: false,
+                    taskKinds: ["ocr"]
+                ),
+                makeModel(
+                    id: "qwen-ocr-ready",
+                    name: "Qwen OCR Ready",
+                    state: .loaded,
+                    backend: "mlx",
+                    modelPath: "/models/qwen-ocr-ready",
+                    offlineReady: true,
+                    taskKinds: ["ocr"]
+                )
+            ],
+            updatedAt: 1_776_200_245
+        )
+
+        let resolution = HubModelSelectionAdvisor.resolveLocalTaskModel(
+            taskKind: "ocr",
+            preferredModelId: "qwen-ocr-broken",
+            snapshot: snapshot
+        )
+
+        #expect(resolution.resolvedModel?.id == "qwen-ocr-ready")
+        #expect(resolution.reasonCode == "preferred_model_fallback_task_kind")
+        #expect(resolution.fallbackUsed == true)
+    }
+
+    @Test
     func embeddingOnlyExactMatchIsMarkedAsNonInteractiveAndSuggestsChatFallback() throws {
         let snapshot = ModelStateSnapshot(
             models: [
@@ -233,6 +327,7 @@ struct HubModelSelectionAdvisorTests {
         state: HubModelState,
         backend: String = "openai",
         modelPath: String? = nil,
+        offlineReady: Bool? = nil,
         taskKinds: [String]? = nil
     ) -> HubModel {
         HubModel(
@@ -248,7 +343,8 @@ struct HubModelSelectionAdvisorTests {
             tokensPerSec: nil,
             modelPath: modelPath,
             note: nil,
-            taskKinds: taskKinds
+            taskKinds: taskKinds,
+            offlineReady: offlineReady
         )
     }
 }

@@ -14,6 +14,30 @@ actor MemoryProfileAttemptRecorder {
     }
 }
 
+actor RemoteSnapshotFetchCountRecorder {
+    private var count: Int = 0
+
+    func increment() {
+        count += 1
+    }
+
+    func snapshot() -> Int {
+        count
+    }
+}
+
+actor RemoteSnapshotFetchKeyedRecorder {
+    private var counts: [String: Int] = [:]
+
+    func increment(_ key: String) {
+        counts[key, default: 0] += 1
+    }
+
+    func snapshot(_ key: String) -> Int {
+        counts[key, default: 0]
+    }
+}
+
 @Suite(.serialized)
 struct HubIPCClientMemoryProgressiveDisclosureTests {
 
@@ -267,6 +291,755 @@ struct HubIPCClientMemoryProgressiveDisclosureTests {
         #expect(!rendered.contains("retrieval_available=false"))
     }
 
+    @Test
+    func remoteSnapshotCacheExposesPostureAndLastInvalidationReasonAfterManualRefresh() async throws {
+        let recorder = RemoteSnapshotFetchCountRecorder()
+        let projectId = "proj-cache-\(UUID().uuidString.lowercased())"
+
+        HubIPCClient.installHubRouteDecisionOverrideForTesting {
+            HubRouteDecision(
+                mode: .auto,
+                hasRemoteProfile: true,
+                preferRemote: true,
+                allowFileFallback: true,
+                requiresRemote: false,
+                remoteUnavailableReasonCode: nil
+            )
+        }
+        HubIPCClient.installRemoteMemorySnapshotOverrideForTesting { mode, projectId, _, _ in
+            await recorder.increment()
+            return HubRemoteMemorySnapshotResult(
+                ok: true,
+                source: "hub_memory_v1_grpc",
+                canonicalEntries: ["goal: keep memory fast and governed"],
+                workingEntries: ["mode=\(mode.rawValue)", "project=\(projectId ?? "(none)")"],
+                reasonCode: nil,
+                logLines: []
+            )
+        }
+        defer { HubIPCClient.resetMemoryContextResolutionOverrideForTesting() }
+
+        let first = await HubIPCClient.requestMemoryContextDetailed(
+            useMode: .projectChat,
+            requesterRole: .chat,
+            projectId: projectId,
+            projectRoot: "/tmp/\(projectId)",
+            displayName: projectId,
+            latestUser: "继续当前项目",
+            constitutionHint: "safe",
+            canonicalText: "local canonical",
+            observationsText: "local observations",
+            workingSetText: "local working",
+            rawEvidenceText: "local raw",
+            progressiveDisclosure: false,
+            budgets: nil,
+            timeoutSec: 0.1
+        )
+        let firstResponse = try #require(first.response)
+        #expect(first.cacheHit == false)
+        #expect(firstResponse.remoteSnapshotCachePosture == XTMemoryRemoteSnapshotCachePosture.continuitySafe.rawValue)
+        #expect(firstResponse.remoteSnapshotInvalidationReason == nil)
+
+        let second = await HubIPCClient.requestMemoryContextDetailed(
+            useMode: .projectChat,
+            requesterRole: .chat,
+            projectId: projectId,
+            projectRoot: "/tmp/\(projectId)",
+            displayName: projectId,
+            latestUser: "继续当前项目",
+            constitutionHint: "safe",
+            canonicalText: "local canonical",
+            observationsText: "local observations",
+            workingSetText: "local working",
+            rawEvidenceText: "local raw",
+            progressiveDisclosure: false,
+            budgets: nil,
+            timeoutSec: 0.1
+        )
+        let secondResponse = try #require(second.response)
+        #expect(second.cacheHit == true)
+        #expect(secondResponse.freshness == "ttl_cache")
+        #expect(await recorder.snapshot() == 1)
+
+        await HubIPCClient.refreshProjectRemoteMemorySnapshotCache(projectId: projectId)
+
+        let third = await HubIPCClient.requestMemoryContextDetailed(
+            useMode: .projectChat,
+            requesterRole: .chat,
+            projectId: projectId,
+            projectRoot: "/tmp/\(projectId)",
+            displayName: projectId,
+            latestUser: "继续当前项目",
+            constitutionHint: "safe",
+            canonicalText: "local canonical",
+            observationsText: "local observations",
+            workingSetText: "local working",
+            rawEvidenceText: "local raw",
+            progressiveDisclosure: false,
+            budgets: nil,
+            timeoutSec: 0.1
+        )
+
+        let thirdResponse = try #require(third.response)
+        #expect(third.cacheHit == false)
+        #expect(thirdResponse.remoteSnapshotCachePosture == XTMemoryRemoteSnapshotCachePosture.continuitySafe.rawValue)
+        #expect(
+            thirdResponse.remoteSnapshotInvalidationReason
+            == XTMemoryRemoteSnapshotInvalidationReason.manualRefresh.rawValue
+        )
+        #expect(await recorder.snapshot() == 2)
+    }
+
+    @Test
+    func transportModeChangeInvalidatesRemoteSnapshotCacheWithRouteReason() async throws {
+        let recorder = RemoteSnapshotFetchCountRecorder()
+        let projectId = "proj-transport-\(UUID().uuidString.lowercased())"
+        let originalMode = HubAIClient.transportMode()
+
+        HubIPCClient.installHubRouteDecisionOverrideForTesting {
+            HubRouteDecision(
+                mode: .auto,
+                hasRemoteProfile: true,
+                preferRemote: true,
+                allowFileFallback: true,
+                requiresRemote: false,
+                remoteUnavailableReasonCode: nil
+            )
+        }
+        HubIPCClient.installRemoteMemorySnapshotOverrideForTesting { mode, projectId, _, _ in
+            await recorder.increment()
+            return HubRemoteMemorySnapshotResult(
+                ok: true,
+                source: "hub_memory_v1_grpc",
+                canonicalEntries: ["goal: keep route changes observable"],
+                workingEntries: ["mode=\(mode.rawValue)", "project=\(projectId ?? "(none)")"],
+                reasonCode: nil,
+                logLines: []
+            )
+        }
+        defer {
+            HubIPCClient.resetMemoryContextResolutionOverrideForTesting()
+            HubAIClient.setTransportMode(originalMode)
+        }
+
+        let first = await HubIPCClient.requestMemoryContextDetailed(
+            useMode: .projectChat,
+            requesterRole: .chat,
+            projectId: projectId,
+            projectRoot: "/tmp/\(projectId)",
+            displayName: projectId,
+            latestUser: "继续当前项目",
+            constitutionHint: "safe",
+            canonicalText: "local canonical",
+            observationsText: "local observations",
+            workingSetText: "local working",
+            rawEvidenceText: "local raw",
+            progressiveDisclosure: false,
+            budgets: nil,
+            timeoutSec: 0.1
+        )
+        let firstResponse = try #require(first.response)
+        #expect(first.cacheHit == false)
+        #expect(firstResponse.remoteSnapshotInvalidationReason == nil)
+
+        let second = await HubIPCClient.requestMemoryContextDetailed(
+            useMode: .projectChat,
+            requesterRole: .chat,
+            projectId: projectId,
+            projectRoot: "/tmp/\(projectId)",
+            displayName: projectId,
+            latestUser: "继续当前项目",
+            constitutionHint: "safe",
+            canonicalText: "local canonical",
+            observationsText: "local observations",
+            workingSetText: "local working",
+            rawEvidenceText: "local raw",
+            progressiveDisclosure: false,
+            budgets: nil,
+            timeoutSec: 0.1
+        )
+        #expect(second.cacheHit == true)
+        #expect(await recorder.snapshot() == 1)
+
+        let replacementMode: HubTransportMode = originalMode == .grpc ? .auto : .grpc
+        HubAIClient.setTransportMode(replacementMode)
+        try await Task.sleep(for: .milliseconds(50))
+
+        let third = await HubIPCClient.requestMemoryContextDetailed(
+            useMode: .projectChat,
+            requesterRole: .chat,
+            projectId: projectId,
+            projectRoot: "/tmp/\(projectId)",
+            displayName: projectId,
+            latestUser: "继续当前项目",
+            constitutionHint: "safe",
+            canonicalText: "local canonical",
+            observationsText: "local observations",
+            workingSetText: "local working",
+            rawEvidenceText: "local raw",
+            progressiveDisclosure: false,
+            budgets: nil,
+            timeoutSec: 0.1
+        )
+
+        let thirdResponse = try #require(third.response)
+        #expect(third.cacheHit == false)
+        #expect(
+            thirdResponse.remoteSnapshotInvalidationReason
+            == XTMemoryRemoteSnapshotInvalidationReason.routeOrModelPreferenceChanged.rawValue
+        )
+        #expect(await recorder.snapshot() == 2)
+    }
+
+    @Test
+    func voiceGrantChallengeInvalidatesProjectAndSupervisorRemoteSnapshotCaches() async throws {
+        let projectId = "proj-voice-challenge-\(UUID().uuidString.lowercased())"
+        let recorder = RemoteSnapshotFetchKeyedRecorder()
+
+        HubIPCClient.installHubRouteDecisionOverrideForTesting {
+            Self.preferredRemoteRouteDecision()
+        }
+        HubIPCClient.installRemoteMemorySnapshotOverrideForTesting { mode, incomingProjectId, _, _ in
+            await recorder.increment("\(mode.rawValue)|\(incomingProjectId ?? "(none)")")
+            return Self.remoteSnapshotResult(mode: mode, projectId: incomingProjectId)
+        }
+        HubIPCClient.installVoiceGrantChallengeOverrideForTesting { payload in
+            HubIPCClient.VoiceGrantChallengeResult(
+                ok: true,
+                source: "hub_memory_v1_grpc",
+                challenge: HubIPCClient.VoiceGrantChallengeSnapshot(
+                    challengeId: "voice-challenge-\(payload.requestId)",
+                    templateId: payload.templateId,
+                    actionDigest: payload.actionDigest,
+                    scopeDigest: payload.scopeDigest,
+                    amountDigest: payload.amountDigest ?? "",
+                    challengeCode: payload.challengeCode ?? "confirm",
+                    riskLevel: payload.riskLevel,
+                    requiresMobileConfirm: payload.requiresMobileConfirm,
+                    allowVoiceOnly: payload.allowVoiceOnly,
+                    boundDeviceId: payload.boundDeviceId ?? "device-1",
+                    mobileTerminalId: payload.mobileTerminalId ?? "terminal-1",
+                    issuedAtMs: 1_774_000_100_000,
+                    expiresAtMs: 1_774_000_160_000
+                ),
+                reasonCode: nil
+            )
+        }
+        defer { HubIPCClient.resetMemoryContextResolutionOverrideForTesting() }
+
+        await HubIPCClient.refreshProjectRemoteMemorySnapshotCache(projectId: projectId)
+        await HubIPCClient.refreshSupervisorRemoteMemorySnapshotCache()
+
+        _ = try #require(await Self.requestProjectMemory(projectId: projectId).response)
+        let projectCached = await Self.requestProjectMemory(projectId: projectId)
+        #expect(projectCached.cacheHit == true)
+
+        _ = try #require(await Self.requestSupervisorMemory(projectId: projectId).response)
+        let supervisorCached = await Self.requestSupervisorMemory(projectId: projectId)
+        #expect(supervisorCached.cacheHit == true)
+
+        let challenge = await HubIPCClient.issueVoiceGrantChallenge(
+            HubIPCClient.VoiceGrantChallengeRequestPayload(
+                requestId: "voice-request-\(projectId)",
+                projectId: projectId,
+                templateId: "voice_authorize_high_risk_action_v1",
+                actionDigest: "action-digest-\(projectId)",
+                scopeDigest: "scope-digest-\(projectId)",
+                amountDigest: "amount-digest-\(projectId)",
+                challengeCode: "confirm",
+                riskLevel: "high",
+                boundDeviceId: "device-1",
+                mobileTerminalId: "terminal-1",
+                allowVoiceOnly: false,
+                requiresMobileConfirm: true,
+                ttlMs: 60_000
+            )
+        )
+        #expect(challenge.ok == true)
+        #expect(challenge.challenge?.challengeId == "voice-challenge-voice-request-\(projectId)")
+
+        let projectFresh = await Self.requestProjectMemory(projectId: projectId)
+        let projectFreshResponse = try #require(projectFresh.response)
+        #expect(projectFresh.cacheHit == false)
+        #expect(
+            projectFreshResponse.remoteSnapshotInvalidationReason
+            == XTMemoryRemoteSnapshotInvalidationReason.grantStateChanged.rawValue
+        )
+
+        let supervisorFresh = await Self.requestSupervisorMemory(projectId: projectId)
+        let supervisorFreshResponse = try #require(supervisorFresh.response)
+        #expect(supervisorFresh.cacheHit == false)
+        #expect(
+            supervisorFreshResponse.remoteSnapshotInvalidationReason
+            == XTMemoryRemoteSnapshotInvalidationReason.grantStateChanged.rawValue
+        )
+
+        #expect(await recorder.snapshot("\(XTMemoryUseMode.projectChat.rawValue)|\(projectId)") == 2)
+        #expect(
+            await recorder.snapshot("\(XTMemoryUseMode.supervisorOrchestration.rawValue)|(none)") == 2
+        )
+    }
+
+    @Test
+    func voiceGrantVerificationDenyInvalidatesProjectAndSupervisorRemoteSnapshotCaches() async throws {
+        let projectId = "proj-voice-verify-\(UUID().uuidString.lowercased())"
+        let recorder = RemoteSnapshotFetchKeyedRecorder()
+
+        HubIPCClient.installHubRouteDecisionOverrideForTesting {
+            Self.preferredRemoteRouteDecision()
+        }
+        HubIPCClient.installRemoteMemorySnapshotOverrideForTesting { mode, incomingProjectId, _, _ in
+            await recorder.increment("\(mode.rawValue)|\(incomingProjectId ?? "(none)")")
+            return Self.remoteSnapshotResult(mode: mode, projectId: incomingProjectId)
+        }
+        HubIPCClient.installVoiceGrantVerificationOverrideForTesting { payload in
+            HubIPCClient.VoiceGrantVerificationResult(
+                ok: true,
+                verified: false,
+                decision: .deny,
+                source: "hub_memory_v1_grpc",
+                denyCode: "voice_mismatch",
+                challengeId: payload.challengeId,
+                transcriptHash: payload.transcriptHash,
+                semanticMatchScore: payload.semanticMatchScore ?? 0,
+                challengeMatch: false,
+                deviceBindingOK: true,
+                mobileConfirmed: payload.mobileConfirmed,
+                reasonCode: "denied"
+            )
+        }
+        defer { HubIPCClient.resetMemoryContextResolutionOverrideForTesting() }
+
+        await HubIPCClient.refreshProjectRemoteMemorySnapshotCache(projectId: projectId)
+        await HubIPCClient.refreshSupervisorRemoteMemorySnapshotCache()
+
+        _ = try #require(await Self.requestProjectMemory(projectId: projectId).response)
+        let projectCached = await Self.requestProjectMemory(projectId: projectId)
+        #expect(projectCached.cacheHit == true)
+
+        _ = try #require(await Self.requestSupervisorMemory(projectId: projectId).response)
+        let supervisorCached = await Self.requestSupervisorMemory(projectId: projectId)
+        #expect(supervisorCached.cacheHit == true)
+
+        let verification = await HubIPCClient.verifyVoiceGrantResponse(
+            HubIPCClient.VoiceGrantVerificationPayload(
+                requestId: "voice-verify-\(projectId)",
+                projectId: projectId,
+                challengeId: "challenge-\(projectId)",
+                challengeCode: "confirm",
+                transcript: "authorize this action",
+                transcriptHash: "transcript-hash-\(projectId)",
+                semanticMatchScore: 0.42,
+                parsedActionDigest: "action-digest-\(projectId)",
+                parsedScopeDigest: "scope-digest-\(projectId)",
+                parsedAmountDigest: "amount-digest-\(projectId)",
+                verifyNonce: "nonce-\(projectId)",
+                boundDeviceId: "device-1",
+                mobileConfirmed: true
+            )
+        )
+        #expect(verification.ok == true)
+        #expect(verification.decision == .deny)
+        #expect(verification.reasonCode == "denied")
+
+        let projectFresh = await Self.requestProjectMemory(projectId: projectId)
+        let projectFreshResponse = try #require(projectFresh.response)
+        #expect(projectFresh.cacheHit == false)
+        #expect(
+            projectFreshResponse.remoteSnapshotInvalidationReason
+            == XTMemoryRemoteSnapshotInvalidationReason.grantStateChanged.rawValue
+        )
+
+        let supervisorFresh = await Self.requestSupervisorMemory(projectId: projectId)
+        let supervisorFreshResponse = try #require(supervisorFresh.response)
+        #expect(supervisorFresh.cacheHit == false)
+        #expect(
+            supervisorFreshResponse.remoteSnapshotInvalidationReason
+            == XTMemoryRemoteSnapshotInvalidationReason.grantStateChanged.rawValue
+        )
+
+        #expect(await recorder.snapshot("\(XTMemoryUseMode.projectChat.rawValue)|\(projectId)") == 2)
+        #expect(
+            await recorder.snapshot("\(XTMemoryUseMode.supervisorOrchestration.rawValue)|(none)") == 2
+        )
+    }
+
+    @Test
+    func voiceGrantVerificationFailureDoesNotInvalidateRemoteSnapshotCaches() async throws {
+        let projectId = "proj-voice-verify-failed-\(UUID().uuidString.lowercased())"
+        let recorder = RemoteSnapshotFetchKeyedRecorder()
+
+        HubIPCClient.installHubRouteDecisionOverrideForTesting {
+            Self.preferredRemoteRouteDecision()
+        }
+        HubIPCClient.installRemoteMemorySnapshotOverrideForTesting { mode, incomingProjectId, _, _ in
+            await recorder.increment("\(mode.rawValue)|\(incomingProjectId ?? "(none)")")
+            return Self.remoteSnapshotResult(mode: mode, projectId: incomingProjectId)
+        }
+        HubIPCClient.installVoiceGrantVerificationOverrideForTesting { payload in
+            HubIPCClient.VoiceGrantVerificationResult(
+                ok: false,
+                verified: false,
+                decision: .failed,
+                source: "hub_memory_v1_grpc",
+                denyCode: nil,
+                challengeId: payload.challengeId,
+                transcriptHash: payload.transcriptHash,
+                semanticMatchScore: payload.semanticMatchScore ?? 0,
+                challengeMatch: false,
+                deviceBindingOK: false,
+                mobileConfirmed: payload.mobileConfirmed,
+                reasonCode: "remote_voice_grant_verify_failed"
+            )
+        }
+        defer { HubIPCClient.resetMemoryContextResolutionOverrideForTesting() }
+
+        await HubIPCClient.refreshProjectRemoteMemorySnapshotCache(projectId: projectId)
+        await HubIPCClient.refreshSupervisorRemoteMemorySnapshotCache()
+
+        _ = try #require(await Self.requestProjectMemory(projectId: projectId).response)
+        _ = try #require(await Self.requestSupervisorMemory(projectId: projectId).response)
+
+        let verification = await HubIPCClient.verifyVoiceGrantResponse(
+            HubIPCClient.VoiceGrantVerificationPayload(
+                requestId: "voice-verify-failed-\(projectId)",
+                projectId: projectId,
+                challengeId: "challenge-\(projectId)",
+                challengeCode: "confirm",
+                transcript: "authorize this action",
+                transcriptHash: "transcript-hash-\(projectId)",
+                semanticMatchScore: 0.2,
+                parsedActionDigest: "action-digest-\(projectId)",
+                parsedScopeDigest: "scope-digest-\(projectId)",
+                parsedAmountDigest: "amount-digest-\(projectId)",
+                verifyNonce: "nonce-\(projectId)",
+                boundDeviceId: "device-1",
+                mobileConfirmed: false
+            )
+        )
+        #expect(verification.ok == false)
+        #expect(verification.decision == .failed)
+
+        let projectCached = await Self.requestProjectMemory(projectId: projectId)
+        let projectCachedResponse = try #require(projectCached.response)
+        #expect(projectCached.cacheHit == true)
+        #expect(projectCachedResponse.remoteSnapshotInvalidationReason == nil)
+
+        let supervisorCached = await Self.requestSupervisorMemory(projectId: projectId)
+        let supervisorCachedResponse = try #require(supervisorCached.response)
+        #expect(supervisorCached.cacheHit == true)
+        #expect(supervisorCachedResponse.remoteSnapshotInvalidationReason == nil)
+
+        #expect(await recorder.snapshot("\(XTMemoryUseMode.projectChat.rawValue)|\(projectId)") == 1)
+        #expect(
+            await recorder.snapshot("\(XTMemoryUseMode.supervisorOrchestration.rawValue)|(none)") == 1
+        )
+    }
+
+    @Test
+    func paidRemoteGenerateGrantApprovalInvalidatesProjectAndSupervisorRemoteSnapshotCaches() async throws {
+        let projectId = "proj-paid-grant-approved-\(UUID().uuidString.lowercased())"
+        let recorder = RemoteSnapshotFetchKeyedRecorder()
+
+        HubIPCClient.installHubRouteDecisionOverrideForTesting {
+            Self.preferredRemoteRouteDecision()
+        }
+        HubIPCClient.installRemoteMemorySnapshotOverrideForTesting { mode, incomingProjectId, _, _ in
+            await recorder.increment("\(mode.rawValue)|\(incomingProjectId ?? "(none)")")
+            return Self.remoteSnapshotResult(mode: mode, projectId: incomingProjectId)
+        }
+        HubAIClient.installRemoteGenerateOverrideForTesting { invocation in
+            HubRemoteGenerateResult(
+                ok: true,
+                text: "paid remote generate succeeded after grant",
+                modelId: invocation.modelId,
+                requestedModelId: invocation.modelId,
+                actualModelId: invocation.modelId,
+                runtimeProvider: "Hub (Remote)",
+                executionPath: "remote_model",
+                fallbackReasonCode: nil,
+                grantDecision: .approved,
+                grantRequestId: "paid-grant-\(invocation.requestId)",
+                reasonCode: nil,
+                logLines: []
+            )
+        }
+        defer {
+            HubIPCClient.resetMemoryContextResolutionOverrideForTesting()
+            HubAIClient.resetRemoteGenerateOverrideForTesting()
+        }
+
+        await HubIPCClient.refreshProjectRemoteMemorySnapshotCache(projectId: projectId)
+        await HubIPCClient.refreshSupervisorRemoteMemorySnapshotCache()
+
+        _ = try #require(await Self.requestProjectMemory(projectId: projectId).response)
+        _ = try #require(await Self.requestSupervisorMemory(projectId: projectId).response)
+
+        let resolution = await HubAIClient.shared.remoteRetryResolutionForTesting(
+            preferredModelId: "openai/gpt-5.4",
+            remoteBackupModelId: nil,
+            projectId: projectId,
+            transportMode: .grpc
+        )
+        #expect(resolution.ok == true)
+        #expect(resolution.actualModelId == "openai/gpt-5.4")
+
+        let projectFresh = await Self.requestProjectMemory(projectId: projectId)
+        let projectFreshResponse = try #require(projectFresh.response)
+        #expect(projectFresh.cacheHit == false)
+        #expect(
+            projectFreshResponse.remoteSnapshotInvalidationReason
+            == XTMemoryRemoteSnapshotInvalidationReason.grantStateChanged.rawValue
+        )
+
+        let supervisorFresh = await Self.requestSupervisorMemory(projectId: projectId)
+        let supervisorFreshResponse = try #require(supervisorFresh.response)
+        #expect(supervisorFresh.cacheHit == false)
+        #expect(
+            supervisorFreshResponse.remoteSnapshotInvalidationReason
+            == XTMemoryRemoteSnapshotInvalidationReason.grantStateChanged.rawValue
+        )
+
+        #expect(await recorder.snapshot("\(XTMemoryUseMode.projectChat.rawValue)|\(projectId)") == 2)
+        #expect(
+            await recorder.snapshot("\(XTMemoryUseMode.supervisorOrchestration.rawValue)|(none)") == 2
+        )
+    }
+
+    @Test
+    func escalatedHeartbeatAnomalyInvalidatesProjectAndSupervisorRemoteSnapshotCaches() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "review-schedule-memory-invalidation")
+        defer { fixture.cleanup() }
+
+        let ctx = AXProjectContext(root: fixture.root)
+        let projectId = AXProjectRegistryStore.projectId(forRoot: fixture.root)
+        var config = AXProjectConfig.default(forProjectRoot: fixture.root)
+        config.progressHeartbeatSeconds = 600
+        config.reviewPulseSeconds = 900
+        config.brainstormReviewSeconds = 1800
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let recorder = RemoteSnapshotFetchKeyedRecorder()
+        HubIPCClient.installHubRouteDecisionOverrideForTesting {
+            HubRouteDecision(
+                mode: .auto,
+                hasRemoteProfile: true,
+                preferRemote: true,
+                allowFileFallback: true,
+                requiresRemote: false,
+                remoteUnavailableReasonCode: nil
+            )
+        }
+        HubIPCClient.installRemoteMemorySnapshotOverrideForTesting { mode, incomingProjectId, _, _ in
+            await recorder.increment("\(mode.rawValue)|\(incomingProjectId ?? "(none)")")
+            return HubRemoteMemorySnapshotResult(
+                ok: true,
+                source: "hub_memory_v1_grpc",
+                canonicalEntries: ["goal: keep escalation visible"],
+                workingEntries: ["mode=\(mode.rawValue)", "project=\(incomingProjectId ?? "(none)")"],
+                reasonCode: nil,
+                logLines: []
+            )
+        }
+        defer { HubIPCClient.resetMemoryContextResolutionOverrideForTesting() }
+
+        await HubIPCClient.refreshProjectRemoteMemorySnapshotCache(projectId: projectId)
+        await HubIPCClient.refreshSupervisorRemoteMemorySnapshotCache()
+
+        _ = try #require(
+            await HubIPCClient.requestMemoryContextDetailed(
+                useMode: .projectChat,
+                requesterRole: .chat,
+                projectId: projectId,
+                projectRoot: fixture.root.path,
+                displayName: "Project",
+                latestUser: "继续当前项目",
+                constitutionHint: "safe",
+                canonicalText: "canonical",
+                observationsText: "observations",
+                workingSetText: "working",
+                rawEvidenceText: "raw",
+                progressiveDisclosure: false,
+                budgets: nil,
+                timeoutSec: 0.1
+            ).response
+        )
+        let projectCached = await HubIPCClient.requestMemoryContextDetailed(
+            useMode: .projectChat,
+            requesterRole: .chat,
+            projectId: projectId,
+            projectRoot: fixture.root.path,
+            displayName: "Project",
+            latestUser: "继续当前项目",
+            constitutionHint: "safe",
+            canonicalText: "canonical",
+            observationsText: "observations",
+            workingSetText: "working",
+            rawEvidenceText: "raw",
+            progressiveDisclosure: false,
+            budgets: nil,
+            timeoutSec: 0.1
+        )
+        #expect(projectCached.cacheHit == true)
+
+        _ = try #require(
+            await HubIPCClient.requestMemoryContextDetailed(
+                useMode: .supervisorOrchestration,
+                requesterRole: .supervisor,
+                projectId: nil,
+                projectRoot: nil,
+                displayName: "Supervisor",
+                latestUser: "审查当前 heartbeat 风险",
+                reviewLevelHint: SupervisorReviewLevel.r2Strategic.rawValue,
+                constitutionHint: "safe",
+                portfolioBriefText: "portfolio",
+                focusedProjectAnchorPackText: "project: \(projectId)",
+                longtermOutlineText: "longterm",
+                deltaFeedText: "delta",
+                conflictSetText: "conflict",
+                contextRefsText: "refs",
+                evidencePackText: "evidence",
+                canonicalText: "canonical",
+                observationsText: "observations",
+                workingSetText: "working",
+                rawEvidenceText: "raw",
+                servingProfile: .m2PlanReview,
+                progressiveDisclosure: false,
+                budgets: nil,
+                timeoutSec: 0.1
+            ).response
+        )
+        let supervisorCached = await HubIPCClient.requestMemoryContextDetailed(
+            useMode: .supervisorOrchestration,
+            requesterRole: .supervisor,
+            projectId: nil,
+            projectRoot: nil,
+            displayName: "Supervisor",
+            latestUser: "审查当前 heartbeat 风险",
+            reviewLevelHint: SupervisorReviewLevel.r2Strategic.rawValue,
+            constitutionHint: "safe",
+            portfolioBriefText: "portfolio",
+            focusedProjectAnchorPackText: "project: \(projectId)",
+            longtermOutlineText: "longterm",
+            deltaFeedText: "delta",
+            conflictSetText: "conflict",
+            contextRefsText: "refs",
+            evidencePackText: "evidence",
+            canonicalText: "canonical",
+            observationsText: "observations",
+            workingSetText: "working",
+            rawEvidenceText: "raw",
+            servingProfile: .m2PlanReview,
+            progressiveDisclosure: false,
+            budgets: nil,
+            timeoutSec: 0.1
+        )
+        #expect(supervisorCached.cacheHit == true)
+
+        let assessment = HeartbeatAssessmentResult(
+            meaningfulProgressAtMs: nil,
+            qualitySnapshot: HeartbeatQualitySnapshot(
+                overallScore: 28,
+                overallBand: .weak,
+                freshnessScore: 30,
+                deltaSignificanceScore: 22,
+                evidenceStrengthScore: 25,
+                blockerClarityScore: 18,
+                nextActionSpecificityScore: 24,
+                executionVitalityScore: 20,
+                completionConfidenceScore: 16,
+                weakReasons: ["weak heartbeat should force a fresh governed reread"],
+                computedAtMs: 1_774_000_000_000
+            ),
+            openAnomalies: [
+                HeartbeatAnomalyNote(
+                    anomalyId: "hb-anomaly-\(projectId)",
+                    projectId: projectId,
+                    anomalyType: .weakDoneClaim,
+                    severity: .high,
+                    confidence: 0.92,
+                    reason: "done claim is weak and needs rescue review",
+                    evidenceRefs: ["heartbeat://\(projectId)/done"],
+                    detectedAtMs: 1_774_000_000_000,
+                    recommendedEscalation: .rescueReview
+                )
+            ],
+            heartbeatFingerprint: "hb-fingerprint-1",
+            repeatCount: 1,
+            projectPhase: .verify,
+            executionStatus: .blocked,
+            riskTier: .high
+        )
+
+        _ = try SupervisorReviewScheduleStore.touchHeartbeat(
+            for: ctx,
+            config: config,
+            assessment: assessment,
+            nowMs: 1_774_000_000_000
+        )
+        try await Task.sleep(for: .milliseconds(50))
+
+        let projectFresh = await HubIPCClient.requestMemoryContextDetailed(
+            useMode: .projectChat,
+            requesterRole: .chat,
+            projectId: projectId,
+            projectRoot: fixture.root.path,
+            displayName: "Project",
+            latestUser: "继续当前项目",
+            constitutionHint: "safe",
+            canonicalText: "canonical",
+            observationsText: "observations",
+            workingSetText: "working",
+            rawEvidenceText: "raw",
+            progressiveDisclosure: false,
+            budgets: nil,
+            timeoutSec: 0.1
+        )
+        let projectFreshResponse = try #require(projectFresh.response)
+        #expect(projectFresh.cacheHit == false)
+        #expect(
+            projectFreshResponse.remoteSnapshotInvalidationReason
+            == XTMemoryRemoteSnapshotInvalidationReason.heartbeatAnomalyEscalated.rawValue
+        )
+
+        let supervisorFresh = await HubIPCClient.requestMemoryContextDetailed(
+            useMode: .supervisorOrchestration,
+            requesterRole: .supervisor,
+            projectId: nil,
+            projectRoot: nil,
+            displayName: "Supervisor",
+            latestUser: "审查当前 heartbeat 风险",
+            reviewLevelHint: SupervisorReviewLevel.r2Strategic.rawValue,
+            constitutionHint: "safe",
+            portfolioBriefText: "portfolio",
+            focusedProjectAnchorPackText: "project: \(projectId)",
+            longtermOutlineText: "longterm",
+            deltaFeedText: "delta",
+            conflictSetText: "conflict",
+            contextRefsText: "refs",
+            evidencePackText: "evidence",
+            canonicalText: "canonical",
+            observationsText: "observations",
+            workingSetText: "working",
+            rawEvidenceText: "raw",
+            servingProfile: .m2PlanReview,
+            progressiveDisclosure: false,
+            budgets: nil,
+            timeoutSec: 0.1
+        )
+        let supervisorFreshResponse = try #require(supervisorFresh.response)
+        #expect(supervisorFresh.cacheHit == false)
+        #expect(
+            supervisorFreshResponse.remoteSnapshotInvalidationReason
+            == XTMemoryRemoteSnapshotInvalidationReason.heartbeatAnomalyEscalated.rawValue
+        )
+
+        #expect(await recorder.snapshot("\(XTMemoryUseMode.projectChat.rawValue)|\(projectId)") == 2)
+        #expect(
+            await recorder.snapshot("\(XTMemoryUseMode.supervisorOrchestration.rawValue)|(none)") == 2
+        )
+    }
+
     private static func resolutionResult(
         mode: XTMemoryUseMode,
         profile: XTMemoryServingProfile,
@@ -303,6 +1076,82 @@ struct HubIPCClientMemoryProgressiveDisclosureTests {
             denyCode: nil,
             downgradeCode: nil,
             reasonCode: nil
+        )
+    }
+
+    private static func preferredRemoteRouteDecision() -> HubRouteDecision {
+        HubRouteDecision(
+            mode: .auto,
+            hasRemoteProfile: true,
+            preferRemote: true,
+            allowFileFallback: true,
+            requiresRemote: false,
+            remoteUnavailableReasonCode: nil
+        )
+    }
+
+    private static func remoteSnapshotResult(
+        mode: XTMemoryUseMode,
+        projectId: String?
+    ) -> HubRemoteMemorySnapshotResult {
+        HubRemoteMemorySnapshotResult(
+            ok: true,
+            source: "hub_memory_v1_grpc",
+            canonicalEntries: ["goal: keep remote snapshot freshness aligned with grant truth"],
+            workingEntries: ["mode=\(mode.rawValue)", "project=\(projectId ?? "(none)")"],
+            reasonCode: nil,
+            logLines: []
+        )
+    }
+
+    private static func requestProjectMemory(
+        projectId: String
+    ) async -> HubIPCClient.MemoryContextResolutionResult {
+        await HubIPCClient.requestMemoryContextDetailed(
+            useMode: .projectChat,
+            requesterRole: .chat,
+            projectId: projectId,
+            projectRoot: "/tmp/\(projectId)",
+            displayName: projectId,
+            latestUser: "继续当前项目",
+            constitutionHint: "safe",
+            canonicalText: "canonical",
+            observationsText: "observations",
+            workingSetText: "working",
+            rawEvidenceText: "raw",
+            progressiveDisclosure: false,
+            budgets: nil,
+            timeoutSec: 0.1
+        )
+    }
+
+    private static func requestSupervisorMemory(
+        projectId: String
+    ) async -> HubIPCClient.MemoryContextResolutionResult {
+        await HubIPCClient.requestMemoryContextDetailed(
+            useMode: .supervisorOrchestration,
+            requesterRole: .supervisor,
+            projectId: nil,
+            projectRoot: nil,
+            displayName: "Supervisor",
+            latestUser: "审查当前授权状态",
+            reviewLevelHint: SupervisorReviewLevel.r2Strategic.rawValue,
+            constitutionHint: "safe",
+            portfolioBriefText: "portfolio",
+            focusedProjectAnchorPackText: "project: \(projectId)",
+            longtermOutlineText: "longterm",
+            deltaFeedText: "delta",
+            conflictSetText: "conflict",
+            contextRefsText: "refs",
+            evidencePackText: "evidence",
+            canonicalText: "canonical",
+            observationsText: "observations",
+            workingSetText: "working",
+            rawEvidenceText: "raw",
+            servingProfile: .m2PlanReview,
+            progressiveDisclosure: false,
+            budgets: nil,
+            timeoutSec: 0.1
         )
     }
 }

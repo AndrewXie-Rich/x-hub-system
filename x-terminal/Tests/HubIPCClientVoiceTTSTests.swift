@@ -274,7 +274,7 @@ struct HubIPCClientVoiceTTSTests {
         try FileManager.default.createDirectory(at: responsesDir, withIntermediateDirectories: true)
 
         let status = HubStatus(
-            pid: 42,
+            pid: nil,
             startedAt: Date().timeIntervalSince1970,
             updatedAt: Date().timeIntervalSince1970,
             ipcMode: "file",

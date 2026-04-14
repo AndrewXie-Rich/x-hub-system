@@ -1,4 +1,3 @@
-import AppKit
 import Foundation
 
 enum HubBridgeClient {
@@ -31,8 +30,6 @@ enum HubBridgeClient {
     }
 
     static func requestEnable(seconds: Int) -> BridgeStatus {
-        launchBridgeAppIfInstalled()
-
         let base = bridgeBaseDir()
         let settingsFile = base.appendingPathComponent("bridge_settings.json")
         let commandsDir = base.appendingPathComponent("bridge_commands", isDirectory: true)
@@ -130,19 +127,6 @@ enum HubBridgeClient {
         testingLock.lock()
         defer { testingLock.unlock() }
         return body()
-    }
-
-    private static func launchBridgeAppIfInstalled() {
-        let launch: () -> Void = {
-            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.rel.flowhub.bridge") {
-                NSWorkspace.shared.open(url)
-            }
-        }
-        if Thread.isMainThread {
-            launch()
-        } else {
-            DispatchQueue.main.async(execute: launch)
-        }
     }
 }
 

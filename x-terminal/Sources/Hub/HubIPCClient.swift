@@ -8,18 +8,50 @@ enum HubIPCClient {
     }
 
     private static let remoteMemorySnapshotCache = HubRemoteMemorySnapshotCache(ttlSeconds: 15.0)
-    private static let remoteRuntimeSurfaceOverrideCache = HubRemoteRuntimeSurfaceOverrideCache(ttlSeconds: 3.0)
+    private static let remoteRuntimeSurfaceOverrideCacheTTLSeconds: TimeInterval = 20.0
+    private static var remoteRuntimeSurfaceOverrideCache = HubRemoteRuntimeSurfaceOverrideCache(
+        ttlSeconds: remoteRuntimeSurfaceOverrideCacheTTLSeconds
+    )
     private static let testingOverrideLock = NSLock()
+    private static let runtimeSurfaceFetchLock = NSLock()
+    private static var inFlightRuntimeSurfaceOverrideFetches: [HubRemoteRuntimeSurfaceOverrideCache.Key: Task<RuntimeSurfaceOverridesSnapshot?, Never>] = [:]
+    private struct TestingOverrideScopeKey: Hashable {
+        let task: UnsafeCurrentTask
+    }
+    private static var agentImportStageOverrideForTesting: (@Sendable (AgentImportStageRequestPayload) async -> AgentImportStageResult)?
     private static var agentImportRecordOverrideForTesting: (@Sendable (AgentImportRecordLookupPayload) async -> AgentImportRecordResult)?
+    private static var skillPackageUploadOverrideForTesting: (@Sendable (SkillPackageUploadRequestPayload) async -> SkillPackageUploadResult)?
+    private static var agentImportPromoteOverrideForTesting: (@Sendable (AgentImportPromoteRequestPayload) async -> AgentImportPromoteResult)?
+    private static var skillPinOverrideForTesting: (@Sendable (SkillPinRequestPayload) async -> SkillPinResult)?
+    private static var resolvedSkillsOverrideForTesting: (@Sendable (String?) async -> ResolvedSkillsResult)?
+    private static var skillManifestOverrideForTesting: (@Sendable (String) async -> SkillManifestResult)?
     private static var secretUseOverrideForTesting: (@Sendable (SecretUseRequestPayload) async -> SecretUseResult)?
     private static var secretRedeemOverrideForTesting: (@Sendable (SecretRedeemRequestPayload) async -> SecretRedeemResult)?
+    private static var localTaskExecutionOverrideForTesting: (@Sendable (LocalTaskRequestPayload, Double) -> LocalTaskResult)?
     private static var routeDecisionOverrideForTesting: (@Sendable () async -> HubRouteDecision)?
+    private static var scopedRouteDecisionOverridesForTesting: [TestingOverrideScopeKey: (@Sendable () async -> HubRouteDecision)] = [:]
     private static var memoryContextResolutionOverrideForTesting: (@Sendable (XTMemoryRouteDecision, XTMemoryUseMode, Double) async -> MemoryContextResolutionResult)?
+    private static var scopedMemoryContextResolutionOverridesForTesting: [TestingOverrideScopeKey: (@Sendable (XTMemoryRouteDecision, XTMemoryUseMode, Double) async -> MemoryContextResolutionResult)] = [:]
     private static var memoryRetrievalOverrideForTesting: (@Sendable (MemoryRetrievalPayload, Double) async -> MemoryRetrievalResponsePayload?)?
+    private static var scopedMemoryRetrievalOverridesForTesting: [TestingOverrideScopeKey: (@Sendable (MemoryRetrievalPayload, Double) async -> MemoryRetrievalResponsePayload?)] = [:]
     private static var localMemoryRetrievalIPCOverrideForTesting: (@Sendable (MemoryRetrievalPayload, Double) async -> MemoryRetrievalResponsePayload?)?
-    private static var remoteMemoryRetrievalOverrideForTesting: (@Sendable (MemoryRetrievalPayload) async -> MemoryRetrievalResponsePayload?)?
+    private static var scopedLocalMemoryRetrievalIPCOverridesForTesting: [TestingOverrideScopeKey: (@Sendable (MemoryRetrievalPayload, Double) async -> MemoryRetrievalResponsePayload?)] = [:]
+    private static var remoteMemorySnapshotOverrideForTesting: (@Sendable (XTMemoryUseMode, String?, Bool, Double) async -> HubRemoteMemorySnapshotResult)?
+    private static var scopedRemoteMemorySnapshotOverridesForTesting: [TestingOverrideScopeKey: (@Sendable (XTMemoryUseMode, String?, Bool, Double) async -> HubRemoteMemorySnapshotResult)] = [:]
+    private static var voiceGrantChallengeOverrideForTesting: (@Sendable (VoiceGrantChallengeRequestPayload) async -> VoiceGrantChallengeResult)?
+    private static var scopedVoiceGrantChallengeOverridesForTesting: [TestingOverrideScopeKey: (@Sendable (VoiceGrantChallengeRequestPayload) async -> VoiceGrantChallengeResult)] = [:]
+    private static var voiceGrantVerificationOverrideForTesting: (@Sendable (VoiceGrantVerificationPayload) async -> VoiceGrantVerificationResult)?
+    private static var scopedVoiceGrantVerificationOverridesForTesting: [TestingOverrideScopeKey: (@Sendable (VoiceGrantVerificationPayload) async -> VoiceGrantVerificationResult)] = [:]
+    private static var remoteMemoryRetrievalOverrideForTesting: (@Sendable (MemoryRetrievalPayload, Double) async -> MemoryRetrievalResponsePayload?)?
+    private static var scopedRemoteMemoryRetrievalOverridesForTesting: [TestingOverrideScopeKey: (@Sendable (MemoryRetrievalPayload, Double) async -> MemoryRetrievalResponsePayload?)] = [:]
+    private static var remoteRuntimeSurfaceOverridesOverrideForTesting: (@Sendable (String?, Int, Double) async -> HubRemoteRuntimeSurfaceOverridesResult)?
+    private static var scopedRemoteRuntimeSurfaceOverridesForTesting: [TestingOverrideScopeKey: (@Sendable (String?, Int, Double) async -> HubRemoteRuntimeSurfaceOverridesResult)] = [:]
     private static var supervisorRemoteContinuityOverrideForTesting: (@Sendable (Bool) async -> SupervisorRemoteContinuityResult)?
+    private static var scopedSupervisorRemoteContinuityOverridesForTesting: [TestingOverrideScopeKey: (@Sendable (Bool) async -> SupervisorRemoteContinuityResult)] = [:]
     private static var supervisorConversationAppendOverrideForTesting: (@Sendable (HubRemoteSupervisorConversationPayload) async -> Bool)?
+    private static var scopedSupervisorConversationAppendOverridesForTesting: [TestingOverrideScopeKey: (@Sendable (HubRemoteSupervisorConversationPayload) async -> Bool)] = [:]
+    private static var supervisorRouteDecisionOverrideForTesting: (@Sendable (SupervisorRouteDecisionRequestPayload) async -> SupervisorRouteDecisionResult)?
+    private static var scopedSupervisorRouteDecisionOverridesForTesting: [TestingOverrideScopeKey: (@Sendable (SupervisorRouteDecisionRequestPayload) async -> SupervisorRouteDecisionResult)] = [:]
     private static var eventWriteOverrideForTesting: (@Sendable (Data, URL, URL) throws -> Void)?
     private static let voiceTTSReadinessCacheLock = NSLock()
     private static let voiceTTSReadinessCacheTTL: TimeInterval = 1.0
@@ -31,6 +63,54 @@ enum HubIPCClient {
         testingOverrideLock.lock()
         defer { testingOverrideLock.unlock() }
         return body()
+    }
+
+    private static func currentTestingOverrideScopeKey() -> TestingOverrideScopeKey? {
+        var scopeKey: TestingOverrideScopeKey?
+        withUnsafeCurrentTask { task in
+            if let task {
+                scopeKey = TestingOverrideScopeKey(task: task)
+            }
+        }
+        return scopeKey
+    }
+
+    private static func testingOverride<T>(
+        fallback: T?,
+        scoped: [TestingOverrideScopeKey: T]
+    ) -> T? {
+        if let scopeKey = currentTestingOverrideScopeKey(),
+           let override = scoped[scopeKey] {
+            return override
+        }
+        return fallback
+    }
+
+    private static func setTestingOverride<T>(
+        _ override: T?,
+        fallback: inout T?,
+        scoped: inout [TestingOverrideScopeKey: T]
+    ) {
+        if let scopeKey = currentTestingOverrideScopeKey() {
+            if let override {
+                scoped[scopeKey] = override
+            } else {
+                scoped.removeValue(forKey: scopeKey)
+            }
+            return
+        }
+        fallback = override
+    }
+
+    private static func resetTestingOverride<T>(
+        fallback: inout T?,
+        scoped: inout [TestingOverrideScopeKey: T]
+    ) {
+        if let scopeKey = currentTestingOverrideScopeKey() {
+            scoped.removeValue(forKey: scopeKey)
+            return
+        }
+        fallback = nil
     }
 
     private struct CachedVoiceTTSReadiness {
@@ -71,6 +151,12 @@ enum HubIPCClient {
         var workingEntries: [String]
         var cacheHit: Bool
         var reasonCode: String?
+        var remoteSnapshotCacheScope: String? = nil
+        var remoteSnapshotCachedAtMs: Int64? = nil
+        var remoteSnapshotAgeMs: Int? = nil
+        var remoteSnapshotTTLRemainingMs: Int? = nil
+        var remoteSnapshotCachePosture: String? = nil
+        var remoteSnapshotInvalidationReason: String? = nil
     }
 
     struct AgentImportStageResult: Codable, Equatable, Sendable {
@@ -107,6 +193,15 @@ enum HubIPCClient {
             case recordPath = "record_path"
             case reasonCode = "reason_code"
         }
+    }
+
+    struct AgentImportStageRequestPayload: Equatable, Sendable {
+        var importManifestJSON: String
+        var findingsJSON: String?
+        var scanInputJSON: String?
+        var requestedBy: String?
+        var note: String?
+        var requestId: String?
     }
 
     struct AgentImportRecordLookupPayload: Equatable, Sendable {
@@ -164,6 +259,13 @@ enum HubIPCClient {
         }
     }
 
+    struct SkillPackageUploadRequestPayload: Equatable, Sendable {
+        var packageFileURL: URL
+        var manifestJSON: String
+        var sourceId: String
+        var requestId: String?
+    }
+
     struct AgentImportPromoteResult: Codable, Equatable, Sendable {
         var ok: Bool
         var source: String
@@ -190,6 +292,13 @@ enum HubIPCClient {
             case recordPath = "record_path"
             case reasonCode = "reason_code"
         }
+    }
+
+    struct AgentImportPromoteRequestPayload: Equatable, Sendable {
+        var stagingId: String
+        var packageSHA256: String
+        var note: String?
+        var requestId: String?
     }
 
     struct SkillCatalogEntry: Codable, Equatable, Sendable, Identifiable {
@@ -352,6 +461,15 @@ enum HubIPCClient {
         }
     }
 
+    struct SkillPinRequestPayload: Equatable, Sendable {
+        var scope: String
+        var skillId: String
+        var packageSHA256: String
+        var projectId: String?
+        var note: String?
+        var requestId: String?
+    }
+
     struct SkillPinResult: Codable, Equatable, Sendable {
         var ok: Bool
         var source: String
@@ -395,6 +513,22 @@ enum HubIPCClient {
             case ok
             case source
             case skills
+            case reasonCode = "reason_code"
+        }
+    }
+
+    struct SkillManifestResult: Codable, Equatable, Sendable {
+        var ok: Bool
+        var source: String
+        var packageSHA256: String
+        var manifestJSON: String
+        var reasonCode: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case packageSHA256 = "package_sha256"
+            case manifestJSON = "manifest_json"
             case reasonCode = "reason_code"
         }
     }
@@ -1234,6 +1368,12 @@ enum HubIPCClient {
         var fulltextNotLoaded: Bool?
         var freshness: String?
         var cacheHit: Bool?
+        var remoteSnapshotCacheScope: String?
+        var remoteSnapshotCachedAtMs: Int64?
+        var remoteSnapshotAgeMs: Int?
+        var remoteSnapshotTTLRemainingMs: Int?
+        var remoteSnapshotCachePosture: String?
+        var remoteSnapshotInvalidationReason: String?
         var denyCode: String?
         var downgradeCode: String?
         var budgetTotalTokens: Int
@@ -1256,6 +1396,12 @@ enum HubIPCClient {
             fulltextNotLoaded: Bool? = nil,
             freshness: String? = nil,
             cacheHit: Bool? = nil,
+            remoteSnapshotCacheScope: String? = nil,
+            remoteSnapshotCachedAtMs: Int64? = nil,
+            remoteSnapshotAgeMs: Int? = nil,
+            remoteSnapshotTTLRemainingMs: Int? = nil,
+            remoteSnapshotCachePosture: String? = nil,
+            remoteSnapshotInvalidationReason: String? = nil,
             denyCode: String? = nil,
             downgradeCode: String? = nil,
             budgetTotalTokens: Int,
@@ -1277,6 +1423,12 @@ enum HubIPCClient {
             self.fulltextNotLoaded = fulltextNotLoaded
             self.freshness = freshness
             self.cacheHit = cacheHit
+            self.remoteSnapshotCacheScope = remoteSnapshotCacheScope
+            self.remoteSnapshotCachedAtMs = remoteSnapshotCachedAtMs
+            self.remoteSnapshotAgeMs = remoteSnapshotAgeMs
+            self.remoteSnapshotTTLRemainingMs = remoteSnapshotTTLRemainingMs
+            self.remoteSnapshotCachePosture = remoteSnapshotCachePosture
+            self.remoteSnapshotInvalidationReason = remoteSnapshotInvalidationReason
             self.denyCode = denyCode
             self.downgradeCode = downgradeCode
             self.budgetTotalTokens = budgetTotalTokens
@@ -1300,6 +1452,12 @@ enum HubIPCClient {
             case fulltextNotLoaded = "fulltext_not_loaded"
             case freshness
             case cacheHit = "cache_hit"
+            case remoteSnapshotCacheScope = "remote_snapshot_cache_scope"
+            case remoteSnapshotCachedAtMs = "remote_snapshot_cached_at_ms"
+            case remoteSnapshotAgeMs = "remote_snapshot_age_ms"
+            case remoteSnapshotTTLRemainingMs = "remote_snapshot_ttl_remaining_ms"
+            case remoteSnapshotCachePosture = "remote_snapshot_cache_posture"
+            case remoteSnapshotInvalidationReason = "remote_snapshot_invalidation_reason"
             case denyCode = "deny_code"
             case downgradeCode = "downgrade_code"
             case budgetTotalTokens = "budget_total_tokens"
@@ -1393,6 +1551,12 @@ enum HubIPCClient {
         var attemptedProfiles: [String]
         var freshness: String
         var cacheHit: Bool
+        var remoteSnapshotCacheScope: String? = nil
+        var remoteSnapshotCachedAtMs: Int64? = nil
+        var remoteSnapshotAgeMs: Int? = nil
+        var remoteSnapshotTTLRemainingMs: Int? = nil
+        var remoteSnapshotCachePosture: String? = nil
+        var remoteSnapshotInvalidationReason: String? = nil
         var denyCode: String?
         var downgradeCode: String?
         var reasonCode: String?
@@ -1726,6 +1890,124 @@ enum HubIPCClient {
             case id
             case error
             case voiceTTS = "voice_tts"
+        }
+    }
+
+    struct LocalTaskRequestPayload: Codable, Equatable, Sendable {
+        var schemaVersion: String
+        var taskKind: String
+        var modelId: String
+        var deviceId: String?
+        var timeoutSec: Double?
+        var parameters: [String: JSONValue]
+
+        init(
+            schemaVersion: String = "xhub.local_task_ipc.v1",
+            taskKind: String,
+            modelId: String,
+            deviceId: String? = nil,
+            timeoutSec: Double? = nil,
+            parameters: [String: JSONValue] = [:]
+        ) {
+            self.schemaVersion = schemaVersion
+            self.taskKind = taskKind
+            self.modelId = modelId
+            self.deviceId = deviceId
+            self.timeoutSec = timeoutSec
+            self.parameters = parameters
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version"
+            case taskKind = "task_kind"
+            case modelId = "model_id"
+            case deviceId = "device_id"
+            case timeoutSec = "timeout_sec"
+            case parameters
+        }
+    }
+
+    struct LocalTaskIPCRequest: Codable {
+        var type: String
+        var reqId: String
+        var localTask: LocalTaskRequestPayload
+
+        enum CodingKeys: String, CodingKey {
+            case type
+            case reqId = "req_id"
+            case localTask = "local_task"
+        }
+    }
+
+    struct LocalTaskResult: Codable, Equatable, Sendable {
+        var ok: Bool
+        var source: String
+        var runtimeSource: String?
+        var provider: String?
+        var modelId: String?
+        var taskKind: String?
+        var reasonCode: String?
+        var runtimeReasonCode: String?
+        var error: String?
+        var detail: String?
+        var payload: [String: JSONValue]
+
+        init(
+            ok: Bool,
+            source: String,
+            runtimeSource: String? = nil,
+            provider: String? = nil,
+            modelId: String? = nil,
+            taskKind: String? = nil,
+            reasonCode: String? = nil,
+            runtimeReasonCode: String? = nil,
+            error: String? = nil,
+            detail: String? = nil,
+            payload: [String: JSONValue] = [:]
+        ) {
+            self.ok = ok
+            self.source = source
+            self.runtimeSource = runtimeSource
+            self.provider = provider
+            self.modelId = modelId
+            self.taskKind = taskKind
+            self.reasonCode = reasonCode
+            self.runtimeReasonCode = runtimeReasonCode
+            self.error = error
+            self.detail = detail
+            self.payload = payload
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case runtimeSource = "runtime_source"
+            case provider
+            case modelId = "model_id"
+            case taskKind = "task_kind"
+            case reasonCode = "reason_code"
+            case runtimeReasonCode = "runtime_reason_code"
+            case error
+            case detail
+            case payload
+        }
+    }
+
+    struct LocalTaskIPCResponse: Codable {
+        var type: String
+        var reqId: String?
+        var ok: Bool
+        var id: String?
+        var error: String?
+        var localTask: LocalTaskResult?
+
+        enum CodingKeys: String, CodingKey {
+            case type
+            case reqId = "req_id"
+            case ok
+            case id
+            case error
+            case localTask = "local_task"
         }
     }
 
@@ -2080,6 +2362,93 @@ enum HubIPCClient {
         var reasonCode: String?
     }
 
+    struct SupervisorRouteDecisionRequestPayload: Codable, Equatable {
+        var requestId: String
+        var projectId: String
+        var runId: String?
+        var missionId: String?
+        var surfaceType: String
+        var trustLevel: String
+        var normalizedIntentType: String
+        var preferredDeviceId: String?
+        var requireXT: Bool
+        var requireRunner: Bool
+        var actorRef: String?
+        var conversationId: String?
+        var threadKey: String?
+
+        enum CodingKeys: String, CodingKey {
+            case requestId = "request_id"
+            case projectId = "project_id"
+            case runId = "run_id"
+            case missionId = "mission_id"
+            case surfaceType = "surface_type"
+            case trustLevel = "trust_level"
+            case normalizedIntentType = "normalized_intent_type"
+            case preferredDeviceId = "preferred_device_id"
+            case requireXT = "require_xt"
+            case requireRunner = "require_runner"
+            case actorRef = "actor_ref"
+            case conversationId = "conversation_id"
+            case threadKey = "thread_key"
+        }
+    }
+
+    struct SupervisorRouteGovernanceComponentSnapshot: Codable, Equatable {
+        var key: AXProjectGovernanceRuntimeReadinessComponentKey
+        var state: AXProjectGovernanceRuntimeReadinessComponentState
+        var denyCode: String
+        var summaryLine: String
+        var missingReasonCodes: [String]
+    }
+
+    struct SupervisorRouteGovernanceRuntimeReadinessSnapshot: Codable, Equatable {
+        var schemaVersion: String
+        var source: String
+        var governanceSurface: String
+        var context: String
+        var configured: Bool
+        var state: AXProjectGovernanceRuntimeReadinessState
+        var runtimeReady: Bool
+        var projectId: String
+        var blockers: [String]
+        var blockedComponentKeys: [AXProjectGovernanceRuntimeReadinessComponentKey]
+        var missingReasonCodes: [String]
+        var summaryLine: String
+        var missingSummaryLine: String
+        var components: [SupervisorRouteGovernanceComponentSnapshot]
+    }
+
+    struct SupervisorRouteDecisionSnapshot: Codable, Equatable {
+        var schemaVersion: String
+        var routeId: String
+        var requestId: String
+        var projectId: String
+        var runId: String
+        var missionId: String
+        var decision: String
+        var riskTier: String
+        var preferredDeviceId: String
+        var resolvedDeviceId: String
+        var runnerId: String
+        var xtOnline: Bool
+        var runnerRequired: Bool
+        var sameProjectScope: Bool
+        var requiresGrant: Bool
+        var grantScope: String
+        var denyCode: String
+        var updatedAtMs: Double
+        var auditRef: String
+    }
+
+    struct SupervisorRouteDecisionResult: Codable, Equatable {
+        var ok: Bool
+        var source: String
+        var route: SupervisorRouteDecisionSnapshot?
+        var governanceRuntimeReadiness: SupervisorRouteGovernanceRuntimeReadinessSnapshot?
+        var reasonCode: String?
+    }
+
     struct OperatorChannelXTCommandItem: Codable, Equatable, Identifiable {
         var commandId: String
         var requestId: String
@@ -2412,7 +2781,7 @@ enum HubIPCClient {
             return await override()
         }
         let mode = HubAIClient.transportMode()
-        let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
+        let hasRemote = HubPairingCoordinator.hasHubEnvFast(stateDir: nil)
         return HubRouteStateMachine.resolve(mode: mode, hasRemoteProfile: hasRemote)
     }
 
@@ -2559,6 +2928,23 @@ enum HubIPCClient {
         return requestVoiceTTSSynthesisViaLocalIPC(payload, timeoutSec: timeoutSec)
     }
 
+    static func executeLocalTaskViaLocalHub(
+        taskKind: String,
+        modelID: String,
+        parameters: [String: JSONValue],
+        deviceID: String? = nil,
+        timeoutSec: Double = 5.0
+    ) -> LocalTaskResult {
+        let payload = LocalTaskRequestPayload(
+            taskKind: taskKind,
+            modelId: modelID,
+            deviceId: normalized(deviceID),
+            timeoutSec: timeoutSec,
+            parameters: parameters
+        )
+        return requestLocalTaskExecutionViaLocalIPC(payload, timeoutSec: timeoutSec)
+    }
+
     static func fetchVoiceWakeProfile(
         desiredWakeMode: VoiceWakeMode
     ) async -> VoiceWakeProfileSyncResult {
@@ -2682,7 +3068,10 @@ enum HubIPCClient {
             payload: payload
         )
         if remote.ok {
-            await remoteMemorySnapshotCache.invalidate(projectId: projectId)
+            await invalidateProjectRemoteMemorySnapshotCache(
+                projectId: projectId,
+                reason: .newTurnAppend
+            )
         }
         return remote.ok
     }
@@ -2732,13 +3121,14 @@ enum HubIPCClient {
             payload: payload
         )
         if remote.ok {
-            await invalidateSupervisorMemoryCache()
+            await invalidateSupervisorMemoryCache(reason: .newTurnAppend)
         }
         return remote.ok
     }
 
     static func requestSupervisorRemoteContinuity(
-        bypassCache: Bool = false
+        bypassCache: Bool = false,
+        timeoutSec: Double = 0.9
     ) async -> SupervisorRemoteContinuityResult {
         if let override = supervisorRemoteContinuityOverride() {
             return await override(bypassCache)
@@ -2758,14 +3148,21 @@ enum HubIPCClient {
         let remote = await fetchRemoteMemorySnapshot(
             mode: .supervisorOrchestration,
             projectId: nil,
-            bypassCache: bypassCache
+            bypassCache: bypassCache,
+            timeoutSec: timeoutSec
         )
         return SupervisorRemoteContinuityResult(
             ok: remote.snapshot.ok,
             source: remote.snapshot.ok ? "hub_thread" : remote.snapshot.source,
             workingEntries: remote.snapshot.ok ? remote.snapshot.workingEntries : [],
             cacheHit: remote.cacheHit,
-            reasonCode: remote.snapshot.reasonCode
+            reasonCode: remote.snapshot.reasonCode,
+            remoteSnapshotCacheScope: remote.cacheMetadata?.scope,
+            remoteSnapshotCachedAtMs: remote.cacheMetadata?.storedAtMs,
+            remoteSnapshotAgeMs: remote.cacheMetadata?.ageMs,
+            remoteSnapshotTTLRemainingMs: remote.cacheMetadata?.ttlRemainingMs,
+            remoteSnapshotCachePosture: remote.cacheMetadata?.cachePosture.rawValue,
+            remoteSnapshotInvalidationReason: remote.cacheMetadata?.invalidationReason?.rawValue
         )
     }
 
@@ -2832,7 +3229,10 @@ enum HubIPCClient {
             )
             if result.ok {
                 Task {
-                    await remoteMemorySnapshotCache.invalidate(projectId: payload.projectId)
+                    await invalidateProjectRemoteMemorySnapshotCache(
+                        projectId: payload.projectId,
+                        reason: .projectCanonicalSave
+                    )
                 }
             }
         }
@@ -2871,7 +3271,10 @@ enum HubIPCClient {
                     result: finalResult
                 )
                 if finalResult.ok {
-                    await remoteMemorySnapshotCache.invalidate(projectId: payload.projectId)
+                    await invalidateProjectRemoteMemorySnapshotCache(
+                        projectId: payload.projectId,
+                        reason: .projectCanonicalSave
+                    )
                 }
             }
         case .auto:
@@ -2891,7 +3294,10 @@ enum HubIPCClient {
                     result: finalResult
                 )
                 if finalResult.ok {
-                    await remoteMemorySnapshotCache.invalidate(projectId: payload.projectId)
+                    await invalidateProjectRemoteMemorySnapshotCache(
+                        projectId: payload.projectId,
+                        reason: .projectCanonicalSave
+                    )
                 }
             }
         case .fileIPC:
@@ -2903,7 +3309,10 @@ enum HubIPCClient {
             )
             if localResult.ok {
                 Task {
-                    await remoteMemorySnapshotCache.invalidate(projectId: payload.projectId)
+                    await invalidateProjectRemoteMemorySnapshotCache(
+                        projectId: payload.projectId,
+                        reason: .projectCanonicalSave
+                    )
                 }
             }
         }
@@ -2942,7 +3351,10 @@ enum HubIPCClient {
                     result: finalResult
                 )
                 if finalResult.ok {
-                    await remoteMemorySnapshotCache.invalidate(projectId: payload.projectId)
+                    await invalidateProjectRemoteMemorySnapshotCache(
+                        projectId: payload.projectId,
+                        reason: .projectCanonicalSave
+                    )
                 }
             }
         case .auto:
@@ -2962,7 +3374,10 @@ enum HubIPCClient {
                     result: finalResult
                 )
                 if finalResult.ok {
-                    await remoteMemorySnapshotCache.invalidate(projectId: payload.projectId)
+                    await invalidateProjectRemoteMemorySnapshotCache(
+                        projectId: payload.projectId,
+                        reason: .projectCanonicalSave
+                    )
                 }
             }
         case .fileIPC:
@@ -2974,7 +3389,90 @@ enum HubIPCClient {
             )
             if localResult.ok {
                 Task {
-                    await remoteMemorySnapshotCache.invalidate(projectId: payload.projectId)
+                    await invalidateProjectRemoteMemorySnapshotCache(
+                        projectId: payload.projectId,
+                        reason: .projectCanonicalSave
+                    )
+                }
+            }
+        }
+    }
+
+    static func syncSupervisorProjectHeartbeat(_ record: SupervisorProjectHeartbeatCanonicalRecord) {
+        let payload = ProjectCanonicalMemoryPayload(
+            projectId: record.projectId,
+            projectRoot: nil,
+            displayName: record.projectName,
+            updatedAt: Double(record.updatedAtMs) / 1000.0,
+            items: SupervisorProjectHeartbeatCanonicalSync.items(record: record).map { item in
+                ProjectCanonicalMemoryItemPayload(key: item.key, value: item.value)
+            }
+        )
+        guard !payload.projectId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard !payload.items.isEmpty else { return }
+
+        let localResult = writeProjectCanonicalMemoryViaLocalIPC(payload)
+        let mode = HubAIClient.transportMode()
+        switch mode {
+        case .grpc:
+            Task {
+                let remoteResult = await syncProjectCanonicalMemoryViaPreferredRoute(
+                    payload: payload,
+                    allowFileFallback: false
+                )
+                let finalResult = mergedCanonicalMemorySyncResult(
+                    primary: remoteResult,
+                    secondary: localResult
+                )
+                recordCanonicalMemorySyncStatus(
+                    scopeKind: "project",
+                    scopeId: payload.projectId,
+                    displayName: payload.displayName,
+                    result: finalResult
+                )
+                if finalResult.ok {
+                    await invalidateProjectRemoteMemorySnapshotCache(
+                        projectId: payload.projectId,
+                        reason: .projectCanonicalSave
+                    )
+                }
+            }
+        case .auto:
+            Task {
+                let remoteResult = await syncProjectCanonicalMemoryViaPreferredRoute(
+                    payload: payload,
+                    allowFileFallback: false
+                )
+                let finalResult = mergedCanonicalMemorySyncResult(
+                    primary: remoteResult,
+                    secondary: localResult
+                )
+                recordCanonicalMemorySyncStatus(
+                    scopeKind: "project",
+                    scopeId: payload.projectId,
+                    displayName: payload.displayName,
+                    result: finalResult
+                )
+                if finalResult.ok {
+                    await invalidateProjectRemoteMemorySnapshotCache(
+                        projectId: payload.projectId,
+                        reason: .projectCanonicalSave
+                    )
+                }
+            }
+        case .fileIPC:
+            recordCanonicalMemorySyncStatus(
+                scopeKind: "project",
+                scopeId: payload.projectId,
+                displayName: payload.displayName,
+                result: localResult
+            )
+            if localResult.ok {
+                Task {
+                    await invalidateProjectRemoteMemorySnapshotCache(
+                        projectId: payload.projectId,
+                        reason: .projectCanonicalSave
+                    )
                 }
             }
         }
@@ -3021,7 +3519,7 @@ enum HubIPCClient {
                     result: finalResult
                 )
                 if finalResult.ok {
-                    await invalidateSupervisorMemoryCache()
+                    await invalidateSupervisorMemoryCache(reason: .reviewGuidanceCarryForwardChanged)
                 }
             }
         case .auto:
@@ -3041,7 +3539,7 @@ enum HubIPCClient {
                     result: finalResult
                 )
                 if finalResult.ok {
-                    await invalidateSupervisorMemoryCache()
+                    await invalidateSupervisorMemoryCache(reason: .reviewGuidanceCarryForwardChanged)
                 }
             }
         case .fileIPC:
@@ -3053,7 +3551,7 @@ enum HubIPCClient {
             )
             if localResult.ok {
                 Task {
-                    await invalidateSupervisorMemoryCache()
+                    await invalidateSupervisorMemoryCache(reason: .reviewGuidanceCarryForwardChanged)
                 }
             }
         }
@@ -3091,6 +3589,7 @@ enum HubIPCClient {
                     let bridgeAfterGrant = await waitForBridgeEnabled(timeoutSec: 4.2)
                     if bridgeAfterGrant.enabled {
                         let remaining = Int(max(0, bridgeAfterGrant.enabledUntil - Date().timeIntervalSince1970))
+                        await noteRemoteMemoryGrantStateChanged(projectId: projectId)
                         return NetworkAccessResult(
                             state: .autoApproved,
                             source: "grpc",
@@ -3099,6 +3598,7 @@ enum HubIPCClient {
                             grantRequestId: grantId
                         )
                     }
+                    await noteRemoteMemoryGrantStateChanged(projectId: projectId)
                     return NetworkAccessResult(
                         state: .autoApproved,
                         source: "grpc",
@@ -3108,6 +3608,7 @@ enum HubIPCClient {
                     )
 
                 case .queued:
+                    await noteRemoteMemoryGrantStateChanged(projectId: projectId)
                     return NetworkAccessResult(
                         state: .queued,
                         source: "grpc",
@@ -3117,6 +3618,7 @@ enum HubIPCClient {
                     )
 
                 case .denied:
+                    await noteRemoteMemoryGrantStateChanged(projectId: projectId)
                     return NetworkAccessResult(
                         state: .denied,
                         source: "grpc",
@@ -3210,6 +3712,7 @@ enum HubIPCClient {
                 let bridgeAfterGrant = await waitForBridgeEnabled(timeoutSec: 4.2)
                 if bridgeAfterGrant.enabled {
                     let remaining = Int(max(0, bridgeAfterGrant.enabledUntil - Date().timeIntervalSince1970))
+                    await noteRemoteMemoryGrantStateChanged(projectId: projectId)
                     return NetworkAccessResult(
                         state: .autoApproved,
                         source: dispatch.source,
@@ -3218,6 +3721,7 @@ enum HubIPCClient {
                         grantRequestId: grantId
                     )
                 }
+                await noteRemoteMemoryGrantStateChanged(projectId: projectId)
                 return NetworkAccessResult(
                     state: .autoApproved,
                     source: dispatch.source,
@@ -3228,6 +3732,7 @@ enum HubIPCClient {
             }
 
             if reasonCode == "denied" || reasonCode == "forbidden" {
+                await noteRemoteMemoryGrantStateChanged(projectId: projectId)
                 return NetworkAccessResult(
                     state: .denied,
                     source: dispatch.source,
@@ -3237,6 +3742,7 @@ enum HubIPCClient {
                 )
             }
 
+            await noteRemoteMemoryGrantStateChanged(projectId: projectId)
             return NetworkAccessResult(
                 state: .queued,
                 source: dispatch.source,
@@ -3250,6 +3756,7 @@ enum HubIPCClient {
             let bridgeAfterFileRequest = HubBridgeClient.status()
             if bridgeAfterFileRequest.enabled {
                 let remaining = Int(max(0, bridgeAfterFileRequest.enabledUntil - Date().timeIntervalSince1970))
+                await noteRemoteMemoryGrantStateChanged(projectId: projectId)
                 return NetworkAccessResult(
                     state: .enabled,
                     source: "bridge",
@@ -3260,6 +3767,7 @@ enum HubIPCClient {
             }
         }
 
+        await noteRemoteMemoryGrantStateChanged(projectId: projectId)
         return NetworkAccessResult(
             state: .queued,
             source: dispatch.source,
@@ -3392,7 +3900,10 @@ enum HubIPCClient {
                 )
             )
             if remote.ok {
-                await remoteMemorySnapshotCache.invalidate(projectId: payload.projectId)
+                await invalidateProjectRemoteMemorySnapshotCache(
+                    projectId: payload.projectId,
+                    reason: .projectCanonicalSave
+                )
                 return CanonicalMemorySyncDispatchResult(
                     ok: true,
                     source: normalized(remote.source) ?? "grpc",
@@ -3429,7 +3940,10 @@ enum HubIPCClient {
 
         let localResult = writeProjectCanonicalMemoryViaLocalIPC(payload)
         if localResult.ok {
-            await remoteMemorySnapshotCache.invalidate(projectId: payload.projectId)
+            await invalidateProjectRemoteMemorySnapshotCache(
+                        projectId: payload.projectId,
+                        reason: .projectCanonicalSave
+                    )
         }
         return localResult
     }
@@ -3551,7 +4065,7 @@ enum HubIPCClient {
                 )
             )
             if remote.ok {
-                await invalidateSupervisorMemoryCache()
+                await invalidateSupervisorMemoryCache(reason: .reviewGuidanceCarryForwardChanged)
                 return CanonicalMemorySyncDispatchResult(
                     ok: true,
                     source: normalized(remote.source) ?? "grpc",
@@ -3588,7 +4102,7 @@ enum HubIPCClient {
 
         let localResult = writeDeviceCanonicalMemoryViaLocalIPC(payload)
         if localResult.ok {
-            await invalidateSupervisorMemoryCache()
+            await invalidateSupervisorMemoryCache(reason: .reviewGuidanceCarryForwardChanged)
         }
         return localResult
     }
@@ -3685,13 +4199,74 @@ enum HubIPCClient {
         }
     }
 
-    private static func invalidateSupervisorMemoryCache() async {
+    static func invalidateProjectRemoteMemorySnapshotCache(
+        projectId: String?,
+        reason: XTMemoryRemoteSnapshotInvalidationReason
+    ) async {
+        await remoteMemorySnapshotCache.invalidate(projectId: projectId, reason: reason)
+    }
+
+    static func invalidateSupervisorRemoteMemorySnapshotCache(
+        reason: XTMemoryRemoteSnapshotInvalidationReason
+    ) async {
         await remoteMemorySnapshotCache.invalidate(
             key: HubRemoteMemorySnapshotCache.Key(
                 mode: XTMemoryUseMode.supervisorOrchestration.rawValue,
                 projectId: nil
-            )
+            ),
+            reason: reason
         )
+    }
+
+    private static func invalidateSupervisorMemoryCache(
+        reason: XTMemoryRemoteSnapshotInvalidationReason
+    ) async {
+        await invalidateSupervisorRemoteMemorySnapshotCache(reason: reason)
+    }
+
+    static func noteRemoteMemoryGrantStateChanged(
+        projectId: String?
+    ) async {
+        await noteSupervisorRemoteMemoryGrantStateChanged()
+        await noteProjectRemoteMemoryGrantStateChanged(projectId: projectId)
+    }
+
+    static func refreshProjectRemoteMemorySnapshotCache(projectId: String?) async {
+        await invalidateProjectRemoteMemorySnapshotCache(projectId: projectId, reason: .manualRefresh)
+    }
+
+    static func refreshSupervisorRemoteMemorySnapshotCache() async {
+        await invalidateSupervisorRemoteMemorySnapshotCache(reason: .manualRefresh)
+    }
+
+    static func noteProjectRemoteMemoryGrantStateChanged(projectId: String?) async {
+        await invalidateProjectRemoteMemorySnapshotCache(projectId: projectId, reason: .grantStateChanged)
+    }
+
+    static func noteProjectRemoteMemoryRouteOrModelPreferenceChanged(projectId: String?) async {
+        await invalidateProjectRemoteMemorySnapshotCache(
+            projectId: projectId,
+            reason: .routeOrModelPreferenceChanged
+        )
+    }
+
+    static func noteProjectRemoteMemoryHeartbeatAnomalyEscalated(projectId: String?) async {
+        await invalidateProjectRemoteMemorySnapshotCache(
+            projectId: projectId,
+            reason: .heartbeatAnomalyEscalated
+        )
+    }
+
+    static func noteSupervisorRemoteMemoryGrantStateChanged() async {
+        await invalidateSupervisorRemoteMemorySnapshotCache(reason: .grantStateChanged)
+    }
+
+    static func noteSupervisorRemoteMemoryRouteOrModelPreferenceChanged() async {
+        await invalidateSupervisorRemoteMemorySnapshotCache(reason: .routeOrModelPreferenceChanged)
+    }
+
+    static func noteSupervisorRemoteMemoryHeartbeatAnomalyEscalated() async {
+        await invalidateSupervisorRemoteMemorySnapshotCache(reason: .heartbeatAnomalyEscalated)
     }
 
     static func defaultSupervisorCanonicalID() -> String {
@@ -4099,7 +4674,8 @@ enum HubIPCClient {
             let remote = await fetchRemoteMemorySnapshot(
                 mode: useMode,
                 projectId: payload.projectId,
-                bypassCache: route.bypassRemoteCache
+                bypassCache: route.bypassRemoteCache,
+                timeoutSec: timeoutSec
             )
             if remote.snapshot.ok {
                 var response = buildMemoryContextFromRemoteSnapshot(snapshot: remote.snapshot, payload: payload)
@@ -4118,6 +4694,12 @@ enum HubIPCClient {
                 response.text = ensureMemoryLongtermDisclosureText(response.text, disclosure: disclosure)
                 response.freshness = remote.cacheHit ? "ttl_cache" : "fresh_remote"
                 response.cacheHit = remote.cacheHit
+                response.remoteSnapshotCacheScope = remote.cacheMetadata?.scope
+                response.remoteSnapshotCachedAtMs = remote.cacheMetadata?.storedAtMs
+                response.remoteSnapshotAgeMs = remote.cacheMetadata?.ageMs
+                response.remoteSnapshotTTLRemainingMs = remote.cacheMetadata?.ttlRemainingMs
+                response.remoteSnapshotCachePosture = remote.cacheMetadata?.cachePosture.rawValue
+                response.remoteSnapshotInvalidationReason = remote.cacheMetadata?.invalidationReason?.rawValue
                 response.denyCode = nil
                 response.downgradeCode = route.downgradeCode?.rawValue
                 return MemoryContextResolutionResult(
@@ -4128,6 +4710,12 @@ enum HubIPCClient {
                     attemptedProfiles: [route.servingProfile.rawValue],
                     freshness: response.freshness ?? "fresh_remote",
                     cacheHit: remote.cacheHit,
+                    remoteSnapshotCacheScope: remote.cacheMetadata?.scope,
+                    remoteSnapshotCachedAtMs: remote.cacheMetadata?.storedAtMs,
+                    remoteSnapshotAgeMs: remote.cacheMetadata?.ageMs,
+                    remoteSnapshotTTLRemainingMs: remote.cacheMetadata?.ttlRemainingMs,
+                    remoteSnapshotCachePosture: remote.cacheMetadata?.cachePosture.rawValue,
+                    remoteSnapshotInvalidationReason: remote.cacheMetadata?.invalidationReason?.rawValue,
                     denyCode: nil,
                     downgradeCode: route.downgradeCode?.rawValue,
                     reasonCode: nil
@@ -4142,6 +4730,12 @@ enum HubIPCClient {
                     attemptedProfiles: [route.servingProfile.rawValue],
                     freshness: route.bypassRemoteCache ? "fresh_remote_required" : "remote_failed",
                     cacheHit: remote.cacheHit,
+                    remoteSnapshotCacheScope: remote.cacheMetadata?.scope,
+                    remoteSnapshotCachedAtMs: remote.cacheMetadata?.storedAtMs,
+                    remoteSnapshotAgeMs: remote.cacheMetadata?.ageMs,
+                    remoteSnapshotTTLRemainingMs: remote.cacheMetadata?.ttlRemainingMs,
+                    remoteSnapshotCachePosture: remote.cacheMetadata?.cachePosture.rawValue,
+                    remoteSnapshotInvalidationReason: remote.cacheMetadata?.invalidationReason?.rawValue,
                     denyCode: route.bypassRemoteCache
                         ? XTMemoryUseDenyCode.memorySnapshotStaleForHighRiskAct.rawValue
                         : nil,
@@ -4324,43 +4918,109 @@ enum HubIPCClient {
 
     private static func memoryContextResolutionOverride() -> (@Sendable (XTMemoryRouteDecision, XTMemoryUseMode, Double) async -> MemoryContextResolutionResult)? {
         withTestingOverrideLock {
-            memoryContextResolutionOverrideForTesting
+            testingOverride(
+                fallback: memoryContextResolutionOverrideForTesting,
+                scoped: scopedMemoryContextResolutionOverridesForTesting
+            )
         }
     }
 
     private static func routeDecisionOverride() -> (@Sendable () async -> HubRouteDecision)? {
         withTestingOverrideLock {
-            routeDecisionOverrideForTesting
+            testingOverride(
+                fallback: routeDecisionOverrideForTesting,
+                scoped: scopedRouteDecisionOverridesForTesting
+            )
+        }
+    }
+
+    private static func supervisorRouteDecisionOverride() -> (@Sendable (SupervisorRouteDecisionRequestPayload) async -> SupervisorRouteDecisionResult)? {
+        withTestingOverrideLock {
+            testingOverride(
+                fallback: supervisorRouteDecisionOverrideForTesting,
+                scoped: scopedSupervisorRouteDecisionOverridesForTesting
+            )
         }
     }
 
     private static func supervisorRemoteContinuityOverride() -> (@Sendable (Bool) async -> SupervisorRemoteContinuityResult)? {
         withTestingOverrideLock {
-            supervisorRemoteContinuityOverrideForTesting
+            testingOverride(
+                fallback: supervisorRemoteContinuityOverrideForTesting,
+                scoped: scopedSupervisorRemoteContinuityOverridesForTesting
+            )
         }
     }
 
     private static func supervisorConversationAppendOverride() -> (@Sendable (HubRemoteSupervisorConversationPayload) async -> Bool)? {
         withTestingOverrideLock {
-            supervisorConversationAppendOverrideForTesting
+            testingOverride(
+                fallback: supervisorConversationAppendOverrideForTesting,
+                scoped: scopedSupervisorConversationAppendOverridesForTesting
+            )
         }
     }
 
     private static func memoryRetrievalOverride() -> (@Sendable (MemoryRetrievalPayload, Double) async -> MemoryRetrievalResponsePayload?)? {
         withTestingOverrideLock {
-            memoryRetrievalOverrideForTesting
+            testingOverride(
+                fallback: memoryRetrievalOverrideForTesting,
+                scoped: scopedMemoryRetrievalOverridesForTesting
+            )
         }
     }
 
-    private static func remoteMemoryRetrievalOverride() -> (@Sendable (MemoryRetrievalPayload) async -> MemoryRetrievalResponsePayload?)? {
+    private static func remoteMemoryRetrievalOverride() -> (@Sendable (MemoryRetrievalPayload, Double) async -> MemoryRetrievalResponsePayload?)? {
         withTestingOverrideLock {
-            remoteMemoryRetrievalOverrideForTesting
+            testingOverride(
+                fallback: remoteMemoryRetrievalOverrideForTesting,
+                scoped: scopedRemoteMemoryRetrievalOverridesForTesting
+            )
+        }
+    }
+
+    private static func remoteRuntimeSurfaceOverridesOverride() -> (@Sendable (String?, Int, Double) async -> HubRemoteRuntimeSurfaceOverridesResult)? {
+        withTestingOverrideLock {
+            testingOverride(
+                fallback: remoteRuntimeSurfaceOverridesOverrideForTesting,
+                scoped: scopedRemoteRuntimeSurfaceOverridesForTesting
+            )
+        }
+    }
+
+    private static func remoteMemorySnapshotOverride() -> (@Sendable (XTMemoryUseMode, String?, Bool, Double) async -> HubRemoteMemorySnapshotResult)? {
+        withTestingOverrideLock {
+            testingOverride(
+                fallback: remoteMemorySnapshotOverrideForTesting,
+                scoped: scopedRemoteMemorySnapshotOverridesForTesting
+            )
+        }
+    }
+
+    private static func voiceGrantChallengeOverride() -> (@Sendable (VoiceGrantChallengeRequestPayload) async -> VoiceGrantChallengeResult)? {
+        withTestingOverrideLock {
+            testingOverride(
+                fallback: voiceGrantChallengeOverrideForTesting,
+                scoped: scopedVoiceGrantChallengeOverridesForTesting
+            )
+        }
+    }
+
+    private static func voiceGrantVerificationOverride() -> (@Sendable (VoiceGrantVerificationPayload) async -> VoiceGrantVerificationResult)? {
+        withTestingOverrideLock {
+            testingOverride(
+                fallback: voiceGrantVerificationOverrideForTesting,
+                scoped: scopedVoiceGrantVerificationOverridesForTesting
+            )
         }
     }
 
     private static func localMemoryRetrievalIPCOverride() -> (@Sendable (MemoryRetrievalPayload, Double) async -> MemoryRetrievalResponsePayload?)? {
         withTestingOverrideLock {
-            localMemoryRetrievalIPCOverrideForTesting
+            testingOverride(
+                fallback: localMemoryRetrievalIPCOverrideForTesting,
+                scoped: scopedLocalMemoryRetrievalIPCOverridesForTesting
+            )
         }
     }
 
@@ -4394,6 +5054,9 @@ enum HubIPCClient {
                 || kind.contains("decision")
                 || kind.contains("canonical")
                 || kind.contains("blocker")
+                || kind.contains("checkpoint")
+                || kind.contains("execution")
+                || kind.contains("guidance")
                 || kind.contains("plan")
                 || kind.contains("skill") {
                 layers.insert(XTMemoryLayer.l1Canonical.rawValue)
@@ -4402,7 +5065,13 @@ enum HubIPCClient {
                 || kind.contains("context")
                 || kind.contains("recent")
                 || kind.contains("observation")
+                || kind.contains("retry")
+                || kind.contains("heartbeat")
                 || kind.contains("outline") {
+                layers.insert(XTMemoryLayer.l2Observations.rawValue)
+            }
+            if kind.contains("automation") {
+                layers.insert(XTMemoryLayer.l1Canonical.rawValue)
                 layers.insert(XTMemoryLayer.l2Observations.rawValue)
             }
         }
@@ -4487,15 +5156,18 @@ enum HubIPCClient {
     }
 
     private static func requestMemoryRetrievalViaPreferredRemote(
-        payload: MemoryRetrievalPayload
+        payload: MemoryRetrievalPayload,
+        timeoutSec: Double
     ) async -> MemoryRetrievalResponsePayload? {
         if let override = remoteMemoryRetrievalOverride() {
-            return await override(payload)
+            return await override(payload, timeoutSec)
         }
 
         let remote = await HubPairingCoordinator.shared.fetchRemoteMemoryRetrieval(
             options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
-            payload: payload
+            payload: payload,
+            timeoutSec: timeoutSec,
+            allowClientKitInstallRetry: false
         )
         guard remote.ok else { return nil }
 
@@ -4576,7 +5248,10 @@ enum HubIPCClient {
         }
         let routeDecision = await currentRouteDecision()
         if routeDecision.preferRemote {
-            let remote = await requestMemoryRetrievalViaPreferredRemote(payload: payload)
+            let remote = await requestMemoryRetrievalViaPreferredRemote(
+                payload: payload,
+                timeoutSec: timeoutSec
+            )
             if remote != nil {
                 return normalizedMemoryRetrievalResponse(remote, request: payload)
             }
@@ -4841,7 +5516,10 @@ enum HubIPCClient {
                 )
             )
             if remote.ok {
-                await remoteMemorySnapshotCache.invalidate(projectId: payload.projectId)
+                await invalidateProjectRemoteMemorySnapshotCache(
+                        projectId: payload.projectId,
+                        reason: .projectCanonicalSave
+                    )
                 return true
             }
             if !allowFileFallback {
@@ -4936,6 +5614,7 @@ enum HubIPCClient {
         let routeDecision = await currentRouteDecision()
         let boundedLimit = max(1, min(500, limit))
         let normalizedProjectId = normalized(projectId)
+        var sourceOverrideForLocalSnapshot: String?
 
         if routeDecision.preferRemote {
             let remote = await HubPairingCoordinator.shared.fetchRemotePendingGrantRequests(
@@ -4969,9 +5648,22 @@ enum HubIPCClient {
                     items: items
                 )
             }
-            if !routeDecision.allowFileFallback {
+
+            let remoteReasonCode = normalizedReasonCode(
+                remote.reasonCode,
+                fallback: remote.ok ? nil : "remote_pending_grants_failed"
+            )
+            guard HubRouteStateMachine.shouldFallbackToFileForPendingGrantSnapshot(
+                routeDecision: routeDecision,
+                remoteReasonCode: remoteReasonCode
+            ) else {
                 return nil
             }
+            sourceOverrideForLocalSnapshot = HubRouteStateMachine.pendingGrantSnapshotFallbackSource(
+                localSource: "hub_pending_grants_file",
+                routeDecision: routeDecision,
+                remoteReasonCode: remoteReasonCode
+            )
         }
 
         if routeDecision.requiresRemote {
@@ -4980,7 +5672,8 @@ enum HubIPCClient {
 
         return readLocalPendingGrantRequests(
             projectId: normalizedProjectId,
-            limit: boundedLimit
+            limit: boundedLimit,
+            sourceOverride: sourceOverrideForLocalSnapshot
         )
     }
 
@@ -5153,6 +5846,19 @@ enum HubIPCClient {
         let normalizedSkillId = skillId.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedPackageSHA256 = packageSHA256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let normalizedProjectId = normalized(projectId)
+        let override = withTestingOverrideLock { skillPinOverrideForTesting }
+        if let override {
+            return await override(
+                SkillPinRequestPayload(
+                    scope: normalizedScope,
+                    skillId: normalizedSkillId,
+                    packageSHA256: normalizedPackageSHA256,
+                    projectId: normalizedProjectId,
+                    note: note,
+                    requestId: requestId
+                )
+            )
+        }
 
         guard normalizedScope == "global" || normalizedScope == "project" else {
             return SkillPinResult(
@@ -5254,6 +5960,9 @@ enum HubIPCClient {
         projectId: String? = nil
     ) async -> ResolvedSkillsResult {
         let normalizedProjectId = normalized(projectId)
+        if let override = withTestingOverrideLock({ resolvedSkillsOverrideForTesting }) {
+            return await override(normalizedProjectId)
+        }
         let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
         if hasRemote {
             let remote = await HubPairingCoordinator.shared.fetchRemoteResolvedSkills(
@@ -5294,6 +6003,50 @@ enum HubIPCClient {
         )
     }
 
+    static func getSkillManifest(
+        packageSHA256: String
+    ) async -> SkillManifestResult {
+        let normalizedPackageSHA256 = packageSHA256
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !normalizedPackageSHA256.isEmpty else {
+            return SkillManifestResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                packageSHA256: "",
+                manifestJSON: "",
+                reasonCode: "missing_package_sha256"
+            )
+        }
+
+        if let override = withTestingOverrideLock({ skillManifestOverrideForTesting }) {
+            return await override(normalizedPackageSHA256)
+        }
+
+        let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
+        if hasRemote {
+            let remote = await HubPairingCoordinator.shared.fetchRemoteSkillManifest(
+                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                packageSHA256: normalizedPackageSHA256
+            )
+            return SkillManifestResult(
+                ok: remote.ok,
+                source: remote.source,
+                packageSHA256: remote.packageSHA256,
+                manifestJSON: remote.manifestJSON,
+                reasonCode: remote.reasonCode
+            )
+        }
+
+        return SkillManifestResult(
+            ok: false,
+            source: "file_ipc",
+            packageSHA256: normalizedPackageSHA256,
+            manifestJSON: "",
+            reasonCode: "skills_manifest_file_ipc_not_supported"
+        )
+    }
+
     static func stageAgentImport(
         importManifestJSON: String,
         findingsJSON: String? = nil,
@@ -5320,6 +6073,19 @@ enum HubIPCClient {
                 vetterAuditRef: nil,
                 recordPath: nil,
                 reasonCode: "missing_agent_import_manifest"
+            )
+        }
+
+        if let override = agentImportStageOverrideSnapshotForTesting() {
+            return await override(
+                AgentImportStageRequestPayload(
+                    importManifestJSON: manifestText,
+                    findingsJSON: findingsJSON,
+                    scanInputJSON: scanInputJSON,
+                    requestedBy: requestedBy,
+                    note: note,
+                    requestId: requestId
+                )
             )
         }
 
@@ -5461,15 +6227,33 @@ enum HubIPCClient {
         }
     }
 
+    private static func agentImportStageOverrideSnapshotForTesting() -> (@Sendable (AgentImportStageRequestPayload) async -> AgentImportStageResult)? {
+        withTestingOverrideLock {
+            agentImportStageOverrideForTesting
+        }
+    }
+
     private static func secretUseOverrideSnapshotForTesting() -> (@Sendable (SecretUseRequestPayload) async -> SecretUseResult)? {
         withTestingOverrideLock {
             secretUseOverrideForTesting
         }
     }
 
+    private static func skillPackageUploadOverrideSnapshotForTesting() -> (@Sendable (SkillPackageUploadRequestPayload) async -> SkillPackageUploadResult)? {
+        withTestingOverrideLock {
+            skillPackageUploadOverrideForTesting
+        }
+    }
+
     private static func secretRedeemOverrideSnapshotForTesting() -> (@Sendable (SecretRedeemRequestPayload) async -> SecretRedeemResult)? {
         withTestingOverrideLock {
             secretRedeemOverrideForTesting
+        }
+    }
+
+    private static func agentImportPromoteOverrideSnapshotForTesting() -> (@Sendable (AgentImportPromoteRequestPayload) async -> AgentImportPromoteResult)? {
+        withTestingOverrideLock {
+            agentImportPromoteOverrideForTesting
         }
     }
 
@@ -5489,6 +6273,17 @@ enum HubIPCClient {
                 skillId: nil,
                 version: nil,
                 reasonCode: "missing_manifest_json"
+            )
+        }
+
+        if let override = skillPackageUploadOverrideSnapshotForTesting() {
+            return await override(
+                SkillPackageUploadRequestPayload(
+                    packageFileURL: packageFileURL,
+                    manifestJSON: manifestText,
+                    sourceId: sourceId,
+                    requestId: requestId
+                )
             )
         }
 
@@ -5559,6 +6354,17 @@ enum HubIPCClient {
                 previousPackageSHA256: nil,
                 recordPath: nil,
                 reasonCode: "missing_package_sha256"
+            )
+        }
+
+        if let override = agentImportPromoteOverrideSnapshotForTesting() {
+            return await override(
+                AgentImportPromoteRequestPayload(
+                    stagingId: normalizedStagingId,
+                    packageSHA256: normalizedPackageSHA256,
+                    note: note,
+                    requestId: requestId
+                )
             )
         }
 
@@ -5734,48 +6540,197 @@ enum HubIPCClient {
         return writeLocalSnapshot(payload, to: url)
     }
 
+    private struct RemoteRuntimeSurfaceOverridesFetchResult {
+        var snapshot: RuntimeSurfaceOverridesSnapshot
+        var cacheHit: Bool
+    }
+
+    private enum RuntimeSurfaceFetchWaitOutcome {
+        case completed(RuntimeSurfaceOverridesSnapshot?)
+        case timedOut
+    }
+
+    private static func runtimeSurfaceInFlightTask(
+        for key: HubRemoteRuntimeSurfaceOverrideCache.Key,
+        createIfMissing: () -> Task<RuntimeSurfaceOverridesSnapshot?, Never>
+    ) -> (task: Task<RuntimeSurfaceOverridesSnapshot?, Never>, isOwner: Bool) {
+        runtimeSurfaceFetchLock.lock()
+        defer { runtimeSurfaceFetchLock.unlock() }
+        if let task = inFlightRuntimeSurfaceOverrideFetches[key] {
+            return (task, false)
+        }
+        let task = createIfMissing()
+        inFlightRuntimeSurfaceOverrideFetches[key] = task
+        return (task, true)
+    }
+
+    private static func clearRuntimeSurfaceInFlightTask(
+        for key: HubRemoteRuntimeSurfaceOverrideCache.Key
+    ) {
+        runtimeSurfaceFetchLock.lock()
+        defer { runtimeSurfaceFetchLock.unlock() }
+        inFlightRuntimeSurfaceOverrideFetches[key] = nil
+    }
+
+    private static func waitForRuntimeSurfaceFetchTask(
+        _ task: Task<RuntimeSurfaceOverridesSnapshot?, Never>,
+        for key: HubRemoteRuntimeSurfaceOverrideCache.Key,
+        cache: HubRemoteRuntimeSurfaceOverrideCache,
+        timeoutSec: Double
+    ) async -> RuntimeSurfaceOverridesSnapshot? {
+        let clampedTimeoutNs = UInt64(
+            (max(0.2, min(4.0, timeoutSec)) * 1_000_000_000).rounded()
+        )
+        let outcome: RuntimeSurfaceFetchWaitOutcome = await withCheckedContinuation { continuation in
+            let lock = NSLock()
+            var resumed = false
+
+            func resumeOnce(_ value: RuntimeSurfaceFetchWaitOutcome) {
+                lock.lock()
+                defer { lock.unlock() }
+                guard !resumed else { return }
+                resumed = true
+                continuation.resume(returning: value)
+            }
+
+            Task.detached(priority: .userInitiated) {
+                resumeOnce(.completed(await task.value))
+            }
+            Task.detached(priority: .userInitiated) {
+                try? await Task.sleep(nanoseconds: clampedTimeoutNs)
+                resumeOnce(.timedOut)
+            }
+        }
+
+        switch outcome {
+        case .completed(let snapshot):
+            return snapshot
+        case .timedOut:
+            task.cancel()
+            clearRuntimeSurfaceInFlightTask(for: key)
+            await cache.markMiss(for: key)
+            return nil
+        }
+    }
+
+    private static func resetRuntimeSurfaceRemoteStateForTesting() {
+        runtimeSurfaceFetchLock.lock()
+        let tasks = Array(inFlightRuntimeSurfaceOverrideFetches.values)
+        inFlightRuntimeSurfaceOverrideFetches.removeAll(keepingCapacity: false)
+        runtimeSurfaceFetchLock.unlock()
+        tasks.forEach { $0.cancel() }
+        remoteRuntimeSurfaceOverrideCache = HubRemoteRuntimeSurfaceOverrideCache(
+            ttlSeconds: remoteRuntimeSurfaceOverrideCacheTTLSeconds
+        )
+    }
+
+    private static func fetchRemoteRuntimeSurfaceOverrides(
+        projectId: String?,
+        limit: Int,
+        bypassCache: Bool,
+        timeoutSec: Double
+    ) async -> RemoteRuntimeSurfaceOverridesFetchResult? {
+        let normalizedProjectId = normalized(projectId)
+        let boundedLimit = max(1, min(500, limit))
+        let cache = remoteRuntimeSurfaceOverrideCache
+        let cacheKey = HubRemoteRuntimeSurfaceOverrideCache.Key(
+            projectId: normalizedProjectId,
+            limit: boundedLimit
+        )
+        if !bypassCache, let cached = await cache.snapshot(for: cacheKey) {
+            return RemoteRuntimeSurfaceOverridesFetchResult(snapshot: cached, cacheHit: true)
+        }
+        if !bypassCache, await cache.hasRecentMiss(for: cacheKey) {
+            return nil
+        }
+        let taskFactory = {
+            Task<RuntimeSurfaceOverridesSnapshot?, Never> {
+            let remote: HubRemoteRuntimeSurfaceOverridesResult
+            if let override = remoteRuntimeSurfaceOverridesOverride() {
+                remote = await override(normalizedProjectId, boundedLimit, timeoutSec)
+            } else {
+                remote = await HubPairingCoordinator.shared.fetchRemoteRuntimeSurfaceOverrides(
+                    options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                    projectId: normalizedProjectId,
+                    limit: boundedLimit,
+                    timeoutSec: timeoutSec
+                )
+            }
+            guard remote.ok else {
+                await cache.markMiss(for: cacheKey)
+                return nil
+            }
+
+            let snapshot = RuntimeSurfaceOverridesSnapshot(
+                source: remote.source.trimmingCharacters(in: .whitespacesAndNewlines),
+                updatedAtMs: max(0, Int64(remote.updatedAtMs.rounded())),
+                items: remote.items.map { row in
+                    RuntimeSurfaceOverrideItem(
+                        projectId: row.projectId.trimmingCharacters(in: .whitespacesAndNewlines),
+                        overrideMode: row.overrideMode,
+                        updatedAtMs: max(0, Int64(row.updatedAtMs.rounded())),
+                        reason: row.reason.trimmingCharacters(in: .whitespacesAndNewlines),
+                        auditRef: row.auditRef.trimmingCharacters(in: .whitespacesAndNewlines)
+                    )
+                }
+            )
+            await cache.store(snapshot, for: cacheKey)
+            return snapshot
+        }
+        }
+        if !bypassCache {
+            let inFlight = runtimeSurfaceInFlightTask(for: cacheKey, createIfMissing: taskFactory)
+            if !inFlight.isOwner {
+                guard let snapshot = await waitForRuntimeSurfaceFetchTask(
+                    inFlight.task,
+                    for: cacheKey,
+                    cache: cache,
+                    timeoutSec: timeoutSec
+                ) else {
+                    return nil
+                }
+                return RemoteRuntimeSurfaceOverridesFetchResult(snapshot: snapshot, cacheHit: false)
+            }
+            defer { clearRuntimeSurfaceInFlightTask(for: cacheKey) }
+            let snapshot = await waitForRuntimeSurfaceFetchTask(
+                inFlight.task,
+                for: cacheKey,
+                cache: cache,
+                timeoutSec: timeoutSec
+            )
+            guard let snapshot else { return nil }
+            return RemoteRuntimeSurfaceOverridesFetchResult(snapshot: snapshot, cacheHit: false)
+        }
+        let directTask = taskFactory()
+        let snapshot = await waitForRuntimeSurfaceFetchTask(
+            directTask,
+            for: cacheKey,
+            cache: cache,
+            timeoutSec: timeoutSec
+        )
+        guard let snapshot else { return nil }
+        return RemoteRuntimeSurfaceOverridesFetchResult(snapshot: snapshot, cacheHit: false)
+    }
+
     static func requestRuntimeSurfaceOverrides(
         projectId: String? = nil,
         limit: Int = 200,
-        bypassCache: Bool = false
+        bypassCache: Bool = false,
+        timeoutSec: Double = 1.0
     ) async -> RuntimeSurfaceOverridesSnapshot? {
         let routeDecision = await currentRouteDecision()
         let boundedLimit = max(1, min(500, limit))
         let normalizedProjectId = normalized(projectId)
 
         if routeDecision.preferRemote {
-            let cacheKey = HubRemoteRuntimeSurfaceOverrideCache.Key(
+            if let remote = await fetchRemoteRuntimeSurfaceOverrides(
                 projectId: normalizedProjectId,
-                limit: boundedLimit
-            )
-            if !bypassCache, let cached = await remoteRuntimeSurfaceOverrideCache.snapshot(for: cacheKey) {
-                return cached
+                limit: boundedLimit,
+                bypassCache: bypassCache,
+                timeoutSec: timeoutSec
+            ) {
+                return remote.snapshot
             }
-
-            let remote = await HubPairingCoordinator.shared.fetchRemoteRuntimeSurfaceOverrides(
-                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
-                projectId: normalizedProjectId,
-                limit: boundedLimit
-            )
-            if remote.ok {
-                let snapshot = RuntimeSurfaceOverridesSnapshot(
-                    source: remote.source.trimmingCharacters(in: .whitespacesAndNewlines),
-                    updatedAtMs: max(0, Int64(remote.updatedAtMs.rounded())),
-                    items: remote.items.map { row in
-                        RuntimeSurfaceOverrideItem(
-                            projectId: row.projectId.trimmingCharacters(in: .whitespacesAndNewlines),
-                            overrideMode: row.overrideMode,
-                            updatedAtMs: max(0, Int64(row.updatedAtMs.rounded())),
-                            reason: row.reason.trimmingCharacters(in: .whitespacesAndNewlines),
-                            auditRef: row.auditRef.trimmingCharacters(in: .whitespacesAndNewlines)
-                        )
-                    }
-                )
-                await remoteRuntimeSurfaceOverrideCache.store(snapshot, for: cacheKey)
-                return snapshot
-            }
-
-            await remoteRuntimeSurfaceOverrideCache.invalidate(key: cacheKey)
             if !routeDecision.allowFileFallback {
                 return nil
             }
@@ -6051,14 +7006,44 @@ enum HubIPCClient {
 
     static func requestProjectRuntimeSurfaceOverride(
         projectId: String,
-        bypassCache: Bool = false
+        bypassCache: Bool = false,
+        timeoutSec: Double = 1.0
     ) async -> AXProjectRuntimeSurfaceRemoteOverrideSnapshot? {
         let normalizedProjectId = projectId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedProjectId.isEmpty else { return nil }
+        if !bypassCache {
+            let sharedCache = remoteRuntimeSurfaceOverrideCache
+            let sharedCacheKey = HubRemoteRuntimeSurfaceOverrideCache.Key(projectId: nil, limit: 500)
+            if let sharedSnapshot = await requestRuntimeSurfaceOverrides(
+                projectId: nil,
+                limit: 500,
+                bypassCache: false,
+                timeoutSec: timeoutSec
+            ) {
+                if let row = sharedSnapshot.items.first(where: { $0.projectId == normalizedProjectId }) {
+                    return AXProjectRuntimeSurfaceRemoteOverrideSnapshot(
+                        projectId: row.projectId,
+                        overrideMode: row.overrideMode,
+                        updatedAtMs: row.updatedAtMs,
+                        source: sharedSnapshot.source,
+                        reason: row.reason.isEmpty ? nil : row.reason,
+                        auditRef: row.auditRef.isEmpty ? nil : row.auditRef
+                    )
+                }
+                if sharedSnapshot.items.count < 500 {
+                    return nil
+                }
+            }
+            if await sharedCache.hasRecentMiss(for: sharedCacheKey) {
+                return nil
+            }
+        }
+
         guard let snapshot = await requestRuntimeSurfaceOverrides(
             projectId: normalizedProjectId,
             limit: 1,
-            bypassCache: bypassCache
+            bypassCache: bypassCache,
+            timeoutSec: timeoutSec
         ) else {
             return nil
         }
@@ -6118,7 +7103,11 @@ enum HubIPCClient {
                 tokenCap: requestedTokenCap,
                 note: note
             )
-            return mapPendingGrantActionResult(remote, defaultGrantRequestId: normalizedGrantId)
+            let result = mapPendingGrantActionResult(remote, defaultGrantRequestId: normalizedGrantId)
+            if result.ok {
+                await noteRemoteMemoryGrantStateChanged(projectId: normalizedProjectId)
+            }
+            return result
         }
 
         let fallbackReason = routeDecision.requiresRemote
@@ -6163,7 +7152,11 @@ enum HubIPCClient {
                 projectId: normalizedProjectId,
                 reason: reason
             )
-            return mapPendingGrantActionResult(remote, defaultGrantRequestId: normalizedGrantId)
+            let result = mapPendingGrantActionResult(remote, defaultGrantRequestId: normalizedGrantId)
+            if result.ok {
+                await noteRemoteMemoryGrantStateChanged(projectId: normalizedProjectId)
+            }
+            return result
         }
 
         let fallbackReason = routeDecision.requiresRemote
@@ -6367,6 +7360,152 @@ enum HubIPCClient {
         )
     }
 
+    static func requestSupervisorRouteDecision(
+        _ payload: SupervisorRouteDecisionRequestPayload
+    ) async -> SupervisorRouteDecisionResult {
+        let normalizedRequestId = normalized(payload.requestId)
+        guard let normalizedRequestId else {
+            return SupervisorRouteDecisionResult(
+                ok: false,
+                source: "hub_supervisor_grpc",
+                route: nil,
+                governanceRuntimeReadiness: nil,
+                reasonCode: "request_id_empty"
+            )
+        }
+
+        let normalizedProjectId = normalized(payload.projectId)
+        guard let normalizedProjectId else {
+            return SupervisorRouteDecisionResult(
+                ok: false,
+                source: "hub_supervisor_grpc",
+                route: nil,
+                governanceRuntimeReadiness: nil,
+                reasonCode: "project_id_empty"
+            )
+        }
+
+        let routeDecision = await currentRouteDecision()
+        let surfaceType = normalized(payload.surfaceType) ?? "xt_ui"
+        let trustLevel = normalized(payload.trustLevel) ?? "paired_surface"
+        let normalizedIntentType = normalized(payload.normalizedIntentType) ?? "directive"
+
+        if routeDecision.preferRemote {
+            let remote: HubRemoteSupervisorRouteDecisionResult
+            if let override = supervisorRouteDecisionOverride() {
+                let result = await override(
+                    SupervisorRouteDecisionRequestPayload(
+                        requestId: normalizedRequestId,
+                        projectId: normalizedProjectId,
+                        runId: normalized(payload.runId),
+                        missionId: normalized(payload.missionId),
+                        surfaceType: surfaceType,
+                        trustLevel: trustLevel,
+                        normalizedIntentType: normalizedIntentType,
+                        preferredDeviceId: normalized(payload.preferredDeviceId),
+                        requireXT: payload.requireXT,
+                        requireRunner: payload.requireRunner,
+                        actorRef: normalized(payload.actorRef),
+                        conversationId: normalized(payload.conversationId),
+                        threadKey: normalized(payload.threadKey)
+                    )
+                )
+                return result
+            } else {
+                remote = await HubPairingCoordinator.shared.fetchRemoteSupervisorRouteDecision(
+                    options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                    requestId: normalizedRequestId,
+                    projectId: normalizedProjectId,
+                    runId: normalized(payload.runId),
+                    missionId: normalized(payload.missionId),
+                    surfaceType: surfaceType,
+                    trustLevel: trustLevel,
+                    normalizedIntentType: normalizedIntentType,
+                    preferredDeviceId: normalized(payload.preferredDeviceId),
+                    requireXT: payload.requireXT,
+                    requireRunner: payload.requireRunner,
+                    actorRef: normalized(payload.actorRef),
+                    conversationId: normalized(payload.conversationId),
+                    threadKey: normalized(payload.threadKey)
+                )
+            }
+
+            let route = remote.route.map { row in
+                SupervisorRouteDecisionSnapshot(
+                    schemaVersion: row.schemaVersion,
+                    routeId: row.routeId,
+                    requestId: row.requestId,
+                    projectId: row.projectId,
+                    runId: row.runId,
+                    missionId: row.missionId,
+                    decision: row.decision,
+                    riskTier: row.riskTier,
+                    preferredDeviceId: row.preferredDeviceId,
+                    resolvedDeviceId: row.resolvedDeviceId,
+                    runnerId: row.runnerId,
+                    xtOnline: row.xtOnline,
+                    runnerRequired: row.runnerRequired,
+                    sameProjectScope: row.sameProjectScope,
+                    requiresGrant: row.requiresGrant,
+                    grantScope: row.grantScope,
+                    denyCode: row.denyCode,
+                    updatedAtMs: max(0, row.updatedAtMs),
+                    auditRef: row.auditRef
+                )
+            }
+            let governanceRuntimeReadiness = remote.governanceRuntimeReadiness.map { row in
+                SupervisorRouteGovernanceRuntimeReadinessSnapshot(
+                    schemaVersion: row.schemaVersion,
+                    source: row.source,
+                    governanceSurface: row.governanceSurface,
+                    context: row.context,
+                    configured: row.configured,
+                    state: row.state,
+                    runtimeReady: row.runtimeReady,
+                    projectId: row.projectId,
+                    blockers: row.blockers,
+                    blockedComponentKeys: row.blockedComponentKeys,
+                    missingReasonCodes: row.missingReasonCodes,
+                    summaryLine: row.summaryLine,
+                    missingSummaryLine: row.missingSummaryLine,
+                    components: row.components.map { component in
+                        SupervisorRouteGovernanceComponentSnapshot(
+                            key: component.key,
+                            state: component.state,
+                            denyCode: component.denyCode,
+                            summaryLine: component.summaryLine,
+                            missingReasonCodes: component.missingReasonCodes
+                        )
+                    }
+                )
+            }
+            return SupervisorRouteDecisionResult(
+                ok: remote.ok && route != nil,
+                source: remote.source,
+                route: route,
+                governanceRuntimeReadiness: governanceRuntimeReadiness,
+                reasonCode: normalizedReasonCode(
+                    remote.reasonCode,
+                    fallback: remote.ok ? nil : "supervisor_route_decision_failed"
+                )
+            )
+        }
+
+        let fallbackReason = routeDecision.requiresRemote
+            ? normalizedReasonCode(
+                routeDecision.remoteUnavailableReasonCode,
+                fallback: "hub_env_missing"
+            )
+            : "supervisor_route_file_ipc_not_supported"
+        return SupervisorRouteDecisionResult(
+            ok: false,
+            source: routeDecision.requiresRemote ? "hub_supervisor_grpc" : "file_ipc",
+            route: nil,
+            governanceRuntimeReadiness: nil,
+            reasonCode: fallbackReason
+        )
+    }
+
     static func issueVoiceGrantChallenge(
         _ payload: VoiceGrantChallengeRequestPayload
     ) async -> VoiceGrantChallengeResult {
@@ -6383,6 +7522,7 @@ enum HubIPCClient {
         let normalizedTemplateId = normalized(payload.templateId)
         let normalizedActionDigest = normalized(payload.actionDigest)
         let normalizedScopeDigest = normalized(payload.scopeDigest)
+        let normalizedProjectId = normalized(payload.projectId)
         guard normalizedTemplateId != nil, normalizedActionDigest != nil, normalizedScopeDigest != nil else {
             return VoiceGrantChallengeResult(
                 ok: false,
@@ -6392,12 +7532,20 @@ enum HubIPCClient {
             )
         }
 
+        if let override = voiceGrantChallengeOverride() {
+            let result = await override(payload)
+            if shouldInvalidateRemoteMemoryForVoiceGrantChallenge(result) {
+                await noteRemoteMemoryGrantStateChanged(projectId: normalizedProjectId)
+            }
+            return result
+        }
+
         let routeDecision = await currentRouteDecision()
         if routeDecision.preferRemote {
             let remote = await HubPairingCoordinator.shared.issueRemoteVoiceGrantChallenge(
                 options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
                 requestId: normalizedRequestId,
-                projectId: normalized(payload.projectId),
+                projectId: normalizedProjectId,
                 templateId: normalizedTemplateId ?? "",
                 actionDigest: normalizedActionDigest ?? "",
                 scopeDigest: normalizedScopeDigest ?? "",
@@ -6410,7 +7558,11 @@ enum HubIPCClient {
                 requiresMobileConfirm: payload.requiresMobileConfirm,
                 ttlMs: max(10_000, min(600_000, payload.ttlMs))
             )
-            return mapVoiceGrantChallengeResult(remote)
+            let result = mapVoiceGrantChallengeResult(remote)
+            if shouldInvalidateRemoteMemoryForVoiceGrantChallenge(result) {
+                await noteRemoteMemoryGrantStateChanged(projectId: normalizedProjectId)
+            }
+            return result
         }
 
         if routeDecision.requiresRemote {
@@ -6455,6 +7607,7 @@ enum HubIPCClient {
         }
 
         let normalizedChallengeId = normalized(payload.challengeId)
+        let normalizedProjectId = normalized(payload.projectId)
         guard let normalizedChallengeId else {
             return VoiceGrantVerificationResult(
                 ok: false,
@@ -6490,12 +7643,20 @@ enum HubIPCClient {
             )
         }
 
+        if let override = voiceGrantVerificationOverride() {
+            let result = await override(payload)
+            if shouldInvalidateRemoteMemoryForVoiceGrantVerification(result) {
+                await noteRemoteMemoryGrantStateChanged(projectId: normalizedProjectId)
+            }
+            return result
+        }
+
         let routeDecision = await currentRouteDecision()
         if routeDecision.preferRemote {
             let remote = await HubPairingCoordinator.shared.verifyRemoteVoiceGrantResponse(
                 options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
                 requestId: normalizedRequestId,
-                projectId: normalized(payload.projectId),
+                projectId: normalizedProjectId,
                 challengeId: normalizedChallengeId,
                 challengeCode: normalized(payload.challengeCode),
                 transcript: payload.transcript,
@@ -6508,7 +7669,11 @@ enum HubIPCClient {
                 boundDeviceId: normalized(payload.boundDeviceId),
                 mobileConfirmed: payload.mobileConfirmed
             )
-            return mapVoiceGrantVerificationResult(remote)
+            let result = mapVoiceGrantVerificationResult(remote)
+            if shouldInvalidateRemoteMemoryForVoiceGrantVerification(result) {
+                await noteRemoteMemoryGrantStateChanged(projectId: normalizedProjectId)
+            }
+            return result
         }
 
         if routeDecision.requiresRemote {
@@ -7018,6 +8183,141 @@ enum HubIPCClient {
                 runtimeReasonCode: nil,
                 error: nil,
                 detail: "voice TTS local IPC mode unsupported"
+            )
+        }
+    }
+
+    private static func requestLocalTaskExecutionViaLocalIPC(
+        _ payload: LocalTaskRequestPayload,
+        timeoutSec: Double
+    ) -> LocalTaskResult {
+        if let override = withTestingOverrideLock({ localTaskExecutionOverrideForTesting }) {
+            return override(payload, timeoutSec)
+        }
+
+        let normalizedTaskKind = normalized(payload.taskKind)
+        let normalizedModelID = normalized(payload.modelId)
+
+        guard let transport = localIPCTransport(ttl: 3.0) else {
+            return LocalTaskResult(
+                ok: false,
+                source: "local_ipc",
+                runtimeSource: nil,
+                provider: nil,
+                modelId: normalizedModelID,
+                taskKind: normalizedTaskKind,
+                reasonCode: "hub_not_connected",
+                runtimeReasonCode: nil,
+                error: nil,
+                detail: "local task IPC unavailable"
+            )
+        }
+
+        let reqId = UUID().uuidString
+        let req = LocalTaskIPCRequest(
+            type: "local_task_execute",
+            reqId: reqId,
+            localTask: payload
+        )
+
+        switch transport.mode {
+        case "file":
+            try? FileManager.default.createDirectory(at: transport.ipcURL, withIntermediateDirectories: true)
+            let data: Data
+            do {
+                data = try JSONEncoder().encode(req)
+            } catch {
+                return LocalTaskResult(
+                    ok: false,
+                    source: "file_ipc",
+                    runtimeSource: nil,
+                    provider: nil,
+                    modelId: normalizedModelID,
+                    taskKind: normalizedTaskKind,
+                    reasonCode: "local_task_encode_failed",
+                    runtimeReasonCode: nil,
+                    error: summarized(error),
+                    detail: "local task request encoding failed"
+                )
+            }
+            let writeStatus = Self.writeEventStatus(
+                data: data,
+                reqId: reqId,
+                filePrefix: "xterminal_local_task",
+                tmpPrefix: ".xterminal_local_task",
+                in: transport.ipcURL
+            )
+            guard writeStatus.requestQueued == true else {
+                return LocalTaskResult(
+                    ok: false,
+                    source: "file_ipc",
+                    runtimeSource: nil,
+                    provider: nil,
+                    modelId: normalizedModelID,
+                    taskKind: normalizedTaskKind,
+                    reasonCode: "local_task_write_failed",
+                    runtimeReasonCode: nil,
+                    error: normalized(writeStatus.requestError),
+                    detail: "local task request write failed"
+                )
+            }
+            guard let ack = pollLocalTaskResponse(
+                baseDir: transport.baseDir,
+                reqId: reqId,
+                timeoutSec: timeoutSec
+            ) else {
+                return LocalTaskResult(
+                    ok: false,
+                    source: "file_ipc",
+                    runtimeSource: nil,
+                    provider: nil,
+                    modelId: normalizedModelID,
+                    taskKind: normalizedTaskKind,
+                    reasonCode: "ack_timeout",
+                    runtimeReasonCode: nil,
+                    error: nil,
+                    detail: "local task ack timeout"
+                )
+            }
+            return mapLocalTaskAck(
+                ack,
+                source: "file_ipc",
+                fallbackModelID: payload.modelId,
+                fallbackTaskKind: payload.taskKind
+            )
+        case "socket":
+            guard let ack: LocalTaskIPCResponse = sendSocketRequest(req, socketURL: transport.ipcURL, timeoutSec: timeoutSec) else {
+                return LocalTaskResult(
+                    ok: false,
+                    source: "socket_ipc",
+                    runtimeSource: nil,
+                    provider: nil,
+                    modelId: normalizedModelID,
+                    taskKind: normalizedTaskKind,
+                    reasonCode: "socket_request_failed",
+                    runtimeReasonCode: nil,
+                    error: nil,
+                    detail: "local task socket request failed"
+                )
+            }
+            return mapLocalTaskAck(
+                ack,
+                source: "socket_ipc",
+                fallbackModelID: payload.modelId,
+                fallbackTaskKind: payload.taskKind
+            )
+        default:
+            return LocalTaskResult(
+                ok: false,
+                source: "local_ipc",
+                runtimeSource: nil,
+                provider: nil,
+                modelId: normalizedModelID,
+                taskKind: normalizedTaskKind,
+                reasonCode: "unsupported_ipc_mode",
+                runtimeReasonCode: nil,
+                error: nil,
+                detail: "local task IPC mode unsupported"
             )
         }
     }
@@ -7577,6 +8877,43 @@ enum HubIPCClient {
         )
     }
 
+    private static func mapLocalTaskAck(
+        _ ack: LocalTaskIPCResponse,
+        source: String,
+        fallbackModelID: String,
+        fallbackTaskKind: String
+    ) -> LocalTaskResult {
+        if let result = ack.localTask {
+            return LocalTaskResult(
+                ok: result.ok,
+                source: source,
+                runtimeSource: result.runtimeSource ?? normalized(result.source),
+                provider: result.provider,
+                modelId: result.modelId ?? normalized(fallbackModelID),
+                taskKind: result.taskKind ?? normalized(fallbackTaskKind),
+                reasonCode: result.reasonCode ?? (!ack.ok ? normalizedReasonCode(ack.error, fallback: "local_task_failed") : nil),
+                runtimeReasonCode: result.runtimeReasonCode,
+                error: result.error ?? (!ack.ok ? ack.error : nil),
+                detail: result.detail,
+                payload: result.payload
+            )
+        }
+
+        return LocalTaskResult(
+            ok: false,
+            source: source,
+            runtimeSource: nil,
+            provider: nil,
+            modelId: normalized(fallbackModelID),
+            taskKind: normalized(fallbackTaskKind),
+            reasonCode: normalizedReasonCode(ack.error, fallback: "local_task_missing_payload"),
+            runtimeReasonCode: nil,
+            error: ack.error,
+            detail: "local task response payload missing",
+            payload: [:]
+        )
+    }
+
     private static func buildMemoryContextFromRemoteSnapshot(
         snapshot: HubRemoteMemorySnapshotResult,
         payload: MemoryContextPayload
@@ -7933,6 +9270,7 @@ compression_policy: \(compressionPolicy)
     private struct RemoteMemorySnapshotFetchResult {
         var snapshot: HubRemoteMemorySnapshotResult
         var cacheHit: Bool
+        var cacheMetadata: HubRemoteMemorySnapshotCache.Metadata?
     }
 
     private static func remoteMemorySnapshotWorkingLimit(
@@ -7949,29 +9287,54 @@ compression_policy: \(compressionPolicy)
     private static func fetchRemoteMemorySnapshot(
         mode: XTMemoryUseMode,
         projectId: String?,
-        bypassCache: Bool
+        bypassCache: Bool,
+        timeoutSec: Double
     ) async -> RemoteMemorySnapshotFetchResult {
         let cacheKey = HubRemoteMemorySnapshotCache.Key(
             mode: mode.rawValue,
             projectId: normalized(projectId)
         )
-        if !bypassCache, let cached = await remoteMemorySnapshotCache.snapshot(for: cacheKey) {
-            return RemoteMemorySnapshotFetchResult(snapshot: cached, cacheHit: true)
+        let posture = XTMemoryRoleScopedRouter.remoteSnapshotCachePosture(for: mode)
+        if !bypassCache, let cached = await remoteMemorySnapshotCache.snapshotRecord(for: cacheKey) {
+            return RemoteMemorySnapshotFetchResult(
+                snapshot: cached.snapshot,
+                cacheHit: true,
+                cacheMetadata: cached.metadata
+            )
         }
 
-        let remote = await HubPairingCoordinator.shared.fetchRemoteMemorySnapshot(
-            options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
-            mode: mode.rawValue,
-            projectId: normalized(projectId),
-            canonicalLimit: 24,
-            workingLimit: remoteMemorySnapshotWorkingLimit(for: mode)
-        )
-        if remote.ok {
-            await remoteMemorySnapshotCache.store(remote, for: cacheKey)
+        let fetchStartedAt = Date()
+        let remote: HubRemoteMemorySnapshotResult
+        if let override = remoteMemorySnapshotOverride() {
+            remote = await override(mode, projectId, bypassCache, timeoutSec)
         } else {
-            await remoteMemorySnapshotCache.invalidate(key: cacheKey)
+            remote = await HubPairingCoordinator.shared.fetchRemoteMemorySnapshot(
+                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                mode: mode.rawValue,
+                projectId: normalized(projectId),
+                canonicalLimit: 24,
+                workingLimit: remoteMemorySnapshotWorkingLimit(for: mode),
+                timeoutSec: timeoutSec,
+                allowClientKitInstallRetry: false
+            )
         }
-        return RemoteMemorySnapshotFetchResult(snapshot: remote, cacheHit: false)
+        let cacheMetadata: HubRemoteMemorySnapshotCache.Metadata?
+        if remote.ok {
+            cacheMetadata = await remoteMemorySnapshotCache.store(
+                remote,
+                for: cacheKey,
+                posture: posture,
+                now: fetchStartedAt
+            )
+        } else {
+            await remoteMemorySnapshotCache.invalidate(key: cacheKey, reason: .remoteFetchFailed)
+            cacheMetadata = nil
+        }
+        return RemoteMemorySnapshotFetchResult(
+            snapshot: remote,
+            cacheHit: false,
+            cacheMetadata: cacheMetadata
+        )
     }
 
     private struct LocalPaidSchedulerConfig: Codable {
@@ -8158,7 +9521,8 @@ compression_policy: \(compressionPolicy)
 
     private static func readLocalPendingGrantRequests(
         projectId: String?,
-        limit: Int
+        limit: Int,
+        sourceOverride: String? = nil
     ) -> PendingGrantSnapshot? {
         let url = HubPaths.baseDir().appendingPathComponent("pending_grant_requests_status.json")
         guard let data = try? Data(contentsOf: url),
@@ -8200,9 +9564,13 @@ compression_policy: \(compressionPolicy)
             if lhs.createdAtMs != rhs.createdAtMs { return lhs.createdAtMs < rhs.createdAtMs }
             return lhs.grantRequestId.localizedCaseInsensitiveCompare(rhs.grantRequestId) == .orderedAscending
         }
+        let resolvedSource = {
+            let normalized = sourceOverride?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return normalized.isEmpty ? "hub_pending_grants_file" : normalized
+        }()
 
         return PendingGrantSnapshot(
-            source: "hub_pending_grants_file",
+            source: resolvedSource,
             updatedAtMs: max(0, decoded.updatedAtMs ?? 0),
             items: Array(mapped.prefix(boundedLimit))
         )
@@ -8988,6 +10356,29 @@ compression_policy: \(compressionPolicy)
         return nil
     }
 
+    private static func pollLocalTaskResponse(
+        baseDir: URL,
+        reqId: String,
+        timeoutSec: Double
+    ) -> LocalTaskIPCResponse? {
+        let rid = reqId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rid.isEmpty else { return nil }
+
+        let dir = baseDir.appendingPathComponent("ipc_responses", isDirectory: true)
+        let url = dir.appendingPathComponent("resp_\(rid).json")
+        let deadline = Date().addingTimeInterval(max(0.2, min(8.0, timeoutSec)))
+
+        while Date() < deadline {
+            if let data = try? Data(contentsOf: url),
+               let resp = try? JSONDecoder().decode(LocalTaskIPCResponse.self, from: data) {
+                try? FileManager.default.removeItem(at: url)
+                return resp
+            }
+            usleep(90_000)
+        }
+        return nil
+    }
+
     private static func cachedVoiceTTSReadiness(for key: String) -> VoiceTTSReadinessResult? {
         voiceTTSReadinessCacheLock.lock()
         defer { voiceTTSReadinessCacheLock.unlock() }
@@ -9321,6 +10712,27 @@ compression_policy: \(compressionPolicy)
                 fallback: remote.ok ? nil : "remote_voice_grant_verify_failed"
             )
         )
+    }
+
+    private static func shouldInvalidateRemoteMemoryForVoiceGrantChallenge(
+        _ result: VoiceGrantChallengeResult
+    ) -> Bool {
+        result.ok && result.challenge != nil
+    }
+
+    private static func shouldInvalidateRemoteMemoryForVoiceGrantVerification(
+        _ result: VoiceGrantVerificationResult
+    ) -> Bool {
+        if result.ok || result.verified {
+            return true
+        }
+
+        switch result.decision {
+        case .allow, .deny:
+            return true
+        case .failed:
+            return false
+        }
     }
 
     static func normalizedReasonCode(_ raw: String?, fallback: String? = nil) -> String? {
@@ -9679,11 +11091,59 @@ compression_policy: \(compressionPolicy)
         }
     }
 
+    static func installAgentImportStageOverrideForTesting(
+        _ override: (@Sendable (AgentImportStageRequestPayload) async -> AgentImportStageResult)?
+    ) {
+        withTestingOverrideLock {
+            agentImportStageOverrideForTesting = override
+        }
+    }
+
     static func installAgentImportRecordOverrideForTesting(
         _ override: (@Sendable (AgentImportRecordLookupPayload) async -> AgentImportRecordResult)?
     ) {
         withTestingOverrideLock {
             agentImportRecordOverrideForTesting = override
+        }
+    }
+
+    static func installSkillPackageUploadOverrideForTesting(
+        _ override: (@Sendable (SkillPackageUploadRequestPayload) async -> SkillPackageUploadResult)?
+    ) {
+        withTestingOverrideLock {
+            skillPackageUploadOverrideForTesting = override
+        }
+    }
+
+    static func installAgentImportPromoteOverrideForTesting(
+        _ override: (@Sendable (AgentImportPromoteRequestPayload) async -> AgentImportPromoteResult)?
+    ) {
+        withTestingOverrideLock {
+            agentImportPromoteOverrideForTesting = override
+        }
+    }
+
+    static func installSkillPinOverrideForTesting(
+        _ override: (@Sendable (SkillPinRequestPayload) async -> SkillPinResult)?
+    ) {
+        withTestingOverrideLock {
+            skillPinOverrideForTesting = override
+        }
+    }
+
+    static func installResolvedSkillsOverrideForTesting(
+        _ override: (@Sendable (String?) async -> ResolvedSkillsResult)?
+    ) {
+        withTestingOverrideLock {
+            resolvedSkillsOverrideForTesting = override
+        }
+    }
+
+    static func installSkillManifestOverrideForTesting(
+        _ override: (@Sendable (String) async -> SkillManifestResult)?
+    ) {
+        withTestingOverrideLock {
+            skillManifestOverrideForTesting = override
         }
     }
 
@@ -9695,11 +11155,23 @@ compression_policy: \(compressionPolicy)
         }
     }
 
+    static func installLocalTaskExecutionOverrideForTesting(
+        _ override: (@Sendable (LocalTaskRequestPayload, Double) -> LocalTaskResult)?
+    ) {
+        withTestingOverrideLock {
+            localTaskExecutionOverrideForTesting = override
+        }
+    }
+
     static func installHubRouteDecisionOverrideForTesting(
         _ override: (@Sendable () async -> HubRouteDecision)?
     ) {
         withTestingOverrideLock {
-            routeDecisionOverrideForTesting = override
+            setTestingOverride(
+                override,
+                fallback: &routeDecisionOverrideForTesting,
+                scoped: &scopedRouteDecisionOverridesForTesting
+            )
         }
     }
 
@@ -9707,7 +11179,11 @@ compression_policy: \(compressionPolicy)
         _ override: (@Sendable (XTMemoryRouteDecision, XTMemoryUseMode, Double) async -> MemoryContextResolutionResult)?
     ) {
         withTestingOverrideLock {
-            memoryContextResolutionOverrideForTesting = override
+            setTestingOverride(
+                override,
+                fallback: &memoryContextResolutionOverrideForTesting,
+                scoped: &scopedMemoryContextResolutionOverridesForTesting
+            )
         }
     }
 
@@ -9715,7 +11191,11 @@ compression_policy: \(compressionPolicy)
         _ override: (@Sendable (MemoryRetrievalPayload, Double) async -> MemoryRetrievalResponsePayload?)?
     ) {
         withTestingOverrideLock {
-            memoryRetrievalOverrideForTesting = override
+            setTestingOverride(
+                override,
+                fallback: &memoryRetrievalOverrideForTesting,
+                scoped: &scopedMemoryRetrievalOverridesForTesting
+            )
         }
     }
 
@@ -9723,7 +11203,11 @@ compression_policy: \(compressionPolicy)
         _ override: (@Sendable (Bool) async -> SupervisorRemoteContinuityResult)?
     ) {
         withTestingOverrideLock {
-            supervisorRemoteContinuityOverrideForTesting = override
+            setTestingOverride(
+                override,
+                fallback: &supervisorRemoteContinuityOverrideForTesting,
+                scoped: &scopedSupervisorRemoteContinuityOverridesForTesting
+            )
         }
     }
 
@@ -9731,7 +11215,23 @@ compression_policy: \(compressionPolicy)
         _ override: (@Sendable (HubRemoteSupervisorConversationPayload) async -> Bool)?
     ) {
         withTestingOverrideLock {
-            supervisorConversationAppendOverrideForTesting = override
+            setTestingOverride(
+                override,
+                fallback: &supervisorConversationAppendOverrideForTesting,
+                scoped: &scopedSupervisorConversationAppendOverridesForTesting
+            )
+        }
+    }
+
+    static func installSupervisorRouteDecisionOverrideForTesting(
+        _ override: (@Sendable (SupervisorRouteDecisionRequestPayload) async -> SupervisorRouteDecisionResult)?
+    ) {
+        withTestingOverrideLock {
+            setTestingOverride(
+                override,
+                fallback: &supervisorRouteDecisionOverrideForTesting,
+                scoped: &scopedSupervisorRouteDecisionOverridesForTesting
+            )
         }
     }
 
@@ -9739,7 +11239,71 @@ compression_policy: \(compressionPolicy)
         _ override: (@Sendable (MemoryRetrievalPayload, Double) async -> MemoryRetrievalResponsePayload?)?
     ) {
         withTestingOverrideLock {
-            localMemoryRetrievalIPCOverrideForTesting = override
+            setTestingOverride(
+                override,
+                fallback: &localMemoryRetrievalIPCOverrideForTesting,
+                scoped: &scopedLocalMemoryRetrievalIPCOverridesForTesting
+            )
+        }
+    }
+
+    static func installRemoteMemorySnapshotOverrideForTesting(
+        _ override: (@Sendable (XTMemoryUseMode, String?, Bool, Double) async -> HubRemoteMemorySnapshotResult)?
+    ) {
+        withTestingOverrideLock {
+            setTestingOverride(
+                override,
+                fallback: &remoteMemorySnapshotOverrideForTesting,
+                scoped: &scopedRemoteMemorySnapshotOverridesForTesting
+            )
+        }
+    }
+
+    static func installVoiceGrantChallengeOverrideForTesting(
+        _ override: (@Sendable (VoiceGrantChallengeRequestPayload) async -> VoiceGrantChallengeResult)?
+    ) {
+        withTestingOverrideLock {
+            setTestingOverride(
+                override,
+                fallback: &voiceGrantChallengeOverrideForTesting,
+                scoped: &scopedVoiceGrantChallengeOverridesForTesting
+            )
+        }
+    }
+
+    static func installVoiceGrantVerificationOverrideForTesting(
+        _ override: (@Sendable (VoiceGrantVerificationPayload) async -> VoiceGrantVerificationResult)?
+    ) {
+        withTestingOverrideLock {
+            setTestingOverride(
+                override,
+                fallback: &voiceGrantVerificationOverrideForTesting,
+                scoped: &scopedVoiceGrantVerificationOverridesForTesting
+            )
+        }
+    }
+
+    static func installRemoteMemoryRetrievalOverrideForTesting(
+        _ override: (@Sendable (MemoryRetrievalPayload, Double) async -> MemoryRetrievalResponsePayload?)?
+    ) {
+        withTestingOverrideLock {
+            setTestingOverride(
+                override,
+                fallback: &remoteMemoryRetrievalOverrideForTesting,
+                scoped: &scopedRemoteMemoryRetrievalOverridesForTesting
+            )
+        }
+    }
+
+    static func installRemoteRuntimeSurfaceOverridesOverrideForTesting(
+        _ override: (@Sendable (String?, Int, Double) async -> HubRemoteRuntimeSurfaceOverridesResult)?
+    ) {
+        withTestingOverrideLock {
+            setTestingOverride(
+                override,
+                fallback: &remoteRuntimeSurfaceOverridesOverrideForTesting,
+                scoped: &scopedRemoteRuntimeSurfaceOverridesForTesting
+            )
         }
     }
 
@@ -9747,7 +11311,21 @@ compression_policy: \(compressionPolicy)
         _ override: (@Sendable (MemoryRetrievalPayload) async -> MemoryRetrievalResponsePayload?)?
     ) {
         withTestingOverrideLock {
-            remoteMemoryRetrievalOverrideForTesting = override
+            guard let override else {
+                setTestingOverride(
+                    nil as (@Sendable (MemoryRetrievalPayload, Double) async -> MemoryRetrievalResponsePayload?)?,
+                    fallback: &remoteMemoryRetrievalOverrideForTesting,
+                    scoped: &scopedRemoteMemoryRetrievalOverridesForTesting
+                )
+                return
+            }
+            setTestingOverride(
+                { payload, _ in
+                    await override(payload)
+                },
+                fallback: &remoteMemoryRetrievalOverrideForTesting,
+                scoped: &scopedRemoteMemoryRetrievalOverridesForTesting
+            )
         }
     }
 
@@ -9766,16 +11344,64 @@ compression_policy: \(compressionPolicy)
         }
     }
 
+    static func resetLocalTaskExecutionOverrideForTesting() {
+        withTestingOverrideLock {
+            localTaskExecutionOverrideForTesting = nil
+        }
+    }
+
     static func resetMemoryContextResolutionOverrideForTesting() {
         withTestingOverrideLock {
-            routeDecisionOverrideForTesting = nil
-            memoryContextResolutionOverrideForTesting = nil
-            memoryRetrievalOverrideForTesting = nil
-            localMemoryRetrievalIPCOverrideForTesting = nil
-            remoteMemoryRetrievalOverrideForTesting = nil
-            supervisorRemoteContinuityOverrideForTesting = nil
-            supervisorConversationAppendOverrideForTesting = nil
+            resetTestingOverride(
+                fallback: &routeDecisionOverrideForTesting,
+                scoped: &scopedRouteDecisionOverridesForTesting
+            )
+            resetTestingOverride(
+                fallback: &memoryContextResolutionOverrideForTesting,
+                scoped: &scopedMemoryContextResolutionOverridesForTesting
+            )
+            resetTestingOverride(
+                fallback: &memoryRetrievalOverrideForTesting,
+                scoped: &scopedMemoryRetrievalOverridesForTesting
+            )
+            resetTestingOverride(
+                fallback: &localMemoryRetrievalIPCOverrideForTesting,
+                scoped: &scopedLocalMemoryRetrievalIPCOverridesForTesting
+            )
+            resetTestingOverride(
+                fallback: &remoteMemorySnapshotOverrideForTesting,
+                scoped: &scopedRemoteMemorySnapshotOverridesForTesting
+            )
+            resetTestingOverride(
+                fallback: &voiceGrantChallengeOverrideForTesting,
+                scoped: &scopedVoiceGrantChallengeOverridesForTesting
+            )
+            resetTestingOverride(
+                fallback: &voiceGrantVerificationOverrideForTesting,
+                scoped: &scopedVoiceGrantVerificationOverridesForTesting
+            )
+            resetTestingOverride(
+                fallback: &remoteMemoryRetrievalOverrideForTesting,
+                scoped: &scopedRemoteMemoryRetrievalOverridesForTesting
+            )
+            resetTestingOverride(
+                fallback: &remoteRuntimeSurfaceOverridesOverrideForTesting,
+                scoped: &scopedRemoteRuntimeSurfaceOverridesForTesting
+            )
+            resetTestingOverride(
+                fallback: &supervisorRemoteContinuityOverrideForTesting,
+                scoped: &scopedSupervisorRemoteContinuityOverridesForTesting
+            )
+            resetTestingOverride(
+                fallback: &supervisorConversationAppendOverrideForTesting,
+                scoped: &scopedSupervisorConversationAppendOverridesForTesting
+            )
+            resetTestingOverride(
+                fallback: &supervisorRouteDecisionOverrideForTesting,
+                scoped: &scopedSupervisorRouteDecisionOverridesForTesting
+            )
         }
+        resetRuntimeSurfaceRemoteStateForTesting()
     }
 
     static func resetIPCEventWriteOverrideForTesting() {
@@ -9787,6 +11413,42 @@ compression_policy: \(compressionPolicy)
     static func resetAgentImportRecordOverrideForTesting() {
         withTestingOverrideLock {
             agentImportRecordOverrideForTesting = nil
+        }
+    }
+
+    static func resetAgentImportStageOverrideForTesting() {
+        withTestingOverrideLock {
+            agentImportStageOverrideForTesting = nil
+        }
+    }
+
+    static func resetSkillPackageUploadOverrideForTesting() {
+        withTestingOverrideLock {
+            skillPackageUploadOverrideForTesting = nil
+        }
+    }
+
+    static func resetAgentImportPromoteOverrideForTesting() {
+        withTestingOverrideLock {
+            agentImportPromoteOverrideForTesting = nil
+        }
+    }
+
+    static func resetSkillPinOverrideForTesting() {
+        withTestingOverrideLock {
+            skillPinOverrideForTesting = nil
+        }
+    }
+
+    static func resetResolvedSkillsOverrideForTesting() {
+        withTestingOverrideLock {
+            resolvedSkillsOverrideForTesting = nil
+        }
+    }
+
+    static func resetSkillManifestOverrideForTesting() {
+        withTestingOverrideLock {
+            skillManifestOverrideForTesting = nil
         }
     }
 }

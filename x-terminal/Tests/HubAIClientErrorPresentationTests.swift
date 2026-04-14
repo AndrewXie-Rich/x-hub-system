@@ -17,4 +17,19 @@ struct HubAIClientErrorPresentationTests {
         #expect(description.contains("Hub gRPC is unavailable"))
         #expect(description.contains("/hub route auto"))
     }
+
+    @Test
+    func providerTokenExpiredGetsFriendlyGuidance() {
+        let error = HubAIError.responseDoneNotOk(
+            HubAIResponseFailureContext(
+                reason: "provider_token_expired",
+                deviceName: "Andrew Mac",
+                modelId: "openai/gpt-5.3-codex"
+            )
+        )
+
+        let description = error.errorDescription ?? ""
+        #expect(description.contains("Remote model access token is expired"))
+        #expect(description.contains("Remote Models / Models & Paid Access"))
+    }
 }

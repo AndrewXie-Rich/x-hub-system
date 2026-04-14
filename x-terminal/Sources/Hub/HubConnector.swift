@@ -31,11 +31,9 @@ enum HubConnector {
         let env = (ProcessInfo.processInfo.environment["REL_FLOW_HUB_BASE_DIR"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if !env.isEmpty {
             let u = URL(fileURLWithPath: NSString(string: env).expandingTildeInPath)
-            if let st = HubPaths.readHubStatus(in: u), st.isAlive(ttl: ttl) {
-                HubPaths.setBaseDirOverride(URL(fileURLWithPath: st.baseDir))
-                UserDefaults.standard.set(st.baseDir, forKey: defaultsKey)
-                UserDefaults.standard.set(st.baseDir, forKey: legacyDefaultsKey)
-                return (true, URL(fileURLWithPath: st.baseDir), st, nil)
+            if let live = HubPaths.resolveLiveBaseDir(in: u, ttl: ttl) {
+                persistResolvedBaseDir(live.baseDir)
+                return (true, live.baseDir, live.status, nil)
             }
         }
 
@@ -43,22 +41,25 @@ enum HubConnector {
         let prev = UserDefaults.standard.string(forKey: defaultsKey) ?? UserDefaults.standard.string(forKey: legacyDefaultsKey)
         if let prev, !prev.isEmpty {
             let u = URL(fileURLWithPath: NSString(string: prev).expandingTildeInPath)
-            if let st = HubPaths.readHubStatus(in: u), st.isAlive(ttl: ttl) {
-                HubPaths.setBaseDirOverride(URL(fileURLWithPath: st.baseDir))
-                UserDefaults.standard.set(st.baseDir, forKey: defaultsKey)
-                return (true, URL(fileURLWithPath: st.baseDir), st, nil)
+            if let live = HubPaths.resolveLiveBaseDir(in: u, ttl: ttl) {
+                persistResolvedBaseDir(live.baseDir)
+                return (true, live.baseDir, live.status, nil)
             }
         }
 
         // 3) Scan candidates (supports both legacy RELFlowHub and new XHub runtime dirs).
         for cand in baseDirCandidates() {
-            if let st = HubPaths.readHubStatus(in: cand), st.isAlive(ttl: ttl) {
-                let base = URL(fileURLWithPath: st.baseDir)
-                HubPaths.setBaseDirOverride(base)
-                UserDefaults.standard.set(st.baseDir, forKey: defaultsKey)
-                UserDefaults.standard.set(st.baseDir, forKey: legacyDefaultsKey)
-                return (true, base, st, nil)
+            if let live = HubPaths.resolveLiveBaseDir(in: cand, ttl: ttl) {
+                persistResolvedBaseDir(live.baseDir)
+                return (true, live.baseDir, live.status, nil)
             }
+        }
+
+        // No live local runtime matched. Clear any unpinned override so the rest of XT
+        // doesn't keep projecting an old RELFlowHub/XHub directory as authoritative.
+        HubPaths.setBaseDirOverride(nil)
+        if let prev, !prev.isEmpty {
+            clearPersistedBaseDir()
         }
 
         return (false, nil, nil, "hub_not_running")
@@ -83,13 +84,25 @@ enum HubConnector {
     static func readHubStatusIfAny(ttl: Double = 3.0) -> HubStatus? {
         // If connected override is set, read from it.
         if let base = HubPaths.baseDirOverride() {
-            if let st = HubPaths.readHubStatus(in: base), st.isAlive(ttl: ttl) {
-                return st
+            if let live = HubPaths.resolveLiveBaseDir(in: base, ttl: ttl) {
+                return live.status
             }
         }
 
         // Otherwise, probe quickly.
         let res = connect(ttl: ttl)
         return res.status
+    }
+
+    private static func persistResolvedBaseDir(_ url: URL) {
+        HubPaths.setBaseDirOverride(url)
+        UserDefaults.standard.set(url.path, forKey: defaultsKey)
+        UserDefaults.standard.set(url.path, forKey: legacyDefaultsKey)
+    }
+
+    private static func clearPersistedBaseDir() {
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: defaultsKey)
+        defaults.removeObject(forKey: legacyDefaultsKey)
     }
 }

@@ -194,6 +194,81 @@ struct HubIPCClientMemoryRetrievalContractTests {
     }
 
     @Test
+    func governedCodingRuntimeTruthRetrievalUsesAutomationKindsAndDualLayers() async throws {
+        let recorder = MemoryRetrievalPayloadRecorder()
+        HubIPCClient.installMemoryRetrievalOverrideForTesting { payload, _ in
+            await recorder.append(payload)
+            return HubIPCClient.MemoryRetrievalResponsePayload(
+                source: "test_memory_retrieval",
+                scope: payload.scope,
+                auditRef: payload.auditRef,
+                reasonCode: nil,
+                denyCode: nil,
+                snippets: [
+                    HubIPCClient.MemoryRetrievalSnippet(
+                        snippetId: "runtime-1",
+                        sourceKind: "automation_execution_report",
+                        title: "Automation execution blocked",
+                        ref: "/tmp/proj-runtime/build/reports/xt_automation_run_handoff_run-1.v1.json#run:run-1",
+                        text: "run_id: run-1\nblocker_code: automation_verify_failed",
+                        score: 94,
+                        truncated: false
+                    )
+                ],
+                truncatedItems: 0,
+                redactedItems: 0
+            )
+        }
+        defer { HubIPCClient.resetMemoryContextResolutionOverrideForTesting() }
+
+        let response = await HubIPCClient.requestMemoryRetrieval(
+            HubIPCClient.MemoryRetrievalRequest(
+                requesterRole: .supervisor,
+                useMode: .supervisorOrchestration,
+                projectId: "proj-runtime",
+                projectRoot: "/tmp/proj-runtime",
+                displayName: "Runtime Project",
+                query: "当前 blocker、retry plan 和 latest guidance 是什么",
+                reason: "supervisor_runtime_truth_review",
+                requestedKinds: [
+                    "automation_execution_report",
+                    "automation_checkpoint",
+                    "automation_retry_package",
+                    "heartbeat_projection",
+                    "guidance_injection"
+                ],
+                explicitRefs: [],
+                allowedLayers: [],
+                retrievalKind: "search",
+                maxResults: 5,
+                maxSnippetChars: 480
+            ),
+            timeoutSec: 0.1
+        )
+
+        let payload = try #require(await recorder.first())
+        let normalized = try #require(response)
+        let result = try #require(normalized.results?.first)
+
+        #expect(payload.requestedKinds == [
+            "automation_execution_report",
+            "automation_checkpoint",
+            "automation_retry_package",
+            "heartbeat_projection",
+            "guidance_injection"
+        ])
+        #expect(Set(payload.allowedLayers) == Set([
+            XTMemoryLayer.l1Canonical.rawValue,
+            XTMemoryLayer.l2Observations.rawValue
+        ]))
+        #expect(payload.retrievalKind == "search")
+        #expect(normalized.status == "ok")
+        #expect(result.sourceKind == "automation_execution_report")
+        #expect(result.ref.contains("xt_automation_run_handoff_run-1.v1.json"))
+        #expect(abs(result.score - 0.94) < 0.0001)
+    }
+
+    @Test
     func grpcRemoteRetrievalFallsBackToLocalWhenAllowed() async throws {
         let localRecorder = MemoryRetrievalPayloadRecorder()
         HubIPCClient.installHubRouteDecisionOverrideForTesting {
@@ -206,7 +281,7 @@ struct HubIPCClientMemoryRetrievalContractTests {
                 remoteUnavailableReasonCode: nil
             )
         }
-        HubIPCClient.installRemoteMemoryRetrievalOverrideForTesting { _ in
+        HubIPCClient.installRemoteMemoryRetrievalOverrideForTesting { _, _ in
             nil
         }
         HubIPCClient.installLocalMemoryRetrievalIPCOverrideForTesting { payload, _ in
@@ -268,7 +343,7 @@ struct HubIPCClientMemoryRetrievalContractTests {
                 remoteUnavailableReasonCode: nil
             )
         }
-        HubIPCClient.installRemoteMemoryRetrievalOverrideForTesting { _ in
+        HubIPCClient.installRemoteMemoryRetrievalOverrideForTesting { _, _ in
             nil
         }
         HubIPCClient.installLocalMemoryRetrievalIPCOverrideForTesting { payload, _ in

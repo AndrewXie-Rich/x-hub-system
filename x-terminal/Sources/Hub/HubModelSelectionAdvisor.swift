@@ -34,6 +34,16 @@ struct HubGlobalRoleModelIssue: Equatable, Identifiable {
     var id: String { role.rawValue }
 }
 
+struct HubLocalTaskModelResolution: Equatable {
+    var taskKind: String
+    var explicitModelId: String?
+    var preferredModelId: String?
+    var requestedModelId: String?
+    var resolvedModel: HubModel?
+    var reasonCode: String
+    var fallbackUsed: Bool
+}
+
 enum HubModelSelectionAdvisor {
     static func allModels(in snapshot: ModelStateSnapshot) -> [HubModel] {
         sortedModels(snapshot.models)
@@ -59,7 +69,10 @@ enum HubModelSelectionAdvisor {
             : nil
         let ranked = rankedCandidates(
             for: requestedId,
-            in: allModels.filter(\.isSelectableForInteractiveRouting)
+            in: allModels.filter { model in
+                model.isSelectableForInteractiveRouting
+                    && isInventoryRunnableCandidate(model)
+            }
         )
             .filter { candidate in
                 guard let resolvedExactMatch else { return true }
@@ -87,7 +100,8 @@ enum HubModelSelectionAdvisor {
     static func globalAssignmentIssue(
         for role: AXRole,
         configuredModelId rawConfiguredModelId: String?,
-        snapshot: ModelStateSnapshot
+        snapshot: ModelStateSnapshot,
+        language: XTInterfaceLanguage = .defaultPreference
     ) -> HubGlobalRoleModelIssue? {
         let configuredModelId = normalize(rawConfiguredModelId)
         guard !configuredModelId.isEmpty,
@@ -104,12 +118,24 @@ enum HubModelSelectionAdvisor {
 
         if let blocked = assessment.nonInteractiveExactMatch {
             let reason = assessment.interactiveRoutingBlockedReason
-                ?? "这个模型属于非对话能力，不适合作为当前角色的工作模型。"
+                ?? XTL10n.text(
+                    language,
+                    zhHans: "这个模型属于非对话能力，不适合作为当前角色的工作模型。",
+                    en: "This model is reserved for non-chat capabilities and is not a good fit for this role's working model."
+                )
             let message: String
             if let suggestedModelId {
-                message = "\(role.displayName) 当前配的是 `\(blocked.id)`，但它不能直接用于对话执行。\(reason) 可先改用 `\(suggestedModelId)`。"
+                message = XTL10n.text(
+                    language,
+                    zhHans: "\(role.displayName(in: language)) 当前配的是 `\(blocked.id)`，但它不能直接用于对话执行。\(reason) 可先改用 `\(suggestedModelId)`。",
+                    en: "\(role.displayName(in: language)) is currently set to `\(blocked.id)`, but it cannot be used directly for interactive execution. \(reason) Switch to `\(suggestedModelId)` first."
+                )
             } else {
-                message = "\(role.displayName) 当前配的是 `\(blocked.id)`，但它不能直接用于对话执行。\(reason)"
+                message = XTL10n.text(
+                    language,
+                    zhHans: "\(role.displayName(in: language)) 当前配的是 `\(blocked.id)`，但它不能直接用于对话执行。\(reason)",
+                    en: "\(role.displayName(in: language)) is currently set to `\(blocked.id)`, but it cannot be used directly for interactive execution. \(reason)"
+                )
             }
             return HubGlobalRoleModelIssue(
                 role: role,
@@ -122,9 +148,17 @@ enum HubModelSelectionAdvisor {
         if let exact = assessment.exactMatch {
             let message: String
             if let suggestedModelId {
-                message = "\(role.displayName) 当前配的是 `\(exact.id)`，但它现在是 \(stateLabel(exact.state))；继续用可能会回退到本地，可先改用 `\(suggestedModelId)`。"
+                message = XTL10n.text(
+                    language,
+                    zhHans: "\(role.displayName(in: language)) 当前配的是 `\(exact.id)`，但它现在是 \(stateLabel(exact.state, language: language))；继续用可能会回退到本地，可先改用 `\(suggestedModelId)`。",
+                    en: "\(role.displayName(in: language)) is currently set to `\(exact.id)`, but it is \(stateLabel(exact.state, language: language)) right now. Continuing may fall back to local, so switch to `\(suggestedModelId)` first."
+                )
             } else {
-                message = "\(role.displayName) 当前配的是 `\(exact.id)`，但它现在是 \(stateLabel(exact.state))；继续用可能会回退到本地。"
+                message = XTL10n.text(
+                    language,
+                    zhHans: "\(role.displayName(in: language)) 当前配的是 `\(exact.id)`，但它现在是 \(stateLabel(exact.state, language: language))；继续用可能会回退到本地。",
+                    en: "\(role.displayName(in: language)) is currently set to `\(exact.id)`, but it is \(stateLabel(exact.state, language: language)) right now. Continuing may fall back to local."
+                )
             }
             return HubGlobalRoleModelIssue(
                 role: role,
@@ -136,9 +170,17 @@ enum HubModelSelectionAdvisor {
 
         let message: String
         if let suggestedModelId {
-            message = "\(role.displayName) 当前配的是 `\(configuredModelId)`，但当前 inventory 里没有精确匹配；可先改用 `\(suggestedModelId)`。"
+            message = XTL10n.text(
+                language,
+                zhHans: "\(role.displayName(in: language)) 当前配的是 `\(configuredModelId)`，但当前 inventory 里没有精确匹配；可先改用 `\(suggestedModelId)`。",
+                en: "\(role.displayName(in: language)) is currently set to `\(configuredModelId)`, but there is no exact match in the current inventory. Switch to `\(suggestedModelId)` first."
+            )
         } else {
-            message = "\(role.displayName) 当前配的是 `\(configuredModelId)`，但当前 inventory 里没有精确匹配。"
+            message = XTL10n.text(
+                language,
+                zhHans: "\(role.displayName(in: language)) 当前配的是 `\(configuredModelId)`，但当前 inventory 里没有精确匹配。",
+                en: "\(role.displayName(in: language)) is currently set to `\(configuredModelId)`, but there is no exact match in the current inventory."
+            )
         }
         return HubGlobalRoleModelIssue(
             role: role,
@@ -198,6 +240,16 @@ enum HubModelSelectionAdvisor {
         )
     }
 
+    private static func isInventoryRunnableCandidate(_ model: HubModel) -> Bool {
+        if model.state == .loaded {
+            return true
+        }
+        if model.isLocalModel {
+            return model.offlineReady
+        }
+        return true
+    }
+
     static func displayName(_ model: HubModel) -> String {
         let name = normalize(model.name)
         if name.isEmpty {
@@ -207,13 +259,20 @@ enum HubModelSelectionAdvisor {
     }
 
     static func stateLabel(_ state: HubModelState) -> String {
+        stateLabel(state, language: .defaultPreference)
+    }
+
+    static func stateLabel(
+        _ state: HubModelState,
+        language: XTInterfaceLanguage
+    ) -> String {
         switch state {
         case .loaded:
-            return "已加载"
+            return XTL10n.HubModelStateCopy.label(.loaded, language: language)
         case .available:
-            return "可用未加载"
+            return XTL10n.HubModelStateCopy.label(.available, language: language)
         case .sleeping:
-            return "休眠"
+            return XTL10n.HubModelStateCopy.label(.sleeping, language: language)
         }
     }
 
@@ -266,6 +325,143 @@ enum HubModelSelectionAdvisor {
         }
         let ordered = sameProvider.isEmpty ? rankedRemote : sameProvider
         return Array(ordered.prefix(candidateLimit))
+    }
+
+    static func resolveLocalTaskModel(
+        taskKind rawTaskKind: String,
+        explicitModelId rawExplicitModelId: String? = nil,
+        preferredModelId rawPreferredModelId: String? = nil,
+        snapshot: ModelStateSnapshot
+    ) -> HubLocalTaskModelResolution {
+        let taskKind = normalize(rawTaskKind).lowercased()
+        let explicitModelId: String? = {
+            let value = normalize(rawExplicitModelId)
+            return value.isEmpty ? nil : value
+        }()
+        let preferredModelId: String? = {
+            let value = normalize(rawPreferredModelId)
+            return value.isEmpty ? nil : value
+        }()
+        let requestedModelId = explicitModelId ?? preferredModelId
+        let localModels = allModels(in: snapshot).filter(\.isLocalModel)
+        let runnableCandidates = rankedRunnableLocalTaskCandidates(
+            taskKind: taskKind,
+            in: localModels
+        )
+
+        if let explicitModelId {
+            guard let exact = exactModelMatch(for: explicitModelId, in: localModels) else {
+                return HubLocalTaskModelResolution(
+                    taskKind: taskKind,
+                    explicitModelId: explicitModelId,
+                    preferredModelId: preferredModelId,
+                    requestedModelId: requestedModelId,
+                    resolvedModel: nil,
+                    reasonCode: "explicit_model_not_found",
+                    fallbackUsed: false
+                )
+            }
+            guard supportsLocalTaskKind(taskKind, model: exact) else {
+                return HubLocalTaskModelResolution(
+                    taskKind: taskKind,
+                    explicitModelId: explicitModelId,
+                    preferredModelId: preferredModelId,
+                    requestedModelId: requestedModelId,
+                    resolvedModel: nil,
+                    reasonCode: "explicit_model_task_unsupported",
+                    fallbackUsed: false
+                )
+            }
+            guard isRunnableLocalTaskCandidate(exact) else {
+                return HubLocalTaskModelResolution(
+                    taskKind: taskKind,
+                    explicitModelId: explicitModelId,
+                    preferredModelId: preferredModelId,
+                    requestedModelId: requestedModelId,
+                    resolvedModel: nil,
+                    reasonCode: "explicit_model_not_runnable",
+                    fallbackUsed: false
+                )
+            }
+            return HubLocalTaskModelResolution(
+                taskKind: taskKind,
+                explicitModelId: explicitModelId,
+                preferredModelId: preferredModelId,
+                requestedModelId: requestedModelId,
+                resolvedModel: exact,
+                reasonCode: "explicit_model_exact",
+                fallbackUsed: false
+            )
+        }
+
+        if let preferredModelId {
+            let preferredMatch = exactModelMatch(for: preferredModelId, in: localModels)
+            if let preferredMatch,
+               supportsLocalTaskKind(taskKind, model: preferredMatch),
+               isRunnableLocalTaskCandidate(preferredMatch) {
+                return HubLocalTaskModelResolution(
+                    taskKind: taskKind,
+                    explicitModelId: nil,
+                    preferredModelId: preferredModelId,
+                    requestedModelId: requestedModelId,
+                    resolvedModel: preferredMatch,
+                    reasonCode: "preferred_model_exact",
+                    fallbackUsed: false
+                )
+            }
+
+            if let fallback = runnableCandidates.first {
+                return HubLocalTaskModelResolution(
+                    taskKind: taskKind,
+                    explicitModelId: nil,
+                    preferredModelId: preferredModelId,
+                    requestedModelId: requestedModelId,
+                    resolvedModel: fallback,
+                    reasonCode: "preferred_model_fallback_task_kind",
+                    fallbackUsed: normalizedModelID(fallback.id) != normalizedModelID(preferredModelId)
+                )
+            }
+
+            let failureReason: String
+            if let preferredMatch {
+                failureReason = supportsLocalTaskKind(taskKind, model: preferredMatch)
+                    ? "preferred_model_not_runnable"
+                    : "preferred_model_task_unsupported"
+            } else {
+                failureReason = "preferred_model_not_found"
+            }
+            return HubLocalTaskModelResolution(
+                taskKind: taskKind,
+                explicitModelId: nil,
+                preferredModelId: preferredModelId,
+                requestedModelId: requestedModelId,
+                resolvedModel: nil,
+                reasonCode: failureReason,
+                fallbackUsed: false
+            )
+        }
+
+        if let fallback = runnableCandidates.first {
+            return HubLocalTaskModelResolution(
+                taskKind: taskKind,
+                explicitModelId: nil,
+                preferredModelId: nil,
+                requestedModelId: nil,
+                resolvedModel: fallback,
+                reasonCode: "task_kind_auto",
+                fallbackUsed: false
+            )
+        }
+
+        return HubLocalTaskModelResolution(
+            taskKind: taskKind,
+            explicitModelId: nil,
+            preferredModelId: nil,
+            requestedModelId: nil,
+            resolvedModel: nil,
+            reasonCode: "no_runnable_local_model_for_task_kind",
+            fallbackUsed: false
+        )
     }
 
     private static func exactModelMatch(
@@ -446,6 +642,99 @@ enum HubModelSelectionAdvisor {
 
     private static func normalizedModelID(_ raw: String) -> String {
         normalize(raw).lowercased()
+    }
+
+    private static func rankedRunnableLocalTaskCandidates(
+        taskKind: String,
+        in models: [HubModel]
+    ) -> [HubModel] {
+        models
+            .filter { model in
+                supportsLocalTaskKind(taskKind, model: model)
+                    && isRunnableLocalTaskCandidate(model)
+            }
+            .sorted { lhs, rhs in
+                let leftRank = localTaskRank(lhs, taskKind: taskKind)
+                let rightRank = localTaskRank(rhs, taskKind: taskKind)
+                if leftRank != rightRank {
+                    return leftRank < rightRank
+                }
+                return lhs.id.localizedCaseInsensitiveCompare(rhs.id) == .orderedAscending
+            }
+    }
+
+    private static func supportsLocalTaskKind(
+        _ taskKind: String,
+        model: HubModel
+    ) -> Bool {
+        let normalizedTaskKind = normalize(taskKind).lowercased()
+        let taskKinds = Set(model.taskKinds.map { normalize($0).lowercased() })
+        let outputModalities = Set(model.outputModalities.map { normalize($0).lowercased() })
+
+        switch normalizedTaskKind {
+        case "text_generate":
+            return model.supportsInteractiveTextGeneration
+        case "embedding":
+            return taskKinds.contains("embedding")
+                || model.isEmbeddingModel
+                || outputModalities.contains("embedding")
+        case "speech_to_text":
+            return taskKinds.contains("speech_to_text")
+        case "text_to_speech":
+            return taskKinds.contains("text_to_speech")
+                || model.isTextToSpeechModel
+                || outputModalities.contains("audio")
+        case "vision_understand":
+            return taskKinds.contains("vision_understand")
+        case "ocr":
+            return taskKinds.contains("ocr")
+        default:
+            return false
+        }
+    }
+
+    private static func isRunnableLocalTaskCandidate(_ model: HubModel) -> Bool {
+        guard model.isLocalModel else { return false }
+        if model.state == .loaded {
+            return true
+        }
+        return model.offlineReady
+    }
+
+    private static func localTaskRank(
+        _ model: HubModel,
+        taskKind: String
+    ) -> (Int, Int, Int, Int, String) {
+        let outputModalities = Set(model.outputModalities.map { normalize($0).lowercased() })
+        let taskKinds = Set(model.taskKinds.map { normalize($0).lowercased() })
+        let taskSpecificRank: Int = {
+            switch taskKind {
+            case "embedding":
+                return outputModalities.contains("embedding") ? 0 : 1
+            case "speech_to_text":
+                return outputModalities.contains("segments") ? 0 : 1
+            case "text_to_speech":
+                return outputModalities.contains("audio") ? 0 : 1
+            case "ocr":
+                if outputModalities.contains("spans") {
+                    return 0
+                }
+                return outputModalities.contains("text") ? 1 : 2
+            case "vision_understand":
+                return outputModalities.contains("text") ? 0 : 1
+            default:
+                return 0
+            }
+        }()
+        let specializationRank = taskKinds.count <= 1 ? 0 : 1
+        let offlineRank = model.state == .loaded || model.offlineReady ? 0 : 1
+        return (
+            stateRank(model.state),
+            taskSpecificRank,
+            specializationRank,
+            offlineRank,
+            normalizedSortName(model)
+        )
     }
 
     private static func normalize(_ raw: String?) -> String {

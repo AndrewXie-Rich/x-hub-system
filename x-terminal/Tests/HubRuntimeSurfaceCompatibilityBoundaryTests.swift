@@ -47,9 +47,6 @@ struct HubRuntimeSurfaceCompatibilityBoundaryTests {
     }
 
     private func repoRoot() -> URL {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
+        monorepoTestRepoRoot(filePath: #filePath)
     }
 }

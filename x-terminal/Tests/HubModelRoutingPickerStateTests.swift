@@ -96,6 +96,79 @@ struct HubModelRoutingPickerStateTests {
     }
 
     @Test
+    func supplementaryPresentationSeparatesEvidenceBadgesFromPrimaryBadges() {
+        let presentation = HubModelRoutingSupplementaryPresentation(
+            badges: [
+                HubModelRoutingBadgePresentation(
+                    text: "项目 Override",
+                    tone: .neutral,
+                    kind: .source
+                ),
+                HubModelRoutingBadgePresentation(
+                    text: "Fallback",
+                    tone: .warning,
+                    kind: .status
+                ),
+                HubModelRoutingBadgePresentation(
+                    text: "Local qwen3-14b-mlx",
+                    tone: .warning,
+                    kind: .detail
+                ),
+                HubModelRoutingBadgePresentation(
+                    text: "Deny 当前设备不允许远端 export",
+                    tone: .danger,
+                    kind: .evidence
+                )
+            ],
+            summaryText: "summary"
+        )
+
+        #expect(presentation.primaryBadges.map(\.text) == ["项目 Override", "Fallback", "Local qwen3-14b-mlx"])
+        #expect(presentation.evidenceBadges.map(\.text) == ["Deny 当前设备不允许远端 export"])
+    }
+
+    @Test
+    func supplementaryPresentationHasEmptyEvidenceSliceWhenNoEvidenceBadgeExists() {
+        let presentation = HubModelRoutingSupplementaryPresentation(
+            badges: [
+                HubModelRoutingBadgePresentation(
+                    text: "继承全局",
+                    tone: .neutral,
+                    kind: .source
+                ),
+                HubModelRoutingBadgePresentation(
+                    text: "Pending",
+                    tone: .neutral,
+                    kind: .status
+                )
+            ],
+            summaryText: "summary"
+        )
+
+        #expect(presentation.primaryBadges.map(\.text) == ["继承全局", "Pending"])
+        #expect(presentation.evidenceBadges.isEmpty)
+    }
+
+    @Test
+    func remoteSourceBadgesUseIconsForKeyAndHost() {
+        let model = makeModel(
+            id: "openai/gpt-5.4",
+            name: "GPT 5.4",
+            state: .loaded,
+            backend: "openai",
+            remoteGroupDisplayName: "Team Pro",
+            remoteProviderModelID: "gpt-5.4",
+            remoteKeyReference: "crs",
+            remoteEndpointHost: "aispeed.store"
+        )
+
+        let badges = model.routingSourceBadges(language: .defaultPreference)
+
+        #expect(badges.map(\.text) == ["crs", "aispeed.store"])
+        #expect(badges.map(\.iconName) == ["key.fill", "network"])
+    }
+
+    @Test
     func explicitRecommendationWinsOverAutomaticFallbackRecommendation() throws {
         let recommendation = try #require(
             HubModelPickerRecommendationState.resolved(
@@ -165,7 +238,28 @@ struct HubModelRoutingPickerStateTests {
         #expect(recommendation.modelId == "mlx-community/qwen3-8b-4bit")
         #expect(recommendation.kind == .switchRecommended)
         #expect(recommendation.message.contains("检索专用"))
-        #expect(recommendation.message.contains("retrieval"))
+        #expect(recommendation.message.contains("做检索"))
+    }
+
+    @Test
+    func automaticRecommendationCanRenderInEnglish() throws {
+        let recommendation = try #require(
+            HubModelPickerRecommendationState.resolved(
+                explicitModelId: nil,
+                explicitMessage: nil,
+                selectedModelId: "openai/gpt-5.4",
+                models: [
+                    makeModel(id: "openai/gpt-5.4", name: "GPT 5.4", state: .available),
+                    makeModel(id: "openai/gpt-4.1", name: "GPT 4.1", state: .loaded)
+                ],
+                language: .english
+            )
+        )
+
+        #expect(recommendation.kind == .switchRecommended)
+        #expect(recommendation.message.contains("openai/gpt-5.4"))
+        #expect(recommendation.message.contains("openai/gpt-4.1"))
+        #expect(recommendation.message.contains("switch to the loaded model"))
     }
 
     @Test
@@ -189,7 +283,11 @@ struct HubModelRoutingPickerStateTests {
         state: HubModelState,
         backend: String = "openai",
         modelPath: String? = nil,
-        taskKinds: [String]? = nil
+        taskKinds: [String]? = nil,
+        remoteGroupDisplayName: String? = nil,
+        remoteProviderModelID: String? = nil,
+        remoteKeyReference: String? = nil,
+        remoteEndpointHost: String? = nil
     ) -> HubModel {
         HubModel(
             id: id,
@@ -204,7 +302,11 @@ struct HubModelRoutingPickerStateTests {
             tokensPerSec: nil,
             modelPath: modelPath,
             note: nil,
-            taskKinds: taskKinds
+            taskKinds: taskKinds,
+            remoteGroupDisplayName: remoteGroupDisplayName,
+            remoteProviderModelID: remoteProviderModelID,
+            remoteKeyReference: remoteKeyReference,
+            remoteEndpointHost: remoteEndpointHost
         )
     }
 }

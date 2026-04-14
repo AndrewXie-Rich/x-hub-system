@@ -21,8 +21,13 @@ actor HubRemoteRuntimeSurfaceOverrideCache {
         var expiresAt: Date
     }
 
+    private struct NegativeEntry: Sendable {
+        var expiresAt: Date
+    }
+
     private let ttlSeconds: TimeInterval
     private var entries: [Key: Entry] = [:]
+    private var negativeEntries: [Key: NegativeEntry] = [:]
 
     init(ttlSeconds: Double = 3.0) {
         self.ttlSeconds = max(1.0, ttlSeconds)
@@ -37,26 +42,46 @@ actor HubRemoteRuntimeSurfaceOverrideCache {
         return entry.snapshot
     }
 
+    func hasRecentMiss(for key: Key, now: Date = Date()) -> Bool {
+        purgeExpiredEntries(now: now)
+        guard let entry = negativeEntries[key], entry.expiresAt > now else {
+            negativeEntries[key] = nil
+            return false
+        }
+        return true
+    }
+
     func store(_ snapshot: HubIPCClient.RuntimeSurfaceOverridesSnapshot, for key: Key, now: Date = Date()) {
         purgeExpiredEntries(now: now)
         entries[key] = Entry(snapshot: snapshot, expiresAt: now.addingTimeInterval(ttlSeconds))
+        negativeEntries[key] = nil
+    }
+
+    func markMiss(for key: Key, now: Date = Date()) {
+        purgeExpiredEntries(now: now)
+        entries[key] = nil
+        negativeEntries[key] = NegativeEntry(expiresAt: now.addingTimeInterval(ttlSeconds))
     }
 
     func invalidate(projectId: String?) {
         let keyProjectId = projectId?.trimmingCharacters(in: .whitespacesAndNewlines)
         if keyProjectId == nil || keyProjectId?.isEmpty == true {
             entries.removeAll(keepingCapacity: true)
+            negativeEntries.removeAll(keepingCapacity: true)
             return
         }
         entries = entries.filter { $0.key.projectId != keyProjectId }
+        negativeEntries = negativeEntries.filter { $0.key.projectId != keyProjectId }
     }
 
     func invalidate(key: Key) {
         entries[key] = nil
+        negativeEntries[key] = nil
     }
 
     private func purgeExpiredEntries(now: Date) {
         entries = entries.filter { $0.value.expiresAt > now }
+        negativeEntries = negativeEntries.filter { $0.value.expiresAt > now }
     }
 }
 
