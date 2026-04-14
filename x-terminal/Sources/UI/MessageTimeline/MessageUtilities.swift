@@ -71,13 +71,24 @@ struct AccessibleMessageCard: View {
     }
 
     private var accessibilityLabel: String {
-        let role = message.role.rawValue.capitalized
+        let role = accessibilityRoleLabel
         let time = Date(timeIntervalSince1970: message.createdAt).formatted(date: .omitted, time: .shortened)
-        return "\(role) message at \(time)"
+        return "\(role)消息，时间 \(time)"
     }
 
     private var accessibilityHint: String {
-        "Double tap to select, triple tap to copy"
+        "双击选中，三击复制"
+    }
+
+    private var accessibilityRoleLabel: String {
+        switch message.role {
+        case .user:
+            return "用户"
+        case .assistant:
+            return "助手"
+        case .tool:
+            return "工具"
+        }
     }
 }
 
@@ -171,24 +182,24 @@ struct MessageDebugView: View {
 
             if showDebugInfo {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Debug Info")
+                    Text("调试信息")
                         .font(.caption)
                         .fontWeight(.bold)
 
-                    Text("ID: \(message.id)")
+                    Text("ID：\(message.id)")
                         .font(.system(.caption2, design: .monospaced))
 
-                    Text("Role: \(message.role.rawValue)")
+                    Text("角色：\(message.role.rawValue)")
                         .font(.system(.caption2, design: .monospaced))
 
-                    Text("Created: \(Date(timeIntervalSince1970: message.createdAt).formatted())")
+                    Text("创建时间：\(Date(timeIntervalSince1970: message.createdAt).formatted())")
                         .font(.system(.caption2, design: .monospaced))
 
-                    Text("Content Length: \(message.content.count) chars")
+                    Text("内容长度：\(message.content.count) 字符")
                         .font(.system(.caption2, design: .monospaced))
 
                     if let tag = message.tag {
-                        Text("Tag: \(tag)")
+                        Text("标签：\(tag)")
                             .font(.system(.caption2, design: .monospaced))
                     }
                 }
@@ -238,17 +249,17 @@ struct PerformanceOverlay: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Performance")
+            Text("性能")
                 .font(.caption)
                 .fontWeight(.bold)
 
-            Text("Last Render: \(String(format: "%.2f", monitor.renderTime * 1000))ms")
+            Text("最近渲染：\(String(format: "%.2f", monitor.renderTime * 1000))ms")
                 .font(.system(.caption2, design: .monospaced))
 
-            Text("Avg Render: \(String(format: "%.2f", monitor.averageRenderTime * 1000))ms")
+            Text("平均渲染：\(String(format: "%.2f", monitor.averageRenderTime * 1000))ms")
                 .font(.system(.caption2, design: .monospaced))
 
-            Text("Messages: \(monitor.messageCount)")
+            Text("消息数：\(monitor.messageCount)")
                 .font(.system(.caption2, design: .monospaced))
         }
         .padding(8)

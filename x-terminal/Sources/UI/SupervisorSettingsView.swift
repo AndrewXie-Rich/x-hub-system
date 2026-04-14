@@ -1,15 +1,30 @@
 import Foundation
 import SwiftUI
 
+private struct SupervisorProjectModelPanelSelection {
+    let projectId: String
+    let projectEntry: AXProjectEntry?
+    let projectContext: AXProjectContext?
+    let projectConfig: AXProjectConfig?
+    let projectOverrideModelId: String?
+    let inheritedModelId: String?
+    let selectedModelId: String?
+    let selectedHubModel: HubModel?
+    let selectedPresentation: ModelInfo?
+    let sourceLabel: String
+}
+
 struct SupervisorSettingsView: View {
     @EnvironmentObject private var appModel: AppModel
     @StateObject private var modelManager = HubModelManager.shared
     @StateObject private var supervisorManager = SupervisorManager.shared
     @StateObject private var calendarAccessController = XTCalendarAccessController.shared
     @StateObject private var calendarEventStore = XTCalendarEventStore.shared
+    @StateObject private var interfaceLanguageUpdateFeedback = XTTransientUpdateFeedbackState()
     @StateObject private var workModeUpdateFeedback = XTTransientUpdateFeedbackState()
     @StateObject private var privacyModeUpdateFeedback = XTTransientUpdateFeedbackState()
     @StateObject private var recentRawContextUpdateFeedback = XTTransientUpdateFeedbackState()
+    @StateObject private var reviewMemoryDepthUpdateFeedback = XTTransientUpdateFeedbackState()
     @StateObject private var projectModelAssignmentUpdateFeedback = XTTransientUpdateFeedbackState()
     @State private var selectedProjectId: String?
     @State private var selectedRole: AXRole = .coder
@@ -18,64 +33,91 @@ struct SupervisorSettingsView: View {
     @State private var calendarReminderPreviewPhase: SupervisorCalendarReminderPhase = .headsUp
     @State private var calendarReminderSmokeStatus: String = ""
     @State private var voiceDiagnosticsExpanded: Bool = false
+    @State private var activeFocusRequest: XTSupervisorSettingsFocusRequest?
+    @State private var interfaceLanguageChangeNotice: XTSettingsChangeNotice?
     @State private var workModeChangeNotice: XTSettingsChangeNotice?
     @State private var privacyModeChangeNotice: XTSettingsChangeNotice?
     @State private var recentRawContextChangeNotice: XTSettingsChangeNotice?
+    @State private var reviewMemoryDepthChangeNotice: XTSettingsChangeNotice?
     @State private var projectModelAssignmentChangeNotice: XTSettingsChangeNotice?
+    @State private var visibleModelInventory = XTVisibleHubModelInventory.empty
+    @State private var sortedProjects: [AXProjectEntry] = []
     
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                header
-                supervisorWorkModeSection
-                supervisorPrivacyModeSection
-                SupervisorPersonaCenterView()
-                SupervisorPersonalMemoryCenterView()
-                recentRawContextSection
-                SupervisorFollowUpQueueView()
-                SupervisorPersonalReviewCenterView()
-                heartbeatPolicySection
-                supervisorCalendarReminderSection
-                voiceRuntimeSection
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    header
+                    interfaceLanguageSection
+                    supervisorWorkModeSection
+                    supervisorPrivacyModeSection
+                    SupervisorPersonaCenterView()
+                    SupervisorPersonalMemoryCenterView()
+                    recentRawContextSection
+                        .id(XTSupervisorSettingsFocusSection.recentRawContext.rawValue)
+                    reviewMemoryDepthSection
+                        .id(XTSupervisorSettingsFocusSection.reviewMemoryDepth.rawValue)
+                    SupervisorFollowUpQueueView()
+                    SupervisorPersonalReviewCenterView()
+                    heartbeatPolicySection
+                    supervisorCalendarReminderSection
+                    voiceRuntimeSection
 
-                Divider()
+                    Divider()
 
-                if appModel.sortedProjects.isEmpty {
-                    Text("没有项目。请先创建或打开一个项目。")
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        .padding()
-                } else {
-                    modelAssignmentArea
-                        .frame(minHeight: 420)
+                    if sortedProjects.isEmpty {
+                        Text("没有项目。请先创建或打开一个项目。")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .padding()
+                    } else {
+                        modelAssignmentArea
+                            .frame(minHeight: 420)
+                    }
+                }
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+            .frame(minWidth: 900, minHeight: 700)
+            .onAppear {
+                modelManager.setAppModel(appModel)
+                syncWakeTriggerWordsDraft()
+                syncVisibleModelInventory()
+                syncSortedProjects()
+                refreshSupervisorCalendarReminderSurface(forceUpcomingRefresh: true)
+                processSupervisorSettingsFocusRequest(proxy)
+                Task {
+                    await modelManager.fetchModels()
                 }
             }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-        }
-        .frame(minWidth: 900, minHeight: 700)
-        .onAppear {
-            modelManager.setAppModel(appModel)
-            syncWakeTriggerWordsDraft()
-            refreshSupervisorCalendarReminderSurface(forceUpcomingRefresh: true)
-            Task {
-                await modelManager.fetchModels()
+            .onChange(of: appModel.registry.updatedAt) { _ in
+                syncSortedProjects()
             }
-        }
-        .onChange(of: supervisorManager.voiceWakeProfileSnapshot.generatedAtMs) { _ in
-            if wakeTriggerWordsDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                syncWakeTriggerWordsDraft()
+            .onChange(of: modelInventorySnapshot) { _ in
+                syncVisibleModelInventory()
             }
-        }
-        .onDisappear {
-            workModeUpdateFeedback.cancel(resetState: true)
-            privacyModeUpdateFeedback.cancel(resetState: true)
-            recentRawContextUpdateFeedback.cancel(resetState: true)
-            projectModelAssignmentUpdateFeedback.cancel(resetState: true)
-            workModeChangeNotice = nil
-            privacyModeChangeNotice = nil
-            recentRawContextChangeNotice = nil
-            projectModelAssignmentChangeNotice = nil
+            .onChange(of: appModel.supervisorSettingsFocusRequest?.nonce) { _ in
+                processSupervisorSettingsFocusRequest(proxy)
+            }
+            .onChange(of: supervisorManager.voiceWakeProfileSnapshot.generatedAtMs) { _ in
+                if wakeTriggerWordsDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    syncWakeTriggerWordsDraft()
+                }
+            }
+            .onDisappear {
+                interfaceLanguageUpdateFeedback.cancel(resetState: true)
+                workModeUpdateFeedback.cancel(resetState: true)
+                privacyModeUpdateFeedback.cancel(resetState: true)
+                recentRawContextUpdateFeedback.cancel(resetState: true)
+                reviewMemoryDepthUpdateFeedback.cancel(resetState: true)
+                projectModelAssignmentUpdateFeedback.cancel(resetState: true)
+                interfaceLanguageChangeNotice = nil
+                workModeChangeNotice = nil
+                privacyModeChangeNotice = nil
+                recentRawContextChangeNotice = nil
+                reviewMemoryDepthChangeNotice = nil
+                projectModelAssignmentChangeNotice = nil
+            }
         }
     }
     
@@ -97,13 +139,22 @@ struct SupervisorSettingsView: View {
                     }
                 }
                 .buttonStyle(.bordered)
+
+                Button("打开 AI 模型") {
+                    supervisorManager.requestSupervisorWindow(
+                        sheet: .modelSettings,
+                        reason: "supervisor_settings_open_model_settings",
+                        focusConversation: false
+                    )
+                }
+                .buttonStyle(.bordered)
             }
             
             Text("这里统一管理 Supervisor 的人格、心跳 / 语音运行时，以及各个项目的模型分配。")
                 .font(.body)
                 .foregroundStyle(.secondary)
 
-            Text("如果某台已配对终端需要独立的本地加载配置覆盖，例如更大的 `ctx`、不同的 `ttl / par / identifier`，请在 Hub 的设备编辑页调整该设备的本地模型覆盖；这里显示的是 Hub 模型目录的默认值。")
+            Text("如果某台已配对终端要用不同的本地模型加载参数，请到 Hub 的设备编辑页给这台设备单独覆盖；这里显示的是 Hub 模型目录的默认配置。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -119,6 +170,68 @@ struct SupervisorSettingsView: View {
         }
     }
 
+    private var interfaceLanguage: XTInterfaceLanguage {
+        appModel.settingsStore.settings.interfaceLanguage
+    }
+
+    private var interfaceLanguageSection: some View {
+        let language = appModel.settingsStore.settings.interfaceLanguage
+
+        return VStack(alignment: .leading, spacing: 12) {
+            Text(XTL10n.InterfaceLanguage.title.resolve(language))
+                .font(.headline)
+
+            Text(XTL10n.InterfaceLanguage.rolloutSummary.resolve(language))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if interfaceLanguageUpdateFeedback.showsBadge,
+               let interfaceLanguageChangeNotice {
+                XTSettingsChangeNoticeInlineView(
+                    notice: interfaceLanguageChangeNotice,
+                    tint: .accentColor
+                )
+            }
+
+            Picker(
+                XTL10n.InterfaceLanguage.pickerLabel.resolve(language),
+                selection: Binding(
+                    get: { appModel.settingsStore.settings.interfaceLanguage },
+                    set: { updateInterfaceLanguage($0) }
+                )
+            ) {
+                ForEach(XTInterfaceLanguage.allCases) { option in
+                    Text(option.displayName(in: language)).tag(option)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(XTL10n.InterfaceLanguage.currentValue(language, language: language))
+                    .font(.caption.weight(.semibold))
+
+                Text(XTL10n.InterfaceLanguage.rolloutCoverage.resolve(language))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(XTL10n.InterfaceLanguage.partialRollout.resolve(language))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(12)
+        .xtTransientUpdateCardChrome(
+            cornerRadius: 10,
+            isUpdated: interfaceLanguageUpdateFeedback.isHighlighted,
+            focusTint: .accentColor,
+            updateTint: .accentColor,
+            baseBackground: Color(NSColor.controlBackgroundColor)
+        )
+    }
+
     private var supervisorWorkModeSection: some View {
         let mode = appModel.settingsStore.settings.supervisorWorkMode
 
@@ -126,7 +239,7 @@ struct SupervisorSettingsView: View {
             Text("工作模式")
                 .font(.headline)
 
-            Text("A-tier 决定权限上限，S-tier 决定监督深度；这里决定 Supervisor 是只回答、会帮你推进，还是允许在治理边界内自动执行。切换模式不会自动抬高任何项目的 A-tier。")
+            Text("A-Tier 决定权限上限，S-Tier 决定监督深度；这里决定 Supervisor 是只回答、会帮你推进，还是允许在治理边界内自动执行。切换模式不会自动抬高任何项目的 A-Tier。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -163,7 +276,7 @@ struct SupervisorSettingsView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text("硬边界：项目治理、授权状态、runtime readiness 和 fail-closed gate 只会继续收紧，不会因为切到这个模式就自动放大权限。")
+                Text("硬边界：项目治理、授权状态和运行时就绪只会继续收紧，不会因为切到这个模式就自动放大权限。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -173,7 +286,7 @@ struct SupervisorSettingsView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("对话模式：只回答你明确提出的问题，不主动推进，也不自动执行。")
                     Text("推进模式：会给计划、提醒和下一步建议，但先给方案，不直接自己开跑。")
-                    Text("自动执行模式：只有在 A-tier、S-tier、授权和 runtime 都允许时，才会继续自动推进和执行。")
+                    Text("自动执行模式：只有在 A-Tier、S-Tier、授权和 runtime 都允许时，才会继续自动推进和执行。")
                     Text("隐私模式是另一条轴：它不会切断 Hub 长期记忆，只会决定最近原始对话保留多少、以及是否更偏向摘要。")
                 }
                 .font(.caption)
@@ -476,6 +589,10 @@ struct SupervisorSettingsView: View {
             Text("最近原始上下文")
                 .font(.headline)
 
+            if let context = focusContext(for: .recentRawContext) {
+                XTFocusContextCard(context: context)
+            }
+
             Text("这里控制 Supervisor 最近原始对话保留多少。硬底线固定是 8 个来回；这个设置调的是 ceiling，不会替代 long-term memory，也不会改动 5 层记忆内核。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -532,6 +649,140 @@ struct SupervisorSettingsView: View {
         )
     }
 
+    private var reviewMemoryDepthSection: some View {
+        let selectedProfile = appModel.settingsStore.settings.supervisorReviewMemoryDepthProfile
+        let snapshot = supervisorManager.supervisorMemoryAssemblySnapshot
+        let snapshotConfigured = snapshot.flatMap {
+            XTSupervisorReviewMemoryDepthProfile(rawValue: $0.configuredReviewMemoryDepth)
+        }
+        let snapshotRecommended = snapshot.flatMap {
+            XTSupervisorReviewMemoryDepthProfile(rawValue: $0.recommendedReviewMemoryDepth)
+        }
+        let snapshotEffective = snapshot.flatMap {
+            XTSupervisorReviewMemoryDepthProfile(rawValue: $0.effectiveReviewMemoryDepth)
+        }
+        let snapshotCeiling = snapshot.flatMap {
+            XTMemoryServingProfile(rawValue: $0.sTierReviewMemoryCeiling)
+        }
+        let snapshotMatchesCurrentConfig = snapshotConfigured == selectedProfile
+
+        return VStack(alignment: .leading, spacing: 12) {
+            Text("Review Memory Depth")
+                .font(.headline)
+
+            if let context = focusContext(for: .reviewMemoryDepth) {
+                XTFocusContextCard(context: context)
+            }
+
+            Text("这里控制 Supervisor 在 recent raw context 之外，愿意为 review / intervention 再带多厚的治理记忆。它不会抬高项目权限、不会放宽远端导出，也不会替代 S-Tier ceiling。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if reviewMemoryDepthUpdateFeedback.showsBadge,
+               let reviewMemoryDepthChangeNotice {
+                XTSettingsChangeNoticeInlineView(
+                    notice: reviewMemoryDepthChangeNotice,
+                    tint: .accentColor
+                )
+            }
+
+            Picker("Review Memory Depth", selection: Binding(
+                get: { appModel.settingsStore.settings.supervisorReviewMemoryDepthProfile },
+                set: { updateSupervisorReviewMemoryDepthProfile($0) }
+            )) {
+                ForEach(XTSupervisorReviewMemoryDepthProfile.allCases) { profile in
+                    Text(profile.displayName).tag(profile)
+                }
+            }
+            .pickerStyle(.menu)
+            .frame(width: 280, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("当前配置：\(selectedProfile.displayName)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.primary)
+
+                Text(selectedProfile.summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text("说明：Review Memory Depth 只决定 Supervisor 想看多深的 review-memory；真正能看到多少，仍由 focused project 的 S-Tier ceiling 和 runtime resolver 一起裁决。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let snapshot, snapshotMatchesCurrentConfig {
+                    let recommendedText = snapshotRecommended?.displayName ?? snapshot.recommendedReviewMemoryDepth
+                    let effectiveText = snapshotEffective?.displayName ?? snapshot.effectiveReviewMemoryDepth
+                    Text("最近一次实际装配：recommended \(recommendedText) · effective \(effectiveText)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if snapshot.reviewMemoryCeilingHit,
+                       let snapshotCeiling {
+                        Text("注意：最近一次装配被当前 S-Tier ceiling \(snapshotCeiling.rawValue) 收束，所以 effective 没有完全吃到你配置的深度。")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                } else if let snapshotConfigured {
+                    Text("最近一次 runtime 仍按 \(snapshotConfigured.displayName) 组装；你刚改的配置会在下一轮 Supervisor memory assembly 生效。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text("当前还没有 recent assembly snapshot；下一轮 Supervisor 组装会开始按这个配置请求 review-memory，并继续保留 fail-closed 与 audit 语义。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(12)
+        .xtTransientUpdateCardChrome(
+            cornerRadius: 10,
+            isUpdated: reviewMemoryDepthUpdateFeedback.isHighlighted,
+            focusTint: .accentColor,
+            updateTint: .accentColor,
+            baseBackground: Color(NSColor.controlBackgroundColor)
+        )
+    }
+
+    private func processSupervisorSettingsFocusRequest(_ proxy: ScrollViewProxy) {
+        guard let request = appModel.supervisorSettingsFocusRequest else { return }
+        activeFocusRequest = request
+        withAnimation(.easeInOut(duration: 0.2)) {
+            proxy.scrollTo(request.section.rawValue, anchor: .top)
+        }
+        appModel.clearSupervisorSettingsFocusRequest(request)
+        scheduleFocusContextClear(nonce: request.nonce)
+    }
+
+    private func focusContext(
+        for section: XTSupervisorSettingsFocusSection
+    ) -> XTSectionFocusContext? {
+        guard activeFocusRequest?.section == section else { return nil }
+        return activeFocusRequest?.context
+    }
+
+    private func scheduleFocusContextClear(nonce: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12) {
+            if activeFocusRequest?.nonce == nonce {
+                activeFocusRequest = nil
+            }
+        }
+    }
+
+    private func updateInterfaceLanguage(_ language: XTInterfaceLanguage) {
+        guard appModel.settingsStore.settings.interfaceLanguage != language else { return }
+        appModel.setInterfaceLanguage(language)
+        interfaceLanguageChangeNotice = XTSettingsChangeNoticeBuilder.interfaceLanguage(language)
+        interfaceLanguageUpdateFeedback.trigger()
+    }
+
     private func updateSupervisorWorkMode(_ mode: XTSupervisorWorkMode) {
         guard appModel.settingsStore.settings.supervisorWorkMode != mode else { return }
         appModel.setSupervisorWorkMode(mode)
@@ -560,6 +811,15 @@ struct SupervisorSettingsView: View {
             privacyMode: appModel.settingsStore.settings.supervisorPrivacyMode
         )
         recentRawContextUpdateFeedback.trigger()
+    }
+
+    private func updateSupervisorReviewMemoryDepthProfile(
+        _ profile: XTSupervisorReviewMemoryDepthProfile
+    ) {
+        guard appModel.settingsStore.settings.supervisorReviewMemoryDepthProfile != profile else { return }
+        appModel.setSupervisorReviewMemoryDepthProfile(profile)
+        reviewMemoryDepthChangeNotice = XTSettingsChangeNoticeBuilder.supervisorReviewMemoryDepth(profile)
+        reviewMemoryDepthUpdateFeedback.trigger()
     }
 
     private var voiceRuntimeSection: some View {
@@ -818,15 +1078,17 @@ struct SupervisorSettingsView: View {
                 )
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(supervisorManager.voiceReadinessSnapshot.overallState.tint)
-                Text("就绪状态：\(supervisorManager.voiceReadinessSnapshot.overallState.rawValue)")
+                Text("就绪状态：\(voiceSurfaceStateLabel(supervisorManager.voiceReadinessSnapshot.overallState))")
                     .font(.caption)
-                Text("首任务可用：\(supervisorManager.voiceReadinessSnapshot.readyForFirstTask ? "是" : "否")")
+                Text("首个任务：\(supervisorManager.voiceReadinessSnapshot.readyForFirstTask ? "可以直接开始" : "还不能直接开始")")
                     .font(.caption)
                 if !supervisorManager.voiceReadinessSnapshot.primaryReasonCode.isEmpty {
-                    Text("主原因：\(supervisorManager.voiceReadinessSnapshot.primaryReasonCode)")
+                    Text(
+                        "主原因：\(SupervisorVoiceReasonPresentation.displayTextOrRaw(supervisorManager.voiceReadinessSnapshot.primaryReasonCode) ?? supervisorManager.voiceReadinessSnapshot.primaryReasonCode)"
+                    )
                         .font(.caption)
                 }
-                Text("当前链路：\(supervisorManager.voiceRouteDecision.route.rawValue)")
+                Text("当前链路：\(supervisorManager.voiceRouteDecision.route.displayName)")
                     .font(.caption)
                 Text("当前人格：\(personaRuntimePresentation.persistedActivePersonaName)")
                     .font(.caption)
@@ -834,48 +1096,58 @@ struct SupervisorSettingsView: View {
                     .font(.caption)
                 Text("语音包覆盖：\(activePersonaVoicePackOverlaySummary)")
                     .font(.caption)
-                Text("语音语言：\(voiceLocaleSelection.rawValue)")
+                Text("语音语言：\(voiceLocaleSelection.displayName)")
                     .font(.caption)
-                Text("音色：\(effectiveVoicePreferences.timbre.rawValue)")
+                Text("音色：\(effectiveVoicePreferences.timbre.displayName)")
                     .font(.caption)
                 Text("语速：\(voiceSpeechRateText(effectiveVoicePreferences.speechRateMultiplier))")
                     .font(.caption)
                 Text("当前覆盖：\(personaRuntimePresentation.persistedActiveVoiceSummary)")
                     .font(.caption)
-                Text("原因：\(supervisorManager.voiceRouteDecision.reasonCode)")
+                Text(
+                    "原因：\(SupervisorVoiceReasonPresentation.displayTextOrRaw(supervisorManager.voiceRouteDecision.reasonCode) ?? supervisorManager.voiceRouteDecision.reasonCode)"
+                )
                     .font(.caption)
-                Text("授权：\(supervisorManager.voiceAuthorizationStatus.rawValue)")
+                Text("权限状态：\(voiceAuthorizationStatusText(supervisorManager.voiceAuthorizationStatus))")
                     .font(.caption)
-                Text("会话状态：\(supervisorManager.voiceRuntimeState.state.rawValue)")
+                Text("会话状态：\(voiceSessionPhaseText(supervisorManager.voiceRuntimeState.state))")
                     .font(.caption)
                 Text("说话时打断：\(appModel.settingsStore.settings.voice.interruptOnSpeech ? "开启" : "关闭")")
                     .font(.caption)
-                Text("唤醒词同步：\(supervisorManager.voiceWakeProfileSnapshot.syncState.rawValue)")
+                Text("唤醒词同步：\(voiceWakeProfileSyncStateText(supervisorManager.voiceWakeProfileSnapshot.syncState))")
                     .font(.caption)
-                Text("目标唤醒模式：\(supervisorManager.voiceWakeProfileSnapshot.desiredWakeMode.rawValue)")
+                Text("目标唤醒模式：\(supervisorManager.voiceWakeProfileSnapshot.desiredWakeMode.displayName)")
                     .font(.caption)
-                Text("实际唤醒模式：\(supervisorManager.voiceWakeProfileSnapshot.effectiveWakeMode.rawValue)")
+                Text("实际唤醒模式：\(supervisorManager.voiceWakeProfileSnapshot.effectiveWakeMode.displayName)")
                     .font(.caption)
-                Text("唤醒词来源：\(supervisorManager.voiceWakeProfileSnapshot.profileSource?.rawValue ?? "无")")
+                Text("唤醒词来源：\(voiceWakeProfileSourceText(supervisorManager.voiceWakeProfileSnapshot.profileSource))")
                     .font(.caption)
-                Text("唤醒词原因：\(supervisorManager.voiceWakeProfileSnapshot.reasonCode)")
+                Text(
+                    "唤醒词原因：\(SupervisorVoiceReasonPresentation.displayTextOrRaw(supervisorManager.voiceWakeProfileSnapshot.reasonCode) ?? supervisorManager.voiceWakeProfileSnapshot.reasonCode)"
+                )
                     .font(.caption)
                 if !supervisorManager.voiceWakeProfileSnapshot.triggerWords.isEmpty {
                     Text("唤醒词列表：\(supervisorManager.voiceWakeProfileSnapshot.triggerWords.joined(separator: ", "))")
                         .font(.caption)
                 }
                 if let remoteReason = supervisorManager.voiceWakeProfileSnapshot.lastRemoteReasonCode, !remoteReason.isEmpty {
-                    Text("远端同步原因：\(remoteReason)")
+                    Text(
+                        "远端同步原因：\(SupervisorVoiceReasonPresentation.displayTextOrRaw(remoteReason) ?? remoteReason)"
+                    )
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Text("唤醒能力：\(supervisorManager.voiceRouteDecision.wakeCapability)")
+                Text("唤醒能力：\(voiceWakeCapabilityText(supervisorManager.voiceRouteDecision.wakeCapability))")
                     .font(.caption)
-                Text("引擎健康：funasr=\(supervisorManager.voiceRouteDecision.funasrHealth.rawValue), whisperkit=\(supervisorManager.voiceRouteDecision.whisperKitHealth.rawValue), system=\(supervisorManager.voiceRouteDecision.systemSpeechHealth.rawValue)")
+                Text(
+                    "引擎健康：FunASR \(voiceEngineHealthText(supervisorManager.voiceRouteDecision.funasrHealth)) / WhisperKit \(voiceEngineHealthText(supervisorManager.voiceRouteDecision.whisperKitHealth)) / 系统语音 \(voiceEngineHealthText(supervisorManager.voiceRouteDecision.systemSpeechHealth))"
+                )
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if !supervisorManager.voiceActiveHealthReasonCode.isEmpty {
-                    Text("引擎原因：\(supervisorManager.voiceActiveHealthReasonCode)")
+                    Text(
+                        "引擎原因：\(SupervisorVoiceReasonPresentation.displayTextOrRaw(supervisorManager.voiceActiveHealthReasonCode) ?? supervisorManager.voiceActiveHealthReasonCode)"
+                    )
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -909,13 +1181,19 @@ struct SupervisorSettingsView: View {
                                         Text(check.kind.title)
                                             .font(.caption.weight(.semibold))
                                         Spacer()
-                                        Text(check.state.rawValue)
-                                            .font(.caption.monospaced())
+                                        Text(voiceSurfaceStateLabel(check.state))
+                                            .font(.caption.weight(.semibold))
                                             .foregroundStyle(check.state.tint)
                                     }
                                     Text(check.headline)
                                         .font(.caption)
-                                    Text("原因代码=\(check.reasonCode)")
+                                    Text(check.summary)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                    Text("下一步：\(check.nextStep)")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                    Text("原始原因：\(check.reasonCode)")
                                         .font(.caption2.monospaced())
                                         .foregroundStyle(.secondary)
                                 }
@@ -930,11 +1208,11 @@ struct SupervisorSettingsView: View {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("FunASR Sidecar")
                                 .font(.caption.weight(.semibold))
-                            Text("状态：\(snapshot.status.rawValue)")
+                            Text("状态：\(voiceSidecarStatusText(snapshot.status))")
                                 .font(.caption)
                             Text("地址：\(snapshot.endpoint)")
                                 .font(.caption)
-                            Text("能力：vad=\(readinessToken(snapshot.vadReady)), wake=\(readinessToken(snapshot.wakeReady)), partial=\(readinessToken(snapshot.partialReady))")
+                            Text("能力：语音活动检测 \(readinessToken(snapshot.vadReady)) / 唤醒 \(readinessToken(snapshot.wakeReady)) / 分段结果 \(readinessToken(snapshot.partialReady))")
                                 .font(.caption)
                             if let lastError = snapshot.lastError, !lastError.isEmpty {
                                 Text("最近错误：\(lastError)")
@@ -1018,7 +1296,7 @@ struct SupervisorSettingsView: View {
                 }
                 voiceInfoRow("Hub 语音包状态", value: voiceHubVoicePackAvailabilityLine)
             }
-            voiceInfoRow("解析原因", value: voicePlaybackResolution.reasonCode, secondary: true)
+            voiceInfoRow("解析原因", value: voiceReasonText(voicePlaybackResolution.reasonCode), secondary: true)
         }
         .padding(12)
         .background(Color(NSColor.windowBackgroundColor))
@@ -1038,6 +1316,17 @@ struct SupervisorSettingsView: View {
             Text(activity.summaryLine)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            if let nextStep = activity.recommendedNextStep {
+                Label("建议下一步", systemImage: activity.state == .failed ? "wrench.and.screwdriver" : "arrow.trianglehead.branch")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(voicePlaybackStateColor(activity.state))
+                Text(nextStep)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
 
             Divider()
 
@@ -1062,12 +1351,12 @@ struct SupervisorSettingsView: View {
                 voiceInfoRow("音频格式", value: activity.audioFormat)
             }
             if !activity.fallbackReasonCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                voiceInfoRow("回退原因", value: activity.fallbackReasonDisplayName, secondary: true)
+                voiceInfoRow("回退原因", value: voiceReasonText(activity.fallbackReasonCode), secondary: true)
             }
             if activity.updatedAt > 0 {
                 voiceInfoRow("更新时间", value: voicePlaybackTimestamp(activity.updatedAt))
             }
-            voiceInfoRow("原因", value: activity.reasonCode, secondary: true)
+            voiceInfoRow("原因", value: voiceReasonText(activity.reasonCode), secondary: true)
             if !activity.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text(activity.detail)
                     .font(.caption2)
@@ -1135,11 +1424,11 @@ struct SupervisorSettingsView: View {
             return "只有在你需要流式识别 / 唤醒支持时，才建议启用本地 FunASR Sidecar；否则运行时会继续使用更稳妥的回退链路。"
         case .degraded:
             if snapshot.lastError == "funasr_healthcheck_not_configured" {
-                return "请补上本地 healthcheck URL，或者先关闭 FunASR，等 sidecar 完整接好后再启用。"
+                return "请补上本地 healthcheck 地址，或者先关闭 FunASR，等本机侧车完整接好后再启用。"
             }
-            return "Sidecar 只返回了部分结果。先看最近错误，修好本地 sidecar 后再重新刷新语音运行时。"
+            return "本机侧车只返回了部分结果。先看最近错误，修好后再重新刷新语音运行时。"
         case .unreachable:
-            return "Keep FunASR on a local endpoint only, start the sidecar, then refresh runtime readiness."
+            return "请把 FunASR 保持在本机地址，先启动本机侧车，再回来刷新语音运行时。"
         }
     }
     
@@ -1150,7 +1439,7 @@ struct SupervisorSettingsView: View {
             
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
-                    ForEach(appModel.sortedProjects) { project in
+                    ForEach(sortedProjects) { project in
                         projectRow(project)
                     }
                 }
@@ -1211,7 +1500,11 @@ struct SupervisorSettingsView: View {
     
     private var roleSelector: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("选择角色")
+            Text(XTL10n.text(
+                interfaceLanguage,
+                zhHans: "选择角色",
+                en: "Choose Role"
+            ))
                 .font(.headline)
             
             ScrollView(.horizontal, showsIndicators: false) {
@@ -1233,7 +1526,7 @@ struct SupervisorSettingsView: View {
         }) {
             HStack(spacing: 8) {
                 roleIcon(role)
-                Text(role.displayName)
+                Text(role.displayName(in: interfaceLanguage))
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
@@ -1267,17 +1560,44 @@ struct SupervisorSettingsView: View {
     }
     
     private func modelRoutingPanel(for projectId: String) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let selection = projectModelPanelSelection(
+            for: projectId,
+            role: selectedRole
+        )
+        let routeTruth = projectRoleRouteTruth(
+            for: projectId,
+            role: selectedRole,
+            projectContext: selection.projectContext,
+            projectConfig: selection.projectConfig
+        )
+        let warning = modelAvailabilityWarningText(
+            selection: selection,
+            role: selectedRole
+        )
+
+        return VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("为 \(selectedRole.displayName) 选择模型")
+                Text(XTL10n.text(
+                    interfaceLanguage,
+                    zhHans: "为 \(selectedRole.displayName(in: interfaceLanguage)) 选择模型",
+                    en: "Choose Model for \(selectedRole.displayName(in: interfaceLanguage))"
+                ))
                     .font(.headline)
                 Spacer()
-                if let modelId = currentProjectModelOverrideId(for: projectId, role: selectedRole), !modelId.isEmpty {
-                    Button("应用到全部项目") {
+                if let modelId = selection.projectOverrideModelId {
+                    Button(XTL10n.text(
+                        interfaceLanguage,
+                        zhHans: "应用到全部项目",
+                        en: "Apply to All Projects"
+                    )) {
                         assignModelToAllProjects(role: selectedRole, modelId: modelId)
                     }
                     .buttonStyle(.bordered)
-                    .help("将当前角色模型批量应用到所有项目")
+                    .help(XTL10n.text(
+                        interfaceLanguage,
+                        zhHans: "将当前角色模型批量应用到所有项目",
+                        en: "Apply the current role model to all projects in one step"
+                    ))
                 }
             }
 
@@ -1288,20 +1608,25 @@ struct SupervisorSettingsView: View {
                     tint: .accentColor
                 )
             }
+
+            if supervisorModelInventoryTruth.showsStatusCard && !sortedAvailableHubModels.isEmpty {
+                XTModelInventoryTruthCard(presentation: supervisorModelInventoryTruth)
+            }
             
             if sortedAvailableHubModels.isEmpty {
-                Text("没有可用的模型。请确保 X-Hub 已启动并加载了模型。")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding()
+                XTModelInventoryTruthCard(presentation: supervisorModelInventoryTruth)
             } else {
-                if let selectedProject = appModel.sortedProjects.first(where: { $0.projectId == projectId }) {
-                    Text("当前项目：\(selectedProject.displayName)")
+                if let selectedProject = selection.projectEntry {
+                    Text(XTL10n.text(
+                        interfaceLanguage,
+                        zhHans: "当前项目：\(selectedProject.displayName)",
+                        en: "Current Project: \(selectedProject.displayName)"
+                    ))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
-                if let warning = modelAvailabilityWarningText(for: projectId, role: selectedRole) {
+                if let warning {
                     Text(warning)
                         .font(.caption)
                         .foregroundStyle(.orange)
@@ -1309,27 +1634,71 @@ struct SupervisorSettingsView: View {
                 }
 
                 HubModelRoutingButton(
-                    title: selectedModelButtonTitle(for: projectId, role: selectedRole),
-                    identifier: selectedModelIdentifier(for: projectId, role: selectedRole),
-                    sourceLabel: selectedModelPresentationSourceLabel(for: projectId, role: selectedRole),
-                    presentation: selectedModelPresentation(for: projectId, role: selectedRole),
-                    disabled: !appModel.hubInteractive || sortedAvailableHubModels.isEmpty
+                    title: selectedModelButtonTitle(selection: selection),
+                    identifier: selection.selectedModelId,
+                    sourceLabel: selection.sourceLabel,
+                    presentation: selection.selectedPresentation,
+                    sourceIdentityLine: selection.selectedHubModel?
+                        .remoteSourceIdentityLine(language: interfaceLanguage),
+                    sourceBadges: selection.selectedHubModel?
+                        .routingSourceBadges(language: interfaceLanguage) ?? [],
+                    supplementary: routeTruth,
+                    disabled: !appModel.hubInteractive || sortedAvailableHubModels.isEmpty,
+                    automaticRouteLabel: XTL10n.Common.automaticRouting.resolve(interfaceLanguage)
                 ) {
                     showProjectModelPicker = true
                 }
                 .frame(maxWidth: 480, alignment: .leading)
                 .popover(isPresented: $showProjectModelPicker, arrowEdge: .bottom) {
                     let recommendation = projectModelSelectionRecommendation(
-                        for: projectId,
+                        selection: selection,
                         role: selectedRole
                     )
                     HubModelPickerPopover(
-                        title: "为 \(selectedRole.displayName) 选择模型",
-                        selectedModelId: currentProjectModelOverrideId(for: projectId, role: selectedRole),
-                        inheritedModelId: globalModelId(selectedRole),
-                        inheritedModelPresentation: globalModelPresentation(for: selectedRole),
+                        title: XTL10n.text(
+                            interfaceLanguage,
+                            zhHans: "为 \(selectedRole.displayName(in: interfaceLanguage)) 选择模型",
+                            en: "Choose Model for \(selectedRole.displayName(in: interfaceLanguage))"
+                        ),
+                        selectedModelId: selection.projectOverrideModelId,
+                        inheritedModelId: selection.inheritedModelId,
+                        inheritedModelPresentation: visibleModelInventory.presentation(
+                            for: selection.inheritedModelId
+                        ),
                         models: sortedAvailableHubModels,
+                        language: interfaceLanguage,
                         recommendation: recommendation,
+                        selectionTruth: routeTruth,
+                        selectionTruthTitle: XTL10n.text(
+                            interfaceLanguage,
+                            zhHans: "\(selectedRole.displayName(in: interfaceLanguage)) · 当前项目 Route Truth",
+                            en: "\(selectedRole.displayName(in: interfaceLanguage)) · Current Project Route Truth"
+                        ),
+                        automaticTitle: XTL10n.text(
+                            interfaceLanguage,
+                            zhHans: "使用全局设置",
+                            en: "Use Global Setting"
+                        ),
+                        automaticSelectedBadge: XTL10n.text(
+                            interfaceLanguage,
+                            zhHans: "当前生效",
+                            en: "Currently Active"
+                        ),
+                        automaticRestoreBadge: XTL10n.text(
+                            interfaceLanguage,
+                            zhHans: "恢复继承",
+                            en: "Restore Inheritance"
+                        ),
+                        inheritedModelLabel: XTL10n.text(
+                            interfaceLanguage,
+                            zhHans: "全局模型",
+                            en: "Global Model"
+                        ),
+                        automaticDescription: XTL10n.text(
+                            interfaceLanguage,
+                            zhHans: "当前没有全局固定模型，恢复后会交给系统自动路由。",
+                            en: "There is no global pinned model right now. Restoring inheritance will hand routing back to the system."
+                        ),
                         onSelect: { modelId in
                             updateProjectRoleModelAssignment(
                                 projectId: projectId,
@@ -1342,7 +1711,7 @@ struct SupervisorSettingsView: View {
                     .frame(width: 460, height: 420)
                 }
 
-                if let globalHint = inheritedGlobalModelHint(for: projectId, role: selectedRole) {
+                if let globalHint = inheritedGlobalModelHint(selection: selection) {
                     Text(globalHint)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -1362,103 +1731,136 @@ struct SupervisorSettingsView: View {
 
     private func currentProjectModelOverrideId(for projectId: String, role: AXRole) -> String? {
         guard let ctx = appModel.projectContext(for: projectId),
-              let cfg = try? AXProjectStore.loadOrCreateConfig(for: ctx) else {
+              let cfg = projectConfig(for: projectId, projectContext: ctx) else {
             return nil
         }
-        let raw = cfg.modelOverride(for: role)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return raw.isEmpty ? nil : raw
+        return trimmedNonEmptyModelId(cfg.modelOverride(for: role))
     }
 
     private func availableHubModels() -> [HubModel] {
-        modelManager.availableModels.isEmpty ? appModel.modelsState.models : modelManager.availableModels
+        visibleModelInventory.snapshot.models
     }
 
     private var sortedAvailableHubModels: [HubModel] {
-        var dedup: [String: HubModel] = [:]
-        for model in availableHubModels() {
-            dedup[model.id] = model
-        }
-        return dedup.values.sorted { a, b in
-            let sa = stateRank(a.state)
-            let sb = stateRank(b.state)
-            if sa != sb { return sa < sb }
-            let an = (a.name.isEmpty ? a.id : a.name).lowercased()
-            let bn = (b.name.isEmpty ? b.id : b.name).lowercased()
-            if an != bn { return an < bn }
-            return a.id.lowercased() < b.id.lowercased()
-        }
+        visibleModelInventory.sortedModels
     }
 
     private func globalModelId(_ role: AXRole) -> String? {
-        appModel.settingsStore.settings.assignment(for: role).model
+        trimmedNonEmptyModelId(appModel.settingsStore.settings.assignment(for: role).model)
     }
 
-    private func selectedModelPresentation(for projectId: String, role: AXRole) -> ModelInfo? {
-        if let projectModelId = currentProjectModelOverrideId(for: projectId, role: role) {
-            return availableHubModels().first(where: { $0.id == projectModelId })?.capabilityPresentationModel
-                ?? XTModelCatalog.modelInfo(for: projectModelId)
+    private func projectConfig(
+        for projectId: String,
+        projectContext: AXProjectContext? = nil
+    ) -> AXProjectConfig? {
+        guard let ctx = projectContext ?? appModel.projectContext(for: projectId) else { return nil }
+        return try? AXProjectStore.loadOrCreateConfig(for: ctx)
+    }
+
+    private func projectRoleExecutionSnapshot(
+        for projectId: String,
+        role: AXRole
+    ) -> AXRoleExecutionSnapshot {
+        if role == .supervisor {
+            return ExecutionRoutePresentation.supervisorSnapshot(from: supervisorManager)
         }
-
-        let inheritedModelId = globalModelId(role)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !inheritedModelId.isEmpty else { return nil }
-        return availableHubModels().first(where: { $0.id == inheritedModelId })?.capabilityPresentationModel
-            ?? XTModelCatalog.modelInfo(for: inheritedModelId)
+        guard let ctx = appModel.projectContext(for: projectId) else {
+            return .empty(role: role, source: "supervisor_settings")
+        }
+        return AXRoleExecutionSnapshots.latestSnapshots(for: ctx)[role]
+            ?? .empty(role: role, source: "supervisor_settings")
     }
 
-    private func globalModelPresentation(for role: AXRole) -> ModelInfo? {
-        let inheritedModelId = globalModelId(role)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !inheritedModelId.isEmpty else { return nil }
-        return availableHubModels().first(where: { $0.id == inheritedModelId })?.capabilityPresentationModel
-            ?? XTModelCatalog.modelInfo(for: inheritedModelId)
+    private func projectRoleRouteTruth(
+        for projectId: String,
+        role: AXRole,
+        projectContext: AXProjectContext? = nil,
+        projectConfig: AXProjectConfig? = nil
+    ) -> HubModelRoutingSupplementaryPresentation {
+        let runtimeReadiness: AXProjectGovernanceRuntimeReadinessSnapshot? = {
+            let resolvedProjectContext = projectContext ?? appModel.projectContext(for: projectId)
+            let resolvedProjectConfig = projectConfig ?? self.projectConfig(
+                for: projectId,
+                projectContext: resolvedProjectContext
+            )
+            guard let ctx = resolvedProjectContext,
+                  let config = resolvedProjectConfig else {
+                return nil
+            }
+            return xtResolveProjectGovernance(
+                projectRoot: ctx.root,
+                config: config
+            ).runtimeReadinessSnapshot
+        }()
+        return HubModelRoutingTruthBuilder.build(
+            surface: .projectRoleSettings,
+            role: role,
+            selectedProjectID: projectId,
+            selectedProjectName: appModel.registry.project(for: projectId)?.displayName,
+            projectConfig: projectConfig ?? self.projectConfig(
+                for: projectId,
+                projectContext: projectContext
+            ),
+            projectRuntimeReadiness: runtimeReadiness,
+            settings: appModel.settingsStore.settings,
+            snapshot: projectRoleExecutionSnapshot(for: projectId, role: role),
+            transportMode: HubAIClient.transportMode().rawValue,
+            language: interfaceLanguage
+        )
+        .pickerTruth
     }
 
-    private func selectedModelPresentationSourceLabel(for projectId: String, role: AXRole) -> String {
-        currentProjectModelOverrideId(for: projectId, role: role) == nil ? "继承全局" : "项目覆盖"
-    }
-
-    private func selectedModelButtonTitle(for projectId: String, role: AXRole) -> String {
-        if let presentation = selectedModelPresentation(for: projectId, role: role) {
+    private func selectedModelButtonTitle(selection: SupervisorProjectModelPanelSelection) -> String {
+        if let presentation = selection.selectedPresentation {
             return presentation.displayName
         }
-        return "使用全局设置"
+        return XTL10n.text(
+            interfaceLanguage,
+            zhHans: "使用全局设置",
+            en: "Use Global Setting"
+        )
     }
 
-    private func selectedModelIdentifier(for projectId: String, role: AXRole) -> String? {
-        if let projectModelId = currentProjectModelOverrideId(for: projectId, role: role) {
-            return projectModelId
+    private func inheritedGlobalModelHint(selection: SupervisorProjectModelPanelSelection) -> String? {
+        guard selection.projectOverrideModelId != nil else { return nil }
+        if let global = selection.inheritedModelId {
+            return XTL10n.text(
+                interfaceLanguage,
+                zhHans: "当前不选项目覆盖时，会回到全局模型 `\(global)`。",
+                en: "If you clear the project override, XT will fall back to the global model `\(global)`."
+            )
         }
-        let inheritedModelId = globalModelId(role)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return inheritedModelId.isEmpty ? nil : inheritedModelId
+        return XTL10n.text(
+            interfaceLanguage,
+            zhHans: "当前不选项目覆盖时，会回到全局自动路由。",
+            en: "If you clear the project override, XT will fall back to global automatic routing."
+        )
     }
 
-    private func inheritedGlobalModelHint(for projectId: String, role: AXRole) -> String? {
-        guard currentProjectModelOverrideId(for: projectId, role: role) != nil else { return nil }
-        if let global = globalModelId(role)?.trimmingCharacters(in: .whitespacesAndNewlines), !global.isEmpty {
-            return "当前不选项目覆盖时，会回到全局模型 `\(global)`。"
-        }
-        return "当前不选项目覆盖时，会回到全局自动路由。"
+    private var modelInventorySnapshot: ModelStateSnapshot {
+        modelManager.visibleSnapshot(fallback: appModel.modelsState)
     }
 
-    private func modelInventorySnapshot() -> ModelStateSnapshot {
-        ModelStateSnapshot(
-            models: availableHubModels(),
-            updatedAt: appModel.modelsState.updatedAt
+    private var supervisorModelInventoryTruth: XTModelInventoryTruthPresentation {
+        XTModelInventoryTruthPresentation.build(
+            snapshot: modelInventorySnapshot,
+            hubBaseDir: appModel.hubBaseDir ?? HubPaths.baseDir()
         )
     }
 
     private func projectModelSelectionRecommendation(
-        for projectId: String,
+        selection: SupervisorProjectModelPanelSelection,
         role: AXRole
     ) -> HubModelPickerRecommendationState? {
-        let configured = selectedModelIdentifier(for: projectId, role: role)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !configured.isEmpty else { return nil }
+        guard let configured = selection.selectedModelId else { return nil }
 
         if let guidance = AXProjectModelRouteMemoryStore.selectionGuidance(
             configuredModelId: configured,
             role: role,
-            ctx: appModel.projectContext(for: projectId),
-            snapshot: modelInventorySnapshot()
+            ctx: selection.projectContext,
+            snapshot: modelInventorySnapshot,
+            paidAccessSnapshot: appModel.hubRemotePaidAccessSnapshot,
+            language: interfaceLanguage
         ),
            let recommendedModelId = guidance.recommendedModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
            !recommendedModelId.isEmpty {
@@ -1472,7 +1874,7 @@ struct SupervisorSettingsView: View {
 
         let assessment = HubModelSelectionAdvisor.assess(
             requestedId: configured,
-            snapshot: modelInventorySnapshot()
+            snapshot: modelInventorySnapshot
         )
         guard let assessment,
               assessment.isExactMatchLoaded != true,
@@ -1489,7 +1891,11 @@ struct SupervisorSettingsView: View {
             return HubModelPickerRecommendationState(
                 kind: .switchRecommended,
                 modelId: candidate,
-                message: "`\(blocked.id)` 是检索专用模型，Supervisor 会按需调用它做 retrieval；如果你要立刻继续，可改用 `\(candidate)`。"
+                message: XTL10n.ModelSelector.nonInteractiveRecommendation(
+                    blockedId: blocked.id,
+                    candidate: candidate,
+                    language: interfaceLanguage
+                )
             )
         }
 
@@ -1497,33 +1903,61 @@ struct SupervisorSettingsView: View {
             return HubModelPickerRecommendationState(
                 kind: .switchRecommended,
                 modelId: candidate,
-                message: "`\(exact.id)` 当前是 \(HubModelSelectionAdvisor.stateLabel(exact.state))；如果你要立刻继续，可改用已加载的 `\(candidate)`。"
+                message: XTL10n.ModelSelector.exactStateRecommendation(
+                    exactId: exact.id,
+                    stateLabel: HubModelSelectionAdvisor.stateLabel(
+                        exact.state,
+                        language: interfaceLanguage
+                    ),
+                    candidate: candidate,
+                    language: interfaceLanguage
+                )
             )
         }
 
         return HubModelPickerRecommendationState(
             kind: .switchRecommended,
             modelId: candidate,
-            message: "`\(configured)` 当前不在可直接执行的 inventory 里；如果你要立刻继续，可改用已加载的 `\(candidate)`，避免这轮继续掉本地。"
+            message: XTL10n.ModelSelector.missingRecommendation(
+                selectedModelId: configured,
+                candidate: candidate,
+                language: interfaceLanguage
+            )
         )
     }
 
-    private func modelAvailabilityWarningText(for projectId: String, role: AXRole) -> String? {
-        guard let configuredBinding = warningConfiguredModelBinding(for: projectId, role: role) else {
+    private func modelAvailabilityWarningText(
+        selection: SupervisorProjectModelPanelSelection,
+        role: AXRole
+    ) -> String? {
+        guard let configuredBinding = warningConfiguredModelBinding(
+            selection: selection,
+            role: role
+        ) else {
             return nil
         }
         let configured = configuredBinding.modelId
+        let executionSnapshot = projectRoleExecutionSnapshot(
+            for: selection.projectId,
+            role: role
+        )
         if let routeWarning = AXProjectModelRouteMemoryStore.selectionWarningText(
             configuredModelId: configured,
             role: role,
             ctx: configuredBinding.ctx,
-            snapshot: modelInventorySnapshot()
+            snapshot: modelInventorySnapshot,
+            paidAccessSnapshot: appModel.hubRemotePaidAccessSnapshot,
+            language: interfaceLanguage
         ) {
-            return routeWarning
+            return appendingGrpcRouteInterpretationWarning(
+                routeWarning,
+                configuredModelId: configured,
+                snapshot: executionSnapshot
+            )
         }
         let assessment = HubModelSelectionAdvisor.assess(
             requestedId: configured,
-            snapshot: modelInventorySnapshot()
+            snapshot: modelInventorySnapshot
         )
         guard assessment?.isExactMatchLoaded != true else { return nil }
 
@@ -1532,48 +1966,115 @@ struct SupervisorSettingsView: View {
            let reason = assessment.interactiveRoutingBlockedReason {
             let candidates = suggestedModelIDs(from: assessment)
             if let first = candidates.first {
-                return "\(configuredBinding.subject) `\(blocked.id)`，但它是检索专用模型。\(reason) 如果你要立刻继续，可改用 `\(first)`。"
+                return appendingGrpcRouteInterpretationWarning(
+                    XTL10n.text(
+                        interfaceLanguage,
+                        zhHans: "\(configuredBinding.subject) `\(blocked.id)`，但它是检索专用模型。\(reason) 如果你要立刻继续，可改用 `\(first)`。",
+                        en: "The \(configuredBinding.subject) `\(blocked.id)` is retrieval-only. \(reason) If you want to continue right now, switch to `\(first)`."
+                    ),
+                    configuredModelId: configured,
+                    snapshot: executionSnapshot
+                )
             }
-            return "\(configuredBinding.subject) `\(blocked.id)`，但它是检索专用模型。\(reason)"
+            return appendingGrpcRouteInterpretationWarning(
+                XTL10n.text(
+                    interfaceLanguage,
+                    zhHans: "\(configuredBinding.subject) `\(blocked.id)`，但它是检索专用模型。\(reason)",
+                    en: "The \(configuredBinding.subject) `\(blocked.id)` is retrieval-only. \(reason)"
+                ),
+                configuredModelId: configured,
+                snapshot: executionSnapshot
+            )
         }
 
         if let assessment, let exact = assessment.exactMatch {
             let candidates = suggestedModelIDs(from: assessment)
             if let first = candidates.first {
-                return "\(configuredBinding.subject) `\(exact.id)`，但它现在是 \(HubModelSelectionAdvisor.stateLabel(exact.state))。若你现在执行，这一路可能会回退到本地；如果你要立刻继续，可改用 `\(first)`。"
+                return appendingGrpcRouteInterpretationWarning(
+                    XTL10n.text(
+                        interfaceLanguage,
+                        zhHans: "\(configuredBinding.subject) `\(exact.id)`，但它现在是 \(HubModelSelectionAdvisor.stateLabel(exact.state, language: interfaceLanguage))。若你现在执行，这一路可能会回退到本地；如果你要立刻继续，可改用 `\(first)`。",
+                        en: "The \(configuredBinding.subject) `\(exact.id)` is currently \(HubModelSelectionAdvisor.stateLabel(exact.state, language: interfaceLanguage)). This route may fall back to local if you run it now. If you want to continue right away, switch to `\(first)`."
+                    ),
+                    configuredModelId: configured,
+                    snapshot: executionSnapshot
+                )
             }
-            return "\(configuredBinding.subject) `\(exact.id)`，但它现在是 \(HubModelSelectionAdvisor.stateLabel(exact.state))。若你现在执行，这一路可能会回退到本地。"
+            return appendingGrpcRouteInterpretationWarning(
+                XTL10n.text(
+                    interfaceLanguage,
+                    zhHans: "\(configuredBinding.subject) `\(exact.id)`，但它现在是 \(HubModelSelectionAdvisor.stateLabel(exact.state, language: interfaceLanguage))。若你现在执行，这一路可能会回退到本地。",
+                    en: "The \(configuredBinding.subject) `\(exact.id)` is currently \(HubModelSelectionAdvisor.stateLabel(exact.state, language: interfaceLanguage)). This route may fall back to local if you run it now."
+                ),
+                configuredModelId: configured,
+                snapshot: executionSnapshot
+            )
         }
 
         if let assessment {
             let candidates = suggestedModelIDs(from: assessment)
             if !candidates.isEmpty {
-                return "\(configuredBinding.subject) `\(configured)`，但 inventory 里没有精确匹配。可先试 `\(candidates.joined(separator: "`, `"))`。"
+                return appendingGrpcRouteInterpretationWarning(
+                    XTL10n.text(
+                        interfaceLanguage,
+                        zhHans: "\(configuredBinding.subject) `\(configured)`，但 inventory 里没有精确匹配。可先试 `\(candidates.joined(separator: "`, `"))`。",
+                        en: "The \(configuredBinding.subject) `\(configured)` has no exact match in the current inventory. Try `\(candidates.joined(separator: "`, `"))` first."
+                    ),
+                    configuredModelId: configured,
+                    snapshot: executionSnapshot
+                )
             }
         }
-        return "\(configuredBinding.subject) `\(configured)`，但现在无法确认它可执行。"
+        return appendingGrpcRouteInterpretationWarning(
+            XTL10n.text(
+                interfaceLanguage,
+                zhHans: "\(configuredBinding.subject) `\(configured)`，但现在无法确认它可执行。",
+                en: "XT cannot confirm whether the \(configuredBinding.subject) `\(configured)` is currently runnable."
+            ),
+            configuredModelId: configured,
+            snapshot: executionSnapshot
+        )
+    }
+
+    private func appendingGrpcRouteInterpretationWarning(
+        _ warning: String,
+        configuredModelId: String,
+        snapshot: AXRoleExecutionSnapshot
+    ) -> String {
+        let hint = ExecutionRoutePresentation.grpcTransportMismatchHint(
+            configuredModelId: configuredModelId,
+            snapshot: snapshot,
+            transportMode: HubAIClient.transportMode().rawValue,
+            language: interfaceLanguage
+        )
+        return hint.isEmpty ? warning : warning + hint
     }
 
     private func warningConfiguredModelBinding(
-        for projectId: String,
+        selection: SupervisorProjectModelPanelSelection,
         role: AXRole
     ) -> (modelId: String, subject: String, ctx: AXProjectContext?)? {
-        if let projectModelId = currentProjectModelOverrideId(for: projectId, role: role)?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !projectModelId.isEmpty {
+        if let projectModelId = selection.projectOverrideModelId {
             return (
                 projectModelId,
-                "当前 project 为 \(role.displayName) 配的是",
-                appModel.projectContext(for: projectId)
+                XTL10n.text(
+                    interfaceLanguage,
+                    zhHans: "当前项目给 \(role.displayName(in: interfaceLanguage)) 配的模型",
+                    en: "project override for \(role.displayName(in: interfaceLanguage))"
+                ),
+                selection.projectContext
             )
         }
 
-        if let inheritedModelId = globalModelId(role)?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !inheritedModelId.isEmpty {
+        if let inheritedModelId = selection.inheritedModelId {
             return (
                 inheritedModelId,
-                "\(role.displayName) 当前继承的全局模型是",
-                appModel.projectContext(for: projectId)
+                XTL10n.text(
+                    interfaceLanguage,
+                    zhHans: "\(role.displayName(in: interfaceLanguage)) 当前继承的全局模型",
+                    en: "global model inherited by \(role.displayName(in: interfaceLanguage))"
+                ),
+                selection.projectContext
             )
         }
 
@@ -1585,12 +2086,67 @@ struct SupervisorSettingsView: View {
         return source.prefix(3).map(\.id)
     }
 
-    private func stateRank(_ s: HubModelState) -> Int {
-        switch s {
-        case .loaded: return 0
-        case .available: return 1
-        case .sleeping: return 2
+    private func projectModelPanelSelection(
+        for projectId: String,
+        role: AXRole
+    ) -> SupervisorProjectModelPanelSelection {
+        let projectContext = appModel.projectContext(for: projectId)
+        let projectConfig = projectConfig(
+            for: projectId,
+            projectContext: projectContext
+        )
+        let projectOverrideModelId = trimmedNonEmptyModelId(
+            projectConfig?.modelOverride(for: role)
+        )
+        let inheritedModelId = globalModelId(role)
+        let selectedModelId = projectOverrideModelId ?? inheritedModelId
+
+        return SupervisorProjectModelPanelSelection(
+            projectId: projectId,
+            projectEntry: sortedProjects.first(where: { $0.projectId == projectId })
+                ?? appModel.registry.project(for: projectId),
+            projectContext: projectContext,
+            projectConfig: projectConfig,
+            projectOverrideModelId: projectOverrideModelId,
+            inheritedModelId: inheritedModelId,
+            selectedModelId: selectedModelId,
+            selectedHubModel: visibleModelInventory.model(for: selectedModelId),
+            selectedPresentation: visibleModelInventory.presentation(for: selectedModelId),
+            sourceLabel: projectOverrideModelId == nil
+                ? XTL10n.text(
+                    interfaceLanguage,
+                    zhHans: "继承全局",
+                    en: "Inherited Global"
+                )
+                : XTL10n.text(
+                    interfaceLanguage,
+                    zhHans: "项目覆盖",
+                    en: "Project Override"
+                )
+        )
+    }
+
+    private func syncVisibleModelInventory() {
+        visibleModelInventory = XTVisibleHubModelInventorySupport.build(
+            snapshot: modelInventorySnapshot
+        )
+    }
+
+    private func syncSortedProjects() {
+        sortedProjects = appModel.sortedProjects
+        guard let selectedProjectId else {
+            self.selectedProjectId = sortedProjects.first?.projectId
+            return
         }
+        guard sortedProjects.contains(where: { $0.projectId == selectedProjectId }) else {
+            self.selectedProjectId = sortedProjects.first?.projectId
+            return
+        }
+    }
+
+    private func trimmedNonEmptyModelId(_ raw: String?) -> String? {
+        let trimmed = XTVisibleHubModelInventorySupport.trimmedModelID(raw)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private func resetProjectModelAssignmentFeedback() {
@@ -1613,7 +2169,10 @@ struct SupervisorSettingsView: View {
             role: role,
             modelId: normalizedModelId,
             inheritedModelId: globalModelId(role),
-            snapshot: modelInventorySnapshot()
+            snapshot: modelInventorySnapshot,
+            executionSnapshot: projectRoleExecutionSnapshot(for: projectId, role: role),
+            transportMode: HubAIClient.transportMode().rawValue,
+            language: interfaceLanguage
         )
         projectModelAssignmentUpdateFeedback.trigger()
     }
@@ -1622,7 +2181,7 @@ struct SupervisorSettingsView: View {
         let trimmedModelId = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedModelId.isEmpty else { return }
 
-        let changedProjectCount = appModel.sortedProjects.reduce(into: 0) { partialResult, project in
+        let changedProjectCount = sortedProjects.reduce(into: 0) { partialResult, project in
             let currentModelId = currentProjectModelOverrideId(for: project.projectId, role: role)
             guard normalizedModelOverrideValue(currentModelId) != normalizedModelOverrideValue(trimmedModelId) else {
                 return
@@ -1635,8 +2194,9 @@ struct SupervisorSettingsView: View {
             role: role,
             modelId: trimmedModelId,
             changedProjectCount: changedProjectCount,
-            totalProjectCount: appModel.sortedProjects.count,
-            snapshot: modelInventorySnapshot()
+            totalProjectCount: sortedProjects.count,
+            snapshot: modelInventorySnapshot,
+            language: interfaceLanguage
         )
         projectModelAssignmentUpdateFeedback.trigger()
     }
@@ -1903,6 +2463,147 @@ struct SupervisorSettingsView: View {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
         return formatter.localizedString(for: Date(timeIntervalSince1970: value), relativeTo: Date())
+    }
+
+    private func voiceSurfaceStateLabel(_ state: XTUISurfaceState) -> String {
+        switch state {
+        case .ready:
+            return "已就绪"
+        case .inProgress:
+            return "处理中"
+        case .grantRequired:
+            return "待授权"
+        case .permissionDenied:
+            return "权限被拒"
+        case .blockedWaitingUpstream:
+            return "被上游阻塞"
+        case .releaseFrozen:
+            return "已冻结"
+        case .diagnosticRequired:
+            return "需要排查"
+        }
+    }
+
+    private func voiceAuthorizationStatusText(_ status: VoiceTranscriberAuthorizationStatus) -> String {
+        switch status {
+        case .undetermined:
+            return "待确认"
+        case .authorized:
+            return "已授权"
+        case .denied:
+            return "已拒绝"
+        case .restricted:
+            return "受限"
+        case .unavailable:
+            return "不可用"
+        }
+    }
+
+    private func voiceSessionPhaseText(_ state: VoiceSessionPhase) -> String {
+        switch state {
+        case .idle:
+            return "空闲"
+        case .listening:
+            return "聆听中"
+        case .transcribing:
+            return "转写中"
+        case .completed:
+            return "已完成"
+        case .failClosed:
+            return "安全暂停"
+        }
+    }
+
+    private func voiceWakeProfileSyncStateText(_ state: VoiceWakeProfileSyncState) -> String {
+        switch state {
+        case .notRequired:
+            return "当前不需要"
+        case .pairedSynced:
+            return "已与 Hub 同步"
+        case .localOverrideActive:
+            return "使用本机覆盖"
+        case .waitingForPairing:
+            return "等待配对完成"
+        case .stale:
+            return "已过期"
+        case .syncUnavailable:
+            return "暂不可同步"
+        case .invalid:
+            return "配置无效"
+        }
+    }
+
+    private func voiceWakeProfileSourceText(_ source: VoiceWakeProfileSource?) -> String {
+        switch source {
+        case .hubPairingSync:
+            return "Hub 配对同步"
+        case .localOverride:
+            return "本机覆盖"
+        case .cachedFallback:
+            return "缓存兜底"
+        case nil:
+            return "无"
+        }
+    }
+
+    private func voiceWakeCapabilityText(_ rawValue: String) -> String {
+        switch normalizedVoiceToken(rawValue) ?? rawValue {
+        case "funasr_kws":
+            return "FunASR 唤醒词"
+        case "push_to_talk_only":
+            return "仅按住说话"
+        case "prompt_phrase_only":
+            return "仅提示词"
+        case "none":
+            return "无"
+        default:
+            return rawValue
+        }
+    }
+
+    private func voiceEngineHealthText(_ health: VoiceEngineHealth) -> String {
+        switch health {
+        case .ready:
+            return "已就绪"
+        case .loading:
+            return "加载中"
+        case .degraded:
+            return "部分可用"
+        case .unauthorized:
+            return "缺少权限"
+        case .unavailable:
+            return "不可用"
+        case .disabled:
+            return "未启用"
+        }
+    }
+
+    private func voiceSidecarStatusText(_ status: VoiceSidecarStatus) -> String {
+        switch status {
+        case .ready:
+            return "已就绪"
+        case .degraded:
+            return "部分可用"
+        case .unreachable:
+            return "不可达"
+        case .disabled:
+            return "未启用"
+        }
+    }
+
+    private func voiceReasonText(_ raw: String?) -> String {
+        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return "无" }
+        return SupervisorVoiceReasonPresentation.displayTextOrRaw(trimmed) ?? trimmed
+    }
+
+    private func normalizedVoiceToken(_ raw: String?) -> String? {
+        let trimmed = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return trimmed
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
     }
 
     private func syncWakeTriggerWordsDraft() {

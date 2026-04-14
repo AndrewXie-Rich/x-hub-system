@@ -8,6 +8,11 @@ struct TerminalChatView: View {
     let hubConnected: Bool
     @ObservedObject var session: ChatSessionModel
     @EnvironmentObject private var appModel: AppModel
+    @Environment(\.openWindow) private var openWindow
+    @StateObject private var modelManager = HubModelManager.shared
+    @State private var isInputFocused: Bool = false
+    @State private var isAttachmentDropTarget: Bool = false
+    @State private var attachmentDropIntent: XTChatComposerDropIntent? = nil
 
     private struct SlashSuggestion: Identifiable {
         var id: String { insertion }
@@ -31,9 +36,22 @@ struct TerminalChatView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             session.ensureLoaded(ctx: ctx, limit: 200)
+            modelManager.setAppModel(appModel)
+            if appModel.hubInteractive {
+                Task {
+                    await modelManager.fetchModels()
+                }
+            }
         }
         .onChange(of: ctx.root.path) { _ in
             session.ensureLoaded(ctx: ctx, limit: 200)
+        }
+        .onChange(of: appModel.hubInteractive) { connected in
+            if connected {
+                Task {
+                    await modelManager.fetchModels()
+                }
+            }
         }
     }
 
@@ -91,9 +109,9 @@ struct TerminalChatView: View {
     }
 
     private var inputBar: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
-                ModelSelectorView(config: config)
+                ModelSelectorView(projectContext: ctx, config: config)
                     .environmentObject(appModel)
 
                 VoiceInputButton(text: $session.draft)
@@ -108,27 +126,104 @@ struct TerminalChatView: View {
                     .disabled(!session.isSending)
 
                 Button(session.isSending ? "发送中…" : "发送") {
-                    session.send(ctx: ctx, memory: memory, config: config, router: appModel.llmRouter)
+                    sendMessage()
                 }
-                .disabled(!hubConnected || session.isSending || !session.pendingToolCalls.isEmpty)
+                .disabled(
+                    !hubConnected ||
+                        session.isSending ||
+                        !session.pendingToolCalls.isEmpty ||
+                        !AXChatAttachmentSupport.hasSubmittableContent(
+                            draft: session.draft,
+                            attachments: session.draftAttachments
+                        )
+                )
                 .keyboardShortcut(.return, modifiers: [.command])
             }
 
             memoryRouteRail
-            projectExecutionRail
-
-            TextEditor(text: $session.draft)
-                .font(.system(.body, design: .monospaced))
-                .frame(minHeight: 78, maxHeight: 140)
+            coderExecutionStatusBar
+            if !session.draftAttachments.isEmpty {
+                XTChatProjectInboxPanel(
+                    attachments: session.draftAttachments,
+                    projectImportEnabled: true,
+                    continuation: session.importContinuation,
+                    onRemove: session.removeDraftAttachment,
+                    onImport: { session.importAttachmentToProject($0, ctx: ctx) },
+                    onImportAll: { session.importAllExternalDraftAttachments(ctx: ctx) },
+                    onContinue: {
+                        session.dismissImportContinuation()
+                        isInputFocused = true
+                    },
+                    onContinueAndSend: {
+                        session.dismissImportContinuation()
+                        sendMessage()
+                    },
+                    canContinueAndSend: hubConnected &&
+                        !session.isSending &&
+                        session.pendingToolCalls.isEmpty &&
+                        AXChatAttachmentSupport.hasSubmittableContent(
+                            draft: session.draft,
+                            attachments: session.draftAttachments
+                        ),
+                    onDismissContinuation: session.dismissImportContinuation
+                )
+            }
+            XTChatComposerTextView(
+                text: $session.draft,
+                isFocused: $isInputFocused,
+                font: .monospacedSystemFont(
+                    ofSize: NSFont.preferredFont(forTextStyle: .body).pointSize,
+                    weight: .regular
+                ),
+                isEditable: session.pendingToolCalls.isEmpty,
+                canSubmit: hubConnected &&
+                    !session.isSending &&
+                    session.pendingToolCalls.isEmpty &&
+                    AXChatAttachmentSupport.hasSubmittableContent(
+                        draft: session.draft,
+                        attachments: session.draftAttachments
+                    ),
+                diagnosticScope: "terminal_chat",
+                onSubmit: sendMessage,
+                allowsImportDrop: true,
+                onDropFiles: handleDroppedFiles,
+                onDropHoverChange: {
+                    isAttachmentDropTarget = $0
+                    if !$0 {
+                        attachmentDropIntent = nil
+                    }
+                },
+                onDropIntentChange: { attachmentDropIntent = $0 }
+            )
+                .frame(maxWidth: .infinity, minHeight: 78, maxHeight: 140)
                 .overlay {
                     RoundedRectangle(cornerRadius: 6)
-                        .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+                        .stroke(
+                            isAttachmentDropTarget
+                                ? Color.orange.opacity(0.7)
+                                : Color.secondary.opacity(0.3),
+                            lineWidth: isAttachmentDropTarget ? 2 : 1
+                        )
+                        .allowsHitTesting(false)
                 }
-                .disabled(!session.pendingToolCalls.isEmpty)
+                .overlay {
+                    if isAttachmentDropTarget {
+                        XTChatContextDock(
+                            activeIntent: attachmentDropIntent,
+                            importEnabled: true
+                        )
+                        .padding(10)
+                        .allowsHitTesting(false)
+                    }
+                }
 
             if showSlashSuggestions {
                 slashSuggestionsView
             }
+
+            Text("回车发送 · Shift+回车换行 · Cmd+回车也可发送")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
 
             if let err = session.lastError, !err.isEmpty {
                 Text(err)
@@ -145,6 +240,34 @@ struct TerminalChatView: View {
         }
         .padding(10)
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private func sendMessage() {
+        guard hubConnected,
+              !session.isSending,
+              session.pendingToolCalls.isEmpty,
+              AXChatAttachmentSupport.hasSubmittableContent(
+                  draft: session.draft,
+                  attachments: session.draftAttachments
+              ) else {
+            return
+        }
+        session.send(ctx: ctx, memory: memory, config: config, router: appModel.llmRouter)
+        isInputFocused = true
+    }
+
+    private func handleDroppedFiles(
+        _ urls: [URL],
+        intent: XTChatComposerDropIntent
+    ) {
+        switch intent {
+        case .attachReadOnly:
+            session.handleDroppedFiles(urls, ctx: ctx)
+        case .importToProject:
+            session.importDroppedFilesToProject(urls, ctx: ctx)
+        }
+        attachmentDropIntent = nil
+        isInputFocused = true
     }
 
     private var memoryRouteRail: some View {
@@ -178,7 +301,7 @@ struct TerminalChatView: View {
             Spacer(minLength: 0)
 
             Button(preferHubMemory ? "改用本地" : "改用 Hub") {
-                appModel.setProjectHubMemoryPreference(enabled: !preferHubMemory)
+                appModel.setProjectHubMemoryPreference(for: ctx, enabled: !preferHubMemory)
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
@@ -190,22 +313,62 @@ struct TerminalChatView: View {
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
-    private var projectExecutionRail: some View {
-        let roles: [AXRole] = [.coder, .coarse, .refine, .reviewer, .advisor]
-        let snapshots = AXRoleExecutionSnapshots.latestSnapshots(for: ctx)
+    private var coderExecutionStatusBar: some View {
+        let snapshot = AXRoleExecutionSnapshots.latestSnapshots(for: ctx)[.coder]
+            ?? .empty(role: .coder, source: "terminal_chat")
+        let configuredModelId = AXRoleExecutionSnapshots.configuredModelId(
+            for: .coder,
+            projectConfig: config,
+            settings: appModel.settingsStore.settings
+        )
+        let interfaceLanguage = appModel.settingsStore.settings.interfaceLanguage
+        let primaryAction = ProjectCoderExecutionStatusPrimaryActionResolver.resolve(
+            configuredModelId: configuredModelId,
+            snapshot: snapshot,
+            hubConnected: hubConnected,
+            governanceInterception: latestGovernanceInterception,
+            language: interfaceLanguage
+        )
 
-        return RoleExecutionStatusRail(
-            title: "最近实际模型使用",
-            subtitle: "当前项目角色",
-            roles: roles,
-            snapshots: snapshots
-        ) { role in
-            AXRoleExecutionSnapshots.configuredModelId(
-                for: role,
-                projectConfig: config,
-                settings: appModel.settingsStore.settings
-            )
-        }
+        return ProjectCoderExecutionStatusBar(
+            presentation: ProjectCoderExecutionStatusResolver.map(
+                configuredModelId: configuredModelId,
+                snapshot: snapshot,
+                hubConnected: hubConnected,
+                governancePresentation: governancePresentation,
+                governanceInterception: latestGovernanceInterception
+            ),
+            actionTitle: primaryAction?.title,
+            actionHelpText: primaryAction?.helpText,
+            actionDisabled: session.isSending || !session.pendingToolCalls.isEmpty,
+            onAction: {
+                guard let primaryAction else { return }
+                ProjectCoderExecutionStatusPrimaryActionResolver.perform(
+                    primaryAction.kind,
+                    configuredModelId: configuredModelId,
+                    snapshot: snapshot,
+                    ctx: ctx,
+                    config: config,
+                    session: session,
+                    appModel: appModel,
+                    openWindow: openWindow,
+                    governanceInterception: latestGovernanceInterception,
+                    interfaceLanguage: interfaceLanguage
+                )
+            }
+        )
+    }
+
+    private var governancePresentation: ProjectGovernancePresentation {
+        ProjectGovernancePresentation(
+            resolved: appModel.resolvedProjectGovernance(for: ctx, config: config)
+        )
+    }
+
+    private var latestGovernanceInterception: ProjectGovernanceInterceptionPresentation? {
+        ProjectGovernanceInterceptionPresentation.latest(
+            from: AXProjectSkillActivityStore.loadRecentActivities(ctx: ctx, limit: 12)
+        )
     }
 
     private var showSlashSuggestions: Bool {
@@ -261,7 +424,7 @@ struct TerminalChatView: View {
 
         if lower == "/model" || lower.hasPrefix("/model ") {
             let query = String(lower.dropFirst("/model".count)).trimmingCharacters(in: .whitespacesAndNewlines)
-            let loaded = appModel.modelsState.models
+            let loaded = modelManager.visibleSnapshot(fallback: appModel.modelsState).models
                 .filter { $0.state == .loaded }
                 .sorted { $0.id.lowercased() < $1.id.lowercased() }
             var out = loaded.map { m in
@@ -417,6 +580,13 @@ struct TerminalChatView: View {
 
             appendLine(prefix, font: small, color: labelColor)
             appendLine(msg.content.isEmpty ? "…" : msg.content, font: font, color: bodyColor)
+            if !msg.attachments.isEmpty {
+                appendLine(
+                    "attachments: " + msg.attachments.map(\.displayPath).joined(separator: ", "),
+                    font: small,
+                    color: .secondaryLabelColor
+                )
+            }
             appendLine("", font: font, color: bodyColor)
         }
 

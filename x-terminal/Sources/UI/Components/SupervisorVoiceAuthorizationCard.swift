@@ -6,6 +6,8 @@ struct SupervisorVoiceAuthorizationCard: View {
 
     @State private var transcriptDraft: String = ""
     @State private var verifyInFlight = false
+    @State private var restartInFlight = false
+    @State private var challengeDiagnosticsExpanded = false
 
     private var resolution: SupervisorVoiceAuthorizationResolution? {
         supervisorManager.voiceAuthorizationResolution
@@ -17,6 +19,18 @@ struct SupervisorVoiceAuthorizationCard: View {
 
     private var hasActiveChallenge: Bool {
         supervisorManager.activeVoiceChallenge != nil
+    }
+
+    private var canRestartChallenge: Bool {
+        supervisorManager.canRestartLastVoiceAuthorizationChallengeFromUI()
+    }
+
+    private var guidance: SupervisorVoiceAuthorizationGuidancePresentation? {
+        guard let resolution else { return nil }
+        return SupervisorVoiceAuthorizationGuidancePresentationBuilder.build(
+            resolution: resolution,
+            challenge: challenge
+        )
     }
 
     private var challengeKey: String {
@@ -44,7 +58,7 @@ struct SupervisorVoiceAuthorizationCard: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("语音授权")
                         .font(UIThemeTokens.sectionFont())
-                    Text("高风险动作会保持 fail-closed，直到 Hub 完成口令核验。")
+                    Text("高风险动作会先暂停，等 Hub 完成口令核验后再继续。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -60,15 +74,40 @@ struct SupervisorVoiceAuthorizationCard: View {
                 StatusExplanationCard(explanation: explanation)
             }
 
+            if let guidance {
+                guidanceDetails(guidance)
+            }
+
             if let challenge {
                 challengeDetails(challenge)
+            }
+
+            if shouldShowVoiceSafetyEvidence {
+                voiceSafetyEvidenceDetails
             }
 
             if hasActiveChallenge {
                 verificationControls
             } else if resolution != nil {
-                HStack {
+                HStack(spacing: 10) {
                     Spacer()
+
+                    if canRestartChallenge {
+                        Button {
+                            Task {
+                                await restartChallenge()
+                            }
+                        } label: {
+                            if restartInFlight {
+                                Label("重发中...", systemImage: "arrow.trianglehead.clockwise")
+                            } else {
+                                Label("重新发起挑战", systemImage: "arrow.trianglehead.clockwise")
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(restartInFlight)
+                    }
+
                     Button("清空语音授权状态") {
                         supervisorManager.resetVoiceAuthorizationState()
                         resetDraftState()
@@ -112,10 +151,15 @@ struct SupervisorVoiceAuthorizationCard: View {
         )
     }
 
+    private var shouldShowVoiceSafetyEvidence: Bool {
+        !supervisorManager.voiceReplaySummary.isEmpty
+            || supervisorManager.voiceSafetyInvariantReport.updatedAt > 0
+    }
+
     @ViewBuilder
     private func voiceStateBadge(for resolution: SupervisorVoiceAuthorizationResolution) -> some View {
         let state = uiState(for: resolution)
-        Label(state.label, systemImage: state.iconName)
+        Label(surfaceLabel(for: state), systemImage: state.iconName)
             .font(.caption.weight(.semibold))
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
@@ -133,14 +177,14 @@ struct SupervisorVoiceAuthorizationCard: View {
     @ViewBuilder
     private func challengeDetails(_ challenge: HubIPCClient.VoiceGrantChallengeSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("挑战详情")
+            Text("挑战信息")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
 
             LazyVGrid(columns: [GridItem(.flexible(minimum: 180), spacing: 12), GridItem(.flexible(minimum: 180), spacing: 12)], alignment: .leading, spacing: 8) {
                 challengeDetailRow(title: "挑战 ID", value: challenge.challengeId)
-                challengeDetailRow(title: "风险等级", value: challenge.riskLevel)
-                challengeDetailRow(title: "口令", value: challenge.challengeCode)
+                challengeDetailRow(title: "风险等级", value: voiceRiskLevelLabel(challenge.riskLevel))
+                challengeDetailRow(title: "当前口令", value: challenge.challengeCode)
                 challengeDetailRow(title: "过期时间", value: expiryText(for: challenge.expiresAtMs))
 
                 if !challenge.boundDeviceId.isEmpty {
@@ -151,11 +195,107 @@ struct SupervisorVoiceAuthorizationCard: View {
                 }
             }
 
-            if let resolution {
-                Text("policy_ref: \(resolution.policyRef)")
-                    .font(UIThemeTokens.monoFont())
+            if let resolution, !resolution.policyRef.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                DisclosureGroup(isExpanded: $challengeDiagnosticsExpanded) {
+                    Text("策略引用：\(resolution.policyRef)")
+                        .font(UIThemeTokens.monoFont())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .padding(.top, 8)
+                } label: {
+                    HStack {
+                        Text("原始诊断")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(challengeDiagnosticsExpanded ? "展开中" : "已折叠")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: UIThemeTokens.cardRadius)
+                .fill(UIThemeTokens.secondaryCardBackground)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: UIThemeTokens.cardRadius)
+                .stroke(UIThemeTokens.subtleBorder, lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private func guidanceDetails(_ guidance: SupervisorVoiceAuthorizationGuidancePresentation) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("恢复指引")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Text(guidance.summary)
+                .font(UIThemeTokens.bodyFont())
+                .foregroundStyle(.primary)
+
+            ForEach(Array(guidance.instructions.enumerated()), id: \.offset) { _, line in
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "arrow.right.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(line)
+                        .font(UIThemeTokens.bodyFont())
+                        .foregroundStyle(.primary)
+                }
+            }
+
+            if let caution = guidance.caution, !caution.isEmpty {
+                Label(caution, systemImage: "exclamationmark.shield")
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: UIThemeTokens.cardRadius)
+                .fill(UIThemeTokens.secondaryCardBackground)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: UIThemeTokens.cardRadius)
+                .stroke(UIThemeTokens.subtleBorder, lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private var voiceSafetyEvidenceDetails: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("回放与安全")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            if !supervisorManager.voiceReplaySummary.isEmpty {
+                SupervisorVoiceEvidenceSummaryRowView(
+                    title: "回放核对",
+                    state: supervisorManager.voiceReplaySummary.overallState.surfaceState,
+                    headline: supervisorManager.voiceReplaySummary.headline,
+                    summary: supervisorManager.voiceReplaySummary.summaryLine,
+                    detail: supervisorManager.voiceReplaySummary.compactTimelineText
+                )
+            }
+
+            if supervisorManager.voiceSafetyInvariantReport.updatedAt > 0 {
+                SupervisorVoiceEvidenceSummaryRowView(
+                    title: "安全约束",
+                    state: supervisorManager.voiceSafetyInvariantReport.overallState.surfaceState,
+                    headline: supervisorManager.voiceSafetyInvariantReport.headline,
+                    summary: supervisorManager.voiceSafetyInvariantReport.summaryLine,
+                    detail: nil
+                )
+
+                ForEach(supervisorManager.voiceSafetyInvariantReport.checks) { check in
+                    SupervisorVoiceInvariantCheckRowView(check: check)
+                }
             }
         }
         .padding(16)
@@ -184,7 +324,7 @@ struct SupervisorVoiceAuthorizationCard: View {
                 VoiceInputButton(text: $transcriptDraft, autoAppend: true)
 
                 if let challengeCode = challenge?.challengeCode, !challengeCode.isEmpty {
-                    Text("目标口令: \(challengeCode)")
+                    Text("当前口令：\(challengeCode)")
                         .font(UIThemeTokens.monoFont())
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
@@ -197,6 +337,14 @@ struct SupervisorVoiceAuthorizationCard: View {
             }
 
             HStack(spacing: 10) {
+                Button {
+                    _ = supervisorManager.repeatActiveVoiceAuthorizationPromptFromUI()
+                } label: {
+                    Label("重读挑战", systemImage: "arrow.clockwise.circle")
+                }
+                .buttonStyle(.bordered)
+                .disabled(verifyInFlight)
+
                 Button {
                     Task {
                         await submitVerification()
@@ -267,6 +415,14 @@ struct SupervisorVoiceAuthorizationCard: View {
         transcriptDraft = ""
     }
 
+    private func restartChallenge() async {
+        restartInFlight = true
+        defer { restartInFlight = false }
+        resetDraftState()
+        _ = await supervisorManager.restartLastVoiceAuthorizationChallengeFromUI()
+        syncDraftStateFromCurrentChallenge()
+    }
+
     private func uiState(for resolution: SupervisorVoiceAuthorizationResolution) -> XTUISurfaceState {
         switch resolution.state {
         case .pending:
@@ -298,7 +454,7 @@ struct SupervisorVoiceAuthorizationCard: View {
         case .escalatedToMobile:
             return "语音授权需要配对手机确认"
         case .failClosed:
-            return "语音授权仍保持 fail-closed"
+            return "语音授权暂时没走通"
         }
     }
 
@@ -313,7 +469,7 @@ struct SupervisorVoiceAuthorizationCard: View {
         case .escalatedToMobile:
             return "当前挑战已经发出，但所选风险等级要求在配对移动端再做一次确认。"
         case .failClosed:
-            return "这条语音授权链路没能安全完成，所以受控动作会继续保持阻塞，而不是假装已经恢复。"
+            return "这条语音授权链路没能完整走通，所以这次受控动作会继续暂停，而不是假装已经恢复。"
         }
     }
 
@@ -328,18 +484,18 @@ struct SupervisorVoiceAuthorizationCard: View {
         case .escalatedToMobile:
             return "当前风险等级或挑战契约要求先完成移动端二次确认，纯语音核验才可能通过。"
         case .failClosed:
-            return "传输、运行时或挑战前置条件不完整，而当前契约要求显式保持 fail-closed。"
+            return "传输、运行时或挑战前置条件还不完整，系统会先停在安全状态，而不是假装已经恢复。"
         }
     }
 
     private func hardLine(for resolution: SupervisorVoiceAuthorizationResolution) -> String {
         switch resolution.state {
         case .verified:
-            return "Hub 完成核验前，受控动作不会放行"
+            return "只有核验通过后，受控动作才会放行"
         case .denied:
-            return "被拒绝的语音挑战必须保持可见"
+            return "被拒绝的授权不会自动重试"
         case .pending, .escalatedToMobile, .failClosed:
-            return "语音授权在核验完成前都保持 fail-closed"
+            return "核验完成前，受控动作保持暂停"
         }
     }
 
@@ -358,6 +514,40 @@ struct SupervisorVoiceAuthorizationCard: View {
         .joined(separator: "; ")
     }
 
+    private func voiceRiskLevelLabel(_ raw: String) -> String {
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "low":
+            return "低风险"
+        case "medium", "moderate":
+            return "中风险"
+        case "high":
+            return "高风险"
+        case "critical":
+            return "关键风险"
+        default:
+            return raw
+        }
+    }
+
+    private func surfaceLabel(for state: XTUISurfaceState) -> String {
+        switch state {
+        case .ready:
+            return "已就绪"
+        case .inProgress:
+            return "处理中"
+        case .grantRequired:
+            return "待授权"
+        case .permissionDenied:
+            return "权限被拒"
+        case .blockedWaitingUpstream:
+            return "被上游阻塞"
+        case .releaseFrozen:
+            return "已冻结"
+        case .diagnosticRequired:
+            return "需要排查"
+        }
+    }
+
     private func expiryText(for expiresAtMs: Double) -> String {
         let remaining = Int((expiresAtMs / 1000.0) - Date().timeIntervalSince1970)
         if remaining <= 0 {
@@ -367,5 +557,59 @@ struct SupervisorVoiceAuthorizationCard: View {
             return "\(remaining) 秒后过期"
         }
         return "\(remaining / 60) 分 \(remaining % 60) 秒后过期"
+    }
+}
+
+private struct SupervisorVoiceInvariantCheckRowView: View {
+    let check: VoiceSafetyInvariantCheck
+
+    @State private var diagnosticsExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .center, spacing: 8) {
+                Label(check.kind.title, systemImage: check.status.surfaceState.iconName)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(check.status.surfaceState.tint)
+                Spacer(minLength: 0)
+                Text(check.status.localizedLabel)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(check.status.surfaceState.tint)
+            }
+
+            Text(check.summary)
+                .font(.caption)
+                .foregroundStyle(.primary)
+
+            Text(check.detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if let evidenceLine {
+                DisclosureGroup(isExpanded: $diagnosticsExpanded) {
+                    Text(evidenceLine)
+                        .font(UIThemeTokens.monoFont())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .padding(.top, 6)
+                } label: {
+                    HStack {
+                        Text("原始诊断")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(diagnosticsExpanded ? "展开中" : "已折叠")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var evidenceLine: String? {
+        let trimmed = check.evidence.first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 }

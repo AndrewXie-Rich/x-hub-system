@@ -113,4 +113,83 @@ struct ToolResultPresentationTests {
         #expect(ToolResultPresentation.body(for: result).contains("5 层"))
         #expect(ToolResultPresentation.body(for: result).contains("审查结论：ready"))
     }
+
+    @Test
+    func governanceReasonSummarizesStructuredGovernanceDenial() throws {
+        let result = ToolResult(
+            id: "tool_write_file_governance_denied",
+            tool: .write_file,
+            ok: false,
+            output: ToolExecutor.structuredOutput(
+                summary: [
+                    "tool": .string(ToolName.write_file.rawValue),
+                    "ok": .bool(false),
+                    "deny_code": .string("governance_capability_denied"),
+                    "policy_source": .string("project_governance"),
+                    "policy_reason": .string("execution_tier_missing_repo_write"),
+                ],
+                body: "governance denied write_file"
+            )
+        )
+
+        #expect(ToolResultPresentation.governanceReason(for: result) == "当前项目 A-Tier 不允许写文件。")
+        #expect(ToolResultPresentation.policyReason(for: result) == "execution_tier_missing_repo_write")
+    }
+
+    @Test
+    func policyReasonPrefersRuntimeSurfaceAliasWhenPresent() throws {
+        let result = ToolResult(
+            id: "tool_browser_runtime_surface_denied",
+            tool: .deviceBrowserControl,
+            ok: false,
+            output: ToolExecutor.structuredOutput(
+                summary: [
+                    "tool": .string(ToolName.deviceBrowserControl.rawValue),
+                    "ok": .bool(false),
+                    "deny_code": .string("autonomy_policy_denied"),
+                    "policy_source": .string("project_autonomy_policy"),
+                    "policy_reason": .string("autonomy_mode=guided"),
+                    "runtime_surface_policy_reason": .string("runtime_surface_effective=guided"),
+                ],
+                body: "runtime surface denied browser control"
+            )
+        )
+
+        #expect(ToolResultPresentation.policyReason(for: result) == "runtime_surface_effective=guided")
+        #expect(ToolResultPresentation.governanceReason(for: result)?.contains("运行面") == true)
+    }
+
+    @Test
+    func timelineBodySeparatesGovernanceTruthFromVisibleSummary() throws {
+        let result = ToolResult(
+            id: "tool_browser_truth_split",
+            tool: .deviceBrowserControl,
+            ok: false,
+            output: ToolExecutor.structuredOutput(
+                summary: [
+                    "tool": .string(ToolName.deviceBrowserControl.rawValue),
+                    "ok": .bool(false),
+                    "deny_code": .string("autonomy_policy_denied"),
+                    "policy_source": .string("project_autonomy_policy"),
+                    "policy_reason": .string("autonomy_mode=guided"),
+                    "runtime_surface_policy_reason": .string("runtime_surface_effective=guided"),
+                    "execution_tier": .string(AXProjectExecutionTier.a4OpenClaw.rawValue),
+                    "effective_execution_tier": .string(AXProjectExecutionTier.a4OpenClaw.rawValue),
+                    "supervisor_intervention_tier": .string(AXProjectSupervisorInterventionTier.s3StrategicCoach.rawValue),
+                    "effective_supervisor_intervention_tier": .string(AXProjectSupervisorInterventionTier.s3StrategicCoach.rawValue),
+                    "review_policy_mode": .string(AXProjectReviewPolicyMode.hybrid.rawValue),
+                    "progress_heartbeat_sec": .number(300),
+                    "review_pulse_sec": .number(600),
+                    "brainstorm_review_sec": .number(1800),
+                    "governance_compat_source": .string(AXProjectGovernanceCompatSource.explicitDualDial.rawValue)
+                ],
+                body: "runtime surface blocks device.browser.control on surface device_tools"
+            )
+        )
+
+        #expect(ToolResultPresentation.governanceTruthLine(for: result) == "治理真相：当前生效 A4/S3 · 审查 混合 · 节奏 心跳 5m / 脉冲 10m / 脑暴 30m。")
+        #expect(ToolResultPresentation.body(for: result).contains("治理真相：当前生效 A4/S3") == true)
+        #expect(ToolResultPresentation.timelineBody(for: result).contains("治理真相：") == false)
+        #expect(ToolResultPresentation.timelineBody(for: result).contains("当前运行面仍然关闭了设备级动作。") == true)
+    }
 }

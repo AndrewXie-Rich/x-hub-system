@@ -34,6 +34,7 @@ enum SupervisorConversationVoiceRailPresentationBuilder {
         routeDecision: VoiceRouteDecision,
         readinessSnapshot: VoiceReadinessSnapshot,
         authorizationStatus: VoiceTranscriberAuthorizationStatus,
+        permissionSnapshot: VoicePermissionSnapshot = .unknown,
         runtimeState: SupervisorVoiceRuntimeState,
         conversationSession: SupervisorConversationSessionSnapshot,
         playbackActivity: VoicePlaybackActivity,
@@ -54,6 +55,11 @@ enum SupervisorConversationVoiceRailPresentationBuilder {
             ?? readinessSnapshot.overallState
         let wakeState = readinessSnapshot.check(.wakeProfileReadiness)?.state
             ?? readinessSnapshot.overallState
+        let authorizationChip = authorizationChipPresentation(
+            route: routeDecision.route,
+            authorizationStatus: authorizationStatus,
+            permissionSnapshot: permissionSnapshot
+        )
         var chips: [SupervisorConversationVoiceRailChip] = [
             SupervisorConversationVoiceRailChip(
                 id: "route",
@@ -74,9 +80,10 @@ enum SupervisorConversationVoiceRailPresentationBuilder {
             ),
             SupervisorConversationVoiceRailChip(
                 id: "auth",
-                text: "权限：\(authorizationStatusText(authorizationStatus))",
-                state: authorizationState(authorizationStatus),
-                prefersMonospacedText: false
+                text: authorizationChip.text,
+                state: authorizationChip.state,
+                prefersMonospacedText: false,
+                helpText: authorizationChip.helpText
             ),
             SupervisorConversationVoiceRailChip(
                 id: "session",
@@ -102,12 +109,13 @@ enum SupervisorConversationVoiceRailPresentationBuilder {
             activeHealthReasonCode: activeHealthReasonCode,
             readinessReasonCode: readinessSnapshot.primaryReasonCode
         ) {
+            let reasonDisplay = reasonChipPresentation(reasonCode)
             chips.append(
                 SupervisorConversationVoiceRailChip(
                     id: "reason",
-                    text: "原因：\(reasonCode)",
+                    text: "原因：\(reasonDisplay.text)",
                     state: notice?.state ?? phase.state,
-                    prefersMonospacedText: true
+                    prefersMonospacedText: reasonDisplay.prefersMonospacedText
                 )
             )
         }
@@ -204,16 +212,32 @@ enum SupervisorConversationVoiceRailPresentationBuilder {
             )
         }
 
-        guard playbackActivity.state == .failed else { return nil }
-        let nextStep = normalized(playbackActivity.detail)
-            ?? "打开 Supervisor 设置，确认当前播放输出链路。"
+        guard playbackActivity.state == .failed || playbackActivity.state == .fallbackPlayed else { return nil }
+        let nextStep: String
+        let repairEntry: UITroubleshootDestination
+        if playbackActivity.state == .fallbackPlayed {
+            nextStep = playbackActivity.recommendedNextStep
+                ?? fallbackPlaybackNextStep(playbackActivity)
+            repairEntry = .homeSupervisor
+        } else {
+            nextStep = playbackActivity.recommendedNextStep
+                ?? "打开 Supervisor 设置，确认当前播放输出链路。"
+            repairEntry = .xtDiagnostics
+        }
         return SupervisorConversationVoiceRailNotice(
-            state: .diagnosticRequired,
+            state: playbackState(playbackActivity.state),
             title: playbackActivity.headline,
             summary: playbackActivity.summaryLine,
             nextStep: nextStep,
-            repairEntry: .xtDiagnostics
+            repairEntry: repairEntry
         )
+    }
+
+    private static func fallbackPlaybackNextStep(
+        _ playbackActivity: VoicePlaybackActivity
+    ) -> String {
+        playbackActivity.recommendedNextStep
+            ?? "当前已经安全回退到系统语音；如果你想恢复原始播放链路，请打开 Supervisor 设置检查当前输出配置。"
     }
 
     private static func preferredReadinessCheck(
@@ -261,6 +285,39 @@ enum SupervisorConversationVoiceRailPresentationBuilder {
         }
     }
 
+    private static func authorizationChipPresentation(
+        route: VoiceRouteMode,
+        authorizationStatus: VoiceTranscriberAuthorizationStatus,
+        permissionSnapshot: VoicePermissionSnapshot
+    ) -> (text: String, state: XTUISurfaceState, helpText: String?) {
+        if !route.supportsLiveCapture {
+            let helpText: String
+            if permissionSnapshot.requiresSettingsRepair {
+                let guidance = VoicePermissionRepairGuidance.build(
+                    snapshot: permissionSnapshot,
+                    fallbackAuthorizationStatus: dominantPermissionStatus(
+                        in: permissionSnapshot,
+                        fallback: authorizationStatus
+                    )
+                )
+                helpText = "当前链路不走实时采集，所以不会被语音权限卡住；如果后面要切回实时语音，仍需先修复。\(guidance.settingsGuidance)"
+            } else {
+                helpText = "当前链路不走实时采集，所以不会使用麦克风或语音识别权限。"
+            }
+            return ("权限：当前链路不需要", .ready, helpText)
+        }
+
+        let dominantStatus = dominantPermissionStatus(
+            in: permissionSnapshot,
+            fallback: authorizationStatus
+        )
+        return (
+            "权限：\(authorizationStatusText(dominantStatus))",
+            authorizationState(dominantStatus),
+            nil
+        )
+    }
+
     private static func authorizationState(
         _ authorizationStatus: VoiceTranscriberAuthorizationStatus
     ) -> XTUISurfaceState {
@@ -274,6 +331,32 @@ enum SupervisorConversationVoiceRailPresentationBuilder {
         case .unavailable:
             return .diagnosticRequired
         }
+    }
+
+    private static func dominantPermissionStatus(
+        in permissionSnapshot: VoicePermissionSnapshot,
+        fallback: VoiceTranscriberAuthorizationStatus
+    ) -> VoiceTranscriberAuthorizationStatus {
+        let statuses = [permissionSnapshot.microphone, permissionSnapshot.speechRecognition]
+        if statuses.allSatisfy({ $0 == .undetermined }) {
+            return fallback
+        }
+        if statuses.contains(.denied) {
+            return .denied
+        }
+        if statuses.contains(.restricted) {
+            return .restricted
+        }
+        if statuses.contains(.undetermined) {
+            return .undetermined
+        }
+        if statuses.allSatisfy({ $0 == .authorized }) {
+            return .authorized
+        }
+        if statuses.contains(.unavailable) {
+            return .unavailable
+        }
+        return fallback
     }
 
     private static func authorizationStatusText(
@@ -370,8 +453,28 @@ enum SupervisorConversationVoiceRailPresentationBuilder {
         return readinessReasonCode
     }
 
+    private static func reasonChipPresentation(
+        _ raw: String
+    ) -> (text: String, prefersMonospacedText: Bool) {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return (raw, true) }
+        if let humanized = XTRouteTruthPresentation.userVisibleReasonText(trimmed) {
+            return (humanized, false)
+        }
+        return (trimmed, true)
+    }
+
     private static func normalized(_ value: String?) -> String? {
         let trimmed = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+private extension VoicePermissionSnapshot {
+    var requiresSettingsRepair: Bool {
+        microphone == .denied
+            || microphone == .restricted
+            || speechRecognition == .denied
+            || speechRecognition == .restricted
     }
 }

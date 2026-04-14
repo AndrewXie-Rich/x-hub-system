@@ -3,6 +3,7 @@ import AppKit
 
 enum XTSystemSettingsPrivacyTarget: Equatable {
     case calendar
+    case localNetwork
     case microphone
     case speechRecognition
     case voiceCapture
@@ -11,6 +12,8 @@ enum XTSystemSettingsPrivacyTarget: Equatable {
         switch self {
         case .calendar:
             return privacyCandidates(token: "Privacy_Calendars")
+        case .localNetwork:
+            return privacyCandidates(token: "Privacy_LocalNetwork")
         case .microphone:
             return privacyCandidates(token: "Privacy_Microphone")
         case .speechRecognition:
@@ -100,6 +103,10 @@ enum XTSystemSettingsLinks {
         openPrivacy(.calendar)
     }
 
+    static func openLocalNetworkPrivacy() {
+        openPrivacy(.localNetwork)
+    }
+
     static func openSpeechRecognitionPrivacy() {
         openPrivacy(.speechRecognition)
     }
@@ -120,6 +127,8 @@ enum XTSystemSettingsLinks {
         switch target {
         case .calendar:
             return "打开日历权限"
+        case .localNetwork:
+            return "打开本地网络权限"
         case .microphone:
             return "打开麦克风权限"
         case .speechRecognition:

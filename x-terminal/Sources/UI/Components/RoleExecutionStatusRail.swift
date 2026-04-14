@@ -68,14 +68,16 @@ private struct RoleExecutionStatusCard: View {
             executionLine(label: "提供方", value: displayValue(snapshot.runtimeProvider))
             executionLine(label: "路径", value: displayValue(snapshot.executionPath == "no_record" ? "" : snapshot.executionPath))
 
-            if !snapshot.fallbackReasonCode.isEmpty {
-                executionLine(label: "回退", value: snapshot.fallbackReasonCode)
+            if let reason = ExecutionRoutePresentation.displayReasonText(
+                snapshot.effectiveFailureReasonCode
+            ) {
+                executionLine(label: "回退", value: reason)
             }
             if !snapshot.auditRef.isEmpty {
                 executionLine(label: "审计", value: snapshot.auditRef)
             }
-            if !snapshot.denyCode.isEmpty {
-                executionLine(label: "拒绝码", value: snapshot.denyCode)
+            if let denyCode = ExecutionRoutePresentation.displayDenyCodeText(snapshot.denyCode) {
+                executionLine(label: "拒绝码", value: denyCode)
             }
         }
         .padding(10)
@@ -119,6 +121,8 @@ private struct RoleExecutionStatusCard: View {
         case "local_fallback_after_remote_error":
             return .orange
         case "local_runtime":
+            return .yellow
+        case "local_preflight", "local_direct_reply", "local_direct_action", "hub_brief_projection":
             return .yellow
         case "remote_error":
             return .red

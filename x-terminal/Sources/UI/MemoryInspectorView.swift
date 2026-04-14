@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 
 struct MemoryInspectorView: View {
+    @EnvironmentObject private var appModel: AppModel
     let ctx: AXProjectContext
     let memory: AXMemory?
 
@@ -16,7 +17,7 @@ struct MemoryInspectorView: View {
                 Spacer(minLength: 0)
 
                 Button("Open") {
-                    NSWorkspace.shared.open(ctx.memoryMarkdownURL)
+                    appModel.openWorkspaceURL(ctx.memoryMarkdownURL)
                 }
             }
 

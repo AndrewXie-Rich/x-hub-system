@@ -20,15 +20,15 @@ struct CreateProjectSheet: View {
     @State private var taskDescription: String = ""
     @State private var selectedRegisteredProjectId: String = Self.unboundProjectSelection
     @State private var selectedModel: String = XTModelCatalog.projectCreationEntries.first?.id ?? "claude-opus-4.6"
-    @State private var governanceTemplateBaseline: AXProjectGovernanceTemplate = .safe
-    @State private var executionTier: AXProjectExecutionTier = .a3DeliverAuto
-    @State private var supervisorInterventionTier: AXProjectSupervisorInterventionTier = .s3StrategicCoach
+    @State private var governanceTemplateBaseline: AXProjectGovernanceTemplate = .feature
+    @State private var executionTier: AXProjectExecutionTier = .a2RepoAuto
+    @State private var supervisorInterventionTier: AXProjectSupervisorInterventionTier = .s2PeriodicReview
     @State private var reviewPolicyMode: AXProjectReviewPolicyMode = .hybrid
-    @State private var progressHeartbeatSeconds: Int = AXProjectExecutionTier.a3DeliverAuto.defaultProgressHeartbeatSeconds
-    @State private var reviewPulseSeconds: Int = AXProjectExecutionTier.a3DeliverAuto.defaultReviewPulseSeconds
-    @State private var brainstormReviewSeconds: Int = AXProjectExecutionTier.a3DeliverAuto.defaultBrainstormReviewSeconds
-    @State private var eventDrivenReviewEnabled: Bool = AXProjectExecutionTier.a3DeliverAuto.defaultEventDrivenReviewEnabled
-    @State private var eventReviewTriggers: [AXProjectReviewTrigger] = AXProjectExecutionTier.a3DeliverAuto.defaultEventReviewTriggers
+    @State private var progressHeartbeatSeconds: Int = AXProjectExecutionTier.a2RepoAuto.defaultProgressHeartbeatSeconds
+    @State private var reviewPulseSeconds: Int = AXProjectExecutionTier.a2RepoAuto.defaultReviewPulseSeconds
+    @State private var brainstormReviewSeconds: Int = AXProjectExecutionTier.a2RepoAuto.defaultBrainstormReviewSeconds
+    @State private var eventDrivenReviewEnabled: Bool = AXProjectExecutionTier.a2RepoAuto.defaultEventDrivenReviewEnabled
+    @State private var eventReviewTriggers: [AXProjectReviewTrigger] = AXProjectExecutionTier.a2RepoAuto.defaultEventReviewTriggers
     @State private var selectedGovernanceDestination: XTProjectGovernanceDestination = .executionTier
     @State private var priority: Int = 5
     @State private var budget: Double = 10.0
@@ -165,10 +165,10 @@ struct CreateProjectSheet: View {
         let templatePreview = draftGovernanceTemplatePreview
 
         return VStack(alignment: .leading, spacing: 12) {
-            Text("治理模板（可选）")
+            Text("执行场景模板（可选）")
                 .font(.headline)
 
-            Text("这些模板只是创建项目时的快捷映射。真正生效的 A-tier / S-tier、审查节奏、绑定关系与运行时收束，仍以下方治理编排为准。")
+            Text("这些模板会一次初始化 A-Tier / S-Tier / Heartbeat / Review / Project Context 连续性。真正生效的执行权限、Supervisor 介入、绑定关系和运行时收束，仍以下方治理编排为准。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -182,9 +182,13 @@ struct CreateProjectSheet: View {
             }
 
             if templatePreview.configuredProfile == .custom {
-                Text("当前模板已偏离默认映射：创建后系统会按实际治理参数运行。")
+                Text("当前场景模板已偏离默认映射：创建后系统会按实际治理参数运行；Project Context 连续性继续沿用最近一次应用的场景基线。")
                     .font(.caption)
                     .foregroundStyle(.orange)
+            } else if templatePreview.configuredProfile == .legacyObserve {
+                Text("当前仍是旧 Observe 基线；新建项目通常建议直接切到五种执行场景模板之一。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             if let governanceInlineMessage, !governanceInlineMessage.isEmpty {
@@ -193,14 +197,12 @@ struct CreateProjectSheet: View {
                     .foregroundStyle(governanceInlineMessageIsError ? .red : .orange)
             }
 
-            ProjectGovernanceCompactSummaryView(
+            ProjectGovernanceThreeAxisOverviewView(
                 presentation: governancePresentation,
-                showCallout: true,
-                onExecutionTierTap: { selectedGovernanceDestination = .executionTier },
-                onSupervisorTierTap: { selectedGovernanceDestination = .supervisorTier },
-                onReviewCadenceTap: { selectedGovernanceDestination = .heartbeatReview },
-                onStatusTap: { selectedGovernanceDestination = .overview },
-                onCalloutTap: { selectedGovernanceDestination = .overview }
+                compact: true,
+                onSelectDestination: { destination in
+                    selectedGovernanceDestination = destination
+                }
             )
 
             HStack(alignment: .top, spacing: 12) {
@@ -218,7 +220,7 @@ struct CreateProjectSheet: View {
             }
 
             if templatePreview.hasConfiguredEffectiveDrift {
-                Text("这里只展示创建前的运行时预演。真正运行时仍继续受受治理自动化、授权门、TTL、紧急回收和是否绑定真实项目共同约束。")
+                Text("这里只展示创建前的运行时预演。真正运行时仍继续受受治理自动化、授权门、TTL、紧急回收、Project Context 实际装配和是否绑定真实项目共同约束。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -276,20 +278,18 @@ struct CreateProjectSheet: View {
             Text("治理编排")
                 .font(.headline)
 
-            Text("创建阶段也保持三根独立治理拨盘：A-tier 决定能做什么，S-tier 决定盯多深，心跳与审查决定多久做一次审查。")
+            Text("创建阶段也保持三根独立治理拨盘：A-Tier 决定 Project AI 最多能做到哪一步，S-Tier 决定 Supervisor 管多深，Heartbeat / Review 决定多久看一次。overview 里另外会展示 role-aware memory、双环治理和 hard boundaries。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
             governanceBindingSection
 
-            ProjectGovernanceCompactSummaryView(
+            ProjectGovernanceThreeAxisOverviewView(
                 presentation: presentation,
-                showCallout: true,
-                onExecutionTierTap: { selectedGovernanceDestination = .executionTier },
-                onSupervisorTierTap: { selectedGovernanceDestination = .supervisorTier },
-                onReviewCadenceTap: { selectedGovernanceDestination = .heartbeatReview },
-                onStatusTap: { selectedGovernanceDestination = .overview },
-                onCalloutTap: { selectedGovernanceDestination = .overview }
+                compact: true,
+                onSelectDestination: { destination in
+                    selectedGovernanceDestination = destination
+                }
             )
 
             governanceDestinationCards
@@ -316,7 +316,7 @@ struct CreateProjectSheet: View {
             .frame(width: 320, alignment: .leading)
 
             if let selectedBoundProject {
-                Text("当前会直接读取 \(selectedBoundProject.displayName) 的治理活动。心跳与审查子页会显示真实的审查 / 指导 / 调度时间线。")
+                Text("当前会直接读取 \(selectedBoundProject.displayName) 的治理活动。Heartbeat / Review 子页会显示真实的审查 / 指导 / 调度时间线。")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -326,7 +326,7 @@ struct CreateProjectSheet: View {
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                Text("未绑定时，这个多项目卡片只保存治理草稿；心跳与审查子页不会显示真实的审查 / 指导时间线。")
+                Text("未绑定时，创建后会按项目名自动新建真实项目，并立刻接入 project memory、Hub canonical sync 与治理配置。")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -408,6 +408,7 @@ struct CreateProjectSheet: View {
             case .heartbeatReview:
                 ProjectHeartbeatReviewView(
                     ctx: boundGovernanceActivityContext,
+                    projectConfig: draftGovernanceTemplateConfig,
                     configuredExecutionTier: executionTier,
                     configuredReviewPolicyMode: reviewPolicyMode,
                     progressHeartbeatSeconds: progressHeartbeatSeconds,
@@ -415,6 +416,9 @@ struct CreateProjectSheet: View {
                     brainstormReviewSeconds: brainstormReviewSeconds,
                     eventDrivenReviewEnabled: eventDrivenReviewEnabled,
                     eventReviewTriggers: eventReviewTriggers,
+                    configuredSupervisorRecentRawContextProfile: appModel.settingsStore.settings.supervisorRecentRawContextProfile,
+                    configuredSupervisorReviewMemoryDepth: appModel.settingsStore.settings.supervisorReviewMemoryDepthProfile,
+                    supervisorPrivacyMode: appModel.settingsStore.settings.supervisorPrivacyMode,
                     resolvedGovernance: draftResolvedGovernance,
                     governancePresentation: draftGovernancePresentation,
                     inlineMessage: governanceInlineMessage ?? "",
@@ -649,15 +653,24 @@ struct CreateProjectSheet: View {
         eventReviewTriggers = config.eventReviewTriggers
 
         switch profile {
-        case .agent:
-            governanceInlineMessage = "已切到 Agent 治理模板（默认 A4 Agent + S3）。创建后如果要真正放开设备级执行面，仍需要绑定真实项目并完成受治理自动化与权限就绪。"
+        case .highGovernance:
+            governanceInlineMessage = "已切到高治理场景（默认 A4 Agent + S3，Extended 40 / Full）。创建后如果要真正放开设备级执行面，仍需要绑定真实项目并完成 runtime ready、受治理自动化与权限就绪。"
             governanceInlineMessageIsError = false
             selectedGovernanceDestination = .executionTier
-        case .safe:
-            governanceInlineMessage = "已切到推荐治理模板（默认 A3 + S3）。项目会优先持续推进，但高风险动作仍继续受授权门与收束规则约束。"
+        case .largeProject:
+            governanceInlineMessage = "已切到大型项目场景（默认 A3 + S3，Deep 20 / Deep）。当前更强调 continuity、checkpoint、review 和 delivery 收口。"
             governanceInlineMessageIsError = false
-        case .conservative:
-            governanceInlineMessage = "已切到保守治理模板（默认 A1 + S2）。当前更偏向理解、规划与审阅，不主动放大执行面。"
+        case .feature:
+            governanceInlineMessage = "已切到功能开发场景（默认 A2 + S2，Standard 12 / Balanced）。这会作为新项目的默认主力模式。"
+            governanceInlineMessageIsError = false
+        case .prototype:
+            governanceInlineMessage = "已切到原型场景（默认 A2 + S1，Floor 8 / Lean）。适合 demo / spike；不默认进入高风险 delivery 面。"
+            governanceInlineMessageIsError = false
+        case .inception:
+            governanceInlineMessage = "已切到产品开局场景（默认 A1 + S2，Deep 20 / Deep）。适合先收敛 scope、architecture 和 work orders，再升级到正式执行。"
+            governanceInlineMessageIsError = false
+        case .legacyObserve:
+            governanceInlineMessage = "已回到旧 Observe 基线（默认 A0 + S0）。当前更偏向观测与建议，不主动创建执行动作。"
             governanceInlineMessageIsError = false
         case .custom:
             break
@@ -687,8 +700,8 @@ struct CreateProjectSheet: View {
             preserving: eventReviewTriggers
         )
 
-        if updatedBundle.supervisorInterventionTier != previousSupervisor {
-            governanceInlineMessage = "\(tier.displayName) 至少需要 \(tier.minimumSafeSupervisorTier.displayName)，已自动抬升 Supervisor 安全下限。"
+        if previousSupervisor < tier.minimumSafeSupervisorTier {
+            governanceInlineMessage = "\(tier.displayName) 已保留当前 S-Tier \(previousSupervisor.displayName)。这个组合允许创建，但低于 \(tier.minimumSafeSupervisorTier.displayName) 风险参考线。"
             governanceInlineMessageIsError = false
         } else {
             clearGovernanceInlineMessage()
@@ -696,15 +709,11 @@ struct CreateProjectSheet: View {
     }
 
     private func applySupervisorTier(_ tier: AXProjectSupervisorInterventionTier) {
-        let minimumSafe = executionTier.minimumSafeSupervisorTier
-        guard tier >= minimumSafe else {
-            governanceInlineMessage = "\(executionTier.displayName) 不能低于 \(minimumSafe.displayName)。"
-            governanceInlineMessageIsError = true
-            return
-        }
-
         supervisorInterventionTier = tier
-        if tier < executionTier.defaultSupervisorInterventionTier {
+        if tier < executionTier.minimumSafeSupervisorTier {
+            governanceInlineMessage = "\(executionTier.displayName) 当前搭配 \(tier.displayName) 属于高风险监督区：允许创建，但建议只在你明确接受更弱监督时使用。"
+            governanceInlineMessageIsError = false
+        } else if tier < executionTier.defaultSupervisorInterventionTier {
             governanceInlineMessage = "\(executionTier.displayName) 推荐 \(executionTier.defaultSupervisorInterventionTier.displayName) 及以上；当前组合允许，但会放松审查纠偏强度。"
             governanceInlineMessageIsError = false
         } else {
@@ -734,28 +743,38 @@ struct CreateProjectSheet: View {
         errorMessage = nil
 
         Task {
-            let project = await appModel.createMultiProject(
-                name: projectName.trimmingCharacters(in: .whitespaces),
-                taskDescription: taskDescription.trimmingCharacters(in: .whitespaces),
-                modelName: selectedModel,
-                registeredProjectId: normalizedRegisteredProjectId,
-                executionTier: executionTier,
-                supervisorInterventionTier: supervisorInterventionTier,
-                reviewPolicyMode: reviewPolicyMode,
-                progressHeartbeatSeconds: progressHeartbeatSeconds,
-                reviewPulseSeconds: reviewPulseSeconds,
-                brainstormReviewSeconds: brainstormReviewSeconds,
-                eventDrivenReviewEnabled: eventDrivenReviewEnabled,
-                eventReviewTriggers: eventReviewTriggers
-            )
+            do {
+                let project = try await appModel.createMultiProject(
+                    name: projectName.trimmingCharacters(in: .whitespaces),
+                    taskDescription: taskDescription.trimmingCharacters(in: .whitespaces),
+                    modelName: selectedModel,
+                    registeredProjectId: normalizedRegisteredProjectId,
+                    materializeRegisteredProjectIfNeeded: true,
+                    executionTier: executionTier,
+                    supervisorInterventionTier: supervisorInterventionTier,
+                    reviewPolicyMode: reviewPolicyMode,
+                    progressHeartbeatSeconds: progressHeartbeatSeconds,
+                    reviewPulseSeconds: reviewPulseSeconds,
+                    brainstormReviewSeconds: brainstormReviewSeconds,
+                    eventDrivenReviewEnabled: eventDrivenReviewEnabled,
+                    eventReviewTriggers: eventReviewTriggers,
+                    projectRecentDialogueProfile: draftGovernanceTemplateConfig.projectRecentDialogueProfile,
+                    projectContextDepthProfile: draftGovernanceTemplateConfig.projectContextDepthProfile
+                )
 
-            // 设置优先级和预算
-            project.priority = priority
-            project.budget.daily = budget
+                // 设置优先级和预算
+                project.priority = priority
+                project.budget.daily = budget
 
-            await MainActor.run {
-                isCreating = false
-                dismiss()
+                await MainActor.run {
+                    isCreating = false
+                    dismiss()
+                }
+            } catch {
+                await MainActor.run {
+                    isCreating = false
+                    errorMessage = "创建失败：\(error.localizedDescription)"
+                }
             }
         }
     }
@@ -784,6 +803,11 @@ struct CreateProjectSheet: View {
                 Text(profile.shortDescription)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(profile.selectableDescription)
+                    .font(.caption2)
+                    .foregroundStyle(accent)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -871,30 +895,25 @@ struct CreateProjectSheet: View {
 
     private func governanceTemplateAccent(_ profile: AXProjectGovernanceTemplate) -> Color {
         switch profile {
-        case .conservative:
-            return .secondary
-        case .safe:
+        case .prototype:
+            return .mint
+        case .feature:
             return .green
-        case .agent:
+        case .largeProject:
+            return .blue
+        case .highGovernance:
             return .orange
+        case .inception:
+            return .indigo
+        case .legacyObserve:
+            return .secondary
         case .custom:
             return .blue
         }
     }
 
     private func governanceCardAccent(_ tone: ProjectGovernanceComposerAccentTone) -> Color {
-        switch tone {
-        case .gray:
-            return .gray
-        case .blue:
-            return .blue
-        case .teal:
-            return .teal
-        case .green:
-            return .green
-        case .orange:
-            return .orange
-        }
+        tone.color
     }
 }
 

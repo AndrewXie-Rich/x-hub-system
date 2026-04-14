@@ -10,7 +10,7 @@ struct VoiceInputButton: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Button(action: {
-                if voiceCoordinator.isRecording {
+                if manualCaptureActive {
                     voiceCoordinator.stopRecording()
                     let recognized = voiceCoordinator.committedTranscript()
                     if !recognized.isEmpty {
@@ -26,27 +26,30 @@ struct VoiceInputButton: View {
                     showPreview = false
                 } else {
                     Task {
+                        if voiceCoordinator.currentCaptureSource == .wakeArmed {
+                            voiceCoordinator.discardRecording(reasonCode: "manual_composer_override")
+                        }
                         await voiceCoordinator.startRecording()
                     }
                     showPreview = true
                 }
             }) {
                 HStack(spacing: 8) {
-                    Image(systemName: voiceCoordinator.isRecording ? "mic.fill" : "mic")
-                    Text(voiceCoordinator.isRecording ? "Stop" : "Voice Input")
+                    Image(systemName: manualCaptureActive ? "mic.fill" : "mic")
+                    Text(manualCaptureActive ? "Stop" : "Voice Input")
                     
-                    if voiceCoordinator.isRecording {
+                    if manualCaptureActive {
                         BreathingDotView(label: "R", isActive: true)
                     }
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
-                .background(voiceCoordinator.isRecording ? Color.red : Color.accentColor)
+                .background(manualCaptureActive ? Color.red : Color.accentColor)
                 .foregroundColor(.white)
                 .cornerRadius(6)
             }
             .buttonStyle(.plain)
-            .disabled(!voiceCoordinator.isAuthorized && !voiceCoordinator.isRecording)
+            .disabled(voiceInputDisabled)
             
             if showPreview && !voiceCoordinator.recognizedText.isEmpty {
                 Text("识别中 [\(voiceCoordinator.routeDecision.route.displayName)]: \(voiceCoordinator.recognizedText)")
@@ -60,5 +63,19 @@ struct VoiceInputButton: View {
                     .padding(.horizontal, 12)
             }
         }
+    }
+
+    private var manualCaptureActive: Bool {
+        voiceCoordinator.currentCaptureSource == .manualComposer && voiceCoordinator.isRecording
+    }
+
+    private var voiceInputDisabled: Bool {
+        if manualCaptureActive {
+            return false
+        }
+        if let captureSource = voiceCoordinator.currentCaptureSource {
+            return captureSource != .wakeArmed
+        }
+        return !voiceCoordinator.isAuthorized
     }
 }

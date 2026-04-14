@@ -26,6 +26,7 @@ struct StatusExplanation: Codable, Equatable, Identifiable {
 
 struct StatusExplanationCard: View {
     let explanation: StatusExplanation
+    @State private var diagnosticsExpanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -37,7 +38,7 @@ struct StatusExplanationCard: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(explanation.headline)
                         .font(UIThemeTokens.sectionFont())
-                    Text(explanation.state.label)
+                    Text(surfaceLabel(explanation.state))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -49,29 +50,46 @@ struct StatusExplanationCard: View {
             detailLine(title: "原因", text: explanation.whyItHappened)
             detailLine(title: "下一步", text: explanation.userAction)
 
-            if !explanation.highlights.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("观测信号")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    ForEach(explanation.highlights, id: \.self) { highlight in
-                        Text("• \(highlight)")
+            if hasDiagnostics {
+                DisclosureGroup(isExpanded: $diagnosticsExpanded) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if !explanation.highlights.isEmpty {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("观测信号")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                ForEach(explanation.highlights, id: \.self) { highlight in
+                                    Text("• \(highlight)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+
+                        if let hardLine = explanation.hardLine, !hardLine.isEmpty {
+                            Text("硬边界 · \(hardLine)")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(explanation.state.tint)
+                        }
+
+                        Text("machine_status_ref: \(explanation.machineStatusRef)")
+                            .font(UIThemeTokens.monoFont())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    .padding(.top, 8)
+                } label: {
+                    HStack {
+                        Text("详细诊断")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(diagnosticsExpanded ? "展开中" : "已折叠")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
             }
-
-            if let hardLine = explanation.hardLine, !hardLine.isEmpty {
-                Text("硬边界 · \(hardLine)")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(explanation.state.tint)
-            }
-
-            Text("machine_status_ref: \(explanation.machineStatusRef)")
-                .font(UIThemeTokens.monoFont())
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -83,6 +101,31 @@ struct StatusExplanationCard: View {
             RoundedRectangle(cornerRadius: UIThemeTokens.cardRadius)
                 .stroke(explanation.state.tint.opacity(0.24), lineWidth: 1)
         )
+    }
+
+    private var hasDiagnostics: Bool {
+        !explanation.highlights.isEmpty
+            || !(explanation.hardLine?.isEmpty ?? true)
+            || !explanation.machineStatusRef.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func surfaceLabel(_ state: XTUISurfaceState) -> String {
+        switch state {
+        case .ready:
+            return "已就绪"
+        case .inProgress:
+            return "处理中"
+        case .grantRequired:
+            return "待授权"
+        case .permissionDenied:
+            return "权限被拒"
+        case .blockedWaitingUpstream:
+            return "被上游阻塞"
+        case .releaseFrozen:
+            return "已冻结"
+        case .diagnosticRequired:
+            return "需要排查"
+        }
     }
 
     @ViewBuilder

@@ -24,6 +24,24 @@ struct XTHubGrantPresentationTests {
                 modelId: ""
             ) == "浏览器控制"
         )
+        #expect(
+            XTHubGrantPresentation.capabilityLabel(
+                capability: "ai.embed.local",
+                modelId: "qwen3-embedding"
+            ) == "本地向量模型调用（qwen3-embedding）"
+        )
+        #expect(
+            XTHubGrantPresentation.capabilityLabel(
+                capability: "ai.audio.tts.local",
+                modelId: "kokoro"
+            ) == "本地语音合成调用（kokoro）"
+        )
+        #expect(
+            XTHubGrantPresentation.capabilityLabel(
+                capability: "ai.vision.local",
+                modelId: "qwen2-vl"
+            ) == "本地图像理解调用（qwen2-vl）"
+        )
     }
 
     @Test
@@ -34,7 +52,7 @@ struct XTHubGrantPresentationTests {
         )
 
         #expect(summary.contains("等待 Hub 授权后才能继续"))
-        #expect(summary.contains("本地模型调用（llama）"))
+        #expect(summary.contains("本地文本模型调用（llama）"))
     }
 
     @Test
@@ -59,7 +77,7 @@ struct XTHubGrantPresentationTests {
         )
 
         #expect(summary.contains("Hub 授权已被你拒绝"))
-        #expect(summary.contains("本地模型调用（llama）"))
+        #expect(summary.contains("本地文本模型调用（llama）"))
     }
 
     @Test
@@ -91,7 +109,7 @@ struct XTHubGrantPresentationTests {
 
         #expect(reply.contains("语音授权已验证"))
         #expect(reply.contains("《Local Runtime》"))
-        #expect(reply.contains("本地模型调用（llama）"))
+        #expect(reply.contains("本地文本模型调用（llama）"))
         #expect(reply.contains("授权单号：grant-local-1"))
         #expect(reply.contains("原因：hub_busy"))
     }

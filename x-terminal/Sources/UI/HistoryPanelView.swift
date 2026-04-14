@@ -21,7 +21,10 @@ struct HistoryPanelView: View {
                             isSelected: selectedMessage?.id == message.id,
                             onTap: { selectedMessage = message },
                             onCopy: { copyToClipboard(message) },
-                            onInsert: { showInsertOptions = true }
+                            onInsert: {
+                                selectedMessage = message
+                                showInsertOptions = true
+                            }
                         )
                     }
                 }
@@ -37,10 +40,10 @@ struct HistoryPanelView: View {
     
     private var header: some View {
         HStack {
-            Text("History")
+            Text("历史记录")
                 .font(.headline)
             Spacer()
-            Button("Clear") {
+            Button("清空") {
             }
             .buttonStyle(.borderless)
         }
@@ -66,8 +69,8 @@ struct HistoryPanelView: View {
     
     private func showCopiedNotification() {
         let content = UNMutableNotificationContent()
-        content.title = "Copied"
-        content.body = "Content copied to clipboard"
+        content.title = "已复制"
+        content.body = "内容已复制到剪贴板"
         content.sound = UNNotificationSound.default
         
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
@@ -82,20 +85,20 @@ struct HistoryPanelView: View {
     @ViewBuilder
     private func insertOptionsSheet(message: AXChatMessage) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Insert content to:")
+            Text("将内容插入到：")
                 .font(.headline)
             
-            Button("Insert at cursor position") {
+            Button("插入到光标位置") {
                 insertAtCursor(message.content)
                 showInsertOptions = false
             }
             
-            Button("Add to new file") {
+            Button("添加到新文件") {
                 addToNewFile(message.content)
                 showInsertOptions = false
             }
             
-            Button("Cancel") {
+            Button("取消") {
                 showInsertOptions = false
             }
             .keyboardShortcut(.escape)
@@ -119,8 +122,8 @@ struct HistoryPanelView: View {
     
     private func addToNewFile(_ content: String) {
         let savePanel = NSSavePanel()
-        savePanel.title = "Save to new file"
-        savePanel.nameFieldStringValue = "new_file.txt"
+        savePanel.title = "保存为新文件"
+        savePanel.nameFieldStringValue = "新文件.txt"
         
         savePanel.begin { response in
             if response == .OK, let url = savePanel.url {
@@ -149,11 +152,11 @@ struct MessageRow: View {
                     .lineLimit(3)
                 
                 HStack(spacing: 8) {
-                    Button("Copy") { onCopy() }
+                    Button("复制") { onCopy() }
                         .buttonStyle(.borderless)
                         .font(.caption)
                     
-                    Button("Insert") { onInsert() }
+                    Button("插入") { onInsert() }
                         .buttonStyle(.borderless)
                         .font(.caption)
                 }

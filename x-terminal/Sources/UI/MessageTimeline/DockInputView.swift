@@ -8,10 +8,13 @@ struct DockInputView: View {
     let hubConnected: Bool
     @ObservedObject var session: ChatSessionModel
     @EnvironmentObject private var appModel: AppModel
+    @StateObject private var modelManager = HubModelManager.shared
 
-    @FocusState private var isFocused: Bool
+    @State private var isFocused: Bool = false
     @State private var inputHeight: CGFloat = 44
     @State private var showSlashSuggestions = false
+    @State private var isAttachmentDropTarget = false
+    @State private var attachmentDropIntent: XTChatComposerDropIntent? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -33,7 +36,7 @@ struct DockInputView: View {
                 if showSlashSuggestions {
                     SlashSuggestionsView(
                         draft: $session.draft,
-                        modelsState: appModel.modelsState,
+                        modelsState: modelManager.visibleSnapshot(fallback: appModel.modelsState),
                         onSelect: { suggestion in
                             session.draft = suggestion
                             showSlashSuggestions = false
@@ -47,7 +50,7 @@ struct DockInputView: View {
                     // 左侧：附件和设置按钮
                     VStack(spacing: 8) {
                         // 模型选择器
-                        ModelSelectorButton(config: config)
+                        ModelSelectorButton(ctx: ctx, config: config)
                             .environmentObject(appModel)
 
                         // 语音输入
@@ -55,42 +58,95 @@ struct DockInputView: View {
                     }
 
                     // 中间：输入框
-                    ZStack(alignment: .topLeading) {
-                        // 占位符
-                        if session.draft.isEmpty && !isFocused {
-                            HStack(spacing: 8) {
-                                Image(systemName: "sparkles")
-                                    .foregroundStyle(.tertiary)
-                                Text("想问什么都可以，输入 / 查看命令…")
-                                    .foregroundStyle(.tertiary)
-                            }
-                            .font(.body)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 12)
-                            .allowsHitTesting(false)
+                    VStack(alignment: .leading, spacing: 10) {
+                        if !session.draftAttachments.isEmpty {
+                            XTChatProjectInboxPanel(
+                                attachments: session.draftAttachments,
+                                projectImportEnabled: true,
+                                continuation: session.importContinuation,
+                                onRemove: session.removeDraftAttachment,
+                                onImport: { session.importAttachmentToProject($0, ctx: ctx) },
+                                onImportAll: { session.importAllExternalDraftAttachments(ctx: ctx) },
+                                onContinue: {
+                                    session.dismissImportContinuation()
+                                    isFocused = true
+                                },
+                                onContinueAndSend: {
+                                    session.dismissImportContinuation()
+                                    sendMessage()
+                                },
+                                canContinueAndSend: hubConnected &&
+                                    !session.isSending &&
+                                    session.pendingToolCalls.isEmpty &&
+                                    AXChatAttachmentSupport.hasSubmittableContent(
+                                        draft: session.draft,
+                                        attachments: session.draftAttachments
+                                    ),
+                                onDismissContinuation: session.dismissImportContinuation
+                            )
                         }
 
-                        // 自动扩展的文本编辑器
-                        TextEditor(text: $session.draft)
-                            .font(.body)
-                            .focused($isFocused)
-                            .scrollContentBackground(.hidden)
-                            .frame(minHeight: 44, maxHeight: 200)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .disabled(false) // 始终允许输入
-                            .onChange(of: session.draft) { newValue in
-                                showSlashSuggestions = newValue.hasPrefix("/") && session.pendingToolCalls.isEmpty
+                        ZStack(alignment: .topLeading) {
+                            // 占位符
+                            if session.draft.isEmpty && session.draftAttachments.isEmpty && !isFocused {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "sparkles")
+                                        .foregroundStyle(.tertiary)
+                                    Text("想问什么都可以，输入 / 查看命令…")
+                                        .foregroundStyle(.tertiary)
+                                }
+                                .font(.body)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 12)
+                                .allowsHitTesting(false)
                             }
+
+                            // 自动扩展的文本编辑器
+                            XTChatComposerTextView(
+                                text: $session.draft,
+                                isFocused: $isFocused,
+                                canSubmit: canSend && !session.isSending,
+                                diagnosticScope: "coder_dock",
+                                onSubmit: sendMessage,
+                                allowsImportDrop: true,
+                                onDropFiles: handleDroppedFiles,
+                                onDropHoverChange: {
+                                    isAttachmentDropTarget = $0
+                                    if !$0 {
+                                        attachmentDropIntent = nil
+                                    }
+                                },
+                                onDropIntentChange: { attachmentDropIntent = $0 }
+                            )
+                                .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 200)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .disabled(false) // 始终允许输入
+                                .onChange(of: session.draft) { newValue in
+                                    showSlashSuggestions = newValue.hasPrefix("/") && session.pendingToolCalls.isEmpty
+                                }
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color(nsColor: .controlBackgroundColor))
                     .cornerRadius(12)
                     .overlay(
                         RoundedRectangle(cornerRadius: 12)
-                            .stroke(inputBorderColor, lineWidth: isFocused ? 2 : 1)
+                            .stroke(
+                                isAttachmentDropTarget ? Color.orange.opacity(0.7) : inputBorderColor,
+                                lineWidth: isAttachmentDropTarget ? 2 : (isFocused ? 2 : 1)
+                            )
+                            .allowsHitTesting(false)
                     )
-                    .onTapGesture {
-                        isFocused = true
+                    .overlay {
+                        if isAttachmentDropTarget {
+                            XTChatContextDock(
+                                activeIntent: attachmentDropIntent,
+                                importEnabled: true
+                            )
+                            .padding(10)
+                            .allowsHitTesting(false)
+                        }
                     }
 
                     // 右侧：发送/取消按钮
@@ -152,10 +208,19 @@ struct DockInputView: View {
 
                     // 快捷键提示
                     HStack(spacing: 4) {
-                        Text("⌘↩")
+                        Text("↩")
                             .font(.system(.caption, design: .monospaced))
                             .foregroundStyle(.tertiary)
                         Text("发送")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                        Text("·")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                        Text("⇧↩")
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                        Text("换行")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
                     }
@@ -186,8 +251,21 @@ struct DockInputView: View {
         .frame(maxWidth: 900) // 限制最大宽度
         .frame(maxWidth: .infinity)
         .onAppear {
+            modelManager.setAppModel(appModel)
+            if appModel.hubInteractive {
+                Task {
+                    await modelManager.fetchModels()
+                }
+            }
             DispatchQueue.main.async {
                 isFocused = true
+            }
+        }
+        .onChange(of: appModel.hubInteractive) { connected in
+            if connected {
+                Task {
+                    await modelManager.fetchModels()
+                }
             }
         }
     }
@@ -196,7 +274,12 @@ struct DockInputView: View {
         if session.isSending {
             return true // 可以取消
         }
-        return hubConnected && !session.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && session.pendingToolCalls.isEmpty
+        return hubConnected &&
+            AXChatAttachmentSupport.hasSubmittableContent(
+                draft: session.draft,
+                attachments: session.draftAttachments
+            ) &&
+            session.pendingToolCalls.isEmpty
     }
 
     private var sendButtonIcon: String {
@@ -245,10 +328,25 @@ struct DockInputView: View {
         session.send(ctx: ctx, memory: memory, config: config, router: appModel.llmRouter)
         isFocused = true
     }
+
+    private func handleDroppedFiles(
+        _ urls: [URL],
+        intent: XTChatComposerDropIntent
+    ) {
+        switch intent {
+        case .attachReadOnly:
+            session.handleDroppedFiles(urls, ctx: ctx)
+        case .importToProject:
+            session.importDroppedFilesToProject(urls, ctx: ctx)
+        }
+        attachmentDropIntent = nil
+        isFocused = true
+    }
 }
 
 /// 模型选择器按钮
 struct ModelSelectorButton: View {
+    let ctx: AXProjectContext
     let config: AXProjectConfig?
     @EnvironmentObject private var appModel: AppModel
     @State private var showModelPicker = false
@@ -267,7 +365,7 @@ struct ModelSelectorButton: View {
         .buttonStyle(.plain)
         .help("选择模型（Select Model）")
         .popover(isPresented: $showModelPicker) {
-            ModelSelectorView(config: config)
+            ModelSelectorView(projectContext: ctx, config: config)
                 .environmentObject(appModel)
                 .frame(width: 300)
         }

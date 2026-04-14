@@ -2,7 +2,7 @@ import SwiftUI
 
 /// 任务分解视图 - 用于输入任务并查看分解结果
 struct TaskDecompositionView: View {
-    @ObservedObject var supervisor: SupervisorModel
+    @ObservedObject var orchestrator: SupervisorOrchestrator
     @Environment(\.dismiss) private var dismiss
 
     @State private var taskDescription: String = ""
@@ -580,7 +580,7 @@ struct TaskDecompositionView: View {
         isAnalyzing = true
         defer { isAnalyzing = false }
 
-        let result = await supervisor.orchestrator.handleNewTask(taskDescription)
+        let result = await orchestrator.handleNewTask(taskDescription)
         decompositionResult = result
     }
 

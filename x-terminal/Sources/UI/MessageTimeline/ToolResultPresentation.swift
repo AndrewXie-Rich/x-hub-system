@@ -30,6 +30,14 @@ enum ToolResultPresentation {
         ToolResultHumanSummary.body(for: result)
     }
 
+    static func timelineBody(for result: ToolResult) -> String {
+        let body = body(for: result)
+        guard let truthLine = governanceTruthLine(for: result) else {
+            return body
+        }
+        return removingLeadingPrefix(truthLine, from: body)
+    }
+
     static func repairHint(for result: ToolResult) -> XTGuardrailRepairHint? {
         guard let summary = ToolResultHumanSummary.structuredSummary(for: result) else {
             return nil
@@ -41,6 +49,39 @@ enum ToolResultPresentation {
                 ?? string(summary["policy_reason"])
                 ?? ""
         )
+    }
+
+    static func governanceTruthLine(for result: ToolResult) -> String? {
+        guard let summary = ToolResultHumanSummary.structuredSummary(for: result) else {
+            return nil
+        }
+        return XTGuardrailMessagePresentation.displayGovernanceTruthLine(
+            from: summary,
+            denyCode: string(summary["deny_code"]) ?? "",
+            policySource: string(summary["policy_source"]) ?? ""
+        )
+    }
+
+    static func governanceReason(for result: ToolResult) -> String? {
+        guard let summary = ToolResultHumanSummary.structuredSummary(for: result) else {
+            return nil
+        }
+        return XTGuardrailMessagePresentation.governanceReasonSummary(
+            tool: result.tool,
+            toolLabel: toolDisplayName(result.tool),
+            denyCode: string(summary["deny_code"]) ?? "",
+            policySource: string(summary["policy_source"]) ?? "",
+            policyReason: policyReason(for: result) ?? "",
+            requiredCapability: string(summary["required_capability"]) ?? ""
+        )
+    }
+
+    static func policyReason(for result: ToolResult) -> String? {
+        guard let summary = ToolResultHumanSummary.structuredSummary(for: result) else {
+            return nil
+        }
+        return string(summary["runtime_surface_policy_reason"])
+            ?? string(summary["policy_reason"])
     }
 
     static func iconName(for result: ToolResult) -> String {
@@ -133,10 +174,14 @@ enum ToolResultPresentation {
             return "检查桥接状态"
         case .skills_search:
             return "搜索技能"
+        case .skills_pin:
+            return "更新技能可用性"
         case .summarize:
             return "总结内容"
         case .supervisorVoicePlayback:
             return "Supervisor 语音"
+        case .run_local_task:
+            return "本地模型任务"
         case .web_fetch:
             return "抓取网页内容"
         case .web_search:
@@ -150,6 +195,16 @@ enum ToolResultPresentation {
         guard case .string(let text)? = value else { return nil }
         let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return cleaned.isEmpty ? nil : cleaned
+    }
+
+    private static func removingLeadingPrefix(
+        _ prefix: String,
+        from body: String
+    ) -> String {
+        guard body.hasPrefix(prefix) else { return body }
+        let remainder = body.dropFirst(prefix.count)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return remainder.isEmpty ? body : remainder
     }
 
 }

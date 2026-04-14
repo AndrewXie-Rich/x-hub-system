@@ -1,40 +1,63 @@
 import SwiftUI
 
 struct ModelSelectorView: View {
+    let projectContext: AXProjectContext?
     let config: AXProjectConfig?
     var focusContext: XTSectionFocusContext? = nil
 
     @EnvironmentObject private var appModel: AppModel
+    @StateObject private var modelManager = HubModelManager.shared
     @StateObject private var updateFeedback = XTTransientUpdateFeedbackState()
     @State private var showPopover: Bool = false
+    @State private var visibleModelInventory = XTVisibleHubModelInventory.empty
+
+    init(
+        projectContext: AXProjectContext? = nil,
+        config: AXProjectConfig?,
+        focusContext: XTSectionFocusContext? = nil
+    ) {
+        self.projectContext = projectContext
+        self.config = config
+        self.focusContext = focusContext
+    }
 
     var body: some View {
         HStack(spacing: 8) {
             Button(action: { showPopover.toggle() }) {
-                HStack(spacing: 6) {
-                    Image(systemName: "brain")
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(selectorTitle)
-                        HStack(spacing: 6) {
-                            Text(routingSelectionState.sourceLabel)
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                            if updateFeedback.showsBadge {
-                                XTTransientUpdateBadge(
-                                    tint: .accentColor,
-                                    title: "已更新"
-                                )
-                            }
-                            if let presentation = selectedPresentationModel {
-                                ModelCapabilityStrip(model: presentation, limit: 3, compact: true)
-                            } else {
-                                Text("自动路由")
-                                    .font(.caption2)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "brain")
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(selectorTitle)
+                            HStack(spacing: 6) {
+                                Text(routingSelectionState.sourceLabel)
+                                    .font(.caption2.weight(.semibold))
                                     .foregroundStyle(.secondary)
+                                if updateFeedback.showsBadge {
+                                    XTTransientUpdateBadge(
+                                        tint: .accentColor,
+                                        title: XTL10n.Common.updated.resolve(interfaceLanguage)
+                                    )
+                                }
+                                if let presentation = selectedPresentationModel {
+                                    ModelCapabilityStrip(model: presentation, limit: 3, compact: true)
+                                } else {
+                                    Text(XTL10n.Common.automaticRouting.resolve(interfaceLanguage))
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
                             }
                         }
+                        Image(systemName: "chevron.down")
                     }
-                    Image(systemName: "chevron.down")
+
+                    if let routeTruth = currentProjectRouteTruth,
+                       routeTruth.compactButtonPresentation.hasContent {
+                        HubModelRoutingSupplementaryContent(
+                            presentation: routeTruth.compactButtonPresentation,
+                            showsBackground: false
+                        )
+                    }
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
@@ -47,6 +70,7 @@ struct ModelSelectorView: View {
                 )
             }
             .buttonStyle(.plain)
+            .help(currentProjectRouteTruth?.tooltip?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
             .popover(isPresented: $showPopover) {
                 modelList
             }
@@ -54,13 +78,28 @@ struct ModelSelectorView: View {
         .onDisappear {
             updateFeedback.cancel(resetState: true)
         }
+        .onAppear {
+            modelManager.setAppModel(appModel)
+            syncVisibleModelInventory()
+        }
+        .onChange(of: modelInventorySnapshot) { _ in
+            syncVisibleModelInventory()
+        }
     }
 
     private var modelList: some View {
         VStack(alignment: .leading, spacing: 0) {
+            if modelInventoryTruth.showsStatusCard {
+                VStack(alignment: .leading, spacing: 0) {
+                    XTModelInventoryTruthCard(presentation: modelInventoryTruth)
+                        .padding(12)
+                    Divider()
+                }
+            }
+
             if let warning = selectedModelWarningText() {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("当前配置提示")
+                    Text(XTL10n.ModelSelector.currentConfigurationTitle.resolve(interfaceLanguage))
                         .font(.caption.weight(.semibold))
                     Text(warning)
                         .font(.caption)
@@ -73,25 +112,31 @@ struct ModelSelectorView: View {
 
             if appModel.hubInteractive {
                 HubModelPickerPopover(
-                    title: "为 coder 选择模型",
+                    title: XTL10n.ModelSelector.pickerTitle(language: interfaceLanguage),
                     selectedModelId: explicitModelId,
                     inheritedModelId: inheritedModelId,
                     inheritedModelPresentation: routingSelectionState.inheritedPresentation,
                     models: selectableModels,
+                    language: interfaceLanguage,
                     focusContext: focusContext,
                     recommendation: selectedModelRecommendation,
+                    selectionTruth: currentProjectRouteTruth,
+                    selectionTruthTitle: currentProjectRouteTruthTitle,
                     showContextDetails: false,
-                    automaticTitle: "自动（使用全局 / Hub 路由）",
-                    automaticSelectedBadge: "当前生效",
-                    automaticRestoreBadge: "恢复继承",
-                    inheritedModelLabel: inheritedModelId == nil ? "自动路由" : "全局模型",
-                    automaticDescription: "让 Hub 或全局配置自行路由当前 coder 模型。"
+                    automaticTitle: XTL10n.ModelSelector.automaticPopoverTitle(language: interfaceLanguage),
+                    automaticSelectedBadge: XTL10n.ModelSelector.automaticSelectedBadge.resolve(interfaceLanguage),
+                    automaticRestoreBadge: XTL10n.ModelSelector.automaticRestoreBadge.resolve(interfaceLanguage),
+                    inheritedModelLabel: XTL10n.ModelSelector.inheritedModelLabel(
+                        inheritedModelId: inheritedModelId,
+                        language: interfaceLanguage
+                    ),
+                    automaticDescription: XTL10n.ModelSelector.automaticDescription.resolve(interfaceLanguage)
                 ) { modelId in
                     updateProjectCoderModelSelection(modelId: modelId)
                     showPopover = false
                 }
             } else {
-                Text("Hub 未连接")
+                Text(XTL10n.ModelSelector.hubDisconnected.resolve(interfaceLanguage))
                     .foregroundStyle(.secondary)
                     .padding(12)
             }
@@ -100,7 +145,16 @@ struct ModelSelectorView: View {
     }
 
     private var effectiveConfig: AXProjectConfig? {
-        appModel.projectConfig ?? config
+        guard let effectiveProjectContext else {
+            return appModel.projectConfig ?? config
+        }
+        if appModel.projectContext?.root.standardizedFileURL == effectiveProjectContext.root.standardizedFileURL,
+           let current = appModel.projectConfig {
+            return current
+        }
+        return (try? AXProjectStore.loadOrCreateConfig(for: effectiveProjectContext))
+            ?? config
+            ?? .default(forProjectRoot: effectiveProjectContext.root)
     }
 
     private var explicitModelId: String? {
@@ -113,40 +167,81 @@ struct ModelSelectorView: View {
         return raw.isEmpty ? nil : raw
     }
 
+    private var interfaceLanguage: XTInterfaceLanguage {
+        appModel.settingsStore.settings.interfaceLanguage
+    }
+
     private var routingSelectionState: HubModelRoutingSelectionState {
         HubModelRoutingSelectionState.resolved(
             explicitModelId: explicitModelId,
             inheritedModelId: inheritedModelId,
             models: selectableModels,
-            explicitSourceLabel: "项目覆盖",
-            inheritedSourceLabel: inheritedModelId == nil ? "自动路由" : "继承全局",
-            automaticTitle: "自动"
+            explicitSourceLabel: XTL10n.ModelSelector.explicitSourceLabel(language: interfaceLanguage),
+            inheritedSourceLabel: XTL10n.ModelSelector.inheritedSourceLabel(
+                inheritedModelId: inheritedModelId,
+                language: interfaceLanguage
+            ),
+            automaticTitle: XTL10n.ModelSelector.automaticTitle(language: interfaceLanguage)
         )
     }
 
     private var selectorTitle: String {
-        "Coder：\(routingSelectionState.title)"
+        XTL10n.ModelSelector.selectorTitle(
+            selectionTitle: routingSelectionState.title,
+            language: interfaceLanguage
+        )
     }
 
     private var selectedPresentationModel: ModelInfo? {
         routingSelectionState.effectivePresentation
     }
 
+    private var effectiveProjectContext: AXProjectContext? {
+        projectContext ?? appModel.projectContext ?? appModel.projectRoot.map { AXProjectContext(root: $0) }
+    }
+
+    private var currentProjectID: String? {
+        effectiveProjectContext.map { AXProjectRegistryStore.projectId(forRoot: $0.root) }
+    }
+
+    private var currentProjectName: String? {
+        guard let effectiveProjectContext else { return nil }
+        let projectID = AXProjectRegistryStore.projectId(forRoot: effectiveProjectContext.root)
+        return appModel.registry.project(for: projectID)?.displayName
+            ?? AXProjectRegistryStore.displayName(
+                forRoot: effectiveProjectContext.root,
+                registry: appModel.registry
+            )
+    }
+
+    private var currentProjectRouteTruthTitle: String {
+        XTL10n.text(
+            interfaceLanguage,
+            zhHans: "Coder · 当前项目 Route Truth",
+            en: "Coder · Current Project Route Truth"
+        )
+    }
+
+    private var currentProjectRouteTruth: HubModelRoutingSupplementaryPresentation? {
+        guard let effectiveProjectContext else { return nil }
+        let snapshot = AXRoleExecutionSnapshots.latestSnapshots(for: effectiveProjectContext)[.coder]
+            ?? .empty(role: .coder, source: "model_selector")
+        return HubModelRoutingTruthBuilder.build(
+            surface: .projectRoleSettings,
+            role: .coder,
+            selectedProjectID: currentProjectID,
+            selectedProjectName: currentProjectName,
+            projectConfig: effectiveConfig,
+            settings: appModel.settingsStore.settings,
+            snapshot: snapshot,
+            transportMode: HubAIClient.transportMode().rawValue,
+            language: interfaceLanguage
+        )
+        .pickerTruth
+    }
+
     private var selectableModels: [HubModel] {
-        let source = appModel.modelsState.models
-        var dedup: [String: HubModel] = [:]
-        for model in source {
-            dedup[model.id] = model
-        }
-        return dedup.values.sorted { a, b in
-            let sa = stateRank(a.state)
-            let sb = stateRank(b.state)
-            if sa != sb { return sa < sb }
-            let an = (a.name.isEmpty ? a.id : a.name).lowercased()
-            let bn = (b.name.isEmpty ? b.id : b.name).lowercased()
-            if an != bn { return an < bn }
-            return a.id.lowercased() < b.id.lowercased()
-        }
+        visibleModelInventory.sortedModels
     }
 
     private var selectedModelId: String? {
@@ -157,17 +252,18 @@ struct ModelSelectorView: View {
         guard let selectedModelId else { return nil }
         return HubModelSelectionAdvisor.assess(
             requestedId: selectedModelId,
-            snapshot: appModel.modelsState
+            snapshot: modelInventorySnapshot
         )
     }
 
     private var selectedModelRecommendation: HubModelPickerRecommendationState? {
-        let projectContext = appModel.projectRoot.map { AXProjectContext(root: $0) }
         if let guidance = AXProjectModelRouteMemoryStore.selectionGuidance(
             configuredModelId: selectedModelId,
             role: .coder,
-            ctx: projectContext,
-            snapshot: appModel.modelsState
+            ctx: effectiveProjectContext,
+            snapshot: modelInventorySnapshot,
+            paidAccessSnapshot: appModel.hubRemotePaidAccessSnapshot,
+            language: interfaceLanguage
         ),
            let recommendedModelId = guidance.recommendedModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
            !recommendedModelId.isEmpty {
@@ -197,7 +293,11 @@ struct ModelSelectorView: View {
             return HubModelPickerRecommendationState(
                 kind: .switchRecommended,
                 modelId: candidate,
-                message: "`\(blocked.id)` 是检索专用模型，Supervisor 会按需调用它做 retrieval；如果你要立刻继续，可改用 `\(candidate)`。"
+                message: XTL10n.ModelSelector.nonInteractiveRecommendation(
+                    blockedId: blocked.id,
+                    candidate: candidate,
+                    language: interfaceLanguage
+                )
             )
         }
 
@@ -205,55 +305,150 @@ struct ModelSelectorView: View {
             return HubModelPickerRecommendationState(
                 kind: .switchRecommended,
                 modelId: candidate,
-                message: "`\(exact.id)` 当前是 \(HubModelSelectionAdvisor.stateLabel(exact.state))；如果你要立刻继续，可改用已加载的 `\(candidate)`。"
+                message: XTL10n.ModelSelector.exactStateRecommendation(
+                    exactId: exact.id,
+                    stateLabel: XTL10n.HubModelStateCopy.label(
+                        exact.state,
+                        language: interfaceLanguage
+                    ),
+                    candidate: candidate,
+                    language: interfaceLanguage
+                )
             )
         }
 
         return HubModelPickerRecommendationState(
             kind: .switchRecommended,
             modelId: candidate,
-            message: "`\(selectedModelId)` 当前不在可直接执行的 inventory 里；如果你要立刻继续，可改用已加载的 `\(candidate)`，避免这轮直接掉到本地。"
+            message: XTL10n.ModelSelector.missingRecommendation(
+                selectedModelId: selectedModelId,
+                candidate: candidate,
+                language: interfaceLanguage
+            )
         )
     }
 
     private func selectedModelWarningText() -> String? {
-        let projectContext = appModel.projectRoot.map { AXProjectContext(root: $0) }
         if let routeWarning = AXProjectModelRouteMemoryStore.selectionWarningText(
             configuredModelId: selectedModelId,
             role: .coder,
-            ctx: projectContext,
-            snapshot: appModel.modelsState
+            ctx: effectiveProjectContext,
+            snapshot: modelInventorySnapshot,
+            paidAccessSnapshot: appModel.hubRemotePaidAccessSnapshot,
+            language: interfaceLanguage
         ) {
-            return routeWarning
+            return appendingGrpcRouteInterpretationWarning(
+                routeWarning,
+                configuredModelId: selectedModelId ?? "",
+                snapshot: currentProjectExecutionSnapshot
+            )
         }
 
         guard let selectedModelId else { return nil }
-        let sourceLabel = explicitModelId == nil ? "继承的全局模型" : "项目覆盖模型"
-        guard let assessment = selectedModelAssessment else { return "当前无法确认\(sourceLabel) `\(selectedModelId)` 是否可用。" }
+        let sourceLabel = explicitModelId == nil
+            ? XTL10n.text(interfaceLanguage, zhHans: "继承的全局模型", en: "Inherited Global Model")
+            : XTL10n.text(interfaceLanguage, zhHans: "项目覆盖模型", en: "Project Override Model")
+        guard let assessment = selectedModelAssessment else {
+            return appendingGrpcRouteInterpretationWarning(
+                XTL10n.ModelSelector.availabilityUnknown(
+                    sourceLabel: sourceLabel,
+                    selectedModelId: selectedModelId,
+                    language: interfaceLanguage
+                ),
+                configuredModelId: selectedModelId,
+                snapshot: currentProjectExecutionSnapshot
+            )
+        }
         guard !assessment.isExactMatchLoaded else { return nil }
 
         if let blocked = assessment.nonInteractiveExactMatch,
            let reason = assessment.interactiveRoutingBlockedReason {
             let suggestions = suggestedCandidates(from: assessment)
-            if let first = suggestions.first {
-                return "\(sourceLabel) `\(blocked.id)` 当前是检索专用模型。\(reason) 如果你要立刻继续，可改用 `\(first)`，或恢复 Auto。"
-            }
-            return "\(sourceLabel) `\(blocked.id)` 当前是检索专用模型。\(reason)"
+            return appendingGrpcRouteInterpretationWarning(
+                XTL10n.ModelSelector.nonInteractiveWarning(
+                    sourceLabel: sourceLabel,
+                    blockedId: blocked.id,
+                    reason: reason,
+                    suggested: suggestions.first,
+                    language: interfaceLanguage
+                ),
+                configuredModelId: selectedModelId,
+                snapshot: currentProjectExecutionSnapshot
+            )
         }
 
         if let exact = assessment.exactMatch {
             let suggestions = suggestedCandidates(from: assessment)
-            if let first = suggestions.first {
-                return "\(sourceLabel) `\(exact.id)` 当前状态是 \(HubModelSelectionAdvisor.stateLabel(exact.state))，这轮请求可能回退到本地。如果你要立刻继续，可改用 `\(first)`。"
-            }
-            return "\(sourceLabel) `\(exact.id)` 当前状态是 \(HubModelSelectionAdvisor.stateLabel(exact.state))，这轮请求可能回退到本地。"
+            return appendingGrpcRouteInterpretationWarning(
+                XTL10n.ModelSelector.exactStateWarning(
+                    sourceLabel: sourceLabel,
+                    exactId: exact.id,
+                    stateLabel: XTL10n.HubModelStateCopy.label(
+                        exact.state,
+                        language: interfaceLanguage
+                    ),
+                    suggested: suggestions.first,
+                    language: interfaceLanguage
+                ),
+                configuredModelId: selectedModelId,
+                snapshot: currentProjectExecutionSnapshot
+            )
         }
 
         let suggestions = suggestedCandidates(from: assessment)
         if !suggestions.isEmpty {
-            return "\(sourceLabel) `\(selectedModelId)` 不在当前 inventory 里。如果你要立刻继续，可改用 `\(suggestions.joined(separator: "`, `"))`。"
+            return appendingGrpcRouteInterpretationWarning(
+                XTL10n.text(
+                    interfaceLanguage,
+                    zhHans: "\(sourceLabel) `\(selectedModelId)` 不在当前模型清单里。如果你要立刻继续，可改用 `\(suggestions.joined(separator: "`, `"))`。",
+                    en: "The \(sourceLabel.lowercased()) `\(selectedModelId)` is not in the current model list. If you want to continue right now, switch to `\(suggestions.joined(separator: "`, `"))`."
+                ),
+                configuredModelId: selectedModelId,
+                snapshot: currentProjectExecutionSnapshot
+            )
         }
-        return "\(sourceLabel) `\(selectedModelId)` 不在当前 inventory 里，这轮请求可能直接走本地模式。"
+        return appendingGrpcRouteInterpretationWarning(
+            XTL10n.text(
+                interfaceLanguage,
+                zhHans: "\(sourceLabel) `\(selectedModelId)` 不在当前模型清单里，这轮请求可能直接走本地模式。",
+                en: "The \(sourceLabel.lowercased()) `\(selectedModelId)` is not in the current model list, so this request may go straight to local mode."
+            ),
+            configuredModelId: selectedModelId,
+            snapshot: currentProjectExecutionSnapshot
+        )
+    }
+
+    private var currentProjectExecutionSnapshot: AXRoleExecutionSnapshot {
+        guard let effectiveProjectContext else {
+            return .empty(role: .coder, source: "model_selector")
+        }
+        return AXRoleExecutionSnapshots.latestSnapshots(for: effectiveProjectContext)[.coder]
+            ?? .empty(role: .coder, source: "model_selector")
+    }
+
+    private func appendingGrpcRouteInterpretationWarning(
+        _ warning: String,
+        configuredModelId: String,
+        snapshot: AXRoleExecutionSnapshot
+    ) -> String {
+        let hint = ExecutionRoutePresentation.grpcTransportMismatchHint(
+            configuredModelId: configuredModelId,
+            snapshot: snapshot,
+            transportMode: HubAIClient.transportMode().rawValue,
+            language: interfaceLanguage
+        )
+        return hint.isEmpty ? warning : warning + hint
+    }
+
+    private var modelInventorySnapshot: ModelStateSnapshot {
+        modelManager.visibleSnapshot(fallback: appModel.modelsState)
+    }
+
+    private var modelInventoryTruth: XTModelInventoryTruthPresentation {
+        XTModelInventoryTruthPresentation.build(
+            snapshot: modelInventorySnapshot,
+            hubBaseDir: appModel.hubBaseDir ?? HubPaths.baseDir()
+        )
     }
 
     private func suggestedCandidates(from assessment: HubModelAvailabilityAssessment) -> [String] {
@@ -261,12 +456,10 @@ struct ModelSelectorView: View {
         return source.prefix(3).map(\.id)
     }
 
-    private func stateRank(_ s: HubModelState) -> Int {
-        switch s {
-        case .loaded: return 0
-        case .available: return 1
-        case .sleeping: return 2
-        }
+    private func syncVisibleModelInventory() {
+        visibleModelInventory = XTVisibleHubModelInventorySupport.build(
+            snapshot: modelInventorySnapshot
+        )
     }
 
     private func updateProjectCoderModelSelection(modelId: String?) {
@@ -276,7 +469,11 @@ struct ModelSelectorView: View {
             return
         }
 
-        appModel.setProjectRoleModel(role: .coder, modelId: normalizedModelId)
+        if let effectiveProjectContext {
+            appModel.setProjectRoleModel(for: effectiveProjectContext, role: .coder, modelId: normalizedModelId)
+        } else {
+            appModel.setProjectRoleModel(role: .coder, modelId: normalizedModelId)
+        }
         updateFeedback.trigger()
     }
 

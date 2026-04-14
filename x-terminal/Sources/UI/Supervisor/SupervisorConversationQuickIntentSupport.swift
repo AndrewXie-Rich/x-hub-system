@@ -246,11 +246,15 @@ enum SupervisorConversationQuickIntentSupport {
     private static func hubStatusIntent(
         _ context: SupervisorConversationQuickIntentContext
     ) -> SupervisorConversationQuickIntent {
-        let executionMode = normalizedToken(context.lastReplyExecutionMode)
-        let failureReason = normalizedToken(context.lastRemoteFailureReasonCode)
-        let hasFallbackSignal = executionMode == "local_fallback_after_remote_error"
-            || executionMode == "hub_downgraded_to_local"
-            || !failureReason.isEmpty
+        let executionMode = normalizedMachineToken(context.lastReplyExecutionMode)
+        let failureReasonCode = normalizedMachineToken(context.lastRemoteFailureReasonCode)
+        let displayedFailureReason = humanizedToken(context.lastRemoteFailureReasonCode)
+        let hasHubDowngradeSignal = executionMode == "hub_downgraded_to_local"
+            || failureReasonCode == "hub_downgraded_to_local"
+            || failureReasonCode == "downgrade_to_local"
+        let hasFallbackSignal = hasHubDowngradeSignal
+            || executionMode == "local_fallback_after_remote_error"
+            || !failureReasonCode.isEmpty
         let prompt: String
         let tone: SupervisorConversationQuickIntent.Tone
         let helpText: String
@@ -259,12 +263,18 @@ enum SupervisorConversationQuickIntentSupport {
             prompt = "检查一下当前 Hub / 模型 / 路由状态，告诉我为什么现在只能走本地，以及先修哪一步。"
             tone = .diagnostic
             helpText = "当前 Hub 不可交互；Supervisor 很可能只能走本地路径。"
+        } else if hasHubDowngradeSignal {
+            prompt = "检查一下当前 Hub / 模型 / 路由状态，重点看为什么 Hub 最近把远端请求降到了本地；请直接告诉我现状、最可能原因和最短修复路径。"
+            tone = .diagnostic
+            helpText = displayedFailureReason.isEmpty || displayedFailureReason == "downgrade to local"
+                ? "最近一次由 Hub 在执行阶段把远端请求降到了本地。"
+                : "最近一次由 Hub 在执行阶段把远端请求降到了本地：\(displayedFailureReason)"
         } else if hasFallbackSignal {
             prompt = "检查一下当前 Hub / 模型 / 路由状态，重点看为什么最近会掉到本地；请直接告诉我现状、最可能原因和最短修复路径。"
             tone = .diagnostic
-            helpText = failureReason.isEmpty
+            helpText = displayedFailureReason.isEmpty
                 ? "最近出现过远端失败后本地兜底。"
-                : "最近出现过远端失败后本地兜底：\(failureReason)"
+                : "最近出现过远端失败后本地兜底：\(displayedFailureReason)"
         } else if context.hubRemoteConnected {
             prompt = "检查一下当前 Hub / 模型 / 路由状态，告诉我现在远端是否正常、有没有明显风险。"
             tone = .neutral
@@ -294,9 +304,16 @@ enum SupervisorConversationQuickIntentSupport {
         return trimmedFallback.isEmpty ? "需要你先看的项目" : trimmedFallback
     }
 
-    private static func normalizedToken(_ raw: String) -> String {
+    private static func normalizedMachineToken(_ raw: String) -> String {
         raw
             .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
+    }
+
+    private static func humanizedToken(_ raw: String) -> String {
+        normalizedMachineToken(raw)
             .replacingOccurrences(of: "_", with: " ")
     }
 }

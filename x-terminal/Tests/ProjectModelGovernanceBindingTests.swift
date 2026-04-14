@@ -342,7 +342,7 @@ struct ProjectModelGovernanceBindingTests {
 
         let ctx = AXProjectContext(root: root)
         let config = AXProjectConfig.default(forProjectRoot: root)
-            .settingGovernanceTemplate(.safe, projectRoot: root)
+            .settingGovernanceTemplate(.feature, projectRoot: root)
         try AXProjectStore.saveConfig(config, for: ctx)
 
         let projectId = AXProjectRegistryStore.projectId(forRoot: root)
@@ -367,9 +367,9 @@ struct ProjectModelGovernanceBindingTests {
         let appModel = AppModel()
         let preview = appModel.governanceTemplatePreview(for: project)
 
-        #expect(preview.configuredProfile == .safe)
-        #expect(preview.effectiveProfile == .safe)
-        #expect(preview.configuredDeviceAuthorityPosture == .projectBound)
+        #expect(preview.configuredProfile == .feature)
+        #expect(preview.effectiveProfile == .feature)
+        #expect(preview.configuredDeviceAuthorityPosture == .off)
         #expect(preview.effectiveGrantPosture == .guidedAuto)
     }
 
@@ -380,7 +380,7 @@ struct ProjectModelGovernanceBindingTests {
 
         let ctx = AXProjectContext(root: root)
         let config = AXProjectConfig.default(forProjectRoot: root)
-            .settingGovernanceTemplate(.conservative, projectRoot: root)
+            .settingGovernanceTemplate(.prototype, projectRoot: root)
         try AXProjectStore.saveConfig(config, for: ctx)
 
         let projectId = AXProjectRegistryStore.projectId(forRoot: root)
@@ -399,8 +399,8 @@ struct ProjectModelGovernanceBindingTests {
         let appModel = AppModel()
         let preview = appModel.governanceTemplatePreview(for: project)
 
-        #expect(preview.configuredProfile == .conservative)
-        #expect(preview.effectiveProfile == .conservative)
+        #expect(preview.configuredProfile == .prototype)
+        #expect(preview.effectiveProfile == .prototype)
         #expect(preview.configuredDeviceAuthorityPosture == .off)
         #expect(preview.effectiveDeviceAuthorityPosture == .off)
     }

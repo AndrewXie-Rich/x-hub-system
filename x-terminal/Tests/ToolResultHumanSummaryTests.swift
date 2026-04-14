@@ -14,7 +14,7 @@ struct ToolResultHumanSummaryTests {
                 "policy_source": .string("project_governance"),
                 "policy_reason": .string("execution_tier_missing_repo_build_test")
             ],
-            body: "project governance blocks run_command under execution tier a0_observe"
+            body: "project governance blocks run_command under A-Tier a0_observe"
         )
         let result = ToolResult(
             id: "tool-1",
@@ -26,7 +26,7 @@ struct ToolResultHumanSummaryTests {
         let body = ToolResultHumanSummary.body(for: result)
 
         #expect(body.contains("不允许运行构建或测试命令"))
-        #expect(body.contains("打开项目设置 -> 执行档位"))
+        #expect(body.contains("打开项目设置 -> A-Tier"))
         #expect(body.contains("A2 Repo Auto"))
     }
 
@@ -425,5 +425,54 @@ struct ToolResultHumanSummaryTests {
 
         #expect(body.contains("被拒绝"))
         #expect(body.contains("远端分支已发生分叉"))
+    }
+
+    @Test
+    func skillsPinSuccessUsesHumanGuidanceInsteadOfFailurePrefix() {
+        let output = ToolExecutor.structuredOutput(
+            summary: [
+                "tool": .string(ToolName.skills_pin.rawValue),
+                "ok": .bool(true),
+                "scope": .string("global"),
+                "skill_id": .string("find-skills"),
+                "package_sha256": .string("abcdef1234567890"),
+            ],
+            body: "Hub 已通过审查并启用技能：find-skills@abcdef123456（global）"
+        )
+        let result = ToolResult(
+            id: "tool-skills-pin-success",
+            tool: .skills_pin,
+            ok: true,
+            output: output
+        )
+
+        let body = ToolResultHumanSummary.body(for: result)
+
+        #expect(body.contains("已通过审查并启用技能"))
+        #expect(!body.contains("无法更新技能可用性"))
+    }
+
+    @Test
+    func skillsPinOfficialReviewBlockedUsesHumanGuidance() {
+        let output = ToolExecutor.structuredOutput(
+            summary: [
+                "tool": .string(ToolName.skills_pin.rawValue),
+                "ok": .bool(false),
+                "reason": .string("official_skill_review_blocked"),
+            ],
+            body: "Hub 已自动审查该官方技能包，但当前 official_skills doctor 结果还不是 ready，暂不能启用。"
+        )
+        let result = ToolResult(
+            id: "tool-skills-pin-blocked",
+            tool: .skills_pin,
+            ok: false,
+            output: output
+        )
+
+        let body = ToolResultHumanSummary.body(for: result)
+
+        #expect(body.contains("Hub 已自动审查该官方技能包"))
+        #expect(body.contains("doctor"))
+        #expect(body.contains("lifecycle"))
     }
 }

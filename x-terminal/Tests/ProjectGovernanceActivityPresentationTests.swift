@@ -106,7 +106,33 @@ struct ProjectGovernanceActivityPresentationTests {
                 lastTriggerReviewAtMs: ["blocker_detected": review.createdAtMs],
                 nextHeartbeatDueAtMs: nowMs + 15 * 60 * 1000,
                 nextPulseReviewDueAtMs: nowMs + 20 * 60 * 1000,
-                nextBrainstormReviewDueAtMs: nowMs + 45 * 60 * 1000
+                nextBrainstormReviewDueAtMs: nowMs + 45 * 60 * 1000,
+                latestQualitySnapshot: HeartbeatQualitySnapshot(
+                    overallScore: 82,
+                    overallBand: .strong,
+                    freshnessScore: 88,
+                    deltaSignificanceScore: 80,
+                    evidenceStrengthScore: 84,
+                    blockerClarityScore: 78,
+                    nextActionSpecificityScore: 86,
+                    executionVitalityScore: 80,
+                    completionConfidenceScore: 78,
+                    weakReasons: [],
+                    computedAtMs: nowMs - 60 * 1000
+                ),
+                openAnomalies: [
+                    HeartbeatAnomalyNote(
+                        anomalyId: "anomaly-hollow",
+                        projectId: "project-alpha",
+                        anomalyType: .hollowProgress,
+                        severity: .concern,
+                        confidence: 0.74,
+                        reason: "Heartbeat delta is too weak",
+                        evidenceRefs: ["project_digest:project-alpha"],
+                        detectedAtMs: nowMs - 60 * 1000,
+                        recommendedEscalation: .pulseReview
+                    )
+                ]
             ),
             resolvedGovernance: resolvedGovernance,
             now: now
@@ -119,6 +145,18 @@ struct ProjectGovernanceActivityPresentationTests {
         #expect(presentation.recentReviews.count == 1)
         #expect(presentation.recentGuidance.count == 1)
         #expect(presentation.pendingGuidance?.injectionID == "guidance-1")
+        let cadence = try #require(presentation.cadenceExplainability)
+        #expect(cadence.progressHeartbeat.configuredSeconds == 600)
+        #expect(cadence.progressHeartbeat.recommendedSeconds == 600)
+        #expect(cadence.progressHeartbeat.effectiveSeconds == 600)
+        #expect(cadence.reviewPulse.configuredSeconds == 1200)
+        #expect(cadence.reviewPulse.recommendedSeconds == 1200)
+        #expect(cadence.reviewPulse.effectiveSeconds == 1200)
+        #expect(cadence.brainstormReview.configuredSeconds == 2400)
+        #expect(cadence.brainstormReview.recommendedSeconds == 2400)
+        #expect(cadence.brainstormReview.effectiveSeconds == 2400)
+        #expect(cadence.reviewPulse.isDue)
+        #expect(cadence.brainstormReview.isDue == false)
 
         let latestReview = try #require(presentation.latestReview)
         #expect(latestReview.triggerText == "Blocker Detected")
@@ -146,14 +184,18 @@ struct ProjectGovernanceActivityPresentationTests {
         #expect(latestGuidance.workOrderRef == "plan:plan-review-1")
         #expect(latestGuidance.ackUpdatedAtText == "(none)")
         #expect(latestGuidance.guidanceText.contains("pending ack"))
+        #expect(latestGuidance.guidanceSummaryText == "Keep the first version inside ProjectSettingsView and expose pending ack.")
         #expect(latestGuidance.contractSummary?.kind == .supervisorReplan)
         #expect(latestGuidance.contractSummary?.primaryBlocker == "ProjectDetailView still uses random UUID")
         #expect(latestGuidance.contractSummary?.nextSafeAction == "apply_supervisor_replan")
 
         #expect(presentation.schedule.lastHeartbeatText.contains("2m ago"))
-        #expect(presentation.schedule.nextHeartbeatText.contains("in 15m"))
-        #expect(presentation.schedule.nextPulseReviewText.contains("in 20m"))
-        #expect(presentation.schedule.nextBrainstormReviewText.contains("in 45m"))
+        #expect(presentation.schedule.nextHeartbeatText.contains("in 8m"))
+        #expect(presentation.schedule.nextPulseReviewText.contains("10m ago"))
+        #expect(presentation.schedule.nextBrainstormReviewText.contains("in 32m"))
+        #expect(presentation.schedule.heartbeatQualityBandText == "Strong")
+        #expect(presentation.schedule.heartbeatQualityScoreText == "82 / 100")
+        #expect(presentation.schedule.heartbeatOpenAnomaliesText.contains("1 open"))
     }
 
     @Test
@@ -368,12 +410,83 @@ ui_review_issue_codes=critical_action_not_visible
         let contract = try #require(pendingGuidance.contractSummary)
         let uiReview = try #require(contract.uiReviewRepair)
 
+        #expect(pendingGuidance.guidanceSummaryText == "Primary CTA is missing from the current screen.")
         #expect(contract.kind == SupervisorGuidanceContractSummary.Kind.uiReviewRepair)
         #expect(contract.summaryText == "Primary CTA is missing from the current screen.")
         #expect(contract.nextSafeAction == "repair_before_execution")
         #expect(uiReview.repairAction == "Expose the primary CTA")
         #expect(uiReview.repairFocus == "Landing hero actions")
         #expect(uiReview.instruction == "Fix the CTA before resuming browser automation.")
+    }
+
+    @Test
+    func presentationParsesWrappedStructuredGrantResolutionContractSummary() throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let nowMs = Int64(now.timeIntervalSince1970 * 1000.0)
+
+        let guidance = SupervisorGuidanceInjectionRecord(
+            schemaVersion: SupervisorGuidanceInjectionRecord.currentSchemaVersion,
+            injectionId: "guidance-grant-wrapped-1",
+            reviewId: "review-grant-wrapped-1",
+            projectId: "project-alpha",
+            targetRole: .coder,
+            deliveryMode: .priorityInsert,
+            interventionMode: .replanNextSafePoint,
+            safePointPolicy: .nextStepBoundary,
+            guidanceText: """
+收到，我会按《Release Runtime》这条指导继续推进：summary=当前没有待处理的 Hub 授权。
+contract_kind=grant_resolution
+primary_blocker=grant_required
+next_safe_action=open_hub_grants
+recommended_actions=Open Hub grant approval for this project | Retry the governed step after grant approval
+""",
+            ackStatus: .pending,
+            ackRequired: true,
+            effectiveSupervisorTier: .s3StrategicCoach,
+            effectiveWorkOrderDepth: .executionReady,
+            workOrderRef: "plan:grant-wrapped-1",
+            ackNote: "",
+            injectedAtMs: nowMs - 120_000,
+            ackUpdatedAtMs: 0,
+            auditRef: "audit-guidance-grant-wrapped-1"
+        )
+
+        let presentation = ProjectGovernanceActivityPresentation(
+            reviewNotes: SupervisorReviewNoteSnapshot(
+                schemaVersion: SupervisorReviewNoteSnapshot.currentSchemaVersion,
+                updatedAtMs: 0,
+                notes: []
+            ),
+            guidance: SupervisorGuidanceInjectionSnapshot(
+                schemaVersion: SupervisorGuidanceInjectionSnapshot.currentSchemaVersion,
+                updatedAtMs: guidance.injectedAtMs,
+                items: [guidance]
+            ),
+            scheduleState: SupervisorReviewScheduleState(
+                schemaVersion: SupervisorReviewScheduleState.currentSchemaVersion,
+                projectId: "project-alpha",
+                updatedAtMs: 0,
+                lastHeartbeatAtMs: 0,
+                lastObservedProgressAtMs: 0,
+                lastPulseReviewAtMs: 0,
+                lastBrainstormReviewAtMs: 0,
+                lastTriggerReviewAtMs: [:],
+                nextHeartbeatDueAtMs: 0,
+                nextPulseReviewDueAtMs: 0,
+                nextBrainstormReviewDueAtMs: 0
+            ),
+            now: now
+        )
+
+        let pendingGuidance = try #require(presentation.pendingGuidance)
+        let contract = try #require(pendingGuidance.contractSummary)
+
+        #expect(pendingGuidance.guidanceSummaryText == "当前没有待处理的 Hub 授权。")
+        #expect(contract.kind == .grantResolution)
+        #expect(contract.summaryText == "当前没有待处理的 Hub 授权。")
+        #expect(contract.primaryBlocker == "grant_required")
+        #expect(contract.nextSafeAction == "open_hub_grants")
+        #expect(contract.recommendedActionsText == "Open Hub grant approval for this project | Retry the governed step after grant approval")
     }
 
     @Test
@@ -430,6 +543,346 @@ ui_review_issue_codes=critical_action_not_visible
     }
 
     @Test
+    func presentationLoadsRecentGovernanceConfigUpdatesFromRawLog() throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("governance-config-updates-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        AXProjectStore.appendRawLog(
+            [
+                "type": "project_governance_bundle",
+                "action": "update",
+                "created_at": now.timeIntervalSince1970 - 3600,
+                "execution_tier": "a1_plan",
+                "supervisor_intervention_tier": "s2_periodic_review",
+                "review_policy_mode": "milestone_only",
+                "progress_heartbeat_sec": 900,
+                "review_pulse_sec": 0,
+                "brainstorm_review_sec": 0,
+                "event_driven_review_enabled": false,
+                "event_review_triggers": ["manual_request"],
+                "compat_source": "explicit_dual_dial",
+                "runtime_surface_configured": "manual",
+                "effective_runtime_surface": "manual",
+                "runtime_surface_hub_override": "none",
+                "runtime_surface_remote_override": "none",
+                "runtime_surface_ttl_sec": 1800,
+                "runtime_surface_remaining_sec": 1800,
+                "invalid_reasons": [],
+                "warning_reasons": [],
+                "should_fail_closed": false
+            ],
+            for: ctx
+        )
+        AXProjectStore.appendRawLog(
+            [
+                "type": "project_governance_bundle",
+                "action": "update",
+                "created_at": now.timeIntervalSince1970 - 300,
+                "execution_tier": "a3_deliver_auto",
+                "configured_execution_tier": "a3_deliver_auto",
+                "effective_execution_tier": "a3_deliver_auto",
+                "supervisor_intervention_tier": "s2_periodic_review",
+                "configured_supervisor_tier": "s2_periodic_review",
+                "effective_supervisor_tier": "s3_strategic_coach",
+                "effective_supervisor_intervention_tier": "s3_strategic_coach",
+                "effective_supervisor_work_order_depth": "execution_ready",
+                "review_policy_mode": "hybrid",
+                "progress_heartbeat_sec": 600,
+                "review_pulse_sec": 1200,
+                "brainstorm_review_sec": 2400,
+                "event_driven_review_enabled": true,
+                "event_review_triggers": ["blocker_detected", "plan_drift", "pre_done_summary"],
+                "compat_source": "explicit_dual_dial",
+                "governance_truth": "治理真相：预设 A3/S2 · 当前生效 A3/S3 · 审查 混合 · 节奏 心跳 10m / 脉冲 20m / 脑暴 40m。",
+                "runtime_surface_configured": "guided",
+                "effective_runtime_surface": "guided",
+                "runtime_surface_hub_override": "clamp_guided",
+                "runtime_surface_remote_override": "none",
+                "runtime_surface_ttl_sec": 1800,
+                "runtime_surface_remaining_sec": 900,
+                "invalid_reasons": [],
+                "warning_reasons": ["supervisor_escalated_for_safety"],
+                "should_fail_closed": false
+            ],
+            for: ctx
+        )
+
+        let presentation = ProjectGovernanceActivityPresentation.load(for: ctx, now: now)
+
+        #expect(presentation.latestConfigUpdate != nil)
+        #expect(presentation.recentConfigUpdates.count == 2)
+
+        let latest = try #require(presentation.latestConfigUpdate)
+        #expect(latest.updatedAtText.contains("5m ago"))
+        #expect(latest.configuredGovernanceText == "A3 交付自动推进 · S2 周期审查")
+        #expect(latest.effectiveGovernanceText == "A3 交付自动推进 · S3 战略教练")
+        #expect(latest.effectiveWorkOrderDepthText == "执行就绪")
+        #expect(latest.reviewPolicyText == "审查 混合")
+        #expect(latest.cadenceText == "心跳 10分钟 / 脉冲 20分钟 / 脑暴 40分钟")
+        #expect(latest.eventReviewText == "开启 · 发现阻塞 | 计划漂移 | 完成前审查")
+        #expect(latest.runtimeSurfaceText.contains("执行面 浏览器受控执行面"))
+        #expect(latest.runtimeSurfaceText.contains("Hub 收束 浏览器受控收束"))
+        #expect(latest.governanceTruthText.contains("预设 A3/S2"))
+        #expect(latest.governanceTruthText.contains("当前生效 A3/S3"))
+        #expect(latest.validationText.contains("警告原因"))
+
+        let older = try #require(presentation.recentConfigUpdates.last)
+        #expect(older.reviewPolicyText == "审查 里程碑")
+        #expect(older.eventReviewText == "关闭")
+        #expect(older.runtimeSurfaceText.contains("执行面 最保守执行面"))
+    }
+
+    @Test
+    func presentationLoadsAutomationRuntimeSummaryFromRawLog() throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("governance-automation-activity-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+
+        AXProjectStore.appendRawLog(
+            [
+                "type": "automation_run_launch",
+                "created_at": now.timeIntervalSince1970 - 600,
+                "run_id": "run-auto-1",
+                "recipe_id": "recipe-auto",
+                "recipe_ref": "recipe-auto@v1",
+                "audit_ref": "audit-launch"
+            ],
+            for: ctx
+        )
+        AXProjectStore.appendRawLog(
+            [
+                "type": "automation_checkpoint",
+                "created_at": now.timeIntervalSince1970 - 300,
+                "run_id": "run-auto-1",
+                "recipe_id": "recipe-auto",
+                "state": "blocked",
+                "attempt": 2,
+                "last_transition": "running_to_blocked",
+                "retry_after_seconds": 90,
+                "resume_token": "resume-auto-1",
+                "checkpoint_ref": "checkpoint-auto-1",
+                "stable_identity": true,
+                "current_step_id": "verify_smoke",
+                "current_step_title": "Run focused smoke checks",
+                "current_step_state": "retry_wait",
+                "current_step_summary": "Waiting for the bounded retry window.",
+                "audit_ref": "audit-checkpoint"
+            ],
+            for: ctx
+        )
+        AXProjectStore.appendRawLog(
+            [
+                "type": "automation_execution",
+                "phase": "completed",
+                "created_at": now.timeIntervalSince1970 - 240,
+                "run_id": "run-auto-1",
+                "recipe_ref": "recipe-auto@v1",
+                "final_state": "blocked",
+                "hold_reason": "automation_verify_failed",
+                "detail": "1 of 2 checks passed",
+                "executed_action_count": 3,
+                "succeeded_action_count": 2,
+                "total_action_count": 4,
+                "verification": [
+                    "required": true,
+                    "executed": true,
+                    "command_count": 2,
+                    "passed_command_count": 1,
+                    "hold_reason": "automation_verify_failed",
+                    "detail": "1 of 2 checks passed",
+                    "verification_contract": [
+                        "expected_state": "post_change_verification_passes",
+                        "verify_method": "project_verify_commands",
+                        "retry_policy": "manual_retry_or_replan",
+                        "hold_policy": "block_run_and_emit_structured_blocker",
+                        "evidence_required": true,
+                        "trigger_action_ids": ["verify_smoke"],
+                        "verify_commands": ["swift test --filter SmokeTests"]
+                    ]
+                ],
+                "blocker": [
+                    "code": "automation_verify_failed",
+                    "summary": "验证失败，需要收窄验证集后重试",
+                    "stage": "verification",
+                    "detail": "1 of 2 checks passed",
+                    "next_safe_action": "rerun_focused_verification",
+                    "retry_eligible": true,
+                    "current_step_id": "verify_smoke",
+                    "current_step_title": "Run focused smoke checks",
+                    "current_step_state": "retry_wait",
+                    "current_step_summary": "Waiting for the bounded retry window."
+                ],
+                "current_step_id": "verify_smoke",
+                "current_step_title": "Run focused smoke checks",
+                "current_step_state": "retry_wait",
+                "current_step_summary": "Waiting for the bounded retry window.",
+                "audit_ref": "audit-execution"
+            ],
+            for: ctx
+        )
+        AXProjectStore.appendRawLog(
+            [
+                "type": "automation_verification",
+                "phase": "completed",
+                "created_at": now.timeIntervalSince1970 - 210,
+                "run_id": "run-auto-1",
+                "recipe_ref": "recipe-auto@v1",
+                "required": true,
+                "executed": true,
+                "command_count": 2,
+                "passed_command_count": 1,
+                "hold_reason": "automation_verify_failed",
+                "detail": "1 of 2 checks passed",
+                "audit_ref": "audit-verify"
+            ],
+            for: ctx
+        )
+        AXProjectStore.appendRawLog(
+            [
+                "type": "automation_retry",
+                "status": "scheduled",
+                "created_at": now.timeIntervalSince1970 - 180,
+                "source_run_id": "run-prev",
+                "retry_run_id": "run-auto-1",
+                "retry_strategy": "verify_failed_retry",
+                "retry_reason": "automation_verify_failed",
+                "revised_verification_contract": [
+                    "expected_state": "post_change_verification_passes",
+                    "verify_method": "project_verify_commands_override",
+                    "retry_policy": "retry_failed_verify_commands_within_budget",
+                    "hold_policy": "block_run_and_emit_structured_blocker",
+                    "evidence_required": true,
+                    "trigger_action_ids": ["verify_smoke"],
+                    "verify_commands": ["swift test --filter SmokeTests --skip PassedCase"]
+                ],
+                "retry_reason_descriptor": [
+                    "code": "automation_verify_failed",
+                    "category": "verification",
+                    "summary": "只重跑失败的验证命令",
+                    "strategy": "verify_failed_retry",
+                    "blocker_code": "automation_verify_failed",
+                    "planning_mode": "verify_only_retry",
+                    "current_step_id": "verify_smoke",
+                    "current_step_title": "Run focused smoke checks",
+                    "current_step_state": "retry_wait",
+                    "current_step_summary": "Waiting for the bounded retry window."
+                ],
+                "source_blocker": [
+                    "code": "automation_verify_failed",
+                    "summary": "验证失败，需要收窄验证集后重试",
+                    "stage": "verification",
+                    "detail": "1 of 2 checks passed",
+                    "next_safe_action": "rerun_focused_verification",
+                    "retry_eligible": true,
+                    "current_step_id": "verify_smoke",
+                    "current_step_title": "Run focused smoke checks",
+                    "current_step_state": "retry_wait",
+                    "current_step_summary": "Waiting for the bounded retry window."
+                ],
+                "source_handoff_artifact_path": "build/reports/handoff.json",
+                "source_hold_reason": "automation_verify_failed",
+                "current_step_id": "verify_smoke",
+                "current_step_title": "Run focused smoke checks",
+                "current_step_state": "retry_wait",
+                "current_step_summary": "Waiting for the bounded retry window.",
+                "audit_ref": "audit-retry"
+            ],
+            for: ctx
+        )
+
+        let presentation = ProjectGovernanceActivityPresentation.load(for: ctx, now: now)
+
+        let latestAutomation = try #require(presentation.latestAutomation)
+        #expect(latestAutomation.runID == "run-auto-1")
+        #expect(latestAutomation.stateText == "受阻")
+        #expect(latestAutomation.stepText.contains("Run focused smoke checks"))
+        #expect(latestAutomation.stepText.contains("等待重试"))
+        #expect(latestAutomation.verificationText == "验证失败 1/2 · 1 of 2 checks passed")
+        #expect(latestAutomation.verificationContractText == "项目校验命令 · 目标=变更后验证通过 · 失败后=人工重试或重规划 · 证据必需")
+        #expect(latestAutomation.blockerText == "验证失败，需要收窄验证集后重试")
+        #expect(latestAutomation.retryText == "只重跑失败的验证命令")
+        #expect(latestAutomation.retryVerificationContractText == "覆写校验命令 · 目标=变更后验证通过 · 失败后=预算内只重试失败验证 · 证据必需")
+        #expect(latestAutomation.recoveryText == "可恢复")
+        #expect(latestAutomation.handoffText == "无")
+        #expect(latestAutomation.auditRef == "audit-execution")
+        #expect(presentation.recentAutomationEvents.count == 5)
+        #expect(presentation.recentAutomationEvents.first?.eventTypeText == "已排队重试")
+        #expect(presentation.recentAutomationEvents.first?.retryText == "只重跑失败的验证命令")
+        #expect(presentation.recentAutomationEvents.first?.retryVerificationContractText == "覆写校验命令 · 目标=变更后验证通过 · 失败后=预算内只重试失败验证 · 证据必需")
+        #expect(presentation.recentAutomationEvents.first?.blockerText == "验证失败，需要收窄验证集后重试")
+        #expect(presentation.recentAutomationEvents[1].eventTypeText == "验证完成")
+        #expect(presentation.recentAutomationEvents[1].stateText == "失败")
+        #expect(presentation.recentAutomationEvents[1].verificationText == "验证失败 1/2 · 1 of 2 checks passed")
+        #expect(presentation.recentAutomationEvents[1].verificationContractText == nil)
+        #expect(presentation.recentAutomationEvents[2].eventTypeText == "执行完成")
+        #expect(presentation.recentAutomationEvents[2].stateText == "受阻")
+        #expect(presentation.recentAutomationEvents[2].verificationText == "验证失败 1/2 · 1 of 2 checks passed")
+        #expect(presentation.recentAutomationEvents[2].verificationContractText == "项目校验命令 · 目标=变更后验证通过 · 失败后=人工重试或重规划 · 证据必需")
+        #expect(projectId.isEmpty == false)
+    }
+
+    @Test
+    func presentationShowsStableIdentityRecoveryFailureInAutomationSummary() throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_100)
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("governance-automation-identity-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        AXProjectStore.appendRawLog(
+            [
+                "type": "automation_run_launch",
+                "created_at": now.timeIntervalSince1970 - 120,
+                "run_id": "run-identity-drift",
+                "recipe_id": "recipe-auto",
+                "recipe_ref": "recipe-auto@v1",
+                "audit_ref": "audit-launch-identity"
+            ],
+            for: ctx
+        )
+        AXProjectStore.appendRawLog(
+            [
+                "type": "automation_checkpoint",
+                "created_at": now.timeIntervalSince1970 - 60,
+                "run_id": "run-identity-drift",
+                "recipe_id": "recipe-auto",
+                "state": "blocked",
+                "attempt": 2,
+                "last_transition": "running_to_blocked",
+                "retry_after_seconds": 0,
+                "resume_token": "resume-identity-drift",
+                "checkpoint_ref": "checkpoint-identity-drift",
+                "stable_identity": false,
+                "current_step_id": "verify_smoke",
+                "current_step_title": "Run focused smoke checks",
+                "current_step_state": "blocked",
+                "current_step_summary": "Stable identity drifted before restart recovery.",
+                "audit_ref": "audit-checkpoint-identity"
+            ],
+            for: ctx
+        )
+
+        let presentation = ProjectGovernanceActivityPresentation.load(for: ctx, now: now)
+
+        let latestAutomation = try #require(presentation.latestAutomation)
+        #expect(latestAutomation.runID == "run-identity-drift")
+        #expect(latestAutomation.stateText == "受阻")
+        #expect(latestAutomation.recoveryText == "身份校验失败")
+    }
+
+    @Test
     func emptyPresentationFallsBackToNonePlaceholders() {
         let presentation = ProjectGovernanceActivityPresentation.empty
 
@@ -437,11 +890,15 @@ ui_review_issue_codes=critical_action_not_visible
         #expect(presentation.guidanceCount == 0)
         #expect(presentation.pendingAckCount == 0)
         #expect(presentation.followUpRhythmSummary == "(none)")
+        #expect(presentation.latestConfigUpdate == nil)
+        #expect(presentation.recentConfigUpdates.isEmpty)
         #expect(presentation.latestReview == nil)
         #expect(presentation.recentReviews.isEmpty)
         #expect(presentation.pendingGuidance == nil)
         #expect(presentation.latestGuidance == nil)
         #expect(presentation.recentGuidance.isEmpty)
+        #expect(presentation.latestAutomation == nil)
+        #expect(presentation.recentAutomationEvents.isEmpty)
         #expect(presentation.schedule.lastHeartbeatText == "(none)")
         #expect(presentation.schedule.nextBrainstormReviewText == "(none)")
     }
@@ -449,9 +906,18 @@ ui_review_issue_codes=critical_action_not_visible
     @Test
     func governanceDisplayLocalizesFieldLabelsAndAckCopy() {
         #expect(ProjectGovernanceActivityDisplay.fieldLabel("ack_status") == "确认状态")
+        #expect(ProjectGovernanceActivityDisplay.fieldLabel("updated_at") == "更新时间")
+        #expect(ProjectGovernanceActivityDisplay.fieldLabel("configured_governance") == "预设治理档")
+        #expect(ProjectGovernanceActivityDisplay.fieldLabel("validation") == "治理校验")
         #expect(ProjectGovernanceActivityDisplay.fieldLabel("retry_at_ms") == "重试时间(ms)")
         #expect(ProjectGovernanceActivityDisplay.fieldLabel("work_order_depth") == "工单深度")
         #expect(ProjectGovernanceActivityDisplay.fieldLabel("recommended_actions") == "建议动作")
+        #expect(ProjectGovernanceActivityDisplay.fieldLabel("automation_state") == "运行状态")
+        #expect(ProjectGovernanceActivityDisplay.fieldLabel("automation_step") == "当前步骤")
+        #expect(ProjectGovernanceActivityDisplay.fieldLabel("automation_verification") == "验证状态")
+        #expect(ProjectGovernanceActivityDisplay.fieldLabel("automation_verification_contract") == "验证合同")
+        #expect(ProjectGovernanceActivityDisplay.fieldLabel("automation_retry") == "重试策略")
+        #expect(ProjectGovernanceActivityDisplay.fieldLabel("automation_retry_verification_contract") == "重试验证合同")
         #expect(ProjectGovernanceActivityDisplay.displayValue(label: "ack", value: "Pending · required") == "待确认 · 需要确认")
         #expect(ProjectGovernanceActivityDisplay.displayValue(label: "ack_status", value: "Accepted") == "已接受")
         #expect(ProjectGovernanceActivityDisplay.displayValue(label: "lifecycle", value: "retry due now") == "现在可重试")
@@ -468,6 +934,11 @@ ui_review_issue_codes=critical_action_not_visible
         #expect(ProjectGovernanceActivityDisplay.displayValue(label: "work_order_depth", value: "Execution Ready") == "执行就绪")
         #expect(ProjectGovernanceActivityDisplay.displayValue(label: "project_ai_strength", value: "Strong · conf=0.91") == "强 · 置信度=0.91")
         #expect(ProjectGovernanceActivityDisplay.displayValue(label: "follow_up_rhythm", value: "cadence=active · blocker cooldown≈600s") == "节奏=活跃 · 阻塞冷却≈600秒")
+        #expect(ProjectGovernanceActivityDisplay.displayValue(label: "updated_at", value: "2023-11-14 22:08:20 · 5m ago") == "2023-11-14 22:08:20 · 5分钟前")
+        #expect(ProjectGovernanceActivityDisplay.displayValue(label: "created_at", value: "2023-11-14 22:03:20 · 10m ago") == "2023-11-14 22:03:20 · 10分钟前")
+        #expect(ProjectGovernanceActivityDisplay.displayValue(label: "next_heartbeat", value: "2023-11-14 22:28:20 · in 15m") == "2023-11-14 22:28:20 · 15分钟后")
+        #expect(ProjectGovernanceActivityDisplay.displayValue(label: "ack_updated_at", value: "(none)") == "无")
+        #expect(ProjectGovernanceActivityDisplay.fieldLine("work_order_ref", value: "(none)") == "工单引用：无")
         #expect(ProjectGovernanceActivityDisplay.fieldLine("next_safe_action", value: "repair_before_execution") == "下一个安全动作：repair_before_execution")
     }
 }

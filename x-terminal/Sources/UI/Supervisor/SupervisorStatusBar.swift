@@ -4,26 +4,133 @@
 //
 //
 
+import Combine
 import SwiftUI
 
 /// Supervisor 状态栏
-/// 显示在窗口顶部，提供 Supervisor 状态和项目统计信息
+/// 显示在窗口顶部，按需激活 Supervisor，避免启动期立刻拉起完整后台服务。
 struct SupervisorStatusBar: View {
-    @ObservedObject var supervisor: SupervisorModel
     @EnvironmentObject private var appModel: AppModel
-    @StateObject private var supervisorManager = SupervisorManager.shared
+    @StateObject private var runtime = SupervisorStatusBarRuntime()
+
+    var body: some View {
+        Group {
+            if let supervisorManager = runtime.supervisorManager {
+                SupervisorStatusBarActiveView(supervisorManager: supervisorManager)
+                    .environmentObject(appModel)
+            } else {
+                SupervisorStatusBarColdStartView(
+                    configuredSupervisorModelId: configuredSupervisorModelId,
+                    hubInteractive: appModel.hubInteractive,
+                    onOpenSupervisor: {
+                        let manager = runtime.activate(with: appModel)
+                        manager.requestSupervisorWindow(reason: "status_bar")
+                    }
+                )
+            }
+        }
+    }
+
+    private var configuredSupervisorModelId: String {
+        let configured = appModel.settingsStore.settings.assignment(for: .supervisor).model?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return configured
+    }
+}
+
+@MainActor
+private final class SupervisorStatusBarRuntime: ObservableObject {
+    @Published fileprivate var supervisorManager: SupervisorManager?
+
+    private var cancellables = Set<AnyCancellable>()
+
+    init() {
+        supervisorManager = SupervisorManager.sharedIfInitialized
+        NotificationCenter.default.publisher(for: SupervisorManager.didInitializeNotification)
+            .compactMap { $0.object as? SupervisorManager }
+            .sink { [weak self] manager in
+                self?.supervisorManager = manager
+            }
+            .store(in: &cancellables)
+    }
+
+    func activate(with appModel: AppModel) -> SupervisorManager {
+        let manager = SupervisorManager.shared
+        manager.attachAppModelIfNeeded(appModel)
+        supervisorManager = manager
+        return manager
+    }
+}
+
+private struct SupervisorStatusBarColdStartView: View {
+    let configuredSupervisorModelId: String
+    let hubInteractive: Bool
+    let onOpenSupervisor: () -> Void
 
     var body: some View {
         HStack(spacing: 16) {
-            // 左侧: Supervisor 信息
+            HStack(spacing: 8) {
+                Image(systemName: "brain.head.profile")
+                    .foregroundColor(.purple)
+                    .font(.system(size: 14))
+
+                Text("Supervisor · \(configuredSupervisorLabel)")
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+
+                Text(hubInteractive ? "按需加载" : "Hub 关闭")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(hubInteractive ? .secondary : .red)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background((hubInteractive ? Color.secondary : Color.red).opacity(0.12))
+                    .clipShape(Capsule())
+                    .help("启动期不自动拉起 Supervisor 后台轮询；打开 Supervisor 窗口后再接管。")
+            }
+
+            Spacer()
+
+            Button(action: onOpenSupervisor) {
+                Image(systemName: "message.circle.fill")
+                    .foregroundColor(.purple)
+                    .font(.system(size: 16))
+            }
+            .buttonStyle(.plain)
+            .help("打开 Supervisor 窗口 (⌘⇧S)")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .overlay(
+            Rectangle()
+                .frame(height: 1)
+                .foregroundColor(Color.secondary.opacity(0.2)),
+            alignment: .bottom
+        )
+    }
+
+    private var configuredSupervisorLabel: String {
+        ExecutionRoutePresentation.configuredModelLabel(
+            configuredModelId: configuredSupervisorModelId,
+            snapshot: AXRoleExecutionSnapshot.empty(role: .supervisor)
+        )
+    }
+}
+
+/// Supervisor 状态栏完整视图
+/// 仅在 Supervisor 已经初始化后显示完整状态，避免应用启动时立刻拉起后台服务。
+private struct SupervisorStatusBarActiveView: View {
+    @EnvironmentObject private var appModel: AppModel
+    @ObservedObject var supervisorManager: SupervisorManager
+
+    var body: some View {
+        HStack(spacing: 16) {
             supervisorInfo
 
             Spacer()
 
-            // 右侧: 项目统计
             projectStatistics
 
-            // 快速操作按钮
             quickActions
         }
         .padding(.horizontal, 16)
@@ -43,10 +150,15 @@ struct SupervisorStatusBar: View {
         let snapshot = supervisorExecutionSnapshot
         let tooltip = ExecutionRoutePresentation.tooltip(
             configuredModelId: configuredSupervisorModelId,
-            snapshot: snapshot
+            snapshot: snapshot,
+            paidAccessSnapshot: appModel.hubRemotePaidAccessSnapshot
         )
         let statusColor = supervisorStatusColor(snapshot: snapshot)
         let detailBadge = ExecutionRoutePresentation.detailBadge(
+            configuredModelId: configuredSupervisorModelId,
+            snapshot: snapshot
+        )
+        let interpretationBadge = ExecutionRoutePresentation.interpretationBadge(
             configuredModelId: configuredSupervisorModelId,
             snapshot: snapshot
         )
@@ -84,10 +196,16 @@ struct SupervisorStatusBar: View {
                     .help(tooltip)
             }
 
-            if !supervisor.memorySize.isEmpty && supervisor.memorySize != "0GB" {
-                Label(supervisor.memorySize, systemImage: "internaldrive")
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
+            if let interpretationBadge {
+                Text(interpretationBadge.text)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(interpretationBadge.color)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(interpretationBadge.color.opacity(0.12))
+                    .clipShape(Capsule())
+                    .lineLimit(1)
+                    .help(tooltip)
             }
 
             if !pendingMemoryFollowUpQuestion.isEmpty {
@@ -101,6 +219,28 @@ struct SupervisorStatusBar: View {
                     .help(pendingMemoryFollowUpQuestion)
             }
         }
+    }
+
+    private var portfolioSnapshot: SupervisorPortfolioSnapshot {
+        supervisorManager.supervisorPortfolioSnapshot
+    }
+
+    private var actionabilitySnapshot: SupervisorPortfolioActionabilitySnapshot {
+        portfolioSnapshot.actionabilitySnapshot()
+    }
+
+    private var pendingWorkCount: Int {
+        let livePending = supervisorManager.frontstagePendingHubGrants.count +
+            supervisorManager.frontstagePendingSupervisorSkillApprovals.count +
+            supervisorManager.frontstageSupervisorCandidateReviews.count
+        return max(portfolioSnapshot.counts.awaitingAuthorization, livePending)
+    }
+
+    private var blockedCount: Int {
+        max(
+            portfolioSnapshot.counts.blocked,
+            actionabilitySnapshot.decisionBlockerProjectsCount
+        )
     }
 
     private var configuredSupervisorModelId: String {
@@ -132,25 +272,25 @@ struct SupervisorStatusBar: View {
             StatusBadge(
                 icon: "chart.bar",
                 label: "活跃",
-                count: supervisor.activeProjects.count,
-                total: supervisor.totalProjectsCount,
+                count: portfolioSnapshot.counts.active,
+                total: portfolioSnapshot.projects.count,
                 color: .blue
             )
 
-            if supervisor.pendingApprovals > 0 {
+            if pendingWorkCount > 0 {
                 StatusBadge(
                     icon: "bolt",
-                    label: "待授权",
-                    count: supervisor.pendingApprovals,
+                    label: "待处理",
+                    count: pendingWorkCount,
                     color: .orange
                 )
             }
 
-            if supervisor.needsAttention > 0 {
+            if blockedCount > 0 {
                 StatusBadge(
                     icon: "exclamationmark.triangle",
-                    label: "需关注",
-                    count: supervisor.needsAttention,
+                    label: "阻塞",
+                    count: blockedCount,
                     color: .red
                 )
             }
@@ -158,7 +298,7 @@ struct SupervisorStatusBar: View {
             StatusBadge(
                 icon: "checkmark.circle",
                 label: "完成",
-                count: supervisor.completedProjects.count,
+                count: portfolioSnapshot.counts.completed,
                 color: .green
             )
         }
@@ -210,7 +350,7 @@ struct StatusBadge: View {
 #if DEBUG
 struct SupervisorStatusBar_Previews: PreviewProvider {
     static var previews: some View {
-        SupervisorStatusBar(supervisor: SupervisorModel.preview)
+        SupervisorStatusBar()
             .environmentObject(AppModel())
             .frame(height: 40)
     }

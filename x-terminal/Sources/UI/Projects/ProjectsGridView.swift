@@ -190,11 +190,20 @@ struct ProjectCard: View {
 
             ProjectGovernanceCompactSummaryView(
                 presentation: governancePresentation,
+                configuration: .operationalDense,
                 onExecutionTierTap: governanceProjectId == nil ? nil : { openGovernance(.executionTier) },
                 onSupervisorTierTap: governanceProjectId == nil ? nil : { openGovernance(.supervisorTier) },
                 onReviewCadenceTap: governanceProjectId == nil ? nil : { openGovernance(.heartbeatReview) },
                 onStatusTap: governanceProjectId == nil ? nil : { openGovernance(.overview) },
                 onCalloutTap: governanceProjectId == nil ? nil : { openGovernance(.overview) }
+            )
+
+            ProjectGovernanceQuickAccessStrip(
+                selectedDestination: nil,
+                governancePresentation: governancePresentation,
+                enabled: governanceProjectId != nil,
+                displayStyle: .compact,
+                onSelect: openGovernance
             )
 
             if governanceProjectId == nil {
@@ -207,18 +216,14 @@ struct ProjectCard: View {
     }
 
     private var modelInfo: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Image(systemName: "brain")
-                    .foregroundColor(.purple)
-                    .font(.caption)
+        let configuredModel = project.configuredCoderModelInfo
+        return VStack(alignment: .leading, spacing: 6) {
+            ProjectCoderExecutionStatusBar(
+                presentation: coderExecutionStatusPresentation,
+                style: .inline
+            )
 
-                Text(project.currentModel.displayName)
-                    .font(.caption)
-                    .lineLimit(1)
-            }
-
-            ModelCapabilityStrip(model: project.currentModel, limit: 4, compact: true)
+            ModelCapabilityStrip(model: configuredModel, limit: 4, compact: true)
         }
     }
 
@@ -314,7 +319,11 @@ struct ProjectCard: View {
 
     private var governancePresentation: ProjectGovernancePresentation {
         if let resolved = appModel.resolvedProjectGovernance(for: project) {
-            return ProjectGovernancePresentation(resolved: resolved)
+            return ProjectGovernancePresentation(
+                resolved: resolved,
+                scheduleState: project.governanceActivityContext(resolveProjectContext: appModel.projectContext(for:))
+                    .map { SupervisorReviewScheduleStore.load(for: $0) }
+            )
         }
         return ProjectGovernancePresentation(
             executionTier: project.executionTier,
@@ -336,6 +345,47 @@ struct ProjectCard: View {
         }
         let ctx = AXProjectContext(root: URL(fileURLWithPath: rootPath, isDirectory: true))
         return AXSessionSummaryCapsulePresentation.load(for: ctx)
+    }
+
+    private var coderExecutionContext: AXProjectContext? {
+        if let ctx = project.governanceActivityContext(resolveProjectContext: appModel.projectContext(for:)) {
+            return ctx
+        }
+
+        guard let rootPath = project.registeredProjectRootPath?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !rootPath.isEmpty else {
+            return nil
+        }
+        return AXProjectContext(root: URL(fileURLWithPath: rootPath, isDirectory: true))
+    }
+
+    private var configuredCoderModelId: String {
+        project.configuredCoderModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var coderExecutionSnapshot: AXRoleExecutionSnapshot {
+        guard let coderExecutionContext else {
+            return .empty(role: .coder, source: "project_card")
+        }
+        return AXRoleExecutionSnapshots.latestSnapshots(for: coderExecutionContext)[.coder]
+            ?? .empty(role: .coder, source: "project_card")
+    }
+
+    private var coderExecutionStatusPresentation: ProjectCoderExecutionStatusPresentation {
+        ProjectCoderExecutionStatusResolver.map(
+            configuredModelId: configuredCoderModelId,
+            snapshot: coderExecutionSnapshot,
+            hubConnected: appModel.hubInteractive,
+            governancePresentation: governancePresentation,
+            governanceInterception: latestGovernanceInterception
+        )
+    }
+
+    private var latestGovernanceInterception: ProjectGovernanceInterceptionPresentation? {
+        guard let coderExecutionContext else { return nil }
+        return ProjectGovernanceInterceptionPresentation.latest(
+            from: AXProjectSkillActivityStore.loadRecentActivities(ctx: coderExecutionContext, limit: 12)
+        )
     }
 
     private func openGovernance(_ destination: XTProjectGovernanceDestination) {
@@ -360,7 +410,7 @@ struct ProjectsGridView_Previews: PreviewProvider {
 extension MultiProjectManager {
     static var preview: MultiProjectManager {
         let supervisor = SupervisorModel.preview
-        let manager = MultiProjectManager(supervisor: supervisor)
+        let manager = MultiProjectManager(runtimeHost: supervisor)
 
         // 添加示例项目
         Task {

@@ -3,6 +3,8 @@ import SwiftUI
 
 struct SupervisorHeartbeatFeedView: View {
     let entries: [SupervisorManager.HeartbeatFeedEntry]
+    let historicalProjectBoundaryRepairStatusLine: String
+    let doctorPresentation: SupervisorDoctorBoardPresentation?
     let primarySignalPresentation: SupervisorPrimarySignalPresentation?
     let onOpenFocus: (String) -> Void
     let onPrimarySignalAction: (SupervisorSignalCenterOverviewAction) -> Void
@@ -10,12 +12,16 @@ struct SupervisorHeartbeatFeedView: View {
 
     init(
         entries: [SupervisorManager.HeartbeatFeedEntry],
+        historicalProjectBoundaryRepairStatusLine: String = "",
+        doctorPresentation: SupervisorDoctorBoardPresentation? = nil,
         primarySignalPresentation: SupervisorPrimarySignalPresentation? = nil,
         onOpenFocus: @escaping (String) -> Void,
         onPrimarySignalAction: @escaping (SupervisorSignalCenterOverviewAction) -> Void = { _ in },
         listMaxHeight: CGFloat = 360
     ) {
         self.entries = entries
+        self.historicalProjectBoundaryRepairStatusLine = historicalProjectBoundaryRepairStatusLine
+        self.doctorPresentation = doctorPresentation
         self.primarySignalPresentation = primarySignalPresentation
         self.onOpenFocus = onOpenFocus
         self.onPrimarySignalAction = onPrimarySignalAction
@@ -23,7 +29,11 @@ struct SupervisorHeartbeatFeedView: View {
     }
 
     var body: some View {
-        let presentation = SupervisorHeartbeatPresentation.map(entries: entries)
+        let presentation = SupervisorHeartbeatPresentation.map(
+            entries: entries,
+            historicalProjectBoundaryRepairStatusLine: historicalProjectBoundaryRepairStatusLine,
+            doctorPresentation: doctorPresentation
+        )
         let attentionEntries = presentation.entries.filter(\.priority.belongsToAttentionSection)
         let recentEntries = presentation.entries.filter { !$0.priority.belongsToAttentionSection }
 
@@ -46,6 +56,11 @@ struct SupervisorHeartbeatFeedView: View {
                 }
                 Spacer()
             }
+
+            Text(presentation.digestModeNoteText)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
             if presentation.isEmpty {
                 Text(presentation.emptyStateText)
@@ -189,26 +204,21 @@ struct SupervisorHeartbeatFeedView: View {
                     .foregroundStyle(entry.changeTone.color)
             }
 
-            if entry.detailLines.isEmpty {
-                Text(entry.contentText)
-                    .font(.caption)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(Array(entry.detailLines.enumerated()), id: \.offset) { item in
-                        HStack(alignment: .top, spacing: 6) {
-                            Circle()
-                                .fill(entry.headlineTone.color.opacity(0.7))
-                                .frame(width: 4, height: 4)
-                                .padding(.top, 6)
-                            Text(item.element)
-                                .font(.caption)
-                                .foregroundStyle(.primary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                }
+            VStack(alignment: .leading, spacing: 8) {
+                digestLine(
+                    title: "发生了什么",
+                    text: entry.digest.whatChangedText,
+                    valueTone: entry.headlineTone.color
+                )
+                digestLine(
+                    title: "为什么重要",
+                    text: entry.digest.whyImportantText
+                )
+                digestLine(
+                    title: "系统下一步",
+                    text: entry.digest.systemNextStepText,
+                    valueTone: SupervisorHeaderControlTone.accent.color
+                )
             }
 
             if let focusAction = entry.focusAction {
@@ -225,6 +235,24 @@ struct SupervisorHeartbeatFeedView: View {
             RoundedRectangle(cornerRadius: 12)
                 .strokeBorder(entry.priorityTone.color.opacity(0.18), lineWidth: 1)
         )
+    }
+
+    @ViewBuilder
+    private func digestLine(
+        title: String,
+        text: String,
+        valueTone: Color = .primary
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(valueTone)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     @ViewBuilder
@@ -341,17 +369,72 @@ struct SupervisorHeartbeatFeedView: View {
 
 struct SupervisorHeartbeatBoardSection: View {
     let entries: [SupervisorManager.HeartbeatFeedEntry]
+    let historicalProjectBoundaryRepairStatusLine: String
+    let doctorPresentation: SupervisorDoctorBoardPresentation?
     let primarySignalPresentation: SupervisorPrimarySignalPresentation?
     let onOpenFocus: (String) -> Void
     let onPrimarySignalAction: (SupervisorSignalCenterOverviewAction) -> Void
 
+    init(
+        entries: [SupervisorManager.HeartbeatFeedEntry],
+        historicalProjectBoundaryRepairStatusLine: String = "",
+        doctorPresentation: SupervisorDoctorBoardPresentation? = nil,
+        primarySignalPresentation: SupervisorPrimarySignalPresentation?,
+        onOpenFocus: @escaping (String) -> Void,
+        onPrimarySignalAction: @escaping (SupervisorSignalCenterOverviewAction) -> Void
+    ) {
+        self.entries = entries
+        self.historicalProjectBoundaryRepairStatusLine = historicalProjectBoundaryRepairStatusLine
+        self.doctorPresentation = doctorPresentation
+        self.primarySignalPresentation = primarySignalPresentation
+        self.onOpenFocus = onOpenFocus
+        self.onPrimarySignalAction = onPrimarySignalAction
+    }
+
     var body: some View {
         SupervisorHeartbeatFeedView(
             entries: entries,
+            historicalProjectBoundaryRepairStatusLine: historicalProjectBoundaryRepairStatusLine,
+            doctorPresentation: doctorPresentation,
             primarySignalPresentation: primarySignalPresentation,
             onOpenFocus: onOpenFocus,
             onPrimarySignalAction: onPrimarySignalAction,
             listMaxHeight: 248
+        )
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(Color(NSColor.windowBackgroundColor))
+    }
+}
+
+struct SupervisorHeartbeatPanel: View {
+    let maxHeight: CGFloat
+    let entries: [SupervisorManager.HeartbeatFeedEntry]
+    let historicalProjectBoundaryRepairStatusLine: String
+    let doctorPresentation: SupervisorDoctorBoardPresentation?
+    let onOpenFocus: (String) -> Void
+
+    init(
+        maxHeight: CGFloat,
+        entries: [SupervisorManager.HeartbeatFeedEntry],
+        historicalProjectBoundaryRepairStatusLine: String = "",
+        doctorPresentation: SupervisorDoctorBoardPresentation? = nil,
+        onOpenFocus: @escaping (String) -> Void
+    ) {
+        self.maxHeight = maxHeight
+        self.entries = entries
+        self.historicalProjectBoundaryRepairStatusLine = historicalProjectBoundaryRepairStatusLine
+        self.doctorPresentation = doctorPresentation
+        self.onOpenFocus = onOpenFocus
+    }
+
+    var body: some View {
+        SupervisorHeartbeatFeedView(
+            entries: entries,
+            historicalProjectBoundaryRepairStatusLine: historicalProjectBoundaryRepairStatusLine,
+            doctorPresentation: doctorPresentation,
+            onOpenFocus: onOpenFocus,
+            listMaxHeight: max(160, maxHeight - 40)
         )
         .padding(.horizontal, 16)
         .padding(.vertical, 12)

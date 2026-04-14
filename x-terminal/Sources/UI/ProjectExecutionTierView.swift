@@ -14,23 +14,23 @@ struct ProjectExecutionTierView: View {
     ]
 
     var body: some View {
-        GroupBox("执行档位（Execution Tier）") {
+        GroupBox("A-Tier") {
             VStack(alignment: .leading, spacing: 14) {
-                Text("这里只控制项目 AI 能做多大动作，包括 repo / browser / device 的执行边界；不负责决定 Supervisor 审查多深，也不负责 `Recent Project Dialogue / Context Depth`。后两者请到 `Project Settings` 里的 `Context Assembly` 单独设置。")
+                Text("A-Tier 只回答一件事：这个 Project AI 最多能做到哪一步。它决定执行上限和能力边界，但不决定 Supervisor 看多深，也不决定多久 review。真正放行动作的仍是 grant、runtime、policy、TTL、kill-switch 这些硬边界。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                 LazyVGrid(columns: summaryColumns, alignment: .leading, spacing: 10) {
                     summaryMetric(
                         title: "已配置",
-                        value: configuredTier.displayName,
+                        value: configuredTier.localizedDisplayLabel,
                         tone: tierTint(configuredTier)
                     )
 
                     if effectiveTier != configuredTier {
                         summaryMetric(
                             title: "当前生效",
-                            value: effectiveTier.displayName,
+                            value: effectiveTier.localizedDisplayLabel,
                             tone: .orange
                         )
                     }
@@ -79,10 +79,9 @@ struct ProjectExecutionTierView: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .top, spacing: 12) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(tier.displayName)
+                        Text(tier.localizedDisplayLabel)
                             .font(.headline)
                             .foregroundStyle(.primary)
-
                         Text(tier.oneLineSummary)
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -100,46 +99,46 @@ struct ProjectExecutionTierView: View {
 
                 LazyVGrid(columns: summaryColumns, alignment: .leading, spacing: 10) {
                     summaryMetric(
-                        title: "上下文上限（Serving Ceiling）",
+                        title: "上下文上限",
                         value: tier.defaultProjectMemoryCeiling.rawValue,
                         tone: tint
                     )
                     summaryMetric(
-                        title: "推荐 S 档（Recommended S）",
-                        value: tier.defaultSupervisorInterventionTier.displayName,
+                        title: "推荐 S 档",
+                        value: tier.defaultSupervisorInterventionTier.localizedDisplayLabel,
                         tone: .orange
                     )
                     summaryMetric(
-                        title: "安全下限（Safe Floor）",
-                        value: tier.minimumSafeSupervisorTier.displayName,
+                        title: "风险参考线",
+                        value: tier.minimumSafeSupervisorTier.localizedDisplayLabel,
                         tone: .red
                     )
                     summaryMetric(
-                        title: "执行面预设（Surface Preset）",
+                        title: "执行面预设",
                         value: tier.defaultRuntimeSurfacePreset.displayName,
                         tone: .teal
                     )
                     summaryMetric(
-                        title: "运行预算（Run Budget）",
+                        title: "运行预算",
                         value: tier.defaultBudgetSummary,
                         tone: .secondary
                     )
                 }
 
                 tierTagGroup(
-                    title: "允许范围（Allows）",
-                    labels: tier.allowedHighlights,
+                    title: "允许范围",
+                    labels: tier.allowedHighlights.map(localizedExecutionHighlight),
                     tint: tint
                 )
 
                 tierTagGroup(
-                    title: "阻止范围（Blocked）",
-                    labels: tier.blockedHighlights,
+                    title: "阻止范围",
+                    labels: tier.blockedHighlights.map(localizedExecutionHighlight),
                     tint: .secondary
                 )
 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("核心能力包（Core Capability Bundle）")
+                    Text("核心能力包")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
 
@@ -148,7 +147,7 @@ struct ProjectExecutionTierView: View {
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     } else {
-                        ExecutionTierTagWrapView(
+                        ExecutionTierSingleRowTagStripView(
                             labels: tier.baseCapabilityBundle.allowedCapabilityLabels,
                             tint: tint
                         )
@@ -167,7 +166,7 @@ struct ProjectExecutionTierView: View {
             )
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(tier.displayName)")
+        .accessibilityLabel("\(tier.localizedDisplayLabel)")
         .accessibilityValue(presentation.accessibilityStateLabel)
     }
 
@@ -239,6 +238,27 @@ struct ProjectExecutionTierView: View {
             return .orange
         }
     }
+
+    private func localizedExecutionHighlight(_ value: String) -> String {
+        switch value {
+        case "browser runtime":
+            return "浏览器运行时"
+        case "device tools":
+            return "设备工具"
+        case "connector / extension":
+            return "连接器 / 扩展"
+        case "不能触发 browser / device side effect":
+            return "不能触发浏览器 / 设备副作用"
+        case "不能触发 browser / device / connector side effect":
+            return "不能触发浏览器 / 设备 / 连接器副作用"
+        case "不能碰 browser / device / connector 执行":
+            return "不能碰浏览器 / 设备 / 连接器执行"
+        case "不能碰 device / browser / connector / extension 执行":
+            return "不能碰设备 / 浏览器 / 连接器 / 扩展执行"
+        default:
+            return value
+        }
+    }
 }
 
 private struct ExecutionTierTagWrapView: View {
@@ -266,6 +286,43 @@ private struct ExecutionTierTagWrapView: View {
         Text(text)
             .font(.caption2.weight(.semibold))
             .foregroundStyle(tint)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(tint.opacity(0.12))
+            .clipShape(Capsule())
+    }
+}
+
+private struct ExecutionTierSingleRowTagStripView: View {
+    let labels: [String]
+    let tint: Color
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 6) {
+                ForEach(labels, id: \.self) { label in
+                    tag(label)
+                }
+                Spacer(minLength: 0)
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(labels, id: \.self) { label in
+                        tag(label)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private func tag(_ text: String) -> some View {
+        Text(text)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(tint)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(tint.opacity(0.12))

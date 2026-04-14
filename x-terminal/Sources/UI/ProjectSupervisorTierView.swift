@@ -14,26 +14,26 @@ struct ProjectSupervisorTierView: View {
     ]
 
     var body: some View {
-        GroupBox("Supervisor Tier") {
+        GroupBox("S-Tier") {
             VStack(alignment: .leading, spacing: 14) {
-                Text("这里只控制 Supervisor 审查 / 指导 / 重规划的介入强度。不直接放行 repo、browser 或 device 权限。")
+                Text("S-Tier 只回答一件事：Supervisor 会盯多深、介入多积极。它不额外放行 repo、browser 或 device 权限，只决定 review、纠偏和救援强度；真正 fail-closed 仍来自 grant、runtime、policy、TTL、kill-switch。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                 LazyVGrid(columns: summaryColumns, alignment: .leading, spacing: 10) {
                     summaryMetric(
-                        title: "当前 A-tier",
-                        value: currentExecutionTier.displayName,
+                        title: "当前 A-Tier",
+                        value: currentExecutionTier.localizedDisplayLabel,
                         tone: executionTierTint(currentExecutionTier)
                     )
                     summaryMetric(
-                        title: "推荐 S 档位",
-                        value: currentExecutionTier.defaultSupervisorInterventionTier.displayName,
+                        title: "推荐 S-Tier",
+                        value: currentExecutionTier.defaultSupervisorInterventionTier.localizedDisplayLabel,
                         tone: .orange
                     )
                     summaryMetric(
-                        title: "安全下限",
-                        value: currentExecutionTier.minimumSafeSupervisorTier.displayName,
+                        title: "风险参考线",
+                        value: currentExecutionTier.minimumSafeSupervisorTier.localizedDisplayLabel,
                         tone: .red
                     )
                     summaryMetric(
@@ -75,7 +75,7 @@ struct ProjectSupervisorTierView: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .top, spacing: 12) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(tier.displayName)
+                        Text(tier.localizedDisplayLabel)
                             .font(.headline)
                             .foregroundStyle(.primary)
 
@@ -118,14 +118,14 @@ struct ProjectSupervisorTierView: View {
                 }
 
                 tierTagGroup(
-                    title: "Behavior",
-                    labels: tier.behaviorHighlights,
+                    title: "行为特点",
+                    labels: tier.behaviorHighlights.map(localizedSupervisorHighlight),
                     tint: tint
                 )
 
                 tierTagGroup(
-                    title: "Good For",
-                    labels: tier.typicalUseCases,
+                    title: "适用场景",
+                    labels: tier.typicalUseCases.map(localizedSupervisorHighlight),
                     tint: .secondary
                 )
             }
@@ -141,7 +141,7 @@ struct ProjectSupervisorTierView: View {
             )
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(tier.displayName)")
+        .accessibilityLabel("\(tier.localizedDisplayLabel)")
         .accessibilityValue(presentation.accessibilityStateLabel)
     }
 
@@ -200,32 +200,49 @@ struct ProjectSupervisorTierView: View {
     }
 
     private func executionTierTint(_ tier: AXProjectExecutionTier) -> Color {
-        switch tier {
-        case .a0Observe:
-            return .gray
-        case .a1Plan:
-            return .blue
-        case .a2RepoAuto:
-            return .teal
-        case .a3DeliverAuto:
-            return .green
-        case .a4OpenClaw:
-            return .orange
-        }
+        ProjectGovernanceComposerAccentTone.forExecutionTier(tier).color
     }
 
     private func supervisorTierTint(_ tier: AXProjectSupervisorInterventionTier) -> Color {
-        switch tier {
-        case .s0SilentAudit:
-            return .gray
-        case .s1MilestoneReview:
-            return .blue
-        case .s2PeriodicReview:
-            return .teal
-        case .s3StrategicCoach:
-            return .orange
-        case .s4TightSupervision:
-            return .red
+        ProjectGovernanceComposerAccentTone.forSupervisorTier(tier).color
+    }
+
+    private func localizedSupervisorHighlight(_ value: String) -> String {
+        switch value {
+        case "只读 heartbeat / audit":
+            return "只读心跳 / 审计"
+        case "默认 observe only":
+            return "默认仅观察"
+        case "只在 kill-switch / 越界时出手":
+            return "只在紧急回收 / 越界时出手"
+        case "里程碑 review":
+            return "里程碑审查"
+        case "safe point 给建议":
+            return "在安全点给建议"
+        case "brief 级 work order":
+            return "简要级工单"
+        case "定时 pulse review":
+            return "定时脉冲审查"
+        case "suggest at safe point":
+            return "在安全点建议"
+        case "milestone contract depth":
+            return "里程碑合同深度"
+        case "replan at safe point":
+            return "在安全点重规划"
+        case "execution ready depth":
+            return "执行就绪深度"
+        case "高频 review":
+            return "高频审查"
+        case "step-locked rescue":
+            return "锁步救援"
+        case "强 ack / 强纠偏":
+            return "强确认 / 强纠偏"
+        case "A2 Repo Auto":
+            return "A2 仓库自动推进"
+        case "A3 Deliver Auto":
+            return "A3 交付自动推进"
+        default:
+            return value
         }
     }
 }

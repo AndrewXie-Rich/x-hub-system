@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ProjectHeartbeatReviewView: View {
     let ctx: AXProjectContext?
+    let projectConfig: AXProjectConfig
     let configuredExecutionTier: AXProjectExecutionTier
     let configuredReviewPolicyMode: AXProjectReviewPolicyMode
     let progressHeartbeatSeconds: Int
@@ -9,6 +10,9 @@ struct ProjectHeartbeatReviewView: View {
     let brainstormReviewSeconds: Int
     let eventDrivenReviewEnabled: Bool
     let eventReviewTriggers: [AXProjectReviewTrigger]
+    let configuredSupervisorRecentRawContextProfile: XTSupervisorRecentRawContextProfile
+    let configuredSupervisorReviewMemoryDepth: XTSupervisorReviewMemoryDepthProfile
+    let supervisorPrivacyMode: XTPrivacyMode
     let resolvedGovernance: AXProjectResolvedGovernanceState
     let governancePresentation: ProjectGovernancePresentation
     let inlineMessage: String
@@ -29,21 +33,21 @@ struct ProjectHeartbeatReviewView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            GroupBox("心跳与审查（Heartbeat & Review）") {
+            GroupBox("Heartbeat / Review") {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text("这里单独治理进度心跳、Supervisor 审查节奏、事件触发和安全点指导。A-tier 决定哪些审查检查点必须存在，但心跳 / 审查频率仍然独立配置；`Recent Project Dialogue / Supervisor Recent Raw Context` 不在这里调整。")
+                    Text("Heartbeat / Review 只回答一件事：多久看一次、什么事件会触发 review、什么时候插手。它独立于 A-Tier 和 S-Tier；A-Tier 只锁定必须存在的检查点。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
                     LazyVGrid(columns: summaryColumns, alignment: .leading, spacing: 10) {
                         summaryMetric(
                             title: "已配置策略",
-                            value: configuredReviewPolicyMode.displayName,
+                            value: configuredReviewPolicyMode.localizedDisplayName,
                             tone: reviewPolicyTint(configuredReviewPolicyMode)
                         )
                         summaryMetric(
                             title: "当前生效",
-                            value: resolvedGovernance.effectiveBundle.reviewPolicyMode.displayName,
+                            value: resolvedGovernance.effectiveBundle.reviewPolicyMode.localizedDisplayName,
                             tone: reviewPolicyTint(resolvedGovernance.effectiveBundle.reviewPolicyMode)
                         )
                         summaryMetric(
@@ -65,6 +69,28 @@ struct ProjectHeartbeatReviewView: View {
                     }
 
                     configurationSection(
+                        title: "Scene 参数矩阵",
+                        subtitle: "把当前场景默认、用户手改和 runtime 生效三层拆开看。这里集中说明 cadence、coder continuity、Supervisor continuity、能力包和交付收口要求。"
+                    ) {
+                        parameterMatrixGroup(
+                            title: "节奏",
+                            rows: pagePresentation.sceneParameterMatrix.cadenceRows
+                        )
+                        parameterMatrixGroup(
+                            title: "连续性",
+                            rows: pagePresentation.sceneParameterMatrix.continuityRows
+                        )
+                        parameterMatrixGroup(
+                            title: "执行包络",
+                            rows: pagePresentation.sceneParameterMatrix.executionRows
+                        )
+                        parameterMatrixGroup(
+                            title: "收口",
+                            rows: pagePresentation.sceneParameterMatrix.closeoutRows
+                        )
+                    }
+
+                    configurationSection(
                         title: "进度心跳",
                         subtitle: "进度心跳只负责看进度，不做战略纠偏。它可以比审查更频繁，也不要求指导确认。"
                     ) {
@@ -76,7 +102,11 @@ struct ProjectHeartbeatReviewView: View {
                             in: 1...240,
                             step: 5
                         ) {
-                            Text("进度心跳：\(governanceDurationLabel(progressHeartbeatSeconds))")
+                            Text("进度心跳：\(governanceDisplayDurationLabel(progressHeartbeatSeconds))")
+                        }
+
+                        if let cadence = activityPresentation.cadenceExplainability?.progressHeartbeat {
+                            self.cadenceExplainabilityBlock(cadence)
                         }
 
                         schedulePair(
@@ -106,15 +136,19 @@ struct ProjectHeartbeatReviewView: View {
                             in: 0...240,
                             step: 5
                         ) {
-                            Text("周期复盘：\(governanceDurationLabel(reviewPulseSeconds))")
+                            Text("周期复盘：\(governanceDisplayDurationLabel(reviewPulseSeconds))")
                         }
                         .disabled(!configuredReviewPolicyMode.supportsPulseCadence)
 
                         Text(configuredReviewPolicyMode.supportsPulseCadence
                              ? "脉冲审查当前可用，适合轻量周期复盘。"
-                             : "当前策略不启用脉冲节奏；如需周期复盘，请切到 `Periodic / Hybrid / Aggressive`。")
+                             : "当前策略不启用脉冲节奏；如需周期复盘，请切到 `周期 / 混合 / 高压`。")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
+
+                        if let cadence = activityPresentation.cadenceExplainability?.reviewPulse {
+                            self.cadenceExplainabilityBlock(cadence)
+                        }
 
                         schedulePair(
                             leadingTitle: "上次脉冲审查",
@@ -132,15 +166,19 @@ struct ProjectHeartbeatReviewView: View {
                             in: 0...240,
                             step: 5
                         ) {
-                            Text("脑暴复盘（Brainstorm）：\(governanceDurationLabel(brainstormReviewSeconds))")
+                            Text("脑暴复盘：\(governanceDisplayDurationLabel(brainstormReviewSeconds))")
                         }
                         .disabled(!configuredReviewPolicyMode.supportsBrainstormCadence)
 
                         Text(configuredReviewPolicyMode.supportsBrainstormCadence
-                             ? "脑暴审查会围绕 `no-progress window` 做更深的方向复盘。"
-                             : "当前策略不启用脑暴节奏；如需战略复盘，请切到 `Hybrid / Aggressive`。")
+                             ? "脑暴审查会围绕“长时间无进展窗口”做更深的方向复盘。"
+                             : "当前策略不启用脑暴节奏；如需战略复盘，请切到 `混合 / 高压`。")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
+
+                        if let cadence = activityPresentation.cadenceExplainability?.brainstormReview {
+                            self.cadenceExplainabilityBlock(cadence)
+                        }
 
                         schedulePair(
                             leadingTitle: "上次脑暴审查",
@@ -161,15 +199,15 @@ struct ProjectHeartbeatReviewView: View {
 
                         Text(configuredReviewPolicyMode.supportsEventDrivenReview
                              ? (eventDrivenReviewEnabled
-                                ? "当前会监听 blocker / drift / high-risk 等事件；A-tier 强制检查点始终保留。"
-                                : "当前只保留 A-tier 强制检查点；下面的可选事件会先保存，重新开启后生效。")
-                             : "`Off` 模式不会启用事件驱动审查，但 `manual request / user override` 仍可触发。")
+                                ? "当前会监听卡点 / 漂移 / 高风险等事件；A 档强制检查点始终保留。"
+                                : "当前只保留 A 档强制检查点；下面的可选事件会先保存，重新开启后生效。")
+                             : "`关闭` 模式不会启用事件驱动审查，但“手动请求 / 用户覆盖”仍可触发。")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
 
                         triggerGroup(
-                            title: "A-tier 锁定",
-                            subtitle: "这些检查点由当前 A-tier 决定，不能在这里关闭。",
+                            title: "A 档锁定",
+                            subtitle: "这些检查点由当前 A 档决定，不能在这里关闭。",
                             triggers: pagePresentation.mandatoryTriggers,
                             accent: executionTierTint(configuredExecutionTier)
                         ) { trigger in
@@ -190,7 +228,7 @@ struct ProjectHeartbeatReviewView: View {
                                 isOn: optionalTriggerBinding(trigger)
                             ) {
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text(trigger.displayName)
+                                    Text(trigger.localizedDisplayName)
                                         .font(.caption.weight(.semibold))
                                     Text(trigger.governanceSummary)
                                         .font(.caption2)
@@ -298,7 +336,11 @@ struct ProjectHeartbeatReviewView: View {
             configuredReviewPolicyMode: configuredReviewPolicyMode,
             reviewPulseSeconds: reviewPulseSeconds,
             brainstormReviewSeconds: brainstormReviewSeconds,
-            resolvedGovernance: resolvedGovernance
+            resolvedGovernance: resolvedGovernance,
+            projectConfig: projectConfig,
+            configuredSupervisorRecentRawContextProfile: configuredSupervisorRecentRawContextProfile,
+            configuredSupervisorReviewMemoryDepth: configuredSupervisorReviewMemoryDepth,
+            supervisorPrivacyMode: supervisorPrivacyMode
         )
     }
 
@@ -358,6 +400,54 @@ struct ProjectHeartbeatReviewView: View {
         )
     }
 
+    private func parameterMatrixGroup(
+        title: String,
+        rows: [ProjectGovernanceParameterMatrixRowPresentation]
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                parameterMatrixRow(row)
+            }
+        }
+    }
+
+    private func parameterMatrixRow(
+        _ row: ProjectGovernanceParameterMatrixRowPresentation
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(row.title)
+                .font(.caption.weight(.semibold))
+
+            LazyVGrid(columns: summaryColumns, alignment: .leading, spacing: 10) {
+                summaryMetric(title: "已配置", value: row.configuredValue, tone: .secondary)
+                summaryMetric(title: "建议值", value: row.recommendedValue, tone: .blue)
+                summaryMetric(title: "生效值", value: row.effectiveValue, tone: .green)
+            }
+
+            Text(row.sourceSummary)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let detail = row.detail, !detail.isEmpty {
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.secondary.opacity(0.05))
+        )
+    }
+
     private func schedulePair(
         leadingTitle: String,
         leadingValue: String,
@@ -368,6 +458,48 @@ struct ProjectHeartbeatReviewView: View {
             summaryMetric(title: leadingTitle, value: leadingValue, tone: .secondary)
             summaryMetric(title: trailingTitle, value: trailingValue, tone: .secondary)
         }
+    }
+
+    private func cadenceExplainabilityBlock(
+        _ cadence: SupervisorCadenceDimensionExplainability
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            LazyVGrid(columns: summaryColumns, alignment: .leading, spacing: 10) {
+                summaryMetric(
+                    title: "已配置",
+                    value: governanceDisplayDurationLabel(cadence.configuredSeconds),
+                    tone: .secondary
+                )
+                summaryMetric(
+                    title: "建议值",
+                    value: governanceDisplayDurationLabel(cadence.recommendedSeconds),
+                    tone: .blue
+                )
+                summaryMetric(
+                    title: "生效值",
+                    value: governanceDisplayDurationLabel(cadence.effectiveSeconds),
+                    tone: cadence.isDue ? .orange : .green
+                )
+            }
+
+            Text("生效原因：\(localizedCadenceReasonCodes(cadence.effectiveReasonCodes))")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("到期判断：\(cadence.isDue ? "已到期" : "未到期") · \(localizedCadenceReasonCodes(cadence.nextDueReasonCodes))")
+                .font(.caption2)
+                .foregroundStyle(cadence.isDue ? .orange : .secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func localizedCadenceReasonCodes(_ codes: [String]) -> String {
+        HeartbeatGovernanceUserFacingText.cadenceReasonSummary(codes, empty: "无")
+    }
+
+    private func localizedCadenceReasonCode(_ code: String) -> String {
+        HeartbeatGovernanceUserFacingText.cadenceReasonText(code) ?? code
     }
 
     private func reviewPolicyCard(_ mode: AXProjectReviewPolicyMode) -> some View {
@@ -381,7 +513,7 @@ struct ProjectHeartbeatReviewView: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .top, spacing: 12) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(mode.displayName)
+                        Text(mode.localizedDisplayName)
                             .font(.headline)
                         Text(mode.oneLineSummary)
                             .font(.caption)
@@ -399,9 +531,9 @@ struct ProjectHeartbeatReviewView: View {
                 }
 
                 HStack(spacing: 8) {
-                    capabilityBadge("脉冲（Pulse）", active: mode.supportsPulseCadence, tint: tint)
-                    capabilityBadge("脑暴（Brainstorm）", active: mode.supportsBrainstormCadence, tint: .indigo)
-                    capabilityBadge("事件（Events）", active: mode.supportsEventDrivenReview, tint: .teal)
+                    capabilityBadge("脉冲", active: mode.supportsPulseCadence, tint: tint)
+                    capabilityBadge("脑暴", active: mode.supportsBrainstormCadence, tint: .indigo)
+                    capabilityBadge("事件", active: mode.supportsEventDrivenReview, tint: .teal)
                 }
             }
             .padding(14)
@@ -416,7 +548,7 @@ struct ProjectHeartbeatReviewView: View {
             )
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(mode.displayName)
+        .accessibilityLabel(mode.localizedDisplayName)
         .accessibilityValue(accessibilityStateLabel(isConfigured: isConfigured, isEffective: isEffective))
     }
 
@@ -456,7 +588,7 @@ struct ProjectHeartbeatReviewView: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(trigger.displayName)
+                Text(trigger.localizedDisplayName)
                     .font(.caption.weight(.semibold))
                 Spacer(minLength: 0)
                 Text(status)
@@ -590,33 +722,11 @@ struct ProjectHeartbeatReviewView: View {
     }
 
     private func reviewPolicyTint(_ mode: AXProjectReviewPolicyMode) -> Color {
-        switch mode {
-        case .off:
-            return .gray
-        case .milestoneOnly:
-            return .blue
-        case .periodic:
-            return .teal
-        case .hybrid:
-            return .green
-        case .aggressive:
-            return .orange
-        }
+        ProjectGovernanceComposerAccentTone.forReviewPolicy(mode).color
     }
 
     private func executionTierTint(_ tier: AXProjectExecutionTier) -> Color {
-        switch tier {
-        case .a0Observe:
-            return .gray
-        case .a1Plan:
-            return .blue
-        case .a2RepoAuto:
-            return .teal
-        case .a3DeliverAuto:
-            return .green
-        case .a4OpenClaw:
-            return .orange
-        }
+        ProjectGovernanceComposerAccentTone.forExecutionTier(tier).color
     }
 
     private func guidanceTint(_ mode: SupervisorGuidanceInterventionMode) -> Color {

@@ -1,6 +1,144 @@
 import AppKit
 import SwiftUI
 
+enum MessageTimelineWindowingSupport {
+    static func initialVisibleRange(
+        totalCount: Int,
+        pageSize: Int
+    ) -> Range<Int> {
+        guard totalCount > 0 else { return 0..<0 }
+        let clampedPageSize = max(1, pageSize)
+        let end = totalCount
+        let start = max(0, end - clampedPageSize)
+        return start..<end
+    }
+
+    static func prependedVisibleRange(
+        currentRange: Range<Int>,
+        totalCount: Int,
+        pageSize: Int,
+        maxWindowSize: Int? = nil
+    ) -> Range<Int> {
+        guard totalCount > 0 else { return 0..<0 }
+        guard !currentRange.isEmpty else {
+            return initialVisibleRange(totalCount: totalCount, pageSize: pageSize)
+        }
+        let clampedUpper = min(totalCount, max(currentRange.upperBound, 0))
+        let newStart = max(0, currentRange.lowerBound - max(1, pageSize))
+        return clampedVisibleRange(
+            currentRange: newStart..<clampedUpper,
+            totalCount: totalCount,
+            maxWindowSize: maxWindowSize
+        )
+    }
+
+    static func latestVisibleRange(
+        from currentRange: Range<Int>,
+        totalCount: Int,
+        pageSize: Int,
+        maxWindowSize: Int? = nil,
+        stickToBottom: Bool
+    ) -> Range<Int> {
+        guard totalCount > 0 else { return 0..<0 }
+        guard !currentRange.isEmpty else {
+            return initialVisibleRange(totalCount: totalCount, pageSize: pageSize)
+        }
+        if currentRange.lowerBound >= totalCount {
+            return initialVisibleRange(totalCount: totalCount, pageSize: pageSize)
+        }
+        if stickToBottom {
+            let preservedWindow = max(currentRange.count, max(1, pageSize))
+            let clampedWindow = maxWindowSize.map { min(preservedWindow, max(1, $0)) } ?? preservedWindow
+            let end = totalCount
+            let start = max(0, end - clampedWindow)
+            return start..<end
+        }
+        return clampedVisibleRange(
+            currentRange: currentRange,
+            totalCount: totalCount,
+            maxWindowSize: maxWindowSize
+        )
+    }
+
+    static func clampedVisibleRange(
+        currentRange: Range<Int>,
+        totalCount: Int,
+        maxWindowSize: Int? = nil
+    ) -> Range<Int> {
+        guard totalCount > 0 else { return 0..<0 }
+        guard !currentRange.isEmpty else { return 0..<0 }
+
+        let lowerBound = max(0, min(currentRange.lowerBound, totalCount - 1))
+        let upperBound = max(lowerBound, min(totalCount, currentRange.upperBound))
+        guard let maxWindowSize else {
+            return lowerBound..<upperBound
+        }
+
+        let clampedMaxWindowSize = max(1, maxWindowSize)
+        if upperBound - lowerBound <= clampedMaxWindowSize {
+            return lowerBound..<upperBound
+        }
+        return lowerBound..<min(totalCount, lowerBound + clampedMaxWindowSize)
+    }
+
+    static func shouldStickToBottom(
+        bottomAnchorMaxY: CGFloat,
+        viewportHeight: CGFloat,
+        threshold: CGFloat = 72
+    ) -> Bool {
+        guard viewportHeight > 0 else { return true }
+        guard bottomAnchorMaxY.isFinite else { return true }
+        return bottomAnchorMaxY <= viewportHeight + threshold
+    }
+}
+
+private enum MessageTimelineFormatters {
+    static let time: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
+        return formatter
+    }()
+}
+
+private enum MessageTimelineRenderCache {
+    private static let parsedContentLock = NSLock()
+    private static var parsedContentByKey: [String: ParsedContent] = [:]
+    private static var parsedContentOrder: [String] = []
+    private static let maxParsedContentEntries = 256
+
+    static func parsedContent(for message: AXChatMessage) -> ParsedContent {
+        let key = "\(message.id)|\(message.content.count)|\(message.content.hashValue)"
+        parsedContentLock.lock()
+        if let cached = parsedContentByKey[key] {
+            parsedContentLock.unlock()
+            return cached
+        }
+        parsedContentLock.unlock()
+
+        let parsed = ToolCallParser.parse(message.content)
+
+        parsedContentLock.lock()
+        parsedContentByKey[key] = parsed
+        parsedContentOrder.append(key)
+        if parsedContentOrder.count > maxParsedContentEntries,
+           let evictedKey = parsedContentOrder.first {
+            parsedContentOrder.removeFirst()
+            parsedContentByKey.removeValue(forKey: evictedKey)
+        }
+        parsedContentLock.unlock()
+        return parsed
+    }
+}
+
+private struct MessageTimelineBottomOffsetPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = .greatestFiniteMagnitude
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 /// 现代化的消息时间线视图，替代原来的 TranscriptTextView
 struct MessageTimelineView: View {
     let ctx: AXProjectContext
@@ -9,7 +147,7 @@ struct MessageTimelineView: View {
     let hubConnected: Bool
     let onApproveSkillActivity: (String) -> Void
     let onRetrySkillActivity: (ProjectSkillActivityItem) -> Void
-    let onOpenGovernance: (XTProjectGovernanceDestination) -> Void
+    let onOpenGovernance: (XTProjectGovernanceDestination, XTSectionFocusContext?) -> Void
     var focusedSkillActivityRequestId: String? = nil
     var focusedSkillActivityNonce: Int? = nil
     var bottomPadding: CGFloat = 24
@@ -17,110 +155,185 @@ struct MessageTimelineView: View {
     @State private var recentSkillActivities: [ProjectSkillActivityItem] = []
     @State private var selectedSkillRecord: ProjectSkillRecordSheetState?
     @State private var pendingFocusedSkillActivityNonce: Int?
+    @State private var timelineMessages: [AXChatMessage] = []
+    @State private var visibleMessageRange: Range<Int> = 0..<0
+    @State private var isLoadingPreviousMessages = false
+    @State private var scrollViewportHeight: CGFloat = 0
+    @State private var bottomAnchorMaxY: CGFloat = .greatestFiniteMagnitude
 
     private let recentSkillActivityLimit = 8
+    private let initialMessagePageSize = 60
+    private let prependMessagePageSize = 30
+    private let maxVisibleMessageWindow = 120
 
-    private var visibleMessages: [AXChatMessage] {
-        session.messages.filter { message in
-            message.role != .tool
-        }
+    private var visibleMessages: ArraySlice<AXChatMessage> {
+        let range = visibleMessageRange.clamped(to: 0..<timelineMessages.count)
+        guard !range.isEmpty else { return [] }
+        return timelineMessages[range]
+    }
+
+    private var shouldStickToBottom: Bool {
+        MessageTimelineWindowingSupport.shouldStickToBottom(
+            bottomAnchorMaxY: bottomAnchorMaxY,
+            viewportHeight: scrollViewportHeight
+        )
     }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: 16) {
-                    ForEach(visibleMessages) { message in
-                        MessageCard(
-                            ctx: ctx,
-                            config: config,
-                            session: session,
-                            message: message
-                        )
-                            .id(message.id)
-                            .transition(.asymmetric(
-                                insertion: .move(edge: .bottom).combined(with: .opacity),
-                                removal: .opacity
-                            ))
-                    }
-
-                    if !recentSkillActivities.isEmpty {
-                        ProjectSkillActivitySection(
-                            items: recentSkillActivities,
-                            pendingRequestIDs: Set(session.pendingToolCalls.map(\.id)),
-                            focusedRequestID: focusedSkillActivityRequestId,
-                            isFocused: focusedSkillActivityNonce != nil,
-                            hubConnected: hubConnected,
-                            isBusy: session.isSending,
-                            onApprove: onApproveSkillActivity,
-                            onReject: { requestID in
-                                session.rejectPendingTool(requestID: requestID)
-                            },
-                            onRetry: onRetrySkillActivity,
-                            onOpenGovernance: onOpenGovernance,
-                            onViewFullRecord: showFullRecord
-                        )
-                        .id(MessageTimelineFocusPresentation.projectSkillActivitySectionAnchorID)
-                        .transition(.opacity.combined(with: .move(edge: .bottom)))
-                    }
-
-                    // 加载指示器
-                    if session.shouldShowThinkingIndicator {
-                        ThinkingIndicator()
-                            .transition(.opacity)
-                    }
-
-                    // 底部锚点
-                    Color.clear
-                        .frame(height: 1)
-                        .id(bottomID)
-                }
-                .padding(20)
-                .padding(.bottom, bottomPadding)
-            }
-            .onChange(of: session.messages.count) { _ in
-                refreshRecentSkillActivities(using: proxy)
-                if pendingFocusedSkillActivityNonce == nil {
-                    withAnimation(.easeOut(duration: 0.3)) {
-                        proxy.scrollTo(bottomID, anchor: .bottom)
-                    }
-                }
-            }
-            .onChange(of: session.isSending) { sending in
-                refreshRecentSkillActivities(using: proxy)
-                if sending, pendingFocusedSkillActivityNonce == nil {
-                    withAnimation(.easeOut(duration: 0.3)) {
-                        proxy.scrollTo(bottomID, anchor: .bottom)
-                    }
-                }
-            }
-            .onChange(of: session.messages.last?.content ?? "") { _ in
-                refreshRecentSkillActivities(using: proxy)
-                if pendingFocusedSkillActivityNonce == nil {
-                    proxy.scrollTo(bottomID, anchor: .bottom)
-                }
-            }
-            .onChange(of: session.pendingToolCalls.map(\.id).joined(separator: ",")) { _ in
-                refreshRecentSkillActivities(using: proxy)
-            }
-            .onChange(of: recentSkillActivities.count) { _ in
-                if pendingFocusedSkillActivityNonce == nil {
-                    proxy.scrollTo(bottomID, anchor: .bottom)
-                }
-            }
-            .onChange(of: focusedSkillActivityNonce) { newNonce in
-                pendingFocusedSkillActivityNonce = newNonce
-                refreshRecentSkillActivities(using: proxy)
-            }
-            .onAppear {
-                pendingFocusedSkillActivityNonce = focusedSkillActivityNonce
-                refreshRecentSkillActivities(using: proxy)
-            }
+        GeometryReader { geometry in
+            timelineScrollContainer(in: geometry)
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .sheet(item: $selectedSkillRecord) { record in
             ProjectSkillRecordSheet(record: record)
         }
+    }
+
+    private func timelineScrollContainer(in geometry: GeometryProxy) -> some View {
+        let viewportHeight = geometry.size.height
+        return ScrollViewReader { proxy in
+            timelineScrollView(using: proxy, viewportHeight: viewportHeight)
+        }
+    }
+
+    private func timelineScrollView(
+        using proxy: ScrollViewProxy,
+        viewportHeight: CGFloat
+    ) -> some View {
+        ScrollView {
+            timelineStack(using: proxy)
+        }
+        .coordinateSpace(name: "messageTimelineScroll")
+        .onAppear {
+            scrollViewportHeight = viewportHeight
+            pendingFocusedSkillActivityNonce = focusedSkillActivityNonce
+            syncTimelineMessages()
+            syncVisibleMessageRangeToLatest()
+            refreshRecentSkillActivities(using: proxy)
+            DispatchQueue.main.async {
+                proxy.scrollTo(bottomID, anchor: .bottom)
+            }
+        }
+        .onChange(of: viewportHeight) { newHeight in
+            scrollViewportHeight = newHeight
+        }
+        .onChange(of: ctx.root.path) { _ in
+            syncTimelineMessages()
+            visibleMessageRange = MessageTimelineWindowingSupport.initialVisibleRange(
+                totalCount: timelineMessages.count,
+                pageSize: initialMessagePageSize
+            )
+            refreshRecentSkillActivities(using: proxy)
+            DispatchQueue.main.async {
+                proxy.scrollTo(bottomID, anchor: .bottom)
+            }
+        }
+        .onChange(of: session.messages.count) { _ in
+            syncTimelineMessages()
+            syncVisibleMessageRangeToLatest()
+            refreshRecentSkillActivities(using: proxy)
+            guard pendingFocusedSkillActivityNonce == nil else { return }
+            guard shouldStickToBottom || timelineMessages.last?.role == .user else { return }
+            withAnimation(.easeOut(duration: 0.3)) {
+                proxy.scrollTo(bottomID, anchor: .bottom)
+            }
+        }
+        .onChange(of: session.isSending) { sending in
+            guard sending, pendingFocusedSkillActivityNonce == nil, shouldStickToBottom else { return }
+            withAnimation(.easeOut(duration: 0.2)) {
+                proxy.scrollTo(bottomID, anchor: .bottom)
+            }
+        }
+        .onChange(of: session.messages.last?.content ?? "") { _ in
+            syncTimelineMessagesKeepingTailFresh()
+            guard pendingFocusedSkillActivityNonce == nil, shouldStickToBottom else { return }
+            proxy.scrollTo(bottomID, anchor: .bottom)
+        }
+        .onChange(of: session.pendingToolCalls.map(\.id).joined(separator: ",")) { _ in
+            refreshRecentSkillActivities(using: proxy)
+        }
+        .onChange(of: recentSkillActivities.count) { _ in
+            guard pendingFocusedSkillActivityNonce == nil, shouldStickToBottom else { return }
+            proxy.scrollTo(bottomID, anchor: .bottom)
+        }
+        .onChange(of: focusedSkillActivityNonce) { newNonce in
+            pendingFocusedSkillActivityNonce = newNonce
+            refreshRecentSkillActivities(using: proxy)
+        }
+        .onPreferenceChange(MessageTimelineBottomOffsetPreferenceKey.self) { newValue in
+            bottomAnchorMaxY = newValue
+        }
+    }
+
+    @ViewBuilder
+    private func timelineStack(using proxy: ScrollViewProxy) -> some View {
+        LazyVStack(spacing: 16) {
+            if visibleMessageRange.lowerBound > 0 {
+                previousMessagesLoader(using: proxy)
+            }
+
+            messageRows
+
+            if !recentSkillActivities.isEmpty {
+                skillActivitySection
+            }
+
+            if session.shouldShowThinkingIndicator {
+                ThinkingIndicator()
+                    .transition(.opacity)
+            }
+
+            bottomAnchor
+        }
+        .padding(20)
+        .padding(.bottom, bottomPadding)
+    }
+
+    @ViewBuilder
+    private var messageRows: some View {
+        ForEach(visibleMessages) { message in
+            MessageCard(
+                ctx: ctx,
+                config: config,
+                session: session,
+                message: message
+            )
+                .id(message.id)
+        }
+    }
+
+    private var skillActivitySection: some View {
+        ProjectSkillActivitySection(
+            items: recentSkillActivities,
+            pendingRequestIDs: Set(session.pendingToolCalls.map(\.id)),
+            focusedRequestID: focusedSkillActivityRequestId,
+            isFocused: focusedSkillActivityNonce != nil,
+            hubConnected: hubConnected,
+            isBusy: session.isSending,
+            onApprove: onApproveSkillActivity,
+            onReject: { requestID in
+                session.rejectPendingTool(requestID: requestID)
+            },
+            onRetry: onRetrySkillActivity,
+            onOpenGovernance: onOpenGovernance,
+            onViewFullRecord: showFullRecord
+        )
+        .id(MessageTimelineFocusPresentation.projectSkillActivitySectionAnchorID)
+        .transition(.opacity.combined(with: .move(edge: .bottom)))
+    }
+
+    private var bottomAnchor: some View {
+        Color.clear
+            .frame(height: 1)
+            .background(
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: MessageTimelineBottomOffsetPreferenceKey.self,
+                        value: proxy.frame(in: .named("messageTimelineScroll")).maxY
+                    )
+                }
+            )
+            .id(bottomID)
     }
 
     private func refreshRecentSkillActivities(
@@ -184,6 +397,73 @@ struct MessageTimelineView: View {
             return
         }
         selectedSkillRecord = ProjectSkillRecordSheetState(record: record)
+    }
+
+    @ViewBuilder
+    private func previousMessagesLoader(using proxy: ScrollViewProxy) -> some View {
+        VStack(spacing: 8) {
+            if isLoadingPreviousMessages {
+                ProgressView()
+                    .controlSize(.small)
+            }
+            Color.clear
+                .frame(height: 12)
+                .onAppear {
+                    loadPreviousMessages(using: proxy)
+                }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func loadPreviousMessages(using proxy: ScrollViewProxy) {
+        guard !isLoadingPreviousMessages else { return }
+        guard visibleMessageRange.lowerBound > 0 else { return }
+
+        let anchorMessageID = visibleMessages.first?.id
+        isLoadingPreviousMessages = true
+        visibleMessageRange = MessageTimelineWindowingSupport.prependedVisibleRange(
+            currentRange: visibleMessageRange,
+            totalCount: timelineMessages.count,
+            pageSize: prependMessagePageSize,
+            maxWindowSize: maxVisibleMessageWindow
+        )
+
+        DispatchQueue.main.async {
+            if let anchorMessageID {
+                proxy.scrollTo(anchorMessageID, anchor: .top)
+            }
+            isLoadingPreviousMessages = false
+        }
+    }
+
+    private func syncVisibleMessageRangeToLatest() {
+        visibleMessageRange = MessageTimelineWindowingSupport.latestVisibleRange(
+            from: visibleMessageRange,
+            totalCount: timelineMessages.count,
+            pageSize: initialMessagePageSize,
+            maxWindowSize: maxVisibleMessageWindow,
+            stickToBottom: shouldStickToBottom
+        )
+    }
+
+    private func syncTimelineMessages() {
+        timelineMessages = session.messages.filter { $0.role != .tool }
+    }
+
+    private func syncTimelineMessagesKeepingTailFresh() {
+        let filtered = session.messages.filter { $0.role != .tool }
+        guard !timelineMessages.isEmpty,
+              timelineMessages.count == filtered.count,
+              let currentLast = timelineMessages.last,
+              let filteredLast = filtered.last,
+              currentLast.id == filteredLast.id else {
+            timelineMessages = filtered
+            return
+        }
+
+        if currentLast != filteredLast {
+            timelineMessages[timelineMessages.count - 1] = filteredLast
+        }
     }
 }
 
@@ -256,7 +536,12 @@ struct MessageCard: View {
         .padding(16)
         .background(cardBackground)
         .cornerRadius(12)
-        .shadow(color: .black.opacity(0.03), radius: 3, x: 0, y: 1)
+        .shadow(
+            color: isHovered ? .black.opacity(0.08) : .clear,
+            radius: isHovered ? 6 : 0,
+            x: 0,
+            y: isHovered ? 2 : 0
+        )
         .overlay(
             RoundedRectangle(cornerRadius: 12)
                 .stroke(borderColor, lineWidth: 1)
@@ -314,10 +599,7 @@ struct MessageCard: View {
 
     private var timeLabel: String {
         let date = Date(timeIntervalSince1970: message.createdAt)
-        let formatter = DateFormatter()
-        formatter.timeStyle = .short
-        formatter.dateStyle = .none
-        return formatter.string(from: date)
+        return MessageTimelineFormatters.time.string(from: date)
     }
 }
 
@@ -421,10 +703,25 @@ struct MessageContentView: View {
 
         case .user:
             // User 消息：简单文本
-            Text(message.content)
-                .font(.body)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 10) {
+                Text(message.content)
+                    .font(.body)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                if !message.attachments.isEmpty {
+                    XTChatAttachmentStrip(
+                        attachments: message.attachments,
+                        showsPath: true,
+                        onImport: (ctx != nil && session != nil)
+                            ? { attachment in
+                                guard let ctx, let session else { return }
+                                session.importAttachmentToProject(attachment, ctx: ctx)
+                            }
+                            : nil
+                    )
+                }
+            }
         }
     }
 }
@@ -439,7 +736,7 @@ struct ProjectSkillActivitySection: View {
     let onApprove: (String) -> Void
     let onReject: (String) -> Void
     let onRetry: (ProjectSkillActivityItem) -> Void
-    let onOpenGovernance: (XTProjectGovernanceDestination) -> Void
+    let onOpenGovernance: (XTProjectGovernanceDestination, XTSectionFocusContext?) -> Void
     let onViewFullRecord: (ProjectSkillActivityItem) -> Void
 
     var body: some View {
@@ -473,7 +770,7 @@ struct ProjectSkillActivitySection: View {
                         onRetry(item)
                     },
                     onOpenGovernance: {
-                        onOpenGovernance($0)
+                        onOpenGovernance($0, $1)
                     },
                     onViewFullRecord: {
                         onViewFullRecord(item)
@@ -501,7 +798,7 @@ struct ProjectSkillActivityCard: View {
     let onApprove: () -> Void
     let onReject: () -> Void
     let onRetry: () -> Void
-    let onOpenGovernance: (XTProjectGovernanceDestination) -> Void
+    let onOpenGovernance: (XTProjectGovernanceDestination, XTSectionFocusContext?) -> Void
     let onViewFullRecord: () -> Void
     @State private var showDiagnostics = false
 
@@ -529,8 +826,9 @@ struct ProjectSkillActivityCard: View {
             }
 
             HStack(spacing: 8) {
-                if !item.skillID.isEmpty {
-                    Text(item.skillID)
+                let skillBadge = ProjectSkillActivityPresentation.skillBadgeText(for: item)
+                if !skillBadge.isEmpty {
+                    Text(skillBadge)
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 6)
@@ -550,10 +848,40 @@ struct ProjectSkillActivityCard: View {
                     .foregroundStyle(.tertiary)
             }
 
-            Text(ProjectSkillActivityPresentation.body(for: item))
+            Text(ProjectSkillActivityPresentation.timelineBody(for: item))
                 .font(.system(.subheadline, design: .default))
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            ForEach(ProjectSkillActivityPresentation.cardGovernedDetailLines(for: item), id: \.self) { line in
+                Text(line)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let governanceTruthLine = ProjectSkillActivityPresentation.displayGovernanceTruthLine(for: item) {
+                Text(governanceTruthLine)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let governanceInterception,
+               governanceInterception.shouldShowGovernanceReason {
+                Text("治理原因：\(governanceInterception.governanceReason)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let policyReason = governanceInterception?.policyReason {
+                Text("策略原因：\(policyReason)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             HStack(spacing: 8) {
                 if ProjectSkillActivityPresentation.isAwaitingApproval(item), isPendingApproval {
@@ -583,7 +911,10 @@ struct ProjectSkillActivityCard: View {
 
                 if let guardrailRepairHint {
                     Button(guardrailRepairHint.buttonTitle) {
-                        onOpenGovernance(guardrailRepairHint.destination)
+                        onOpenGovernance(
+                            guardrailRepairHint.destination,
+                            governanceInterception?.repairFocusContext
+                        )
                     }
                     .buttonStyle(.bordered)
                     .help(guardrailRepairHint.helpText)
@@ -595,6 +926,16 @@ struct ProjectSkillActivityCard: View {
                 .buttonStyle(.bordered)
 
                 Spacer()
+            }
+
+            if let repairCaption = MessageTimelineGuardrailRepairPresentation.secondaryHintText(
+                repairHint: guardrailRepairHint,
+                repairActionSummary: governanceInterception?.repairActionSummary
+            ) {
+                Text(repairCaption)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             DisclosureGroup("详细诊断", isExpanded: $showDiagnostics) {
@@ -646,11 +987,11 @@ struct ProjectSkillActivityCard: View {
     }
 
     private var guardrailRepairHint: XTGuardrailRepairHint? {
-        XTGuardrailMessagePresentation.repairHint(
-            denyCode: item.denyCode,
-            policySource: item.policySource,
-            policyReason: item.policyReason
-        )
+        governanceInterception?.repairHint
+    }
+
+    private var governanceInterception: ProjectGovernanceInterceptionPresentation? {
+        ProjectGovernanceInterceptionPresentation.make(from: item)
     }
 }
 
@@ -710,6 +1051,13 @@ private struct ProjectSkillRecordSheet: View {
                         ProjectSkillRecordFieldSection(
                             title: "审批状态",
                             fields: record.record.approvalFields
+                        )
+                    }
+
+                    if !record.record.governanceFields.isEmpty {
+                        ProjectSkillRecordFieldSection(
+                            title: "治理上下文",
+                            fields: record.record.governanceFields
                         )
                     }
 
@@ -792,7 +1140,7 @@ struct ProjectSkillRecordStatusBadge: View {
             return .red
         case "blocked", "受阻":
             return .orange
-        case "awaiting approval", "待审批":
+        case "awaiting approval", "待审批", "待授权":
             return .yellow
         case "resolved", "已路由":
             return .blue
@@ -807,6 +1155,7 @@ struct ProjectSkillRecordFieldSection: View {
     let fields: [ProjectSkillRecordField]
 
     var body: some View {
+        let context = Dictionary(uniqueKeysWithValues: fields.map { ($0.label, $0.value) })
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle
             VStack(alignment: .leading, spacing: 8) {
@@ -817,7 +1166,13 @@ struct ProjectSkillRecordFieldSection: View {
                             .foregroundStyle(.secondary)
                             .frame(width: 150, alignment: .leading)
 
-                        Text(field.value)
+                        Text(
+                            ProjectSkillActivityPresentation.displayFieldValue(
+                                field.label,
+                                field.value,
+                                context: context
+                            )
+                        )
                             .font(.system(.subheadline, design: .default))
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -910,7 +1265,7 @@ private struct ProjectSkillRecordResultSection: View {
                                 .foregroundStyle(.secondary)
                                 .frame(width: 150, alignment: .leading)
 
-                            Text(field.value)
+                            Text(ProjectSkillActivityPresentation.displayFieldValue(field.label, field.value))
                                 .font(.system(.subheadline, design: .default))
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1104,12 +1459,43 @@ struct ToolResultView: View {
                         .foregroundStyle(.primary)
                         .fixedSize(horizontal: false, vertical: true)
 
+                    if let governanceTruthLine {
+                        Text(governanceTruthLine)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    if let governanceReason {
+                        Text("治理原因：\(governanceReason)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    if let policyReason {
+                        Text("策略原因：\(policyReason)")
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
                     if let guardrailRepairHint {
                         Button(guardrailRepairHint.buttonTitle) {
                             openGovernance(guardrailRepairHint.destination)
                         }
                         .buttonStyle(.bordered)
                         .help(guardrailRepairHint.helpText)
+                    }
+
+                    if let repairCaption = MessageTimelineGuardrailRepairPresentation.secondaryHintText(
+                        repairHint: guardrailRepairHint
+                    ) {
+                        Text(repairCaption)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
 
                     DisclosureGroup("详细诊断", isExpanded: $showDiagnostics) {
@@ -1161,12 +1547,27 @@ struct ToolResultView: View {
         guard let result = toolResult else {
             return "这次工具调用返回了诊断信息，可展开“详细诊断”查看原始输出。"
         }
-        return ToolResultPresentation.body(for: result)
+        return ToolResultPresentation.timelineBody(for: result)
+    }
+
+    private var governanceTruthLine: String? {
+        guard let result = toolResult, !result.ok else { return nil }
+        return ToolResultPresentation.governanceTruthLine(for: result)
     }
 
     private var guardrailRepairHint: XTGuardrailRepairHint? {
         guard let result = toolResult, !result.ok else { return nil }
         return ToolResultPresentation.repairHint(for: result)
+    }
+
+    private var governanceReason: String? {
+        guard let result = toolResult, !result.ok else { return nil }
+        return ToolResultPresentation.governanceReason(for: result)
+    }
+
+    private var policyReason: String? {
+        guard let result = toolResult, !result.ok else { return nil }
+        return ToolResultPresentation.policyReason(for: result)
     }
 
     private var diagnosticsText: String {
@@ -1205,9 +1606,16 @@ struct AssistantMessageContent: View {
     let message: AXChatMessage
     @State private var parsedContent: ParsedContent?
 
+    private var thinkingPresentation: XTStreamingPlaceholderPresentation? {
+        session?.assistantThinkingPresentation(for: message)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if let parsed = parsedContent, !parsed.isEmpty {
+            if let thinkingPresentation {
+                XTStreamingPlaceholderView(presentation: thinkingPresentation)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let parsed = parsedContent, !parsed.isEmpty {
                 // 结构化内容
                 ForEach(parsed.parts) { part in
                     ParsedPartView(part: part)
@@ -1228,15 +1636,17 @@ struct AssistantMessageContent: View {
                 RouteDiagnoseActionRail(
                     ctx: ctx,
                     config: config,
-                    session: session
+                    session: session,
+                    messageContent: message.content
                 )
             }
         }
         .onAppear {
-            parsedContent = ToolCallParser.parse(message.content)
+            parsedContent = MessageTimelineRenderCache.parsedContent(for: message)
         }
         .onChange(of: message.content) { newContent in
-            parsedContent = ToolCallParser.parse(newContent)
+            _ = newContent
+            parsedContent = MessageTimelineRenderCache.parsedContent(for: message)
         }
     }
 }
@@ -1245,15 +1655,23 @@ struct RouteDiagnoseActionRail: View {
     let ctx: AXProjectContext
     let config: AXProjectConfig?
     @ObservedObject var session: ChatSessionModel
+    let messageContent: String
     @EnvironmentObject private var appModel: AppModel
     @Environment(\.openWindow) private var openWindow
+    @StateObject private var modelManager = HubModelManager.shared
     @StateObject private var updateFeedback = XTTransientUpdateFeedbackState()
     @State private var showModelPicker = false
     @State private var repairActionInFlight = false
     @State private var actionNotice: XTSettingsChangeNotice?
 
     private var effectiveProjectConfig: AXProjectConfig? {
-        appModel.projectConfig ?? config
+        if appModel.projectContext?.root.standardizedFileURL == ctx.root.standardizedFileURL,
+           let current = appModel.projectConfig {
+            return current
+        }
+        return (try? AXProjectStore.loadOrCreateConfig(for: ctx))
+            ?? config
+            ?? .default(forProjectRoot: ctx.root)
     }
 
     private var recommendation: HubModelPickerRecommendationState? {
@@ -1261,24 +1679,37 @@ struct RouteDiagnoseActionRail: View {
             config: effectiveProjectConfig,
             settings: appModel.settingsStore.settings,
             ctx: ctx,
-            modelsState: appModel.modelsState
+            modelsState: visibleModelSnapshot
         )
     }
 
     private var availableModels: [HubModel] {
-        appModel.modelsState.models
+        visibleModelSnapshot.models
+    }
+
+    private var visibleModelSnapshot: ModelStateSnapshot {
+        modelManager.visibleSnapshot(fallback: appModel.modelsState)
+    }
+
+    private var interfaceLanguage: XTInterfaceLanguage {
+        appModel.settingsStore.settings.interfaceLanguage
     }
 
     private var recommendationTitle: String? {
         guard let recommendation else { return nil }
         return RouteDiagnoseMessagePresentation.actionTitle(
             for: recommendation,
-            models: availableModels
+            models: availableModels,
+            language: interfaceLanguage
         )
     }
 
     private var latestRouteEvent: AXModelRouteDiagnosticEvent? {
         AXModelRouteDiagnosticsStore.recentEvents(for: ctx, limit: 1).first
+    }
+
+    private var supervisorRouteExplainability: RouteDiagnoseMessagePresentation.SupervisorRouteExplainability? {
+        RouteDiagnoseMessagePresentation.supervisorRouteExplainability(from: messageContent)
     }
 
     private func recordRouteRepairLog(
@@ -1308,7 +1739,8 @@ struct RouteDiagnoseActionRail: View {
             latestEvent: latestRouteEvent,
             hubConnected: appModel.hubConnected,
             hubRemoteConnected: appModel.hubRemoteConnected,
-            hasRecommendation: recommendation != nil
+            hasRecommendation: recommendation != nil,
+            messageContent: messageContent
         )
     }
 
@@ -1316,7 +1748,8 @@ struct RouteDiagnoseActionRail: View {
         guard let repairAction else { return nil }
         return RouteDiagnoseMessagePresentation.title(
             for: repairAction,
-            inProgress: repairActionInFlight || appModel.hubRemoteLinking
+            inProgress: repairActionInFlight || appModel.hubRemoteLinking,
+            language: interfaceLanguage
         )
     }
 
@@ -1325,7 +1758,10 @@ struct RouteDiagnoseActionRail: View {
         return RouteDiagnoseMessagePresentation.focusContext(
             for: repairAction,
             latestEvent: latestRouteEvent,
-            recommendation: recommendation
+            recommendation: recommendation,
+            paidAccessSnapshot: appModel.hubRemotePaidAccessSnapshot,
+            explainability: supervisorRouteExplainability,
+            language: interfaceLanguage
         )
     }
 
@@ -1334,123 +1770,49 @@ struct RouteDiagnoseActionRail: View {
         switch repairAction {
         case .connectHubAndDiagnose, .reconnectHubAndDiagnose:
             return repairActionInFlight || appModel.hubRemoteLinking
-        case .openChooseModel, .openHubRecovery, .openHubConnectionLog:
+        case .openChooseModel, .openProjectGovernanceOverview, .openHubRecovery, .openHubConnectionLog:
             return false
         }
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                if let recommendation,
-                   let recommendationTitle {
-                    Button(recommendationTitle) {
-                        applyRecommendedModel(recommendation)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .disabled(session.isSending)
-
-                    Button("更多模型") {
-                        openRouteDiagnoseModelPicker()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(!appModel.hubInteractive)
-                } else {
-                    Button("改模型") {
-                        openRouteDiagnoseModelPicker()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .disabled(!appModel.hubInteractive)
-                }
-
-                Button("重新诊断") {
-                    session.presentProjectRouteDiagnosis(
-                        ctx: ctx,
-                        config: effectiveProjectConfig,
-                        router: appModel.llmRouter
+        routeDiagnoseCard
+            .popover(isPresented: $showModelPicker) {
+                ModelSelectorView(
+                    projectContext: ctx,
+                    config: effectiveProjectConfig,
+                    focusContext: RouteDiagnoseMessagePresentation.focusContext(
+                        for: .openChooseModel,
+                        latestEvent: latestRouteEvent,
+                        recommendation: recommendation,
+                        paidAccessSnapshot: appModel.hubRemotePaidAccessSnapshot,
+                        language: interfaceLanguage
                     )
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(session.isSending)
-            }
-
-            HStack(spacing: 8) {
-                if let repairAction,
-                   let repairActionTitle {
-                    Button(repairActionTitle) {
-                        runRepairAction(repairAction)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .disabled(repairActionBusy)
-                }
-
-                Button("Supervisor · AI 模型") {
-                    recordRouteRepairLog(
-                        actionId: "open_model_settings",
-                        outcome: "opened"
-                    )
-                    let context = RouteDiagnoseMessagePresentation.modelSettingsContext(
-                        latestEvent: latestRouteEvent
-                    )
-                    appModel.requestModelSettingsFocus(
-                        role: .coder,
-                        title: context.title,
-                        detail: context.detail
-                    )
-                    SupervisorManager.shared.requestSupervisorWindow(
-                        sheet: .modelSettings,
-                        reason: "route_diagnose_model_settings",
-                        focusConversation: false
-                    )
-                    presentRouteActionFeedback(for: .modelSettingsOpened)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-
-                Button("XT Diagnostics") {
-                    recordRouteRepairLog(
-                        actionId: "open_xt_diagnostics",
-                        outcome: "opened"
-                    )
-                    let context = RouteDiagnoseMessagePresentation.diagnosticsContext(
-                        latestEvent: latestRouteEvent
-                    )
-                    appModel.requestSettingsFocus(
-                        sectionId: "diagnostics",
-                        title: context.title,
-                        detail: context.detail
-                    )
-                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-                    presentRouteActionFeedback(for: .diagnosticsOpened)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
-
-            if updateFeedback.showsBadge,
-               let actionNotice {
-                XTSettingsChangeNoticeInlineView(
-                    notice: actionNotice,
-                    tint: .accentColor
                 )
+                    .environmentObject(appModel)
+                    .frame(width: 420)
             }
+            .onDisappear {
+                updateFeedback.cancel(resetState: true)
+                actionNotice = nil
+            }
+            .onAppear {
+                handleRouteDiagnoseAppear()
+            }
+            .onChange(of: appModel.hubInteractive) { connected in
+                if connected {
+                    fetchVisibleModels()
+                }
+            }
+    }
 
-            if let recommendation {
-                Text(recommendation.message)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else if let repairAction {
-                Text(RouteDiagnoseMessagePresentation.helperText(for: repairAction))
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+    private var routeDiagnoseCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            modelActionRow
+            repairActionRow
+            actionNoticeView
+            governanceExplainabilityView
+            helperMessageView
         }
         .padding(12)
         .background(Color.orange.opacity(0.06))
@@ -1467,22 +1829,196 @@ struct RouteDiagnoseActionRail: View {
             baseBackground: Color.orange.opacity(0.06),
             baseBorder: Color.orange.opacity(0.18)
         )
-        .popover(isPresented: $showModelPicker) {
-            ModelSelectorView(
-                config: effectiveProjectConfig,
-                focusContext: RouteDiagnoseMessagePresentation.focusContext(
-                    for: .openChooseModel,
-                    latestEvent: latestRouteEvent,
-                    recommendation: recommendation
+    }
+
+    private var modelActionRow: some View {
+        HStack(spacing: 8) {
+            if let recommendation,
+               let recommendationTitle {
+                Button(recommendationTitle) {
+                    applyRecommendedModel(recommendation)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(session.isSending)
+
+                Button(XTL10n.RouteDiagnose.moreModels.resolve(interfaceLanguage)) {
+                    openRouteDiagnoseModelPicker()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(!appModel.hubInteractive)
+            } else {
+                Button(XTL10n.RouteDiagnose.changeModel.resolve(interfaceLanguage)) {
+                    openRouteDiagnoseModelPicker()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(!appModel.hubInteractive)
+            }
+
+            Button(XTL10n.RouteDiagnose.rediagnose.resolve(interfaceLanguage)) {
+                session.presentProjectRouteDiagnosis(
+                    ctx: ctx,
+                    config: effectiveProjectConfig,
+                    router: appModel.llmRouter
+                )
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(session.isSending)
+        }
+    }
+
+    private var repairActionRow: some View {
+        HStack(spacing: 8) {
+            if let repairAction,
+               let repairActionTitle {
+                Button(repairActionTitle) {
+                    runRepairAction(repairAction)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(repairActionBusy)
+            }
+
+            Button(XTL10n.RouteDiagnose.modelSettingsButton.resolve(interfaceLanguage)) {
+                openModelSettings()
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+
+            Button(XTL10n.Common.xtDiagnostics.resolve(interfaceLanguage)) {
+                openDiagnostics()
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+    }
+
+    @ViewBuilder
+    private var actionNoticeView: some View {
+        if updateFeedback.showsBadge,
+           let actionNotice {
+            XTSettingsChangeNoticeInlineView(
+                notice: actionNotice,
+                tint: .accentColor
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var helperMessageView: some View {
+        if let recommendation {
+            Text(recommendation.message)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if let repairAction {
+            Text(
+                RouteDiagnoseMessagePresentation.helperText(
+                    for: repairAction,
+                    explainability: supervisorRouteExplainability,
+                    language: interfaceLanguage
                 )
             )
-                .environmentObject(appModel)
-                .frame(width: 420)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .onDisappear {
-            updateFeedback.cancel(resetState: true)
-            actionNotice = nil
+    }
+
+    @ViewBuilder
+    private var governanceExplainabilityView: some View {
+        if let supervisorRouteExplainability,
+           supervisorRouteExplainability.hasActionableBlocker
+            || supervisorRouteExplainability.runtimeReadinessSummary != nil {
+            VStack(alignment: .leading, spacing: 6) {
+                Label(
+                    RouteDiagnoseMessagePresentation.supervisorRouteExplainabilityHeading(
+                        language: interfaceLanguage
+                    ),
+                    systemImage: supervisorRouteExplainability.hasActionableBlocker
+                        ? "exclamationmark.triangle"
+                        : "checkmark.circle"
+                )
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(
+                    supervisorRouteExplainability.hasActionableBlocker ? Color.orange : Color.green
+                )
+
+                ForEach(
+                    RouteDiagnoseMessagePresentation.supervisorRouteExplainabilityLines(
+                        supervisorRouteExplainability,
+                        language: interfaceLanguage
+                    ),
+                    id: \.self
+                ) { line in
+                    Text(line)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.secondary.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
         }
+    }
+
+    private func handleRouteDiagnoseAppear() {
+        modelManager.setAppModel(appModel)
+        fetchVisibleModels()
+    }
+
+    private func fetchVisibleModels() {
+        guard appModel.hubInteractive else { return }
+        Task {
+            await modelManager.fetchModels()
+        }
+    }
+
+    private func openModelSettings() {
+        recordRouteRepairLog(
+            actionId: "open_model_settings",
+            outcome: "opened"
+        )
+        let context = RouteDiagnoseMessagePresentation.modelSettingsContext(
+            latestEvent: latestRouteEvent,
+            paidAccessSnapshot: appModel.hubRemotePaidAccessSnapshot,
+            language: interfaceLanguage
+        )
+        appModel.requestModelSettingsFocus(
+            role: .coder,
+            title: context.title,
+            detail: context.detail
+        )
+        SupervisorManager.shared.requestSupervisorWindow(
+            sheet: .modelSettings,
+            reason: "route_diagnose_model_settings",
+            focusConversation: false
+        )
+        presentRouteActionFeedback(for: .modelSettingsOpened)
+    }
+
+    private func openDiagnostics() {
+        recordRouteRepairLog(
+            actionId: "open_xt_diagnostics",
+            outcome: "opened"
+        )
+        let context = RouteDiagnoseMessagePresentation.diagnosticsContext(
+            latestEvent: latestRouteEvent,
+            paidAccessSnapshot: appModel.hubRemotePaidAccessSnapshot,
+            language: interfaceLanguage
+        )
+        appModel.requestSettingsFocus(
+            sectionId: "diagnostics",
+            title: context.title,
+            detail: context.detail
+        )
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        presentRouteActionFeedback(for: .diagnosticsOpened)
     }
 
     private func runRepairAction(_ action: RouteDiagnoseMessagePresentation.RepairAction) {
@@ -1509,7 +2045,8 @@ struct RouteDiagnoseActionRail: View {
                         let context = RouteDiagnoseMessagePresentation.diagnosticsFailureContext(
                             for: action,
                             report: report,
-                            latestEvent: latestRouteEvent
+                            latestEvent: latestRouteEvent,
+                            language: interfaceLanguage
                         )
                         recordRouteRepairLog(
                             actionId: "open_xt_diagnostics",
@@ -1554,7 +2091,8 @@ struct RouteDiagnoseActionRail: View {
                         let context = RouteDiagnoseMessagePresentation.diagnosticsFailureContext(
                             for: action,
                             report: report,
-                            latestEvent: latestRouteEvent
+                            latestEvent: latestRouteEvent,
+                            language: interfaceLanguage
                         )
                         recordRouteRepairLog(
                             actionId: "open_xt_diagnostics",
@@ -1584,12 +2122,33 @@ struct RouteDiagnoseActionRail: View {
                     actionId: "open_choose_model",
                     outcome: "opened"
                 )
-                appModel.requestSettingsFocus(
-                    sectionId: "choose_model",
+                appModel.requestModelSettingsFocus(
+                    role: .coder,
                     title: repairFocusContext?.title,
                     detail: repairFocusContext?.detail
                 )
-                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                SupervisorManager.shared.requestSupervisorWindow(
+                    sheet: .modelSettings,
+                    reason: "route_diagnose_open_choose_model",
+                    focusConversation: false
+                )
+                presentRouteActionFeedback(for: .repairSurfaceOpened(action))
+            case .openProjectGovernanceOverview:
+                recordRouteRepairLog(
+                    actionId: "open_project_governance_overview",
+                    outcome: "opened"
+                )
+                let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+                let context = RouteDiagnoseMessagePresentation.projectGovernanceContext(
+                    explainability: supervisorRouteExplainability,
+                    language: interfaceLanguage
+                )
+                appModel.requestProjectSettingsFocus(
+                    projectId: projectId,
+                    destination: .overview,
+                    title: context.title,
+                    detail: context.detail
+                )
                 presentRouteActionFeedback(for: .repairSurfaceOpened(action))
             case .openHubRecovery:
                 recordRouteRepairLog(
@@ -1626,19 +2185,24 @@ struct RouteDiagnoseActionRail: View {
             outcome: "selected",
             note: "target_model=\(recommendation.modelId)"
         )
-        appModel.setProjectRoleModel(role: .coder, modelId: recommendation.modelId)
+        appModel.setProjectRoleModel(for: ctx, role: .coder, modelId: recommendation.modelId)
+        let refreshedConfig = (try? AXProjectStore.loadOrCreateConfig(for: ctx))
+            ?? effectiveProjectConfig
         presentRouteActionNotice(
             XTSettingsChangeNoticeBuilder.projectRoleModel(
                 projectName: ctx.displayName(registry: appModel.registry),
                 role: .coder,
                 modelId: recommendation.modelId,
                 inheritedModelId: appModel.settingsStore.settings.assignment(for: .coder).model,
-                snapshot: appModel.modelsState
+                snapshot: visibleModelSnapshot,
+                executionSnapshot: AXRoleExecutionSnapshots.latestSnapshots(for: ctx)[.coder]
+                    ?? .empty(role: .coder, source: "message_timeline"),
+                transportMode: HubAIClient.transportMode().rawValue
             )
         )
         session.presentProjectRouteDiagnosis(
             ctx: ctx,
-            config: effectiveProjectConfig,
+            config: refreshedConfig,
             router: appModel.llmRouter
         )
     }
@@ -1651,7 +2215,10 @@ struct RouteDiagnoseActionRail: View {
     private func presentRouteActionFeedback(
         for trigger: RouteDiagnoseMessagePresentation.RailFeedbackTrigger
     ) {
-        let plan = RouteDiagnoseMessagePresentation.railFeedbackPlan(for: trigger)
+        let plan = RouteDiagnoseMessagePresentation.railFeedbackPlan(
+            for: trigger,
+            language: interfaceLanguage
+        )
         guard let notice = plan.notice else { return }
         actionNotice = notice
         if plan.shouldHighlight {
@@ -1777,10 +2344,14 @@ struct ToolCallCard: View {
             return "magnifyingglass"
         case .skills_search:
             return "magnifyingglass"
+        case .skills_pin:
+            return "pin"
         case .summarize:
             return "text.alignleft"
         case .supervisorVoicePlayback:
             return "speaker.wave.2.fill"
+        case .run_local_task:
+            return "cpu"
         case .run_command:
             return "terminal"
         case .process_start:
@@ -1919,7 +2490,7 @@ struct ThinkingIndicator: View {
                 }
             }
 
-            Text("我在整理回复。")
+            Text("准备回复")
                 .font(.system(.body, design: .rounded))
                 .foregroundStyle(.secondary)
         }

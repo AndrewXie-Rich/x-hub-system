@@ -2,6 +2,7 @@ import Foundation
 
 enum SupervisorConversationRepairAction: Equatable {
     case openXTSettings(sectionId: String)
+    case openSupervisorControlCenter(sheet: SupervisorManager.SupervisorWindowSheet)
     case openHubSetup(sectionId: String)
     case openSystemPrivacy(target: XTSystemSettingsPrivacyTarget)
     case focusSupervisor
@@ -20,13 +21,13 @@ enum SupervisorConversationRepairActionPlanner {
         switch destination {
         case .xtPairHub:
             return SupervisorConversationRepairActionPlan(
-                buttonTitle: "打开 Pair Hub",
+                buttonTitle: "打开连接 Hub",
                 action: .openXTSettings(sectionId: "pair_hub")
             )
         case .xtChooseModel:
             return SupervisorConversationRepairActionPlan(
-                buttonTitle: "打开 XT AI 模型",
-                action: .openXTSettings(sectionId: "choose_model")
+                buttonTitle: "打开 AI 模型设置",
+                action: .openSupervisorControlCenter(sheet: .modelSettings)
             )
         case .xtDiagnostics:
             return SupervisorConversationRepairActionPlan(
@@ -35,12 +36,12 @@ enum SupervisorConversationRepairActionPlanner {
             )
         case .hubPairing:
             return SupervisorConversationRepairActionPlan(
-                buttonTitle: "打开 Pair Progress",
+                buttonTitle: "打开连接进度",
                 action: .openHubSetup(sectionId: "pair_progress")
             )
         case .hubLAN:
             return SupervisorConversationRepairActionPlan(
-                buttonTitle: "打开 Hub LAN (gRPC)",
+                buttonTitle: "打开 Hub 网络连接",
                 action: .openHubSetup(sectionId: "pair_progress")
             )
         case .hubModels:
@@ -50,7 +51,7 @@ enum SupervisorConversationRepairActionPlanner {
             )
         case .hubGrants, .hubSecurity, .hubDiagnostics:
             return SupervisorConversationRepairActionPlan(
-                buttonTitle: "打开 Hub Troubleshoot",
+                buttonTitle: "打开 Hub 排障",
                 action: .openHubSetup(sectionId: "troubleshoot")
             )
         case .systemPermissions:

@@ -5,8 +5,33 @@ enum RouteDiagnoseMessagePresentation {
         case connectHubAndDiagnose
         case reconnectHubAndDiagnose
         case openChooseModel
+        case openProjectGovernanceOverview
         case openHubRecovery
         case openHubConnectionLog
+    }
+
+    struct SupervisorRouteExplainability: Equatable {
+        struct BlockedComponent: Equatable, Identifiable {
+            var key: AXProjectGovernanceRuntimeReadinessComponentKey
+            var detail: String
+
+            var id: String { key.rawValue }
+        }
+
+        var decision: String?
+        var denyCode: String?
+        var auditRef: String?
+        var runtimeReadinessSummary: String?
+        var blockedComponentKeys: [AXProjectGovernanceRuntimeReadinessComponentKey]
+        var blockedComponents: [BlockedComponent]
+        var suggestedAction: String?
+
+        var hasActionableBlocker: Bool {
+            !blockedComponentKeys.isEmpty
+                || !blockedComponents.isEmpty
+                || denyCode != nil
+                || suggestedAction != nil
+        }
     }
 
     enum RailFeedbackTrigger {
@@ -26,6 +51,7 @@ enum RouteDiagnoseMessagePresentation {
     }
 
     static let coderHeading = "Project route diagnose: coder"
+    static let localizedCoderHeading = "项目路由诊断：coder"
 
     static func matches(_ message: AXChatMessage) -> Bool {
         message.role == .assistant && matches(content: message.content)
@@ -33,7 +59,7 @@ enum RouteDiagnoseMessagePresentation {
 
     static func matches(content: String) -> Bool {
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.hasPrefix(coderHeading)
+        return trimmed.hasPrefix(coderHeading) || trimmed.hasPrefix(localizedCoderHeading)
     }
 
     static func recommendation(
@@ -50,7 +76,8 @@ enum RouteDiagnoseMessagePresentation {
             configuredModelId: configuredModelId,
             role: .coder,
             ctx: ctx,
-            snapshot: modelsState
+            snapshot: modelsState,
+            language: settings.interfaceLanguage
         ),
         let recommendedModelId = normalizedModelId(guidance.recommendedModelId) else {
             return nil
@@ -66,23 +93,31 @@ enum RouteDiagnoseMessagePresentation {
 
     static func actionTitle(
         for recommendation: HubModelPickerRecommendationState,
-        models: [HubModel]
+        models: [HubModel],
+        language: XTInterfaceLanguage = .defaultPreference
     ) -> String {
-        switch recommendation.kind {
-        case .continueWithoutSwitch:
-            return "固定成 \(displayLabel(for: recommendation.modelId, models: models))"
-        case .switchRecommended:
-            return "改用 \(displayLabel(for: recommendation.modelId, models: models))"
-        }
+        XTL10n.RouteDiagnose.actionTitle(
+            kind: recommendation.kind,
+            modelLabel: displayLabel(for: recommendation.modelId, models: models),
+            language: language
+        )
     }
 
     static func repairAction(
         latestEvent: AXModelRouteDiagnosticEvent?,
         hubConnected: Bool,
         hubRemoteConnected: Bool,
-        hasRecommendation: Bool
+        hasRecommendation: Bool,
+        messageContent: String? = nil
     ) -> RepairAction? {
         guard shouldOfferConnectivityRepair(latestEvent: latestEvent) else {
+            if let governanceRepairAction = governanceRepairAction(
+                for: messageContent.flatMap(supervisorRouteExplainability(from:)),
+                hubConnected: hubConnected,
+                hubRemoteConnected: hubRemoteConnected
+            ) {
+                return governanceRepairAction
+            }
             if shouldOfferChooseModelRepair(latestEvent: latestEvent, hasRecommendation: hasRecommendation) {
                 return .openChooseModel
             }
@@ -100,79 +135,267 @@ enum RouteDiagnoseMessagePresentation {
         return hubRemoteConnected ? .reconnectHubAndDiagnose : .connectHubAndDiagnose
     }
 
-    static func title(
-        for action: RepairAction,
-        inProgress: Bool
-    ) -> String {
-        switch action {
-        case .connectHubAndDiagnose:
-            return inProgress ? "连接中..." : "连接 Hub 并重诊断"
-        case .reconnectHubAndDiagnose:
-            return inProgress ? "重连中..." : "重连并重诊断"
-        case .openChooseModel:
-            return "检查 XT AI 模型"
-        case .openHubRecovery:
-            return "检查 Hub Recovery"
-        case .openHubConnectionLog:
-            return "查看 Hub 日志"
+    static func supervisorRouteExplainability(
+        from content: String
+    ) -> SupervisorRouteExplainability? {
+        let lines = content.components(separatedBy: .newlines)
+        guard let headerIndex = lines.firstIndex(where: { line in
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed == "Supervisor 路由诊断："
+                || trimmed == "Supervisor 路由诊断:"
+                || trimmed == "Hub supervisor route 真相："
+                || trimmed == "Hub supervisor route 真相:"
+                || trimmed == "Hub supervisor route truth:"
+                || trimmed == "Hub supervisor route truth："
+        }) else {
+            return nil
         }
+
+        var explainability = SupervisorRouteExplainability(
+            decision: nil,
+            denyCode: nil,
+            auditRef: nil,
+            runtimeReadinessSummary: nil,
+            blockedComponentKeys: [],
+            blockedComponents: [],
+            suggestedAction: nil
+        )
+        var capturedSection = false
+
+        for line in lines[(headerIndex + 1)...] {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                if capturedSection {
+                    break
+                }
+                continue
+            }
+
+            guard trimmed.hasPrefix("- ") else {
+                if capturedSection {
+                    break
+                }
+                continue
+            }
+
+            capturedSection = true
+            let payload = String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if consumeExplainabilityField(payload, explainability: &explainability) {
+                continue
+            }
+
+            if let component = blockedComponent(from: payload) {
+                explainability.blockedComponents.append(component)
+                if !explainability.blockedComponentKeys.contains(component.key) {
+                    explainability.blockedComponentKeys.append(component.key)
+                }
+            }
+        }
+
+        guard capturedSection else { return nil }
+        return explainability.hasActionableBlocker || explainability.runtimeReadinessSummary != nil
+            ? explainability
+            : nil
     }
 
-    static func helperText(for action: RepairAction) -> String {
-        switch action {
-        case .connectHubAndDiagnose:
-            return "这更像是 Hub 连接或 runtime 还没就绪。先补连通，再自动回到当前项目重跑一次路由诊断。"
-        case .reconnectHubAndDiagnose:
-            return "这更像是远端链路或 runtime 状态异常。先重连，再自动重跑一次当前项目的路由诊断。"
-        case .openChooseModel:
-            return "这更像是目标远端模型没加载，或当前配置还不在可直接执行的列表里。先到 XT AI 模型看当前真实可执行模型；只有你想固定当前配置时，再手动切。"
-        case .openHubRecovery:
-            return "这更像是 Hub 的 remote export gate、配额或恢复链路拦住了 paid 路由。先到 Hub Recovery 看失败码和修复提示。"
-        case .openHubConnectionLog:
-            return "这更像是 Hub 侧把远端请求降到了本地。先看 Hub 日志和最近连接状态，再决定是否继续追 Hub 端降级原因。"
+    static func title(
+        for action: RepairAction,
+        inProgress: Bool,
+        language: XTInterfaceLanguage = .defaultPreference
+    ) -> String {
+        XTL10n.RouteDiagnose.repairTitle(
+            action,
+            inProgress: inProgress,
+            language: language
+        )
+    }
+
+    static func helperText(
+        for action: RepairAction,
+        language: XTInterfaceLanguage = .defaultPreference
+    ) -> String {
+        XTL10n.RouteDiagnose.helperText(action, language: language)
+    }
+
+    static func helperText(
+        for action: RepairAction,
+        explainability: SupervisorRouteExplainability?,
+        language: XTInterfaceLanguage = .defaultPreference
+    ) -> String {
+        let base = helperText(for: action, language: language)
+        guard action == .openProjectGovernanceOverview,
+              let explainability,
+              let hint = governanceHint(for: explainability, language: language) else {
+            return base
         }
+
+        return orderedUniqueLines([
+            hint.summaryText,
+            repairDirectionLine(hint.repairHintText, language: language),
+            base
+        ]).joined(separator: " ")
+    }
+
+    static func projectGovernanceContext(
+        explainability: SupervisorRouteExplainability?,
+        language: XTInterfaceLanguage = .defaultPreference
+    ) -> XTSectionFocusContext {
+        let fallback = XTL10n.RouteDiagnose.projectGovernanceFallback(language: language)
+        let lines = explainability.map {
+            supervisorRouteExplainabilityLines($0, language: language)
+        } ?? []
+        let detail = lines.isEmpty
+            ? fallback
+            : lines.joined(separator: language == .english ? "; " : "；")
+        return XTSectionFocusContext(
+            title: XTL10n.RouteDiagnose.projectGovernanceTitle(language: language),
+            detail: detail
+        )
+    }
+
+    static func supervisorRouteExplainabilityHeading(
+        language: XTInterfaceLanguage = .defaultPreference
+    ) -> String {
+        XTL10n.text(
+            language,
+            zhHans: "Supervisor 路由诊断",
+            en: "Supervisor Route Diagnosis"
+        )
+    }
+
+    static func supervisorRouteExplainabilityLines(
+        _ explainability: SupervisorRouteExplainability,
+        language: XTInterfaceLanguage = .defaultPreference
+    ) -> [String] {
+        var lines: [String] = []
+        let hint = governanceHint(for: explainability, language: language)
+
+        if let runtimeReadinessSummary = normalizedExplainabilityValue(
+            explainability.runtimeReadinessSummary
+        ) {
+            lines.append(
+                XTL10n.text(
+                    language,
+                    zhHans: "runtime readiness：\(runtimeReadinessSummary)",
+                    en: "runtime readiness: \(runtimeReadinessSummary)"
+                )
+            )
+        }
+
+        if let hint {
+            lines.append(hint.summaryText)
+            if explainability.blockedComponents.isEmpty {
+                lines.append(
+                    XTL10n.text(
+                        language,
+                        zhHans: "当前阻塞：\(hint.blockerText)",
+                        en: "current blocker: \(hint.blockerText)"
+                    )
+                )
+            }
+        }
+
+        if !explainability.blockedComponentKeys.isEmpty {
+            let blockedPlanes = explainability.blockedComponentKeys
+                .map { blockedComponentLabel($0, language: language) }
+                .joined(separator: language == .english ? " / " : " / ")
+            lines.append(
+                XTL10n.text(
+                    language,
+                    zhHans: "阻塞平面：\(blockedPlanes)",
+                    en: "blocked planes: \(blockedPlanes)"
+                )
+            )
+        }
+
+        lines += explainability.blockedComponents.map { component in
+            let detail = normalizedExplainabilityValue(component.detail) ?? ""
+            return XTL10n.text(
+                language,
+                zhHans: "\(blockedComponentLabel(component.key, language: language))：\(detail)",
+                en: "\(blockedComponentLabel(component.key, language: language)): \(detail)"
+            )
+        }
+
+        if let denyCode = normalizedExplainabilityValue(explainability.denyCode) {
+            let denyDisplay = XTRouteTruthPresentation.denyCodeText(
+                denyCode,
+                language: language
+            ) ?? denyCode
+            lines.append(
+                XTL10n.text(
+                    language,
+                    zhHans: "deny code：\(denyDisplay)",
+                    en: "deny code: \(denyDisplay)"
+                )
+            )
+        }
+
+        if let suggestedAction = normalizedExplainabilityValue(explainability.suggestedAction) {
+            lines.append(
+                XTL10n.text(
+                    language,
+                    zhHans: "建议动作：\(suggestedAction)",
+                    en: "next step: \(suggestedAction)"
+                )
+            )
+        }
+
+        if let hint {
+            lines.append(repairDirectionLine(hint.repairHintText, language: language))
+        }
+
+        if let auditRef = normalizedExplainabilityValue(explainability.auditRef) {
+            lines.append("audit_ref=\(auditRef)")
+        }
+
+        return orderedUniqueLines(lines)
     }
 
     static func focusContext(
         for action: RepairAction,
         latestEvent: AXModelRouteDiagnosticEvent?,
-        recommendation: HubModelPickerRecommendationState? = nil
+        recommendation: HubModelPickerRecommendationState? = nil,
+        paidAccessSnapshot: HubRemotePaidAccessSnapshot? = nil,
+        explainability: SupervisorRouteExplainability? = nil,
+        language: XTInterfaceLanguage = .defaultPreference
     ) -> XTSectionFocusContext? {
         switch action {
         case .openChooseModel:
-            let fallback: String
-            if let recommendation {
-                switch recommendation.kind {
-                case .continueWithoutSwitch:
-                    fallback = "优先确认目标远端是否已经 loaded；如果你只是继续推进，不用手动切模型，XT 会先自动改试上次稳定远端。只有想把它固定成当前配置时，再手动切。"
-                case .switchRecommended:
-                    fallback = "优先确认目标远端是否已经 loaded；如果你现在就要继续，也可以直接固定推荐模型，避免这轮再掉本地。"
-                }
-            } else {
-                fallback = "优先确认目标远端是否已经 loaded；这里只展示当前真实可执行模型，只有要固定当前配置时，再手动切。"
-            }
             return XTSectionFocusContext(
-                title: "路由诊断：检查 XT AI 模型",
+                title: XTL10n.RouteDiagnose.chooseModelFocusTitle(language: language),
                 detail: focusDetail(
                     latestEvent: latestEvent,
-                    fallback: fallback
+                    fallback: XTL10n.RouteDiagnose.chooseModelFocusFallback(
+                        recommendation: recommendation,
+                        language: language
+                    ),
+                    paidAccessSnapshot: paidAccessSnapshot
                 )
             )
         case .openHubRecovery:
             return XTSectionFocusContext(
-                title: "路由诊断：检查 Hub Recovery",
+                title: XTL10n.RouteDiagnose.hubRecoveryFocusTitle(language: language),
                 detail: focusDetail(
                     latestEvent: latestEvent,
-                    fallback: "这更像是 remote export gate、配额或 paid route 恢复问题；先看失败码和恢复入口。"
+                    fallback: XTL10n.RouteDiagnose.hubRecoveryFocusFallback(language: language),
+                    paidAccessSnapshot: paidAccessSnapshot
                 )
             )
         case .openHubConnectionLog:
             return XTSectionFocusContext(
-                title: "路由诊断：查看 Hub 日志",
+                title: XTL10n.RouteDiagnose.hubLogFocusTitle(language: language),
                 detail: focusDetail(
                     latestEvent: latestEvent,
-                    fallback: "这更像是 Hub 侧把远端请求降到了本地；先看最近连接日志和降级线索。"
+                    fallback: XTL10n.RouteDiagnose.hubLogFocusFallback(language: language),
+                    paidAccessSnapshot: paidAccessSnapshot
                 )
+            )
+        case .openProjectGovernanceOverview:
+            return projectGovernanceContext(
+                explainability: explainability,
+                language: language
             )
         case .connectHubAndDiagnose, .reconnectHubAndDiagnose:
             return nil
@@ -180,25 +403,31 @@ enum RouteDiagnoseMessagePresentation {
     }
 
     static func diagnosticsContext(
-        latestEvent: AXModelRouteDiagnosticEvent?
+        latestEvent: AXModelRouteDiagnosticEvent?,
+        paidAccessSnapshot: HubRemotePaidAccessSnapshot? = nil,
+        language: XTInterfaceLanguage = .defaultPreference
     ) -> XTSectionFocusContext {
         XTSectionFocusContext(
-            title: "路由诊断：查看 XT Diagnostics",
+            title: XTL10n.RouteDiagnose.diagnosticsTitle(language: language),
             detail: focusDetail(
                 latestEvent: latestEvent,
-                fallback: "先核对当前 route event、transport、模型可见性和最近连接状态。"
+                fallback: XTL10n.RouteDiagnose.diagnosticsFallback(language: language),
+                paidAccessSnapshot: paidAccessSnapshot
             )
         )
     }
 
     static func modelSettingsContext(
-        latestEvent: AXModelRouteDiagnosticEvent?
+        latestEvent: AXModelRouteDiagnosticEvent?,
+        paidAccessSnapshot: HubRemotePaidAccessSnapshot? = nil,
+        language: XTInterfaceLanguage = .defaultPreference
     ) -> XTSectionFocusContext {
         XTSectionFocusContext(
-            title: "路由诊断：检查 AI 模型页签",
+            title: XTL10n.RouteDiagnose.modelSettingsTitle(language: language),
             detail: focusDetail(
                 latestEvent: latestEvent,
-                fallback: "如果你想固定当前项目的 coder 默认模型，可在这里直接切换；这里拿到的是 Hub 当前真实可用视图。"
+                fallback: XTL10n.RouteDiagnose.modelSettingsFallback(language: language),
+                paidAccessSnapshot: paidAccessSnapshot
             )
         )
     }
@@ -206,144 +435,171 @@ enum RouteDiagnoseMessagePresentation {
     static func diagnosticsFailureContext(
         for action: RepairAction,
         report: HubRemoteConnectReport?,
-        latestEvent: AXModelRouteDiagnosticEvent?
+        latestEvent: AXModelRouteDiagnosticEvent?,
+        language: XTInterfaceLanguage = .defaultPreference
     ) -> XTSectionFocusContext {
-        let title: String
-        switch action {
-        case .connectHubAndDiagnose:
-            title = "连接修复失败：查看 XT Diagnostics"
-        case .reconnectHubAndDiagnose:
-            title = "重连修复失败：查看 XT Diagnostics"
-        case .openChooseModel, .openHubRecovery, .openHubConnectionLog:
-            title = "路由诊断：查看 XT Diagnostics"
-        }
-
         let reportReason = normalizedModelId(report?.reasonCode) ?? normalizedModelId(report?.summary)
         let eventText = normalizedModelId(latestEvent?.diagnosticLine(includeProject: false))
         let parts = [
             reportReason.map { "repair_reason=\($0)" },
             eventText.map { "route_event=\($0)" }
         ].compactMap { $0 }
-        let detail = parts.isEmpty ? "连接修复没有成功，先看 XT Diagnostics 里的最新 route event 和连接状态。" : parts.joined(separator: "；")
-        return XTSectionFocusContext(title: title, detail: detail)
+        let detail = parts.isEmpty
+            ? XTL10n.RouteDiagnose.diagnosticsFailureDetail(
+                hasStructuredParts: false,
+                language: language
+            )
+            : parts.joined(separator: language == .english ? "; " : "；")
+        return XTSectionFocusContext(
+            title: XTL10n.RouteDiagnose.diagnosticsFailureTitle(
+                action,
+                language: language
+            ),
+            detail: detail
+        )
     }
 
     static func connectivityRepairNotice(
         for action: RepairAction,
-        report: HubRemoteConnectReport?
+        report: HubRemoteConnectReport?,
+        language: XTInterfaceLanguage = .defaultPreference
     ) -> XTSettingsChangeNotice? {
         switch action {
         case .connectHubAndDiagnose, .reconnectHubAndDiagnose:
             break
-        case .openChooseModel, .openHubRecovery, .openHubConnectionLog:
+        case .openChooseModel, .openProjectGovernanceOverview, .openHubRecovery, .openHubConnectionLog:
             return nil
         }
 
         guard let report else {
-            let title: String
-            switch action {
-            case .connectHubAndDiagnose:
-                title = "连接流程已结束"
-            case .reconnectHubAndDiagnose:
-                title = "重连流程已结束"
-            case .openChooseModel, .openHubRecovery, .openHubConnectionLog:
-                title = "修复流程已结束"
-            }
-
             return XTSettingsChangeNotice(
-                title: title,
-                detail: "没有拿到额外的 Hub 修复报告，但已重新对当前项目跑了一次路由诊断。"
+                title: XTL10n.RouteDiagnose.repairFinishedTitle(
+                    action,
+                    language: language
+                ),
+                detail: XTL10n.RouteDiagnose.repairFinishedDetail(
+                    summary: nil,
+                    language: language
+                )
             )
         }
 
         if report.ok {
-            let title: String
-            switch action {
-            case .connectHubAndDiagnose:
-                title = "Hub 已连接并已重诊断"
-            case .reconnectHubAndDiagnose:
-                title = "Hub 已重连并已重诊断"
-            case .openChooseModel, .openHubRecovery, .openHubConnectionLog:
-                title = "修复已完成"
-            }
-
-            let summary = report.summary.trimmingCharacters(in: .whitespacesAndNewlines)
-            let detail = summary.isEmpty
-                ? "连接修复已完成，并重新对当前项目跑了一次路由诊断。"
-                : "连接修复已完成，并重新对当前项目跑了一次路由诊断。\(summary)"
-            return XTSettingsChangeNotice(title: title, detail: detail)
+            return XTSettingsChangeNotice(
+                title: XTL10n.RouteDiagnose.repairSucceededTitle(
+                    action,
+                    language: language
+                ),
+                detail: XTL10n.RouteDiagnose.repairSucceededDetail(
+                    summary: report.summary,
+                    language: language
+                )
+            )
         }
-
-        let title: String
-        switch action {
-        case .connectHubAndDiagnose:
-            title = "连接修复未完成"
-        case .reconnectHubAndDiagnose:
-            title = "重连修复未完成"
-        case .openChooseModel, .openHubRecovery, .openHubConnectionLog:
-            title = "修复未完成"
-        }
-
-        let summary = report.summary.trimmingCharacters(in: .whitespacesAndNewlines)
-        let detail = summary.isEmpty
-            ? "我已自动把焦点切到 XT Diagnostics，先看最新 route event、连通性和失败原因。"
-            : "我已自动把焦点切到 XT Diagnostics。\(summary)"
-        return XTSettingsChangeNotice(title: title, detail: detail)
+        return XTSettingsChangeNotice(
+            title: XTL10n.RouteDiagnose.repairFailedTitle(
+                action,
+                language: language
+            ),
+            detail: XTL10n.RouteDiagnose.repairFailedDetail(
+                summary: report.summary,
+                language: language
+            )
+        )
     }
 
     static func actionOpenedNotice(
-        for action: RepairAction
+        for action: RepairAction,
+        language: XTInterfaceLanguage = .defaultPreference
     ) -> XTSettingsChangeNotice? {
         switch action {
         case .openChooseModel:
             return XTSettingsChangeNotice(
-                title: "已打开 XT AI 模型",
-                detail: "先确认目标远端是否已经 loaded；这里展示的是当前真实可执行模型，如果你只是继续推进，不一定需要立刻手动切模型。"
+                title: XTL10n.RouteDiagnose.actionOpenedTitle(
+                    action,
+                    language: language
+                ),
+                detail: XTL10n.RouteDiagnose.actionOpenedDetail(
+                    action,
+                    language: language
+                )
+            )
+        case .openProjectGovernanceOverview:
+            return XTSettingsChangeNotice(
+                title: XTL10n.RouteDiagnose.actionOpenedTitle(
+                    action,
+                    language: language
+                ),
+                detail: XTL10n.RouteDiagnose.actionOpenedDetail(
+                    action,
+                    language: language
+                )
             )
         case .openHubRecovery:
             return XTSettingsChangeNotice(
-                title: "已打开 Hub Recovery",
-                detail: "先看失败码、恢复链路和 paid route 相关提示，再决定是不是继续追 Hub 端降级原因。"
+                title: XTL10n.RouteDiagnose.actionOpenedTitle(
+                    action,
+                    language: language
+                ),
+                detail: XTL10n.RouteDiagnose.actionOpenedDetail(
+                    action,
+                    language: language
+                )
             )
         case .openHubConnectionLog:
             return XTSettingsChangeNotice(
-                title: "已打开 Hub 日志",
-                detail: "先核对最近连接状态、远端请求是否被降到本地，以及对应的失败码或恢复线索。"
+                title: XTL10n.RouteDiagnose.actionOpenedTitle(
+                    action,
+                    language: language
+                ),
+                detail: XTL10n.RouteDiagnose.actionOpenedDetail(
+                    action,
+                    language: language
+                )
             )
         case .connectHubAndDiagnose, .reconnectHubAndDiagnose:
             return nil
         }
     }
 
-    static func modelSettingsOpenedNotice() -> XTSettingsChangeNotice {
+    static func modelSettingsOpenedNotice(
+        language: XTInterfaceLanguage = .defaultPreference
+    ) -> XTSettingsChangeNotice {
         XTSettingsChangeNotice(
-            title: "已打开 Supervisor Control Center · AI 模型",
-            detail: "先确认当前项目 override 和全局默认是不是一致；这里展示的是 Hub 当前真实可用模型视图，如果目标模型没 loaded，运行时仍可能回退到本地。"
+            title: XTL10n.RouteDiagnose.modelSettingsOpenedTitle(language: language),
+            detail: XTL10n.RouteDiagnose.modelSettingsOpenedDetail(language: language)
         )
     }
 
-    static func diagnosticsOpenedNotice() -> XTSettingsChangeNotice {
+    static func diagnosticsOpenedNotice(
+        language: XTInterfaceLanguage = .defaultPreference
+    ) -> XTSettingsChangeNotice {
         XTSettingsChangeNotice(
-            title: "已打开 XT Diagnostics",
-            detail: "先核对最近 route event、连通性、模型可见性和失败原因，再决定是改模型还是修 Hub。"
+            title: XTL10n.RouteDiagnose.diagnosticsOpenedTitle(language: language),
+            detail: XTL10n.RouteDiagnose.diagnosticsOpenedDetail(language: language)
         )
     }
 
     static func railFeedbackPlan(
-        for trigger: RailFeedbackTrigger
+        for trigger: RailFeedbackTrigger,
+        language: XTInterfaceLanguage = .defaultPreference
     ) -> RailFeedbackPlan {
         let notice: XTSettingsChangeNotice? = {
-            switch trigger {
-            case .inlineModelPickerOpened:
-                return nil
-            case .repairSurfaceOpened(let action):
-                return actionOpenedNotice(for: action)
+        switch trigger {
+        case .inlineModelPickerOpened:
+            return nil
+        case .repairSurfaceOpened(let action):
+            return actionOpenedNotice(for: action, language: language)
             case .modelSettingsOpened:
-                return modelSettingsOpenedNotice()
+                return modelSettingsOpenedNotice(language: language)
             case .diagnosticsOpened:
-                return diagnosticsOpenedNotice()
+                return diagnosticsOpenedNotice(language: language)
             case .connectivityRepairFinished(let action, let report):
-                return connectivityRepairNotice(for: action, report: report)
+                return connectivityRepairNotice(
+                    for: action,
+                    report: report,
+                    language: language
+                )
             }
         }()
 
@@ -387,11 +643,13 @@ enum RouteDiagnoseMessagePresentation {
 
     private static func focusDetail(
         latestEvent: AXModelRouteDiagnosticEvent?,
-        fallback: String
+        fallback: String,
+        paidAccessSnapshot: HubRemotePaidAccessSnapshot? = nil
     ) -> String {
         XTRouteTruthPresentation.focusDetail(
             latestEvent: latestEvent,
-            fallback: fallback
+            fallback: fallback,
+            paidAccessSnapshot: paidAccessSnapshot
         )
     }
 
@@ -400,7 +658,7 @@ enum RouteDiagnoseMessagePresentation {
     ) -> Bool {
         guard let latestEvent else { return false }
 
-        switch normalizedReasonCode(latestEvent.fallbackReasonCode) {
+        switch normalizedReasonCode(latestEvent.effectiveFailureReasonCode) {
         case "response_timeout", "grpc_route_unavailable", "runtime_not_running", "request_write_failed":
             return true
         default:
@@ -413,7 +671,10 @@ enum RouteDiagnoseMessagePresentation {
         hasRecommendation: Bool
     ) -> Bool {
         guard let latestEvent, !hasRecommendation else { return false }
-        switch normalizedReasonCode(latestEvent.fallbackReasonCode) {
+        if latestIssue(for: latestEvent) == .paidModelAccessBlocked {
+            return true
+        }
+        switch normalizedReasonCode(latestEvent.effectiveFailureReasonCode) {
         case "model_not_found", "remote_model_not_found":
             return true
         default:
@@ -425,8 +686,11 @@ enum RouteDiagnoseMessagePresentation {
         latestEvent: AXModelRouteDiagnosticEvent?
     ) -> Bool {
         guard let latestEvent else { return false }
-        switch normalizedReasonCode(latestEvent.fallbackReasonCode) {
-        case "remote_export_blocked":
+        if latestIssue(for: latestEvent) == .connectorScopeBlocked {
+            return true
+        }
+        switch normalizedReasonCode(latestEvent.effectiveFailureReasonCode) {
+        case "remote_export_blocked", "device_remote_export_denied", "policy_remote_denied", "budget_remote_denied", "remote_disabled_by_user_pref":
             return true
         default:
             return false
@@ -437,7 +701,7 @@ enum RouteDiagnoseMessagePresentation {
         latestEvent: AXModelRouteDiagnosticEvent?
     ) -> Bool {
         guard let latestEvent else { return false }
-        switch normalizedReasonCode(latestEvent.fallbackReasonCode) {
+        switch normalizedReasonCode(latestEvent.effectiveFailureReasonCode) {
         case "downgrade_to_local":
             return true
         default:
@@ -452,5 +716,258 @@ enum RouteDiagnoseMessagePresentation {
             .lowercased()
             .replacingOccurrences(of: "-", with: "_")
             .replacingOccurrences(of: " ", with: "_")
+    }
+
+    private static func governanceRepairAction(
+        for explainability: SupervisorRouteExplainability?,
+        hubConnected: Bool,
+        hubRemoteConnected: Bool
+    ) -> RepairAction? {
+        guard let explainability, explainability.hasActionableBlocker else {
+            return nil
+        }
+        guard let blockedPlane = governanceHint(for: explainability)?.blockedPlane
+            ?? primaryBlockedPlane(for: explainability)
+            ?? inferredBlockedPlane(from: explainability.suggestedAction) else {
+            return nil
+        }
+        switch blockedPlane {
+        case .routeReady:
+            guard !hubConnected else {
+                return .openProjectGovernanceOverview
+            }
+            return hubRemoteConnected ? .reconnectHubAndDiagnose : .connectHubAndDiagnose
+        case .grantReady, .capabilityReady, .checkpointRecoveryReady, .evidenceExportReady:
+            return .openProjectGovernanceOverview
+        }
+    }
+
+    private static func consumeExplainabilityField(
+        _ payload: String,
+        explainability: inout SupervisorRouteExplainability
+    ) -> Bool {
+        if let decision = explainabilityValue(payload, key: "决策")
+            ?? explainabilityValue(payload, key: "decision") {
+            explainability.decision = normalizedExplainabilityValue(decision)
+            return true
+        }
+        if let denyCode = explainabilityValue(payload, key: "deny_code") {
+            explainability.denyCode = normalizedExplainabilityValue(denyCode)
+            return true
+        }
+        if let auditRef = explainabilityValue(payload, key: "audit_ref") {
+            explainability.auditRef = normalizedExplainabilityValue(auditRef)
+            return true
+        }
+        if let runtimeReadiness = explainabilityValue(payload, key: "runtime readiness")
+            ?? explainabilityValue(payload, key: "runtime_readiness") {
+            explainability.runtimeReadinessSummary = normalizedExplainabilityValue(runtimeReadiness)
+            return true
+        }
+        if let blockedPlanes = explainabilityValue(payload, key: "阻塞平面")
+            ?? explainabilityValue(payload, key: "blocked_planes")
+            ?? explainabilityValue(payload, key: "blocked_components") {
+            explainability.blockedComponentKeys = parseBlockedComponentKeys(blockedPlanes)
+            return true
+        }
+        if let suggestedAction = explainabilityValue(payload, key: "建议动作")
+            ?? explainabilityValue(payload, key: "next_step") {
+            explainability.suggestedAction = normalizedExplainabilityValue(suggestedAction)
+            return true
+        }
+        return false
+    }
+
+    private static func blockedComponent(
+        from payload: String
+    ) -> SupervisorRouteExplainability.BlockedComponent? {
+        let mappings: [(String, AXProjectGovernanceRuntimeReadinessComponentKey)] = [
+            ("route plane", .routeReady),
+            ("capability plane", .capabilityReady),
+            ("grant plane", .grantReady),
+            ("checkpoint / recovery plane", .checkpointRecoveryReady),
+            ("evidence / export plane", .evidenceExportReady)
+        ]
+
+        for (label, key) in mappings {
+            if let detail = explainabilityValue(payload, key: label),
+               let normalizedDetail = normalizedExplainabilityValue(detail) {
+                return SupervisorRouteExplainability.BlockedComponent(
+                    key: key,
+                    detail: normalizedDetail
+                )
+            }
+        }
+
+        return nil
+    }
+
+    private static func explainabilityValue(
+        _ payload: String,
+        key: String
+    ) -> String? {
+        let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
+        let candidates = [
+            "\(key)=",
+            "\(key)：",
+            "\(key):"
+        ]
+
+        for candidate in candidates where trimmed.hasPrefix(candidate) {
+            let value = String(trimmed.dropFirst(candidate.count))
+            return value.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        return nil
+    }
+
+    private static func normalizedExplainabilityValue(_ raw: String?) -> String? {
+        let trimmed = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        switch trimmed.lowercased() {
+        case "(none)", "(unavailable)", "none", "unavailable":
+            return nil
+        default:
+            return trimmed
+        }
+    }
+
+    private static func governanceHint(
+        for explainability: SupervisorRouteExplainability,
+        language: XTInterfaceLanguage = .defaultPreference
+    ) -> XTSupervisorRouteGovernanceHint? {
+        let reason = normalizedExplainabilityValue(explainability.denyCode)
+            ?? normalizedExplainabilityValue(explainability.decision)
+        if let hint = XTRouteTruthPresentation.supervisorRouteGovernanceHint(
+            routeReasonCode: reason,
+            denyCode: explainability.denyCode,
+            language: language
+        ) {
+            return hint
+        }
+
+        guard let blockedPlane = primaryBlockedPlane(for: explainability)
+            ?? inferredBlockedPlane(from: explainability.suggestedAction) else {
+            return nil
+        }
+        let blockerText = normalizedExplainabilityValue(
+            explainability.blockedComponents.first(where: { $0.key == blockedPlane })?.detail
+        ) ?? blockedComponentLabel(blockedPlane, language: language)
+
+        switch blockedPlane {
+        case .routeReady:
+            return XTSupervisorRouteGovernanceHint(
+                primaryCode: "route_ready",
+                blockedPlane: .routeReady,
+                blockerText: blockerText,
+                summaryText: XTL10n.text(
+                    language,
+                    zhHans: "这更像是 Supervisor 到 XT / runner 的路由面还没就绪。当前阻塞：\(blockerText)。",
+                    en: "This looks more like the Supervisor-to-XT/runner route plane is not ready yet. Current blocker: \(blockerText)."
+                ),
+                repairHintText: XTL10n.text(
+                    language,
+                    zhHans: "先检查 XT 在线状态、preferred device、project scope 和当前 route 目标。",
+                    en: "Check XT availability, the preferred device, project scope, and the current route target first."
+                )
+            )
+        case .grantReady:
+            return XTSupervisorRouteGovernanceHint(
+                primaryCode: "grant_ready",
+                blockedPlane: .grantReady,
+                blockerText: blockerText,
+                summaryText: XTL10n.text(
+                    language,
+                    zhHans: "这更像是 Supervisor 的 grant / governance 面还没就绪。当前阻塞：\(blockerText)。",
+                    en: "This looks more like the Supervisor grant/governance plane is not ready yet. Current blocker: \(blockerText)."
+                ),
+                repairHintText: XTL10n.text(
+                    language,
+                    zhHans: "先检查 trusted automation、permission owner、kill-switch、TTL 和当前项目绑定。",
+                    en: "Check trusted automation, the permission owner, kill switch, TTL, and the current project binding first."
+                )
+            )
+        case .capabilityReady, .checkpointRecoveryReady, .evidenceExportReady:
+            return nil
+        }
+    }
+
+    private static func primaryBlockedPlane(
+        for explainability: SupervisorRouteExplainability
+    ) -> AXProjectGovernanceRuntimeReadinessComponentKey? {
+        explainability.blockedComponents.first?.key ?? explainability.blockedComponentKeys.first
+    }
+
+    private static func inferredBlockedPlane(
+        from suggestedAction: String?
+    ) -> AXProjectGovernanceRuntimeReadinessComponentKey? {
+        guard let normalized = normalizedExplainabilityValue(suggestedAction)?.lowercased() else {
+            return nil
+        }
+        if normalized.contains("grant") || normalized.contains("governance") {
+            return .grantReady
+        }
+        if normalized.contains("route") || normalized.contains("preferred device") || normalized.contains("xt / runner") {
+            return .routeReady
+        }
+        return nil
+    }
+
+    private static func repairDirectionLine(
+        _ detail: String,
+        language: XTInterfaceLanguage
+    ) -> String {
+        XTL10n.text(
+            language,
+            zhHans: "修复方向：\(detail)",
+            en: "repair direction: \(detail)"
+        )
+    }
+
+    private static func orderedUniqueLines(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        var ordered: [String] = []
+        for value in values {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            if seen.insert(trimmed).inserted {
+                ordered.append(trimmed)
+            }
+        }
+        return ordered
+    }
+
+    private static func parseBlockedComponentKeys(
+        _ raw: String
+    ) -> [AXProjectGovernanceRuntimeReadinessComponentKey] {
+        raw
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .compactMap(AXProjectGovernanceRuntimeReadinessComponentKey.init(rawValue:))
+    }
+
+    private static func blockedComponentLabel(
+        _ key: AXProjectGovernanceRuntimeReadinessComponentKey,
+        language: XTInterfaceLanguage
+    ) -> String {
+        switch key {
+        case .routeReady:
+            return XTL10n.text(language, zhHans: "route plane", en: "route plane")
+        case .capabilityReady:
+            return XTL10n.text(language, zhHans: "capability plane", en: "capability plane")
+        case .grantReady:
+            return XTL10n.text(language, zhHans: "grant plane", en: "grant plane")
+        case .checkpointRecoveryReady:
+            return XTL10n.text(language, zhHans: "checkpoint / recovery plane", en: "checkpoint / recovery plane")
+        case .evidenceExportReady:
+            return XTL10n.text(language, zhHans: "evidence / export plane", en: "evidence / export plane")
+        }
+    }
+
+    private static func latestIssue(
+        for latestEvent: AXModelRouteDiagnosticEvent
+    ) -> UITroubleshootIssue? {
+        UITroubleshootKnowledgeBase.issue(forFailureCode: latestEvent.effectiveFailureReasonCode)
+            ?? UITroubleshootKnowledgeBase.issue(forFailureCode: latestEvent.denyCode ?? "")
     }
 }

@@ -20,11 +20,10 @@ struct ProjectSidebarView: View {
                                 Button("接上次进度") {
                                     appModel.presentResumeBrief(projectId: project.projectId)
                                 }
-                                .disabled(appModel.sessionSummaryPresentation(projectId: project.projectId) == nil)
 
                                 Button("Open Project Folder") {
                                     let url = URL(fileURLWithPath: project.rootPath)
-                                    NSWorkspace.shared.open(url)
+                                    appModel.openWorkspaceURL(url)
                                 }
                                 Button("Remove from List") {
                                     appModel.removeProject(project.projectId)
@@ -48,14 +47,23 @@ private struct ProjectRowView: View {
     let project: AXProjectEntry
 
     var body: some View {
-        let governed = appModel.governedAuthorityPresentation(for: project)
-        let governancePresentation = ProjectGovernancePresentation(
-            resolved: appModel.resolvedProjectGovernance(for: project)
-        )
-        let latestSessionSummary = appModel.sessionSummaryPresentation(projectId: project.projectId)
-        let latestUIReview = XTUIReviewPresentation.loadLatestBrowserPage(
-            for: AXProjectContext(root: URL(fileURLWithPath: project.rootPath, isDirectory: true))
-        )
+        let shouldLoadSupplementalMetadata = appModel.selectedProjectId == project.projectId
+        let governed = shouldLoadSupplementalMetadata
+            ? appModel.governedAuthorityPresentation(for: project)
+            : nil
+        let governancePresentation = shouldLoadSupplementalMetadata
+            ? ProjectGovernancePresentation(
+                resolved: appModel.resolvedProjectGovernance(for: project)
+            )
+            : nil
+        let latestSessionSummary = shouldLoadSupplementalMetadata
+            ? appModel.sessionSummaryPresentation(projectId: project.projectId)
+            : nil
+        let latestUIReview = shouldLoadSupplementalMetadata
+            ? XTUIReviewPresentation.loadLatestBrowserPage(
+                for: AXProjectContext(root: URL(fileURLWithPath: project.rootPath, isDirectory: true))
+            )
+            : nil
 
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -89,41 +97,56 @@ private struct ProjectRowView: View {
                     .help("\(latestUIReview.compactStatusText)\n\(latestUIReview.updatedText)")
             }
 
-            ProjectGovernanceCompactSummaryView(
-                presentation: governancePresentation,
-                onExecutionTierTap: {
-                    appModel.requestProjectSettingsFocus(
-                        projectId: project.projectId,
-                        destination: .executionTier
-                    )
-                },
-                onSupervisorTierTap: {
-                    appModel.requestProjectSettingsFocus(
-                        projectId: project.projectId,
-                        destination: .supervisorTier
-                    )
-                },
-                onReviewCadenceTap: {
-                    appModel.requestProjectSettingsFocus(
-                        projectId: project.projectId,
-                        destination: .heartbeatReview
-                    )
-                },
-                onStatusTap: {
-                    appModel.requestProjectSettingsFocus(
-                        projectId: project.projectId,
-                        destination: .overview
-                    )
-                },
-                onCalloutTap: {
-                    appModel.requestProjectSettingsFocus(
-                        projectId: project.projectId,
-                        destination: .overview
-                    )
-                }
-            )
+            if let governancePresentation {
+                ProjectGovernanceCompactSummaryView(
+                    presentation: governancePresentation,
+                    configuration: .operationalDense,
+                    onExecutionTierTap: {
+                        appModel.requestProjectSettingsFocus(
+                            projectId: project.projectId,
+                            destination: .executionTier
+                        )
+                    },
+                    onSupervisorTierTap: {
+                        appModel.requestProjectSettingsFocus(
+                            projectId: project.projectId,
+                            destination: .supervisorTier
+                        )
+                    },
+                    onReviewCadenceTap: {
+                        appModel.requestProjectSettingsFocus(
+                            projectId: project.projectId,
+                            destination: .heartbeatReview
+                        )
+                    },
+                    onStatusTap: {
+                        appModel.requestProjectSettingsFocus(
+                            projectId: project.projectId,
+                            destination: .overview
+                        )
+                    },
+                    onCalloutTap: {
+                        appModel.requestProjectSettingsFocus(
+                            projectId: project.projectId,
+                            destination: .overview
+                        )
+                    }
+                )
 
-            if governed.hasAnyVisibleSignal {
+                ProjectGovernanceQuickAccessStrip(
+                    selectedDestination: nil,
+                    governancePresentation: governancePresentation,
+                    displayStyle: .compact,
+                    onSelect: { destination in
+                        appModel.requestProjectSettingsFocus(
+                            projectId: project.projectId,
+                            destination: destination
+                        )
+                    }
+                )
+            }
+
+            if let governed, governed.hasAnyVisibleSignal {
                 HStack(spacing: 4) {
                     if governed.deviceAuthorityConfigured {
                         projectGovernedChip("Device", color: .green)

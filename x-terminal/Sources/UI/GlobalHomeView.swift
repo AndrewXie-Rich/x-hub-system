@@ -6,7 +6,7 @@ struct GlobalHomeView: View {
     @EnvironmentObject private var appModel: AppModel
     @Environment(\.openWindow) private var openWindow
     @StateObject private var supervisorManager = SupervisorManager.shared
-    @State private var decisionDrafts: [String: String] = [:]
+    @State private var projectInlineNotes: [String: String] = [:]
     @State private var pendingGrantSnapshot: HubIPCClient.PendingGrantSnapshot?
     @State private var supervisorCandidateReviewSnapshot: HubIPCClient.SupervisorCandidateReviewSnapshot?
     @State private var pendingGrantActionsInFlight: Set<String> = []
@@ -65,26 +65,19 @@ struct GlobalHomeView: View {
             while !Task.isCancelled {
                 await refreshPendingGrants()
                 await refreshSupervisorCandidateReviews()
-                try? await Task.sleep(nanoseconds: 2_500_000_000)
+                try? await Task.sleep(nanoseconds: 12_000_000_000)
             }
         }
     }
 
     private var headerView: some View {
-        let presentation = homePresentation
-
         return HStack(alignment: .top, spacing: 16) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("全局首页（Global Home）")
+                Text("首页")
                     .font(UIThemeTokens.heroFont())
-                Text("汇总每个 project 的状态、blocker、授权与下一步入口；大任务入口已收敛进 Supervisor 窗口。")
+                Text("汇总每个项目的状态、阻塞、授权和下一步入口。新任务统一从 Supervisor 发起。")
                     .foregroundStyle(.secondary)
             }
-
-            Spacer(minLength: 16)
-
-            ValidatedScopeBadge(presentation: presentation.badge)
-                .frame(maxWidth: 280)
         }
         .padding(16)
         .background(Color(NSColor.windowBackgroundColor))
@@ -107,13 +100,12 @@ struct GlobalHomeView: View {
             }
 
             PrimaryActionRail(
-                title: "快速入口",
+                title: "首用动作",
                 actions: presentation.actions,
                 onTap: handleHomeAction
             )
 
             StatusExplanationCard(explanation: presentation.primaryStatus)
-            StatusExplanationCard(explanation: presentation.releaseStatus)
 
             if !appModel.skillsCompatibilitySnapshot.builtinGovernedSkills.isEmpty {
                 builtinGovernedSkillsCard
@@ -137,16 +129,13 @@ struct GlobalHomeView: View {
     private var emptyProjectsCard: some View {
         let explanation = StatusExplanation(
             state: appModel.hubInteractive ? .ready : .blockedWaitingUpstream,
-            headline: "先准备第一个 project，首页只保留项目汇总与运行状态",
-            whatHappened: "当前还没有已登记项目，但首页的项目总览、发布范围提醒和阻断说明都已经就绪。",
-            whyItHappened: "大任务入口已从 Home 收敛进 Supervisor 对话窗，首页只负责项目级概览、resume 与诊断入口。",
-            userAction: appModel.hubInteractive ? "先创建一个 project；需要发起大任务时，从右上角打开 Supervisor 窗口。" : "先点击“Pair Hub”，完成连接后再创建 project。",
+            headline: "先准备第一个项目",
+            whatHappened: "当前还没有已登记项目，但首页已经可以承接项目总览、继续入口和诊断入口。",
+            whyItHappened: "大任务入口已经从首页收口到 Supervisor 对话窗，首页只负责项目级概览。",
+            userAction: appModel.hubInteractive ? "先创建一个项目；需要发起大任务时，从右上角打开 Supervisor 窗口。" : "先点击“连接 Hub”，完成连接后再创建项目。",
             machineStatusRef: "projects=0; hub_interactive=\(appModel.hubInteractive)",
-            hardLine: "validated-mainline-only; no_scope_expansion",
-            highlights: [
-                "badge_text=Validated mainline only",
-                "primary_cta=resume_project"
-            ]
+            hardLine: "首页只负责项目总览和继续入口",
+            highlights: []
         )
 
         return StatusExplanationCard(explanation: explanation)
@@ -174,7 +163,12 @@ struct GlobalHomeView: View {
                                 .font(UIThemeTokens.monoFont())
                                 .foregroundStyle(item.digest.failureCount > 0 ? UIThemeTokens.color(for: .diagnosticRequired) : .secondary)
                         }
-                        Text(item.summary)
+                        Text(
+                            AXRouteRepairLogStore.watchHeadline(
+                                for: item.digest,
+                                paidAccessSnapshot: appModel.hubRemotePaidAccessSnapshot
+                            )
+                        )
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -363,7 +357,7 @@ struct GlobalHomeView: View {
         }
 
         return VStack(alignment: .leading, spacing: 12) {
-            Text("项目总览（Project watchlist）")
+            Text("项目总览")
                 .font(UIThemeTokens.sectionFont())
             Text("先看发生了什么 / 原因 / 下一步，再进入具体项目执行。")
                 .font(.caption)
@@ -378,7 +372,10 @@ struct GlobalHomeView: View {
                     ProjectHomeRow(
                         project: entry.project,
                         session: entry.session,
-                        decisionText: decisionBinding(entry.project.projectId),
+                        inlineNoteText: projectInlineNotes[entry.project.projectId] ?? "",
+                        onClearInlineNote: {
+                            projectInlineNotes[entry.project.projectId] = nil
+                        },
                         supervisorCandidateReviews: supervisorCandidateReviews(for: entry.project.projectId),
                         supervisorCandidateReviewActionsInFlight: supervisorCandidateReviewActionsInFlight,
                         pendingGrants: pendingGrants(for: entry.project.projectId),
@@ -426,13 +423,6 @@ struct GlobalHomeView: View {
         default:
             break
         }
-    }
-
-    private func decisionBinding(_ projectId: String) -> Binding<String> {
-        Binding(
-            get: { decisionDrafts[projectId] ?? "" },
-            set: { decisionDrafts[projectId] = $0 }
-        )
     }
 
     private func routeReminderLine(
@@ -559,7 +549,7 @@ struct GlobalHomeView: View {
             await MainActor.run {
                 pendingGrantActionsInFlight.remove(grantId)
                 if !result.ok {
-                    decisionDrafts[projectId] = XTHubGrantPresentation.decisionFailureDraft(
+                    projectInlineNotes[projectId] = XTHubGrantPresentation.decisionFailureDraft(
                         intent: .approve,
                         capability: grant.capability,
                         modelId: grant.modelId,
@@ -591,7 +581,7 @@ struct GlobalHomeView: View {
                 if !result.ok {
                     let reason = (result.reasonCode ?? "supervisor_candidate_review_stage_failed")
                         .replacingOccurrences(of: "_", with: " ")
-                    decisionDrafts[projectId] = "Supervisor candidate review stage 失败：\(reason)"
+                    projectInlineNotes[projectId] = "Supervisor candidate review stage 失败：\(reason)"
                 }
             }
             await refreshSupervisorCandidateReviews()
@@ -613,7 +603,7 @@ struct GlobalHomeView: View {
             await MainActor.run {
                 pendingGrantActionsInFlight.remove(grantId)
                 if !result.ok {
-                    decisionDrafts[projectId] = XTHubGrantPresentation.decisionFailureDraft(
+                    projectInlineNotes[projectId] = XTHubGrantPresentation.decisionFailureDraft(
                         intent: .deny,
                         capability: grant.capability,
                         modelId: grant.modelId,
@@ -671,10 +661,37 @@ private struct HomeResumeReminderCard: View {
     }
 }
 
+struct ProjectHomeEntryControlPresentation: Equatable {
+    var message: String
+    var primaryActionTitle: String
+    var opensPendingApproval: Bool
+
+    static func make(
+        pendingCount: Int,
+        hubInteractive: Bool
+    ) -> ProjectHomeEntryControlPresentation {
+        if pendingCount > 0 {
+            return ProjectHomeEntryControlPresentation(
+                message: "Home 只保留项目汇总，不再直接发送新指令。先处理待审批调用，再到 Supervisor 继续任务。",
+                primaryActionTitle: "打开审批",
+                opensPendingApproval: true
+            )
+        }
+        return ProjectHomeEntryControlPresentation(
+            message: hubInteractive
+                ? "Home 只保留项目汇总；新的任务和大任务统一从 Supervisor 发起。"
+                : "Hub 未连接。Home 只保留项目汇总；连接后仍从 Supervisor 发起任务。",
+            primaryActionTitle: "去 Supervisor 建任务",
+            opensPendingApproval: false
+        )
+    }
+}
+
 private struct ProjectHomeRow: View {
     let project: AXProjectEntry
     @ObservedObject var session: ChatSessionModel
-    @Binding var decisionText: String
+    let inlineNoteText: String
+    let onClearInlineNote: () -> Void
     let supervisorCandidateReviews: [HubIPCClient.SupervisorCandidateReviewItem]
     let supervisorCandidateReviewActionsInFlight: Set<String>
     let pendingGrants: [HubIPCClient.PendingGrantItem]
@@ -683,6 +700,7 @@ private struct ProjectHomeRow: View {
     let onApprovePendingGrant: (HubIPCClient.PendingGrantItem) -> Void
     let onDenyPendingGrant: (HubIPCClient.PendingGrantItem) -> Void
     @EnvironmentObject private var appModel: AppModel
+    private let governanceSummaryConfiguration = ProjectGovernanceCompactSummarySurfaceConfiguration.watchlist
 
     var body: some View {
         let pending = session.pendingToolCalls
@@ -694,6 +712,14 @@ private struct ProjectHomeRow: View {
         let governed = appModel.governedAuthorityPresentation(for: project)
         let governancePresentation = ProjectGovernancePresentation(
             resolved: appModel.resolvedProjectGovernance(for: project)
+        )
+        let projectContextCompactSummary = AXProjectContextAssemblyDiagnosticsStore.doctorSummary(
+            for: projectContext,
+            config: appModel.projectConfigSnapshot(for: projectContext)
+        ).compactSummary
+        let entryControl = ProjectHomeEntryControlPresentation.make(
+            pendingCount: pending.count,
+            hubInteractive: appModel.hubInteractive
         )
         let routeRepairDigest = AXRouteRepairLogStore.digest(for: projectContext, limit: 50)
         VStack(alignment: .leading, spacing: 6) {
@@ -709,25 +735,35 @@ private struct ProjectHomeRow: View {
                 }
                 .disabled(session.isSending)
                 Button("打开") {
-                    appModel.selectProject(project.projectId)
-                    if !pending.isEmpty {
-                        appModel.setPane(.chat, for: project.projectId)
-                        appModel.requestProjectToolApprovalFocus(
-                            projectId: project.projectId,
-                            requestId: pending.first?.id
-                        )
-                    }
+                    openProjectWorkspace()
                 }
             }
 
             ProjectGovernanceCompactSummaryView(
                 presentation: governancePresentation,
+                configuration: governanceSummaryConfiguration,
                 onExecutionTierTap: { openGovernanceSettings(.executionTier) },
                 onSupervisorTierTap: { openGovernanceSettings(.supervisorTier) },
                 onReviewCadenceTap: { openGovernanceSettings(.heartbeatReview) },
                 onStatusTap: { openGovernanceSettings(.overview) },
                 onCalloutTap: { openGovernanceSettings(.overview) }
             )
+
+            if let projectContextCompactSummary {
+                row(
+                    title: "项目上下文",
+                    value: projectContextCompactSummary.headlineText,
+                    placeholder: "未知",
+                    action: { openGovernanceSettings(.overview) },
+                    help: projectContextCompactSummary.helpText
+                )
+                if let detailText = projectContextCompactSummary.detailText {
+                    Text(detailText)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
 
             if let latestSessionSummary {
                 Text(latestSessionSummary.badgeText)
@@ -748,28 +784,6 @@ private struct ProjectHomeRow: View {
             if routeRepairDigest.totalEvents > 0 {
                 row(title: "路由修复", value: routeRepairDigest.headline, placeholder: "无")
             }
-            row(
-                title: "治理档位",
-                value: governanceAxisSummary(governancePresentation),
-                placeholder: "A0 / S0",
-                action: { openGovernanceSettings(.overview) },
-                help: "打开 Project Governance 概览"
-            )
-            row(
-                title: "治理状态",
-                value: governancePresentation.homeStatusMessage,
-                placeholder: "预设值与生效值当前一致。",
-                action: { openGovernanceSettings(.overview) },
-                help: "查看当前治理状态和收束原因",
-                tone: governanceStatusTone(governancePresentation)
-            )
-            row(
-                title: "审查节奏",
-                value: governancePresentation.reviewCadenceText,
-                placeholder: "off",
-                action: { openGovernanceSettings(.heartbeatReview) },
-                help: "打开心跳与审查设置"
-            )
             if let clampMessage = governancePresentation.homeClampMessage {
                 row(
                     title: "收束 / 限制",
@@ -787,7 +801,11 @@ private struct ProjectHomeRow: View {
                 action: { openGovernanceSettings(.overview) },
                 help: "查看当前项目的治理边界、执行权限和收束状态"
             )
-            row(title: "卡点", value: project.blockerSummary, placeholder: "无")
+            row(
+                title: "卡点",
+                value: SupervisorBlockerPresentation.displayText(project.blockerSummary),
+                placeholder: "无"
+            )
             row(title: "下一步", value: project.nextStepSummary, placeholder: "未生成")
 
             if !digest.isEmpty, !stateValue.isEmpty {
@@ -985,49 +1003,45 @@ private struct ProjectHomeRow: View {
                 }
             }
 
-            HStack(spacing: 8) {
-                TextField("Decision / 指令…", text: $decisionText)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit {
-                        let trimmed = decisionText.trimmingCharacters(in: .whitespacesAndNewlines)
-                        guard !trimmed.isEmpty else { return }
-                        guard pending.isEmpty else { return }
-                        guard appModel.hubInteractive else { return }
-                        appModel.sendFromHome(projectId: project.projectId, text: trimmed)
-                        decisionText = ""
-                    }
-
-                Button("OK") {
-                    if !pending.isEmpty {
-                        appModel.approvePending(for: project.projectId)
-                        decisionText = ""
-                        return
-                    }
-                    let trimmed = decisionText.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !trimmed.isEmpty {
-                        appModel.sendFromHome(projectId: project.projectId, text: trimmed)
-                        decisionText = ""
-                    }
-                }
-                .disabled(!appModel.hubInteractive || (decisionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && pending.isEmpty))
-
-                Button("Reject") {
-                    if !pending.isEmpty {
-                        appModel.rejectPending(for: project.projectId)
-                    }
-                    decisionText = ""
-                }
-                .disabled(decisionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && pending.isEmpty)
-            }
-
-            if !appModel.hubInteractive {
-                Text("Hub 未连接：可先输入，连接后再发送。")
+            VStack(alignment: .leading, spacing: 8) {
+                Text(entryControl.message)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            } else if !pending.isEmpty {
-                Text("当前有待审批工具调用，处理后可提交新指令。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 8) {
+                    Button(entryControl.primaryActionTitle) {
+                        if entryControl.opensPendingApproval {
+                            openProjectWorkspace()
+                        } else {
+                            openSupervisorMainEntry()
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button(entryControl.opensPendingApproval ? "去 Supervisor" : "打开项目") {
+                        if entryControl.opensPendingApproval {
+                            openSupervisorMainEntry()
+                        } else {
+                            openProjectWorkspace()
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                if !inlineNoteText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    HStack(alignment: .top, spacing: 8) {
+                        Text(inlineNoteText)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 8)
+                        Button("清除") {
+                            onClearInlineNote()
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
             }
         }
         .padding(.vertical, 8)
@@ -1102,6 +1116,24 @@ private struct ProjectHomeRow: View {
         appModel.requestProjectSettingsFocus(
             projectId: project.projectId,
             destination: destination
+        )
+    }
+
+    private func openProjectWorkspace() {
+        appModel.selectProject(project.projectId)
+        if let pendingRequest = session.pendingToolCalls.first {
+            appModel.setPane(.chat, for: project.projectId)
+            appModel.requestProjectToolApprovalFocus(
+                projectId: project.projectId,
+                requestId: pendingRequest.id
+            )
+        }
+    }
+
+    private func openSupervisorMainEntry() {
+        appModel.selectProject(project.projectId)
+        SupervisorManager.shared.requestSupervisorWindow(
+            reason: "home_project_supervisor_entry"
         )
     }
 
@@ -1280,7 +1312,7 @@ private struct ProjectHomeRow: View {
     private func governanceAxisSummary(
         _ presentation: ProjectGovernancePresentation
     ) -> String {
-        "\(presentation.effectiveExecutionLabel) / \(presentation.effectiveSupervisorLabel) · \(presentation.reviewPolicyMode.displayName)"
+        "\(presentation.effectiveExecutionLabel) / \(presentation.effectiveSupervisorLabel) · \(presentation.displayReviewPolicyName)"
     }
 
     private func governedSummary(
@@ -1294,7 +1326,7 @@ private struct ProjectHomeRow: View {
             parts.append("read+\(governed.governedReadableRootCount)")
         }
         if governed.localAutoApproveConfigured {
-            parts.append("local auto")
+            parts.append("本地自动批")
         }
         return parts.isEmpty ? "人工审批" : parts.joined(separator: " · ")
     }
@@ -1305,7 +1337,6 @@ private struct ProjectHomeRow: View {
         return f
     }()
 }
-
 
 struct GlobalHomePresentationInput: Codable, Equatable {
     let hubInteractive: Bool
@@ -1430,7 +1461,7 @@ struct GlobalHomePresentation: Codable, Equatable {
             }
         }
 
-        let orchestrator = appModel.supervisor.orchestrator
+        let orchestrator = appModel.legacySupervisorRuntimeContextIfLoaded?.orchestrator
         let monitor = orchestrator?.executionMonitor
         let runtimePolicy = orchestrator?.oneShotAutonomyPolicy
         let scopeFreeze = orchestrator?.latestDeliveryScopeFreeze
@@ -1475,7 +1506,6 @@ struct GlobalHomePresentation: Codable, Equatable {
         let architecture = XTUIInformationArchitectureContract.frozen
         let badge = ValidatedScopePresentation.validatedMainlineOnly
         let freezeDecision = input.scopeFreezeDecision ?? "pending"
-        let validatedScope = input.scopeFreezeValidatedScope.isEmpty ? badge.validatedPaths : input.scopeFreezeValidatedScope
         let replayStatus: String
         if let replayPass = input.replayPass {
             replayStatus = replayPass ? "pass" : "fail"
@@ -1496,61 +1526,134 @@ struct GlobalHomePresentation: Codable, Equatable {
             let laneSuffix = input.nextDirectedResumeLane.map { " @ \($0)" } ?? ""
             return "\(action)\(laneSuffix)"
         }
-        let topDenyCode = input.topLaunchDenyCode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let topDenyCode = input.topLaunchDenyCode.map(UITroubleshootKnowledgeBase.normalizedFailureCode)
+        let topLaunchIssue = input.topLaunchDenyCode.flatMap(UITroubleshootKnowledgeBase.issue(forFailureCode:))
+        let topDenyCodeHighlight = topDenyCode.map { "top_launch_deny_code=\($0)" } ?? ""
+        let topLaunchIssueHighlight = topLaunchIssue.map { "top_launch_issue=\($0.rawValue)" } ?? ""
 
         let primaryStatus: StatusExplanation
         if !input.hubInteractive {
             primaryStatus = StatusExplanation(
                 state: .blockedWaitingUpstream,
-                headline: "Hub 未连接，先 Pair Hub 再进入项目总览（Project watchlist）",
-                whatHappened: "Home 已经是正式入口，但还没连上 Hub，所以不会把状态装成可直接开始。",
-                whyItHappened: "未连 Hub 时，授权、远端密钥和真实连接状态都必须直接说明，不能被首页入口遮掉。",
-                userAction: "点击“Pair Hub”，完成连接后回首页（Home）查看 project 状态；大任务从 Supervisor 窗口发起。",
+                headline: "Hub 还没连上，先完成连接",
+                whatHappened: "首页已经准备好了，但当前还没有接上 Hub，所以不会把状态显示成可以直接开始。",
+                whyItHappened: "没连上 Hub 时，真实连接、授权和远端能力都还不可靠，首页必须先把这件事说明白。",
+                userAction: "点击“连接 Hub”，完成连接后回首页查看项目状态；大任务从 Supervisor 窗口发起。",
                 machineStatusRef: machineStatusRef,
-                hardLine: "remote_secret_blocked / require-real remain fail-closed",
+                hardLine: "Hub 未连通前，不继续往下放行",
                 highlights: [
                     contractSummary,
                     "diagnostic_entrypoint=pairing_health"
                 ].filter { !$0.isEmpty }
             )
-        } else if topDenyCode == "permission_denied" {
+        } else if topLaunchIssue == .permissionDenied {
             primaryStatus = StatusExplanation(
                 state: .permissionDenied,
-                headline: "检测到 permission_denied，首页继续保持 fail-closed",
-                whatHappened: "运行时返回了 permission_denied，所以 Home 不会继续把当前状态显示成可直接开始。",
-                whyItHappened: "权限拒绝必须在主入口直接可见，避免被项目列表和普通状态提示掩盖。",
+                headline: "检测到权限拒绝，需要先修权限",
+                whatHappened: "运行时返回了权限拒绝，所以首页不会把当前状态显示成可以直接开始。",
+                whyItHappened: "权限问题必须在主入口直接可见，避免被项目列表和普通状态提示掩盖。",
                 userAction: directedResumeSummary ?? "先修复权限链路，再重新发起复杂任务或恢复当前任务。",
                 machineStatusRef: machineStatusRef,
-                hardLine: "permission_denied remains explicit",
+                hardLine: "权限问题修复前，不继续推进",
                 highlights: [
                     contractSummary,
-                    "top_launch_deny_code=permission_denied"
+                    topDenyCodeHighlight,
+                    topLaunchIssueHighlight
                 ].filter { !$0.isEmpty }
             )
-        } else if input.pendingGrantCount > 0 || topDenyCode == "grant_required" {
+        } else if input.pendingGrantCount > 0 || topLaunchIssue == .grantRequired {
             primaryStatus = StatusExplanation(
                 state: .grantRequired,
-                headline: "存在授权待处理，主入口保持 fail-closed",
+                headline: "存在待处理授权，先过授权",
                 whatHappened: "系统检测到这条链路还需要人工授权，所以不会显示成已完成或可自动继续。",
                 whyItHappened: "授权没完成前，首页要明确挡住高风险动作，而不是默认放行。",
                 userAction: directedResumeSummary ?? "先处理授权，再返回项目或进入 Supervisor 窗口继续推进。",
                 machineStatusRef: machineStatusRef,
-                hardLine: "grant_fail_closed must remain visible",
+                hardLine: "授权完成前，不自动继续",
                 highlights: [
                     contractSummary,
-                    input.grantGateMode.map { "grant_gate_mode=\($0)" } ?? ""
+                    input.grantGateMode.map { "grant_gate_mode=\($0)" } ?? "",
+                    topDenyCodeHighlight,
+                    topLaunchIssueHighlight
+                ].filter { !$0.isEmpty }
+            )
+        } else if topLaunchIssue == .modelNotReady {
+            primaryStatus = StatusExplanation(
+                state: .diagnosticRequired,
+                headline: "模型或路由还没 ready",
+                whatHappened: "最近一次阻塞更像是 provider 还没 ready、上游仍在等待，或目标模型不在真实可用清单里。",
+                whyItHappened: "如果首页装成 ready 或普通授权问题，用户会先去错入口，实际模型链路还是跑不通。",
+                userAction: directedResumeSummary ?? "先去 Supervisor 控制中心查看 AI 模型，再回 XT 设置 → 诊断核对 route truth 和真实可执行模型。",
+                machineStatusRef: machineStatusRef,
+                hardLine: "模型链路恢复前，不继续推进",
+                highlights: [
+                    contractSummary,
+                    topDenyCodeHighlight,
+                    topLaunchIssueHighlight,
+                    "repair_entry=Supervisor 控制中心 · AI 模型"
+                ].filter { !$0.isEmpty }
+            )
+        } else if topLaunchIssue == .connectorScopeBlocked {
+            primaryStatus = StatusExplanation(
+                state: .diagnosticRequired,
+                headline: "远端能力被安全边界拦住了",
+                whatHappened: "最近一次阻塞指向远端导出策略、设备安全边界或预算边界，所以当前远端能力不会被显示成可自动继续。",
+                whyItHappened: "如果这里只显示成普通授权或 ready，会把真正的 Hub Recovery 和安全边界修复入口藏掉。",
+                userAction: directedResumeSummary ?? "先到 XT 设置 → 诊断记录这次拒绝原因和审计编号，再去 REL Flow Hub → 诊断与恢复检查远端导出开关。",
+                machineStatusRef: machineStatusRef,
+                hardLine: "安全边界解除前，不继续放行",
+                highlights: [
+                    contractSummary,
+                    topDenyCodeHighlight,
+                    topLaunchIssueHighlight,
+                    "repair_entry=REL Flow Hub → 诊断与恢复"
+                ].filter { !$0.isEmpty }
+            )
+        } else if topLaunchIssue == .paidModelAccessBlocked {
+            primaryStatus = StatusExplanation(
+                state: .diagnosticRequired,
+                headline: "付费模型访问受阻",
+                whatHappened: "最近一次阻塞指向付费模型 allowlist、预算或设备级 paid policy，当前入口不会假装这条路已经可继续。",
+                whyItHappened: "这类问题需要回真实模型与预算边界修复，而不是退回一个模糊的 ready。",
+                userAction: directedResumeSummary ?? "先去 Supervisor 控制中心和 REL Flow Hub → 模型与付费访问检查 allowlist、预算和模型绑定。",
+                machineStatusRef: machineStatusRef,
+                hardLine: "付费模型访问恢复前，不继续放行",
+                highlights: [
+                    contractSummary,
+                    topDenyCodeHighlight,
+                    topLaunchIssueHighlight,
+                    "repair_entry=REL Flow Hub → 模型与付费访问"
+                ].filter { !$0.isEmpty }
+            )
+        } else if topLaunchIssue == .pairingRepairRequired
+            || topLaunchIssue == .multipleHubsAmbiguous
+            || topLaunchIssue == .hubPortConflict
+            || topLaunchIssue == .hubUnreachable {
+            primaryStatus = StatusExplanation(
+                state: .blockedWaitingUpstream,
+                headline: "连接还没修好，先修连接",
+                whatHappened: "最近一次阻塞仍指向连接不可达、多 Hub 冲突、端口冲突或旧配对失效，所以首页不会把当前状态装成 ready。",
+                whyItHappened: "只要连接事实还没恢复，首页就必须继续把连接入口和诊断入口放在明面上。",
+                userAction: directedResumeSummary ?? "先回 XT 设置 → 连接 Hub 或 XT 设置 → 诊断与核对修连接，再回来继续当前项目。",
+                machineStatusRef: machineStatusRef,
+                hardLine: "连接恢复前，不继续推进",
+                highlights: [
+                    contractSummary,
+                    topDenyCodeHighlight,
+                    topLaunchIssueHighlight,
+                    "repair_entry=XT 设置 → 连接 Hub"
                 ].filter { !$0.isEmpty }
             )
         } else if topDenyCode == "scope_expansion" || freezeDecision == "no_go" || !input.scopeFreezeBlockedExpansionItems.isEmpty {
             let blockedItems = input.scopeFreezeBlockedExpansionItems.joined(separator: ",")
             primaryStatus = StatusExplanation(
                 state: .blockedWaitingUpstream,
-                headline: "已验证范围拒绝超范围请求",
-                whatHappened: "当前请求已经落在 no-go / blocked expansion，所以首页不会再暗示这条路可以放行。",
-                whyItHappened: "现在只允许已验证主链，超范围请求必须继续挡住。",
-                userAction: input.scopeFreezeNextActions.first ?? "先收回 scope expansion",
+                headline: "当前请求超出了已验证范围",
+                whatHappened: "当前请求已经落在 no-go 或超范围扩展，所以首页不会再暗示这条路可以继续。",
+                whyItHappened: "现在只允许走已经验证过的主链，超范围请求必须继续挡住。",
+                userAction: input.scopeFreezeNextActions.first ?? "先收回超范围请求",
                 machineStatusRef: machineStatusRef,
-                hardLine: "scope_not_validated must remain visible",
+                hardLine: "超范围请求不直接放行",
                 highlights: [
                     contractSummary,
                     blockedItems.isEmpty ? "" : "blocked_expansion=\(blockedItems)"
@@ -1559,12 +1662,12 @@ struct GlobalHomePresentation: Codable, Equatable {
         } else if input.replayPass == false {
             primaryStatus = StatusExplanation(
                 state: .diagnosticRequired,
-                headline: "replay regression 尚未通过，入口保持 explainable hold",
+                headline: "重放回归还没通过",
                 whatHappened: "回放回归还没通过，说明之前的阻断场景还需要复核。",
-                whyItHappened: "回放没变绿之前，首页不能暗示当前发布口径已经稳定。",
+                whyItHappened: "回放没变绿之前，首页不能暗示当前链路已经稳定。",
                 userAction: input.replayEvidenceRefs.first ?? "先查看 replay 证据",
                 machineStatusRef: machineStatusRef,
-                hardLine: "replay fail-closed remains visible",
+                hardLine: "重放通过前，不继续放行",
                 highlights: [
                     contractSummary,
                     "replay_fail_closed_scenarios=\(input.replayFailClosedScenarioCount)/\(input.replayScenarioCount)"
@@ -1573,19 +1676,19 @@ struct GlobalHomePresentation: Codable, Equatable {
         } else if input.runningProjectCount > 0 {
             primaryStatus = StatusExplanation(
                 state: .inProgress,
-                headline: "已有 \(input.runningProjectCount) 个复杂任务在推进",
+                headline: "已有 \(input.runningProjectCount) 个项目在推进",
                 whatHappened: "当前有复杂任务正在推进，首页会把关键运行状态一起摘要出来。",
                 whyItHappened: "这样你在 Home 也能先看进度、阻塞和下一步，而不用先切进聊天流水。",
-                userAction: directedResumeSummary ?? "点击“继续当前项目”或进入 Supervisor 查看 planner explain / blocker / next action。",
+                userAction: directedResumeSummary ?? "点击“继续当前项目”或进入 Supervisor 查看 blocker 和 next action。",
                 machineStatusRef: machineStatusRef,
-                hardLine: "validated-mainline-only; no_unverified_claims",
+                hardLine: "首页只展示当前可继续推进的状态",
                 highlights: [
                     contractSummary,
                     "allowed_public_statements=\(input.allowedPublicStatementCount)"
                 ].filter { !$0.isEmpty }
             )
         } else {
-            let headline = input.projectCount == 0 ? "项目总览（Project watchlist）已就绪，等待第一个项目" : "项目总览（Project watchlist）已同步，可继续当前项目"
+            let headline = input.projectCount == 0 ? "项目总览已就绪，等待第一个项目" : "项目总览已同步，可继续当前项目"
             let nextAction = directedResumeSummary
                 ?? (input.projectCount == 0
                     ? "先创建一个 project；如需发起大任务，请从 Supervisor 窗口进入。"
@@ -1593,43 +1696,17 @@ struct GlobalHomePresentation: Codable, Equatable {
             primaryStatus = StatusExplanation(
                 state: .ready,
                 headline: headline,
-                whatHappened: "Home 现在只负责项目汇总、继续当前项目和诊断入口，主入口已经收口。",
+                whatHappened: "首页现在只负责项目汇总、继续当前项目和诊断入口，主入口已经收口。",
                 whyItHappened: "新的复杂任务统一从 Supervisor 发起，Home 不再承担大任务入口。",
-                userAction: nextAction,
+                userAction: nextAction.replacingOccurrences(of: "project", with: "项目"),
                 machineStatusRef: machineStatusRef,
-                hardLine: "validated-mainline-only remains the only external scope",
+                hardLine: "首页只保留当前正式入口",
                 highlights: [
                     contractSummary,
                     "primary_cta=resume_project"
                 ].filter { !$0.isEmpty }
             )
         }
-
-        let releaseState: XTUISurfaceState
-        if freezeDecision == "no_go" || !input.scopeFreezeBlockedExpansionItems.isEmpty {
-            releaseState = .blockedWaitingUpstream
-        } else if input.replayPass == false {
-            releaseState = .diagnosticRequired
-        } else {
-            releaseState = .releaseFrozen
-        }
-
-        let releaseStatus = StatusExplanation(
-            state: releaseState,
-            headline: "已验证主链当前冻结为 \(validatedScope.joined(separator: " → "))",
-            whatHappened: "首页会明确显示“Validated mainline only”，并把范围与 replay 摘要一起说明。",
-            whyItHappened: "这里现在只围绕已验证主链对外表达，不把未验证功能重新拉回本轮。",
-            userAction: input.scopeFreezeNextActions.first
-                ?? input.replayEvidenceRefs.first
-                ?? "如需新 surface，请另起切片；当前只围绕已验证主链继续验证与交付。",
-            machineStatusRef: "current_release_scope=\(badge.currentReleaseScope); validated_paths=\(validatedScope.joined(separator: ",")); decision=\(freezeDecision); allowed_public_statements=\(input.allowedPublicStatementCount); replay=\(replayStatus)",
-            hardLine: "scope_not_validated must remain visible",
-            highlights: [
-                "external_messaging=frozen",
-                "no_scope_expansion=\((freezeDecision == "no_go" || !input.scopeFreezeBlockedExpansionItems.isEmpty) ? "false" : "true")",
-                "replay_fail_closed_scenarios=\(input.replayFailClosedScenarioCount)/\(input.replayScenarioCount)"
-            ] + input.scopeFreezeBlockedExpansionItems.prefix(3).map { "blocked_item=\($0)" }
-        )
 
         var actions: [PrimaryActionRailAction] = []
         if input.projectCount > 0 {
@@ -1646,8 +1723,8 @@ struct GlobalHomePresentation: Codable, Equatable {
         actions.append(
                 PrimaryActionRailAction(
                     id: "pair_hub",
-                    title: "连接 Hub（Pair Hub）",
-                    subtitle: input.grantGateMode.map { "连接 Hub 真正数据源；grant gate=\($0)" } ?? "连接 Hub 真正数据源，打通授权链和主入口",
+                    title: "连接 Hub",
+                    subtitle: input.grantGateMode.map { "先连上 Hub，再继续授权和项目入口；grant gate=\($0)" } ?? "先连上 Hub，再继续授权和项目入口",
                     systemImage: "cable.connector",
                     style: .secondary
             )
@@ -1655,8 +1732,8 @@ struct GlobalHomePresentation: Codable, Equatable {
         actions.append(
             PrimaryActionRailAction(
                 id: "model_status",
-                title: "Supervisor 控制中心",
-                subtitle: "统一查看 AI 模型、治理边界与 Hub 真实可用视图",
+                title: "打开 Supervisor",
+                subtitle: "统一查看 AI 模型、项目状态和真实可用视图",
                 systemImage: "waveform.path.ecg",
                 style: .diagnostic
             )
@@ -1666,7 +1743,7 @@ struct GlobalHomePresentation: Codable, Equatable {
             informationArchitecture: architecture,
             badge: badge,
             primaryStatus: primaryStatus,
-            releaseStatus: releaseStatus,
+            releaseStatus: primaryStatus,
             actions: actions,
             consumedFrozenFields: [
                 "xt.ui_information_architecture.v1.primary_actions.xt.global_home",

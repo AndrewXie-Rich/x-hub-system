@@ -56,6 +56,52 @@ struct XTDeepLinkURLBuilderTests {
     }
 
     @Test
+    func settingsURLBuildsRoundTrippableHistoricalRepairLink() throws {
+        let url = try #require(
+            XTDeepLinkURLBuilder.settingsURL(
+                sectionId: "diagnostics",
+                title: "历史项目修复",
+                detail: "扫描历史项目并补齐缺失边界",
+                refreshAction: .repairHistoricalProjectBoundaries,
+                refreshReason: "supervisor_historical_project_boundary_repair"
+            )
+        )
+        let route = try #require(XTDeepLinkParser.parse(url))
+
+        #expect(
+            route == .settings(
+                XTSettingsRoute(
+                    sectionId: "diagnostics",
+                    title: "历史项目修复",
+                    detail: "扫描历史项目并补齐缺失边界",
+                    refreshAction: .repairHistoricalProjectBoundaries,
+                    refreshReason: "supervisor_historical_project_boundary_repair"
+                )
+            )
+        )
+    }
+
+    @Test
+    func supervisorModelSettingsURLBuildsRoundTrippableFocusLink() throws {
+        let url = try #require(
+            XTDeepLinkURLBuilder.supervisorModelSettingsURL(
+                title: "Route diagnose",
+                detail: "Check real available models"
+            )
+        )
+        let route = try #require(XTDeepLinkParser.parse(url))
+
+        #expect(
+            route == .supervisorModelSettings(
+                XTSupervisorModelSettingsRoute(
+                    title: "Route diagnose",
+                    detail: "Check real available models"
+                )
+            )
+        )
+    }
+
+    @Test
     func projectResumeURLBuildsRoundTrippableResumeLink() throws {
         let url = try #require(
             XTDeepLinkURLBuilder.projectURL(
@@ -139,6 +185,29 @@ struct XTDeepLinkURLBuilderTests {
     }
 
     @Test
+    func supervisorProjectCreationBoardURLBuildsRoundTrippableFocusLink() throws {
+        let url = try #require(
+            XTDeepLinkURLBuilder.supervisorURL(
+                focusTarget: .projectCreationBoard
+            )
+        )
+        let route = try #require(XTDeepLinkParser.parse(url))
+
+        #expect(
+            route == .supervisor(
+                XTDeepLinkSupervisorRoute(
+                    projectId: nil,
+                    focusTarget: .projectCreationBoard,
+                    requestId: nil,
+                    grantRequestId: nil,
+                    grantCapability: nil,
+                    grantReason: nil
+                )
+            )
+        )
+    }
+
+    @Test
     func projectApprovalSupervisorURLBuildsRoundTrippableFocusLink() throws {
         let url = try #require(
             XTDeepLinkURLBuilder.projectURL(
@@ -193,6 +262,30 @@ struct XTDeepLinkURLBuilderTests {
                     grantCapability: nil,
                     grantReason: nil,
                     resumeRequested: false
+                )
+            )
+        )
+    }
+
+    @Test
+    func supervisorCandidateReviewURLBuildsRoundTrippableFocusLink() throws {
+        let url = try #require(
+            XTDeepLinkURLBuilder.supervisorURL(
+                focusTarget: .candidateReview,
+                requestId: "req-candidate-1"
+            )
+        )
+        let route = try #require(XTDeepLinkParser.parse(url))
+
+        #expect(
+            route == .supervisor(
+                XTDeepLinkSupervisorRoute(
+                    projectId: nil,
+                    focusTarget: .candidateReview,
+                    requestId: "req-candidate-1",
+                    grantRequestId: nil,
+                    grantCapability: nil,
+                    grantReason: nil
                 )
             )
         )

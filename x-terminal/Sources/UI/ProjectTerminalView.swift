@@ -21,7 +21,7 @@ struct ProjectTerminalView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 Text("Terminal")
                     .font(.system(.body, design: .monospaced))
@@ -43,11 +43,19 @@ struct ProjectTerminalView: View {
 
             ProjectGovernanceCompactSummaryView(
                 presentation: governancePresentation,
+                configuration: .operationalDense,
                 onExecutionTierTap: { openGovernance(.executionTier) },
                 onSupervisorTierTap: { openGovernance(.supervisorTier) },
                 onReviewCadenceTap: { openGovernance(.heartbeatReview) },
                 onStatusTap: { openGovernance(.overview) },
                 onCalloutTap: { openGovernance(.overview) }
+            )
+
+            ProjectGovernanceQuickAccessStrip(
+                selectedDestination: nil,
+                governancePresentation: governancePresentation,
+                displayStyle: .compact,
+                onSelect: openGovernance
             )
 
             HStack(spacing: 10) {
@@ -133,7 +141,7 @@ struct ProjectTerminalView: View {
 
     private var governancePresentation: ProjectGovernancePresentation {
         ProjectGovernancePresentation(
-            resolved: appModel.resolvedProjectGovernance(config: projectConfig)
+            resolved: appModel.resolvedProjectGovernance(for: ctx, config: projectConfig)
         )
     }
 

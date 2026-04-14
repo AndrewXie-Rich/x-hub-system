@@ -24,6 +24,7 @@ struct ProjectSkillFullRecord: Identifiable, Equatable, Sendable {
     var latestStatusLabel: String
     var requestMetadata: [ProjectSkillRecordField]
     var approvalFields: [ProjectSkillRecordField]
+    var governanceFields: [ProjectSkillRecordField]
     var toolArgumentsText: String?
     var resultFields: [ProjectSkillRecordField]
     var rawOutputPreview: String?
@@ -37,6 +38,12 @@ struct ProjectSkillFullRecord: Identifiable, Equatable, Sendable {
 }
 
 enum ProjectSkillActivityPresentation {
+    private struct AwaitingApprovalPresentationState {
+        var title: String
+        var statusLabel: String
+        var iconName: String
+    }
+
     static func loadRecentActivities(
         ctx: AXProjectContext,
         limit: Int = 8
@@ -66,7 +73,7 @@ enum ProjectSkillActivityPresentation {
         case "blocked":
             return "技能受阻"
         case "awaiting_approval":
-            return "待审批"
+            return awaitingApprovalPresentation(for: item)?.title ?? "待审批"
         case "resolved":
             return "技能已路由"
         default:
@@ -75,7 +82,11 @@ enum ProjectSkillActivityPresentation {
     }
 
     static func statusLabel(for item: ProjectSkillActivityItem) -> String {
-        statusLabel(for: item.status)
+        statusLabel(
+            for: item.status,
+            executionReadiness: item.executionReadiness,
+            requiredCapability: item.requiredCapability
+        )
     }
 
     static func iconName(for item: ProjectSkillActivityItem) -> String {
@@ -87,7 +98,7 @@ enum ProjectSkillActivityPresentation {
         case "blocked":
             return "lock.trianglebadge.exclamationmark.fill"
         case "awaiting_approval":
-            return "hand.raised.fill"
+            return awaitingApprovalPresentation(for: item)?.iconName ?? "hand.raised.fill"
         case "resolved":
             return "point.3.connected.trianglepath.dotted"
         default:
@@ -99,10 +110,35 @@ enum ProjectSkillActivityPresentation {
         displayToolName(item.toolName)
     }
 
+    static func skillBadgeText(for item: ProjectSkillActivityItem) -> String {
+        skillLabelText(
+            requestedSkillID: item.requestedSkillID,
+            effectiveSkillID: item.skillID
+        ) ?? ""
+    }
+
     static func body(for item: ProjectSkillActivityItem) -> String {
-        let skillLabel = item.skillID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        body(
+            for: item,
+            includeGovernanceTruthPrefix: true
+        )
+    }
+
+    static func timelineBody(for item: ProjectSkillActivityItem) -> String {
+        body(
+            for: item,
+            includeGovernanceTruthPrefix: false
+        )
+    }
+
+    private static func body(
+        for item: ProjectSkillActivityItem,
+        includeGovernanceTruthPrefix: Bool
+    ) -> String {
+        let displaySkill = skillBadgeText(for: item)
+        let skillLabel = displaySkill.isEmpty
             ? "这个技能"
-            : "技能 \(item.skillID)"
+            : "技能 \(displaySkill)"
         let toolLabel = displayToolName(item.toolName)
 
         switch normalizedStatus(item.status) {
@@ -114,21 +150,32 @@ enum ProjectSkillActivityPresentation {
             if !item.detail.isEmpty { return item.detail }
             return "\(skillLabel) 在执行\(toolLabel)时失败。"
         case "blocked":
-            return XTGuardrailMessagePresentation.blockedBody(
+            let blockedBody = XTGuardrailMessagePresentation.blockedBody(
                 tool: ToolName(rawValue: item.toolName),
                 toolLabel: toolLabel,
                 denyCode: item.denyCode,
                 policySource: item.policySource,
                 policyReason: item.policyReason,
+                requiredCapability: item.requiredCapability,
                 fallbackSummary: item.resultSummary,
                 fallbackDetail: item.detail
             )
+            if includeGovernanceTruthPrefix,
+               let governanceTruth = displayGovernanceTruthLine(for: item) {
+                return "\(governanceTruth) \(blockedBody)"
+            }
+            return blockedBody
         case "awaiting_approval":
-            return XTGuardrailMessagePresentation.awaitingApprovalBody(
-                toolLabel: toolLabel,
-                target: requestPreview(for: item),
-                denyCode: item.denyCode
+            let message = XTPendingApprovalPresentation.approvalMessage(
+                toolName: item.toolName,
+                tool: ToolName(rawValue: item.toolName),
+                toolSummary: requestPreview(for: item) ?? "",
+                activity: item
             )
+            if let nextStep = nonEmpty(message.nextStep) {
+                return "\(message.summary) \(nextStep)"
+            }
+            return message.summary
         case "resolved":
             if let preview = requestPreview(for: item), !preview.isEmpty {
                 return "\(skillLabel) 已路由到\(toolLabel)，目标：\(preview)。"
@@ -147,11 +194,32 @@ enum ProjectSkillActivityPresentation {
         if !item.skillID.isEmpty {
             lines.append("skill_id=\(item.skillID)")
         }
+        if !item.requestedSkillID.isEmpty {
+            lines.append("requested_skill_id=\(item.requestedSkillID)")
+        }
+        if !item.routingReasonCode.isEmpty {
+            lines.append("routing_reason_code=\(item.routingReasonCode)")
+        }
+        if !item.routingExplanation.isEmpty {
+            lines.append("routing_explanation=\(item.routingExplanation)")
+        }
         if !item.toolName.isEmpty {
             lines.append("tool_name=\(item.toolName)")
         }
         if !item.status.isEmpty {
             lines.append("status=\(item.status)")
+        }
+        if !item.executionReadiness.isEmpty {
+            lines.append("execution_readiness=\(item.executionReadiness)")
+        }
+        if !item.requiredRuntimeSurfaces.isEmpty {
+            lines.append("required_runtime_surfaces=\(item.requiredRuntimeSurfaces.joined(separator: ","))")
+        }
+        if !item.unblockActions.isEmpty {
+            lines.append("unblock_actions=\(item.unblockActions.joined(separator: ","))")
+        }
+        if !item.requiredCapability.isEmpty {
+            lines.append("required_capability=\(item.requiredCapability)")
         }
         if !item.authorizationDisposition.isEmpty {
             lines.append("authorization_disposition=\(item.authorizationDisposition)")
@@ -164,6 +232,51 @@ enum ProjectSkillActivityPresentation {
         }
         if !item.policyReason.isEmpty {
             lines.append("policy_reason=\(item.policyReason)")
+        }
+        if let blockedSummary = blockedSummary(for: item) {
+            lines.append("blocked_summary=\(blockedSummary)")
+        }
+        if let governanceReason = governanceReason(for: item) {
+            lines.append("governance_reason=\(governanceReason)")
+        }
+        if let governanceTruth = governanceTruthLine(for: item) {
+            lines.append("governance_truth=\(governanceTruth)")
+        }
+        if let repairAction = repairActionSummary(for: item) {
+            lines.append("repair_action=\(repairAction)")
+        }
+        if !item.approvalSummary.isEmpty {
+            lines.append("approval_summary=\(item.approvalSummary)")
+        }
+        if !item.currentRunnableProfiles.isEmpty {
+            lines.append("current_runnable_profiles=\(item.currentRunnableProfiles.joined(separator: ","))")
+        }
+        if !item.requestedProfiles.isEmpty {
+            lines.append("requested_profiles=\(item.requestedProfiles.joined(separator: ","))")
+        }
+        if !item.deltaProfiles.isEmpty {
+            lines.append("delta_profiles=\(item.deltaProfiles.joined(separator: ","))")
+        }
+        if !item.currentRunnableCapabilityFamilies.isEmpty {
+            lines.append(
+                "current_runnable_capability_families=\(item.currentRunnableCapabilityFamilies.joined(separator: ","))"
+            )
+        }
+        if !item.requestedCapabilityFamilies.isEmpty {
+            lines.append(
+                "requested_capability_families=\(item.requestedCapabilityFamilies.joined(separator: ","))"
+            )
+        }
+        if !item.deltaCapabilityFamilies.isEmpty {
+            lines.append(
+                "delta_capability_families=\(item.deltaCapabilityFamilies.joined(separator: ","))"
+            )
+        }
+        if !item.grantFloor.isEmpty {
+            lines.append("grant_floor=\(item.grantFloor)")
+        }
+        if !item.approvalFloor.isEmpty {
+            lines.append("approval_floor=\(item.approvalFloor)")
         }
         if !item.resolutionSource.isEmpty {
             lines.append("resolution_source=\(item.resolutionSource)")
@@ -221,6 +334,12 @@ enum ProjectSkillActivityPresentation {
             evidence?.skillId,
             supervisorCall?.skillId
         )
+        let requestedSkillID = firstNonEmpty(
+            latest?.requestedSkillID,
+            latestRawEventScalar("requested_skill_id", from: events),
+            evidence?.requestedSkillId,
+            supervisorCall?.requestedSkillId
+        )
         let toolName = firstNonEmpty(
             latest?.toolName,
             evidence?.toolName,
@@ -231,51 +350,198 @@ enum ProjectSkillActivityPresentation {
             evidence?.status,
             supervisorCall?.status.rawValue
         ) ?? ""
-        let latestPolicySource = events
-            .reversed()
-            .compactMap { nonEmpty($0.item.policySource) }
-            .first
+        let latestPolicySource = firstNonEmpty(
+            events
+                .reversed()
+                .compactMap { nonEmpty($0.item.policySource) }
+                .first,
+            evidence?.policySource,
+            supervisorCall?.policySource
+        )
         let latestDenyCode = firstNonEmpty(
             latest?.denyCode,
             evidence?.denyCode,
             supervisorCall?.denyCode
         )
-        let latestPolicyReason = events
-            .reversed()
-            .compactMap { nonEmpty($0.item.policyReason) }
-            .first
+        let latestResolutionSource = firstNonEmpty(
+            latest?.resolutionSource,
+            latestRawEventScalar("resolution_source", from: events)
+        )
+        let latestRoutingReasonCode = firstNonEmpty(
+            latest?.routingReasonCode,
+            latestRawEventScalar("routing_reason_code", from: events),
+            evidence?.routingReasonCode,
+            supervisorCall?.routingReasonCode
+        )
+        let latestRoutingExplanation = firstNonEmpty(
+            latest?.routingExplanation,
+            latestRawEventScalar("routing_explanation", from: events),
+            evidence?.routingExplanation,
+            supervisorCall?.routingExplanation
+        )
+        let latestPolicyReason = firstNonEmpty(
+            events
+                .reversed()
+                .compactMap { nonEmpty($0.item.policyReason) }
+                .first,
+            evidence?.policyReason,
+            supervisorCall?.policyReason
+        )
+        let persistedDeltaApproval = evidence?.deltaApproval ?? supervisorCall?.deltaApproval
+        let persistedReadiness = evidence?.readiness ?? supervisorCall?.readiness
+        let latestIntentFamilies = firstNonEmptyStringArray(
+            latest?.intentFamilies ?? [],
+            latestRawEventStringArray("intent_families", from: events),
+            persistedReadiness?.intentFamilies ?? []
+        )
+        let latestCapabilityFamilies = firstNonEmptyStringArray(
+            latest?.capabilityFamilies ?? [],
+            latestRawEventStringArray("capability_families", from: events),
+            persistedReadiness?.capabilityFamilies ?? []
+        )
+        let latestCapabilityProfiles = firstNonEmptyStringArray(
+            latest?.capabilityProfiles ?? [],
+            latestRawEventStringArray("capability_profiles", from: events),
+            persistedReadiness?.capabilityProfiles ?? []
+        )
+        let latestRequiredCapability = firstNonEmpty(
+            latest?.requiredCapability,
+            latestRawEventScalar("required_capability", from: events),
+            supervisorCall?.requiredCapability
+        )
+        let latestAuthorizationDisposition = firstNonEmpty(
+            latest?.authorizationDisposition,
+            latestRawEventScalar("authorization_disposition", from: events)
+        )
+        let latestExecutionReadiness = firstNonEmpty(
+            latest?.executionReadiness,
+            latestRawEventScalar("execution_readiness", from: events),
+            persistedReadiness?.executionReadiness
+        )
+        let latestRequiredRuntimeSurfaces = firstNonEmptyStringArray(
+            latest?.requiredRuntimeSurfaces ?? [],
+            latestRawEventStringArray("required_runtime_surfaces", from: events),
+            persistedReadiness?.requiredRuntimeSurfaces ?? []
+        )
+        let latestUnblockActions = firstNonEmptyStringArray(
+            latest?.unblockActions ?? [],
+            latestRawEventStringArray("unblock_actions", from: events),
+            persistedReadiness?.unblockActions ?? []
+        )
+        let latestApprovalSummary = firstNonEmpty(
+            latest?.approvalSummary,
+            latestRawEventScalar("approval_summary", from: events),
+            persistedDeltaApproval?.summary
+        )
+        let latestCurrentRunnableProfiles = firstNonEmptyStringArray(
+            latest?.currentRunnableProfiles ?? [],
+            latestRawEventStringArray("current_runnable_profiles", from: events),
+            persistedDeltaApproval?.currentRunnableProfiles ?? []
+        )
+        let latestRequestedProfiles = firstNonEmptyStringArray(
+            latest?.requestedProfiles ?? [],
+            latestRawEventStringArray("requested_profiles", from: events),
+            persistedDeltaApproval?.requestedProfiles ?? []
+        )
+        let latestDeltaProfiles = firstNonEmptyStringArray(
+            latest?.deltaProfiles ?? [],
+            latestRawEventStringArray("delta_profiles", from: events),
+            persistedDeltaApproval?.deltaProfiles ?? []
+        )
+        let latestCurrentRunnableCapabilityFamilies = firstNonEmptyStringArray(
+            latest?.currentRunnableCapabilityFamilies ?? [],
+            latestRawEventStringArray("current_runnable_capability_families", from: events),
+            persistedDeltaApproval?.currentRunnableCapabilityFamilies ?? []
+        )
+        let latestRequestedCapabilityFamilies = firstNonEmptyStringArray(
+            latest?.requestedCapabilityFamilies ?? [],
+            latestRawEventStringArray("requested_capability_families", from: events),
+            persistedDeltaApproval?.requestedCapabilityFamilies ?? []
+        )
+        let latestDeltaCapabilityFamilies = firstNonEmptyStringArray(
+            latest?.deltaCapabilityFamilies ?? [],
+            latestRawEventStringArray("delta_capability_families", from: events),
+            persistedDeltaApproval?.deltaCapabilityFamilies ?? []
+        )
+        let latestGrantFloor = firstNonEmpty(
+            latest?.grantFloor,
+            latestRawEventScalar("grant_floor", from: events),
+            persistedDeltaApproval?.grantFloor,
+            persistedReadiness?.grantFloor
+        )
+        let latestApprovalFloor = firstNonEmpty(
+            latest?.approvalFloor,
+            latestRawEventScalar("approval_floor", from: events),
+            persistedDeltaApproval?.approvalFloor,
+            persistedReadiness?.approvalFloor
+        )
+        let approvalGovernanceReason = firstNonEmpty(
+            latestRawEventScalar("governance_reason", from: events),
+            XTGuardrailMessagePresentation.governanceReasonSummary(
+                tool: toolName.flatMap(ToolName.init(rawValue:)),
+                toolLabel: displayToolName(toolName ?? ""),
+                denyCode: latestDenyCode ?? "",
+                policySource: latestPolicySource ?? "",
+                policyReason: latestPolicyReason ?? "",
+                requiredCapability: latestRequiredCapability ?? ""
+            )
+        )
         let latestResultSummary = firstNonEmpty(
             evidence?.resultSummary,
             latest?.resultSummary,
             supervisorCall?.resultSummary
         )
-        let approvalBlockedSummary = XTGuardrailMessagePresentation.blockedSummary(
-            tool: toolName.flatMap(ToolName.init(rawValue:)),
-            toolLabel: displayToolName(toolName ?? ""),
-            denyCode: latestDenyCode ?? "",
-            policySource: latestPolicySource ?? "",
-            policyReason: latestPolicyReason ?? "",
-            fallbackSummary: latestResultSummary ?? "",
-            fallbackDetail: latest?.detail ?? ""
+        let approvalBlockedSummary = firstNonEmpty(
+            latestRawEventScalar("blocked_summary", from: events),
+            XTGuardrailMessagePresentation.blockedSummary(
+                tool: toolName.flatMap(ToolName.init(rawValue:)),
+                toolLabel: displayToolName(toolName ?? ""),
+                denyCode: latestDenyCode ?? "",
+                policySource: latestPolicySource ?? "",
+                policyReason: latestPolicyReason ?? "",
+                requiredCapability: latestRequiredCapability ?? "",
+                fallbackSummary: latestResultSummary ?? "",
+                fallbackDetail: latest?.detail ?? ""
+            )
         )
-        let approvalGovernanceTruth = events
-            .reversed()
-            .compactMap { XTGovernanceTruthPresentation.effectiveTierSummary(from: $0.rawObject) }
-            .first
+        let approvalGovernanceTruth = firstNonEmpty(
+            latestRawEventScalar("governance_truth", from: events),
+            events
+                .reversed()
+                .compactMap { XTGovernanceTruthPresentation.effectiveTierSummary(from: $0.rawObject) }
+                .first
+        )
+        let latestRepairAction = firstNonEmpty(
+            latestRawEventScalar("repair_action", from: events),
+            events
+                .reversed()
+                .compactMap { repairActionSummary(for: $0.item) }
+                .first
+        )
         let toolArgsText = preferredToolArgumentsText(
             latestToolArgs: latest?.toolArgs ?? [:],
             evidenceToolArgs: evidence?.toolArgs
         )
-        let title = skillID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-            ? skillID ?? "技能记录"
-            : "技能记录"
+        let title = firstNonEmpty(
+            skillLabelText(
+                requestedSkillID: requestedSkillID,
+                effectiveSkillID: skillID
+            ),
+            skillID
+        ) ?? "技能记录"
 
         let requestMetadata = recordFields([
             ("request_id", requestID),
             ("skill_id", skillID),
+            ("requested_skill_id", requestedSkillID),
+            ("intent_families", joinedListText(latestIntentFamilies)),
+            ("capability_families", joinedListText(latestCapabilityFamilies)),
+            ("capability_profiles", joinedListText(latestCapabilityProfiles)),
             ("tool_name", toolName),
             ("latest_status", latestStatus),
-            ("resolution_source", latest?.resolutionSource),
+            ("resolution_source", latestResolutionSource),
+            ("routing_reason_code", latestRoutingReasonCode),
+            ("routing_explanation", latestRoutingExplanation),
             ("project_id", firstNonEmpty(evidence?.projectId, supervisorCall?.projectId)),
             ("job_id", firstNonEmpty(evidence?.jobId, supervisorCall?.jobId)),
             ("plan_id", firstNonEmpty(evidence?.planId, supervisorCall?.planId)),
@@ -287,15 +553,32 @@ enum ProjectSkillActivityPresentation {
         ])
 
         let approvalFields = recordFields([
-            ("authorization_disposition", latest?.authorizationDisposition),
+            ("authorization_disposition", latestAuthorizationDisposition),
             ("deny_code", latestDenyCode),
-            ("policy_source", latestPolicySource),
-            ("policy_reason", latestPolicyReason),
-            ("blocked_summary", approvalBlockedSummary),
-            ("governance_truth", approvalGovernanceTruth),
-            ("required_capability", supervisorCall?.requiredCapability),
+            ("execution_readiness", latestExecutionReadiness),
+            ("required_runtime_surfaces", joinedListText(latestRequiredRuntimeSurfaces)),
+            ("unblock_actions", joinedListText(latestUnblockActions)),
+            ("approval_summary", latestApprovalSummary),
+            ("current_runnable_profiles", joinedListText(latestCurrentRunnableProfiles)),
+            ("requested_profiles", joinedListText(latestRequestedProfiles)),
+            ("delta_profiles", joinedListText(latestDeltaProfiles)),
+            ("current_runnable_capability_families", joinedListText(latestCurrentRunnableCapabilityFamilies)),
+            ("requested_capability_families", joinedListText(latestRequestedCapabilityFamilies)),
+            ("delta_capability_families", joinedListText(latestDeltaCapabilityFamilies)),
+            ("grant_floor", latestGrantFloor),
+            ("approval_floor", latestApprovalFloor),
+            ("required_capability", latestRequiredCapability),
             ("grant_request_id", supervisorCall?.grantRequestId),
             ("grant_id", supervisorCall?.grantId)
+        ])
+
+        let governanceFields = recordFields([
+            ("policy_source", latestPolicySource),
+            ("policy_reason", latestPolicyReason),
+            ("governance_reason", approvalGovernanceReason),
+            ("blocked_summary", approvalBlockedSummary),
+            ("governance_truth", approvalGovernanceTruth),
+            ("repair_action", latestRepairAction)
         ])
 
         let resultFields = recordFields([
@@ -322,9 +605,14 @@ enum ProjectSkillActivityPresentation {
             requestID: requestID,
             title: title,
             latestStatus: latestStatus,
-            latestStatusLabel: statusLabel(for: latestStatus),
+            latestStatusLabel: statusLabel(
+                for: latestStatus,
+                executionReadiness: latestExecutionReadiness ?? "",
+                requiredCapability: latestRequiredCapability ?? ""
+            ),
             requestMetadata: requestMetadata,
             approvalFields: approvalFields,
+            governanceFields: governanceFields,
             toolArgumentsText: toolArgsText,
             resultFields: resultFields,
             rawOutputPreview: nonEmpty(evidence?.rawOutputPreview),
@@ -360,6 +648,7 @@ enum ProjectSkillActivityPresentation {
 
         appendDisplayRecordSection("请求信息", fields: record.requestMetadata, into: &lines)
         appendDisplayRecordSection("审批状态", fields: record.approvalFields, into: &lines)
+        appendDisplayRecordSection("治理上下文", fields: record.governanceFields, into: &lines)
 
         if let toolArgs = nonEmpty(record.toolArgumentsText) {
             lines.append("")
@@ -430,6 +719,7 @@ enum ProjectSkillActivityPresentation {
 
         appendRecordSection("请求信息", fields: record.requestMetadata, into: &lines)
         appendRecordSection("审批状态", fields: record.approvalFields, into: &lines)
+        appendRecordSection("治理上下文", fields: record.governanceFields, into: &lines)
 
         if let toolArgs = nonEmpty(record.toolArgumentsText) {
             lines.append("")
@@ -487,15 +777,229 @@ enum ProjectSkillActivityPresentation {
     }
 
     static func displayFieldLabel(_ raw: String) -> String {
-        humanRecordFieldLabel(raw)
+        switch raw {
+        case "deny_code":
+            return "拒绝原因"
+        case "routing_reason_code":
+            return "路由判定"
+        default:
+            break
+        }
+        return humanRecordFieldLabel(raw)
+    }
+
+    static func displayFieldValue(
+        _ rawLabel: String,
+        _ rawValue: String,
+        context: [String: String] = [:]
+    ) -> String {
+        let cleanedLabel = rawLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch cleanedLabel {
+        case "deny_code", "拒绝码", "拒绝原因", "拒绝原因码":
+            return XTGuardrailMessagePresentation.displayDenyCode(
+                rawValue,
+                requiredCapability: context["required_capability"] ?? ""
+            )
+        case "execution_readiness", "执行就绪":
+            return XTPendingApprovalPresentation.displayExecutionReadiness(rawValue)
+        case "grant_floor", "授权门槛":
+            return XTPendingApprovalPresentation.displayGrantFloor(rawValue)
+        case "approval_floor", "审批门槛":
+            return XTPendingApprovalPresentation.displayApprovalFloor(rawValue)
+        case "required_capability", "所需能力":
+            return XTGuardrailMessagePresentation.displayCapability(rawValue)
+        case "required_runtime_surfaces", "运行面", "所需运行面":
+            return XTPendingApprovalPresentation.displayRuntimeSurfaceList(rawValue)
+        case "unblock_actions", "解阻动作":
+            return XTPendingApprovalPresentation.displayUnblockActionList(rawValue)
+        case "capability_families", "能力族",
+            "current_runnable_capability_families", "当前可直接运行能力族",
+            "requested_capability_families", "本次请求能力族",
+            "delta_capability_families", "新增放开能力族":
+            return XTPendingApprovalPresentation.displayCapabilityFamilies(rawValue)
+        case "intent_families", "意图族",
+            "capability_profiles", "能力档位",
+            "current_runnable_profiles", "当前可直接运行档位",
+            "requested_profiles", "本次请求档位",
+            "delta_profiles", "新增放开档位":
+            return XTPendingApprovalPresentation.displayIdentifierList(rawValue)
+        case "governance_truth", "治理真相":
+            return XTGovernanceTruthPresentation.displayText(rawValue)
+        case "routing_reason_code", "路由判定", "路由原因码":
+            return routingReasonText(rawValue) ?? rawValue
+        case "routing_explanation", "路由说明":
+            return routingNarrative(
+                requestedSkillId: context["requested_skill_id"],
+                effectiveSkillId: context["skill_id"] ?? "",
+                routingReasonCode: context["routing_reason_code"],
+                routingExplanation: rawValue
+            ) ?? rawValue
+        default:
+            return rawValue
+        }
     }
 
     static func displayTimelineDetail(_ detail: String?) -> String? {
         guard let detail = nonEmpty(detail) else { return nil }
+        let context = fieldContext(from: detail)
         let lines = detail
             .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { displayTimelineDetailLine(String($0)) }
+            .map { displayTimelineDetailLine(String($0), context: context) }
         return lines.joined(separator: "\n")
+    }
+
+    static func governanceTruthLine(
+        for item: ProjectSkillActivityItem
+    ) -> String? {
+        nonEmpty(item.governanceTruth)
+    }
+
+    static func displayGovernanceTruthLine(
+        for item: ProjectSkillActivityItem
+    ) -> String? {
+        governanceTruthLine(for: item).map(XTGovernanceTruthPresentation.displayText)
+    }
+
+    static func blockedSummary(
+        for item: ProjectSkillActivityItem
+    ) -> String? {
+        if let persisted = nonEmpty(item.blockedSummary) {
+            return persisted
+        }
+        switch normalizedStatus(item.status) {
+        case "blocked":
+            return XTGuardrailMessagePresentation.blockedSummary(
+                tool: ToolName(rawValue: item.toolName),
+                toolLabel: displayToolName(item.toolName),
+                denyCode: item.denyCode,
+                policySource: item.policySource,
+                policyReason: item.policyReason,
+                requiredCapability: item.requiredCapability,
+                fallbackSummary: item.resultSummary,
+                fallbackDetail: item.detail
+            ) ?? firstNonEmpty(item.resultSummary, item.detail)
+        case "failed":
+            guard !item.denyCode.isEmpty || !item.policySource.isEmpty || !item.policyReason.isEmpty else {
+                return nil
+            }
+            return XTGuardrailMessagePresentation.blockedSummary(
+                tool: ToolName(rawValue: item.toolName),
+                toolLabel: displayToolName(item.toolName),
+                denyCode: item.denyCode,
+                policySource: item.policySource,
+                policyReason: item.policyReason,
+                requiredCapability: item.requiredCapability,
+                fallbackSummary: item.resultSummary,
+                fallbackDetail: item.detail
+            ) ?? firstNonEmpty(item.resultSummary, item.detail)
+        default:
+            return nil
+        }
+    }
+
+    static func policyReason(
+        for item: ProjectSkillActivityItem
+    ) -> String? {
+        nonEmpty(item.policyReason)
+    }
+
+    static func governanceReason(
+        for item: ProjectSkillActivityItem
+    ) -> String? {
+        if let persisted = nonEmpty(item.governanceReason) {
+            return persisted
+        }
+        return XTGuardrailMessagePresentation.governanceReasonSummary(
+            tool: ToolName(rawValue: item.toolName),
+            toolLabel: displayToolName(item.toolName),
+            denyCode: item.denyCode,
+            policySource: item.policySource,
+            policyReason: item.policyReason,
+            requiredCapability: item.requiredCapability
+        )
+    }
+
+    static func repairActionSummary(
+        for item: ProjectSkillActivityItem
+    ) -> String? {
+        if let persisted = nonEmpty(item.repairAction) {
+            return persisted
+        }
+        guard let repairHint = XTGuardrailMessagePresentation.repairHint(
+            denyCode: item.denyCode,
+            policySource: item.policySource,
+            policyReason: item.policyReason
+        ) else {
+            return nil
+        }
+        return "\(repairHint.buttonTitle)：\(repairHint.helpText)"
+    }
+
+    static func governedShortSummary(
+        for item: ProjectSkillActivityItem
+    ) -> String? {
+        XTPendingApprovalPresentation.governedSkillShortSummary(for: item)
+    }
+
+    static func governedDetailLines(
+        for item: ProjectSkillActivityItem
+    ) -> [String] {
+        XTPendingApprovalPresentation.governedSkillDetailLines(for: item)
+    }
+
+    static func cardGovernedDetailLines(
+        for item: ProjectSkillActivityItem,
+        limit: Int = 2
+    ) -> [String] {
+        guard limit > 0 else { return [] }
+        let requestedSkillID = item.requestedSkillID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveSkillID = item.skillID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let shouldShow = normalizedStatus(item.status) == "awaiting_approval"
+            || !item.approvalSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !item.executionReadiness.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !item.hubStateDirPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || (!requestedSkillID.isEmpty && requestedSkillID != effectiveSkillID)
+        guard shouldShow else { return [] }
+
+        var lines: [String] = []
+        if let readiness = nonEmpty(item.executionReadiness) {
+            lines.append("执行就绪：\(XTPendingApprovalPresentation.displayExecutionReadiness(readiness))")
+        }
+
+        var blockerParts: [String] = []
+        if !item.requiredRuntimeSurfaces.isEmpty {
+            blockerParts.append(
+                "运行面：\(XTPendingApprovalPresentation.displayRuntimeSurfaceList(item.requiredRuntimeSurfaces))"
+            )
+        }
+        if !item.unblockActions.isEmpty {
+            blockerParts.append(
+                "解阻动作：\(XTPendingApprovalPresentation.displayUnblockActionList(item.unblockActions))"
+            )
+        }
+        if !blockerParts.isEmpty {
+            lines.append(blockerParts.joined(separator: "；"))
+        }
+
+        let detailLines = governedDetailLines(for: item).filter { line in
+            !line.hasPrefix("生效技能：")
+                && !line.hasPrefix("请求技能：")
+                && !line.hasPrefix("执行就绪：")
+                && !line.hasPrefix("运行面：")
+                && !line.hasPrefix("解阻动作：")
+        }
+
+        if let gateLine = detailLines.first(where: { $0.hasPrefix("治理闸门：") }) {
+            lines.append(gateLine)
+        }
+        if let approvalSummary = nonEmpty(item.approvalSummary) {
+            lines.append("能力增量：\(approvalSummary)")
+        }
+        lines.append(contentsOf: detailLines.filter { line in
+            !line.hasPrefix("治理闸门：")
+        })
+
+        return Array(uniqueDisplayLines(lines).prefix(limit))
     }
 
     private static func requestPreview(for item: ProjectSkillActivityItem) -> String? {
@@ -534,7 +1038,26 @@ enum ProjectSkillActivityPresentation {
         raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
-    private static func statusLabel(for rawStatus: String) -> String {
+    private static func uniqueDisplayLines(
+        _ lines: [String]
+    ) -> [String] {
+        var seen: Set<String> = []
+        var output: [String] = []
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            if seen.insert(trimmed).inserted {
+                output.append(trimmed)
+            }
+        }
+        return output
+    }
+
+    private static func statusLabel(
+        for rawStatus: String,
+        executionReadiness: String = "",
+        requiredCapability: String = ""
+    ) -> String {
         switch normalizedStatus(rawStatus) {
         case "completed":
             return "已完成"
@@ -543,7 +1066,10 @@ enum ProjectSkillActivityPresentation {
         case "blocked":
             return "受阻"
         case "awaiting_approval":
-            return "待审批"
+            return awaitingApprovalPresentation(
+                executionReadiness: executionReadiness,
+                requiredCapability: requiredCapability
+            )?.statusLabel ?? "待审批"
         case "resolved":
             return "已路由"
         default:
@@ -596,9 +1122,9 @@ enum ProjectSkillActivityPresentation {
         ProjectSkillRecordTimelineEntry(
             id: "\(event.item.requestID)-\(fallbackIndex)-\(Int((event.item.createdAt * 1000.0).rounded()))",
             status: event.item.status,
-            statusLabel: statusLabel(for: event.item.status),
+            statusLabel: statusLabel(for: event.item),
             timestamp: formattedTimestamp(event.item.createdAt),
-            summary: body(for: event.item),
+            summary: timelineBody(for: event.item),
             detail: timelineDetail(event),
             rawJSON: AXProjectSkillActivityStore.prettyJSONString(for: event.rawObject)
         )
@@ -611,11 +1137,17 @@ enum ProjectSkillActivityPresentation {
         if !event.item.resultSummary.isEmpty {
             lines.append("result_summary=\(event.item.resultSummary)")
         }
+        if !event.item.approvalSummary.isEmpty {
+            lines.append("approval_summary=\(event.item.approvalSummary)")
+        }
         if !event.item.detail.isEmpty {
             lines.append("detail=\(event.item.detail)")
         }
         if !event.item.denyCode.isEmpty {
             lines.append("deny_code=\(event.item.denyCode)")
+        }
+        if !event.item.requiredCapability.isEmpty {
+            lines.append("required_capability=\(event.item.requiredCapability)")
         }
         if !event.item.authorizationDisposition.isEmpty {
             lines.append("authorization_disposition=\(event.item.authorizationDisposition)")
@@ -626,8 +1158,74 @@ enum ProjectSkillActivityPresentation {
         if !event.item.policyReason.isEmpty {
             lines.append("policy_reason=\(event.item.policyReason)")
         }
+        if let governanceReason = governanceReason(for: event.item) {
+            lines.append("governance_reason=\(governanceReason)")
+        }
+        if let governanceTruth = governanceTruthLine(for: event.item) {
+            lines.append("governance_truth=\(governanceTruth)")
+        }
+        if let repairAction = repairActionSummary(for: event.item) {
+            lines.append("repair_action=\(repairAction)")
+        }
         if !event.item.resolutionSource.isEmpty {
             lines.append("resolution_source=\(event.item.resolutionSource)")
+        }
+        if !event.item.requestedSkillID.isEmpty {
+            lines.append("requested_skill_id=\(event.item.requestedSkillID)")
+        }
+        if !event.item.intentFamilies.isEmpty {
+            lines.append("intent_families=\(event.item.intentFamilies.joined(separator: ","))")
+        }
+        if !event.item.capabilityFamilies.isEmpty {
+            lines.append("capability_families=\(event.item.capabilityFamilies.joined(separator: ","))")
+        }
+        if !event.item.capabilityProfiles.isEmpty {
+            lines.append("capability_profiles=\(event.item.capabilityProfiles.joined(separator: ","))")
+        }
+        if !event.item.routingReasonCode.isEmpty {
+            lines.append("routing_reason_code=\(event.item.routingReasonCode)")
+        }
+        if !event.item.routingExplanation.isEmpty {
+            lines.append("routing_explanation=\(event.item.routingExplanation)")
+        }
+        if !event.item.executionReadiness.isEmpty {
+            lines.append("execution_readiness=\(event.item.executionReadiness)")
+        }
+        if !event.item.requiredRuntimeSurfaces.isEmpty {
+            lines.append("required_runtime_surfaces=\(event.item.requiredRuntimeSurfaces.joined(separator: ","))")
+        }
+        if !event.item.unblockActions.isEmpty {
+            lines.append("unblock_actions=\(event.item.unblockActions.joined(separator: ","))")
+        }
+        if !event.item.currentRunnableProfiles.isEmpty {
+            lines.append("current_runnable_profiles=\(event.item.currentRunnableProfiles.joined(separator: ","))")
+        }
+        if !event.item.requestedProfiles.isEmpty {
+            lines.append("requested_profiles=\(event.item.requestedProfiles.joined(separator: ","))")
+        }
+        if !event.item.deltaProfiles.isEmpty {
+            lines.append("delta_profiles=\(event.item.deltaProfiles.joined(separator: ","))")
+        }
+        if !event.item.currentRunnableCapabilityFamilies.isEmpty {
+            lines.append(
+                "current_runnable_capability_families=\(event.item.currentRunnableCapabilityFamilies.joined(separator: ","))"
+            )
+        }
+        if !event.item.requestedCapabilityFamilies.isEmpty {
+            lines.append(
+                "requested_capability_families=\(event.item.requestedCapabilityFamilies.joined(separator: ","))"
+            )
+        }
+        if !event.item.deltaCapabilityFamilies.isEmpty {
+            lines.append(
+                "delta_capability_families=\(event.item.deltaCapabilityFamilies.joined(separator: ","))"
+            )
+        }
+        if !event.item.grantFloor.isEmpty {
+            lines.append("grant_floor=\(event.item.grantFloor)")
+        }
+        if !event.item.approvalFloor.isEmpty {
+            lines.append("approval_floor=\(event.item.approvalFloor)")
         }
         if !event.item.toolArgs.isEmpty,
            let data = try? JSONEncoder().encode(event.item.toolArgs),
@@ -676,11 +1274,31 @@ enum ProjectSkillActivityPresentation {
         into lines: inout [String]
     ) {
         guard !fields.isEmpty else { return }
+        let context = Dictionary(uniqueKeysWithValues: fields.map { ($0.label, $0.value) })
         lines.append("")
         lines.append("== \(title) ==")
         for field in fields {
-            lines.append("\(displayFieldLabel(field.label))：\(field.value)")
+            lines.append(
+                "\(displayFieldLabel(field.label))：\(displayFieldValue(field.label, field.value, context: context))"
+            )
         }
+    }
+
+    private static func fieldContext(
+        from detail: String
+    ) -> [String: String] {
+        var context: [String: String] = [:]
+        for line in detail.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = String(line).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty,
+                  let separatorIndex = trimmed.firstIndex(of: "=") else {
+                continue
+            }
+            let key = String(trimmed[..<separatorIndex])
+            let value = String(trimmed[trimmed.index(after: separatorIndex)...])
+            context[key] = value
+        }
+        return context
     }
 
     private static func preferredToolArgumentsText(
@@ -737,18 +1355,55 @@ enum ProjectSkillActivityPresentation {
         return nil
     }
 
+    private static func latestRawEventScalar(
+        _ key: String,
+        from events: [AXProjectSkillActivityEvent]
+    ) -> String? {
+        for event in events.reversed() {
+            if let value = nonEmpty(event.rawObject[key]?.stringValue) {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private static func latestRawEventStringArray(
+        _ key: String,
+        from events: [AXProjectSkillActivityEvent]
+    ) -> [String] {
+        for event in events.reversed() {
+            let values = stringArrayValue(event.rawObject[key])
+            if !values.isEmpty {
+                return values
+            }
+        }
+        return []
+    }
+
     private static func humanRecordFieldLabel(_ raw: String) -> String {
         switch raw {
         case "request_id":
             return "请求单号"
         case "skill_id":
             return "技能 ID"
+        case "requested_skill_id":
+            return "请求技能 ID"
+        case "intent_families":
+            return "意图族"
+        case "capability_families":
+            return "能力族"
+        case "capability_profiles":
+            return "能力档位"
         case "tool_name":
             return "工具"
         case "latest_status":
             return "最新状态"
         case "resolution_source":
             return "处理来源"
+        case "routing_reason_code":
+            return "路由判定"
+        case "routing_explanation":
+            return "路由说明"
         case "project_id":
             return "项目 ID"
         case "job_id":
@@ -769,14 +1424,42 @@ enum ProjectSkillActivityPresentation {
             return "审批结论"
         case "deny_code":
             return "拒绝原因码"
+        case "execution_readiness":
+            return "执行就绪"
+        case "approval_summary":
+            return "审批摘要"
+        case "current_runnable_profiles":
+            return "当前可直接运行档位"
+        case "requested_profiles":
+            return "本次请求档位"
+        case "delta_profiles":
+            return "新增放开档位"
+        case "current_runnable_capability_families":
+            return "当前可直接运行能力族"
+        case "requested_capability_families":
+            return "本次请求能力族"
+        case "delta_capability_families":
+            return "新增放开能力族"
+        case "grant_floor":
+            return "授权门槛"
+        case "approval_floor":
+            return "审批门槛"
+        case "required_runtime_surfaces":
+            return "运行面"
+        case "unblock_actions":
+            return "解阻动作"
         case "policy_source":
             return "策略来源"
         case "policy_reason":
-            return "策略说明"
+            return "策略原因"
+        case "governance_reason":
+            return "治理原因"
         case "blocked_summary":
             return "阻塞说明"
         case "governance_truth":
             return "治理真相"
+        case "repair_action":
+            return "修复动作"
         case "required_capability":
             return "所需能力"
         case "grant_request_id":
@@ -807,7 +1490,8 @@ enum ProjectSkillActivityPresentation {
     }
 
     private static func displayTimelineDetailLine(
-        _ line: String
+        _ line: String,
+        context: [String: String]
     ) -> String {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
@@ -820,7 +1504,7 @@ enum ProjectSkillActivityPresentation {
         if rawLabel == "status" {
             value = statusLabel(for: rawValue)
         } else {
-            value = rawValue
+            value = displayFieldValue(rawLabel, rawValue, context: context)
         }
         return "\(displayFieldLabel(rawLabel))：\(value)"
     }
@@ -830,6 +1514,128 @@ enum ProjectSkillActivityPresentation {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter.string(from: date)
+    }
+
+    private static func governedSkillLabel(
+        for item: ProjectSkillActivityItem
+    ) -> String? {
+        XTPendingApprovalPresentation.governedSkillLabel(for: item)
+    }
+
+    private static func skillLabelText(
+        requestedSkillID: String?,
+        effectiveSkillID: String?
+    ) -> String? {
+        let item = ProjectSkillActivityItem(
+            requestID: "",
+            skillID: effectiveSkillID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+            requestedSkillID: requestedSkillID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+            toolName: "",
+            status: "",
+            createdAt: 0,
+            resolutionSource: "",
+            toolArgs: [:],
+            resultSummary: "",
+            detail: "",
+            denyCode: "",
+            authorizationDisposition: ""
+        )
+        return governedSkillLabel(for: item)
+    }
+
+    private static func awaitingApprovalPresentation(
+        for item: ProjectSkillActivityItem
+    ) -> AwaitingApprovalPresentationState? {
+        awaitingApprovalPresentation(
+            executionReadiness: item.executionReadiness,
+            requiredCapability: item.requiredCapability
+        )
+    }
+
+    private static func awaitingApprovalPresentation(
+        executionReadiness: String,
+        requiredCapability: String
+    ) -> AwaitingApprovalPresentationState? {
+        let readiness = executionReadiness.trimmingCharacters(in: .whitespacesAndNewlines)
+        let capability = requiredCapability.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayCapability = XTGuardrailMessagePresentation.displayCapability(capability)
+
+        if readiness == XTSkillExecutionReadinessState.grantRequired.rawValue
+            || (!capability.isEmpty && readiness != XTSkillExecutionReadinessState.localApprovalRequired.rawValue) {
+            let title = displayCapability.isEmpty
+                ? "等待 Hub 授权"
+                : "等待 Hub 授权 · \(displayCapability)"
+            return AwaitingApprovalPresentationState(
+                title: title,
+                statusLabel: "待授权",
+                iconName: "lock.shield.fill"
+            )
+        }
+
+        if readiness == XTSkillExecutionReadinessState.localApprovalRequired.rawValue {
+            return AwaitingApprovalPresentationState(
+                title: "等待本地审批",
+                statusLabel: "待审批",
+                iconName: "hand.raised.fill"
+            )
+        }
+
+        return nil
+    }
+
+    private static func routingReasonText(
+        _ rawReasonCode: String?
+    ) -> String? {
+        SupervisorSkillActivityPresentation.routingReasonText(rawReasonCode)
+    }
+
+    private static func routingNarrative(
+        requestedSkillId: String?,
+        effectiveSkillId: String,
+        routingReasonCode: String?,
+        routingExplanation: String?
+    ) -> String? {
+        SupervisorSkillActivityPresentation.routingNarrative(
+            requestedSkillId: requestedSkillId,
+            effectiveSkillId: effectiveSkillId,
+            routingReasonCode: routingReasonCode,
+            routingExplanation: routingExplanation
+        )
+    }
+
+    private static func stringArrayValue(_ value: JSONValue?) -> [String] {
+        switch value {
+        case .array(let values):
+            return values.compactMap {
+                $0.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            .filter { !$0.isEmpty }
+        case .string(let text):
+            return text
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        default:
+            return []
+        }
+    }
+
+    private static func firstNonEmptyStringArray(
+        _ arrays: [String]...
+    ) -> [String] {
+        for array in arrays where !array.isEmpty {
+            return array
+        }
+        return []
+    }
+
+    private static func joinedListText(
+        _ values: [String]
+    ) -> String? {
+        let normalized = values
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return normalized.isEmpty ? nil : normalized.joined(separator: ", ")
     }
 
     private static func encodedJSONText<T: Encodable>(

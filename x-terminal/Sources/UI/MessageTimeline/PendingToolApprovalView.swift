@@ -10,6 +10,15 @@ struct PendingToolApprovalView: View {
     let onReject: () -> Void
 
     var body: some View {
+        let pendingSkillItems = session.pendingProjectSkillActivityItems()
+        let batchPresentation = XTPendingApprovalPresentation.pendingBatchPresentation(
+            calls: session.pendingToolCalls,
+            activityByRequestID: pendingSkillItems
+        )
+        let batchDeltaLines = XTPendingApprovalPresentation.pendingBatchDeltaLines(
+            calls: session.pendingToolCalls,
+            activityByRequestID: pendingSkillItems
+        )
         VStack(alignment: .leading, spacing: 12) {
             // 头部
             HStack(spacing: 12) {
@@ -22,7 +31,7 @@ struct PendingToolApprovalView: View {
                         .font(.system(.headline, design: .rounded))
                         .fontWeight(.semibold)
 
-                    Text("\(session.pendingToolCalls.count) 个工具调用等待你确认")
+                    Text(batchPresentation.subtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -49,8 +58,8 @@ struct PendingToolApprovalView: View {
                         onApprove()
                     } label: {
                         HStack(spacing: 6) {
-                            Image(systemName: "checkmark")
-                            Text("批准并执行")
+                            Image(systemName: batchPresentation.primaryActionSystemImage)
+                            Text(batchPresentation.primaryActionTitle)
                         }
                         .font(.system(.body, design: .rounded))
                         .fontWeight(.medium)
@@ -74,9 +83,28 @@ struct PendingToolApprovalView: View {
 
             Divider()
 
-            Text(XTPendingApprovalPresentation.approvalFooterNote(callCount: session.pendingToolCalls.count))
+            Text(batchPresentation.footerNote)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            if !batchDeltaLines.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("能力增量总览")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    ForEach(batchDeltaLines, id: \.self) { line in
+                        Text(line)
+                            .font(.system(.caption, design: .rounded))
+                            .foregroundStyle(.primary)
+                            .textSelection(.enabled)
+                    }
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(nsColor: .controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
 
             // 工具列表
             ScrollViewReader { proxy in
@@ -85,6 +113,7 @@ struct PendingToolApprovalView: View {
                         ForEach(session.pendingToolCalls) { call in
                             PendingToolCallChip(
                                 toolCall: call,
+                                activity: pendingSkillItems[call.id],
                                 isFocused: focusedRequestId == call.id
                             )
                             .id(call.id)
@@ -107,7 +136,7 @@ struct PendingToolApprovalView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "wifi.slash")
                         .foregroundColor(.red)
-                    Text("Hub 未连接，连上后才能批准执行。")
+                    Text(batchPresentation.hubDisconnectedNote)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -145,6 +174,7 @@ struct PendingToolApprovalView: View {
 /// 单个待审批工具的芯片
 struct PendingToolCallChip: View {
     let toolCall: ToolCall
+    var activity: ProjectSkillActivityItem? = nil
     var isFocused: Bool = false
     @State private var showDetails = false
 
@@ -163,7 +193,17 @@ struct PendingToolCallChip: View {
                         .font(.system(.caption, design: .rounded))
                         .fontWeight(.medium)
 
-                    Text(XTPendingApprovalPresentation.actionSummary(for: toolCall))
+                    if let skillSummary = XTPendingApprovalPresentation.governedSkillShortSummary(for: activity) {
+                        Text(skillSummary)
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    Text(
+                        XTPendingApprovalPresentation.approvalProfileDeltaSummary(for: activity)
+                        ?? XTPendingApprovalPresentation.actionSummary(for: toolCall)
+                    )
                         .font(.system(.caption2, design: .rounded))
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
@@ -187,7 +227,11 @@ struct PendingToolCallChip: View {
         .popover(isPresented: $showDetails) {
             ToolCallDetailsPopover(
                 toolCall: toolCall,
-                message: XTPendingApprovalPresentation.approvalMessage(for: toolCall)
+                activity: activity,
+                message: XTPendingApprovalPresentation.approvalMessage(
+                    for: toolCall,
+                    activity: activity
+                )
             )
         }
     }
@@ -196,6 +240,7 @@ struct PendingToolCallChip: View {
 /// 工具调用详情弹窗
 struct ToolCallDetailsPopover: View {
     let toolCall: ToolCall
+    let activity: ProjectSkillActivityItem?
     let message: XTGuardrailMessage
 
     var body: some View {
@@ -209,6 +254,21 @@ struct ToolCallDetailsPopover: View {
             }
 
             Divider()
+
+            let governanceLines = XTPendingApprovalPresentation.governedSkillDetailLines(for: activity)
+            if !governanceLines.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("治理上下文")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    ForEach(governanceLines, id: \.self) { line in
+                        Text(line)
+                            .font(.system(.caption, design: .rounded))
+                            .textSelection(.enabled)
+                    }
+                }
+            }
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("即将执行")
@@ -233,6 +293,21 @@ struct ToolCallDetailsPopover: View {
                     Text(nextStep)
                         .font(.system(.caption2, design: .rounded))
                         .foregroundStyle(.secondary)
+                }
+            }
+
+            let deltaLines = XTPendingApprovalPresentation.approvalProfileDeltaLines(for: activity)
+            if !deltaLines.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("能力增量")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    ForEach(deltaLines, id: \.self) { line in
+                        Text(line)
+                            .font(.system(.caption, design: .rounded))
+                            .textSelection(.enabled)
+                    }
                 }
             }
 

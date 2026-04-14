@@ -32,35 +32,35 @@ struct ProjectGovernanceComposerPresentation: Equatable, Sendable {
             case .executionTier:
                 return ProjectGovernanceDestinationCardPresentation(
                     destination: destination,
-                    heading: destination.displayTitle,
-                    title: executionTier.displayName,
+                    heading: destination.localizedDisplayTitle,
+                    title: executionTier.localizedDisplayLabel,
                     summary: executionTier.oneLineSummary,
-                    accentTone: Self.executionAccentTone(for: executionTier),
+                    accentTone: .forExecutionTier(executionTier),
                     isSelected: selectedDestination == destination
                 )
             case .supervisorTier:
                 return ProjectGovernanceDestinationCardPresentation(
                     destination: destination,
-                    heading: destination.displayTitle,
-                    title: supervisorInterventionTier.displayName,
+                    heading: destination.localizedDisplayTitle,
+                    title: supervisorInterventionTier.localizedDisplayLabel,
                     summary: supervisorInterventionTier.oneLineSummary,
-                    accentTone: Self.supervisorAccentTone(for: supervisorInterventionTier),
+                    accentTone: .forSupervisorTier(supervisorInterventionTier),
                     isSelected: selectedDestination == destination
                 )
             case .heartbeatReview:
                 return ProjectGovernanceDestinationCardPresentation(
                     destination: destination,
-                    heading: destination.displayTitle,
-                    title: reviewPolicyMode.displayName,
+                    heading: destination.localizedDisplayTitle,
+                    title: reviewPolicyMode.localizedDisplayName,
                     summary: governancePresentation.reviewCadenceText,
-                    accentTone: Self.reviewAccentTone(for: reviewPolicyMode),
+                    accentTone: .forReviewPolicy(reviewPolicyMode),
                     isSelected: selectedDestination == destination
                 )
             case .overview:
                 return ProjectGovernanceDestinationCardPresentation(
                     destination: destination,
-                    heading: destination.displayTitle,
-                    title: destination.displayTitle,
+                    heading: destination.localizedDisplayTitle,
+                    title: destination.localizedDisplayTitle,
                     summary: governancePresentation.homeStatusMessage,
                     accentTone: .blue,
                     isSelected: selectedDestination == destination
@@ -68,64 +68,13 @@ struct ProjectGovernanceComposerPresentation: Equatable, Sendable {
             case .uiReview:
                 return ProjectGovernanceDestinationCardPresentation(
                     destination: destination,
-                    heading: destination.displayTitle,
-                    title: destination.displayTitle,
-                    summary: "Latest UI review workspace",
+                    heading: destination.localizedDisplayTitle,
+                    title: destination.localizedDisplayTitle,
+                    summary: "最近一次 UI 审查工作区",
                     accentTone: .teal,
                     isSelected: selectedDestination == destination
                 )
             }
-        }
-    }
-
-    private static func executionAccentTone(
-        for tier: AXProjectExecutionTier
-    ) -> ProjectGovernanceComposerAccentTone {
-        switch tier {
-        case .a0Observe:
-            return .gray
-        case .a1Plan:
-            return .blue
-        case .a2RepoAuto:
-            return .teal
-        case .a3DeliverAuto:
-            return .green
-        case .a4OpenClaw:
-            return .orange
-        }
-    }
-
-    private static func supervisorAccentTone(
-        for tier: AXProjectSupervisorInterventionTier
-    ) -> ProjectGovernanceComposerAccentTone {
-        switch tier {
-        case .s0SilentAudit:
-            return .gray
-        case .s1MilestoneReview:
-            return .blue
-        case .s2PeriodicReview:
-            return .teal
-        case .s3StrategicCoach:
-            return .green
-        case .s4TightSupervision:
-            return .orange
-        }
-    }
-
-    private static func reviewAccentTone(
-        for mode: AXProjectReviewPolicyMode
-    ) -> ProjectGovernanceComposerAccentTone {
-        switch mode {
-        case .off:
-            return .gray
-        case .milestoneOnly:
-            return .blue
-        case .periodic:
-            return .teal
-        case .hybrid:
-            return .green
-        case .aggressive:
-            return .orange
         }
     }
 }

@@ -1,5 +1,18 @@
 import SwiftUI
 
+func xtProjectSettingsInlineMessage(
+    title: String,
+    detail: String?
+) -> String {
+    let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    let normalizedDetail = detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !normalizedDetail.isEmpty else { return normalizedTitle }
+    if normalizedDetail.contains("\n") {
+        return "\(normalizedTitle)\n\(normalizedDetail)"
+    }
+    return "\(normalizedTitle) · \(normalizedDetail)"
+}
+
 struct ProjectSettingsView: View {
     let ctx: AXProjectContext
     let initialGovernanceDestination: XTProjectGovernanceDestination
@@ -7,6 +20,7 @@ struct ProjectSettingsView: View {
     @EnvironmentObject private var appModel: AppModel
     @Environment(\.dismiss) private var dismiss
     @StateObject private var modelManager = HubModelManager.shared
+    @StateObject private var supervisorManager = SupervisorManager.shared
     @StateObject private var projectModelUpdateFeedback = XTTransientUpdateFeedbackState()
     @State private var trustedAutomationDeviceIdDraft: String = ""
     @State private var governedReadableRootsDraft: String = ""
@@ -15,8 +29,11 @@ struct ProjectSettingsView: View {
     @State private var modelPickerRole: AXRole?
     @State private var advancedGovernanceExpanded = false
     @State private var activeFocusRequest: XTProjectSettingsFocusRequest?
+    @State private var pendingOverviewAnchor: XTProjectSettingsOverviewAnchor?
     @State private var selectedGovernanceDestination: XTProjectGovernanceDestination
     @State private var projectModelChangeNotice: XTSettingsChangeNotice?
+    @State private var projectConfigSnapshot: AXProjectConfig
+    @State private var projectSkillsCompatibilitySnapshot: AXSkillsDoctorSnapshot = .empty
 
     init(
         ctx: AXProjectContext,
@@ -24,7 +41,9 @@ struct ProjectSettingsView: View {
     ) {
         self.ctx = ctx
         self.initialGovernanceDestination = initialGovernanceDestination
+        let initialConfig = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: ctx.root)
         _selectedGovernanceDestination = State(initialValue: initialGovernanceDestination)
+        _projectConfigSnapshot = State(initialValue: initialConfig)
     }
 
     var body: some View {
@@ -38,8 +57,8 @@ struct ProjectSettingsView: View {
         .frame(minWidth: 760, minHeight: 520)
         .onAppear {
             modelManager.setAppModel(appModel)
-            trustedAutomationDeviceIdDraft = appModel.projectConfig?.trustedAutomationDeviceId ?? ""
-            governedReadableRootsDraft = governedReadableRootsText(appModel.projectConfig?.governedReadableRoots ?? [])
+            reloadProjectConfigSnapshot()
+            refreshProjectSkillsCompatibilitySnapshot()
             selectedGovernanceDestination = initialGovernanceDestination
             processProjectSettingsFocusRequest()
             Task {
@@ -53,17 +72,21 @@ struct ProjectSettingsView: View {
             processProjectSettingsFocusRequest()
         }
         .onChange(of: appModel.hubInteractive) { connected in
+            Task {
+                await refreshProjectSkillGovernanceSurface(force: true)
+            }
             if connected {
                 Task {
                     await modelManager.fetchModels()
                 }
             }
         }
-        .onChange(of: appModel.projectConfig?.trustedAutomationDeviceId ?? "") { value in
-            trustedAutomationDeviceIdDraft = value
+        .onChange(of: appModel.projectConfig) { _ in
+            syncProjectConfigSnapshotFromCurrentSelection()
+            refreshProjectSkillsCompatibilitySnapshot()
         }
-        .onChange(of: governedReadableRootsText(appModel.projectConfig?.governedReadableRoots ?? [])) { value in
-            governedReadableRootsDraft = value
+        .task(id: projectSkillGovernanceRefreshKey) {
+            await refreshProjectSkillGovernanceSurface(force: true)
         }
         .onDisappear {
             resetProjectModelRoutingFeedback()
@@ -71,91 +94,102 @@ struct ProjectSettingsView: View {
     }
 
     private var overviewSettingsBody: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    Text("项目设置（Project Settings）")
-                        .font(.headline)
-                    Spacer()
-                    Button("关闭") { dismiss() }
-                }
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack {
+                        Text("项目设置")
+                            .font(.headline)
+                        Spacer()
+                        Button("关闭") { dismiss() }
+                    }
 
-                Text(ctx.displayName(registry: appModel.registry))
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    Text(ctx.displayName(registry: appModel.registry))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
 
-                Divider()
+                    Divider()
 
-                latestUIReviewSection
-                GroupBox("项目级模型路由") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("每个角色可选择不同模型；留空 = 使用全局 Settings。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    governanceQuickAccessSection
+                    governanceThreeAxisOverviewSection
 
-                        if projectModelUpdateFeedback.showsBadge,
-                           let projectModelChangeNotice {
-                            XTSettingsChangeNoticeInlineView(
-                                notice: projectModelChangeNotice,
-                                tint: .accentColor
-                            )
-                        }
-
-                        if !appModel.hubInteractive {
-                            Text("Hub 未连接，无法读取可用模型列表。")
-                                .font(.caption)
-                                .foregroundStyle(.red)
-                        } else if sortedAvailableHubModels.isEmpty {
-                            Text("Hub 暂无可用模型。请在 Hub 中注册/加载模型，或配置付费模型后再试。")
+                    latestUIReviewSection
+                    GroupBox("项目级模型路由") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("每个角色可选择不同模型；留空 = 使用全局设置。")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                        }
 
-                        ForEach(AXRole.allCases) { role in
-                            VStack(alignment: .leading, spacing: 6) {
-                                HStack(alignment: .top, spacing: 12) {
-                                    Text(roleLabel(role))
-                                        .font(.system(.body, design: .monospaced))
-                                        .frame(width: 90, alignment: .leading)
+                            if projectModelUpdateFeedback.showsBadge,
+                               let projectModelChangeNotice {
+                                XTSettingsChangeNoticeInlineView(
+                                    notice: projectModelChangeNotice,
+                                    tint: .accentColor
+                                )
+                            }
 
-                                    roleModelSelectionButton(role)
-                                }
+                            if !appModel.hubInteractive {
+                                Text("Hub 未连接，无法读取可用模型列表。")
+                                    .font(.caption)
+                                    .foregroundStyle(.red)
+                            } else if projectModelInventoryTruth.showsStatusCard {
+                                XTModelInventoryTruthCard(presentation: projectModelInventoryTruth)
+                            }
 
-                                if let warning = modelAvailabilityWarningText(for: role) {
-                                    Text(warning)
-                                        .font(.caption)
-                                        .foregroundStyle(.orange)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
+                            ForEach(AXRole.allCases) { role in
+                                VStack(alignment: .leading, spacing: 6) {
+                                    HStack(alignment: .top, spacing: 12) {
+                                        Text(roleLabel(role))
+                                            .font(.system(.body, design: .monospaced))
+                                            .frame(width: 90, alignment: .leading)
 
-                                if let globalHint = inheritedGlobalModelHint(for: role) {
-                                    Text(globalHint)
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                        .fixedSize(horizontal: false, vertical: true)
+                                        roleModelSelectionButton(role)
+                                    }
+
+                                    if let warning = modelAvailabilityWarningText(for: role) {
+                                        Text(warning)
+                                            .font(.caption)
+                                            .foregroundStyle(.orange)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+
+                                    if let globalHint = inheritedGlobalModelHint(for: role) {
+                                        Text(globalHint)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
                                 }
                             }
                         }
+                        .padding(8)
                     }
-                    .padding(8)
-                }
-                .xtTransientUpdateCardChrome(
-                    cornerRadius: 10,
-                    isUpdated: projectModelUpdateFeedback.isHighlighted,
-                    focusTint: .accentColor,
-                    updateTint: .accentColor,
-                    baseBackground: Color(NSColor.controlBackgroundColor)
-                )
+                    .xtTransientUpdateCardChrome(
+                        cornerRadius: 10,
+                        isUpdated: projectModelUpdateFeedback.isHighlighted,
+                        focusTint: .accentColor,
+                        updateTint: .accentColor,
+                        baseBackground: Color(NSColor.controlBackgroundColor)
+                    )
 
-                hubMemorySection
-                contextAssemblySection
-                automationSelfIterateSection
-                governanceTemplateSection
-                ProjectGovernanceActivityView(ctx: ctx)
-                advancedGovernanceSection
+                    hubMemorySection
+                    contextAssemblySection
+                        .id(XTProjectSettingsOverviewAnchor.contextAssembly.rawValue)
+                    automationSelfIterateSection
+                    governanceTemplateSection
+                    skillGovernanceSection
+                    ProjectGovernanceActivityView(ctx: ctx)
+                    advancedGovernanceSection
+                }
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .onAppear {
+                processOverviewAnchor(proxy)
+            }
+            .onChange(of: pendingOverviewAnchor?.rawValue) { _ in
+                processOverviewAnchor(proxy)
+            }
         }
     }
 
@@ -171,7 +205,7 @@ struct ProjectSettingsView: View {
     }
 
     private func projectModelOverrideId(for role: AXRole) -> String? {
-        let raw = appModel.projectConfig?.modelOverride(for: role)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let raw = governanceConfig.modelOverride(for: role)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return raw.isEmpty ? nil : raw
     }
 
@@ -181,7 +215,7 @@ struct ProjectSettingsView: View {
                 ctx: ctx,
                 emptyTitle: "暂无浏览器 UI 审查",
                 emptyMessage: "当前项目还没有浏览器 UI 审查。执行一次 `device.browser.control snapshot` 后，系统会在这里展示最近一次受治理 UI 观察结果。",
-                helperText: "这条审查会被项目 AI / Supervisor 记忆 / 恢复摘要共同消费。它的作用不是替代人工验收，而是让系统先判断“当前页面是否真的可执行”。"
+                helperText: "这条审查会被项目 AI / Supervisor 记忆 / 恢复摘要共同消费。它的作用不是替代人工验收，而是先让系统判断“当前页面是否真的可执行”。"
             )
             .padding(8)
         }
@@ -192,17 +226,38 @@ struct ProjectSettingsView: View {
     }
 
     private var governanceConfig: AXProjectConfig {
-        appModel.projectConfig ?? .default(forProjectRoot: ctx.root)
+        projectConfigSnapshot
+    }
+
+    private var isCurrentProjectSelected: Bool {
+        appModel.projectContext?.root.standardizedFileURL.path == ctx.root.standardizedFileURL.path
+    }
+
+    private var currentProjectRemoteRuntimeSurfaceOverride: AXProjectRuntimeSurfaceRemoteOverrideSnapshot? {
+        isCurrentProjectSelected ? appModel.projectRemoteRuntimeSurfaceOverride : nil
+    }
+
+    private var currentProjectAIStrengthProfile: AXProjectAIStrengthProfile {
+        AXProjectAIStrengthAssessor.assess(
+            ctx: ctx,
+            adaptationPolicy: .default
+        )
     }
 
     private var resolvedGovernanceState: AXProjectResolvedGovernanceState {
-        appModel.resolvedProjectGovernance(config: governanceConfig)
+        xtResolveProjectGovernance(
+            projectRoot: ctx.root,
+            config: governanceConfig,
+            remoteOverride: currentProjectRemoteRuntimeSurfaceOverride,
+            projectAIStrengthProfile: currentProjectAIStrengthProfile,
+            adaptationPolicy: .default
+        )
     }
 
     private var currentProjectContextAssemblyDiagnostics: AXProjectContextAssemblyDiagnosticsSummary {
         AXProjectContextAssemblyDiagnosticsStore.doctorSummary(
-            for: appModel.projectContext ?? ctx,
-            config: appModel.projectConfig
+            for: ctx,
+            config: governanceConfig
         )
     }
 
@@ -211,11 +266,82 @@ struct ProjectSettingsView: View {
     }
 
     private var resolvedGovernancePresentation: ProjectGovernancePresentation {
-        ProjectGovernancePresentation(resolved: resolvedGovernanceState)
+        ProjectGovernancePresentation(
+            resolved: resolvedGovernanceState,
+            scheduleState: SupervisorReviewScheduleStore.load(for: ctx)
+        )
+    }
+
+    private var recentGovernanceInterception: ProjectGovernanceInterceptionPresentation? {
+        ProjectGovernanceInterceptionPresentation.latest(
+            from: AXProjectSkillActivityStore.loadRecentActivities(ctx: ctx, limit: 32)
+        )
+    }
+
+    private var skillGovernanceProjectID: String {
+        AXProjectRegistryStore.projectId(forRoot: ctx.root)
+    }
+
+    private var skillGovernanceProjectName: String {
+        ctx.displayName(registry: appModel.registry)
+    }
+
+    private var skillGovernanceHubBaseDir: URL {
+        appModel.hubBaseDir ?? HubPaths.baseDir()
+    }
+
+    private var projectSkillProfileSnapshot: XTProjectEffectiveSkillProfileSnapshot {
+        AXSkillsLibrary.projectEffectiveSkillProfileSnapshot(
+            projectId: skillGovernanceProjectID,
+            projectName: skillGovernanceProjectName,
+            projectRoot: ctx.root,
+            config: governanceConfig,
+            hubBaseDir: skillGovernanceHubBaseDir
+        )
+    }
+
+    private var projectGovernanceSurfaceEntries: [AXSkillGovernanceSurfaceEntry] {
+        projectSkillsCompatibilitySnapshot.governanceSurfaceEntries(
+            projectId: skillGovernanceProjectID,
+            projectName: skillGovernanceProjectName,
+            projectRoot: ctx.root,
+            config: governanceConfig,
+            hubBaseDir: skillGovernanceHubBaseDir
+        )
+    }
+
+    private var projectSkillGovernanceRefreshKey: String {
+        [
+            skillGovernanceProjectID,
+            skillGovernanceHubBaseDir.path,
+            appModel.hubInteractive ? "hub=interactive" : "hub=offline"
+        ].joined(separator: "|")
     }
 
     private var effectiveRuntimeSurface: AXProjectRuntimeSurfaceEffectivePolicy {
         resolvedGovernanceState.effectiveRuntimeSurface
+    }
+
+    private func refreshProjectSkillsCompatibilitySnapshot() {
+        projectSkillsCompatibilitySnapshot = AXSkillsLibrary.compatibilityDoctorSnapshot(
+            projectId: skillGovernanceProjectID,
+            projectName: skillGovernanceProjectName,
+            skillsDir: AXSkillsLibrary.resolveSkillsDirectory(),
+            hubBaseDir: skillGovernanceHubBaseDir
+        )
+    }
+
+    @MainActor
+    private func refreshProjectSkillGovernanceSurface(force: Bool = false) async {
+        refreshProjectSkillsCompatibilitySnapshot()
+        _ = await XTResolvedSkillsCacheStore.refreshFromHubIfPossible(
+            projectId: skillGovernanceProjectID,
+            projectName: skillGovernanceProjectName,
+            context: ctx,
+            hubBaseDir: skillGovernanceHubBaseDir,
+            force: force
+        )
+        refreshProjectSkillsCompatibilitySnapshot()
     }
 
     private var configuredRuntimeSurfaceSummary: String {
@@ -245,11 +371,16 @@ struct ProjectSettingsView: View {
         appModel.settingsStore.settings.assignment(for: role).model
     }
 
+    private var interfaceLanguage: XTInterfaceLanguage {
+        appModel.settingsStore.settings.interfaceLanguage
+    }
+
     private func roleModelSelectionButton(_ role: AXRole) -> some View {
         let title = selectedModelButtonTitle(for: role)
         let presentation = selectedModelPresentation(for: role)
         let identifier = selectedModelIdentifier(for: role)
         let sourceLabel = selectedModelPresentationSourceLabel(for: role)
+        let routeTruth = projectRoleRouteTruth(for: role)
         let buttonDisabled = !appModel.hubInteractive || sortedAvailableHubModels.isEmpty
 
         return HubModelRoutingButton(
@@ -257,19 +388,59 @@ struct ProjectSettingsView: View {
             identifier: identifier,
             sourceLabel: sourceLabel,
             presentation: presentation,
-            disabled: buttonDisabled
+            sourceIdentityLine: selectedHubModel(for: role)?.remoteSourceIdentityLine(language: interfaceLanguage),
+            sourceBadges: selectedHubModel(for: role)?.routingSourceBadges(language: interfaceLanguage) ?? [],
+            supplementary: routeTruth,
+            disabled: buttonDisabled,
+            automaticRouteLabel: XTL10n.Common.automaticRouting.resolve(interfaceLanguage)
         ) {
             modelPickerRole = role
         }
         .frame(maxWidth: 420, alignment: .leading)
         .popover(isPresented: modelPickerBinding(for: role), arrowEdge: .bottom) {
                 HubModelPickerPopover(
-                    title: "为 \(roleLabel(role)) 选择模型",
+                    title: XTL10n.text(
+                        interfaceLanguage,
+                        zhHans: "为 \(role.displayName(in: interfaceLanguage)) 选择模型",
+                        en: "Choose Model for \(role.displayName(in: interfaceLanguage))"
+                    ),
                     selectedModelId: projectModelOverrideId(for: role),
                     inheritedModelId: globalModelId(role),
                     inheritedModelPresentation: globalModelPresentation(for: role),
                     models: sortedAvailableHubModels,
+                    language: interfaceLanguage,
                     recommendation: modelSelectionRecommendation(for: role),
+                    selectionTruth: routeTruth,
+                    selectionTruthTitle: XTL10n.text(
+                        interfaceLanguage,
+                        zhHans: "\(roleLabel(role)) · 当前项目 Route Truth",
+                        en: "\(role.displayName(in: interfaceLanguage)) · Current Project Route Truth"
+                    ),
+                    automaticTitle: XTL10n.text(
+                        interfaceLanguage,
+                        zhHans: "使用全局设置",
+                        en: "Use Global Setting"
+                    ),
+                    automaticSelectedBadge: XTL10n.text(
+                        interfaceLanguage,
+                        zhHans: "当前生效",
+                        en: "Currently Active"
+                    ),
+                    automaticRestoreBadge: XTL10n.text(
+                        interfaceLanguage,
+                        zhHans: "恢复继承",
+                        en: "Restore Inheritance"
+                    ),
+                    inheritedModelLabel: XTL10n.text(
+                        interfaceLanguage,
+                        zhHans: "全局模型",
+                        en: "Global Model"
+                    ),
+                    automaticDescription: XTL10n.text(
+                        interfaceLanguage,
+                        zhHans: "当前没有全局固定模型，恢复后会交给系统自动路由。",
+                        en: "There is no global pinned model right now. Restoring inheritance will hand routing back to the system."
+                    ),
                     onSelect: { modelId in
                         updateProjectRoleModelAssignment(role: role, modelId: modelId)
                         modelPickerRole = nil
@@ -302,9 +473,9 @@ struct ProjectSettingsView: View {
             resolved: resolved
         )
 
-        return GroupBox("治理模板") {
+        return GroupBox("执行场景模板") {
             VStack(alignment: .leading, spacing: 12) {
-                Text("这些模板只是 A-tier / S-tier / 审查节奏 的快捷映射。真正生效的执行权限、Supervisor 介入、TTL、受治理自动化与可读根目录，仍以下方治理设置和运行时收束为准。")
+                Text("这些模板会一次初始化 A-Tier / S-Tier / Heartbeat / Review / Project Context 连续性。真正生效的执行权限、Supervisor 介入、TTL、受治理自动化与可读根目录，仍以下方治理设置和运行时收束为准。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -318,9 +489,13 @@ struct ProjectSettingsView: View {
                 }
 
                 if templatePreview.configuredProfile == .custom {
-                    Text("当前模板已偏离默认映射：系统会以实际保存的 A-tier / S-tier / 审查配置为准。")
+                    Text("当前场景模板已偏离默认映射：系统会以实际保存的 A-Tier / S-Tier / Heartbeat / Review 配置与 Project Context 连续性为准。")
                         .font(.caption)
                         .foregroundStyle(.orange)
+                } else if templatePreview.configuredProfile == .legacyObserve {
+                    Text("当前项目仍是旧 Observe 基线；点任一场景模板即可迁入新的五档执行场景真相。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 if !governanceInlineMessage.isEmpty {
@@ -339,6 +514,8 @@ struct ProjectSettingsView: View {
                     onCalloutTap: { selectedGovernanceDestination = .overview }
                 )
 
+                recentGovernanceInterceptionSection
+
                 HStack(alignment: .top, spacing: 12) {
                     governanceTemplateStateCard(
                         title: "模板输入",
@@ -354,7 +531,7 @@ struct ProjectSettingsView: View {
                 }
 
                 if templatePreview.hasConfiguredEffectiveDrift {
-                    Text("模板输入和运行时投影当前不完全一致。真正放行动作仍继续受执行面 TTL、收束规则、受治理自动化、授权门和紧急回收共同约束。")
+                    Text("模板输入和运行时投影当前不完全一致。真正放行动作仍继续受执行面 TTL、收束规则、受治理自动化、授权门、Project Context 实际装配和紧急回收共同约束。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -408,17 +585,115 @@ struct ProjectSettingsView: View {
         }
     }
 
+    private var skillGovernanceSection: some View {
+        Group {
+            if !projectGovernanceSurfaceEntries.isEmpty {
+                GroupBox("技能治理") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        skillProfileSummaryCard
+
+                        XTSkillGovernanceSurfaceView(
+                            items: projectGovernanceSurfaceEntries,
+                            title: "当前 governed skills 可执行真相",
+                            maxItems: 4
+                        )
+                    }
+                    .padding(8)
+                }
+            }
+        }
+    }
+
+    private var skillProfileSummaryCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("项目级 capability profile 真相")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Text(
+                "discoverable=\(projectSkillProfileSnapshot.discoverableProfiles.count) " +
+                "installable=\(projectSkillProfileSnapshot.installableProfiles.count) " +
+                "requestable=\(projectSkillProfileSnapshot.requestableProfiles.count) " +
+                "runnable_now=\(projectSkillProfileSnapshot.runnableNowProfiles.count)"
+            )
+            .font(.caption2.monospaced())
+            .foregroundStyle(.secondary)
+            .textSelection(.enabled)
+
+            if !projectSkillProfileSnapshot.discoverableProfiles.isEmpty {
+                skillProfileSummaryRow(
+                    label: "Discoverable",
+                    values: projectSkillProfileSnapshot.discoverableProfiles
+                )
+            }
+            if !projectSkillProfileSnapshot.installableProfiles.isEmpty {
+                skillProfileSummaryRow(
+                    label: "Installable",
+                    values: projectSkillProfileSnapshot.installableProfiles
+                )
+            }
+            if !projectSkillProfileSnapshot.requestableProfiles.isEmpty {
+                skillProfileSummaryRow(
+                    label: "Requestable",
+                    values: projectSkillProfileSnapshot.requestableProfiles
+                )
+            }
+            if !projectSkillProfileSnapshot.runnableNowProfiles.isEmpty {
+                skillProfileSummaryRow(
+                    label: "Runnable now",
+                    values: projectSkillProfileSnapshot.runnableNowProfiles
+                )
+            }
+
+            if !projectSkillProfileSnapshot.blockedProfiles.isEmpty {
+                let blockedSummary = projectSkillProfileSnapshot.blockedProfiles
+                    .prefix(3)
+                    .map { blocked in
+                        "\(blocked.profileID)=\(blocked.reasonCode)"
+                    }
+                    .joined(separator: " | ")
+                Text("why_not_runnable: \(blockedSummary)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(10)
+        .background(Color.accentColor.opacity(0.04))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.accentColor.opacity(0.14), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    @ViewBuilder
+    private func skillProfileSummaryRow(label: String, values: [String]) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(label)
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+                .frame(width: 88, alignment: .leading)
+            Text(values.joined(separator: ", "))
+                .font(UIThemeTokens.monoFont())
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
     private var hubMemorySection: some View {
-        let preferHubMemory = appModel.projectConfig?.preferHubMemory ?? true
-        let mode = XTProjectMemoryGovernance.modeLabel(appModel.projectConfig)
+        let preferHubMemory = governanceConfig.preferHubMemory
+        let mode = XTProjectMemoryGovernance.modeLabel(governanceConfig)
 
         return GroupBox("Hub 记忆治理") {
             VStack(alignment: .leading, spacing: 10) {
                 Toggle(
                     "当前项目优先使用 Hub 记忆",
                     isOn: Binding(
-                        get: { appModel.projectConfig?.preferHubMemory ?? true },
-                        set: { appModel.setProjectHubMemoryPreference(enabled: $0) }
+                        get: { governanceConfig.preferHubMemory },
+                        set: { updateProjectHubMemoryPreference($0) }
                     )
                 )
                 .toggleStyle(.switch)
@@ -447,7 +722,7 @@ struct ProjectSettingsView: View {
 
         return GroupBox("上下文组装") {
             VStack(alignment: .leading, spacing: 12) {
-                Text("这里控制项目 AI 最近能看到多少项目对话，以及项目背景带多完整。它不会改变执行权限、Supervisor 介入强度或心跳节奏。")
+                Text("这里控制项目 AI 最近能看到多少项目对话，以及项目背景带多完整。默认值通常由上面的执行场景模板初始化，之后可以单独微调；它不会改变执行权限、Supervisor 介入强度或心跳节奏。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -461,7 +736,7 @@ struct ProjectSettingsView: View {
                         "",
                         selection: Binding(
                             get: { governanceConfig.projectRecentDialogueProfile },
-                            set: { appModel.setProjectContextAssembly(projectRecentDialogueProfile: $0) }
+                            set: { updateProjectContextAssembly(projectRecentDialogueProfile: $0) }
                         )
                     ) {
                         ForEach(AXProjectRecentDialogueProfile.allCases) { profile in
@@ -488,7 +763,7 @@ struct ProjectSettingsView: View {
                         "",
                         selection: Binding(
                             get: { governanceConfig.projectContextDepthProfile },
-                            set: { appModel.setProjectContextAssembly(projectContextDepthProfile: $0) }
+                            set: { updateProjectContextAssembly(projectContextDepthProfile: $0) }
                         )
                     ) {
                         ForEach(AXProjectContextDepthProfile.allCases) { profile in
@@ -533,8 +808,8 @@ struct ProjectSettingsView: View {
     }
 
     private var trustedAutomationSection: some View {
-        let config = appModel.projectConfig ?? .default(forProjectRoot: ctx.root)
-        let effective = appModel.resolvedProjectRuntimeSurfacePolicy(config: config)
+        let config = governanceConfig
+        let effective = effectiveRuntimeSurface
         let readiness = AXTrustedAutomationPermissionOwnerReadiness.current()
         let status = config.trustedAutomationStatus(forProjectRoot: ctx.root, permissionReadiness: readiness)
         let expectedHash = xtTrustedAutomationWorkspaceHash(forProjectRoot: ctx.root)
@@ -569,7 +844,7 @@ struct ProjectSettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Text("这是一条项目级设备执行绑定，不等于把整个 X-Terminal 永久全开；高档治理模板也不等于自动拥有全部设备权限。")
+                Text("这是一条项目级设备执行绑定，不等于把整个 X-Terminal 永久全开；高档执行场景模板也不等于自动拥有全部设备权限。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -655,8 +930,8 @@ struct ProjectSettingsView: View {
                 Toggle(
                     "允许低风险本地工具跳过本地审批",
                     isOn: Binding(
-                        get: { appModel.projectConfig?.governedAutoApproveLocalToolCalls ?? false },
-                        set: { appModel.setProjectGovernedAutoApproveLocalToolCalls(enabled: $0) }
+                        get: { governanceConfig.governedAutoApproveLocalToolCalls },
+                        set: { updateProjectGovernedAutoApproveLocalToolCalls(enabled: $0) }
                     )
                 )
                 .toggleStyle(.switch)
@@ -738,7 +1013,7 @@ struct ProjectSettingsView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(selectedGovernanceDestination.displayTitle)
+                    Text(selectedGovernanceDestination.localizedDisplayTitle)
                         .font(.headline)
                     Text(ctx.displayName(registry: appModel.registry))
                         .font(.subheadline)
@@ -747,17 +1022,30 @@ struct ProjectSettingsView: View {
 
                 Spacer()
 
-                Button("All Settings") {
+                Button("全部设置") {
                     selectedGovernanceDestination = .overview
                 }
                 .buttonStyle(.bordered)
 
-                Button("Close") {
+                Button("关闭") {
                     dismiss()
                 }
             }
 
             governanceDestinationTabs
+        }
+    }
+
+    private var governanceQuickAccessSection: some View {
+        GroupBox("治理快捷入口") {
+            ProjectGovernanceQuickAccessStrip(
+                selectedDestination: selectedGovernanceDestination == .overview ? nil : selectedGovernanceDestination,
+                governancePresentation: resolvedGovernancePresentation,
+                onSelect: { destination in
+                    selectedGovernanceDestination = destination
+                }
+            )
+            .padding(8)
         }
     }
 
@@ -775,7 +1063,7 @@ struct ProjectSettingsView: View {
         return Button {
             selectedGovernanceDestination = destination
         } label: {
-            Text(destination.displayTitle)
+            Text(destination.localizedDisplayTitle)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(selected ? .white : .accentColor)
                 .padding(.horizontal, 10)
@@ -798,12 +1086,112 @@ struct ProjectSettingsView: View {
                     onReviewCadenceTap: { selectedGovernanceDestination = .heartbeatReview },
                     onStatusTap: { selectedGovernanceDestination = .overview }
                 )
+                ProjectGovernanceThreeAxisOverviewView(
+                    presentation: resolvedGovernancePresentation,
+                    compact: true,
+                    onSelectDestination: { destination in
+                        selectedGovernanceDestination = destination
+                    },
+                    onOpenProjectMemoryControls: openProjectMemoryControls,
+                    onOpenSupervisorMemoryControls: openSupervisorMemoryControls
+                )
                 ProjectGovernanceInspector(presentation: resolvedGovernancePresentation)
+                recentGovernanceInterceptionSection
 
                 if !governanceInlineMessage.isEmpty {
                     Text(governanceInlineMessage)
                         .font(.caption)
                         .foregroundStyle(governanceInlineMessageIsError ? .red : .orange)
+                }
+            }
+            .padding(8)
+        }
+    }
+
+    private var governanceThreeAxisOverviewSection: some View {
+        ProjectGovernanceThreeAxisOverviewView(
+            presentation: resolvedGovernancePresentation,
+            onSelectDestination: { destination in
+                selectedGovernanceDestination = destination
+            },
+            onOpenProjectMemoryControls: openProjectMemoryControls,
+            onOpenSupervisorMemoryControls: openSupervisorMemoryControls
+        )
+    }
+
+    private var recentGovernanceInterceptionSection: some View {
+        GroupBox("最近治理拦截") {
+            VStack(alignment: .leading, spacing: 8) {
+                if let interception = recentGovernanceInterception {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(ProjectSkillActivityPresentation.toolBadge(for: interception.item))
+                            .font(.caption.weight(.semibold))
+                        Spacer()
+                        Text(ProjectSkillActivityPresentation.statusLabel(for: interception.item))
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if let truthLine = interception.governanceTruthLine {
+                        Text(truthLine)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    if let blockedSummary = interception.blockedSummary {
+                        Text(blockedSummary)
+                            .font(.caption)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    if interception.shouldShowGovernanceReason {
+                        Text("治理原因：\(interception.governanceReason)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    if let policyReason = interception.policyReason {
+                        Text("策略原因：\(policyReason)")
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    HStack(alignment: .top, spacing: 8) {
+                        if let repairHint = interception.repairHint {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Button(repairHint.buttonTitle) {
+                                    selectedGovernanceDestination = repairHint.destination
+                                    if let inlineMessage = interception.repairInlineMessage {
+                                        governanceInlineMessage = inlineMessage
+                                        governanceInlineMessageIsError = false
+                                    }
+                                }
+                                .buttonStyle(.bordered)
+                                .help(repairHint.helpText)
+
+                                Text(repairHint.helpText)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+
+                        Spacer()
+
+                        Text("请求 \(interception.item.requestID) · \(recentGovernanceInterceptionTimestamp(interception.item.createdAt))")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                } else {
+                    Text("最近没有记录到 A-Tier 或运行面拦截。后续一旦出现 A-Tier / runtime surface 拦截，这里会直接显示最近一次真相与修复入口。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .padding(8)
@@ -833,7 +1221,7 @@ struct ProjectSettingsView: View {
         VStack(alignment: .leading, spacing: 12) {
             latestUIReviewSection
 
-            Text("这里是项目的 UI review 专属工作区。Supervisor / 项目 AI 都可以把这里当作“页面是否真的可执行”的当前真相入口。")
+            Text("这里是项目的 UI 审查专属工作区。Supervisor / 项目 AI 都可以把这里当作“页面是否真的可执行”的当前真相入口。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -870,6 +1258,7 @@ struct ProjectSettingsView: View {
     private var heartbeatReviewFocusedSection: some View {
         ProjectHeartbeatReviewView(
             ctx: ctx,
+            projectConfig: governanceConfig,
             configuredExecutionTier: governanceConfig.executionTier,
             configuredReviewPolicyMode: governanceConfig.reviewPolicyMode,
             progressHeartbeatSeconds: governanceConfig.progressHeartbeatSeconds,
@@ -877,16 +1266,19 @@ struct ProjectSettingsView: View {
             brainstormReviewSeconds: governanceConfig.brainstormReviewSeconds,
             eventDrivenReviewEnabled: governanceConfig.eventDrivenReviewEnabled,
             eventReviewTriggers: governanceConfig.eventReviewTriggers,
+            configuredSupervisorRecentRawContextProfile: appModel.settingsStore.settings.supervisorRecentRawContextProfile,
+            configuredSupervisorReviewMemoryDepth: appModel.settingsStore.settings.supervisorReviewMemoryDepthProfile,
+            supervisorPrivacyMode: appModel.settingsStore.settings.supervisorPrivacyMode,
             resolvedGovernance: resolvedGovernanceState,
             governancePresentation: resolvedGovernancePresentation,
             inlineMessage: governanceInlineMessage,
             inlineMessageIsError: governanceInlineMessageIsError,
-            onSelectReviewPolicy: { appModel.setProjectGovernance(reviewPolicyMode: $0) },
-            onUpdateProgressHeartbeatSeconds: { appModel.setProjectGovernance(progressHeartbeatSeconds: $0) },
-            onUpdateReviewPulseSeconds: { appModel.setProjectGovernance(reviewPulseSeconds: $0) },
-            onUpdateBrainstormReviewSeconds: { appModel.setProjectGovernance(brainstormReviewSeconds: $0) },
-            onSetEventDrivenReviewEnabled: { appModel.setProjectGovernance(eventDrivenReviewEnabled: $0) },
-            onSetEventReviewTriggers: { appModel.setProjectGovernance(eventReviewTriggers: $0) }
+            onSelectReviewPolicy: { updateProjectGovernance(reviewPolicyMode: $0) },
+            onUpdateProgressHeartbeatSeconds: { updateProjectGovernance(progressHeartbeatSeconds: $0) },
+            onUpdateReviewPulseSeconds: { updateProjectGovernance(reviewPulseSeconds: $0) },
+            onUpdateBrainstormReviewSeconds: { updateProjectGovernance(brainstormReviewSeconds: $0) },
+            onSetEventDrivenReviewEnabled: { updateProjectGovernance(eventDrivenReviewEnabled: $0) },
+            onSetEventReviewTriggers: { updateProjectGovernance(eventReviewTriggers: $0) }
         )
         .id(XTProjectSettingsSectionID.reviewCadence)
     }
@@ -894,14 +1286,14 @@ struct ProjectSettingsView: View {
     private var runtimeSurfaceSection: some View {
         GroupBox("执行面运行时") {
             VStack(alignment: .leading, spacing: 12) {
-                Text("A-tier / S-tier / 心跳与审查 已拆到各自独立页面。这里仅保留执行面、TTL 与 Hub 收束相关细项。")
+                Text("A-Tier / S-Tier / Heartbeat / Review 已拆到各自独立页面。这里仅保留执行面、TTL 与 Hub 收束相关细项。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                 Stepper(
                     value: Binding(
-                        get: { max(5, (appModel.projectConfig?.runtimeSurfaceTTLSeconds ?? 3600) / 60) },
-                        set: { appModel.setProjectRuntimeSurfacePolicy(ttlSeconds: max(5, $0) * 60) }
+                        get: { max(5, governanceConfig.runtimeSurfaceTTLSeconds / 60) },
+                        set: { updateProjectRuntimeSurfacePolicy(ttlSeconds: max(5, $0) * 60) }
                     ),
                     in: 5...1440,
                     step: 5
@@ -917,8 +1309,8 @@ struct ProjectSettingsView: View {
                     Picker(
                         "",
                         selection: Binding(
-                            get: { appModel.projectConfig?.runtimeSurfaceHubOverrideMode ?? AXProjectRuntimeSurfaceHubOverrideMode.none },
-                            set: { appModel.setProjectRuntimeSurfacePolicy(hubOverrideMode: $0) }
+                            get: { governanceConfig.runtimeSurfaceHubOverrideMode },
+                            set: { updateProjectRuntimeSurfacePolicy(hubOverrideMode: $0) }
                         )
                     ) {
                         ForEach(AXProjectRuntimeSurfaceHubOverrideMode.allCases, id: \.self) { mode in
@@ -963,7 +1355,7 @@ struct ProjectSettingsView: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
 
-                Text("执行档位会同步默认执行面，但真正放行动作仍继续受 TTL、收束规则、设备执行绑定、权限宿主和紧急回收共同约束。")
+                Text("A-Tier 会同步默认执行面，但真正放行动作仍继续受 TTL、收束规则、设备执行绑定、权限宿主和紧急回收共同约束。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
 
@@ -983,7 +1375,7 @@ struct ProjectSettingsView: View {
                         Text("这里保留执行面、设备执行绑定、可读目录和本地自动审批细项。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Text("A-tier / S-tier / 心跳与审查 已拆到各自独立页面；点治理摘要卡即可进入对应编辑器。")
+                        Text("A-Tier / S-Tier / Heartbeat / Review 已拆到各自独立页面；点治理摘要卡即可进入对应编辑器。")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -1090,6 +1482,24 @@ struct ProjectSettingsView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            if let assemblySummary = presentation.userAssemblySummary {
+                Text(assemblySummary)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let omissionSummary = presentation.userOmissionSummary {
+                Text(omissionSummary)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let budgetSummary = presentation.userBudgetSummary {
+                Text(budgetSummary)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(12)
         .background(
@@ -1103,25 +1513,25 @@ struct ProjectSettingsView: View {
     }
 
     private var automationSelfIterateSection: some View {
-        let enabled = appModel.projectConfig?.automationSelfIterateEnabled ?? false
-        let maxDepth = appModel.projectConfig?.automationMaxAutoRetryDepth ?? 2
-        let recipeRef = appModel.projectConfig?.activeAutomationRecipeRef.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let enabled = governanceConfig.automationSelfIterateEnabled
+        let maxDepth = governanceConfig.automationMaxAutoRetryDepth
+        let recipeRef = governanceConfig.activeAutomationRecipeRef.trimmingCharacters(in: .whitespacesAndNewlines)
 
         return GroupBox("自动自迭代") {
             VStack(alignment: .leading, spacing: 10) {
                 Toggle(
                     "开启有边界的自迭代自动重试",
                     isOn: Binding(
-                        get: { appModel.projectConfig?.automationSelfIterateEnabled ?? false },
-                        set: { appModel.setProjectAutomationSelfIteration(enabled: $0) }
+                        get: { governanceConfig.automationSelfIterateEnabled },
+                        set: { updateProjectAutomationSelfIteration(enabled: $0) }
                     )
                 )
                 .toggleStyle(.switch)
 
                 Stepper(
                     value: Binding(
-                        get: { appModel.projectConfig?.automationMaxAutoRetryDepth ?? 2 },
-                        set: { appModel.setProjectAutomationSelfIteration(maxAutoRetryDepth: $0) }
+                        get: { governanceConfig.automationMaxAutoRetryDepth },
+                        set: { updateProjectAutomationSelfIteration(maxAutoRetryDepth: $0) }
                     ),
                     in: 1...8
                 ) {
@@ -1171,14 +1581,18 @@ struct ProjectSettingsView: View {
     }
 
     private func modelInventorySnapshot() -> ModelStateSnapshot {
-        ModelStateSnapshot(
-            models: availableHubModels,
-            updatedAt: appModel.modelsState.updatedAt
+        modelManager.visibleSnapshot(fallback: appModel.modelsState)
+    }
+
+    private var projectModelInventoryTruth: XTModelInventoryTruthPresentation {
+        XTModelInventoryTruthPresentation.build(
+            snapshot: modelInventorySnapshot(),
+            hubBaseDir: appModel.hubBaseDir ?? HubPaths.baseDir()
         )
     }
 
     private var availableHubModels: [HubModel] {
-        modelManager.availableModels.isEmpty ? appModel.modelsState.models : modelManager.availableModels
+        modelManager.visibleSnapshot(fallback: appModel.modelsState).models
     }
 
     private func selectedModelPresentation(for role: AXRole) -> ModelInfo? {
@@ -1193,6 +1607,15 @@ struct ProjectSettingsView: View {
             ?? XTModelCatalog.modelInfo(for: inheritedModelId)
     }
 
+    private func selectedHubModel(for role: AXRole) -> HubModel? {
+        if let projectModelId = projectModelOverrideId(for: role) {
+            return availableHubModels.first(where: { $0.id == projectModelId })
+        }
+        let inheritedModelId = globalModelId(role)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !inheritedModelId.isEmpty else { return nil }
+        return availableHubModels.first(where: { $0.id == inheritedModelId })
+    }
+
     private func globalModelPresentation(for role: AXRole) -> ModelInfo? {
         let inheritedModelId = globalModelId(role)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !inheritedModelId.isEmpty else { return nil }
@@ -1201,14 +1624,63 @@ struct ProjectSettingsView: View {
     }
 
     private func selectedModelPresentationSourceLabel(for role: AXRole) -> String {
-        projectModelOverrideId(for: role) == nil ? "继承全局" : "项目覆盖"
+        projectModelOverrideId(for: role) == nil
+            ? XTL10n.text(
+                interfaceLanguage,
+                zhHans: "继承全局",
+                en: "Inherited Global"
+            )
+            : XTL10n.text(
+                interfaceLanguage,
+                zhHans: "项目覆盖",
+                en: "Project Override"
+            )
+    }
+
+    private var routeTruthProjectID: String {
+        AXProjectRegistryStore.projectId(forRoot: ctx.root)
+    }
+
+    private var routeTruthProjectName: String {
+        ctx.displayName(registry: appModel.registry)
+    }
+
+    private func projectRoleExecutionSnapshot(for role: AXRole) -> AXRoleExecutionSnapshot {
+        if role == .supervisor {
+            return ExecutionRoutePresentation.supervisorSnapshot(from: supervisorManager)
+        }
+        return AXRoleExecutionSnapshots.latestSnapshots(for: ctx)[role]
+            ?? .empty(role: role, source: "project_settings")
+    }
+
+    private func projectRoleRouteTruth(for role: AXRole) -> HubModelRoutingSupplementaryPresentation {
+        HubModelRoutingTruthBuilder.build(
+            surface: .projectRoleSettings,
+            role: role,
+            selectedProjectID: routeTruthProjectID,
+            selectedProjectName: routeTruthProjectName,
+            projectConfig: governanceConfig,
+            projectRuntimeReadiness: xtResolveProjectGovernance(
+                projectRoot: ctx.root,
+                config: governanceConfig
+            ).runtimeReadinessSnapshot,
+            settings: appModel.settingsStore.settings,
+            snapshot: projectRoleExecutionSnapshot(for: role),
+            transportMode: HubAIClient.transportMode().rawValue,
+            language: interfaceLanguage
+        )
+        .pickerTruth
     }
 
     private func selectedModelButtonTitle(for role: AXRole) -> String {
         if let presentation = selectedModelPresentation(for: role) {
             return presentation.displayName
         }
-        return "使用全局设置"
+        return XTL10n.text(
+            interfaceLanguage,
+            zhHans: "使用全局设置",
+            en: "Use Global Setting"
+        )
     }
 
     private func selectedModelIdentifier(for role: AXRole) -> String? {
@@ -1223,9 +1695,17 @@ struct ProjectSettingsView: View {
         guard projectModelOverrideId(for: role) != nil else { return nil }
         if let global = globalModelId(role)?.trimmingCharacters(in: .whitespacesAndNewlines),
            !global.isEmpty {
-            return "当前不选项目覆盖时，会回到全局模型 `\(global)`。"
+            return XTL10n.text(
+                interfaceLanguage,
+                zhHans: "当前不选项目覆盖时，会回到全局模型 `\(global)`。",
+                en: "If you clear the project override, XT will fall back to the global model `\(global)`."
+            )
         }
-        return "当前不选项目覆盖时，会回到全局自动路由。"
+        return XTL10n.text(
+            interfaceLanguage,
+            zhHans: "当前不选项目覆盖时，会回到全局自动路由。",
+            en: "If you clear the project override, XT will fall back to global automatic routing."
+        )
     }
 
     private func modelSelectionRecommendation(for role: AXRole) -> HubModelPickerRecommendationState? {
@@ -1236,7 +1716,9 @@ struct ProjectSettingsView: View {
             configuredModelId: configured,
             role: role,
             ctx: ctx,
-            snapshot: modelInventorySnapshot()
+            snapshot: modelInventorySnapshot(),
+            paidAccessSnapshot: appModel.hubRemotePaidAccessSnapshot,
+            language: interfaceLanguage
         ),
            let recommendedModelId = guidance.recommendedModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
            !recommendedModelId.isEmpty {
@@ -1269,7 +1751,11 @@ struct ProjectSettingsView: View {
             return HubModelPickerRecommendationState(
                 kind: .switchRecommended,
                 modelId: candidate,
-                message: "`\(blocked.id)` 是检索专用模型，Supervisor 会按需调用它做 retrieval；如果你要立刻继续，可改用 `\(candidate)`。"
+                message: XTL10n.ModelSelector.nonInteractiveRecommendation(
+                    blockedId: blocked.id,
+                    candidate: candidate,
+                    language: interfaceLanguage
+                )
             )
         }
 
@@ -1277,27 +1763,46 @@ struct ProjectSettingsView: View {
             return HubModelPickerRecommendationState(
                 kind: .switchRecommended,
                 modelId: candidate,
-                message: "`\(exact.id)` 当前是 \(HubModelSelectionAdvisor.stateLabel(exact.state))；如果你要立刻继续，可改用已加载的 `\(candidate)`。"
+                message: XTL10n.ModelSelector.exactStateRecommendation(
+                    exactId: exact.id,
+                    stateLabel: HubModelSelectionAdvisor.stateLabel(
+                        exact.state,
+                        language: interfaceLanguage
+                    ),
+                    candidate: candidate,
+                    language: interfaceLanguage
+                )
             )
         }
 
         return HubModelPickerRecommendationState(
             kind: .switchRecommended,
             modelId: candidate,
-            message: "`\(configured)` 当前不在可直接执行的 inventory 里；如果你要立刻继续，可改用已加载的 `\(candidate)`，避免这轮继续掉本地。"
+            message: XTL10n.ModelSelector.missingRecommendation(
+                selectedModelId: configured,
+                candidate: candidate,
+                language: interfaceLanguage
+            )
         )
     }
 
     private func modelAvailabilityWarningText(for role: AXRole) -> String? {
         guard let configuredBinding = warningConfiguredModelBinding(for: role) else { return nil }
         let configured = configuredBinding.modelId
+        let executionSnapshot = projectRoleExecutionSnapshot(for: role)
         if let routeWarning = AXProjectModelRouteMemoryStore.selectionWarningText(
             configuredModelId: configured,
             role: role,
             ctx: ctx,
-            snapshot: modelInventorySnapshot()
+            snapshot: modelInventorySnapshot(),
+            paidAccessSnapshot: appModel.hubRemotePaidAccessSnapshot,
+            language: interfaceLanguage
         ) {
-            return routeWarning
+            return appendingGrpcRouteInterpretationWarning(
+                routeWarning,
+                configuredModelId: configured,
+                snapshot: executionSnapshot
+            )
         }
         let assessment = HubModelSelectionAdvisor.assess(
             requestedId: configured,
@@ -1310,26 +1815,88 @@ struct ProjectSettingsView: View {
            let reason = assessment.interactiveRoutingBlockedReason {
             let candidates = suggestedModelIDs(from: assessment)
             if let first = candidates.first {
-                return "\(configuredBinding.subject) `\(blocked.id)`，但它是检索专用模型。\(reason) 如果你要立刻继续，可改用 `\(first)`。"
+                return appendingGrpcRouteInterpretationWarning(
+                    XTL10n.text(
+                        interfaceLanguage,
+                        zhHans: "\(configuredBinding.subject) `\(blocked.id)`，但它是检索专用模型。\(reason) 如果你要立刻继续，可改用 `\(first)`。",
+                        en: "The \(configuredBinding.subject) `\(blocked.id)` is retrieval-only. \(reason) If you want to continue right now, switch to `\(first)`."
+                    ),
+                    configuredModelId: configured,
+                    snapshot: executionSnapshot
+                )
             }
-            return "\(configuredBinding.subject) `\(blocked.id)`，但它是检索专用模型。\(reason)"
+            return appendingGrpcRouteInterpretationWarning(
+                XTL10n.text(
+                    interfaceLanguage,
+                    zhHans: "\(configuredBinding.subject) `\(blocked.id)`，但它是检索专用模型。\(reason)",
+                    en: "The \(configuredBinding.subject) `\(blocked.id)` is retrieval-only. \(reason)"
+                ),
+                configuredModelId: configured,
+                snapshot: executionSnapshot
+            )
         }
 
         if let assessment, let exact = assessment.exactMatch {
             let candidates = suggestedModelIDs(from: assessment)
             if let first = candidates.first {
-                return "\(configuredBinding.subject) `\(exact.id)`，但它现在是 \(HubModelSelectionAdvisor.stateLabel(exact.state))。若你现在执行，这一路可能会回退到本地；如果你要立刻继续，可改用 `\(first)`。"
+                return appendingGrpcRouteInterpretationWarning(
+                    XTL10n.text(
+                        interfaceLanguage,
+                        zhHans: "\(configuredBinding.subject) `\(exact.id)`，但它现在是 \(HubModelSelectionAdvisor.stateLabel(exact.state, language: interfaceLanguage))。若你现在执行，这一路可能会回退到本地；如果你要立刻继续，可改用 `\(first)`。",
+                        en: "The \(configuredBinding.subject) `\(exact.id)` is currently \(HubModelSelectionAdvisor.stateLabel(exact.state, language: interfaceLanguage)). This route may fall back to local if you run it now. If you want to continue right away, switch to `\(first)`."
+                    ),
+                    configuredModelId: configured,
+                    snapshot: executionSnapshot
+                )
             }
-            return "\(configuredBinding.subject) `\(exact.id)`，但它现在是 \(HubModelSelectionAdvisor.stateLabel(exact.state))。若你现在执行，这一路可能会回退到本地。"
+            return appendingGrpcRouteInterpretationWarning(
+                XTL10n.text(
+                    interfaceLanguage,
+                    zhHans: "\(configuredBinding.subject) `\(exact.id)`，但它现在是 \(HubModelSelectionAdvisor.stateLabel(exact.state, language: interfaceLanguage))。若你现在执行，这一路可能会回退到本地。",
+                    en: "The \(configuredBinding.subject) `\(exact.id)` is currently \(HubModelSelectionAdvisor.stateLabel(exact.state, language: interfaceLanguage)). This route may fall back to local if you run it now."
+                ),
+                configuredModelId: configured,
+                snapshot: executionSnapshot
+            )
         }
 
         if let assessment {
             let candidates = suggestedModelIDs(from: assessment)
             if !candidates.isEmpty {
-                return "\(configuredBinding.subject) `\(configured)`，但 inventory 里没有精确匹配。可先试 `\(candidates.joined(separator: "`, `"))`。"
+                return appendingGrpcRouteInterpretationWarning(
+                    XTL10n.text(
+                        interfaceLanguage,
+                        zhHans: "\(configuredBinding.subject) `\(configured)`，但 inventory 里没有精确匹配。可先试 `\(candidates.joined(separator: "`, `"))`。",
+                        en: "The \(configuredBinding.subject) `\(configured)` has no exact match in the current inventory. Try `\(candidates.joined(separator: "`, `"))` first."
+                    ),
+                    configuredModelId: configured,
+                    snapshot: executionSnapshot
+                )
             }
         }
-        return "\(configuredBinding.subject) `\(configured)`，但现在无法确认它可执行。"
+        return appendingGrpcRouteInterpretationWarning(
+            XTL10n.text(
+                interfaceLanguage,
+                zhHans: "\(configuredBinding.subject) `\(configured)`，但现在无法确认它可执行。",
+                en: "XT cannot confirm whether the \(configuredBinding.subject) `\(configured)` is currently runnable."
+            ),
+            configuredModelId: configured,
+            snapshot: executionSnapshot
+        )
+    }
+
+    private func appendingGrpcRouteInterpretationWarning(
+        _ warning: String,
+        configuredModelId: String,
+        snapshot: AXRoleExecutionSnapshot
+    ) -> String {
+        let hint = ExecutionRoutePresentation.grpcTransportMismatchHint(
+            configuredModelId: configuredModelId,
+            snapshot: snapshot,
+            transportMode: HubAIClient.transportMode().rawValue,
+            language: interfaceLanguage
+        )
+        return hint.isEmpty ? warning : warning + hint
     }
 
     private func warningConfiguredModelBinding(for role: AXRole) -> (modelId: String, subject: String)? {
@@ -1337,7 +1904,11 @@ struct ProjectSettingsView: View {
            !projectModelId.isEmpty {
             return (
                 projectModelId,
-                "当前项目为 \(roleLabel(role)) 配的是"
+                XTL10n.text(
+                    interfaceLanguage,
+                    zhHans: "当前项目给 \(roleLabel(role)) 配的模型",
+                    en: "project override for \(role.displayName(in: interfaceLanguage))"
+                )
             )
         }
 
@@ -1345,7 +1916,11 @@ struct ProjectSettingsView: View {
            !inheritedModelId.isEmpty {
             return (
                 inheritedModelId,
-                "\(roleLabel(role)) 当前继承的全局模型是"
+                XTL10n.text(
+                    interfaceLanguage,
+                    zhHans: "\(roleLabel(role)) 当前继承的全局模型",
+                    en: "global model inherited by \(role.displayName(in: interfaceLanguage))"
+                )
             )
         }
 
@@ -1376,6 +1951,103 @@ struct ProjectSettingsView: View {
         projectModelChangeNotice = nil
     }
 
+    private func syncProjectConfigDrafts(_ config: AXProjectConfig) {
+        trustedAutomationDeviceIdDraft = config.trustedAutomationDeviceId
+        governedReadableRootsDraft = governedReadableRootsText(config.governedReadableRoots)
+    }
+
+    private func reloadProjectConfigSnapshot() {
+        let config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: ctx.root)
+        projectConfigSnapshot = config
+        syncProjectConfigDrafts(config)
+    }
+
+    private func syncProjectConfigSnapshotFromCurrentSelection() {
+        guard isCurrentProjectSelected, let config = appModel.projectConfig else { return }
+        projectConfigSnapshot = config
+        syncProjectConfigDrafts(config)
+    }
+
+    private func updateProjectHubMemoryPreference(_ enabled: Bool) {
+        appModel.setProjectHubMemoryPreference(for: ctx, enabled: enabled)
+        reloadProjectConfigSnapshot()
+    }
+
+    private func updateProjectContextAssembly(
+        projectRecentDialogueProfile: AXProjectRecentDialogueProfile? = nil,
+        projectContextDepthProfile: AXProjectContextDepthProfile? = nil
+    ) {
+        appModel.setProjectContextAssembly(
+            for: ctx,
+            projectRecentDialogueProfile: projectRecentDialogueProfile,
+            projectContextDepthProfile: projectContextDepthProfile
+        )
+        reloadProjectConfigSnapshot()
+    }
+
+    private func updateProjectGovernance(
+        executionTier: AXProjectExecutionTier? = nil,
+        supervisorInterventionTier: AXProjectSupervisorInterventionTier? = nil,
+        reviewPolicyMode: AXProjectReviewPolicyMode? = nil,
+        progressHeartbeatSeconds: Int? = nil,
+        reviewPulseSeconds: Int? = nil,
+        brainstormReviewSeconds: Int? = nil,
+        eventDrivenReviewEnabled: Bool? = nil,
+        eventReviewTriggers: [AXProjectReviewTrigger]? = nil
+    ) {
+        appModel.setProjectGovernance(
+            for: ctx,
+            executionTier: executionTier,
+            supervisorInterventionTier: supervisorInterventionTier,
+            reviewPolicyMode: reviewPolicyMode,
+            progressHeartbeatSeconds: progressHeartbeatSeconds,
+            reviewPulseSeconds: reviewPulseSeconds,
+            brainstormReviewSeconds: brainstormReviewSeconds,
+            eventDrivenReviewEnabled: eventDrivenReviewEnabled,
+            eventReviewTriggers: eventReviewTriggers
+        )
+        reloadProjectConfigSnapshot()
+    }
+
+    private func updateProjectRuntimeSurfacePolicy(
+        mode: AXProjectRuntimeSurfaceMode? = nil,
+        allowDeviceTools: Bool? = nil,
+        allowBrowserRuntime: Bool? = nil,
+        allowConnectorActions: Bool? = nil,
+        allowExtensions: Bool? = nil,
+        ttlSeconds: Int? = nil,
+        hubOverrideMode: AXProjectRuntimeSurfaceHubOverrideMode? = nil
+    ) {
+        appModel.setProjectRuntimeSurfacePolicy(
+            for: ctx,
+            mode: mode,
+            allowDeviceTools: allowDeviceTools,
+            allowBrowserRuntime: allowBrowserRuntime,
+            allowConnectorActions: allowConnectorActions,
+            allowExtensions: allowExtensions,
+            ttlSeconds: ttlSeconds,
+            hubOverrideMode: hubOverrideMode
+        )
+        reloadProjectConfigSnapshot()
+    }
+
+    private func updateProjectGovernedAutoApproveLocalToolCalls(enabled: Bool) {
+        appModel.setProjectGovernedAutoApproveLocalToolCalls(for: ctx, enabled: enabled)
+        reloadProjectConfigSnapshot()
+    }
+
+    private func updateProjectAutomationSelfIteration(
+        enabled: Bool? = nil,
+        maxAutoRetryDepth: Int? = nil
+    ) {
+        appModel.setProjectAutomationSelfIteration(
+            for: ctx,
+            enabled: enabled,
+            maxAutoRetryDepth: maxAutoRetryDepth
+        )
+        reloadProjectConfigSnapshot()
+    }
+
     private func updateProjectRoleModelAssignment(role: AXRole, modelId: String?) {
         let trimmedModelId = modelId?.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedModelId = trimmedModelId?.isEmpty == false ? trimmedModelId : nil
@@ -1384,13 +2056,21 @@ struct ProjectSettingsView: View {
             return
         }
 
-        appModel.setProjectRoleModel(role: role, modelId: normalizedModelId)
+        appModel.setProjectRoleModelOverride(
+            projectId: routeTruthProjectID,
+            role: role,
+            modelId: normalizedModelId
+        )
+        reloadProjectConfigSnapshot()
         projectModelChangeNotice = XTSettingsChangeNoticeBuilder.projectRoleModel(
             projectName: ctx.displayName(registry: appModel.registry),
             role: role,
             modelId: normalizedModelId,
             inheritedModelId: globalModelId(role),
-            snapshot: modelInventorySnapshot()
+            snapshot: modelInventorySnapshot(),
+            executionSnapshot: projectRoleExecutionSnapshot(for: role),
+            transportMode: HubAIClient.transportMode().rawValue,
+            language: interfaceLanguage
         )
         projectModelUpdateFeedback.trigger()
     }
@@ -1403,17 +2083,20 @@ struct ProjectSettingsView: View {
         let deviceId = trustedAutomationDeviceIdDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         let mode: AXProjectAutomationMode = armed ? .trustedAutomation : .standard
         appModel.setProjectTrustedAutomationBinding(
+            for: ctx,
             mode: mode,
             deviceId: deviceId,
             workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: ctx.root)
         )
+        reloadProjectConfigSnapshot()
     }
 
     private func applyGovernanceTemplate(_ profile: AXProjectGovernanceTemplate) {
-        appModel.applyProjectGovernanceTemplate(profile)
+        appModel.applyProjectGovernanceTemplate(profile, for: ctx)
+        reloadProjectConfigSnapshot()
 
-        let config = appModel.projectConfig ?? .default(forProjectRoot: ctx.root)
-        let resolved = appModel.resolvedProjectGovernance(config: config)
+        let config = governanceConfig
+        let resolved = resolvedGovernanceState
         let templatePreview = xtProjectGovernanceTemplatePresentation(
             projectRoot: ctx.root,
             config: config,
@@ -1421,19 +2104,28 @@ struct ProjectSettingsView: View {
         )
 
         switch profile {
-        case .agent:
+        case .highGovernance:
             if templatePreview.effectiveDeviceAuthorityPosture == .off {
-                governanceInlineMessage = "已切到 Agent 治理模板（默认 A4 Agent + S3）。若要真正放开设备级能力，请在执行面与设备绑定细节里完成权限就绪。"
+                governanceInlineMessage = "已切到高治理场景（默认 A4 Agent + S3，Extended 40 / Full）。若要真正放开设备级能力，请在执行面与设备绑定细节里完成 runtime ready 和权限就绪。"
                 governanceInlineMessageIsError = false
                 advancedGovernanceExpanded = true
             } else {
                 clearGovernanceInlineMessage()
             }
-        case .safe:
-            governanceInlineMessage = "已切到推荐治理模板（默认 A3 + S3）。项目会优先持续推进，但高风险动作仍继续受 grant 与收束规则约束。"
+        case .largeProject:
+            governanceInlineMessage = "已切到大型项目场景（默认 A3 + S3，Deep 20 / Deep）。当前更强调 continuity、checkpoint、review 和交付收口。"
             governanceInlineMessageIsError = false
-        case .conservative:
-            governanceInlineMessage = "已切到保守治理模板（默认 A1 + S2）。当前更偏向理解、规划与审阅，不主动放大执行面。"
+        case .feature:
+            governanceInlineMessage = "已切到功能开发场景（默认 A2 + S2，Standard 12 / Balanced）。这是日常 feature 的默认主力模式。"
+            governanceInlineMessageIsError = false
+        case .prototype:
+            governanceInlineMessage = "已切到原型场景（默认 A2 + S1，Floor 8 / Lean）。适合 demo / spike，不默认进入高风险交付面。"
+            governanceInlineMessageIsError = false
+        case .inception:
+            governanceInlineMessage = "已切到产品开局场景（默认 A1 + S2，Deep 20 / Deep）。适合先收敛 scope、architecture 和 work orders。"
+            governanceInlineMessageIsError = false
+        case .legacyObserve:
+            governanceInlineMessage = "已回到旧 Observe 基线（默认 A0 + S0）。当前只围绕观测、建议和记忆读取。"
             governanceInlineMessageIsError = false
         case .custom:
             break
@@ -1441,15 +2133,14 @@ struct ProjectSettingsView: View {
     }
 
     private func updateExecutionTier(_ tier: AXProjectExecutionTier) {
-        let currentSupervisor = appModel.projectConfig?.supervisorInterventionTier ?? tier.defaultSupervisorInterventionTier
-        let minimumSafe = tier.minimumSafeSupervisorTier
-        let adjustedSupervisor = max(currentSupervisor, minimumSafe)
-        appModel.setProjectGovernance(
+        let currentSupervisor = governanceConfig.supervisorInterventionTier
+        updateProjectGovernance(
             executionTier: tier,
-            supervisorInterventionTier: adjustedSupervisor
+            supervisorInterventionTier: currentSupervisor
         )
-        if adjustedSupervisor != currentSupervisor {
-            governanceInlineMessage = "\(tier.displayName) 至少需要 \(minimumSafe.displayName)，已自动把 supervisor 提升到安全下限。"
+        let reviewReference = tier.minimumSafeSupervisorTier
+        if currentSupervisor < reviewReference {
+            governanceInlineMessage = "\(tier.displayName) 已保留当前 S-Tier \(currentSupervisor.displayName)。这个组合允许保存，但低于 \(reviewReference.displayName) 风险参考线，建议只在你明确接受更弱监督时使用。"
             governanceInlineMessageIsError = false
         } else {
             clearGovernanceInlineMessage()
@@ -1457,16 +2148,13 @@ struct ProjectSettingsView: View {
     }
 
     private func updateSupervisorTier(_ tier: AXProjectSupervisorInterventionTier) {
-        let executionTier = appModel.projectConfig?.executionTier ?? .a0Observe
-        let minimumSafe = executionTier.minimumSafeSupervisorTier
-        guard tier >= minimumSafe else {
-            governanceInlineMessage = "\(executionTier.displayName) 不能低于 \(minimumSafe.displayName)。当前更低组合会被系统直接拦下。"
-            governanceInlineMessageIsError = true
-            return
-        }
-
-        appModel.setProjectGovernance(supervisorInterventionTier: tier)
-        if tier < executionTier.defaultSupervisorInterventionTier {
+        let executionTier = governanceConfig.executionTier
+        updateProjectGovernance(supervisorInterventionTier: tier)
+        let reviewReference = executionTier.minimumSafeSupervisorTier
+        if tier < reviewReference {
+            governanceInlineMessage = "\(executionTier.displayName) 当前搭配 \(tier.displayName) 属于高风险监督区：系统允许保存，但 drift、误操作和高风险动作前的纠偏窗口会明显变弱。"
+            governanceInlineMessageIsError = false
+        } else if tier < executionTier.defaultSupervisorInterventionTier {
             governanceInlineMessage = "\(executionTier.displayName) 推荐 \(executionTier.defaultSupervisorInterventionTier.displayName) 及以上；当前配置允许，但 supervisor 纠偏窗口会更松。"
             governanceInlineMessageIsError = false
         } else {
@@ -1487,19 +2175,58 @@ struct ProjectSettingsView: View {
 
         activeFocusRequest = request
         selectedGovernanceDestination = request.destination
+        pendingOverviewAnchor = request.destination == .overview ? request.overviewAnchor : nil
         if let context = request.context {
-            governanceInlineMessage = context.detail.map { "\(context.title) · \($0)" } ?? context.title
+            governanceInlineMessage = xtProjectSettingsInlineMessage(
+                title: context.title,
+                detail: context.detail
+            )
             governanceInlineMessageIsError = false
         }
 
         appModel.clearProjectSettingsFocusRequest(request)
     }
 
+    private func openProjectMemoryControls() {
+        governanceInlineMessage = "这里调 Project AI 的 Recent Project Dialogue / Project Context Depth；A-Tier 只提供 memory ceiling。"
+        governanceInlineMessageIsError = false
+        selectedGovernanceDestination = .overview
+        pendingOverviewAnchor = .contextAssembly
+    }
+
+    private func openSupervisorMemoryControls() {
+        appModel.requestSupervisorSettingsFocus(
+            section: .reviewMemoryDepth,
+            title: "Supervisor Settings",
+            detail: "Review Memory Depth"
+        )
+        supervisorManager.requestSupervisorWindow(
+            sheet: .supervisorSettings,
+            reason: "project_governance_review_memory_depth",
+            focusConversation: false,
+            startConversation: false
+        )
+    }
+
+    private func processOverviewAnchor(_ proxy: ScrollViewProxy) {
+        guard selectedGovernanceDestination == .overview,
+              let anchor = pendingOverviewAnchor else { return }
+        withAnimation(.easeInOut(duration: 0.2)) {
+            proxy.scrollTo(anchor.rawValue, anchor: .top)
+        }
+        DispatchQueue.main.async {
+            if pendingOverviewAnchor == anchor {
+                pendingOverviewAnchor = nil
+            }
+        }
+    }
+
     private func saveGovernedReadableRoots() {
         let roots = governedReadableRootsDraft
             .split(whereSeparator: { $0.isNewline })
             .map { String($0) }
-        appModel.setProjectGovernedReadableRoots(paths: roots)
+        appModel.setProjectGovernedReadableRoots(for: ctx, paths: roots)
+        reloadProjectConfigSnapshot()
     }
 
     private func appendGovernedReadableRootSuggestion(_ url: URL) {
@@ -1541,6 +2268,11 @@ struct ProjectSettingsView: View {
                 Text(profile.shortDescription)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(profile.selectableDescription)
+                    .font(.caption2)
+                    .foregroundStyle(accent)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1628,12 +2360,18 @@ struct ProjectSettingsView: View {
 
     private func governanceTemplateAccent(_ profile: AXProjectGovernanceTemplate) -> Color {
         switch profile {
-        case .conservative:
-            return .secondary
-        case .safe:
+        case .prototype:
+            return .mint
+        case .feature:
             return .green
-        case .agent:
+        case .largeProject:
+            return .blue
+        case .highGovernance:
             return .orange
+        case .inception:
+            return .indigo
+        case .legacyObserve:
+            return .secondary
         case .custom:
             return .blue
         }
@@ -1770,6 +2508,15 @@ struct ProjectSettingsView: View {
             return clamp.summary
         }
         return xtProjectRuntimeSurfaceExplanation(mode: effective.effectiveMode, style: .uiChinese)
+    }
+
+    private func recentGovernanceInterceptionTimestamp(
+        _ createdAt: Double
+    ) -> String {
+        guard createdAt > 0 else { return "(unknown time)" }
+        return runtimeSurfaceTimestampFormatter.string(
+            from: Date(timeIntervalSince1970: createdAt)
+        )
     }
 
     private var runtimeSurfaceTimestampFormatter: DateFormatter {

@@ -14,30 +14,19 @@ struct XTModelGuidancePresentation: Equatable, Sendable {
     static func build(
         settings: XTerminalSettings,
         snapshot: ModelStateSnapshot,
+        doctorReport: XHubDoctorOutputReport? = nil,
+        runtimeMonitor: XHubLocalRuntimeMonitorSnapshotReport? = nil,
         currentProjectName: String? = nil,
         currentProjectContext: AXProjectContext? = nil,
-        currentProjectCoderModelId: String? = nil
+        currentProjectCoderModelId: String? = nil,
+        currentRemotePaidAccessSnapshot: HubRemotePaidAccessSnapshot? = nil
     ) -> XTModelGuidancePresentation {
-        let interactiveLoaded = snapshot.models.filter { $0.state == .loaded && $0.isSelectableForInteractiveRouting }
-        let remoteLoaded = interactiveLoaded.filter { !$0.isLocalModel }
-        let localLoaded = interactiveLoaded.filter(\.isLocalModel)
         let supportLoadedCount = snapshot.models.filter { $0.state == .loaded && !$0.isSelectableForInteractiveRouting }.count
-
-        let inventorySummary: String
-        if snapshot.models.isEmpty {
-            inventorySummary = "当前还没有拿到 Hub 模型快照；先刷新模型列表，或去 Hub -> Models 确认模型是否真的已加载。"
-        } else if interactiveLoaded.isEmpty {
-            inventorySummary = "当前 inventory 已同步，但没有已加载的可对话模型；先在 Hub -> Models 至少加载 1 个对话模型，否则角色容易回退到本地或无法执行。"
-        } else {
-            var parts = [
-                "当前已加载可对话模型：远端 \(remoteLoaded.count) 个",
-                "本地 \(localLoaded.count) 个"
-            ]
-            if supportLoadedCount > 0 {
-                parts.append("辅助模型 \(supportLoadedCount) 个")
-            }
-            inventorySummary = parts.joined(separator: "，") + "。"
-        }
+        let inventoryTruth = XTModelInventoryTruthPresentation.build(
+            snapshot: snapshot,
+            doctorReport: doctorReport,
+            runtimeMonitor: runtimeMonitor
+        )
 
         var items: [XTSettingsGuidanceItem] = [
             XTSettingsGuidanceItem(
@@ -52,36 +41,12 @@ struct XTModelGuidancePresentation: Equatable, Sendable {
             )
         ]
 
-        if snapshot.models.isEmpty {
+        if inventoryTruth.showsStatusCard {
             items.append(
                 XTSettingsGuidanceItem(
-                    id: "snapshot_missing",
-                    title: "当前状态",
-                    detail: "这时先不要盲填模型 ID。没有快照时很难判断是模型没加载、被休眠，还是只是名称写错。"
-                )
-            )
-        } else if interactiveLoaded.isEmpty {
-            items.append(
-                XTSettingsGuidanceItem(
-                    id: "no_interactive_loaded",
-                    title: "当前状态",
-                    detail: "先确保至少有 1 个已加载的对话模型，再来配置各个角色；否则很多路由建议都只是纸面上的。"
-                )
-            )
-        } else if remoteLoaded.isEmpty {
-            items.append(
-                XTSettingsGuidanceItem(
-                    id: "local_only",
-                    title: "当前状态",
-                    detail: "现在只有本地对话模型在工作；如果你预期用远端 GPT，这通常说明 Hub 侧远端模型还没真正 ready。"
-                )
-            )
-        } else if localLoaded.isEmpty {
-            items.append(
-                XTSettingsGuidanceItem(
-                    id: "no_local_fallback",
-                    title: "当前状态",
-                    detail: "现在没有本地对话兜底；远端失联时弹性会更差，必要时可以保留一个本地模型做 fallback。"
+                    id: inventoryTruth.state.rawValue,
+                    title: inventoryTruth.state == .localOnlyReady ? "当前姿态" : "当前状态",
+                    detail: inventoryTruth.state == .localOnlyReady ? inventoryTruth.summary + " " + inventoryTruth.detail : inventoryTruth.detail
                 )
             )
         }
@@ -99,21 +64,53 @@ struct XTModelGuidancePresentation: Equatable, Sendable {
         let configuredCoderModelId = normalized(currentProjectCoderModelId)
             ?? normalized(settings.assignment(for: .coder).model)
         let routeMemoryHint: String? = {
-            guard let currentProjectContext,
-                  let guidance = AXProjectModelRouteMemoryStore.selectionGuidance(
-                    configuredModelId: configuredCoderModelId,
-                    role: .coder,
-                    ctx: currentProjectContext,
-                    snapshot: snapshot
-                  ) else {
-                return nil
-            }
+            guard let currentProjectContext else { return nil }
+
+            let guidanceText = AXProjectModelRouteMemoryStore.selectionGuidance(
+                configuredModelId: configuredCoderModelId,
+                role: .coder,
+                ctx: currentProjectContext,
+                snapshot: snapshot,
+                paidAccessSnapshot: currentRemotePaidAccessSnapshot
+            )?.warningText
+
+            let executionSnapshot = AXRoleExecutionSnapshots.latestSnapshots(for: currentProjectContext)[.coder]
+                ?? .empty(role: .coder, source: "settings_guidance")
+            let recentRouteTruthHint = ExecutionRoutePresentation.recentGrpcRouteTruthHint(
+                snapshot: executionSnapshot,
+                transportMode: HubAIClient.transportMode().rawValue,
+                language: settings.interfaceLanguage
+            )
+            let paidTruthHint: String? = {
+                guard let paidTruth = XTRouteTruthPresentation.pairedDeviceTruthText(
+                    routeReasonCode: executionSnapshot.effectiveFailureReasonCode,
+                    denyCode: executionSnapshot.denyCode,
+                    paidAccessSnapshot: currentRemotePaidAccessSnapshot,
+                    language: settings.interfaceLanguage
+                ) else {
+                    return nil
+                }
+
+                let existingText = [guidanceText, recentRouteTruthHint]
+                    .compactMap { normalized($0) }
+                    .joined(separator: " ")
+                guard !existingText.contains(paidTruth) else { return nil }
+                return XTL10n.text(
+                    settings.interfaceLanguage,
+                    zhHans: "当前设备真值：\(paidTruth)。",
+                    en: "Current device truth: \(paidTruth)."
+                )
+            }()
+            let parts = [guidanceText, normalized(recentRouteTruthHint), normalized(paidTruthHint)]
+                .compactMap { normalized($0) }
+            guard !parts.isEmpty else { return nil }
+
             let projectPrefix = normalized(currentProjectName).map { "当前项目 \($0)：" } ?? "当前项目："
-            return projectPrefix + guidance.warningText
+            return projectPrefix + parts.joined(separator: " ")
         }()
 
         return XTModelGuidancePresentation(
-            inventorySummary: inventorySummary,
+            inventorySummary: inventoryTruth.summary,
             items: items,
             routeMemoryHint: routeMemoryHint
         )
@@ -136,9 +133,9 @@ struct XTSecurityRuntimeGuidancePresentation: Equatable, Sendable {
         let sandboxDetail: String
         switch sandboxMode {
         case .host:
-            sandboxDetail = "当前默认走宿主执行；只有 tool call 明确写 `sandbox=true` 时才进沙箱。"
+            sandboxDetail = "当前默认直接在本机执行；只有工具调用明确要求进沙箱时，才会切到沙箱。"
         case .sandbox:
-            sandboxDetail = "当前默认走沙箱执行；只有 tool call 明确写 `sandbox=false` 时才回宿主。"
+            sandboxDetail = "当前默认走沙箱执行；只有工具调用明确要求走本机时，才会切回本机。"
         }
 
         let automationDetail: String
@@ -146,9 +143,9 @@ struct XTSecurityRuntimeGuidancePresentation: Equatable, Sendable {
         case .conversationOnly:
             automationDetail = "当前是对话模式；Supervisor 只回答你的明确请求，不会自己发起 coder / skill / tool 执行。"
         case .guidedProgress:
-            automationDetail = "当前是推进模式；Supervisor 会给计划、提醒和下一步建议，但执行层面仍会收回到 manual。"
+            automationDetail = "当前是推进模式；Supervisor 会给计划、提醒和下一步建议，但执行仍要你来点头。"
         case .governedAutomation:
-            automationDetail = "当前是自动执行模式；只有 A-tier、S-tier、授权、runtime readiness 和 fail-closed gate 都允许时，才会继续自动执行。"
+            automationDetail = "当前是自动执行模式；只有 A-Tier、S-Tier、授权和运行时状态都允许时，才会继续自动执行。"
         }
 
         return XTSecurityRuntimeGuidancePresentation(
@@ -160,8 +157,8 @@ struct XTSecurityRuntimeGuidancePresentation: Equatable, Sendable {
                 ),
                 XTSettingsGuidanceItem(
                     id: "auto_run",
-                    title: "Auto-run tools",
-                    detail: "这是项目聊天里的会话开关，不是全局放开；关闭时仍会先把工具调用列出来等你批准。"
+                    title: "工具自动执行",
+                    detail: "这是项目聊天里的会话开关，不是全局放开；关闭时仍会先把工具调用列出来，等你批准。"
                 ),
                 XTSettingsGuidanceItem(
                     id: "automation_guardrails",
@@ -186,34 +183,75 @@ struct XTSettingsChangeNotice: Equatable, Sendable {
 enum XTSettingsChangeNoticeBuilder {
     private static func roleModelStatusDetail(
         modelId: String,
-        snapshot: ModelStateSnapshot
+        snapshot: ModelStateSnapshot,
+        executionSnapshot: AXRoleExecutionSnapshot? = nil,
+        transportMode: String = HubAIClient.transportMode().rawValue,
+        language: XTInterfaceLanguage = .defaultPreference
     ) -> String {
         let assessment = HubModelSelectionAdvisor.assess(
             requestedId: modelId,
             snapshot: snapshot
         )
 
+        let recentRouteTruthSuffix: String = {
+            guard let executionSnapshot else { return "" }
+            let hint = ExecutionRoutePresentation.recentGrpcRouteTruthHint(
+                snapshot: executionSnapshot,
+                transportMode: transportMode,
+                language: language
+            )
+            return hint.isEmpty ? "" : " " + hint
+        }()
+
         if let exact = assessment?.exactMatch,
            exact.state == .loaded {
-            let sourceLabel = exact.isLocalModel ? "本地" : "远端"
-            return "它当前已加载，且属于可直接对话的\(sourceLabel)模型，后续路由可以直接用。"
+            let sourceLabel = XTL10n.text(
+                language,
+                zhHans: exact.isLocalModel ? "本地" : "远端",
+                en: exact.isLocalModel ? "local" : "remote"
+            )
+            return XTL10n.text(
+                language,
+                zhHans: "它当前已加载，且属于可直接对话的\(sourceLabel)模型，后续路由可以直接用。",
+                en: "It is currently loaded and is a directly interactive \(sourceLabel) model, so runtime can use it directly."
+            )
         }
 
         if let blocked = assessment?.nonInteractiveExactMatch {
             let reason = blocked.interactiveRoutingDisabledReason
-                ?? "它不适合作为当前角色的对话模型。"
-            return "但它属于非对话模型。\(reason) 建议直接改成一个已加载的对话模型。"
+                ?? XTL10n.text(
+                    language,
+                    zhHans: "它不适合作为当前角色的对话模型。",
+                    en: "It is not suitable as the interactive model for this role."
+                )
+            return XTL10n.text(
+                language,
+                zhHans: "但它属于非对话模型。\(reason) 建议直接改成一个已加载的对话模型。",
+                en: "But it is a non-chat model. \(reason) Switch directly to a loaded interactive model."
+            )
         }
 
         if let exact = assessment?.exactMatch {
-            return "但它现在是 \(HubModelSelectionAdvisor.stateLabel(exact.state))；继续运行时可能会回退到本地，建议先在 Hub -> Models 加载它，或改用一个已加载候选。"
+            return XTL10n.text(
+                language,
+                zhHans: "但它现在是 \(HubModelSelectionAdvisor.stateLabel(exact.state, language: language))；继续运行时可能会回退到本地，建议先去 Supervisor Control Center · AI 模型确认它已进入真实可执行列表，或改用一个已加载候选。",
+                en: "But it is currently \(HubModelSelectionAdvisor.stateLabel(exact.state, language: language)). Runtime may fall back to local, so first check in Supervisor Control Center · AI Models that it is in the true runnable list, or switch to a loaded candidate."
+            ) + recentRouteTruthSuffix
         }
 
         if assessment?.isMissingFromInventory == true {
-            return "但当前 inventory 里没有精确匹配。建议先刷新模型列表，或直接改用即时提示里的候选模型。"
+            return XTL10n.text(
+                language,
+                zhHans: "但当前 inventory 里没有精确匹配。建议先刷新模型列表，或直接改用即时提示里的候选模型。",
+                en: "But there is no exact match in the current inventory. Refresh the model list first, or switch to one of the suggested candidates."
+            ) + recentRouteTruthSuffix
         }
 
-        return "如果它没有真正 loaded，运行时仍可能回退到本地。"
+        return XTL10n.text(
+            language,
+            zhHans: "如果它没有真正 loaded，运行时仍可能回退到本地。",
+            en: "If it is not truly loaded, runtime may still fall back to local."
+        ) + recentRouteTruthSuffix
     }
 
     static func supervisorWorkMode(_ mode: XTSupervisorWorkMode) -> XTSettingsChangeNotice {
@@ -271,15 +309,41 @@ enum XTSettingsChangeNoticeBuilder {
         )
     }
 
+    static func supervisorReviewMemoryDepth(
+        _ profile: XTSupervisorReviewMemoryDepthProfile
+    ) -> XTSettingsChangeNotice {
+        XTSettingsChangeNotice(
+            title: "Review Memory Depth 已更新",
+            detail: "Review Memory Depth 已设为 \(profile.displayName)。这个改动只影响 Supervisor 的 review-memory 组装目标；实际生效仍会受当前项目的 S-Tier ceiling clamp，X-宪章、Hub gate 和审计链保持不变。"
+        )
+    }
+
+    static func interfaceLanguage(
+        _ language: XTInterfaceLanguage
+    ) -> XTSettingsChangeNotice {
+        XTSettingsChangeNotice(
+            title: XTL10n.text(
+                language,
+                zhHans: "界面语言已更新",
+                en: "Interface Language Updated"
+            ),
+            detail: XTL10n.text(
+                language,
+                zhHans: "当前界面语言已切到 \(language.displayName(in: language))。这次先覆盖模型选择和路由诊断等小范围界面，其余页面会逐步补齐。",
+                en: "The interface language is now \(language.displayName(in: language)). This first rollout covers a small set of surfaces including model selection and route diagnosis. Other surfaces will move over gradually."
+            )
+        )
+    }
+
     static func defaultToolSandboxMode(_ mode: ToolSandboxMode) -> XTSettingsChangeNotice {
         XTSettingsChangeNotice(
             title: "默认工具路径已更新",
             detail: {
                 switch mode {
                 case .host:
-                    return "默认工具执行路径已切到 Host。Auto-run 仍会受项目授权、runtime readiness 和 fail-closed gate 约束。"
+                    return "默认工具执行路径已切到本机。自动执行仍会受项目授权和运行时状态约束。"
                 case .sandbox:
-                    return "默认工具执行路径已切到 Sandbox。Auto-run 仍会受项目授权、runtime readiness 和 fail-closed gate 约束。"
+                    return "默认工具执行路径已切到沙箱。自动执行仍会受项目授权和运行时状态约束。"
                 }
             }()
         )
@@ -288,19 +352,44 @@ enum XTSettingsChangeNoticeBuilder {
     static func globalRoleModel(
         role: AXRole,
         modelId rawModelId: String?,
-        snapshot: ModelStateSnapshot
+        snapshot: ModelStateSnapshot,
+        executionSnapshot: AXRoleExecutionSnapshot? = nil,
+        transportMode: String = HubAIClient.transportMode().rawValue,
+        language: XTInterfaceLanguage = .defaultPreference
     ) -> XTSettingsChangeNotice {
         let modelId = (rawModelId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !modelId.isEmpty else {
             return XTSettingsChangeNotice(
-                title: "\(role.displayName) 模型已清空",
-                detail: "已清空 \(role.displayName) 的默认 Hub 模型。系统之后会重新按 inventory 和路由策略挑候选；继续前建议至少把 coder 和 supervisor 配完整。"
+                title: XTL10n.text(
+                    language,
+                    zhHans: "\(role.displayName(in: language)) 模型已清空",
+                    en: "\(role.displayName(in: language)) Model Cleared"
+                ),
+                detail: XTL10n.text(
+                    language,
+                    zhHans: "已清空 \(role.displayName(in: language)) 的默认 Hub 模型。系统之后会重新按 inventory 和路由策略挑候选；继续前建议至少把 coder 和 supervisor 配完整。",
+                    en: "Cleared the default Hub model for \(role.displayName(in: language)). XT will pick candidates again from inventory and routing policy. Before continuing, it is best to configure at least coder and supervisor."
+                )
             )
         }
 
         return XTSettingsChangeNotice(
-            title: "\(role.displayName) 模型已更新",
-            detail: "已把 \(role.displayName) 默认模型设为 `\(modelId)`。\(roleModelStatusDetail(modelId: modelId, snapshot: snapshot))"
+            title: XTL10n.text(
+                language,
+                zhHans: "\(role.displayName(in: language)) 模型已更新",
+                en: "\(role.displayName(in: language)) Model Updated"
+            ),
+            detail: XTL10n.text(
+                language,
+                zhHans: "已把 \(role.displayName(in: language)) 默认模型设为 `\(modelId)`。",
+                en: "Set the default model for \(role.displayName(in: language)) to `\(modelId)`."
+            ) + " " + roleModelStatusDetail(
+                modelId: modelId,
+                snapshot: snapshot,
+                executionSnapshot: executionSnapshot,
+                transportMode: transportMode,
+                language: language
+            )
         )
     }
 
@@ -309,30 +398,71 @@ enum XTSettingsChangeNoticeBuilder {
         role: AXRole,
         modelId rawModelId: String?,
         inheritedModelId rawInheritedModelId: String?,
-        snapshot: ModelStateSnapshot
+        snapshot: ModelStateSnapshot,
+        executionSnapshot: AXRoleExecutionSnapshot? = nil,
+        transportMode: String = HubAIClient.transportMode().rawValue,
+        language: XTInterfaceLanguage = .defaultPreference
     ) -> XTSettingsChangeNotice {
         let projectDisplayName = projectName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalizedProjectName = projectDisplayName.isEmpty ? "当前项目" : projectDisplayName
+        let normalizedProjectName = projectDisplayName.isEmpty
+            ? XTL10n.text(language, zhHans: "当前项目", en: "Current Project")
+            : projectDisplayName
         let modelId = (rawModelId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let inheritedModelId = (rawInheritedModelId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !modelId.isEmpty else {
             if inheritedModelId.isEmpty {
                 return XTSettingsChangeNotice(
-                    title: "项目模型已更新",
-                    detail: "已清空 \(normalizedProjectName) 的 \(role.displayName) 项目覆盖。当前没有全局固定模型，之后会回到系统自动路由。"
+                    title: XTL10n.text(
+                        language,
+                        zhHans: "项目模型已更新",
+                        en: "Project Model Updated"
+                    ),
+                    detail: XTL10n.text(
+                        language,
+                        zhHans: "已清空 \(normalizedProjectName) 的 \(role.displayName(in: language)) 项目覆盖。当前没有全局固定模型，之后会回到系统自动路由。",
+                        en: "Cleared the project override for \(role.displayName(in: language)) in \(normalizedProjectName). There is no global pinned model right now, so XT will return to automatic system routing."
+                    )
                 )
             }
 
             return XTSettingsChangeNotice(
-                title: "项目模型已更新",
-                detail: "已清空 \(normalizedProjectName) 的 \(role.displayName) 项目覆盖。当前会回到全局模型 `\(inheritedModelId)`。\(roleModelStatusDetail(modelId: inheritedModelId, snapshot: snapshot))"
+                title: XTL10n.text(
+                    language,
+                    zhHans: "项目模型已更新",
+                    en: "Project Model Updated"
+                ),
+                detail: XTL10n.text(
+                    language,
+                    zhHans: "已清空 \(normalizedProjectName) 的 \(role.displayName(in: language)) 项目覆盖。当前会回到全局模型 `\(inheritedModelId)`。",
+                    en: "Cleared the project override for \(role.displayName(in: language)) in \(normalizedProjectName). XT will fall back to the global model `\(inheritedModelId)`."
+                ) + " " + roleModelStatusDetail(
+                    modelId: inheritedModelId,
+                    snapshot: snapshot,
+                    executionSnapshot: executionSnapshot,
+                    transportMode: transportMode,
+                    language: language
+                )
             )
         }
 
         return XTSettingsChangeNotice(
-            title: "项目模型已更新",
-            detail: "已把 \(normalizedProjectName) 的 \(role.displayName) 项目覆盖设为 `\(modelId)`。\(roleModelStatusDetail(modelId: modelId, snapshot: snapshot))"
+            title: XTL10n.text(
+                language,
+                zhHans: "项目模型已更新",
+                en: "Project Model Updated"
+            ),
+            detail: XTL10n.text(
+                language,
+                zhHans: "已把 \(normalizedProjectName) 的 \(role.displayName(in: language)) 项目覆盖设为 `\(modelId)`。",
+                en: "Set the project override for \(role.displayName(in: language)) in \(normalizedProjectName) to `\(modelId)`."
+            ) + " " + roleModelStatusDetail(
+                modelId: modelId,
+                snapshot: snapshot,
+                executionSnapshot: executionSnapshot,
+                transportMode: transportMode,
+                language: language
+            )
         )
     }
 
@@ -341,7 +471,8 @@ enum XTSettingsChangeNoticeBuilder {
         modelId rawModelId: String?,
         changedProjectCount: Int,
         totalProjectCount: Int,
-        snapshot: ModelStateSnapshot
+        snapshot: ModelStateSnapshot,
+        language: XTInterfaceLanguage = .defaultPreference
     ) -> XTSettingsChangeNotice {
         let modelId = (rawModelId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let safeChangedCount = max(0, changedProjectCount)
@@ -349,21 +480,49 @@ enum XTSettingsChangeNoticeBuilder {
 
         guard !modelId.isEmpty else {
             return XTSettingsChangeNotice(
-                title: "批量应用已完成",
-                detail: "已把 \(role.displayName) 的项目覆盖批量恢复为继承模式，影响 \(safeChangedCount)/\(safeTotalCount) 个项目。"
+                title: XTL10n.text(
+                    language,
+                    zhHans: "批量应用已完成",
+                    en: "Batch Apply Complete"
+                ),
+                detail: XTL10n.text(
+                    language,
+                    zhHans: "已把 \(role.displayName(in: language)) 的项目覆盖批量恢复为继承模式，影响 \(safeChangedCount)/\(safeTotalCount) 个项目。",
+                    en: "Restored project overrides for \(role.displayName(in: language)) back to inherited mode across \(safeChangedCount)/\(safeTotalCount) projects."
+                )
             )
         }
 
         if safeChangedCount == 0 {
             return XTSettingsChangeNotice(
-                title: "批量应用已完成",
-                detail: "全部项目的 \(role.displayName) 当前本来就已是 `\(modelId)`，没有额外改动。"
+                title: XTL10n.text(
+                    language,
+                    zhHans: "批量应用已完成",
+                    en: "Batch Apply Complete"
+                ),
+                detail: XTL10n.text(
+                    language,
+                    zhHans: "全部项目的 \(role.displayName(in: language)) 当前本来就已是 `\(modelId)`，没有额外改动。",
+                    en: "All projects were already set to `\(modelId)` for \(role.displayName(in: language)), so no extra changes were needed."
+                )
             )
         }
 
         return XTSettingsChangeNotice(
-            title: "批量应用已完成",
-            detail: "已把 \(role.displayName) 的项目覆盖批量设为 `\(modelId)`，影响 \(safeChangedCount)/\(safeTotalCount) 个项目。\(roleModelStatusDetail(modelId: modelId, snapshot: snapshot))"
+            title: XTL10n.text(
+                language,
+                zhHans: "批量应用已完成",
+                en: "Batch Apply Complete"
+            ),
+            detail: XTL10n.text(
+                language,
+                zhHans: "已把 \(role.displayName(in: language)) 的项目覆盖批量设为 `\(modelId)`，影响 \(safeChangedCount)/\(safeTotalCount) 个项目。",
+                en: "Set the project override for \(role.displayName(in: language)) to `\(modelId)` across \(safeChangedCount)/\(safeTotalCount) projects."
+            ) + " " + roleModelStatusDetail(
+                modelId: modelId,
+                snapshot: snapshot,
+                language: language
+            )
         )
     }
 }
