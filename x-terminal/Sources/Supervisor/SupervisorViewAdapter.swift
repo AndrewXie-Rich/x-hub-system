@@ -8,12 +8,21 @@ struct SupervisorViewAdapter {
     let screenModel: SupervisorViewStateSupport.ScreenModel
     let interactionCoordinator: SupervisorViewInteractionCoordinator
 
-    func contentProps(totalHeight: CGFloat) -> SupervisorViewContent.Props {
-        .init(
+    func contentProps(totalWidth: CGFloat, totalHeight: CGFloat) -> SupervisorViewContent.Props {
+        let selectedAutomationTemplatePreview = screenModel.selectedAutomationProject.map {
+            appModel.governanceTemplatePreview(for: $0)
+        }
+        return .init(
             supervisor: supervisor,
+            totalWidth: totalWidth,
             totalHeight: totalHeight,
+            selectedAutomationProject: screenModel.selectedAutomationProject,
+            selectedAutomationTemplatePreview: selectedAutomationTemplatePreview,
+            legacyRuntime: screenModel.legacyRuntime,
             dashboardPresentations: screenModel.dashboardPresentations,
             viewResources: screenModel.viewResources,
+            activeWindowSheet: ui.activeWindowSheet,
+            showHeartbeatFeed: ui.showHeartbeatFeed,
             showSignalCenter: ui.showSignalCenter,
             conversationFocusRequestID: ui.conversationFocusRequestID,
             heartbeatIconScale: ui.heartbeatIconScale,
@@ -38,8 +47,7 @@ struct SupervisorViewAdapter {
 
     var lifecycleBindings: SupervisorViewLifecycleAttachments.Bindings {
         .init(
-            selectedSupervisorAuditDrillDown: binding(\.selectedSupervisorAuditDrillDown),
-            activeWindowSheet: binding(\.activeWindowSheet)
+            selectedSupervisorAuditDrillDown: binding(\.selectedSupervisorAuditDrillDown)
         )
     }
 
@@ -54,8 +62,8 @@ struct SupervisorViewAdapter {
                 context: screenModel.viewResources.supervisorAuditDrillDownContext
             ),
             focusRequestNonce: appModel.supervisorFocusRequest?.nonce,
-            pendingHubGrantCount: supervisor.pendingHubGrants.count,
-            pendingSkillApprovalCount: supervisor.pendingSupervisorSkillApprovals.count,
+            pendingHubGrantCount: supervisor.frontstagePendingHubGrants.count,
+            pendingSkillApprovalCount: supervisor.frontstagePendingSupervisorSkillApprovals.count,
             requestedWindowSheetID: supervisor.requestedWindowSheet?.id,
             latestHeartbeatID: supervisor.latestHeartbeat?.id,
             signalCenterFingerprint: screenModel.viewResources.headerControlContext

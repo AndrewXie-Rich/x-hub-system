@@ -26,6 +26,7 @@ enum SupervisorViewStateSupport {
         let selectedAutomationProject: AXProjectEntry?
         let selectedAutomationRecipe: AXAutomationRecipeRuntimeBinding?
         let selectedAutomationLastLaunchRef: String
+        let legacyRuntime: XTLegacySupervisorRuntimeContext
         let dashboardPresentations: SupervisorViewRuntimePresentationSupport.DashboardPresentationBundle
         let viewResources: ViewResources
     }
@@ -34,12 +35,14 @@ enum SupervisorViewStateSupport {
         appModel: AppModel,
         supervisor: SupervisorManager,
         inputText: String,
+        showHeartbeatFeed: Bool,
         showSignalCenter: Bool,
         dismissedFingerprint: String?,
         selectedPortfolioProjectID: String?,
         selectedPortfolioDrillDownScope: SupervisorProjectDrillDownScope,
         highlightedPendingSkillApprovalAnchor: String?,
         highlightedPendingHubGrantAnchor: String?,
+        highlightedCandidateReviewAnchor: String?,
         laneHealthFilter: SupervisorLaneHealthFilter,
         focusedSplitLaneID: String?
     ) -> ScreenModel {
@@ -52,13 +55,15 @@ enum SupervisorViewStateSupport {
         )
         let selectedLastLaunchRef = selectedAutomationLastLaunchRef(
             appModel: appModel,
+            supervisor: supervisor,
             selectedAutomationProject: selectedProject
         )
+        let legacyRuntime = appModel.ensureLegacySupervisorRuntimeContext()
         let xtReadySnapshot = supervisor.xtReadyIncidentExportSnapshot(limit: 120)
         let cockpitPresentation = SupervisorCockpitPresentation.fromRuntime(
             supervisorManager: supervisor,
-            orchestrator: appModel.supervisor.orchestrator,
-            monitor: appModel.supervisor.orchestrator.executionMonitor,
+            orchestrator: legacyRuntime.orchestrator,
+            monitor: legacyRuntime.monitor,
             xtReadySnapshot: xtReadySnapshot
         )
         let dashboardPresentations = SupervisorViewRuntimePresentationSupport.dashboardPresentationBundle(
@@ -71,6 +76,7 @@ enum SupervisorViewStateSupport {
             selectedPortfolioDrillDownScope: selectedPortfolioDrillDownScope,
             highlightedPendingSkillApprovalAnchor: highlightedPendingSkillApprovalAnchor,
             highlightedPendingHubGrantAnchor: highlightedPendingHubGrantAnchor,
+            highlightedCandidateReviewAnchor: highlightedCandidateReviewAnchor,
             laneHealthFilter: laneHealthFilter,
             focusedSplitLaneID: focusedSplitLaneID,
             xtReadySnapshot: xtReadySnapshot
@@ -80,13 +86,16 @@ enum SupervisorViewStateSupport {
             selectedAutomationProject: selectedProject,
             selectedAutomationRecipe: selectedRecipe,
             selectedAutomationLastLaunchRef: selectedLastLaunchRef,
+            legacyRuntime: legacyRuntime,
             dashboardPresentations: dashboardPresentations,
             viewResources: viewResources(
                 appModel: appModel,
                 supervisor: supervisor,
+                legacyRuntime: legacyRuntime,
                 dashboardPresentations: dashboardPresentations,
                 inputText: inputText,
                 cockpitPresentation: cockpitPresentation,
+                showHeartbeatFeed: showHeartbeatFeed,
                 showSignalCenter: showSignalCenter,
                 dismissedFingerprint: dismissedFingerprint
             )
@@ -96,9 +105,11 @@ enum SupervisorViewStateSupport {
     static func viewResources(
         appModel: AppModel,
         supervisor: SupervisorManager,
+        legacyRuntime: XTLegacySupervisorRuntimeContext,
         dashboardPresentations: SupervisorViewRuntimePresentationSupport.DashboardPresentationBundle,
         inputText: String,
         cockpitPresentation: SupervisorCockpitPresentation,
+        showHeartbeatFeed: Bool,
         showSignalCenter: Bool,
         dismissedFingerprint: String?
     ) -> ViewResources {
@@ -115,12 +126,14 @@ enum SupervisorViewStateSupport {
                 inputText: inputText,
                 cockpitPresentation: cockpitPresentation,
                 supervisor: supervisor,
+                legacyRuntime: legacyRuntime,
                 appModel: appModel
             ),
             headerControlContext: headerControlContext(
                 appModel: appModel,
                 supervisor: supervisor,
                 dashboardPresentations: dashboardPresentations,
+                showHeartbeatFeed: showHeartbeatFeed,
                 showSignalCenter: showSignalCenter
             ),
             canonicalMemorySyncStatusFileURL: canonicalURL,
@@ -251,13 +264,26 @@ enum SupervisorViewStateSupport {
                 items: context.builtinGovernedSkills.isEmpty ? items : context.builtinGovernedSkills,
                 managedStatusLine: context.managedSkillsStatusLine
             )
+        case .candidateReview(let item):
+            guard let refreshedItem = context.candidateReviews.first(where: {
+                candidateReviewStableKey($0) == candidateReviewStableKey(item)
+            }) else {
+                return nil
+            }
+            return SupervisorAuditDrillDownResolver.selection(
+                for: refreshedItem,
+                projectNamesByID: context.candidateReviewProjectNamesByID
+            )
         case .pendingGrant(let grant):
             guard let refreshedGrant = context.pendingHubGrants.first(where: {
                 pendingGrantStableKey($0) == pendingGrantStableKey(grant)
             }) else {
                 return nil
             }
-            return SupervisorAuditDrillDownResolver.selection(for: refreshedGrant)
+            return SupervisorAuditDrillDownResolver.selection(
+                for: refreshedGrant,
+                recentSkillActivities: context.recentSupervisorSkillActivities
+            )
         case .pendingSkillApproval(let approval):
             guard let refreshedApproval = context.pendingSupervisorSkillApprovals.first(where: {
                 pendingSkillApprovalStableKey($0) == pendingSkillApprovalStableKey(approval)
@@ -307,6 +333,16 @@ enum SupervisorViewStateSupport {
             grant.id,
             grant.grantRequestId,
             grant.requestId
+        ].joined(separator: "|")
+    }
+
+    private static func candidateReviewStableKey(
+        _ item: HubIPCClient.SupervisorCandidateReviewItem
+    ) -> String {
+        [
+            item.id,
+            item.requestId,
+            item.reviewId
         ].joined(separator: "|")
     }
 

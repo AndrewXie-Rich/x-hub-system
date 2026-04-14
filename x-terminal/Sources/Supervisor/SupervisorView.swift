@@ -13,12 +13,14 @@ struct SupervisorView: View {
             appModel: appModel,
             supervisor: supervisor,
             inputText: ui.inputText,
+            showHeartbeatFeed: ui.showHeartbeatFeed,
             showSignalCenter: ui.showSignalCenter,
             dismissedFingerprint: ui.dismissedBigTaskFingerprint,
             selectedPortfolioProjectID: ui.selectedPortfolioProjectID,
             selectedPortfolioDrillDownScope: ui.selectedPortfolioDrillDownScope,
             highlightedPendingSkillApprovalAnchor: ui.highlightedPendingSupervisorSkillApprovalAnchor,
             highlightedPendingHubGrantAnchor: ui.highlightedPendingHubGrantAnchor,
+            highlightedCandidateReviewAnchor: ui.highlightedSupervisorCandidateReviewAnchor,
             laneHealthFilter: ui.laneHealthFilter,
             focusedSplitLaneID: ui.focusedSplitLaneID
         )
@@ -47,7 +49,10 @@ struct SupervisorView: View {
         let adapter = self.adapter
         GeometryReader { proxy in
             SupervisorViewContent(
-                props: adapter.contentProps(totalHeight: proxy.size.height),
+                props: adapter.contentProps(
+                    totalWidth: proxy.size.width,
+                    totalHeight: proxy.size.height
+                ),
                 bindings: adapter.contentBindings,
                 callbacks: adapter.contentCallbacks
             )

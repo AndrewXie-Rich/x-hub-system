@@ -5,6 +5,56 @@ import Testing
 struct SupervisorCardActionResolverTests {
 
     @Test
+    func candidateReviewActionsOnlyExposeStageForPendingReview() {
+        let item = HubIPCClient.SupervisorCandidateReviewItem(
+            schemaVersion: "v1",
+            reviewId: "review-1",
+            requestId: "req-1",
+            evidenceRef: "",
+            reviewState: "pending_review",
+            durablePromotionState: "candidate_only",
+            promotionBoundary: "project",
+            deviceId: "",
+            userId: "",
+            appId: "",
+            threadId: "",
+            threadKey: "",
+            projectId: "project-alpha",
+            projectIds: [],
+            scopes: [],
+            recordTypes: [],
+            auditRefs: [],
+            idempotencyKeys: [],
+            candidateCount: 1,
+            summaryLine: "",
+            mirrorTarget: "",
+            localStoreRole: "",
+            carrierKind: "",
+            carrierSchemaVersion: "",
+            pendingChangeId: "",
+            pendingChangeStatus: "",
+            editSessionId: "",
+            docId: "",
+            writebackRef: "",
+            stageCreatedAtMs: 0,
+            stageUpdatedAtMs: 0,
+            latestEmittedAtMs: 0,
+            createdAtMs: 0,
+            updatedAtMs: 0
+        )
+
+        let actions = SupervisorCardActionResolver.candidateReviewActions(
+            item,
+            inFlight: false,
+            canAct: true
+        )
+
+        #expect(actions.map(\.label) == ["转入审查"])
+        #expect(actions[0].style == .prominent)
+        #expect(actions[0].isEnabled)
+    }
+
+    @Test
     func pendingHubGrantActionsRespectFlightAndAuthorityState() {
         let grant = pendingGrant(actionURL: "xt://grant/1")
 
@@ -78,13 +128,34 @@ struct SupervisorCardActionResolverTests {
 
         let actions = SupervisorCardActionResolver.recentSkillActivityActions(item)
 
-        #expect(actions.map(\.label) == ["打开执行档位", "重试", "查看详情"])
+        #expect(actions.map(\.label) == ["打开 A-Tier", "重试", "查看详情"])
         switch actions[0].action {
         case .openProjectGovernance(let projectId, let destination):
             #expect(projectId == "project-alpha")
             #expect(destination == .executionTier)
         default:
             Issue.record("expected governance repair action")
+        }
+    }
+
+    @Test
+    func recentSkillActivityActionsIncludeSkillGovernanceShortcutWhenPreflightFails() {
+        let item = recentSkillActivity(
+            status: .blocked,
+            requiredCapability: nil,
+            actionURL: nil,
+            denyCode: "preflight_quarantined"
+        )
+
+        let actions = SupervisorCardActionResolver.recentSkillActivityActions(item)
+
+        #expect(actions.map(\.label) == ["查看技能治理", "重试", "查看详情"])
+        switch actions[0].action {
+        case .openProjectGovernance(let projectId, let destination):
+            #expect(projectId == "project-alpha")
+            #expect(destination == .overview)
+        default:
+            Issue.record("expected skill governance repair action")
         }
     }
 
@@ -100,7 +171,7 @@ struct SupervisorCardActionResolverTests {
 
         let actions = SupervisorCardActionResolver.auditSheetActions(detail)
 
-        #expect(actions.map(\.label) == ["打开执行档位", "重试"])
+        #expect(actions.map(\.label) == ["打开 A-Tier", "重试"])
     }
 
     @Test
@@ -136,7 +207,7 @@ struct SupervisorCardActionResolverTests {
 
         let actions = SupervisorCardActionResolver.auditSheetActions(detail)
 
-        #expect(actions.map(\.label) == ["打开执行档位"])
+        #expect(actions.map(\.label) == ["打开 A-Tier"])
         switch actions[0].action {
         case .openProjectGovernance(let projectId, let destination):
             #expect(projectId == "project-alpha")
@@ -144,6 +215,54 @@ struct SupervisorCardActionResolverTests {
         default:
             Issue.record("expected governance repair action for fallback record")
         }
+    }
+
+    @Test
+    func auditSheetActionsIncludeStageForCandidateReview() {
+        let item = HubIPCClient.SupervisorCandidateReviewItem(
+            schemaVersion: "v1",
+            reviewId: "review-1",
+            requestId: "req-1",
+            evidenceRef: "audit://candidate/1",
+            reviewState: "pending_review",
+            durablePromotionState: "candidate_only",
+            promotionBoundary: "project",
+            deviceId: "device-1",
+            userId: "user-1",
+            appId: "xt",
+            threadId: "thread-1",
+            threadKey: "thread-key-1",
+            projectId: "project-alpha",
+            projectIds: [],
+            scopes: ["project_memory"],
+            recordTypes: ["canonical"],
+            auditRefs: [],
+            idempotencyKeys: [],
+            candidateCount: 2,
+            summaryLine: "归并了 2 条候选记忆",
+            mirrorTarget: "xt_local_store",
+            localStoreRole: "cache",
+            carrierKind: "review_bundle",
+            carrierSchemaVersion: "v1",
+            pendingChangeId: "",
+            pendingChangeStatus: "",
+            editSessionId: "",
+            docId: "",
+            writebackRef: "",
+            stageCreatedAtMs: 0,
+            stageUpdatedAtMs: 0,
+            latestEmittedAtMs: 0,
+            createdAtMs: 0,
+            updatedAtMs: 0
+        )
+        let detail = SupervisorAuditDrillDownSelection.candidateReview(
+            item,
+            projectNamesByID: ["project-alpha": "Project Alpha"]
+        )
+
+        let actions = SupervisorCardActionResolver.auditSheetActions(detail)
+
+        #expect(actions.map(\.label) == ["打开 Supervisor", "转入审查"])
     }
 
     @Test

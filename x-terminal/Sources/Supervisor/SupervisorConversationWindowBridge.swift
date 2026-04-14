@@ -1,8 +1,13 @@
+import Combine
 import Foundation
 
 struct SupervisorConversationWindowOpenRequest: Equatable {
     static let reasonUserInfoKey = "reason"
     static let focusConversationUserInfoKey = "focusConversation"
+    static let sessionWindowStateUserInfoKey = "window_state"
+    static let sessionRemainingTTLSecondsUserInfoKey = "remaining_ttl_sec"
+    static let sessionReasonCodeUserInfoKey = "reason_code"
+    static let sessionEventUserInfoKey = "session_event"
 
     let reason: String
     let focusConversation: Bool
@@ -55,19 +60,29 @@ final class SupervisorConversationWindowBridge {
 
     private let notificationCenter: NotificationCenter
     private let windowVisibleProvider: @MainActor () -> Bool
+    private let conversationSessionController: SupervisorConversationSessionController
     private var lastOpenAt: Date = .distantPast
     private var lastOpenRequest: SupervisorConversationWindowOpenRequest?
     private let dedupeInterval: TimeInterval
+    private var cancellables: Set<AnyCancellable> = []
     private(set) var latestRequest: SupervisorConversationWindowOpenRequest?
+    private(set) var latestSessionOutwardState: SupervisorConversationSessionOutwardState
+    private(set) var latestSessionEvent: SupervisorConversationSessionEvent?
 
     init(
         notificationCenter: NotificationCenter = .default,
         dedupeInterval: TimeInterval = 0.8,
+        conversationSessionController: SupervisorConversationSessionController? = nil,
         windowVisibleProvider: (@MainActor () -> Bool)? = nil
     ) {
         self.notificationCenter = notificationCenter
         self.dedupeInterval = dedupeInterval
+        let resolvedConversationSessionController = conversationSessionController ?? SupervisorConversationSessionController.shared
+        self.conversationSessionController = resolvedConversationSessionController
+        self.latestSessionOutwardState = resolvedConversationSessionController.snapshot.outwardState
+        self.latestSessionEvent = resolvedConversationSessionController.latestEvent
         self.windowVisibleProvider = windowVisibleProvider ?? Self.defaultWindowVisibleProvider
+        bindConversationSession()
     }
 
     func requestOpen(
@@ -98,14 +113,35 @@ final class SupervisorConversationWindowBridge {
         lastOpenAt = now
         lastOpenRequest = request
         latestRequest = request
+        var userInfo = request.userInfo
+        userInfo[SupervisorConversationWindowOpenRequest.sessionWindowStateUserInfoKey] = latestSessionOutwardState.windowState.rawValue
+        userInfo[SupervisorConversationWindowOpenRequest.sessionRemainingTTLSecondsUserInfoKey] = latestSessionOutwardState.remainingTTLSeconds
+        userInfo[SupervisorConversationWindowOpenRequest.sessionReasonCodeUserInfoKey] = latestSessionOutwardState.reasonCode
+        if let latestSessionEvent {
+            userInfo[SupervisorConversationWindowOpenRequest.sessionEventUserInfoKey] = latestSessionEvent.event.rawValue
+        }
         notificationCenter.post(
             name: .xterminalOpenSupervisorWindow,
             object: nil,
-            userInfo: request.userInfo
+            userInfo: userInfo
         )
     }
 
     private static func defaultWindowVisibleProvider() -> Bool {
         XTSupervisorWindowVisibilityRegistry.shared.isWindowVisible
+    }
+
+    private func bindConversationSession() {
+        conversationSessionController.$snapshot
+            .sink { [weak self] snapshot in
+                self?.latestSessionOutwardState = snapshot.outwardState
+            }
+            .store(in: &cancellables)
+
+        conversationSessionController.$latestEvent
+            .sink { [weak self] event in
+                self?.latestSessionEvent = event
+            }
+            .store(in: &cancellables)
     }
 }

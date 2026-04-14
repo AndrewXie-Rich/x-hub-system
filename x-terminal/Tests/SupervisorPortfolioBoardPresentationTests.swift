@@ -57,10 +57,16 @@ struct SupervisorPortfolioBoardPresentationTests {
         let events = (1...6).map { index in
             SupervisorPortfolioActionEventPresentation(
                 id: "event-\(index)",
+                sourceLabel: "项目提醒",
+                scopeLine: "Project \(index)",
                 title: "Event \(index)",
                 summaryLine: "summary \(index)",
                 nextLine: "next \(index)",
                 whyLine: "why \(index)",
+                detailLines: ["detail \(index)"],
+                detailActionLabel: "打开项目",
+                destination: .projectDetail(projectId: "project-\(index)"),
+                defaultUnread: true,
                 tone: .warning
             )
         }
@@ -90,7 +96,7 @@ struct SupervisorPortfolioBoardPresentationTests {
         #expect(presentation.actionEventRows.map { $0.id } == ["event-1", "event-2", "event-3", "event-4"])
         #expect(presentation.activeDrillDown?.projectId == "project-3")
         #expect(presentation.recentUIReviewFeedTitle == "最近 UI 审查")
-        #expect(presentation.recentActionFeedTitle == "最近项目动作")
+        #expect(presentation.recentActionFeedTitle == "提醒中心")
     }
 
     @Test

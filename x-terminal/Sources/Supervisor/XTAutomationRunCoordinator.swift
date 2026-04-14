@@ -31,6 +31,7 @@ struct XTAutomationRunRequest {
     let acceptanceWorkflow: AcceptanceWorkflowResult?
     let recipeOverride: AXAutomationRecipeRuntimeBinding?
     let verifyCommandsOverride: [String]?
+    let verificationContractOverride: XTAutomationVerificationContract?
     let now: Date
 
     init(
@@ -55,6 +56,7 @@ struct XTAutomationRunRequest {
         acceptanceWorkflow: AcceptanceWorkflowResult? = nil,
         recipeOverride: AXAutomationRecipeRuntimeBinding? = nil,
         verifyCommandsOverride: [String]? = nil,
+        verificationContractOverride: XTAutomationVerificationContract? = nil,
         now: Date = Date()
     ) {
         self.triggerSeeds = triggerSeeds
@@ -78,6 +80,7 @@ struct XTAutomationRunRequest {
         self.acceptanceWorkflow = acceptanceWorkflow
         self.recipeOverride = recipeOverride
         self.verifyCommandsOverride = verifyCommandsOverride
+        self.verificationContractOverride = verificationContractOverride
         self.now = now
     }
 }
@@ -90,6 +93,29 @@ struct XTAutomationPreparedRun: Equatable {
     let currentCheckpoint: XTAutomationRunCheckpoint
     let executionRecipe: AXAutomationRecipeRuntimeBinding
     let verifyCommandsOverride: [String]?
+    let verificationContractOverride: XTAutomationVerificationContract?
+}
+
+struct XTAutomationRecoveryCandidate: Equatable {
+    let runID: String
+    let state: XTAutomationRunState
+    let selection: XTAutomationRecoveryCandidateSelection
+    let latestVisibleRunID: String
+    let latestVisibleState: XTAutomationRunState
+    let reason: XTAutomationRecoveryCandidateReason
+    let supersededRunID: String?
+    let supersededByRunID: String?
+    let deliveryRef: String?
+    let checkpointAgeSeconds: Int
+    let retryAfterSeconds: Int
+    let retryAfterRemainingSeconds: Int?
+    let automaticDecision: XTAutomationRestartRecoveryAction
+    let automaticHoldReason: String
+    let automaticResumeMode: XTAutomationRecoveryResumeMode?
+    let automaticRetryStrategy: String?
+    let automaticRetryReason: String?
+    let automaticRetryPlanningMode: String?
+    let automaticRetrySourceHandoffArtifactPath: String?
 }
 
 final class XTAutomationRunCoordinator {
@@ -172,6 +198,10 @@ final class XTAutomationRunCoordinator {
             recipeID: recipe.recipeID,
             initialState: xtAutomationCoordinatorInitialState(for: verticalSlice.eventRunner.launchDecision),
             retryAfterSeconds: verticalSlice.eventRunner.retryAfterSeconds,
+            currentStepID: recipe.actionGraph.first?.actionID,
+            currentStepTitle: xtAutomationCoordinatorInitialStepTitle(recipe.actionGraph.first),
+            currentStepState: recipe.actionGraph.isEmpty ? nil : .pending,
+            currentStepSummary: recipe.actionGraph.isEmpty ? nil : "waiting_to_start_first_action",
             auditRef: verticalSlice.overall.auditRef
         )
 
@@ -190,6 +220,7 @@ final class XTAutomationRunCoordinator {
                 "retry_depth": lineage.retryDepth,
                 "recipe_id": recipe.recipeID,
                 "recipe_ref": recipe.ref,
+                "delivery_ref": request.deliveryRef,
                 "external_trigger_ingress_schema_version": XTAutomationExternalTriggerIngressEnvelope.currentSchemaVersion,
                 "trigger_count": request.triggerSeeds.count,
                 "non_manual_trigger_count": request.triggerSeeds.filter { $0.triggerType != .manual }.count,
@@ -208,7 +239,8 @@ final class XTAutomationRunCoordinator {
             verticalSlice: verticalSlice,
             currentCheckpoint: initialCheckpoint,
             executionRecipe: recipe,
-            verifyCommandsOverride: request.verifyCommandsOverride
+            verifyCommandsOverride: request.verifyCommandsOverride,
+            verificationContractOverride: request.verificationContractOverride
         )
     }
 
@@ -217,25 +249,35 @@ final class XTAutomationRunCoordinator {
         _ runID: String,
         to nextState: XTAutomationRunState,
         retryAfterSeconds: Int = 0,
+        currentStepID: String? = nil,
+        currentStepTitle: String? = nil,
+        currentStepState: XTAutomationRunStepState? = nil,
+        currentStepSummary: String? = nil,
         for ctx: AXProjectContext,
         auditRef: String,
         now: Date = Date()
     ) throws -> XTAutomationRunCheckpoint {
         let store = try resolvedStore(for: runID, ctx: ctx)
+        let rows = xtAutomationReadRawLogRows(for: ctx)
         if nextState != .blocked,
            let guidance = pendingAutomationSafePointGuidance(
             for: ctx,
             runID: runID,
-            store: store
+            store: store,
+            rows: rows
            ),
-           !hasAutomationSafePointHold(
+           !xtAutomationHasSafePointHold(
             runID: runID,
             injectionId: guidance.injectionId,
-            in: ctx
+            from: rows
            ) {
             let checkpoint = store.transition(
                 to: .blocked,
                 retryAfterSeconds: max(retryAfterSeconds, 0),
+                currentStepID: currentStepID,
+                currentStepTitle: currentStepTitle,
+                currentStepState: currentStepState,
+                currentStepSummary: currentStepSummary,
                 auditRef: auditRef
             )
             AXProjectStore.appendRawLog(
@@ -260,6 +302,10 @@ final class XTAutomationRunCoordinator {
         let checkpoint = store.transition(
             to: nextState,
             retryAfterSeconds: retryAfterSeconds,
+            currentStepID: currentStepID,
+            currentStepTitle: currentStepTitle,
+            currentStepState: currentStepState,
+            currentStepSummary: currentStepSummary,
             auditRef: auditRef
         )
         persistCheckpoint(checkpoint, createdAt: now, for: ctx)
@@ -288,26 +334,111 @@ final class XTAutomationRunCoordinator {
     func recoverLatestRun(
         for ctx: AXProjectContext,
         checkpointAgeSeconds: Int,
+        recoveryMode: XTAutomationRestartRecoveryMode = .automatic,
         auditRef: String
     ) throws -> XTAutomationRestartRecoveryDecision? {
-        let config = try AXProjectStore.loadOrCreateConfig(for: ctx)
-        let runID = config.lastAutomationLaunchRef.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !runID.isEmpty else { return nil }
-        return try recoverRun(runID, for: ctx, checkpointAgeSeconds: checkpointAgeSeconds, auditRef: auditRef)
+        let rows = xtAutomationReadRawLogRows(for: ctx)
+        guard let candidate = try latestRecoveryCandidate(
+            for: ctx,
+            rows: rows,
+            now: Date().timeIntervalSince1970
+        ) else {
+            return nil
+        }
+        return try recoverRun(
+            candidate.runID,
+            for: ctx,
+            rows: rows,
+            checkpointAgeSeconds: checkpointAgeSeconds,
+            recoveryMode: recoveryMode,
+            auditRef: auditRef
+        )
+    }
+
+    func recoverLatestRun(
+        for ctx: AXProjectContext,
+        now: TimeInterval,
+        recoveryMode: XTAutomationRestartRecoveryMode = .automatic,
+        auditRef: String
+    ) throws -> XTAutomationRestartRecoveryDecision? {
+        let rows = xtAutomationReadRawLogRows(for: ctx)
+        guard let candidate = try latestRecoveryCandidate(for: ctx, rows: rows, now: now) else {
+            return nil
+        }
+        return try recoverRun(
+            candidate.runID,
+            for: ctx,
+            rows: rows,
+            checkpointAgeSeconds: xtAutomationCheckpointAgeSeconds(
+                for: candidate.runID,
+                from: rows,
+                now: now
+            ),
+            recoveryMode: recoveryMode,
+            auditRef: auditRef
+        )
+    }
+
+    func latestRecoveryCandidate(
+        for ctx: AXProjectContext,
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) throws -> XTAutomationRecoveryCandidate? {
+        try latestRecoveryCandidate(
+            for: ctx,
+            rows: xtAutomationReadRawLogRows(for: ctx),
+            now: now
+        )
+    }
+
+    func latestPersistedRunID(
+        for ctx: AXProjectContext,
+        preferredRunID: String? = nil,
+        allowedStates: Set<XTAutomationRunState>? = nil,
+        excludeCancelled: Bool = false
+    ) -> String? {
+        xtAutomationLatestPersistedCheckpointSummary(
+            from: xtAutomationReadRawLogRows(for: ctx),
+            preferredRunID: preferredRunID,
+            allowedStates: allowedStates,
+            excludeCancelled: excludeCancelled
+        )?.checkpoint.runID
     }
 
     func recoverRun(
         _ runID: String,
         for ctx: AXProjectContext,
         checkpointAgeSeconds: Int,
+        recoveryMode: XTAutomationRestartRecoveryMode = .automatic,
         auditRef: String
     ) throws -> XTAutomationRestartRecoveryDecision {
-        let reconstruction = try loadCheckpointReconstruction(for: runID, ctx: ctx)
-        checkpointStores[runID] = reconstruction.store
-        return XTAutomationRunCheckpointStore.recoveryDecision(
-            for: reconstruction.latestCheckpoint,
-            wasCancelled: reconstruction.wasCancelled,
+        try recoverRun(
+            runID,
+            for: ctx,
+            rows: xtAutomationReadRawLogRows(for: ctx),
             checkpointAgeSeconds: checkpointAgeSeconds,
+            recoveryMode: recoveryMode,
+            auditRef: auditRef
+        )
+    }
+
+    func recoverRun(
+        _ runID: String,
+        for ctx: AXProjectContext,
+        now: TimeInterval,
+        recoveryMode: XTAutomationRestartRecoveryMode = .automatic,
+        auditRef: String
+    ) throws -> XTAutomationRestartRecoveryDecision {
+        let rows = xtAutomationReadRawLogRows(for: ctx)
+        return try recoverRun(
+            runID,
+            for: ctx,
+            rows: rows,
+            checkpointAgeSeconds: xtAutomationCheckpointAgeSeconds(
+                for: runID,
+                from: rows,
+                now: now
+            ),
+            recoveryMode: recoveryMode,
             auditRef: auditRef
         )
     }
@@ -350,44 +481,120 @@ final class XTAutomationRunCoordinator {
         latestCheckpoint: XTAutomationRunCheckpoint,
         wasCancelled: Bool
     ) {
-        let log = xtAutomationReadRawLogEntries(for: ctx)
-        let checkpointRows = log.filter {
-            ($0["type"] as? String) == "automation_checkpoint"
-                && ($0["run_id"] as? String) == runID
-        }
-        guard let firstRow = checkpointRows.first,
-              let firstCheckpoint = xtAutomationCheckpoint(from: firstRow) else {
+        try loadCheckpointReconstruction(
+            for: runID,
+            rows: xtAutomationReadRawLogRows(for: ctx)
+        )
+    }
+
+    private func loadCheckpointReconstruction(
+        for runID: String,
+        rows: [[String: Any]]
+    ) throws -> (
+        store: XTAutomationRunCheckpointStore,
+        latestCheckpoint: XTAutomationRunCheckpoint,
+        wasCancelled: Bool
+    ) {
+        guard let reconstruction = xtAutomationCheckpointReconstruction(
+            for: runID,
+            from: rows
+        ) else {
             throw XTAutomationRunCoordinatorError.runNotFound(runID)
         }
-
-        let store = XTAutomationRunCheckpointStore()
-        _ = store.bootstrap(
-            runID: firstCheckpoint.runID,
-            recipeID: firstCheckpoint.recipeID,
-            initialState: firstCheckpoint.state,
-            retryAfterSeconds: firstCheckpoint.retryAfterSeconds,
-            auditRef: firstCheckpoint.auditRef
+        return (
+            reconstruction.store,
+            reconstruction.latestCheckpoint,
+            reconstruction.wasCancelled
         )
-        var latestCheckpoint = firstCheckpoint
-        for row in checkpointRows.dropFirst() {
-            guard let checkpoint = xtAutomationCheckpoint(from: row) else { continue }
-            latestCheckpoint = store.transition(
-                to: checkpoint.state,
-                retryAfterSeconds: checkpoint.retryAfterSeconds,
-                auditRef: checkpoint.auditRef
+    }
+
+    private func recoverRun(
+        _ runID: String,
+        for ctx: AXProjectContext,
+        rows: [[String: Any]],
+        checkpointAgeSeconds: Int,
+        recoveryMode: XTAutomationRestartRecoveryMode,
+        auditRef: String
+    ) throws -> XTAutomationRestartRecoveryDecision {
+        let reconstruction = try loadCheckpointReconstruction(for: runID, rows: rows)
+        checkpointStores[runID] = reconstruction.store
+        return XTAutomationRunCheckpointStore.recoveryDecision(
+            for: reconstruction.latestCheckpoint,
+            wasCancelled: reconstruction.wasCancelled,
+            checkpointAgeSeconds: checkpointAgeSeconds,
+            recoveryMode: recoveryMode,
+            auditRef: auditRef
+        )
+    }
+
+    private func latestRecoveryCandidate(
+        for ctx: AXProjectContext,
+        rows: [[String: Any]],
+        now: TimeInterval
+    ) throws -> XTAutomationRecoveryCandidate? {
+        let config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        guard let candidate = xtAutomationLatestRecoveryCandidateSummary(
+            from: rows,
+            preferredRunID: config.lastAutomationLaunchRef,
+            now: now
+        ) else {
+            return nil
+        }
+        let checkpointAgeSeconds = max(0, Int(now - candidate.checkpointSummary.createdAt))
+        let automaticRecovery = XTAutomationRunCheckpointStore.recoveryDecision(
+            for: candidate.checkpointSummary.checkpoint,
+            wasCancelled: candidate.checkpointSummary.wasCancelled,
+            checkpointAgeSeconds: checkpointAgeSeconds,
+            recoveryMode: .automatic,
+            auditRef: "audit-xt-auto-recovery-candidate-projection"
+        )
+        let retryAfterRemainingSeconds: Int? = {
+            guard automaticRecovery.holdReason == "retry_after_not_elapsed" else {
+                return nil
+            }
+            return max(0, candidate.checkpointSummary.checkpoint.retryAfterSeconds - checkpointAgeSeconds)
+        }()
+        let retryPlanPreview: XTAutomationRetryPlanPreview? = {
+            guard automaticRecovery.decision == .resume
+                    || automaticRecovery.holdReason == "retry_after_not_elapsed" else {
+                return nil
+            }
+            return xtAutomationRetryPlanPreview(
+                for: candidate.checkpointSummary.checkpoint.runID,
+                ctx: ctx
             )
-        }
-
-        let cancelRows = log.filter {
-            ($0["type"] as? String) == "automation_run_cancel"
-                && ($0["run_id"] as? String) == runID
-        }
-        if let latestCancel = cancelRows.last,
-           let cancelAuditRef = latestCancel["audit_ref"] as? String {
-            store.markCancelled(auditRef: cancelAuditRef)
-        }
-
-        return (store, latestCheckpoint, !cancelRows.isEmpty)
+        }()
+        let automaticResumeMode: XTAutomationRecoveryResumeMode? = {
+            guard automaticRecovery.decision == .resume
+                    || automaticRecovery.holdReason == "retry_after_not_elapsed" else {
+                return nil
+            }
+            return retryPlanPreview == nil ? .inPlace : .retryPackage
+        }()
+        return XTAutomationRecoveryCandidate(
+            runID: candidate.checkpointSummary.checkpoint.runID,
+            state: candidate.checkpointSummary.checkpoint.state,
+            selection: candidate.selection,
+            latestVisibleRunID: candidate.latestVisibleRunID,
+            latestVisibleState: candidate.latestVisibleState,
+            reason: candidate.reason,
+            supersededRunID: candidate.supersededRunID,
+            supersededByRunID: candidate.supersededByRunID,
+            deliveryRef: xtAutomationPersistedRunDeliveryRef(
+                for: candidate.checkpointSummary.checkpoint.runID,
+                from: rows
+            ),
+            checkpointAgeSeconds: checkpointAgeSeconds,
+            retryAfterSeconds: candidate.checkpointSummary.checkpoint.retryAfterSeconds,
+            retryAfterRemainingSeconds: retryAfterRemainingSeconds,
+            automaticDecision: automaticRecovery.decision,
+            automaticHoldReason: automaticRecovery.holdReason,
+            automaticResumeMode: automaticResumeMode,
+            automaticRetryStrategy: retryPlanPreview?.retryStrategy,
+            automaticRetryReason: retryPlanPreview?.retryReason,
+            automaticRetryPlanningMode: retryPlanPreview?.planningMode,
+            automaticRetrySourceHandoffArtifactPath: retryPlanPreview?.sourceHandoffArtifactPath
+        )
     }
 
     private func persistCheckpoint(
@@ -408,6 +615,10 @@ final class XTAutomationRunCoordinator {
                 "resume_token": checkpoint.resumeToken,
                 "checkpoint_ref": checkpoint.checkpointRef,
                 "stable_identity": checkpoint.stableIdentity,
+                "current_step_id": checkpoint.currentStepID ?? NSNull(),
+                "current_step_title": checkpoint.currentStepTitle ?? NSNull(),
+                "current_step_state": checkpoint.currentStepState?.rawValue ?? NSNull(),
+                "current_step_summary": checkpoint.currentStepSummary ?? NSNull(),
                 "audit_ref": checkpoint.auditRef
             ],
             for: ctx
@@ -419,46 +630,39 @@ final class XTAutomationRunCoordinator {
         runID: String,
         store: XTAutomationRunCheckpointStore
     ) -> SupervisorGuidanceInjectionRecord? {
-        let runStartedAtMs = automationRunStartedAtMs(runID: runID, ctx: ctx)
+        pendingAutomationSafePointGuidance(
+            for: ctx,
+            runID: runID,
+            store: store,
+            rows: xtAutomationReadRawLogRows(for: ctx)
+        )
+    }
+
+    private func pendingAutomationSafePointGuidance(
+        for ctx: AXProjectContext,
+        runID: String,
+        store: XTAutomationRunCheckpointStore,
+        rows: [[String: Any]]
+    ) -> SupervisorGuidanceInjectionRecord? {
+        let runStartedAtMs = xtAutomationRunStartedAtMs(
+            for: runID,
+            from: rows
+        )
         return SupervisorSafePointCoordinator.deliverablePendingAutomationGuidance(
             for: ctx,
             runStartedAtMs: runStartedAtMs,
             checkpointCount: store.history.count
         )
     }
+}
 
-    private func automationRunStartedAtMs(runID: String, ctx: AXProjectContext) -> Int64 {
-        let log = xtAutomationReadRawLogEntries(for: ctx)
-        let launchSec = log.first(where: {
-            ($0["type"] as? String) == "automation_run_launch" &&
-            ($0["run_id"] as? String) == runID
-        })?["created_at"] as? Double
-        if let launchSec {
-            return Int64((launchSec * 1000.0).rounded())
-        }
-        let checkpointSec = log.first(where: {
-            ($0["type"] as? String) == "automation_checkpoint" &&
-            ($0["run_id"] as? String) == runID
-        })?["created_at"] as? Double
-        if let checkpointSec {
-            return Int64((checkpointSec * 1000.0).rounded())
-        }
-        return 0
+private func xtAutomationCoordinatorInitialStepTitle(_ action: XTAutomationRecipeAction?) -> String? {
+    let title = action?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if !title.isEmpty {
+        return title
     }
-
-    private func hasAutomationSafePointHold(
-        runID: String,
-        injectionId: String,
-        in ctx: AXProjectContext
-    ) -> Bool {
-        let normalizedInjectionId = injectionId.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedInjectionId.isEmpty else { return false }
-        return xtAutomationReadRawLogEntries(for: ctx).contains {
-            ($0["type"] as? String) == "automation_safe_point_hold" &&
-            ($0["run_id"] as? String) == runID &&
-            ($0["injection_id"] as? String) == normalizedInjectionId
-        }
-    }
+    let actionID = action?.actionID.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return actionID.isEmpty ? nil : actionID
 }
 
 private func xtAutomationCoordinatorInitialState(
@@ -536,76 +740,4 @@ private func xtAutomationValidateTriggerIngressSeeds(
             }
         }
     }
-}
-
-private func xtAutomationReadRawLogEntries(for ctx: AXProjectContext) -> [[String: Any]] {
-    guard FileManager.default.fileExists(atPath: ctx.rawLogURL.path),
-          let data = try? Data(contentsOf: ctx.rawLogURL),
-          let text = String(data: data, encoding: .utf8) else {
-        return []
-    }
-
-    return text
-        .split(separator: "\n", omittingEmptySubsequences: true)
-        .compactMap { line in
-            let rawLine = String(line)
-            guard let lineData = rawLine.data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else {
-                return nil
-            }
-            return object
-        }
-}
-
-private func xtAutomationCheckpoint(from row: [String: Any]) -> XTAutomationRunCheckpoint? {
-    guard let runID = row["run_id"] as? String,
-          let recipeID = row["recipe_id"] as? String,
-          let stateRaw = row["state"] as? String,
-          let state = XTAutomationRunState(rawValue: stateRaw),
-          let lastTransition = row["last_transition"] as? String,
-          let resumeToken = row["resume_token"] as? String,
-          let checkpointRef = row["checkpoint_ref"] as? String,
-          let auditRef = row["audit_ref"] as? String else {
-        return nil
-    }
-
-    return XTAutomationRunCheckpoint(
-        schemaVersion: XTAutomationRunCheckpoint.currentSchemaVersion,
-        runID: runID,
-        recipeID: recipeID,
-        state: state,
-        attempt: xtAutomationInt(row["attempt"], fallback: 1),
-        lastTransition: lastTransition,
-        retryAfterSeconds: xtAutomationInt(row["retry_after_seconds"], fallback: 0),
-        resumeToken: resumeToken,
-        checkpointRef: checkpointRef,
-        stableIdentity: xtAutomationBool(row["stable_identity"]),
-        auditRef: auditRef
-    )
-}
-
-private func xtAutomationInt(_ value: Any?, fallback: Int) -> Int {
-    if let intValue = value as? Int {
-        return intValue
-    }
-    if let doubleValue = value as? Double {
-        return Int(doubleValue)
-    }
-    if let stringValue = value as? String, let intValue = Int(stringValue) {
-        return intValue
-    }
-    return fallback
-}
-
-private func xtAutomationBool(_ value: Any?) -> Bool {
-    if let boolValue = value as? Bool {
-        return boolValue
-    }
-    if let intValue = value as? Int {
-        return intValue != 0
-    }
-    if let stringValue = value as? String {
-        return ["1", "true", "yes"].contains(stringValue.lowercased())
-    }
-    return false
 }

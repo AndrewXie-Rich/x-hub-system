@@ -58,6 +58,7 @@ final class PromptFactory {
         let prohibitions = sanitizeEntries(buildProhibitions(for: lane))
         let rollbackPoints = sanitizeEntries(buildRollbackPoints(for: lane))
         let refusalSemantics = sanitizeEntries(buildRefusalSemantics(for: lane))
+        let verificationContract = lane.verificationContract ?? fallbackVerificationContract(for: lane)
 
         let compiledPrompt = renderPrompt(
             lane: lane,
@@ -65,6 +66,7 @@ final class PromptFactory {
             inputs: inputs,
             outputs: outputs,
             dodChecklist: dodChecklist,
+            verificationContract: verificationContract,
             riskBoundaries: riskBoundaries,
             prohibitions: prohibitions,
             rollbackPoints: rollbackPoints,
@@ -82,6 +84,7 @@ final class PromptFactory {
             prohibitions: prohibitions,
             rollbackPoints: rollbackPoints,
             refusalSemantics: refusalSemantics,
+            verificationContract: verificationContract,
             compiledPrompt: compiledPrompt,
             tokenBudget: lane.tokenBudget
         )
@@ -273,6 +276,7 @@ final class PromptFactory {
         inputs: [String],
         outputs: [String],
         dodChecklist: [String],
+        verificationContract: LaneVerificationContract?,
         riskBoundaries: [String],
         prohibitions: [String],
         rollbackPoints: [String],
@@ -282,6 +286,7 @@ final class PromptFactory {
         let inputText = inputs.map { "- \($0)" }.joined(separator: "\n")
         let outputText = outputs.map { "- \($0)" }.joined(separator: "\n")
         let dodText = dodChecklist.map { "- \($0)" }.joined(separator: "\n")
+        let verificationText = renderVerificationSection(verificationContract)
         let riskText = riskBoundaries.map { "- \($0)" }.joined(separator: "\n")
         let prohibitionText = prohibitions.map { "- \($0)" }.joined(separator: "\n")
         let rollbackText = rollbackPoints.map { "- \($0)" }.joined(separator: "\n")
@@ -303,6 +308,9 @@ final class PromptFactory {
 [DoD]
 \(dodText)
 
+[Verification Contract]
+\(verificationText)
+
 [Risk Boundaries]
 \(riskText)
 
@@ -315,6 +323,69 @@ final class PromptFactory {
 [Refusal Semantics]
 \(refusalText)
 """
+    }
+
+    private func renderVerificationSection(_ contract: LaneVerificationContract?) -> String {
+        guard let contract else {
+            return "- No explicit verification contract was attached."
+        }
+
+        let evidenceText = sanitizeEntries(contract.evidenceRequired)
+            .map { "- \($0)" }
+            .joined(separator: "\n")
+        let checklistText = sanitizeEntries(contract.verificationChecklist)
+            .map { "- \($0)" }
+            .joined(separator: "\n")
+
+        return """
+- Expected state: \(contract.expectedState)
+- Verify method: \(contract.verifyMethod.promptLabel)
+- Retry policy: \(contract.retryPolicy.promptLabel)
+- Hold policy: \(contract.holdPolicy.promptLabel)
+- Evidence required:
+\(evidenceText)
+- Verification checklist:
+\(checklistText)
+"""
+    }
+
+    private func fallbackVerificationContract(for lane: SplitLaneProposal) -> LaneVerificationContract {
+        let text = ([lane.goal] + lane.expectedArtifacts + lane.dodChecklist)
+            .joined(separator: " ")
+            .lowercased()
+
+        if text.contains("deploy") || text.contains("release") || text.contains("rollback") ||
+            text.contains("部署") || text.contains("发布") {
+            return LaneVerificationContract(
+                expectedState: "Change is ready to ship, smoke checks are green, and rollback readiness is documented.",
+                verifyMethod: .preflightAndSmoke,
+                retryPolicy: lane.riskTier >= .high ? .noAutoRetry : .singleRetryThenEscalate,
+                holdPolicy: .holdUntilEvidence,
+                evidenceRequired: sanitizeEntries(lane.expectedArtifacts + ["preflight_result", "smoke_result", "rollback_readiness"]),
+                verificationChecklist: sanitizeEntries(["expected_state_confirmed", "evidence_attached"] + lane.dodChecklist)
+            )
+        }
+
+        if text.contains("doc") || text.contains("design") || text.contains("research") || text.contains("plan") ||
+            text.contains("文档") || text.contains("设计") || text.contains("研究") || text.contains("计划") {
+            return LaneVerificationContract(
+                expectedState: "Artifacts are internally consistent and ready for handoff.",
+                verifyMethod: .artifactConsistencyReview,
+                retryPolicy: .noAutoRetry,
+                holdPolicy: .advisoryOnly,
+                evidenceRequired: sanitizeEntries(lane.expectedArtifacts + ["artifact_review_note", "consistency_summary"]),
+                verificationChecklist: sanitizeEntries(["expected_state_confirmed", "evidence_attached"] + lane.dodChecklist)
+            )
+        }
+
+        return LaneVerificationContract(
+            expectedState: "Lane goal is satisfied and targeted checks confirm the intended change.",
+            verifyMethod: .targetedChecksAndDiffReview,
+            retryPolicy: lane.riskTier >= .high ? .singleRetryThenEscalate : .boundedRetryThenHold,
+            holdPolicy: .holdOnMismatch,
+            evidenceRequired: sanitizeEntries(lane.expectedArtifacts + ["diff_summary", "targeted_check_result"]),
+            verificationChecklist: sanitizeEntries(["expected_state_confirmed", "evidence_attached"] + lane.dodChecklist)
+        )
     }
 
     private func sanitizeEntries(_ values: [String]) -> [String] {

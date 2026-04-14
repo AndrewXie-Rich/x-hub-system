@@ -7,9 +7,12 @@ struct SupervisorHeaderBar: View {
     let latestRuntimeActivityText: String?
     let context: SupervisorHeaderControls.Context
     let isProcessing: Bool
+    let processingStatusText: String?
     let detectedBigTaskCandidate: SupervisorBigTaskCandidate?
+    let bigTaskSceneHint: SupervisorBigTaskSceneHint?
     let heartbeatIconScale: CGFloat
     let onTriggerBigTask: (SupervisorBigTaskCandidate) -> Void
+    let onDismissBigTask: (SupervisorBigTaskCandidate) -> Void
     let onAction: (SupervisorHeaderAction) -> Void
 
     private var headerStatus: SupervisorHeaderStatusPresentation {
@@ -48,8 +51,11 @@ struct SupervisorHeaderBar: View {
         )
     }
 
-    private var signalAction: SupervisorHeaderControls.SignalActionPresentation? {
-        SupervisorHeaderControls.signalAction(context: context)
+    private var operationsButton: SupervisorHeaderButtonPresentation {
+        SupervisorHeaderControls.presentation(
+            for: .operations,
+            context: context
+        )
     }
 
     private var supervisorSettingsButton: SupervisorHeaderButtonPresentation {
@@ -107,61 +113,63 @@ struct SupervisorHeaderBar: View {
             }
 
             if let candidate = detectedBigTaskCandidate {
-                Button(action: { onTriggerBigTask(candidate) }) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "sparkles.rectangle.stack.fill")
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("检测到大任务")
-                                .font(.caption.weight(.semibold))
-                            Text("自动建任务与初始计划")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Button(action: { onTriggerBigTask(candidate) }) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "sparkles.rectangle.stack.fill")
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text("检测到大任务")
+                                    .font(.caption.weight(.semibold))
+                                Text(bigTaskSceneHint?.quickAccessLine ?? "一键建 job + initial plan")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color.green.opacity(0.12))
+                        .clipShape(Capsule())
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(Color.green.opacity(0.12))
-                    .clipShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .help(candidate.goal)
-            }
+                    .buttonStyle(.plain)
+                    .help(bigTaskHelpText(candidate: candidate))
 
-            if let signalAction {
-                Button(
-                    action: {
-                        onAction(.focusSignalCenterOverview(signalAction.action))
+                    Button {
+                        onDismissBigTask(candidate)
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 20, height: 20)
+                            .background(Color.secondary.opacity(0.10))
+                            .clipShape(Circle())
                     }
-                ) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "scope")
-                        Text(signalAction.label)
-                            .font(.caption.weight(.semibold))
-                            .lineLimit(1)
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .foregroundStyle(signalAction.tone.color)
-                    .background(signalAction.tone.color.opacity(0.12))
-                    .clipShape(Capsule())
+                    .buttonStyle(.plain)
+                    .help("忽略这次大任务侦测")
                 }
-                .buttonStyle(.plain)
-                .help(signalAction.helpText)
             }
 
             Spacer()
 
             if isProcessing {
-                HStack(spacing: 4) {
+                HStack(spacing: 6) {
                     ProgressView()
                         .controlSize(.small)
-                    Text("处理中...")
+                    Text(processingStatusText ?? "处理中...")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
 
             HStack(spacing: 8) {
+                iconButton(
+                    operationsButton,
+                    fallbackIconName: "square.grid.2x2"
+                ) {
+                    onAction(.operationsButtonTapped)
+                }
+                .help(operationsButton.helpText)
+
                 iconButton(
                     heartbeatButton,
                     fallbackIconName: "heart",
@@ -241,6 +249,18 @@ struct SupervisorHeaderBar: View {
         case .danger:
             return .red
         }
+    }
+
+    private func bigTaskHelpText(candidate: SupervisorBigTaskCandidate) -> String {
+        guard let bigTaskSceneHint else {
+            return candidate.goal
+        }
+        return """
+\(candidate.goal)
+
+\(bigTaskSceneHint.quickAccessLine)
+\(bigTaskSceneHint.reason)
+"""
     }
 
     private func statusColor(for tone: SupervisorHeaderStatusTone) -> Color {

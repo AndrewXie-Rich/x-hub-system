@@ -3,6 +3,7 @@ import SwiftUI
 @MainActor
 extension SupervisorViewActionSupport {
     static func headerEffectDependencies(
+        setHeartbeatFeedVisible: @escaping (Bool) -> Void,
         setSignalCenterVisible: @escaping (Bool) -> Void,
         focusSignalCenterOverview: @escaping (SupervisorSignalCenterOverviewAction) -> Void,
         setWindowSheet: @escaping (SupervisorManager.SupervisorWindowSheet?) -> Void,
@@ -11,6 +12,7 @@ extension SupervisorViewActionSupport {
         setHeartbeatScale: @escaping (CGFloat) -> Void
     ) -> SupervisorViewHeaderEffects.Dependencies {
         SupervisorViewHeaderEffects.Dependencies(
+            setHeartbeatFeedVisible: setHeartbeatFeedVisible,
             setSignalCenterVisible: setSignalCenterVisible,
             focusSignalCenterOverview: focusSignalCenterOverview,
             setWindowSheet: setWindowSheet,
@@ -44,6 +46,7 @@ extension SupervisorViewActionSupport {
     static func performHeaderAction(
         _ action: SupervisorHeaderAction,
         context: SupervisorHeaderControls.Context,
+        setHeartbeatFeedVisible: @escaping (Bool) -> Void,
         setSignalCenterVisible: @escaping (Bool) -> Void,
         setWindowSheet: @escaping (SupervisorManager.SupervisorWindowSheet?) -> Void,
         clearRequestedWindowSheet: @escaping () -> Void,
@@ -54,6 +57,7 @@ extension SupervisorViewActionSupport {
             action,
             context: context,
             dependencies: headerEffectDependencies(
+                setHeartbeatFeedVisible: setHeartbeatFeedVisible,
                 setSignalCenterVisible: setSignalCenterVisible,
                 focusSignalCenterOverview: { _ in },
                 setWindowSheet: setWindowSheet,
@@ -84,6 +88,7 @@ extension SupervisorViewActionSupport {
     static func performHeaderLifecycleEvent(
         _ event: SupervisorHeaderLifecycleEvent,
         context: SupervisorHeaderControls.Context,
+        setHeartbeatFeedVisible: @escaping (Bool) -> Void,
         setSignalCenterVisible: @escaping (Bool) -> Void,
         setWindowSheet: @escaping (SupervisorManager.SupervisorWindowSheet?) -> Void,
         clearRequestedWindowSheet: @escaping () -> Void,
@@ -94,6 +99,7 @@ extension SupervisorViewActionSupport {
             event,
             context: context,
             dependencies: headerEffectDependencies(
+                setHeartbeatFeedVisible: setHeartbeatFeedVisible,
                 setSignalCenterVisible: setSignalCenterVisible,
                 focusSignalCenterOverview: { _ in },
                 setWindowSheet: setWindowSheet,

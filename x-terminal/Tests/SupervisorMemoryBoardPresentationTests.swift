@@ -99,10 +99,10 @@ struct SupervisorMemoryBoardPresentationTests {
 
         #expect(presentation.iconName == "internaldrive.fill")
         #expect(presentation.iconTone == .accent)
-        #expect(presentation.statusLine == "已接入 1 个项目摘要 · 来源 Hub")
-        #expect(presentation.modeSourceText == "当前记忆来源：Hub · 用途：Supervisor 编排")
+        #expect(presentation.statusLine == "已接入 1 个项目摘要 · 来源 Hub 记忆")
+        #expect(presentation.modeSourceText == "当前记忆来源：Hub 记忆（Hub durable truth） · 用途：Supervisor 编排")
         #expect(presentation.continuityStatusLine == "本轮已接上连续对话与背景记忆")
-        #expect(presentation.continuityDetailLine?.contains("本轮从Hub带入连续对话与背景记忆。") == true)
+        #expect(presentation.continuityDetailLine?.contains("本轮从Hub 记忆（Hub durable truth）带入连续对话与背景记忆。") == true)
         #expect(presentation.continuityDetailLine?.contains("背景深度为 Balanced") == true)
         #expect(presentation.readinessIconName == "checkmark.seal.fill")
         #expect(presentation.readinessTone == .success)
@@ -188,6 +188,26 @@ struct SupervisorMemoryBoardPresentationTests {
         #expect(guardedRow.routingHintText?.contains("browser.open") == true)
         #expect(aliasRow.routingHintText == "别名归一：trusted-automation -> guarded-automation")
         #expect(agentBrowserRow.routingHintText == "优先内建：guarded-automation")
+    }
+
+    @Test
+    func digestRowHumanizesKnownBlockerCodes() {
+        let digest = SupervisorManager.SupervisorMemoryProjectDigest(
+            projectId: "project-auth",
+            displayName: "Auth Project",
+            runtimeState: "blocked",
+            source: "hub",
+            goal: "Ship remote feature",
+            currentState: "waiting",
+            nextStep: "Approve grant",
+            blocker: "grant_required",
+            updatedAt: 10,
+            recentMessageCount: 2
+        )
+
+        let row = SupervisorMemoryBoardPresentationMapper.digestRow(digest)
+
+        #expect(row.blockerText == "阻塞：Hub 授权未完成（grant_required）")
     }
 
     @Test
@@ -299,9 +319,108 @@ struct SupervisorMemoryBoardPresentationTests {
         )
 
         #expect(status == "远端失败后，已带着记忆回退到本地回复")
-        #expect(detail?.contains("本轮从本地回退带入连续对话与背景记忆。") == true)
+        #expect(detail?.contains("本轮从本地 fallback（Hub 不可用时兜底）带入连续对话与背景记忆。") == true)
         #expect(detail?.contains("背景深度为 Execute") == true)
         #expect(detail?.contains("远端模型当前未运行") == true)
+    }
+
+    @Test
+    func continuityHelpersExplainHubSideDowngradeToLocal() {
+        let snapshot = SupervisorMemoryAssemblySnapshot(
+            source: "hub",
+            resolutionSource: "hub",
+            updatedAt: 1,
+            reviewLevelHint: "r1_pulse",
+            requestedProfile: "m1_execute",
+            profileFloor: "m1_execute",
+            resolvedProfile: "m1_execute",
+            attemptedProfiles: ["m1_execute"],
+            progressiveUpgradeCount: 0,
+            focusedProjectId: nil,
+            selectedSections: ["portfolio_brief", "l3_working_set"],
+            omittedSections: [],
+            contextRefsSelected: 0,
+            contextRefsOmitted: 0,
+            evidenceItemsSelected: 0,
+            evidenceItemsOmitted: 0,
+            budgetTotalTokens: nil,
+            usedTotalTokens: nil,
+            truncatedLayers: [],
+            freshness: nil,
+            cacheHit: nil,
+            denyCode: nil,
+            downgradeCode: nil,
+            reasonCode: nil,
+            compressionPolicy: "protect_anchor_then_delta_then_portfolio"
+        )
+
+        let status = SupervisorMemoryBoardPresentationMapper.continuityStatusLine(
+            replyExecutionMode: "hub_downgraded_to_local"
+        )
+        let detail = SupervisorMemoryBoardPresentationMapper.continuityDetailLine(
+            memorySource: "hub",
+            replyExecutionMode: "hub_downgraded_to_local",
+            requestedModelId: "openai/gpt-5.4",
+            actualModelId: "qwen3-14b-mlx",
+            failureReasonCode: "downgrade_to_local",
+            assemblySnapshot: snapshot
+        )
+
+        #expect(status == "远端请求被降到本地，但仍带着记忆继续回复")
+        #expect(detail?.contains("本轮从Hub 记忆（Hub durable truth）带入连续对话与背景记忆。") == true)
+        #expect(detail?.contains("背景深度为 Execute") == true)
+        #expect(detail?.contains("Hub 在执行阶段把远端请求降到了本地") == true)
+    }
+
+    @Test
+    func continuityHelpersExplainRemoteSnapshotCacheProvenance() {
+        let snapshot = SupervisorMemoryAssemblySnapshot(
+            source: "hub",
+            resolutionSource: "hub",
+            updatedAt: 1,
+            reviewLevelHint: "r1_pulse",
+            requestedProfile: "m1_execute",
+            profileFloor: "m1_execute",
+            resolvedProfile: "m1_execute",
+            attemptedProfiles: ["m1_execute"],
+            progressiveUpgradeCount: 0,
+            focusedProjectId: nil,
+            rawWindowFloorPairs: 8,
+            rawWindowSelectedPairs: 10,
+            continuityFloorSatisfied: true,
+            selectedSections: ["dialogue_window", "portfolio_brief"],
+            omittedSections: [],
+            contextRefsSelected: 0,
+            contextRefsOmitted: 0,
+            evidenceItemsSelected: 0,
+            evidenceItemsOmitted: 0,
+            budgetTotalTokens: nil,
+            usedTotalTokens: nil,
+            truncatedLayers: [],
+            freshness: "ttl_cache",
+            cacheHit: true,
+            remoteSnapshotCacheScope: "mode=supervisor_orchestration project_id=(none)",
+            remoteSnapshotAgeMs: 6_000,
+            remoteSnapshotTTLRemainingMs: 9_000,
+            denyCode: nil,
+            downgradeCode: nil,
+            reasonCode: nil,
+            compressionPolicy: "protect_anchor_then_delta_then_portfolio"
+        )
+
+        let detail = SupervisorMemoryBoardPresentationMapper.continuityDetailLine(
+            memorySource: "hub",
+            replyExecutionMode: "remote_model",
+            requestedModelId: "openai/gpt-5.4",
+            actualModelId: "openai/gpt-5.4",
+            failureReasonCode: "",
+            assemblySnapshot: snapshot
+        )
+
+        #expect(detail?.contains("连续性快照：remote snapshot TTL cache") == true)
+        #expect(detail?.contains("age 6s") == true)
+        #expect(detail?.contains("ttl_left 9s") == true)
+        #expect(detail?.contains("mode=supervisor_orchestration project_id=(none)") == true)
     }
 
     @Test
@@ -387,6 +506,176 @@ struct SupervisorMemoryBoardPresentationTests {
     }
 
     @Test
+    func continuityHelpersSurfaceScopedHiddenProjectRecovery() {
+        let snapshot = SupervisorMemoryAssemblySnapshot(
+            source: "hub",
+            resolutionSource: "hub",
+            updatedAt: 1,
+            reviewLevelHint: "r2_strategic",
+            requestedProfile: "m3_deep_dive",
+            profileFloor: "m3_deep_dive",
+            resolvedProfile: "m3_deep_dive",
+            attemptedProfiles: ["m3_deep_dive"],
+            progressiveUpgradeCount: 0,
+            focusedProjectId: "project-hidden",
+            rawWindowProfile: "standard_12_pairs",
+            rawWindowFloorPairs: 8,
+            rawWindowCeilingPairs: 12,
+            rawWindowSelectedPairs: 8,
+            eligibleMessages: 16,
+            lowSignalDroppedMessages: 0,
+            rawWindowSource: "mixed",
+            rollingDigestPresent: false,
+            continuityFloorSatisfied: true,
+            truncationAfterFloor: false,
+            continuityTraceLines: [],
+            lowSignalDropSampleLines: [],
+            selectedSections: ["dialogue_window", "focused_project_anchor_pack", "l2_observations", "l3_working_set"],
+            omittedSections: [],
+            contextRefsSelected: 1,
+            contextRefsOmitted: 0,
+            evidenceItemsSelected: 1,
+            evidenceItemsOmitted: 0,
+            budgetTotalTokens: 1200,
+            usedTotalTokens: 700,
+            truncatedLayers: [],
+            freshness: "fresh_remote",
+            cacheHit: false,
+            denyCode: nil,
+            downgradeCode: nil,
+            reasonCode: nil,
+            compressionPolicy: "balanced",
+            scopedPromptRecoveryMode: "explicit_hidden_project_focus",
+            scopedPromptRecoverySections: [
+                "l1_canonical.focused_project_anchor_pack",
+                "l2_observations.project_recent_events",
+                "l3_working_set.project_activity_memory",
+                "dialogue_window.project_recent_context"
+            ]
+        )
+
+        let detail = SupervisorMemoryBoardPresentationMapper.continuityDetailLine(
+            memorySource: "hub",
+            replyExecutionMode: "remote_model",
+            requestedModelId: "openai/gpt-5.4",
+            actualModelId: "openai/gpt-5.4",
+            failureReasonCode: "",
+            assemblySnapshot: snapshot
+        )
+        let presentation = SupervisorMemoryBoardPresentationMapper.map(
+            statusLine: "memory=hub",
+            memorySource: "hub",
+            replyExecutionMode: "remote_model",
+            requestedModelId: "openai/gpt-5.4",
+            actualModelId: "openai/gpt-5.4",
+            failureReasonCode: "",
+            readiness: SupervisorMemoryAssemblyReadiness(ready: true, statusLine: "ready", issues: []),
+            rawAssemblyStatusLine: "assembly ok",
+            afterTurnSummary: nil,
+            pendingFollowUpQuestion: "",
+            assemblySnapshot: snapshot,
+            skillRegistryStatusLine: "skills=none",
+            skillRegistrySnapshot: nil,
+            digests: [],
+            preview: ""
+        )
+
+        #expect(snapshot.scopedPromptRecoveryHumanLine?.contains("显式 hidden project 恢复") == true)
+        #expect(snapshot.continuityDrillDownLines.contains(where: { $0.contains("scoped_prompt_recovery:") }))
+        #expect(detail?.contains("显式 hidden project 恢复") == true)
+        #expect(detail?.contains("当前项目摘要") == true)
+        #expect(presentation.assemblyDetailLine?.contains("显式 hidden project 恢复") == true)
+        #expect(presentation.continuityDrillDownLines.contains(where: { $0.contains("显式 hidden project 恢复") }))
+    }
+
+    @Test
+    func assemblyDetailLineSurfacesActualizedServingObjectsAndContractScopedGaps() {
+        let snapshot = SupervisorMemoryAssemblySnapshot(
+            source: "hub",
+            resolutionSource: "hub",
+            updatedAt: 1,
+            reviewLevelHint: "r2_strategic",
+            requestedProfile: "m3_deep_dive",
+            profileFloor: "m2_plan_review",
+            resolvedProfile: "m3_deep_dive",
+            attemptedProfiles: ["m3_deep_dive"],
+            progressiveUpgradeCount: 0,
+            focusedProjectId: "project-alpha",
+            selectedSections: [
+                "dialogue_window",
+                "focused_project_anchor_pack",
+                "cross_link_refs",
+            ],
+            omittedSections: ["evidence_pack"],
+            servingObjectContract: [
+                "dialogue_window",
+                "focused_project_anchor_pack",
+                "cross_link_refs",
+                "evidence_pack",
+            ],
+            contextRefsSelected: 1,
+            contextRefsOmitted: 0,
+            evidenceItemsSelected: 0,
+            evidenceItemsOmitted: 2,
+            budgetTotalTokens: 1200,
+            usedTotalTokens: 640,
+            truncatedLayers: [],
+            freshness: "fresh_remote",
+            cacheHit: false,
+            denyCode: nil,
+            downgradeCode: nil,
+            reasonCode: nil,
+            compressionPolicy: "balanced",
+            memoryAssemblyResolution: XTMemoryAssemblyResolution(
+                role: .supervisor,
+                dominantMode: SupervisorTurnMode.hybrid.rawValue,
+                trigger: "heartbeat_no_progress_review",
+                configuredDepth: XTSupervisorReviewMemoryDepthProfile.auto.rawValue,
+                recommendedDepth: XTSupervisorReviewMemoryDepthProfile.deepDive.rawValue,
+                effectiveDepth: XTSupervisorReviewMemoryDepthProfile.deepDive.rawValue,
+                ceilingFromTier: XTMemoryServingProfile.m3DeepDive.rawValue,
+                ceilingHit: false,
+                selectedSlots: [
+                    "recent_raw_dialogue_window",
+                    "focused_project_anchor_pack",
+                    "delta_feed",
+                    "evidence_pack",
+                ],
+                selectedPlanes: ["continuity_lane", "project_plane", "cross_link_plane"],
+                selectedServingObjects: [
+                    "recent_raw_dialogue_window",
+                    "focused_project_anchor_pack",
+                    "delta_feed",
+                    "evidence_pack",
+                ],
+                excludedBlocks: []
+            )
+        )
+
+        let detail = SupervisorMemoryBoardPresentationMapper.map(
+            statusLine: "memory=hub",
+            memorySource: "hub",
+            replyExecutionMode: "remote_model",
+            requestedModelId: "openai/gpt-5.4",
+            actualModelId: "openai/gpt-5.4",
+            failureReasonCode: "",
+            readiness: SupervisorMemoryAssemblyReadiness(ready: true, statusLine: "ready", issues: []),
+            rawAssemblyStatusLine: "assembly ok",
+            afterTurnSummary: nil,
+            pendingFollowUpQuestion: "",
+            assemblySnapshot: snapshot,
+            skillRegistryStatusLine: "skills=none",
+            skillRegistrySnapshot: nil,
+            digests: [],
+            preview: ""
+        ).assemblyDetailLine
+
+        #expect(detail?.contains("实际带入：最近对话、当前项目摘要、关联线索") == true)
+        #expect(detail?.contains("本轮缺口：执行证据") == true)
+        #expect(detail?.contains("未带入：执行证据") == true)
+    }
+
+    @Test
     func afterTurnPresentationMapsTrendAndDetails() {
         let summary = SupervisorManager.SupervisorAfterTurnDerivedSummary(
             replySource: "personal_memory_capture",
@@ -465,7 +754,7 @@ struct SupervisorMemoryBoardPresentationTests {
             preview: ""
         )
 
-        let route = try? #require(presentation.modelRoute)
+        let route = presentation.modelRoute
         #expect(route?.iconName == "curlybraces.square.fill")
         #expect(route?.tone == .warning)
         #expect(route?.statusLine.contains("任务路由：编码 / 实现") == true)
@@ -520,6 +809,8 @@ struct SupervisorMemoryBoardPresentationTests {
                     currentCommitmentId: nil,
                     lastTurnMode: .hybrid
                 ),
+                requestedSlots: [.dialogueWindow, .personalCapsule, .focusedProjectCapsule, .portfolioBrief, .crossLinkRefs, .evidencePack],
+                requestedRefs: ["dialogue_window", "personal_capsule", "focused_project_capsule", "portfolio_brief", "cross_link_refs", "evidence_pack"],
                 selectedSlots: [.dialogueWindow, .personalCapsule, .focusedProjectCapsule, .portfolioBrief, .crossLinkRefs, .evidencePack],
                 selectedRefs: ["dialogue_window", "personal_capsule", "focused_project_capsule", "portfolio_brief", "cross_link_refs", "evidence_pack"],
                 omittedSlots: [],
@@ -603,9 +894,11 @@ struct SupervisorMemoryBoardPresentationTests {
                     currentCommitmentId: nil,
                     lastTurnMode: .personalFirst
                 ),
+                requestedSlots: [.dialogueWindow, .personalCapsule, .portfolioBrief],
+                requestedRefs: ["dialogue_window", "personal_capsule", "portfolio_brief"],
                 selectedSlots: [.dialogueWindow, .personalCapsule, .portfolioBrief],
                 selectedRefs: ["dialogue_window", "personal_capsule", "portfolio_brief"],
-                omittedSlots: [.focusedProjectCapsule, .crossLinkRefs, .evidencePack],
+                omittedSlots: [],
                 assemblyReason: ["personal_first_requires_personal_capsule"],
                 dominantPlane: "assistant_plane",
                 supportingPlanes: ["project_plane", "cross_link_plane(on_demand)", "portfolio_brief"],
@@ -717,7 +1010,98 @@ struct SupervisorMemoryBoardPresentationTests {
         #expect(
             presentation.continuityDrillDownLines.contains {
                 $0.contains("Hub durable candidate mirror：Hub 镜像失败")
-                    && $0.contains("remote_route_not_preferred")
+                    && $0.contains("mirror reason：当前远端路由不是首选（remote_route_not_preferred）")
+            }
+        )
+    }
+
+    @Test
+    func assemblyDetailShowsRoleAwarePolicyTriplesWhenPresent() throws {
+        let snapshot = SupervisorMemoryAssemblySnapshot(
+            source: "hub",
+            resolutionSource: "hub_memory",
+            updatedAt: 1,
+            assemblyPurpose: XTSupervisorMemoryAssemblyPurpose.governanceReview.rawValue,
+            dominantMode: SupervisorTurnMode.projectFirst.rawValue,
+            memoryResolutionTrigger: "manual_full_scan_request",
+            triggerSource: "heartbeat",
+            governanceReviewTrigger: SupervisorReviewTrigger.periodicPulse.rawValue,
+            governanceReviewRunKind: SupervisorReviewRunKind.pulse.rawValue,
+            reviewLevelHint: SupervisorReviewLevel.r2Strategic.rawValue,
+            requestedProfile: XTMemoryServingProfile.m4FullScan.rawValue,
+            profileFloor: XTMemoryServingProfile.m2PlanReview.rawValue,
+            resolvedProfile: XTMemoryServingProfile.m2PlanReview.rawValue,
+            attemptedProfiles: [XTMemoryServingProfile.m4FullScan.rawValue, XTMemoryServingProfile.m2PlanReview.rawValue],
+            progressiveUpgradeCount: 1,
+            focusedProjectId: "project-alpha",
+            configuredRawWindowProfile: XTSupervisorRecentRawContextProfile.autoMax.rawValue,
+            recommendedRawWindowProfile: XTSupervisorRecentRawContextProfile.extended40Pairs.rawValue,
+            effectiveRawWindowProfile: XTSupervisorRecentRawContextProfile.extended40Pairs.rawValue,
+            configuredReviewMemoryDepth: XTSupervisorReviewMemoryDepthProfile.auto.rawValue,
+            recommendedReviewMemoryDepth: XTSupervisorReviewMemoryDepthProfile.deepDive.rawValue,
+            effectiveReviewMemoryDepth: XTSupervisorReviewMemoryDepthProfile.planReview.rawValue,
+            sTierReviewMemoryCeiling: XTMemoryServingProfile.m2PlanReview.rawValue,
+            reviewMemoryCeilingHit: true,
+            selectedSections: ["dialogue_window", "portfolio_brief", "focused_project_anchor_pack"],
+            omittedSections: [],
+            contextRefsSelected: 0,
+            contextRefsOmitted: 0,
+            evidenceItemsSelected: 0,
+            evidenceItemsOmitted: 0,
+            budgetTotalTokens: 1200,
+            usedTotalTokens: 600,
+            truncatedLayers: [],
+            freshness: "fresh",
+            cacheHit: false,
+            denyCode: nil,
+            downgradeCode: nil,
+            reasonCode: nil,
+            compressionPolicy: "balanced"
+        )
+
+        let detail = try #require(
+            SupervisorMemoryBoardPresentationMapper.map(
+                statusLine: "memory=hub · projects=1",
+                memorySource: "hub",
+                replyExecutionMode: "remote_model",
+                requestedModelId: "openai/gpt-5.4",
+                actualModelId: "openai/gpt-5.4",
+                failureReasonCode: "",
+                readiness: .init(ready: true, statusLine: "ready", issues: []),
+                rawAssemblyStatusLine: "assembly ok",
+                afterTurnSummary: nil,
+                pendingFollowUpQuestion: "",
+                assemblySnapshot: snapshot,
+                skillRegistryStatusLine: "",
+                skillRegistrySnapshot: nil,
+                digests: [],
+                preview: ""
+            ).assemblyDetailLine
+        )
+
+        #expect(detail.contains("Assembly Purpose"))
+        #expect(detail.contains("Governance Review"))
+        #expect(detail.contains("source Heartbeat"))
+        #expect(detail.contains("trigger Periodic Pulse"))
+        #expect(detail.contains("run kind Pulse"))
+        #expect(detail.contains("Recent Raw Context"))
+        #expect(detail.contains("configured Auto Max"))
+        #expect(detail.contains("Review Memory Depth"))
+        #expect(detail.contains("ceiling m2_plan_review"))
+        #expect(detail.contains("ceiling hit"))
+        #expect(
+            snapshot.continuityDrillDownLines.contains {
+                $0 == "trigger_source=heartbeat"
+            }
+        )
+        #expect(
+            snapshot.continuityDrillDownLines.contains {
+                $0 == "governance_review_trigger=periodic_pulse"
+            }
+        )
+        #expect(
+            snapshot.continuityDrillDownLines.contains {
+                $0 == "governance_review_run_kind=pulse"
             }
         )
     }

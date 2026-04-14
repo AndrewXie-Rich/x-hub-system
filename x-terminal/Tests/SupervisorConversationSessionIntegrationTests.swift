@@ -306,6 +306,405 @@ struct SupervisorConversationSessionIntegrationTests {
     }
 
     @Test
+    func handsFreeCallAutoCommitsUtteranceAndResumesListeningFromPushToTalk() async throws {
+        try await Self.gate.run {
+            let now = Date(timeIntervalSince1970: 6_250)
+            var spoken: [String] = []
+            let controller = SupervisorConversationSessionController.makeForTesting(
+                route: .systemSpeechCompatibility,
+                wakeMode: .pushToTalk,
+                nowProvider: { now }
+            )
+            let transcriber = IntegrationMockVoiceStreamingTranscriber()
+            let voiceCoordinator = VoiceSessionCoordinator(
+                transcriber: transcriber,
+                preferences: .default()
+            )
+            let synthesizer = SupervisorSpeechSynthesizer(
+                deduper: SupervisorVoiceBriefDeduper(cooldown: 60),
+                speakSink: { spoken.append($0) }
+            )
+            let manager = SupervisorManager.makeForTesting(
+                supervisorSpeechSynthesizer: synthesizer,
+                conversationSessionController: controller,
+                voiceSessionCoordinator: voiceCoordinator
+            )
+            let appModel = AppModel()
+            var settings = appModel.settingsStore.settings
+            settings.voice.wakeMode = .pushToTalk
+            settings.voice.preferredRoute = .systemSpeechCompatibility
+            appModel.settingsStore.settings = settings
+            manager.setAppModel(appModel)
+            let workspaceRoot = try makeProjectRoot(named: "voice-call-entry-handsfree")
+            defer { try? FileManager.default.removeItem(at: workspaceRoot) }
+            manager.setVoiceCallEntryWorkspaceRootForTesting(workspaceRoot)
+            manager.setVoiceReadinessSnapshotForTesting(.empty)
+
+            let started = await manager.startHandsFreeVoiceConversation()
+            #expect(started)
+
+            try await waitUntil("hands free call active") {
+                manager.voiceCallModeActive &&
+                    manager.conversationSessionSnapshot.isConversing &&
+                    manager.conversationSessionSnapshot.wakeMode == .wakePhrase &&
+                    voiceCoordinator.isRecording &&
+                    transcriber.startCount == 1
+            }
+
+            transcriber.emit(.init(kind: .final, text: "/automation"))
+
+            try await waitUntil("hands free voice utterance auto-sent") {
+                manager.messages.contains(where: {
+                    $0.role == .user && $0.isVoice && $0.content == "/automation"
+                }) &&
+                    manager.messages.contains(where: {
+                        $0.role == .assistant && $0.content.contains("自动化执行命令")
+                    })
+            }
+
+            try await waitUntil("hands free talk loop resumed", timeoutMs: 6_000) {
+                manager.voiceCallModeActive &&
+                    voiceCoordinator.isRecording &&
+                    transcriber.isRunning &&
+                    transcriber.startCount == 2 &&
+                    voiceCoordinator.runtimeState.state == .listening &&
+                    voiceCoordinator.runtimeState.reasonCode == "talk_loop_resumed"
+            }
+
+            #expect(spoken.contains(where: { $0.contains("自动化执行命令") }))
+
+            manager.stopHandsFreeVoiceConversation()
+            #expect(!manager.voiceCallModeActive)
+            #expect(manager.conversationSessionSnapshot.windowState == .hidden)
+        }
+    }
+
+    @Test
+    func stoppingHandsFreeCallReturnsToWakeArmedStandbyWhenWakePhraseModeEnabled() async throws {
+        try await Self.gate.run {
+            let now = Date(timeIntervalSince1970: 6_272)
+            let controller = SupervisorConversationSessionController.makeForTesting(
+                route: .funasrStreaming,
+                wakeMode: .wakePhrase,
+                nowProvider: { now }
+            )
+            let transcriber = IntegrationMockVoiceStreamingTranscriber(routeMode: .funasrStreaming)
+            let voiceCoordinator = VoiceSessionCoordinator(
+                transcriber: transcriber,
+                preferences: .default()
+            )
+            let manager = SupervisorManager.makeForTesting(
+                conversationSessionController: controller,
+                voiceSessionCoordinator: voiceCoordinator
+            )
+            let appModel = AppModel()
+            var settings = appModel.settingsStore.settings
+            settings.voice.wakeMode = .wakePhrase
+            settings.voice.preferredRoute = .funasrStreaming
+            appModel.settingsStore.settings = settings
+            manager.setAppModel(appModel)
+            let workspaceRoot = try makeProjectRoot(named: "voice-call-entry-stop")
+            defer { try? FileManager.default.removeItem(at: workspaceRoot) }
+            manager.setVoiceCallEntryWorkspaceRootForTesting(workspaceRoot)
+            manager.setVoiceReadinessSnapshotForTesting(.empty)
+
+            let started = await manager.startHandsFreeVoiceConversation()
+            #expect(started)
+
+            try await waitUntil("hands free call active before stop") {
+                manager.voiceCallModeActive &&
+                    manager.conversationSessionSnapshot.isConversing &&
+                    voiceCoordinator.isRecording &&
+                    voiceCoordinator.currentCaptureSource == .continuousConversation
+            }
+
+            manager.stopHandsFreeVoiceConversation()
+
+            try await waitUntil("wake armed standby restored after stop") {
+                !manager.voiceCallModeActive &&
+                    manager.conversationSessionSnapshot.windowState == .armed &&
+                    voiceCoordinator.isRecording &&
+                    voiceCoordinator.currentCaptureSource == .wakeArmed &&
+                    voiceCoordinator.runtimeState.reasonCode == "wake_armed"
+            }
+        }
+    }
+
+    @Test
+    func freshFailedVoiceDiagnosisBlocksHandsFreeCallStart() async throws {
+        try await Self.gate.run {
+            let now = Date(timeIntervalSince1970: 6_290)
+            let controller = SupervisorConversationSessionController.makeForTesting(
+                route: .systemSpeechCompatibility,
+                wakeMode: .pushToTalk,
+                nowProvider: { now }
+            )
+            let transcriber = IntegrationMockVoiceStreamingTranscriber()
+            let voiceCoordinator = VoiceSessionCoordinator(
+                transcriber: transcriber,
+                preferences: .default()
+            )
+            let manager = SupervisorManager.makeForTesting(
+                conversationSessionController: controller,
+                voiceSessionCoordinator: voiceCoordinator
+            )
+            let workspaceRoot = try makeProjectRoot(named: "voice-call-entry-preflight-block")
+            defer { try? FileManager.default.removeItem(at: workspaceRoot) }
+            manager.setVoiceCallEntryWorkspaceRootForTesting(workspaceRoot)
+            manager.setVoiceReadinessSnapshotForTesting(.empty)
+            writeSupervisorVoiceDoctorReport(
+                workspaceRoot: workspaceRoot,
+                status: .fail,
+                observedAtMs: Int64((Date().timeIntervalSince1970 * 1000).rounded()),
+                message: "最近一次 Supervisor 语音自检卡在Hub 简报播报阶段：简报播报后没有恢复监听。"
+            )
+
+            let started = await manager.startHandsFreeVoiceConversation()
+
+            #expect(started == false)
+            #expect(manager.voiceCallEntryPreflight?.disposition == .block)
+            #expect(manager.voiceCallEntryPreflight?.blocksStart == true)
+            #expect(manager.voiceCallModeActive == false)
+            #expect(manager.conversationSessionSnapshot.windowState == .hidden)
+            #expect(voiceCoordinator.isRecording == false)
+            #expect(transcriber.startCount == 0)
+            #expect(
+                manager.messages.contains(where: {
+                    $0.role == .system && $0.content.contains("进入通话前先修复语音链路")
+                })
+            )
+            #expect(
+                manager.runtimeActivityEntries.contains(where: {
+                    $0.text.contains("voice_call_entry status=blocked")
+                })
+            )
+        }
+    }
+
+    @Test
+    func staleVoiceDiagnosisRemainsAdvisoryAndAllowsHandsFreeCallStart() async throws {
+        try await Self.gate.run {
+            let now = Date(timeIntervalSince1970: 6_295)
+            let controller = SupervisorConversationSessionController.makeForTesting(
+                route: .systemSpeechCompatibility,
+                wakeMode: .pushToTalk,
+                nowProvider: { now }
+            )
+            let transcriber = IntegrationMockVoiceStreamingTranscriber()
+            let voiceCoordinator = VoiceSessionCoordinator(
+                transcriber: transcriber,
+                preferences: .default()
+            )
+            let manager = SupervisorManager.makeForTesting(
+                conversationSessionController: controller,
+                voiceSessionCoordinator: voiceCoordinator
+            )
+            let workspaceRoot = try makeProjectRoot(named: "voice-call-entry-preflight-advisory")
+            defer { try? FileManager.default.removeItem(at: workspaceRoot) }
+            manager.setVoiceCallEntryWorkspaceRootForTesting(workspaceRoot)
+            writeSupervisorVoiceDoctorReport(
+                workspaceRoot: workspaceRoot,
+                status: .fail,
+                observedAtMs: Int64((Date().timeIntervalSince1970 * 1000).rounded())
+                    - SupervisorManager.XTSupervisorVoiceDiagnosisSnapshot.staleAfterMs
+                    - 60_000,
+                message: "最近一次 Supervisor 语音自检卡在Hub 简报播报阶段：简报播报后没有恢复监听。"
+            )
+            let appModel = AppModel()
+            var settings = appModel.settingsStore.settings
+            settings.voice.wakeMode = .pushToTalk
+            settings.voice.preferredRoute = .systemSpeechCompatibility
+            appModel.settingsStore.settings = settings
+            manager.setAppModel(appModel)
+            manager.setVoiceReadinessSnapshotForTesting(.empty)
+
+            let started = await manager.startHandsFreeVoiceConversation()
+
+            #expect(started)
+            #expect(manager.voiceCallEntryPreflight?.disposition == .advisory)
+
+            try await waitUntil("hands free call active despite stale voice diagnosis") {
+                manager.voiceCallModeActive &&
+                    manager.conversationSessionSnapshot.isConversing &&
+                    voiceCoordinator.isRecording &&
+                    transcriber.startCount == 1
+            }
+
+            #expect(
+                manager.runtimeActivityEntries.contains(where: {
+                    $0.text.contains("voice_call_entry status=advisory")
+                })
+            )
+            #expect(
+                manager.messages.contains(where: {
+                    $0.role == .system && $0.content.contains("进入通话前先修复语音链路")
+                }) == false
+            )
+
+            manager.stopHandsFreeVoiceConversation()
+        }
+    }
+
+    @Test
+    func manualComposerRecordingDoesNotAutoInjectSupervisorTurn() async throws {
+        try await Self.gate.run {
+            let now = Date(timeIntervalSince1970: 6_275)
+            let controller = SupervisorConversationSessionController.makeForTesting(
+                route: .systemSpeechCompatibility,
+                wakeMode: .wakePhrase,
+                nowProvider: { now }
+            )
+            let transcriber = IntegrationMockVoiceStreamingTranscriber()
+            let voiceCoordinator = VoiceSessionCoordinator(
+                transcriber: transcriber,
+                preferences: .default()
+            )
+            let manager = SupervisorManager.makeForTesting(
+                conversationSessionController: controller,
+                voiceSessionCoordinator: voiceCoordinator
+            )
+            let appModel = AppModel()
+            var settings = appModel.settingsStore.settings
+            settings.voice.wakeMode = .wakePhrase
+            settings.voice.preferredRoute = .systemSpeechCompatibility
+            appModel.settingsStore.settings = settings
+            manager.setAppModel(appModel)
+            manager.clearMessages()
+            manager.openConversationSession(openedBy: .manualButton)
+
+            await voiceCoordinator.startRecording()
+            transcriber.emit(.init(kind: .final, text: "这句不要自动发出去"))
+
+            #expect(manager.messages.isEmpty)
+
+            voiceCoordinator.stopRecording()
+
+            try await waitUntil("manual composer commit published") {
+                voiceCoordinator.lastCommittedUtterance?.captureSource == .manualComposer
+            }
+
+            #expect(manager.messages.isEmpty)
+        }
+    }
+
+    @Test
+    func wakeArmedCaptureAutoStartsAndWakeFollowupRoutesIntoSupervisorTurn() async throws {
+        try await Self.gate.run {
+            let now = Date(timeIntervalSince1970: 6_320)
+            var spoken: [String] = []
+            let controller = SupervisorConversationSessionController.makeForTesting(
+                route: .funasrStreaming,
+                wakeMode: .wakePhrase,
+                nowProvider: { now }
+            )
+            let transcriber = IntegrationMockVoiceStreamingTranscriber(routeMode: .funasrStreaming)
+            let voiceCoordinator = VoiceSessionCoordinator(
+                transcriber: transcriber,
+                preferences: .default()
+            )
+            let synthesizer = SupervisorSpeechSynthesizer(
+                deduper: SupervisorVoiceBriefDeduper(cooldown: 60),
+                speakSink: { spoken.append($0) }
+            )
+            let manager = SupervisorManager.makeForTesting(
+                supervisorSpeechSynthesizer: synthesizer,
+                conversationSessionController: controller,
+                voiceSessionCoordinator: voiceCoordinator
+            )
+            let appModel = AppModel()
+            var settings = appModel.settingsStore.settings
+            settings.voice.wakeMode = .wakePhrase
+            settings.voice.preferredRoute = .funasrStreaming
+            appModel.settingsStore.settings = settings
+            manager.setAppModel(appModel)
+
+            try await waitUntil("wake armed capture started") {
+                manager.conversationSessionSnapshot.windowState == .armed &&
+                    voiceCoordinator.isRecording &&
+                    voiceCoordinator.currentCaptureSource == .wakeArmed
+            }
+
+            transcriber.emit(.init(kind: .partial, text: "supervisor", isWakeMatch: true))
+            transcriber.emit(.init(kind: .final, text: "supervisor /automation"))
+
+            try await waitUntil("wake followup entered supervisor turn") {
+                manager.conversationSessionSnapshot.windowState == .conversing &&
+                    manager.messages.contains(where: {
+                        $0.role == .user && $0.isVoice && $0.content == "/automation"
+                    }) &&
+                    manager.messages.contains(where: {
+                        $0.role == .assistant && $0.content.contains("自动化执行命令")
+                    })
+            }
+
+            try await waitUntil("wake followup resumed talk loop", timeoutMs: 6_000) {
+                voiceCoordinator.isRecording &&
+                    voiceCoordinator.currentCaptureSource == .talkLoop &&
+                    transcriber.startCount >= 2 &&
+                    voiceCoordinator.runtimeState.reasonCode == "talk_loop_resumed"
+            }
+
+            #expect(manager.conversationSessionSnapshot.openedBy == .wakePhrase)
+            #expect(spoken.contains(where: { $0.contains("自动化执行命令") }))
+        }
+    }
+
+    @Test
+    func wakeOnlyUtteranceSpeaksAckAndReturnsToFollowupListening() async throws {
+        try await Self.gate.run {
+            let now = Date(timeIntervalSince1970: 6_360)
+            var spoken: [String] = []
+            let controller = SupervisorConversationSessionController.makeForTesting(
+                route: .funasrStreaming,
+                wakeMode: .wakePhrase,
+                nowProvider: { now }
+            )
+            let transcriber = IntegrationMockVoiceStreamingTranscriber(routeMode: .funasrStreaming)
+            let voiceCoordinator = VoiceSessionCoordinator(
+                transcriber: transcriber,
+                preferences: .default()
+            )
+            let synthesizer = SupervisorSpeechSynthesizer(
+                deduper: SupervisorVoiceBriefDeduper(cooldown: 0),
+                speakSink: { spoken.append($0) }
+            )
+            let manager = SupervisorManager.makeForTesting(
+                supervisorSpeechSynthesizer: synthesizer,
+                conversationSessionController: controller,
+                voiceSessionCoordinator: voiceCoordinator
+            )
+            let appModel = AppModel()
+            var settings = appModel.settingsStore.settings
+            settings.voice.wakeMode = .wakePhrase
+            settings.voice.preferredRoute = .funasrStreaming
+            appModel.settingsStore.settings = settings
+            manager.setAppModel(appModel)
+
+            try await waitUntil("wake armed capture started") {
+                manager.conversationSessionSnapshot.windowState == .armed &&
+                    voiceCoordinator.isRecording &&
+                    voiceCoordinator.currentCaptureSource == .wakeArmed
+            }
+
+            transcriber.emit(.init(kind: .partial, text: "supervisor", isWakeMatch: true))
+            transcriber.emit(.init(kind: .final, text: "supervisor"))
+
+            try await waitUntil("wake only ack spoken") {
+                spoken.contains(where: { $0.contains("我在，继续说") })
+            }
+
+            try await waitUntil("wake only resumed listening", timeoutMs: 6_000) {
+                manager.messages.isEmpty &&
+                    manager.conversationSessionSnapshot.windowState == .conversing &&
+                    voiceCoordinator.isRecording &&
+                    voiceCoordinator.currentCaptureSource == .talkLoop &&
+                    transcriber.startCount >= 2 &&
+                    voiceCoordinator.runtimeState.reasonCode == "talk_loop_resumed"
+            }
+        }
+    }
+
+    @Test
     func wakePhraseRoutesSessionPersonaWhenAliasMatchesSlot() async throws {
         try await Self.gate.run {
             let now = Date(timeIntervalSince1970: 6_500)
@@ -821,6 +1220,75 @@ struct SupervisorConversationSessionIntegrationTests {
         )
     }
 
+    private func writeSupervisorVoiceDoctorReport(
+        workspaceRoot: URL,
+        status: XHubDoctorCheckStatus,
+        observedAtMs: Int64,
+        message: String,
+        headline: String = "Supervisor 语音自检显示：Hub 简报播报阶段未通过"
+    ) {
+        let reportURL = XHubDoctorOutputStore.defaultXTReportURL(workspaceRoot: workspaceRoot)
+        XHubDoctorOutputStore.writeReport(
+            XHubDoctorOutputReport(
+                schemaVersion: XHubDoctorOutputReport.currentSchemaVersion,
+                contractVersion: XHubDoctorOutputReport.currentContractVersion,
+                reportID: "xhub-doctor-xt-voice-entry-\(observedAtMs)",
+                bundleKind: .pairedSurfaceReadiness,
+                producer: .xTerminal,
+                surface: .xtUI,
+                overallState: .degraded,
+                summary: XHubDoctorOutputSummary(
+                    headline: headline,
+                    passed: 4,
+                    failed: status == .fail ? 1 : 0,
+                    warned: status == .warn ? 1 : 0,
+                    skipped: 0
+                ),
+                readyForFirstTask: true,
+                checks: [
+                    XHubDoctorOutputCheckResult(
+                        checkID: XTUnifiedDoctorSectionKind.voicePlaybackReadiness.rawValue,
+                        checkKind: XTUnifiedDoctorSectionKind.voicePlaybackReadiness.rawValue,
+                        status: status,
+                        severity: status == .fail ? .error : .warning,
+                        blocking: status == .fail,
+                        headline: headline,
+                        message: message,
+                        nextStep: "先在 XT Diagnostics 重跑 Supervisor 语音自检；如果仍卡在 Hub 简报播报阶段，再核对 brief projection、TTS 播报和播报后恢复监听的链路。",
+                        repairDestinationRef: UITroubleshootDestination.xtDiagnostics.rawValue,
+                        detailLines: [
+                            "voice_smoke_phase=brief_playback",
+                            "voice_smoke_phase_status=\(status.rawValue)",
+                            "voice_smoke_failed_check=brief_resumed_listening"
+                        ],
+                        projectContextSummary: nil,
+                        observedAtMs: observedAtMs
+                    )
+                ],
+                nextSteps: [
+                    XHubDoctorOutputNextStep(
+                        stepID: XTUnifiedDoctorSectionKind.voicePlaybackReadiness.rawValue,
+                        kind: .inspectDiagnostics,
+                        label: "重跑语音自检",
+                        owner: .user,
+                        blocking: false,
+                        destinationRef: UITroubleshootDestination.xtDiagnostics.rawValue,
+                        instruction: "先在 XT Diagnostics 重跑 Supervisor 语音自检；如果仍卡在 Hub 简报播报阶段，再核对 brief projection、TTS 播报和播报后恢复监听的链路。"
+                    )
+                ],
+                routeSnapshot: nil,
+                generatedAtMs: observedAtMs,
+                reportPath: reportURL.path,
+                sourceReportSchemaVersion: XTUnifiedDoctorReport.currentSchemaVersion,
+                sourceReportPath: "/tmp/xt_unified_doctor_report.json",
+                currentFailureCode: status == .fail ? "voice_playback_failed" : "",
+                currentFailureIssue: nil,
+                consumedContracts: [XTUnifiedDoctorReportContract.frozen.schemaVersion]
+            ),
+            to: reportURL
+        )
+    }
+
 }
 
 @MainActor
@@ -830,6 +1298,7 @@ private final class IntegrationMockVoiceStreamingTranscriber: VoiceStreamingTran
     private(set) var engineHealth: VoiceEngineHealth
     private(set) var healthReasonCode: String?
     private(set) var isRunning: Bool = false
+    private(set) var startCount: Int = 0
 
     private var onChunk: ((VoiceTranscriptChunk) -> Void)?
     private var onFailure: ((String) -> Void)?
@@ -861,6 +1330,7 @@ private final class IntegrationMockVoiceStreamingTranscriber: VoiceStreamingTran
         guard authorizationStatus.isAuthorized else {
             throw VoiceTranscriberError.notAuthorized
         }
+        startCount += 1
         isRunning = true
         self.onChunk = onChunk
         self.onFailure = onFailure
@@ -868,5 +1338,9 @@ private final class IntegrationMockVoiceStreamingTranscriber: VoiceStreamingTran
 
     func stopTranscribing() {
         isRunning = false
+    }
+
+    func emit(_ chunk: VoiceTranscriptChunk) {
+        onChunk?(chunk)
     }
 }

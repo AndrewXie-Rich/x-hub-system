@@ -46,6 +46,18 @@ struct SupervisorHeaderControlsTests {
             for: .heartbeat,
             context: activeContext
         )
+        let activeOperations = SupervisorHeaderControls.presentation(
+            for: .operations,
+            context: activeContext
+        )
+        let supervisorSettings = SupervisorHeaderControls.presentation(
+            for: .supervisorSettings,
+            context: activeContext
+        )
+        let modelSettings = SupervisorHeaderControls.presentation(
+            for: .modelSettings,
+            context: activeContext
+        )
         let operationsDrivenHeartbeat = SupervisorHeaderControls.presentation(
             for: .heartbeat,
             context: SupervisorHeaderControls.Context(
@@ -71,18 +83,23 @@ struct SupervisorHeaderControlsTests {
         #expect(neutralHeartbeat.chrome == .plain)
         #expect(activeHeartbeat.iconName == "heart.fill")
         #expect(activeHeartbeat.tone == .warning)
-        #expect(activeHeartbeat.helpText == "打开 Supervisor 信号中心（当前：Hub 待处理授权）")
+        #expect(activeHeartbeat.helpText == "打开 Supervisor 心跳（当前：治理修复）")
         #expect(
             activeHeartbeat.chrome == SupervisorHeaderButtonChrome(
                 tone: .warning,
-                fillOpacity: 0.22,
-                strokeOpacity: 0.32,
+                fillOpacity: 0.18,
+                strokeOpacity: 0.30,
                 shadowOpacity: 0.16
             )
         )
-        #expect(operationsDrivenHeartbeat.iconName == "heart.fill")
-        #expect(operationsDrivenHeartbeat.tone == .warning)
-        #expect(operationsDrivenHeartbeat.helpText == "打开 Supervisor 信号中心（当前：Hub 待处理授权）")
+        #expect(activeOperations.iconName == "square.grid.2x2.fill")
+        #expect(activeOperations.tone == .warning)
+        #expect(activeOperations.helpText == "收起 Supervisor 看板（当前：Hub 待处理授权）")
+        #expect(supervisorSettings.helpText == "在当前 Supervisor 主窗口打开 Control Center（含 AI 模型）")
+        #expect(modelSettings.helpText == "在当前 Supervisor 主窗口打开 Control Center 的 AI 模型页签")
+        #expect(operationsDrivenHeartbeat.iconName == "heart")
+        #expect(operationsDrivenHeartbeat.tone == .neutral)
+        #expect(operationsDrivenHeartbeat.helpText == "打开 Supervisor 心跳")
     }
 
     @Test
@@ -128,7 +145,7 @@ struct SupervisorHeaderControlsTests {
         )
 
         #expect(attentionHeartbeat.tone == .accent)
-        #expect(attentionHeartbeat.helpText == "打开 Supervisor 信号中心（当前：语音就绪）")
+        #expect(attentionHeartbeat.helpText == "打开 Supervisor 心跳（当前：语音就绪）")
         #expect(
             attentionHeartbeat.chrome == SupervisorHeaderButtonChrome(
                 tone: .accent,
@@ -138,7 +155,7 @@ struct SupervisorHeaderControlsTests {
             )
         )
         #expect(watchHeartbeat.tone == .success)
-        #expect(watchHeartbeat.helpText == "打开 Supervisor 信号中心（当前：继续观察）")
+        #expect(watchHeartbeat.helpText == "打开 Supervisor 心跳（当前：继续观察）")
         #expect(
             watchHeartbeat.chrome == SupervisorHeaderButtonChrome(
                 tone: .success,
@@ -150,7 +167,7 @@ struct SupervisorHeaderControlsTests {
     }
 
     @Test
-    func heartbeatPresentationReflectsOpenSignalCenterState() {
+    func operationsPresentationReflectsOpenSignalCenterState() {
         let watchContext = SupervisorHeaderControls.Context(
             hasFocusRequest: false,
             pendingHubGrantCount: 0,
@@ -184,29 +201,29 @@ struct SupervisorHeaderControlsTests {
             requestedWindowSheet: nil
         )
 
-        let watchHeartbeat = SupervisorHeaderControls.presentation(
-            for: .heartbeat,
+        let watchOperations = SupervisorHeaderControls.presentation(
+            for: .operations,
             context: watchContext
         )
-        let stableOpenHeartbeat = SupervisorHeaderControls.presentation(
-            for: .heartbeat,
+        let stableOpenOperations = SupervisorHeaderControls.presentation(
+            for: .operations,
             context: stableOpenContext
         )
 
-        #expect(watchHeartbeat.iconName == "heart.fill")
-        #expect(watchHeartbeat.tone == .accent)
-        #expect(watchHeartbeat.helpText == "打开 Supervisor 信号中心（当前：运行动态有新事件）")
+        #expect(watchOperations.iconName == "square.grid.2x2.fill")
+        #expect(watchOperations.tone == .accent)
+        #expect(watchOperations.helpText == "打开 Supervisor 看板（当前：运行动态有新事件）")
         #expect(
-            watchHeartbeat.chrome == SupervisorHeaderButtonChrome(
+            watchOperations.chrome == SupervisorHeaderButtonChrome(
                 tone: .accent,
                 fillOpacity: 0.14,
                 strokeOpacity: 0.22,
                 shadowOpacity: 0.08
             )
         )
-        #expect(stableOpenHeartbeat.iconName == "heart.fill")
+        #expect(stableOpenOperations.iconName == "square.grid.2x2.fill")
         #expect(
-            stableOpenHeartbeat.chrome == SupervisorHeaderButtonChrome(
+            stableOpenOperations.chrome == SupervisorHeaderButtonChrome(
                 tone: .neutral,
                 fillOpacity: 0.10,
                 strokeOpacity: 0.16,
@@ -237,7 +254,18 @@ struct SupervisorHeaderControlsTests {
             SupervisorHeaderControls.resolve(
                 action: .heartbeatButtonTapped,
                 context: context
-            ).effects == [.setSignalCenter(false)]
+            ).effects == [
+                .setSignalCenter(false),
+                .setHeartbeatFeed(true)
+            ]
+        )
+        #expect(
+            SupervisorHeaderControls.resolve(
+                action: .operationsButtonTapped,
+                context: context
+            ).effects == [
+                .setSignalCenter(false)
+            ]
         )
         #expect(
             SupervisorHeaderControls.resolve(
@@ -246,6 +274,7 @@ struct SupervisorHeaderControlsTests {
                 ),
                 context: context
             ).effects == [
+                .setHeartbeatFeed(false),
                 .setSignalCenter(true),
                 .focusSignalCenterOverview(
                     .scrollToBoard(SupervisorFocusPresentation.pendingHubGrantBoardAnchorID)
@@ -310,19 +339,19 @@ struct SupervisorHeaderControlsTests {
             SupervisorHeaderControls.resolve(
                 event: .focusRequestChanged,
                 context: autoOpenContext
-            )?.effects == [.setSignalCenter(true)]
+            )?.effects == [.setHeartbeatFeed(false), .setSignalCenter(true)]
         )
         #expect(
             SupervisorHeaderControls.resolve(
                 event: .pendingHubGrantsChanged,
                 context: autoOpenContext
-            )?.effects == [.setSignalCenter(true)]
+            )?.effects == [.setHeartbeatFeed(false), .setSignalCenter(true)]
         )
         #expect(
             SupervisorHeaderControls.resolve(
                 event: .pendingSkillApprovalsChanged,
                 context: autoOpenContext
-            )?.effects == [.setSignalCenter(true)]
+            )?.effects == [.setHeartbeatFeed(false), .setSignalCenter(true)]
         )
         #expect(
             SupervisorHeaderControls.resolve(

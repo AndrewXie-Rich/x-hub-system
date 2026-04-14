@@ -41,7 +41,8 @@ func xtAutomationRuntimePolicyDecision(
     recipe: AXAutomationRecipeRuntimeBinding,
     action: XTAutomationRecipeAction,
     config: AXProjectConfig,
-    projectRoot: URL
+    projectRoot: URL,
+    now: Date = Date()
 ) async -> XTAutomationRuntimePolicyDecision {
     if !xtAutomationExecutionProfileAllowedTools(recipe.executionProfile).contains(action.tool) {
         return .deny(
@@ -55,7 +56,12 @@ func xtAutomationRuntimePolicyDecision(
 
     let runtimeSurfaceState = await xtResolveProjectRuntimeSurfacePolicy(
         projectRoot: projectRoot,
-        config: config
+        config: config,
+        now: now
+    )
+    let automationScopedConfig = xtAutomationRecipeScopedToolPolicyConfig(
+        config: config,
+        recipe: recipe
     )
     let toolPolicyDecision = xtToolRuntimePolicyDecision(
         call: ToolCall(
@@ -64,7 +70,7 @@ func xtAutomationRuntimePolicyDecision(
             args: action.args
         ),
         projectRoot: projectRoot,
-        config: config,
+        config: automationScopedConfig,
         effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
     )
     if !toolPolicyDecision.allowed {
@@ -118,6 +124,20 @@ func xtAutomationRuntimePolicyDecision(
     }
 
     return .allow()
+}
+
+private func xtAutomationRecipeScopedToolPolicyConfig(
+    config: AXProjectConfig,
+    recipe: AXAutomationRecipeRuntimeBinding
+) -> AXProjectConfig {
+    let recipeDeclaredAllowTokens = recipe.requiredToolGroups + recipe.requiredDeviceToolGroups
+    let mergedAllowTokens = ToolPolicy.normalizePolicyTokens(
+        config.toolAllow + recipeDeclaredAllowTokens
+    )
+    guard mergedAllowTokens != config.toolAllow else {
+        return config
+    }
+    return config.settingToolPolicy(allow: mergedAllowTokens)
 }
 
 func xtAutomationExecutionProfileAllowedTools(

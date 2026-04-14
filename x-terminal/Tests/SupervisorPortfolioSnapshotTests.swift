@@ -64,10 +64,54 @@ struct SupervisorPortfolioSnapshotTests {
         #expect(snapshot.counts.completed == 1)
         #expect(snapshot.counts.active == 1)
         #expect(snapshot.projects.count == 4)
-        #expect(snapshot.projects.first?.projectId == "p-blocked")
-        #expect(snapshot.projects[1].projectId == "p-auth")
+        #expect(snapshot.projects.first?.projectId == "p-auth")
+        #expect(snapshot.projects[1].projectId == "p-blocked")
+        #expect(snapshot.projects.first?.prioritySnapshot?.priorityBand == .critical)
+        #expect(snapshot.projects[1].prioritySnapshot?.priorityBand == .high)
         #expect(snapshot.criticalQueue.count == 2)
-        #expect(snapshot.criticalQueue.first?.projectId == "p-blocked")
+        #expect(snapshot.criticalQueue.first?.projectId == "p-auth")
+    }
+
+    @Test
+    func snapshotPrioritizesStaleWeakProjectAboveFreshRoutineProject() {
+        let now = Date(timeIntervalSince1970: 1_773_005_000).timeIntervalSince1970
+        let staleWeakDigest = SupervisorManager.SupervisorMemoryProjectDigest(
+            projectId: "p-stale",
+            displayName: "Stale Project",
+            runtimeState: "进行中",
+            source: "local_project_memory+registry",
+            goal: "Recover stalled delivery",
+            currentState: "继续推进",
+            nextStep: "(暂无)",
+            blocker: "(无)",
+            updatedAt: now - 4_000,
+            recentMessageCount: 1,
+            missingSpecFields: [.goal]
+        )
+        let freshDigest = SupervisorManager.SupervisorMemoryProjectDigest(
+            projectId: "p-fresh",
+            displayName: "Fresh Project",
+            runtimeState: "进行中",
+            source: "local_project_memory+registry",
+            goal: "Ship routine patch",
+            currentState: "Implementing patch",
+            nextStep: "Run verification",
+            blocker: "(无)",
+            updatedAt: now - 30,
+            recentMessageCount: 2
+        )
+
+        let snapshot = SupervisorPortfolioSnapshotBuilder.build(
+            from: [freshDigest, staleWeakDigest],
+            now: now
+        )
+
+        #expect(snapshot.projects.first?.projectId == "p-stale")
+        #expect(snapshot.projects.first?.prioritySnapshot?.priorityBand == .critical)
+        #expect(snapshot.projects.first?.prioritySnapshot?.factors.staleness == 2)
+        #expect(snapshot.projects.first?.prioritySnapshot?.factors.evidenceWeakness == 3)
+        #expect(snapshot.projects.last?.projectId == "p-fresh")
+        #expect(snapshot.projects.last?.prioritySnapshot?.priorityBand == .normal)
     }
 
     @Test

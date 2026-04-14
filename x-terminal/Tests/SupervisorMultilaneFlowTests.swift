@@ -37,7 +37,7 @@ struct SupervisorMultilaneFlowTests {
         hardTask.metadata["budget_class"] = LaneBudgetClass.premium.rawValue
         hardTask.metadata["create_child_project"] = "1"
 
-        let materializer = ProjectMaterializer(supervisor: nil)
+        let materializer = ProjectMaterializer(runtimeHost: nil)
         let result = await materializer.materialize(
             tasks: [softTask, hardTask],
             rootProject: rootProject,
@@ -60,6 +60,70 @@ struct SupervisorMultilaneFlowTests {
         #expect(hardLane.targetProject?.id != rootProject.id)
         #expect(hardLane.lineageOperations.count == 2)
         #expect(hardLane.task.metadata["create_child_project"] == "1")
+    }
+
+    @MainActor
+    @Test
+    func projectMaterializerPersistsVerificationContractMetadata() async throws {
+        let rootProject = ProjectModel(
+            name: "Root",
+            taskDescription: "Root project",
+            modelName: "claude-sonnet-4.6"
+        )
+
+        let verificationContract = LaneVerificationContract(
+            expectedState: "Release plan is ready and rollback proof is attached.",
+            verifyMethod: .preflightAndSmoke,
+            retryPolicy: .noAutoRetry,
+            holdPolicy: .holdUntilEvidence,
+            evidenceRequired: ["release_plan", "rollback_readiness", "smoke_result"],
+            verificationChecklist: ["expected_state_confirmed", "evidence_attached", "rollback_ready"]
+        )
+
+        let lane = SplitLaneProposal(
+            laneId: "lane-release",
+            goal: "Prepare release lane",
+            dependsOn: [],
+            riskTier: .high,
+            budgetClass: .premium,
+            createChildProject: true,
+            expectedArtifacts: ["release_plan"],
+            dodChecklist: ["rollback_ready"],
+            verificationContract: verificationContract,
+            estimatedEffortMs: 3_000,
+            tokenBudget: 8_000,
+            sourceTaskId: nil,
+            notes: []
+        )
+
+        let proposal = SplitProposal(
+            splitPlanId: UUID(),
+            rootProjectId: rootProject.id,
+            planVersion: 1,
+            complexityScore: 72,
+            lanes: [lane],
+            recommendedConcurrency: 1,
+            tokenBudgetTotal: 8_000,
+            estimatedWallTimeMs: 3_000,
+            sourceTaskDescription: "release proposal",
+            createdAt: Date()
+        )
+
+        let materializer = ProjectMaterializer(runtimeHost: nil)
+        let result = await materializer.materialize(
+            proposal: proposal,
+            decomposition: nil,
+            rootProject: rootProject
+        )
+
+        let materializedLane = try #require(result.lanes.first)
+        #expect(materializedLane.plan.verificationContract == verificationContract)
+        #expect(materializedLane.task.metadata["verification_expected_state"] == verificationContract.expectedState)
+        #expect(materializedLane.task.metadata["verification_method"] == verificationContract.verifyMethod.rawValue)
+        #expect(materializedLane.task.metadata["verification_retry_policy"] == verificationContract.retryPolicy.rawValue)
+        #expect(materializedLane.task.metadata["verification_hold_policy"] == verificationContract.holdPolicy.rawValue)
+        #expect(materializedLane.task.metadata["verification_evidence_required"] == verificationContract.evidenceRequired.joined(separator: "|"))
+        #expect(materializedLane.task.metadata["verification_checklist"] == verificationContract.verificationChecklist.joined(separator: "|"))
     }
 
     @MainActor
@@ -335,7 +399,7 @@ struct SupervisorMultilaneFlowTests {
         highRiskTask.metadata["budget_class"] = LaneBudgetClass.premium.rawValue
         highRiskTask.metadata["create_child_project"] = "1"
 
-        let materializer = ProjectMaterializer(supervisor: nil)
+        let materializer = ProjectMaterializer(runtimeHost: nil)
         let materialized = await materializer.materialize(
             tasks: [highRiskTask],
             rootProject: rootProject,

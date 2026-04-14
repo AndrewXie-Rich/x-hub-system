@@ -4,6 +4,7 @@ struct SupervisorAuditDrillDownSelection: Equatable, Identifiable {
     enum Source: Equatable {
         case officialSkillsChannel
         case xtBuiltinGovernedSkills([AXBuiltinGovernedSkillSummary])
+        case candidateReview(HubIPCClient.SupervisorCandidateReviewItem)
         case pendingGrant(SupervisorManager.SupervisorPendingGrant)
         case pendingSkillApproval(SupervisorManager.SupervisorPendingSkillApproval)
         case recentSkillActivity(SupervisorManager.SupervisorRecentSkillActivity)
@@ -38,11 +39,26 @@ struct SupervisorAuditDrillDownSelection: Equatable, Identifiable {
     }
 
     static func pendingHubGrant(
-        _ grant: SupervisorManager.SupervisorPendingGrant
+        _ grant: SupervisorManager.SupervisorPendingGrant,
+        relatedSkillActivity: SupervisorManager.SupervisorRecentSkillActivity? = nil
     ) -> SupervisorAuditDrillDownSelection {
         SupervisorAuditDrillDownSelection(
             source: .pendingGrant(grant),
-            presentation: .pendingHubGrant(grant),
+            presentation: .pendingHubGrant(
+                grant,
+                relatedSkillActivity: relatedSkillActivity
+            ),
+            fullRecord: nil
+        )
+    }
+
+    static func candidateReview(
+        _ item: HubIPCClient.SupervisorCandidateReviewItem,
+        projectNamesByID: [String: String]
+    ) -> SupervisorAuditDrillDownSelection {
+        SupervisorAuditDrillDownSelection(
+            source: .candidateReview(item),
+            presentation: .candidateReview(item, projectNamesByID: projectNamesByID),
             fullRecord: nil
         )
     }

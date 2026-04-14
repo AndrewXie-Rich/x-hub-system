@@ -3,7 +3,6 @@ import SwiftUI
 struct SupervisorViewLifecycleAttachments: ViewModifier {
     struct Bindings {
         let selectedSupervisorAuditDrillDown: Binding<SupervisorAuditDrillDownSelection?>
-        let activeWindowSheet: Binding<SupervisorManager.SupervisorWindowSheet?>
     }
 
     struct Props {
@@ -36,7 +35,6 @@ struct SupervisorViewLifecycleAttachments: ViewModifier {
         let onLatestHeartbeatChange: () -> Void
         let onSignalCenterChange: () -> Void
         let auditSheetBuilder: (SupervisorAuditDrillDownSelection) -> AnyView
-        let windowSheetBuilder: (SupervisorManager.SupervisorWindowSheet) -> AnyView
     }
 
     let bindings: Bindings
@@ -84,9 +82,6 @@ struct SupervisorViewLifecycleAttachments: ViewModifier {
             }
             .sheet(item: bindings.selectedSupervisorAuditDrillDown) { detail in
                 callbacks.auditSheetBuilder(detail)
-            }
-            .sheet(item: bindings.activeWindowSheet) { sheet in
-                callbacks.windowSheetBuilder(sheet)
             }
     }
 }

@@ -18,6 +18,7 @@ struct SupervisorEventLoopRowPresentation: Equatable, Identifiable {
     var resultText: String?
     var blockedSummaryText: String?
     var governanceTruthText: String?
+    var governanceReasonText: String?
     var policyReasonText: String?
     var policyText: String?
     var contractText: String?
@@ -44,6 +45,7 @@ struct SupervisorEventLoopBoardPresentation: Equatable {
 enum SupervisorEventLoopFeedPresentation {
     static func board(
         items: [SupervisorManager.SupervisorEventLoopActivity],
+        recentSkillActivities: [SupervisorManager.SupervisorRecentSkillActivity] = [],
         statusLine: String,
         limit: Int = 6,
         now: TimeInterval = Date().timeIntervalSince1970
@@ -57,12 +59,22 @@ enum SupervisorEventLoopFeedPresentation {
             emptyStateText: displayedItems.isEmpty
                 ? "当前还没有自动跟进事件。技能回调、授权处理、心跳或异常触发后，这里会显示最近的事件循环记录。"
                 : nil,
-            rows: displayedItems.map { row($0, now: now) }
+            rows: displayedItems.map { item in
+                row(
+                    item,
+                    relatedSkillActivity: relatedSkillActivity(
+                        for: item,
+                        recentSkillActivities: recentSkillActivities
+                    ),
+                    now: now
+                )
+            }
         )
     }
 
     static func row(
         _ item: SupervisorManager.SupervisorEventLoopActivity,
+        relatedSkillActivity: SupervisorManager.SupervisorRecentSkillActivity? = nil,
         now: TimeInterval = Date().timeIntervalSince1970
     ) -> SupervisorEventLoopRowPresentation {
         let projectLabel = normalizedScalar(item.projectName).isEmpty
@@ -70,6 +82,18 @@ enum SupervisorEventLoopFeedPresentation {
             : normalizedScalar(item.projectName)
         let action = SupervisorEventLoopActionPresentation.action(for: item)
         let contract = guidanceContract(item)
+        let blockedSummaryText = firstNonEmpty([
+            nonEmpty(item.blockedSummary).map { "阻塞说明： \($0)" },
+            relatedSkillActivity.flatMap(SupervisorSkillActivityPresentation.blockedSummaryLine(for:))
+        ])
+        let governanceTruthText = firstNonEmpty([
+            nonEmpty(item.governanceTruth).map(XTGovernanceTruthPresentation.displayText),
+            relatedSkillActivity.flatMap(SupervisorSkillActivityPresentation.displayGovernanceTruthLine(for:))
+        ])
+        let governanceReasonText = relatedSkillActivity
+            .flatMap(SupervisorSkillActivityPresentation.governanceReasonText(for:))
+            .map { "治理原因： \($0)" }
+        let reasonText = userVisibleReasonText(item.reasonCode)
         return SupervisorEventLoopRowPresentation(
             id: item.id,
             triggerLabel: triggerLabel(item.triggerSource),
@@ -78,13 +102,14 @@ enum SupervisorEventLoopFeedPresentation {
             statusTone: statusTone(item.status),
             triggerText: nonEmpty(item.triggerSummary).map { "触发：\($0)" },
             resultText: nonEmpty(item.resultSummary).map { "结果：\($0)" },
-            blockedSummaryText: nonEmpty(item.blockedSummary).map { "阻塞说明： \($0)" },
-            governanceTruthText: nonEmpty(item.governanceTruth),
+            blockedSummaryText: blockedSummaryText,
+            governanceTruthText: governanceTruthText,
+            governanceReasonText: governanceReasonText,
             policyReasonText: nonEmpty(item.policyReason).map { "策略原因： \($0)" },
             policyText: nonEmpty(item.policySummary),
             contractText: contract.map(SupervisorGuidanceContractLinePresentation.contractLine),
             nextSafeActionText: contract.map(SupervisorGuidanceContractLinePresentation.nextSafeActionLine),
-            reasonText: "原因：\(item.reasonCode)",
+            reasonText: "原因：\(reasonText)",
             dedupeKeyText: "去重键：\(item.dedupeKey)",
             ageText: relativeTimeText(item.updatedAt, now: now),
             actionDescriptors: SupervisorCardActionResolver.eventLoopActions(item, action: action)
@@ -252,6 +277,20 @@ enum SupervisorEventLoopFeedPresentation {
         )
     }
 
+    private static func relatedSkillActivity(
+        for item: SupervisorManager.SupervisorEventLoopActivity,
+        recentSkillActivities: [SupervisorManager.SupervisorRecentSkillActivity]
+    ) -> SupervisorManager.SupervisorRecentSkillActivity? {
+        guard let requestId = SupervisorEventLoopActionPresentation.requestId(for: item) else {
+            return nil
+        }
+        return SupervisorFocusPresentation.matchingRecentSkillActivity(
+            projectId: normalizedScalar(item.projectId),
+            requestId: requestId,
+            recentActivities: recentSkillActivities
+        )
+    }
+
     private static func policyTokenMap(_ raw: String) -> [String: String] {
         let tokens = raw
             .split(separator: "·")
@@ -291,6 +330,12 @@ enum SupervisorEventLoopFeedPresentation {
     private static func nonEmpty(_ raw: String) -> String? {
         let trimmed = normalizedScalar(raw)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func userVisibleReasonText(_ raw: String) -> String {
+        let trimmed = normalizedScalar(raw)
+        guard !trimmed.isEmpty else { return raw }
+        return XTRouteTruthPresentation.userVisibleReasonText(trimmed) ?? trimmed
     }
 
     private static func firstNonEmpty(_ values: [String?]) -> String? {

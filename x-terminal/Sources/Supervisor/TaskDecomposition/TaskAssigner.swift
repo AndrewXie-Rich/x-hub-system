@@ -6,14 +6,14 @@ class TaskAssigner {
 
     // MARK: - 属性
 
-    weak var supervisor: SupervisorModel?
+    weak var runtimeHost: (any SupervisorProjectRuntimeHosting)?
     private let laneAllocator = LaneAllocator()
     private(set) var lastLaneAllocationResult: LaneAllocationResult?
 
     // MARK: - 初始化
 
-    init(supervisor: SupervisorModel? = nil) {
-        self.supervisor = supervisor
+    init(runtimeHost: (any SupervisorProjectRuntimeHosting)? = nil) {
+        self.runtimeHost = runtimeHost
     }
 
     // MARK: - 公共方法
@@ -22,14 +22,14 @@ class TaskAssigner {
     /// - Parameter tasks: 要分配的任务列表
     /// - Returns: 任务 ID 到项目的映射
     func smartAssign(_ tasks: [DecomposedTask]) async -> [UUID: ProjectModel] {
-        guard let supervisor else {
+        guard let runtimeHost else {
             return [:]
         }
 
         let syntheticLanes = tasks.enumerated().map { makeSyntheticLane(task: $0.element, index: $0.offset + 1) }
         let allocation = laneAllocator.allocate(
             lanes: syntheticLanes,
-            projects: supervisor.activeProjects
+            projects: runtimeHost.activeProjects
         )
         lastLaneAllocationResult = allocation
 
@@ -40,7 +40,7 @@ class TaskAssigner {
     /// - Parameter lanes: 来自 ProjectMaterializer 的落盘结果
     /// - Returns: 分配结果（含 explain 字段）
     func allocateMaterializedLanes(_ lanes: [MaterializedLane]) async -> LaneAllocationResult {
-        let projects = supervisor?.activeProjects ?? []
+        let projects = runtimeHost?.activeProjects ?? []
         let result = laneAllocator.allocate(lanes: lanes, projects: projects)
         lastLaneAllocationResult = result
         return result
@@ -69,13 +69,13 @@ class TaskAssigner {
     /// 重新分配任务
     /// - Parameter taskId: 任务 ID
     func reassignTask(_ taskId: UUID) async {
-        guard let supervisor = supervisor else { return }
+        guard let runtimeHost = runtimeHost else { return }
 
         // 查找任务
         var task: DecomposedTask?
         var currentProject: ProjectModel?
 
-        for project in supervisor.activeProjects {
+        for project in runtimeHost.activeProjects {
             if let foundTask = project.taskQueue.first(where: { $0.id == taskId }) {
                 task = foundTask
                 currentProject = project
@@ -109,9 +109,10 @@ class TaskAssigner {
     /// - Returns: 能力评分 (0-1)
     func evaluateCapability(_ project: ProjectModel, for task: DecomposedTask) -> Double {
         var score = 0.0
+        let modelInfo = project.configuredCoderModelInfo
 
         // 1. 模型能力评分 (40%)
-        let modelScore = evaluateModelCapability(project.currentModel.name, for: task)
+        let modelScore = evaluateModelCapability(modelInfo.name, for: task)
         score += modelScore * 0.4
 
         // 2. 自主性级别评分 (20%)

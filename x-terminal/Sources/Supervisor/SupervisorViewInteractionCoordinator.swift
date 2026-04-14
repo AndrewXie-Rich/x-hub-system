@@ -13,6 +13,7 @@ struct SupervisorViewInteractionCoordinator {
         .init(
             onHeaderAction: performSupervisorHeaderAction,
             onTriggerBigTask: triggerBigTaskFlow,
+            onDismissBigTask: dismissBigTaskCandidate,
             onProcessFocusRequest: processSupervisorFocusRequest,
             onSignalCenterOverviewAction: performSignalCenterOverviewAction,
             onCockpitAction: handleCockpitAction,
@@ -22,11 +23,13 @@ struct SupervisorViewInteractionCoordinator {
             onOpenProjectUIReview: openProjectUIReview,
             onRefreshProjectUIReview: refreshProjectUIReview,
             requestConversationFocus: requestConversationFocus,
+            onSubmitConversationPrompt: submitConversationPrompt,
             onCardAction: performSupervisorCardAction,
             onRetryCanonicalMemorySync: retryCanonicalMemorySyncFromSupervisorBoards,
             onOpenCanonicalMemorySyncStatusFile: openCanonicalMemorySyncStatusFile,
             onAutomationAction: performAutomationRuntimeAction,
-            onLaneHealthAction: performLaneHealthRowAction
+            onLaneHealthAction: performLaneHealthRowAction,
+            onDismissWindowSheet: dismissWindowSheet
         )
     }
 
@@ -52,12 +55,6 @@ struct SupervisorViewInteractionCoordinator {
                         onAction: performSupervisorCardAction
                     )
                 )
-            },
-            windowSheetBuilder: { sheet in
-                AnyView(
-                    SupervisorWindowSheetView(sheet: sheet)
-                        .environmentObject(appModel)
-                )
             }
         )
     }
@@ -82,19 +79,45 @@ struct SupervisorViewInteractionCoordinator {
         supervisor.retryCanonicalMemorySyncNow()
     }
 
+    private func dismissWindowSheet() {
+        ui.activeWindowSheet = nil
+    }
+
+    func openDetachedSupervisorToolWindow(
+        _ sheet: SupervisorManager.SupervisorWindowSheet?
+    ) {
+        ui.activeWindowSheet = nil
+        guard let sheet else { return }
+        openWindow(id: sheet.windowID)
+    }
+
     private func openCanonicalMemorySyncStatusFile() {
         guard screenModel.viewResources.canOpenCanonicalMemorySyncStatusFile else { return }
         openURL(screenModel.viewResources.canonicalMemorySyncStatusFileURL)
     }
 
     private func triggerBigTaskFlow(_ candidate: SupervisorBigTaskCandidate) {
-        SupervisorViewActionSupport.triggerBigTaskFlow(
-            candidate,
-            setDismissedFingerprint: { ui.dismissedBigTaskFingerprint = $0 },
-            setInputText: { ui.inputText = $0 },
-            sendMessage: { supervisor.sendMessage($0) },
-            requestConversationFocus: requestConversationFocus
-        )
+        Task { @MainActor in
+            let selectedProjectTemplate = screenModel.selectedAutomationProject.map {
+                appModel.governanceTemplatePreview(for: $0)
+            }
+            await SupervisorViewActionSupport.triggerBigTaskFlow(
+                candidate,
+                selectedProject: screenModel.selectedAutomationProject,
+                selectedProjectTemplate: selectedProjectTemplate,
+                setDismissedFingerprint: { ui.dismissedBigTaskFingerprint = $0 },
+                setInputText: { ui.inputText = $0 },
+                prepareOneShotControlPlane: { submission in
+                    await supervisor.prepareOneShotControlPlane(submission: submission)
+                },
+                sendMessage: { supervisor.sendMessage($0) },
+                requestConversationFocus: requestConversationFocus
+            )
+        }
+    }
+
+    private func dismissBigTaskCandidate(_ candidate: SupervisorBigTaskCandidate) {
+        ui.dismissedBigTaskFingerprint = candidate.fingerprint
     }
 
     private func performSupervisorHeaderAction(_ action: SupervisorHeaderAction) {
@@ -144,6 +167,16 @@ struct SupervisorViewInteractionCoordinator {
         ui.conversationFocusRequestID += 1
     }
 
+    private func submitConversationPrompt(_ prompt: String) {
+        SupervisorViewActionSupport.submitConversationPrompt(
+            prompt,
+            currentInputText: ui.inputText,
+            setInputText: { ui.inputText = $0 },
+            sendMessage: { supervisor.sendMessage($0) },
+            requestConversationFocus: requestConversationFocus
+        )
+    }
+
     private func openProjectDetail(_ projectId: String) {
         focusPortfolioProject(projectId)
         if appModel.isMultiProjectViewEnabled && appModel.hubInteractive {
@@ -185,6 +218,7 @@ struct SupervisorViewInteractionCoordinator {
 
     private func focusPortfolioProject(_ projectId: String) {
         ui.selectedPortfolioProjectID = projectId
+        appModel.selectedProjectId = projectId
         SupervisorViewActionSupport.refreshSelectedPortfolioDrillDown(
             supervisor: supervisor,
             selectedProjectID: projectId,

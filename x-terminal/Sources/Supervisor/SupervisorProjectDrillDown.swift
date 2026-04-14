@@ -22,6 +22,7 @@ struct SupervisorProjectDrillDownSnapshot: Equatable, Codable, Sendable {
     var latestGuidance: SupervisorGuidanceInjectionRecord?
     var pendingAckGuidance: SupervisorGuidanceInjectionRecord?
     var followUpRhythmSummary: String?
+    var cadenceExplainability: SupervisorCadenceExplainability? = nil
     var memoryCompactionRollup: SupervisorMemoryCompactionRollup? = nil
     var workflow: SupervisorProjectWorkflowSnapshot?
     var recentMessages: [AXRecentContextMessage]
@@ -52,6 +53,7 @@ struct SupervisorProjectDrillDownSnapshot: Equatable, Codable, Sendable {
             latestGuidance: nil,
             pendingAckGuidance: nil,
             followUpRhythmSummary: nil,
+            cadenceExplainability: nil,
             memoryCompactionRollup: nil,
             workflow: nil,
             recentMessages: [],
@@ -70,6 +72,7 @@ enum SupervisorProjectDrillDownRefsBuilder {
         decisionRails: SupervisorProjectDecisionRails?,
         decisionAssist: SupervisorDecisionBlockerAssist?,
         memoryCompactionRollup: SupervisorMemoryCompactionRollup?,
+        scheduleState: SupervisorReviewScheduleState?,
         latestReview: SupervisorReviewNoteRecord?,
         latestGuidance: SupervisorGuidanceInjectionRecord?,
         pendingAckGuidance: SupervisorGuidanceInjectionRecord?,
@@ -104,6 +107,17 @@ enum SupervisorProjectDrillDownRefsBuilder {
         }
         if latestReview != nil {
             refs.append(ctx.supervisorReviewNotesURL.path)
+        }
+        if let scheduleState,
+           scheduleState.lastHeartbeatAtMs > 0
+            || scheduleState.nextHeartbeatDueAtMs > 0
+            || scheduleState.nextPulseReviewDueAtMs > 0
+            || scheduleState.nextBrainstormReviewDueAtMs > 0
+            || scheduleState.latestQualitySnapshot != nil
+            || !scheduleState.openAnomalies.isEmpty {
+            refs.append(ctx.xterminalDir.appendingPathComponent("supervisor_review_schedule.json").path)
+            refs.append(ctx.heartbeatMemoryProjectionURL.path)
+            refs.append(hubHeartbeatSummaryRef(projectId: projectId))
         }
         if latestGuidance != nil || pendingAckGuidance != nil {
             refs.append(ctx.supervisorGuidanceInjectionsURL.path)
@@ -142,5 +156,9 @@ enum SupervisorProjectDrillDownRefsBuilder {
 
     private static func hubProjectActionSummaryRef(projectId: String) -> String {
         "hub://project/\(projectId)/canonical/xterminal.project.action.summary_json"
+    }
+
+    private static func hubHeartbeatSummaryRef(projectId: String) -> String {
+        "hub://project/\(projectId)/canonical/xterminal.project.heartbeat.summary_json"
     }
 }

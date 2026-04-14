@@ -141,14 +141,10 @@ final class SupervisorCalendarReminderScheduler: ObservableObject {
     }
 
     static var shouldAutoStartInCurrentProcess: Bool {
-        let bundlePath = Bundle.main.bundleURL.path.lowercased()
-        if bundlePath.contains(".xctest") || bundlePath.contains("/swift/pm") {
+        if ProcessInfo.processInfo.isRunningUnderAutomatedTests {
             return false
         }
-        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
-            return false
-        }
-        return true
+        return ProcessInfo.processInfo.environment["XTERMINAL_ENABLE_STARTUP_CALENDAR_REMINDERS"] == "1"
     }
 
     func bind(settingsStore: SettingsStore) {

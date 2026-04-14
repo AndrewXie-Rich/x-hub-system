@@ -26,7 +26,7 @@ struct SupervisorAutomationRuntimeBoardSection: View {
                 }
                 .buttonStyle(.borderless)
                 .disabled(!presentation.statusAction.isEnabled)
-                .help("刷新当前项目的自动化执行状态")
+                .help(presentation.statusAction.helpText)
             }
 
             if let emptyStateText = presentation.emptyStateText {
@@ -86,6 +86,7 @@ struct SupervisorAutomationRuntimeBoardSection: View {
                             onAction(action.action)
                         }
                         .disabled(!action.isEnabled)
+                        .help(action.helpText)
                     }
 
                     Menu("推进到") {
@@ -94,6 +95,7 @@ struct SupervisorAutomationRuntimeBoardSection: View {
                                 onAction(action.action)
                             }
                             .disabled(!action.isEnabled)
+                            .help(action.helpText)
                         }
                     }
                     .disabled(!presentation.advanceActions.contains(where: { $0.isEnabled }))

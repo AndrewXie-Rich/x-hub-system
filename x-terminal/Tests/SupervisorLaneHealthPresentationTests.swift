@@ -59,14 +59,15 @@ struct SupervisorLaneHealthPresentationTests {
         )
 
         #expect(presentation.isFocused)
-        #expect(presentation.title == "lane-7 · blocked")
+        #expect(presentation.title == "lane-7 · 阻塞")
         #expect(presentation.statusIconName == "pause.circle.fill")
         #expect(presentation.heartbeatSequenceText == "hb#3")
         #expect(presentation.heartbeatAgeText == "heartbeat=1s")
         #expect(presentation.waitText == "wait=8s")
         #expect(presentation.splitPlanText == "plan=split-1")
+        #expect(presentation.reasonLine == "原因：等待授权（grant_pending） · 下一步：等待授权结果（wait_grant）")
         #expect(presentation.contractText == "合同： 授权处理 · blocker=grant_pending")
-        #expect(presentation.nextSafeActionText == "安全下一步： open_hub_grants · actions=wait_grant")
+        #expect(presentation.nextSafeActionText == "安全下一步： 打开 Hub 授权面板 · 建议动作：等待授权结果")
         #expect(presentation.focusAction.label == "已定位")
         #expect(presentation.openAction?.label == "查看项目")
     }
@@ -94,8 +95,9 @@ struct SupervisorLaneHealthPresentationTests {
             now: now
         )
 
+        #expect(presentation.reasonLine == "原因：无显式阻塞原因（none） · 下一步：暂停当前泳道（pause_lane）")
         #expect(presentation.contractText == "合同： 故障恢复 · blocker=lane_failed")
-        #expect(presentation.nextSafeActionText == "安全下一步： inspect_incident_and_replan · actions=pause_lane")
+        #expect(presentation.nextSafeActionText == "安全下一步： 先检查当前异常，再决定是否重规划 · 建议动作：暂停当前泳道")
     }
 
     @Test

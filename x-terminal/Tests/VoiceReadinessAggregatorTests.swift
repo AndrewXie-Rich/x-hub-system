@@ -39,6 +39,62 @@ struct VoiceReadinessAggregatorTests {
     }
 
     @Test
+    func remoteGrpcRouteDoesNotBlockOnLocalBridgeHeartbeat() {
+        let model = voiceReadinessModel(id: "hub.model.coder")
+        let snapshot = VoiceReadinessAggregator.build(
+            input: makeVoiceReadinessInput(
+                localConnected: false,
+                remoteConnected: true,
+                configuredModelIDs: [model.id],
+                models: [model],
+                bridgeAlive: false,
+                bridgeEnabled: false
+            )
+        )
+
+        #expect(snapshot.check(.modelRouteReadiness)?.state == .ready)
+        #expect(snapshot.check(.bridgeToolReadiness)?.state == .ready)
+        #expect(snapshot.check(.bridgeToolReadiness)?.reasonCode == "remote_tool_route_ready")
+        #expect(snapshot.check(.sessionRuntimeReadiness)?.state == .ready)
+        #expect(snapshot.overallState == .ready)
+        #expect(snapshot.overallSummary == "配对、语音链路、桥接、会话运行时、唤醒、对话链路和播放都已通过检查")
+    }
+
+    @Test
+    func activeSessionRuntimeUsesSettlingSummaryInsteadOfFailClosedCopy() {
+        let model = voiceReadinessModel(id: "hub.model.coder")
+        let snapshot = VoiceReadinessAggregator.build(
+            input: makeVoiceReadinessInput(
+                localConnected: true,
+                remoteConnected: false,
+                configuredModelIDs: [model.id],
+                models: [model],
+                sessionID: "voice-session-1",
+                sessionRuntime: AXSessionRuntimeSnapshot(
+                    schemaVersion: AXSessionRuntimeSnapshot.currentSchemaVersion,
+                    state: .planning,
+                    runID: "run-active-1",
+                    updatedAt: 1_741_300_000,
+                    startedAt: 1_741_299_980,
+                    completedAt: nil,
+                    lastRuntimeSummary: "planning next reply",
+                    lastToolBatchIDs: [],
+                    pendingToolCallCount: 0,
+                    lastFailureCode: nil,
+                    resumeToken: "run-active-1",
+                    recoverable: false
+                )
+            )
+        )
+
+        #expect(snapshot.check(.sessionRuntimeReadiness)?.state == .inProgress)
+        #expect(snapshot.readyForFirstTask == false)
+        #expect(snapshot.overallSummary.contains("当前仍在收敛") == true)
+        #expect(snapshot.overallSummary.contains("会话运行时就绪仍在处理中") == true)
+        #expect(snapshot.overallSummary.contains("fail-closed") == false)
+    }
+
+    @Test
     func modelRouteDiagnosticUsesAIModeledChooseModelNaming() {
         let snapshot = VoiceReadinessAggregator.build(
             input: makeVoiceReadinessInput(
@@ -50,7 +106,76 @@ struct VoiceReadinessAggregatorTests {
         )
 
         #expect(snapshot.check(.modelRouteReadiness)?.state == .diagnosticRequired)
-        #expect(snapshot.check(.modelRouteReadiness)?.nextStep.contains("AI 模型（Choose Model）") == true)
+        #expect(snapshot.check(.modelRouteReadiness)?.nextStep.contains("Supervisor Control Center · AI 模型") == true)
+        #expect(snapshot.check(.modelRouteReadiness)?.nextStep.contains("REL Flow Hub → Models & Paid Access") == true)
+    }
+
+    @Test
+    func modelRouteDiagnosticExplainsNoReadyProviderWhenInventoryIsEmpty() {
+        let snapshot = VoiceReadinessAggregator.build(
+            input: makeVoiceReadinessInput(
+                localConnected: true,
+                remoteConnected: false,
+                configuredModelIDs: [],
+                models: [],
+                runtimeStatus: makeProviderAwareRuntimeStatus(
+                    readyProviderIDs: [],
+                    providers: [
+                        "mlx": ["ok": false, "reason_code": "runtime_missing"]
+                    ]
+                )
+            )
+        )
+
+        let check = snapshot.check(.modelRouteReadiness)
+        #expect(check?.state == .diagnosticRequired)
+        #expect(check?.reasonCode == "no_ready_provider")
+        #expect(check?.headline == "本地 provider 全部未就绪，模型路由当前不可用")
+        #expect(check?.detailLines.contains("runtime_provider_state=no_ready_provider") == true)
+        #expect(check?.detailLines.contains("ready_providers=none") == true)
+    }
+
+    @Test
+    func remoteModelRouteStaysReadyButExplainsMissingLocalFallback() {
+        let remoteModel = HubModel(
+            id: "hub.remote.coder",
+            name: "hub.remote.coder",
+            backend: "openai",
+            quant: "hosted",
+            contextLength: 128_000,
+            paramsB: 0,
+            roles: ["coder"],
+            state: .loaded,
+            memoryBytes: nil,
+            tokensPerSec: nil,
+            modelPath: nil,
+            note: nil,
+            taskKinds: ["text_generate"],
+            outputModalities: ["text"]
+        )
+        let snapshot = VoiceReadinessAggregator.build(
+            input: makeVoiceReadinessInput(
+                localConnected: false,
+                remoteConnected: true,
+                configuredModelIDs: [remoteModel.id],
+                models: [remoteModel],
+                runtimeStatus: makeProviderAwareRuntimeStatus(
+                    readyProviderIDs: [],
+                    providers: [
+                        "mlx": ["ok": false, "reason_code": "runtime_missing"]
+                    ]
+                ),
+                bridgeAlive: false,
+                bridgeEnabled: false
+            )
+        )
+
+        let check = snapshot.check(VoiceReadinessCheckKind.modelRouteReadiness)
+        #expect(check?.state == .ready)
+        #expect(check?.headline == "模型路由已就绪（当前无本地兜底）")
+        #expect(check?.summary.contains("远端失联时不会有本地兜底") == true)
+        #expect(check?.detailLines.contains("interactive_posture=remote_only") == true)
+        #expect(check?.detailLines.contains("ready_providers=none") == true)
     }
 
     @Test
@@ -269,6 +394,89 @@ struct VoiceReadinessAggregatorTests {
     }
 
     @Test
+    func pairingValidityBecomesProofAwareWhenFormalRemoteVerificationIsPending() {
+        let model = voiceReadinessModel(id: "hub.model.supervisor")
+        let stableRemoteRoute = XTPairedRouteTargetSnapshot(
+            routeKind: .internet,
+            host: "hub.tailnet.example",
+            pairingPort: 50052,
+            grpcPort: 50051,
+            hostKind: "stable_named",
+            source: .cachedProfileInternetHost
+        )
+        let snapshot = VoiceReadinessAggregator.build(
+            input: makeVoiceReadinessInput(
+                localConnected: true,
+                remoteConnected: false,
+                configuredModelIDs: [model.id],
+                models: [model],
+                firstPairCompletionProofSnapshot: makeFirstPairCompletionProofSnapshot(
+                    readiness: .localReady,
+                    remoteShadowSmokeStatus: .running,
+                    stableRemoteRoutePresent: true,
+                    remoteShadowSummary: "verifying stable remote route shadow path ..."
+                ),
+                pairedRouteSetSnapshot: makePairedRouteSetSnapshot(
+                    readiness: .localReady,
+                    summaryLine: "当前已完成同网首配，但正式异网入口仍未完成验证。",
+                    stableRemoteRoute: stableRemoteRoute,
+                    readinessReasonCode: "local_pairing_ready_remote_unverified"
+                )
+            )
+        )
+
+        #expect(snapshot.readyForFirstTask)
+        #expect(snapshot.check(.pairingValidity)?.state == .inProgress)
+        #expect(snapshot.check(.pairingValidity)?.reasonCode == "local_pairing_ready_remote_unverified")
+        #expect(snapshot.check(.pairingValidity)?.headline == "同网首配已完成，正在验证正式异网入口")
+        #expect(snapshot.check(.pairingValidity)?.summary.contains("正式异网入口（host=hub.tailnet.example）") == true)
+        #expect(snapshot.overallSummary == "首个任务已可启动，但配对有效性仍需修复：同网首配已完成，正在验证正式异网入口")
+    }
+
+    @Test
+    func pairingValidityUsesSwitchSafeCopyWhenRemoteRouteIsVerified() {
+        let model = voiceReadinessModel(id: "hub.model.supervisor")
+        let stableRemoteRoute = XTPairedRouteTargetSnapshot(
+            routeKind: .internet,
+            host: "hub.tailnet.example",
+            pairingPort: 50052,
+            grpcPort: 50051,
+            hostKind: "stable_named",
+            source: .cachedProfileInternetHost
+        )
+        let snapshot = VoiceReadinessAggregator.build(
+            input: makeVoiceReadinessInput(
+                localConnected: false,
+                remoteConnected: true,
+                configuredModelIDs: [model.id],
+                models: [model],
+                bridgeAlive: false,
+                bridgeEnabled: false,
+                firstPairCompletionProofSnapshot: makeFirstPairCompletionProofSnapshot(
+                    readiness: .remoteReady,
+                    remoteShadowSmokeStatus: .passed,
+                    stableRemoteRoutePresent: true,
+                    remoteShadowSummary: "stable remote route was already verified by cached reconnect smoke."
+                ),
+                pairedRouteSetSnapshot: makePairedRouteSetSnapshot(
+                    readiness: .remoteReady,
+                    summaryLine: "正式异网入口已验证，切网后可继续重连。",
+                    stableRemoteRoute: stableRemoteRoute,
+                    readinessReasonCode: "cached_remote_reconnect_smoke_verified",
+                    cachedReconnectSmokeStatus: "succeeded"
+                )
+            )
+        )
+
+        #expect(snapshot.check(.pairingValidity)?.state == .ready)
+        #expect(snapshot.check(.pairingValidity)?.reasonCode == "cached_remote_reconnect_smoke_verified")
+        #expect(snapshot.check(.pairingValidity)?.headline == "正式异网入口已验证，切网后可继续工作")
+        #expect(snapshot.check(.pairingValidity)?.summary.contains("切网后") == true)
+        #expect(snapshot.check(.pairingValidity)?.detailLines.contains("paired_cached_reconnect_smoke_status=succeeded") == true)
+        #expect(snapshot.overallSummary == "首个任务已可启动，正式异网入口已验证，切网后可继续工作")
+    }
+
+    @Test
     func overallSummaryFailsClosedWhenBridgePathBlocksFirstTask() {
         let model = voiceReadinessModel(id: "hub.model.supervisor")
         let snapshot = VoiceReadinessAggregator.build(
@@ -294,9 +502,12 @@ private func makeVoiceReadinessInput(
     internetHost: String = "10.0.0.8",
     configuredModelIDs: [String] = [],
     models: [HubModel] = [],
+    runtimeStatus: AIRuntimeStatus? = nil,
     bridgeAlive: Bool = true,
     bridgeEnabled: Bool = true,
     bridgeLastError: String = "",
+    sessionID: String? = nil,
+    sessionRuntime: AXSessionRuntimeSnapshot? = nil,
     voiceAuthorizationStatus: VoiceTranscriberAuthorizationStatus = .authorized,
     voicePermissionSnapshot: VoicePermissionSnapshot = .unknown,
     wakeProfileSnapshot: VoiceWakeProfileSnapshot = VoiceWakeProfileSnapshot(
@@ -323,6 +534,8 @@ private func makeVoiceReadinessInput(
     ),
     voicePreferences: VoiceRuntimePreferences = .default(),
     voicePackReadyEvaluator: (@Sendable (String) -> Bool)? = nil,
+    firstPairCompletionProofSnapshot: XTFirstPairCompletionProofSnapshot? = nil,
+    pairedRouteSetSnapshot: XTPairedRouteSetSnapshot? = nil,
     voiceRouteDecision: VoiceRouteDecision = VoiceRouteDecision(
         route: .funasrStreaming,
         reasonCode: "preferred_streaming_ready",
@@ -343,7 +556,7 @@ private func makeVoiceReadinessInput(
         internetHost: internetHost,
         configuredModelIDs: configuredModelIDs,
         totalModelRoles: AXRole.allCases.count,
-        runtimeStatus: AIRuntimeStatus(
+        runtimeStatus: runtimeStatus ?? AIRuntimeStatus(
             pid: 42,
             updatedAt: Date().timeIntervalSince1970,
             mlxOk: true,
@@ -357,9 +570,9 @@ private func makeVoiceReadinessInput(
         bridgeAlive: bridgeAlive,
         bridgeEnabled: bridgeEnabled,
         bridgeLastError: bridgeLastError,
-        sessionID: nil,
-        sessionTitle: nil,
-        sessionRuntime: nil,
+        sessionID: sessionID,
+        sessionTitle: sessionID == nil ? nil : "Voice Session",
+        sessionRuntime: sessionRuntime,
         voiceRouteDecision: voiceRouteDecision,
         voiceRuntimeState: .idle,
         voiceAuthorizationStatus: voiceAuthorizationStatus,
@@ -373,7 +586,103 @@ private func makeVoiceReadinessInput(
             route: voiceRouteDecision.route
         ),
         voicePreferences: voicePreferences,
-        voicePackReadyEvaluator: voicePackReadyEvaluator
+        voicePackReadyEvaluator: voicePackReadyEvaluator,
+        firstPairCompletionProofSnapshot: firstPairCompletionProofSnapshot,
+        pairedRouteSetSnapshot: pairedRouteSetSnapshot
+    )
+}
+
+private func makeProviderAwareRuntimeStatus(
+    updatedAt: Double = Date().timeIntervalSince1970,
+    readyProviderIDs: [String],
+    providers: [String: [String: Any]]
+) -> AIRuntimeStatus {
+    let providerStatuses = providers.reduce(into: [String: AIRuntimeProviderStatus]()) { partial, entry in
+        partial[entry.key] = AIRuntimeProviderStatus(
+            providerIDHint: entry.key,
+            jsonObject: ["provider": entry.key] + entry.value
+        )
+    }
+    return AIRuntimeStatus(
+        pid: 42,
+        updatedAt: updatedAt,
+        mlxOk: false,
+        runtimeVersion: "test-runtime",
+        importError: nil,
+        activeMemoryBytes: nil,
+        peakMemoryBytes: nil,
+        loadedModelCount: nil,
+        schemaVersion: "xhub.local_runtime_status.v2",
+        localRuntimeEntryVersion: "2026-03-12-local-provider-runtime-v1",
+        runtimeAlive: true,
+        providerIDs: providers.keys.sorted(),
+        readyProviderIDs: readyProviderIDs,
+        providerPacks: [],
+        providers: providerStatuses,
+        loadedInstances: [],
+        loadedInstanceCount: nil
+    )
+}
+
+private func + (lhs: [String: Any], rhs: [String: Any]) -> [String: Any] {
+    var merged = lhs
+    rhs.forEach { merged[$0.key] = $0.value }
+    return merged
+}
+
+private func makePairedRouteSetSnapshot(
+    readiness: XTPairedRouteReadiness,
+    summaryLine: String,
+    stableRemoteRoute: XTPairedRouteTargetSnapshot? = nil,
+    readinessReasonCode: String? = nil,
+    cachedReconnectSmokeStatus: String? = nil
+) -> XTPairedRouteSetSnapshot {
+    XTPairedRouteSetSnapshot(
+        readiness: readiness,
+        readinessReasonCode: readinessReasonCode ?? readiness.rawValue,
+        summaryLine: summaryLine,
+        hubInstanceID: "hub_test_123",
+        activeRoute: nil,
+        lanRoute: XTPairedRouteTargetSnapshot(
+            routeKind: .lan,
+            host: "192.168.0.10",
+            pairingPort: 50052,
+            grpcPort: 50051,
+            hostKind: "raw_ip",
+            source: .cachedProfileHost
+        ),
+        stableRemoteRoute: stableRemoteRoute,
+        lastKnownGoodRoute: stableRemoteRoute,
+        cachedReconnectSmokeStatus: cachedReconnectSmokeStatus,
+        cachedReconnectSmokeReasonCode: nil,
+        cachedReconnectSmokeSummary: nil
+    )
+}
+
+private func makeFirstPairCompletionProofSnapshot(
+    readiness: XTPairedRouteReadiness,
+    remoteShadowSmokeStatus: XTFirstPairRemoteShadowSmokeStatus,
+    stableRemoteRoutePresent: Bool,
+    remoteShadowReasonCode: String? = nil,
+    remoteShadowSummary: String? = nil
+) -> XTFirstPairCompletionProofSnapshot {
+    XTFirstPairCompletionProofSnapshot(
+        generatedAtMs: 1_741_300_000_000,
+        readiness: readiness,
+        sameLanVerified: true,
+        ownerLocalApprovalVerified: true,
+        pairingMaterialIssued: true,
+        cachedReconnectSmokePassed: remoteShadowSmokeStatus == .passed,
+        stableRemoteRoutePresent: stableRemoteRoutePresent,
+        remoteShadowSmokePassed: remoteShadowSmokeStatus == .passed,
+        remoteShadowSmokeStatus: remoteShadowSmokeStatus,
+        remoteShadowSmokeSource: remoteShadowSmokeStatus == .notRun ? nil : .dedicatedStableRemoteProbe,
+        remoteShadowTriggeredAtMs: remoteShadowSmokeStatus == .notRun ? nil : 1_741_300_100_000,
+        remoteShadowCompletedAtMs: remoteShadowSmokeStatus == .running ? nil : 1_741_300_120_000,
+        remoteShadowRoute: stableRemoteRoutePresent ? .internet : nil,
+        remoteShadowReasonCode: remoteShadowReasonCode,
+        remoteShadowSummary: remoteShadowSummary,
+        summaryLine: "first pair proof test summary"
     )
 }
 

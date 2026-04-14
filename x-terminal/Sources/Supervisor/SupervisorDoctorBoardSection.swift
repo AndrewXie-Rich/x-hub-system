@@ -47,6 +47,22 @@ struct SupervisorDoctorBoardSection: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
+            if let skillDoctorTruthStatusLine = presentation.skillDoctorTruthStatusLine {
+                Text(skillDoctorTruthStatusLine)
+                    .font(.caption2)
+                    .foregroundStyle(toneColor(presentation.skillDoctorTruthTone))
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+            }
+
+            if let skillDoctorTruthDetailLine = presentation.skillDoctorTruthDetailLine {
+                Text(skillDoctorTruthDetailLine)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                    .textSelection(.enabled)
+            }
+
             Text(presentation.memoryReadinessLine)
                 .font(.caption2)
                 .foregroundStyle(toneColor(presentation.memoryReadinessTone))
@@ -61,6 +77,22 @@ struct SupervisorDoctorBoardSection: View {
 
             if let memoryIssueDetailLine = presentation.memoryIssueDetailLine {
                 Text(memoryIssueDetailLine)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                    .textSelection(.enabled)
+            }
+
+            if let projectMemoryAdvisoryLine = presentation.projectMemoryAdvisoryLine {
+                Text(projectMemoryAdvisoryLine)
+                    .font(.caption2)
+                    .foregroundStyle(toneColor(presentation.projectMemoryAdvisoryTone))
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+            }
+
+            if let projectMemoryAdvisoryDetailLine = presentation.projectMemoryAdvisoryDetailLine {
+                Text(projectMemoryAdvisoryDetailLine)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(3)
@@ -151,6 +183,7 @@ struct SupervisorDoctorBoardSection: View {
 
 private struct SupervisorDoctorSuggestionCardView: View {
     let card: SupervisorDoctorSuggestionCard
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -174,6 +207,16 @@ private struct SupervisorDoctorSuggestionCardView: View {
                 Text("验证：\(verify)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+            }
+
+            if let actionLabel = card.actionLabel,
+               let rawURL = card.actionURL,
+               let url = URL(string: rawURL) {
+                Button(actionLabel) {
+                    openURL(url)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
         }
         .padding(10)

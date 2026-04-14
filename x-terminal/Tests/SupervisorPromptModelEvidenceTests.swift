@@ -7,11 +7,9 @@ struct SupervisorPromptModelEvidenceTests {
 
     @Test
     func localMemoryUsesTypedLoadConfigVocabularyForAvailableModels() async {
-        let previousModels = HubModelManager.shared.availableModels
-        defer { HubModelManager.shared.availableModels = previousModels }
-
-        let manager = SupervisorManager.makeForTesting()
-        HubModelManager.shared.availableModels = [
+        let hubModelManager = HubModelManager()
+        let manager = SupervisorManager.makeForTesting(hubModelManager: hubModelManager)
+        hubModelManager.availableModels = [
             HubModel(
                 id: "qwen3-14b-mlx",
                 name: "Qwen 3 14B",

@@ -130,9 +130,15 @@ struct VoiceReadinessSnapshot: Codable, Equatable, Sendable {
         checks: [VoiceReadinessCheck]
     ) -> String {
         if let firstTaskBlockingCheck = checks.first(where: {
-            $0.kind.contributesToFirstTaskReadiness && $0.state != .ready
+            $0.kind.contributesToFirstTaskReadiness && failClosedSummaryPriority(for: $0.state) != nil
         }) {
             return "当前为 fail-closed：\(firstTaskBlockingCheck.kind.title) 仍未就绪：\(firstTaskBlockingCheck.headline)"
+        }
+
+        if let firstTaskInProgressCheck = checks.first(where: {
+            $0.kind.contributesToFirstTaskReadiness && $0.state == .inProgress
+        }) {
+            return "当前仍在收敛：\(firstTaskInProgressCheck.kind.title)仍在处理中：\(firstTaskInProgressCheck.headline)"
         }
 
         if let firstAdvisoryCheck = checks.first(where: {
@@ -143,6 +149,11 @@ struct VoiceReadinessSnapshot: Codable, Equatable, Sendable {
 
         switch overallState {
         case .ready:
+            if let pairingCheck = checks.first(where: { $0.kind == .pairingValidity && $0.state == .ready }),
+               pairingCheck.detailLines.contains("paired_route_readiness=remote_ready")
+                || pairingCheck.headline == "正式异网入口已验证，切网后可继续工作" {
+                return "首个任务已可启动，正式异网入口已验证，切网后可继续工作"
+            }
             return "配对、语音链路、桥接、会话运行时、唤醒、对话链路和播放都已通过检查"
         case .inProgress:
             return checks.first(where: { $0.state == .inProgress })?.headline
@@ -159,6 +170,15 @@ struct VoiceReadinessSnapshot: Codable, Equatable, Sendable {
         case .releaseFrozen, .diagnosticRequired:
             return checks.first(where: { $0.state == .diagnosticRequired || $0.state == .releaseFrozen })?.headline
                 ?? "语音就绪状态需要进一步诊断。"
+        }
+    }
+
+    private static func failClosedSummaryPriority(for state: XTUISurfaceState) -> Int? {
+        switch state {
+        case .permissionDenied, .grantRequired, .diagnosticRequired, .blockedWaitingUpstream, .releaseFrozen:
+            return 0
+        case .inProgress, .ready:
+            return nil
         }
     }
 }
@@ -192,6 +212,8 @@ struct VoiceReadinessAggregatorInput: Sendable {
     var conversationSession: SupervisorConversationSessionSnapshot
     var voicePreferences: VoiceRuntimePreferences
     var voicePackReadyEvaluator: (@Sendable (String) -> Bool)?
+    var firstPairCompletionProofSnapshot: XTFirstPairCompletionProofSnapshot? = nil
+    var pairedRouteSetSnapshot: XTPairedRouteSetSnapshot? = nil
 
     static func fromDoctorInput(_ input: XTUnifiedDoctorInput) -> VoiceReadinessAggregatorInput {
         VoiceReadinessAggregatorInput(
@@ -226,7 +248,9 @@ struct VoiceReadinessAggregatorInput: Sendable {
                 HubIPCClient.isLocalHubVoicePackPlaybackAvailable(
                     preferredModelID: modelID
                 )
-            }
+            },
+            firstPairCompletionProofSnapshot: input.firstPairCompletionProofSnapshot,
+            pairedRouteSetSnapshot: input.pairedRouteSetSnapshot
         )
     }
 }
@@ -243,28 +267,45 @@ enum VoiceReadinessAggregator {
         let availableModels = input.modelsState.models
         let availableModelCount = availableModels.count
         let loadedModelCount = availableModels.filter { $0.state == .loaded }.count
+        let interactiveLoadedModels = availableModels.filter { $0.state == .loaded && $0.isSelectableForInteractiveRouting }
+        let localInteractiveLoadedCount = interactiveLoadedModels.filter(\.isLocalModel).count
+        let remoteInteractiveLoadedCount = interactiveLoadedModels.count - localInteractiveLoadedCount
         let availableModelIDs = Set(availableModels.map(\.id))
         let missingAssignedModels = configuredModelIDs.filter { !availableModelIDs.contains($0) }
-        let toolRouteExecutable = hubInteractive && input.bridgeAlive && input.bridgeEnabled
+        let toolRouteExecutable = toolRouteExecutable(
+            localConnected: input.localConnected,
+            remoteConnected: input.remoteConnected,
+            bridgeAlive: input.bridgeAlive,
+            bridgeEnabled: input.bridgeEnabled
+        )
         let sessionSnapshot = input.sessionRuntime ?? AXSessionRuntimeSnapshot.idle()
 
-        let pairing = buildPairingValidityCheck(
-            input: input,
-            host: trimmedHost,
-            pairingLooksValid: pairingLooksValid,
-            pairingMatchesConvention: pairingMatchesConvention
+        let pairing = enrichPairingValidityCheck(
+            buildPairingValidityCheck(
+                input: input,
+                host: trimmedHost,
+                pairingLooksValid: pairingLooksValid,
+                pairingMatchesConvention: pairingMatchesConvention
+            ),
+            firstPairCompletionProofSnapshot: input.firstPairCompletionProofSnapshot,
+            pairedRouteSetSnapshot: input.pairedRouteSetSnapshot
         )
         let modelRoute = buildModelRouteCheck(
             hubInteractive: hubInteractive,
             runtimeAlive: runtimeAlive,
+            runtimeStatus: input.runtimeStatus,
             availableModelCount: availableModelCount,
             loadedModelCount: loadedModelCount,
+            localInteractiveLoadedCount: localInteractiveLoadedCount,
+            remoteInteractiveLoadedCount: remoteInteractiveLoadedCount,
             configuredModelCount: configuredModelCount,
             totalModelRoles: input.totalModelRoles,
             missingAssignedModels: missingAssignedModels,
             configuredModelIDs: configuredModelIDs
         )
         let bridge = buildBridgeToolCheck(
+            localConnected: input.localConnected,
+            remoteConnected: input.remoteConnected,
             hubInteractive: hubInteractive,
             modelRouteReady: modelRoute.state == .ready,
             bridgeAlive: input.bridgeAlive,
@@ -374,7 +415,7 @@ enum VoiceReadinessAggregator {
                 reasonCode: "pairing_values_invalid",
                 headline: "配对参数暂时无效",
                 summary: "在信任语音 / 运行时引导之前，Pairing Port 和 gRPC Port 必须是明确且彼此不同的值。",
-                nextStep: "去 REL Flow Hub -> Settings -> LAN (gRPC) 复制 Pairing Port 和 gRPC Port，然后重新执行 Pair Hub。",
+                nextStep: "去 REL Flow Hub → LAN (gRPC) 复制 Pairing Port 和 gRPC Port，然后重新执行 Pair Hub。",
                 repairEntry: .xtPairHub,
                 detailLines: details
             )
@@ -413,7 +454,7 @@ enum VoiceReadinessAggregator {
                 reasonCode: "remote_bootstrap_values_incomplete",
                 headline: "本机链路可用，但远端引导参数还不完整",
                 summary: "同机验证可以继续，但 Internet Host 仍为空，所以第二台设备还不知道该填什么。",
-                nextStep: "先去 REL Flow Hub -> Settings -> LAN (gRPC) 复制 Internet Host 到 X-Terminal，再做远端配对。",
+                nextStep: "先去 REL Flow Hub → LAN (gRPC) 复制 Internet Host 到 X-Terminal，再做远端配对。",
                 repairEntry: .xtPairHub,
                 detailLines: details
             )
@@ -425,31 +466,201 @@ enum VoiceReadinessAggregator {
             reasonCode: "pairing_values_incomplete_for_bootstrap",
             headline: "配对参数不足以完成引导",
             summary: "如果没有明确的 Internet Host，面向 LAN / VPN / 隧道设备的配对路径就是不完整的。",
-            nextStep: "去 REL Flow Hub -> Settings -> LAN (gRPC) 复制 Internet Host，然后重新执行一键设置。",
+            nextStep: "去 REL Flow Hub → LAN (gRPC) 复制 Internet Host，然后重新执行一键设置。",
             repairEntry: .xtPairHub,
             detailLines: details
         )
     }
 
+    private static func enrichPairingValidityCheck(
+        _ base: VoiceReadinessCheck,
+        firstPairCompletionProofSnapshot: XTFirstPairCompletionProofSnapshot?,
+        pairedRouteSetSnapshot: XTPairedRouteSetSnapshot?
+    ) -> VoiceReadinessCheck {
+        guard let pairingContext = UITroubleshootPairingContext(
+            firstPairCompletionProofSnapshot: firstPairCompletionProofSnapshot,
+            pairedRouteSetSnapshot: pairedRouteSetSnapshot
+        ) else {
+            return base
+        }
+
+        var check = base
+        check.detailLines = orderedUnique(
+            base.detailLines + pairingReadinessDetailLines(
+                firstPairCompletionProofSnapshot: firstPairCompletionProofSnapshot,
+                pairedRouteSetSnapshot: pairedRouteSetSnapshot,
+                pairingContext: pairingContext
+            )
+        )
+
+        let stableHost = normalizedPairingField(pairingContext.stableRemoteHost)
+        let stableHostSuffix = stableHost.map { "（host=\($0)）" } ?? ""
+        let readinessReasonCode = normalizedPairingField(pairedRouteSetSnapshot?.readinessReasonCode)
+        let remoteShadowReasonCode = normalizedPairingField(firstPairCompletionProofSnapshot?.remoteShadowReasonCode)
+
+        switch pairingContext.readiness {
+        case .remoteReady:
+            check.state = .ready
+            check.reasonCode = readinessReasonCode ?? "paired_remote_route_ready"
+            check.headline = "正式异网入口已验证，切网后可继续工作"
+            check.summary = [
+                "同网首配、本机批准和正式异网入口已经闭环\(stableHostSuffix)。",
+                "切网后，XT 会优先沿这条已验证的正式入口继续连接 Hub。"
+            ].joined(separator: " ")
+            check.nextStep = "继续保留当前配对档案与正式入口；只有更换 Hub、重置配对材料或入口变更时才需要重新批准。"
+        case .remoteBlocked:
+            check.state = .diagnosticRequired
+            check.reasonCode = readinessReasonCode ?? remoteShadowReasonCode ?? "paired_remote_route_blocked"
+            check.headline = "正式异网入口存在，但被配对或身份边界阻断"
+            check.summary = [
+                "同网首配已经完成，XT 也有正式异网入口\(stableHostSuffix)，但当前被配对或身份边界挡住。",
+                "这不是“重新首配就会自己好”的问题，先修批准、证书、令牌或身份约束。"
+            ].joined(separator: " ")
+            check.nextStep = "先保留现有配对档案，在 XT 连接 Hub 查看当前失败原因；再到 Hub 的配对与设备信任或诊断与恢复修复身份/批准边界。"
+        case .remoteDegraded:
+            check.state = .diagnosticRequired
+            check.reasonCode = readinessReasonCode ?? remoteShadowReasonCode ?? "paired_remote_route_degraded"
+            check.headline = "正式异网入口存在，但切网续连目前不稳定"
+            check.summary = [
+                "同网首配已经完成，XT 也拿到了正式异网入口\(stableHostSuffix)，但最近一次正式异网验证没有通过。",
+                "离开当前 Wi-Fi 后，还不能把这条路径当成稳定可恢复。"
+            ].joined(separator: " ")
+            check.nextStep = "先检查 Hub app 是否在线、pairing / gRPC 端口是否还在监听，以及防火墙、NAT、relay 或 tailnet 路由；修好后再重跑异网验证。"
+        case .localReady:
+            if pairingContext.formalRemoteVerificationPending {
+                check.state = .inProgress
+                check.reasonCode = readinessReasonCode ?? "paired_remote_verification_pending"
+                check.headline = "同网首配已完成，正在验证正式异网入口"
+                check.summary = [
+                    "同网首配和 Hub 本地批准已经完成，XT 也拿到了正式异网入口\(stableHostSuffix)。",
+                    "当前正在补跑正式异网验证，在它真正通过前，不要把状态误判成已经可以无感切网。"
+                ].joined(separator: " ")
+                check.nextStep = "先保留当前配对档案，等待这轮正式异网验证结束；如果长时间不通过，再检查 Hub 的 stable remote host、relay / tailnet / DNS 和端口可达性。"
+            } else {
+                check.state = .inProgress
+                check.reasonCode = readinessReasonCode ?? "paired_formal_remote_route_missing"
+                check.headline = "同网首配已完成，但还没有正式异网入口"
+                check.summary = [
+                    "同网首配和 Hub 本地批准已经完成，但 XT 还没有稳定命名的正式异网入口。",
+                    "当前留在同网环境可以继续用；离开当前 Wi-Fi 后还不能保证继续连回 Hub。"
+                ].joined(separator: " ")
+                check.nextStep = "先在 Hub 配置 tailnet、relay 或 DNS 这类正式异网入口，再回 XT 刷新配对资料并补一轮异网验证。"
+            }
+        case .unknown:
+            break
+        }
+
+        return check
+    }
+
+    private static func pairingReadinessDetailLines(
+        firstPairCompletionProofSnapshot: XTFirstPairCompletionProofSnapshot?,
+        pairedRouteSetSnapshot: XTPairedRouteSetSnapshot?,
+        pairingContext: UITroubleshootPairingContext
+    ) -> [String] {
+        var lines = [
+            "paired_route_readiness=\(pairingContext.readiness.rawValue)",
+            "pairing_formal_remote_verification_pending=\(pairingContext.formalRemoteVerificationPending)",
+            "pairing_remote_shadow_failed=\(pairingContext.remoteShadowFailed)"
+        ]
+
+        if let pairedRouteSetSnapshot {
+            lines.append("paired_route_reason_code=\(pairedRouteSetSnapshot.readinessReasonCode)")
+            lines.append("paired_route_summary=\(pairedRouteSetSnapshot.summaryLine)")
+
+            if let activeRoute = pairedRouteSetSnapshot.activeRoute {
+                lines.append("paired_active_route=\(pairedRouteTargetSummary(activeRoute))")
+            }
+            if let stableRemoteRoute = pairedRouteSetSnapshot.stableRemoteRoute {
+                lines.append("paired_stable_remote_route=\(pairedRouteTargetSummary(stableRemoteRoute))")
+            }
+            if let lastKnownGoodRoute = pairedRouteSetSnapshot.lastKnownGoodRoute {
+                lines.append("paired_last_known_good_route=\(pairedRouteTargetSummary(lastKnownGoodRoute))")
+            }
+            if let cachedReconnectSmokeStatus = normalizedPairingField(pairedRouteSetSnapshot.cachedReconnectSmokeStatus) {
+                lines.append("paired_cached_reconnect_smoke_status=\(cachedReconnectSmokeStatus)")
+            }
+            if let cachedReconnectSmokeReasonCode = normalizedPairingField(pairedRouteSetSnapshot.cachedReconnectSmokeReasonCode) {
+                lines.append("paired_cached_reconnect_smoke_reason_code=\(cachedReconnectSmokeReasonCode)")
+            }
+            if let cachedReconnectSmokeSummary = normalizedPairingField(pairedRouteSetSnapshot.cachedReconnectSmokeSummary) {
+                lines.append("paired_cached_reconnect_smoke_summary=\(cachedReconnectSmokeSummary)")
+            }
+        }
+
+        if let firstPairCompletionProofSnapshot {
+            lines.append("first_pair_proof_readiness=\(firstPairCompletionProofSnapshot.readiness.rawValue)")
+            lines.append("first_pair_same_lan_verified=\(firstPairCompletionProofSnapshot.sameLanVerified)")
+            lines.append("first_pair_owner_local_approval_verified=\(firstPairCompletionProofSnapshot.ownerLocalApprovalVerified)")
+            lines.append("first_pair_pairing_material_issued=\(firstPairCompletionProofSnapshot.pairingMaterialIssued)")
+            lines.append("first_pair_cached_reconnect_smoke_passed=\(firstPairCompletionProofSnapshot.cachedReconnectSmokePassed)")
+            lines.append("first_pair_stable_remote_route_present=\(firstPairCompletionProofSnapshot.stableRemoteRoutePresent)")
+            lines.append("first_pair_remote_shadow_status=\(firstPairCompletionProofSnapshot.remoteShadowSmokeStatus.rawValue)")
+            lines.append("first_pair_summary=\(firstPairCompletionProofSnapshot.summaryLine)")
+
+            if let remoteShadowSource = firstPairCompletionProofSnapshot.remoteShadowSmokeSource?.rawValue {
+                lines.append("first_pair_remote_shadow_source=\(remoteShadowSource)")
+            }
+            if let remoteShadowRoute = firstPairCompletionProofSnapshot.remoteShadowRoute?.rawValue {
+                lines.append("first_pair_remote_shadow_route=\(remoteShadowRoute)")
+            }
+            if let remoteShadowReasonCode = normalizedPairingField(firstPairCompletionProofSnapshot.remoteShadowReasonCode) {
+                lines.append("first_pair_remote_shadow_reason_code=\(remoteShadowReasonCode)")
+            }
+            if let remoteShadowSummary = normalizedPairingField(firstPairCompletionProofSnapshot.remoteShadowSummary) {
+                lines.append("first_pair_remote_shadow_summary=\(remoteShadowSummary)")
+            }
+        }
+
+        return lines
+    }
+
+    private static func pairedRouteTargetSummary(_ target: XTPairedRouteTargetSnapshot) -> String {
+        "\(target.routeKind.rawValue):\(target.host):pairing=\(target.pairingPort),grpc=\(target.grpcPort),source=\(target.source.rawValue)"
+    }
+
     private static func buildModelRouteCheck(
         hubInteractive: Bool,
         runtimeAlive: Bool,
+        runtimeStatus: AIRuntimeStatus?,
         availableModelCount: Int,
         loadedModelCount: Int,
+        localInteractiveLoadedCount: Int,
+        remoteInteractiveLoadedCount: Int,
         configuredModelCount: Int,
         totalModelRoles: Int,
         missingAssignedModels: [String],
         configuredModelIDs: [String]
     ) -> VoiceReadinessCheck {
+        let interactivePosture: String
+        switch (localInteractiveLoadedCount > 0, remoteInteractiveLoadedCount > 0) {
+        case (true, false):
+            interactivePosture = "local_only"
+        case (false, true):
+            interactivePosture = "remote_only"
+        case (true, true):
+            interactivePosture = "mixed"
+        case (false, false):
+            interactivePosture = "none"
+        }
+
+        let providerStateCode = runtimeStatus?.providerReadinessStateCode(ttl: 3.0)
+
         var details = [
             "runtime_alive=\(runtimeAlive)",
             "available_models=\(availableModelCount)",
             "loaded_models=\(loadedModelCount)",
+            "interactive_local_loaded=\(localInteractiveLoadedCount)",
+            "interactive_remote_loaded=\(remoteInteractiveLoadedCount)",
+            "interactive_posture=\(interactivePosture)",
             "configured_roles=\(configuredModelCount)/\(totalModelRoles)",
             configuredModelIDs.isEmpty ? "configured_model_ids=none" : "configured_model_ids=\(configuredModelIDs.joined(separator: ","))"
         ]
         if !missingAssignedModels.isEmpty {
             details.append("missing_assigned_models=\(missingAssignedModels.joined(separator: ","))")
+        }
+        if let runtimeStatus {
+            details = orderedUnique(details + runtimeStatus.providerReadinessDetailLines(ttl: 3.0))
         }
 
         if !hubInteractive {
@@ -459,20 +670,59 @@ enum VoiceReadinessAggregator {
                 reasonCode: "hub_route_not_interactive",
                 headline: "模型路由正在等待可用的 Hub 链路",
                 summary: "在 Hub 可达性真正进入 interactive 之前，XT 无法确认哪些模型实际可用。",
-                nextStep: "先完成 Pair Hub，再回到 AI 模型（Choose Model）。",
+                nextStep: "先完成 Pair Hub，再回到 Supervisor Control Center · AI 模型。",
                 repairEntry: .xtChooseModel,
                 detailLines: details
             )
         }
 
         if availableModelCount == 0 {
+            if providerStateCode == "runtime_heartbeat_stale" {
+                return VoiceReadinessCheck(
+                    kind: .modelRouteReadiness,
+                    state: .diagnosticRequired,
+                    reasonCode: "runtime_heartbeat_stale",
+                    headline: "本地 provider 心跳已过期，模型清单当前不可信",
+                    summary: "Hub 已可达，但本地 runtime/provider 心跳已过期，所以 XT 当前拿不到可信的本地模型清单。",
+                    nextStep: "先到 REL Flow Hub 重启或刷新本地运行时，再回到 Supervisor Control Center · AI 模型刷新真实可执行列表，然后重新执行 Verify。",
+                    repairEntry: .xtChooseModel,
+                    detailLines: details
+                )
+            }
+
+            if providerStateCode == "no_ready_provider" {
+                return VoiceReadinessCheck(
+                    kind: .modelRouteReadiness,
+                    state: .diagnosticRequired,
+                    reasonCode: "no_ready_provider",
+                    headline: "本地 provider 全部未就绪，模型路由当前不可用",
+                    summary: "Hub 已可达，但本地 provider 当前全部未就绪，所以 XT 还看不到任何真正可执行的本地模型。",
+                    nextStep: "先到 REL Flow Hub → Models & Paid Access 检查 provider pack、helper 服务和导入失败原因，确认至少有一个 provider ready；再回到 Supervisor Control Center · AI 模型刷新真实可执行列表。",
+                    repairEntry: .xtChooseModel,
+                    detailLines: details
+                )
+            }
+
+            if providerStateCode == "provider_partial_readiness" {
+                return VoiceReadinessCheck(
+                    kind: .modelRouteReadiness,
+                    state: .diagnosticRequired,
+                    reasonCode: "provider_partial_readiness",
+                    headline: "本地 provider 只有部分就绪，当前模型清单可能缺项",
+                    summary: "Hub 已可达，但本地 provider 只起来了一部分，所以 XT 现在看到的模型目录和能力覆盖还不完整。",
+                    nextStep: "先到 REL Flow Hub → Models & Paid Access 检查还没起来的 provider pack 和 runtime；确认目标 provider ready 后，再回 Supervisor Control Center · AI 模型刷新列表。",
+                    repairEntry: .xtChooseModel,
+                    detailLines: details
+                )
+            }
+
             return VoiceReadinessCheck(
                 kind: .modelRouteReadiness,
                 state: .diagnosticRequired,
                 reasonCode: "model_inventory_empty",
                 headline: "配对已通，但模型路由不可用",
                 summary: "Hub 已可达，但 XT 还看不到任何可用模型。这个问题需要和配对失败、授权失败区分开。",
-                nextStep: "打开 AI 模型（Choose Model）或 REL Flow Hub -> Models & Paid Access，确认至少有一个激活模型，再重新执行 Verify。",
+                nextStep: "先到 REL Flow Hub → Models & Paid Access 确认至少有一个模型已激活且 provider ready；再回到 Supervisor Control Center · AI 模型确认它进入真实可执行列表，然后重新执行 Verify。",
                 repairEntry: .xtChooseModel,
                 detailLines: details
             )
@@ -485,7 +735,7 @@ enum VoiceReadinessAggregator {
                 reasonCode: "xt_role_assignment_empty",
                 headline: "Hub 模型可见，但 XT 的角色分配还是空的",
                 summary: "模型路由已经存在，但 X-Terminal 还没有把任何角色绑定到具体的 Hub 模型上。",
-                nextStep: "至少先在 AI 模型（Choose Model）里给 coder 和 supervisor 分配模型。",
+                nextStep: "至少先在 Supervisor Control Center · AI 模型里给 coder 和 supervisor 分配模型。",
                 repairEntry: .xtChooseModel,
                 detailLines: details
             )
@@ -498,25 +748,80 @@ enum VoiceReadinessAggregator {
                 reasonCode: "assigned_model_missing_from_inventory",
                 headline: "XT 的角色分配指向了当前未暴露的模型",
                 summary: "虽然配对成功，但至少有一个已分配的模型 ID 不在当前的 Hub 模型清单里。",
-                nextStep: "去 AI 模型（Choose Model）替换过期模型 ID，或者回到 Hub 重新启用这些模型。",
+                nextStep: "去 Supervisor Control Center · AI 模型替换过期模型 ID；如果目标模型已在 Hub 侧停用，再到 REL Flow Hub → Models & Paid Access 重新启用。",
                 repairEntry: .xtChooseModel,
                 detailLines: details
             )
+        }
+
+        if interactivePosture == "local_only", providerStateCode == "runtime_heartbeat_stale" {
+            return VoiceReadinessCheck(
+                kind: .modelRouteReadiness,
+                state: .diagnosticRequired,
+                reasonCode: "runtime_heartbeat_stale",
+                headline: "当前走纯本地，但本地 provider 心跳已过期",
+                summary: "XT 现在只剩本地模型路径，但本地 runtime/provider 心跳已过期，所以这条执行链不应继续当成可信状态。",
+                nextStep: "先到 REL Flow Hub 重启或刷新本地运行时，确认 provider 心跳恢复后，再回 Supervisor Control Center · AI 模型重新验证。",
+                repairEntry: .xtChooseModel,
+                detailLines: details
+            )
+        }
+
+        if interactivePosture == "local_only", providerStateCode == "no_ready_provider" {
+            return VoiceReadinessCheck(
+                kind: .modelRouteReadiness,
+                state: .diagnosticRequired,
+                reasonCode: "no_ready_provider",
+                headline: "当前走纯本地，但本地 provider 全部未就绪",
+                summary: "XT 当前只看到本地模型路径，可 Hub 报告本地 provider 全部未就绪，所以这条纯本地执行链还不能继续当成可执行状态。",
+                nextStep: "先到 REL Flow Hub → Models & Paid Access 修复本地 provider，就绪后再回 Supervisor Control Center · AI 模型重新验证。",
+                repairEntry: .xtChooseModel,
+                detailLines: details
+            )
+        }
+
+        let readyHeadline: String
+        let readySummary: String
+        let readyNextStep: String
+
+        switch (interactivePosture, providerStateCode) {
+        case ("local_only", _):
+            readyHeadline = "模型路由已就绪（纯本地）"
+            readySummary = "XT 当前只看到本地对话模型，这本身不是异常；即使没有云端服务或 API key，也可以继续完成首个任务。"
+            readyNextStep = "如果你只需要本地路径，直接继续做桥接 / 工具链验证；只有你要远端 GPT 或云能力时，再去补远端模型。"
+        case ("remote_only", "no_ready_provider"):
+            readyHeadline = "模型路由已就绪（当前无本地兜底）"
+            readySummary = "当前角色分配还能命中远端模型，所以首个任务可以继续；但本地 provider 当前全部未就绪，远端失联时不会有本地兜底。"
+            readyNextStep = "如果你只依赖远端链路，先继续桥接 / 工具链验证；如果你也要本地兜底，再去 REL Flow Hub → Models & Paid Access 修复本地 provider。"
+        case ("remote_only", "runtime_heartbeat_stale"):
+            readyHeadline = "模型路由已就绪，但本地运行时状态已过期"
+            readySummary = "当前角色分配还能命中远端模型，所以首个任务可以继续；但本地 runtime/provider 心跳已过期，本地兜底当前不可信。"
+            readyNextStep = "先继续桥接 / 工具链验证；如果你需要本地兜底，再到 REL Flow Hub 重启本地运行时并刷新模型列表。"
+        case (_, "provider_partial_readiness"):
+            readyHeadline = "模型路由已就绪，但本地能力覆盖还不完整"
+            readySummary = "当前角色分配能命中可见模型，所以首个任务可以继续；但仍有部分本地 provider 未就绪，模型目录和能力覆盖可能不完整。"
+            readyNextStep = "先继续桥接 / 工具链验证；如果你需要更完整的本地能力覆盖，再去 REL Flow Hub → Models & Paid Access 检查未就绪 provider。"
+        default:
+            readyHeadline = "模型路由已就绪"
+            readySummary = "XT 已经能看到可用的 Hub 模型，当前角色分配也都映射到了可见模型 ID。"
+            readyNextStep = "不用离开当前页面，直接继续做桥接 / 工具链验证。"
         }
 
         return VoiceReadinessCheck(
             kind: .modelRouteReadiness,
             state: .ready,
             reasonCode: "model_route_ready",
-            headline: "模型路由已就绪",
-            summary: "XT 已经能看到可用的 Hub 模型，当前角色分配也都映射到了可见模型 ID。",
-            nextStep: "不用离开当前页面，直接继续做桥接 / 工具链验证。",
+            headline: readyHeadline,
+            summary: readySummary,
+            nextStep: readyNextStep,
             repairEntry: .xtChooseModel,
             detailLines: details
         )
     }
 
     private static func buildBridgeToolCheck(
+        localConnected: Bool,
+        remoteConnected: Bool,
         hubInteractive: Bool,
         modelRouteReady: Bool,
         bridgeAlive: Bool,
@@ -524,13 +829,20 @@ enum VoiceReadinessAggregator {
         bridgeLastError: String,
         activeRoute: String
     ) -> VoiceReadinessCheck {
-        let toolRouteExecutable = hubInteractive && bridgeAlive && bridgeEnabled
+        let remoteToolRoute = remoteConnected && !localConnected
+        let toolRouteExecutable = toolRouteExecutable(
+            localConnected: localConnected,
+            remoteConnected: remoteConnected,
+            bridgeAlive: bridgeAlive,
+            bridgeEnabled: bridgeEnabled
+        )
         let normalizedBridgeLastError = bridgeLastError.trimmingCharacters(in: .whitespacesAndNewlines)
         let details = [
             "bridge_alive=\(bridgeAlive)",
             "bridge_enabled=\(bridgeEnabled)",
             "tool_route_executable=\(toolRouteExecutable)",
-            "active_route=\(activeRoute)"
+            "active_route=\(activeRoute)",
+            "remote_tool_route=\(remoteToolRoute)"
         ] + (normalizedBridgeLastError.isEmpty ? [] : ["bridge_last_error=\(normalizedBridgeLastError)"])
 
         if !hubInteractive {
@@ -541,6 +853,19 @@ enum VoiceReadinessAggregator {
                 headline: "工具链路正在等待 Hub 可达",
                 summary: "在 X-Terminal 建立 live Hub 路由之前，桥接和工具执行都无法被验证。",
                 nextStep: "先完成 Pair Hub，再重新执行 Verify。",
+                repairEntry: .hubDiagnostics,
+                detailLines: details
+            )
+        }
+
+        if remoteToolRoute {
+            return VoiceReadinessCheck(
+                kind: .bridgeToolReadiness,
+                state: .ready,
+                reasonCode: "remote_tool_route_ready",
+                headline: "远端 Hub 工具主链已就绪",
+                summary: "当前主链走远端 gRPC。即使本机 bridge heartbeat 缺失，也不会阻塞远端授权与远端工具调用。",
+                nextStep: "继续在当前远端主链上做会话运行时验证。",
                 repairEntry: .hubDiagnostics,
                 detailLines: details
             )
@@ -1042,6 +1367,26 @@ enum VoiceReadinessAggregator {
             }
         }
         return ordered
+    }
+
+    private static func normalizedPairingField(_ value: String?) -> String? {
+        let trimmed = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func toolRouteExecutable(
+        localConnected: Bool,
+        remoteConnected: Bool,
+        bridgeAlive: Bool,
+        bridgeEnabled: Bool
+    ) -> Bool {
+        if localConnected {
+            return bridgeAlive && bridgeEnabled
+        }
+        if remoteConnected {
+            return true
+        }
+        return false
     }
 
     private static func portLooksValid(_ value: Int) -> Bool {

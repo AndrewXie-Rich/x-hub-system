@@ -14,10 +14,15 @@ extension SupervisorViewRuntimePresentationSupport {
                 officialSkillsTopBlockerSummaries: supervisor.supervisorOfficialSkillsChannelTopBlockerSummaries,
                 builtinGovernedSkills: appModel.skillsCompatibilitySnapshot.builtinGovernedSkills,
                 managedSkillsStatusLine: appModel.skillsCompatibilitySnapshot.statusLine,
-                eventLoopStatusLine: supervisor.supervisorEventLoopStatusLine,
-                pendingHubGrants: supervisor.pendingHubGrants,
-                pendingSupervisorSkillApprovals: supervisor.pendingSupervisorSkillApprovals,
-                recentEventLoopActivities: supervisor.recentSupervisorEventLoopActivities
+                historicalProjectBoundaryRepairStatusLine: appModel.historicalProjectBoundaryRepairStatusLine,
+                memoryReadiness: supervisor.supervisorMemoryAssemblyReadiness,
+                memoryAssemblySnapshot: supervisor.supervisorMemoryAssemblySnapshot,
+                eventLoopStatusLine: supervisor.frontstageSupervisorEventLoopStatusLine,
+                pendingHubGrants: supervisor.frontstagePendingHubGrants,
+                pendingSupervisorSkillApprovals: supervisor.frontstagePendingSupervisorSkillApprovals,
+                candidateReviews: supervisor.frontstageSupervisorCandidateReviews,
+                candidateReviewProjectNamesByID: supervisor.frontstageSupervisorCandidateReviewProjectNames,
+                recentEventLoopActivities: supervisor.frontstageRecentSupervisorEventLoopActivities
             )
         )
     }
@@ -26,7 +31,7 @@ extension SupervisorViewRuntimePresentationSupport {
         supervisor: SupervisorManager
     ) -> SupervisorSkillActivityFeedPresentation {
         SupervisorSkillActivityFeedPresentation.map(
-            items: supervisor.recentSupervisorSkillActivities
+            items: supervisor.frontstageRecentSupervisorSkillActivities
         )
     }
 
@@ -49,11 +54,13 @@ extension SupervisorViewRuntimePresentationSupport {
             officialSkillsTopBlockerSummaries: supervisor.supervisorOfficialSkillsChannelTopBlockerSummaries,
             builtinGovernedSkills: appModel.skillsCompatibilitySnapshot.builtinGovernedSkills,
             managedSkillsStatusLine: appModel.skillsCompatibilitySnapshot.statusLine,
-            eventLoopStatusLine: supervisor.supervisorEventLoopStatusLine,
-            pendingHubGrants: supervisor.pendingHubGrants,
-            pendingSupervisorSkillApprovals: supervisor.pendingSupervisorSkillApprovals,
-            recentSupervisorSkillActivities: supervisor.recentSupervisorSkillActivities,
-            recentSupervisorEventLoopActivities: supervisor.recentSupervisorEventLoopActivities
+            eventLoopStatusLine: supervisor.frontstageSupervisorEventLoopStatusLine,
+            pendingHubGrants: supervisor.frontstagePendingHubGrants,
+            pendingSupervisorSkillApprovals: supervisor.frontstagePendingSupervisorSkillApprovals,
+            candidateReviews: supervisor.frontstageSupervisorCandidateReviews,
+            candidateReviewProjectNamesByID: supervisor.frontstageSupervisorCandidateReviewProjectNames,
+            recentSupervisorSkillActivities: supervisor.frontstageRecentSupervisorSkillActivities,
+            recentSupervisorEventLoopActivities: supervisor.frontstageRecentSupervisorEventLoopActivities
         )
     }
 
@@ -61,9 +68,10 @@ extension SupervisorViewRuntimePresentationSupport {
         supervisor: SupervisorManager
     ) -> SupervisorFocusRequestEffects.Context {
         SupervisorFocusRequestEffects.Context(
-            pendingHubGrants: supervisor.pendingHubGrants,
-            pendingSupervisorSkillApprovals: supervisor.pendingSupervisorSkillApprovals,
-            recentSupervisorSkillActivities: supervisor.recentSupervisorSkillActivities
+            pendingHubGrants: supervisor.frontstagePendingHubGrants,
+            pendingSupervisorSkillApprovals: supervisor.frontstagePendingSupervisorSkillApprovals,
+            candidateReviews: supervisor.frontstageSupervisorCandidateReviews,
+            recentSupervisorSkillActivities: supervisor.frontstageRecentSupervisorSkillActivities
         )
     }
 
@@ -71,8 +79,9 @@ extension SupervisorViewRuntimePresentationSupport {
         supervisor: SupervisorManager
     ) -> SupervisorEventLoopBoardPresentation {
         SupervisorEventLoopFeedPresentation.board(
-            items: supervisor.recentSupervisorEventLoopActivities,
-            statusLine: supervisor.supervisorEventLoopStatusLine
+            items: supervisor.frontstageRecentSupervisorEventLoopActivities,
+            recentSkillActivities: supervisor.frontstageRecentSupervisorSkillActivities,
+            statusLine: supervisor.frontstageSupervisorEventLoopStatusLine
         )
     }
 
@@ -82,12 +91,30 @@ extension SupervisorViewRuntimePresentationSupport {
         focusedRowAnchor: String?
     ) -> SupervisorPendingHubGrantBoardPresentation {
         SupervisorPendingHubGrantPresentation.board(
-            grants: supervisor.pendingHubGrants,
+            grants: supervisor.frontstagePendingHubGrants,
             source: supervisor.pendingHubGrantSource,
             hasFreshSnapshot: supervisor.hasFreshPendingHubGrantSnapshot,
             updatedAt: supervisor.pendingHubGrantUpdatedAt,
+            recentSkillActivities: supervisor.frontstageRecentSupervisorSkillActivities,
             inFlightGrantIDs: supervisor.pendingHubGrantActionsInFlight,
             hubInteractive: hubInteractive,
+            focusedRowAnchor: focusedRowAnchor
+        )
+    }
+
+    static func supervisorCandidateReviewBoardPresentation(
+        supervisor: SupervisorManager,
+        hubInteractive: Bool,
+        focusedRowAnchor: String?
+    ) -> SupervisorCandidateReviewBoardPresentation {
+        SupervisorCandidateReviewPresentation.board(
+            items: supervisor.frontstageSupervisorCandidateReviews,
+            source: supervisor.supervisorCandidateReviewSource,
+            hasFreshSnapshot: supervisor.hasFreshSupervisorCandidateReviewSnapshot,
+            updatedAt: supervisor.supervisorCandidateReviewUpdatedAt,
+            inFlightRequestIDs: supervisor.supervisorCandidateReviewActionsInFlight,
+            hubInteractive: hubInteractive,
+            projectNamesByID: supervisor.frontstageSupervisorCandidateReviewProjectNames,
             focusedRowAnchor: focusedRowAnchor
         )
     }
@@ -97,7 +124,7 @@ extension SupervisorViewRuntimePresentationSupport {
         focusedRowAnchor: String?
     ) -> SupervisorPendingSkillApprovalBoardPresentation {
         SupervisorPendingSkillApprovalPresentation.board(
-            approvals: supervisor.pendingSupervisorSkillApprovals,
+            approvals: supervisor.frontstagePendingSupervisorSkillApprovals,
             focusedRowAnchor: focusedRowAnchor
         )
     }

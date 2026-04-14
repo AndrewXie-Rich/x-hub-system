@@ -71,7 +71,7 @@ struct SupervisorAuditDrillDownSelectionTests {
         #expect(selection.source == .officialSkillsChannel)
         #expect(selection.fullRecord == nil)
         #expect(!selection.presentation.includesEmbeddedSkillRecord)
-        #expect(selection.presentation.title == "Official Skills Channel")
+        #expect(selection.presentation.title == "官方技能通道")
         #expect(selection.presentation.secondaryActions.count == 1)
     }
 

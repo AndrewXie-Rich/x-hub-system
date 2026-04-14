@@ -43,6 +43,15 @@ struct SupervisorSkillRegistryItem: Identifiable, Codable, Equatable, Sendable {
     var skillId: String
     var displayName: String
     var description: String
+    var intentFamilies: [String] = []
+    var capabilityFamilies: [String] = []
+    var capabilityProfiles: [String] = []
+    var grantFloor: String = XTSkillGrantFloor.none.rawValue
+    var approvalFloor: String = XTSkillApprovalFloor.none.rawValue
+    var packageSHA256: String = ""
+    var publisherID: String = ""
+    var sourceID: String = ""
+    var officialPackage: Bool = false
     var capabilitiesRequired: [String]
     var governedDispatch: SupervisorGovernedSkillDispatch?
     var governedDispatchVariants: [SupervisorGovernedSkillDispatchVariant]
@@ -63,6 +72,15 @@ struct SupervisorSkillRegistryItem: Identifiable, Codable, Equatable, Sendable {
         case skillId = "skill_id"
         case displayName = "display_name"
         case description
+        case intentFamilies = "intent_families"
+        case capabilityFamilies = "capability_families"
+        case capabilityProfiles = "capability_profiles"
+        case grantFloor = "grant_floor"
+        case approvalFloor = "approval_floor"
+        case packageSHA256 = "package_sha256"
+        case publisherID = "publisher_id"
+        case sourceID = "source_id"
+        case officialPackage = "official_package"
         case capabilitiesRequired = "capabilities_required"
         case governedDispatch = "governed_dispatch"
         case governedDispatchVariants = "governed_dispatch_variants"
@@ -85,6 +103,15 @@ extension SupervisorSkillRegistryItem {
         skillId = try container.decode(String.self, forKey: .skillId)
         displayName = try container.decode(String.self, forKey: .displayName)
         description = try container.decode(String.self, forKey: .description)
+        intentFamilies = try container.decodeIfPresent([String].self, forKey: .intentFamilies) ?? []
+        capabilityFamilies = try container.decodeIfPresent([String].self, forKey: .capabilityFamilies) ?? []
+        capabilityProfiles = try container.decodeIfPresent([String].self, forKey: .capabilityProfiles) ?? []
+        grantFloor = try container.decodeIfPresent(String.self, forKey: .grantFloor) ?? XTSkillGrantFloor.none.rawValue
+        approvalFloor = try container.decodeIfPresent(String.self, forKey: .approvalFloor) ?? XTSkillApprovalFloor.none.rawValue
+        packageSHA256 = ((try? container.decode(String.self, forKey: .packageSHA256)) ?? "").lowercased()
+        publisherID = try container.decodeIfPresent(String.self, forKey: .publisherID) ?? ""
+        sourceID = try container.decodeIfPresent(String.self, forKey: .sourceID) ?? ""
+        officialPackage = try container.decodeIfPresent(Bool.self, forKey: .officialPackage) ?? false
         capabilitiesRequired = try container.decodeIfPresent([String].self, forKey: .capabilitiesRequired) ?? []
         governedDispatch = try container.decodeIfPresent(SupervisorGovernedSkillDispatch.self, forKey: .governedDispatch)
         governedDispatchVariants = try container.decodeIfPresent([SupervisorGovernedSkillDispatchVariant].self, forKey: .governedDispatchVariants) ?? []
@@ -132,7 +159,10 @@ extension SupervisorSkillRegistrySnapshot {
 
     func memorySummary(maxItems: Int = 6, maxChars: Int = 1_000) -> String {
         let projectLabel = (projectName ?? projectId).trimmingCharacters(in: .whitespacesAndNewlines)
-        var lines = ["project=\(projectLabel) id=\(projectId)"]
+        let sourceLabel = memorySource.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "unknown"
+            : memorySource.trimmingCharacters(in: .whitespacesAndNewlines)
+        var lines = ["project=\(projectLabel) id=\(projectId) source=\(sourceLabel)"]
         for (index, item) in promptDiscoveryItems().prefix(max(1, maxItems)).enumerated() {
             let block = promptDiscoverySummaryBlock(for: item, index: index + 1)
             let candidate = (lines + block).joined(separator: "\n")
@@ -161,6 +191,16 @@ extension SupervisorSkillRegistrySnapshot {
             return 0
         case "supervisor-voice":
             return 1
+        case "local-ocr":
+            return 2
+        case "local-vision":
+            return 3
+        case "local-transcribe":
+            return 4
+        case "local-tts":
+            return 5
+        case "local-embeddings":
+            return 6
         default:
             break
         }
@@ -181,10 +221,24 @@ extension SupervisorSkillRegistrySnapshot {
 
     private func promptPreferredUse(_ item: SupervisorSkillRegistryItem) -> String? {
         switch AXSkillsLibrary.canonicalSupervisorSkillID(item.skillId).lowercased() {
+        case "find-skills":
+            return "governed_skill_discovery, capability_lookup, install_lookup"
+        case "request-skill-enable":
+            return "hub_skill_enable_request, package_pin_request"
         case "guarded-automation":
             return "trusted_automation_readiness, governed_browser_actions"
         case "supervisor-voice":
             return "supervisor_playback_status, preview, speak, stop"
+        case "local-embeddings":
+            return "vector_embedding, retrieval_indexing, semantic_search_inputs"
+        case "local-transcribe":
+            return "audio_transcription, speech_to_text, transcript_capture"
+        case "local-vision":
+            return "image_understanding, screenshot_inspection, multimodal_qa"
+        case "local-ocr":
+            return "image_text_extraction, screenshot_ocr, document_text_capture"
+        case "local-tts":
+            return "local_speech_synthesis, text_to_speech, audio_preview"
         default:
             return nil
         }
@@ -268,6 +322,15 @@ extension SupervisorSkillRegistrySnapshot {
     }
 
     private func promptRoutingHint(_ item: SupervisorSkillRegistryItem) -> String? {
+        switch AXSkillsLibrary.canonicalSupervisorSkillID(item.skillId).lowercased() {
+        case "find-skills":
+            return "aliases=skill find, find skills, skills.search"
+        case "request-skill-enable":
+            return "aliases=enable skill, request skill enable"
+        default:
+            break
+        }
+
         switch SupervisorSkillRoutingCompatibilityHint.resolve(
             skillId: item.skillId,
             registryItems: items

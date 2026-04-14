@@ -11,6 +11,8 @@ enum SupervisorAuditDrillDownResolver {
         var eventLoopStatusLine: String
         var pendingHubGrants: [SupervisorManager.SupervisorPendingGrant]
         var pendingSupervisorSkillApprovals: [SupervisorManager.SupervisorPendingSkillApproval]
+        var candidateReviews: [HubIPCClient.SupervisorCandidateReviewItem] = []
+        var candidateReviewProjectNamesByID: [String: String] = [:]
         var recentSupervisorSkillActivities: [SupervisorManager.SupervisorRecentSkillActivity]
         var recentSupervisorEventLoopActivities: [SupervisorManager.SupervisorEventLoopActivity]
     }
@@ -36,6 +38,10 @@ enum SupervisorAuditDrillDownResolver {
             .map(Self.approvalFingerprint)
             .joined(separator: "||")
 
+        let candidateReviewFingerprintValue = context.candidateReviews
+            .map(Self.candidateReviewFingerprint)
+            .joined(separator: "||")
+
         let skillActivityFingerprintValue = context.recentSupervisorSkillActivities
             .map(Self.skillActivityFingerprint)
             .joined(separator: "||")
@@ -54,6 +60,7 @@ enum SupervisorAuditDrillDownResolver {
             builtinSkillsFingerprintValue,
             grantFingerprintValue,
             approvalFingerprintValue,
+            candidateReviewFingerprintValue,
             skillActivityFingerprintValue,
             eventLoopFingerprintValue
         ]
@@ -74,15 +81,38 @@ enum SupervisorAuditDrillDownResolver {
     }
 
     static func selection(
-        for item: SupervisorManager.SupervisorPendingGrant
+        for item: SupervisorManager.SupervisorPendingGrant,
+        recentSkillActivities: [SupervisorManager.SupervisorRecentSkillActivity] = []
     ) -> SupervisorAuditDrillDownSelection {
-        .pendingHubGrant(item)
+        let requestId = normalizedScalar(item.requestId)
+        let relatedSkillActivity: SupervisorManager.SupervisorRecentSkillActivity?
+        if let requestId {
+            relatedSkillActivity = SupervisorFocusPresentation.matchingRecentSkillActivity(
+                projectId: normalizedScalar(item.projectId),
+                requestId: requestId,
+                recentActivities: recentSkillActivities
+            )
+        } else {
+            relatedSkillActivity = nil
+        }
+
+        return .pendingHubGrant(
+            item,
+            relatedSkillActivity: relatedSkillActivity
+        )
     }
 
     static func selection(
         for item: SupervisorManager.SupervisorPendingSkillApproval
     ) -> SupervisorAuditDrillDownSelection {
         .pendingSkillApproval(item)
+    }
+
+    static func selection(
+        for item: HubIPCClient.SupervisorCandidateReviewItem,
+        projectNamesByID: [String: String]
+    ) -> SupervisorAuditDrillDownSelection {
+        .candidateReview(item, projectNamesByID: projectNamesByID)
     }
 
     static func selection(
@@ -136,12 +166,32 @@ enum SupervisorAuditDrillDownResolver {
                 items: context.builtinGovernedSkills,
                 managedStatusLine: context.managedSkillsStatusLine
             )
+        case .historicalProjectBoundaryRepair:
+            return nil
+        case .memoryAssembly:
+            return nil
         case .pendingHubGrant:
             guard let grant = context.pendingHubGrants.first else { return nil }
-            return selection(for: grant)
+            return selection(
+                for: grant,
+                recentSkillActivities: context.recentSupervisorSkillActivities
+            )
         case .pendingSkillApproval:
             guard let approval = context.pendingSupervisorSkillApprovals.first else { return nil }
             return selection(for: approval)
+        case .candidateReview:
+            let candidateRequestID = candidateReviewRequestID(fromInfrastructureItemID: item.id)
+            guard let candidate = context.candidateReviews.first(where: {
+                let requestId = normalizedScalar($0.requestId)
+                let reviewId = normalizedScalar($0.reviewId)
+                return requestId == candidateRequestID || reviewId == candidateRequestID
+            }) ?? context.candidateReviews.first else {
+                return nil
+            }
+            return selection(
+                for: candidate,
+                projectNamesByID: context.candidateReviewProjectNamesByID
+            )
         case .eventLoop:
             let activityID = eventLoopActivityID(fromInfrastructureItemID: item.id)
             guard let activity = context.recentSupervisorEventLoopActivities.first(where: { $0.id == activityID }) else {
@@ -157,6 +207,12 @@ enum SupervisorAuditDrillDownResolver {
 
     private static func eventLoopActivityID(fromInfrastructureItemID itemID: String) -> String {
         let prefix = "event-loop-"
+        guard itemID.hasPrefix(prefix) else { return itemID }
+        return String(itemID.dropFirst(prefix.count))
+    }
+
+    private static func candidateReviewRequestID(fromInfrastructureItemID itemID: String) -> String {
+        let prefix = "candidate-review-"
         guard itemID.hasPrefix(prefix) else { return itemID }
         return String(itemID.dropFirst(prefix.count))
     }
@@ -207,6 +263,20 @@ enum SupervisorAuditDrillDownResolver {
             approval.tool?.rawValue ?? approval.toolName,
             approval.reason,
             approval.toolSummary
+        ].joined(separator: "|")
+    }
+
+    private static func candidateReviewFingerprint(
+        _ item: HubIPCClient.SupervisorCandidateReviewItem
+    ) -> String {
+        [
+            item.id,
+            item.requestId,
+            item.reviewId,
+            item.reviewState,
+            item.pendingChangeId,
+            item.pendingChangeStatus,
+            item.summaryLine
         ].joined(separator: "|")
     }
 

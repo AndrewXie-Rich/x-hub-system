@@ -6,6 +6,7 @@ struct SupervisorPendingHubGrantRowPresentation: Equatable, Identifiable {
     var title: String
     var ageText: String
     var summary: String
+    var governedContextLines: [String] = []
     var supplementaryReasonText: String?
     var priorityReasonText: String?
     var nextActionText: String?
@@ -37,6 +38,7 @@ enum SupervisorPendingHubGrantPresentation {
         source: String,
         hasFreshSnapshot: Bool,
         updatedAt: TimeInterval,
+        recentSkillActivities: [SupervisorManager.SupervisorRecentSkillActivity] = [],
         inFlightGrantIDs: Set<String>,
         hubInteractive: Bool,
         focusedRowAnchor: String?,
@@ -59,12 +61,16 @@ enum SupervisorPendingHubGrantPresentation {
                 ? nil
                 : XTHubGrantPresentation.approvalFooterNote(count: grants.count),
             emptyStateText: grants.isEmpty ? "当前没有待审批的 Hub 授权。" : nil,
-            rows: grants.map {
+            rows: grants.map { grant in
                 row(
-                    $0,
+                    grant,
+                    relatedSkillActivity: matchingRecentSkillActivity(
+                        for: grant,
+                        recentSkillActivities: recentSkillActivities
+                    ),
                     inFlightGrantIDs: inFlightGrantIDs,
                     hubInteractive: hubInteractive,
-                    isFocused: focusedRowAnchor == SupervisorFocusPresentation.pendingHubGrantRowAnchor($0),
+                    isFocused: focusedRowAnchor == SupervisorFocusPresentation.pendingHubGrantRowAnchor(grant),
                     now: now
                 )
             }
@@ -73,6 +79,7 @@ enum SupervisorPendingHubGrantPresentation {
 
     static func row(
         _ grant: SupervisorManager.SupervisorPendingGrant,
+        relatedSkillActivity: SupervisorManager.SupervisorRecentSkillActivity? = nil,
         inFlightGrantIDs: Set<String>,
         hubInteractive: Bool,
         isFocused: Bool,
@@ -91,6 +98,9 @@ enum SupervisorPendingHubGrantPresentation {
             summary: XTHubGrantPresentation.awaitingSummary(
                 capability: grant.capability,
                 modelId: grant.modelId
+            ),
+            governedContextLines: governedContextLines(
+                relatedSkillActivity: relatedSkillActivity
             ),
             supplementaryReasonText: XTHubGrantPresentation.supplementaryReason(
                 grant.reason,
@@ -152,5 +162,41 @@ enum SupervisorPendingHubGrantPresentation {
     private static func nonEmpty(_ raw: String) -> String? {
         let trimmed = normalizedScalar(raw)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func matchingRecentSkillActivity(
+        for grant: SupervisorManager.SupervisorPendingGrant,
+        recentSkillActivities: [SupervisorManager.SupervisorRecentSkillActivity]
+    ) -> SupervisorManager.SupervisorRecentSkillActivity? {
+        let requestID = normalizedScalar(grant.requestId)
+        guard !requestID.isEmpty else { return nil }
+        return SupervisorFocusPresentation.matchingRecentSkillActivity(
+            projectId: normalizedScalar(grant.projectId),
+            requestId: requestID,
+            recentActivities: recentSkillActivities
+        )
+    }
+
+    private static func governedContextLines(
+        relatedSkillActivity: SupervisorManager.SupervisorRecentSkillActivity?
+    ) -> [String] {
+        guard let relatedSkillActivity else { return [] }
+
+        let lines = SupervisorSkillActivityPresentation.governedApprovalContextLines(
+            requestID: relatedSkillActivity.requestId,
+            skillID: relatedSkillActivity.skillId,
+            requestedSkillID: nonEmpty(relatedSkillActivity.requestedSkillId),
+            toolName: relatedSkillActivity.toolName,
+            status: relatedSkillActivity.status,
+            deltaApproval: relatedSkillActivity.record.deltaApproval,
+            readiness: relatedSkillActivity.record.readiness,
+            hubStateDirPath: relatedSkillActivity.record.hubStateDirPath
+        )
+
+        if !lines.isEmpty {
+            return lines
+        }
+
+        return ["执行就绪：等待 Hub grant"]
     }
 }

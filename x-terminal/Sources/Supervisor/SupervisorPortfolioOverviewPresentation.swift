@@ -48,6 +48,9 @@ struct SupervisorPortfolioOverviewPresentation: Equatable {
     var statusLine: String
     var countBadges: [SupervisorPortfolioBadgePresentation]
     var metricBadgeRows: [[SupervisorPortfolioBadgePresentation]]
+    var prioritySummaryLine: String? = nil
+    var priorityExplanationLine: String? = nil
+    var reviewMemorySummary: SupervisorMemoryAssemblyCompactSummary? = nil
     var projectNotificationLine: String?
     var infrastructureStatusLine: String?
     var infrastructureTransitionLine: String?
@@ -70,6 +73,7 @@ enum SupervisorPortfolioOverviewPresentationMapper {
         hasProjectNotificationActivity: Bool,
         infrastructureStatusLine: String,
         infrastructureTransitionLine: String,
+        assemblySnapshot: SupervisorMemoryAssemblySnapshot? = nil,
         maxTodayQueueItems: Int = 4,
         maxCloseOutQueueItems: Int = 3,
         maxCriticalQueueItems: Int = 3
@@ -77,6 +81,7 @@ enum SupervisorPortfolioOverviewPresentationMapper {
         let todayQueueItems = Array(actionability.recommendedActions.prefix(maxTodayQueueItems))
         let closeOutItems = Array(closeOutQueueItems(snapshot.projects).prefix(maxCloseOutQueueItems))
         let criticalQueueItems = Array(snapshot.criticalQueue.prefix(maxCriticalQueueItems))
+        let topPriorityCard = priorityFocusCard(snapshot.projects)
         var metricBadgeRows: [[SupervisorPortfolioBadgePresentation]] = [
             [
                 badge(title: "24h变更", count: actionability.projectsChangedLast24h, tone: .accent),
@@ -108,6 +113,13 @@ enum SupervisorPortfolioOverviewPresentationMapper {
                 badge(title: "完成", count: snapshot.counts.completed, tone: .success),
             ],
             metricBadgeRows: metricBadgeRows,
+            prioritySummaryLine: topPriorityCard.map {
+                "当前先看：\($0.displayName)（\(($0.prioritySnapshot?.priorityBand ?? .normal).displayName)优先级）"
+            },
+            priorityExplanationLine: topPriorityCard.map {
+                "为什么先看：\(SupervisorPortfolioSnapshotBuilder.priorityWhyText(for: $0))"
+            },
+            reviewMemorySummary: assemblySnapshot?.compactSummary,
             projectNotificationLine: hasProjectNotificationActivity
                 ? nonEmpty(projectNotificationStatusLine)
                 : nil,
@@ -172,7 +184,7 @@ enum SupervisorPortfolioOverviewPresentationMapper {
     ) -> SupervisorPortfolioCriticalQueueRowPresentation {
         SupervisorPortfolioCriticalQueueRowPresentation(
             id: item.id,
-            text: "\(item.projectName)：\(item.reason)。下一步：\(item.nextAction)",
+            text: "\(item.projectName)：\(SupervisorBlockerPresentation.label(item.reason))。下一步：\(item.nextAction)",
             tone: criticalQueueTone(item.severity)
         )
     }
@@ -313,6 +325,19 @@ enum SupervisorPortfolioOverviewPresentationMapper {
 
     private static func statusLine(_ snapshot: SupervisorPortfolioSnapshot) -> String {
         "\(snapshot.projects.count) 个项目 · \(snapshot.counts.active) 个进行中 · \(snapshot.counts.blocked) 个阻塞 · \(snapshot.counts.awaitingAuthorization) 个待授权 · \(snapshot.counts.completed) 个已完成"
+    }
+
+    private static func priorityFocusCard(
+        _ cards: [SupervisorPortfolioProjectCard]
+    ) -> SupervisorPortfolioProjectCard? {
+        guard let card = SupervisorPortfolioSnapshotBuilder.topPriorityCard(in: cards) else {
+            return nil
+        }
+        let band = card.prioritySnapshot?.priorityBand ?? .low
+        if cards.count <= 1 && band == .low {
+            return nil
+        }
+        return card
     }
 
     private static func todayQueueStatusLine(

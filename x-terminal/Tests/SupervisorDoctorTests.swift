@@ -296,7 +296,10 @@ struct SupervisorDoctorTests {
                     ok: false,
                     updatedAtMs: 1_773_000_010_000,
                     reasonCode: "project_canonical_memory_write_failed",
-                    detail: "xterminal_project_memory_write_failed=NSError:No space left on device"
+                    detail: "xterminal_project_memory_write_failed=NSError:No space left on device",
+                    auditRefs: ["audit-project-alpha-1"],
+                    evidenceRefs: ["canonical_memory_item:item-project-alpha-1"],
+                    writebackRefs: ["canonical_memory_item:item-project-alpha-1"]
                 )
             ]
         )
@@ -309,7 +312,33 @@ struct SupervisorDoctorTests {
         #expect(finding?.area == "memory_assembly")
         #expect(finding?.severity == .blocking)
         #expect(finding?.detail.contains("scope=project") == true)
+        #expect(finding?.detail.contains("audit_ref=audit-project-alpha-1") == true)
+        #expect(finding?.detail.contains("evidence_ref=canonical_memory_item:item-project-alpha-1") == true)
+        #expect(finding?.detail.contains("writeback_ref=canonical_memory_item:item-project-alpha-1") == true)
         #expect(report.summary.memoryAssemblyBlockingCount == 1)
+    }
+
+    @Test
+    func missingScopedHiddenProjectRecoveryBecomesBlockingFindingWithActionableSuggestion() {
+        let snapshot = makeMemorySnapshot(
+            selectedSections: ["l1_canonical", "l2_observations", "l3_working_set", "dialogue_window"],
+            scopedPromptRecoveryMode: "explicit_hidden_project_focus",
+            scopedPromptRecoverySections: []
+        )
+        let report = SupervisorDoctorChecker.run(input: makeInput(snapshot: snapshot))
+
+        let finding = report.findings.first { $0.code == "memory_scoped_hidden_project_recovery_missing" }
+        #expect(finding?.area == "memory_assembly")
+        #expect(finding?.severity == .blocking)
+        #expect(finding?.priority == .p0)
+        #expect(finding?.priorityReason.contains("hidden project") == true)
+        #expect(finding?.actions.first?.contains("显式聚焦回合") == true)
+        #expect(finding?.verifyHint?.contains("scopedPromptRecoverySections") == true)
+        #expect(report.suggestions.contains(where: {
+            $0.findingCode == "memory_scoped_hidden_project_recovery_missing"
+                && $0.priority == .p0
+                && ($0.actions.first?.contains("显式聚焦回合") == true)
+        }))
     }
 
     @Test
@@ -514,6 +543,97 @@ struct SupervisorDoctorTests {
 
     @MainActor
     @Test
+    func secretsDryRunSummaryPrependsWorkbenchGovernanceBriefWhenPendingSkillGrantExists() {
+        let manager = SupervisorManager.makeForTesting()
+        manager.setPendingSupervisorSkillApprovalsForTesting(
+            [
+                SupervisorManager.SupervisorPendingSkillApproval(
+                    id: "doctor-secrets-grant-1",
+                    requestId: "doctor-secrets-grant-1",
+                    projectId: "project-security",
+                    projectName: "Security Runtime",
+                    jobId: "job-1",
+                    planId: "plan-1",
+                    stepId: "step-1",
+                    skillId: "agent-browser",
+                    requestedSkillId: "browser.open",
+                    toolName: ToolName.deviceBrowserControl.rawValue,
+                    tool: .deviceBrowserControl,
+                    toolSummary: "向浏览器页面填写凭据",
+                    reason: "需要人工确认凭据写入动作",
+                    createdAt: 1_000,
+                    actionURL: nil,
+                    routingReasonCode: nil,
+                    routingExplanation: nil,
+                    readiness: XTSkillExecutionReadiness(
+                        schemaVersion: XTSkillExecutionReadiness.currentSchemaVersion,
+                        projectId: "project-security",
+                        skillId: "agent-browser",
+                        packageSHA256: String(repeating: "d", count: 64),
+                        publisherID: "xhub.official",
+                        policyScope: "hub_governed",
+                        intentFamilies: ["browser.observe", "browser.interact"],
+                        capabilityFamilies: ["browser.observe", "browser.interact"],
+                        capabilityProfiles: ["observe_only", "browser_operator"],
+                        discoverabilityState: "discoverable",
+                        installabilityState: "installable",
+                        pinState: "pinned",
+                        resolutionState: "resolved",
+                        executionReadiness: XTSkillExecutionReadinessState.grantRequired.rawValue,
+                        runnableNow: false,
+                        denyCode: "grant_required",
+                        reasonCode: "grant floor privileged requires hub grant",
+                        grantFloor: XTSkillGrantFloor.privileged.rawValue,
+                        approvalFloor: XTSkillApprovalFloor.hubGrant.rawValue,
+                        requiredGrantCapabilities: ["browser.interact"],
+                        requiredRuntimeSurfaces: ["managed_browser_runtime"],
+                        stateLabel: "awaiting_hub_grant",
+                        installHint: "",
+                        unblockActions: ["request_hub_grant"],
+                        auditRef: "audit-doctor-secrets-grant-1",
+                        doctorAuditRef: "",
+                        vetterAuditRef: "",
+                        resolvedSnapshotId: "snapshot-doctor-secrets-grant-1",
+                        grantSnapshotRef: "grant-doctor-secrets-grant-1"
+                    )
+                )
+            ]
+        )
+        let report = SupervisorDoctorReport(
+            schemaVersion: "xt.supervisor_doctor_report.v1",
+            generatedAtMs: 100,
+            workspaceRoot: "/tmp/workspace",
+            configSource: "config.json",
+            secretsPlanSource: "secrets.json",
+            ok: false,
+            findings: [],
+            suggestions: [],
+            summary: SupervisorDoctorSummary(
+                doctorReportPresent: 1,
+                releaseBlockedByDoctorWithoutReport: 0,
+                blockingCount: 1,
+                warningCount: 0,
+                memoryAssemblyBlockingCount: 0,
+                memoryAssemblyWarningCount: 0,
+                dmAllowlistRiskCount: 0,
+                wsAuthRiskCount: 0,
+                preAuthFloodBreakerRiskCount: 0,
+                secretsPathOutOfScopeCount: 1,
+                secretsMissingVariableCount: 0,
+                secretsPermissionBoundaryCount: 0
+            )
+        )
+
+        let text = manager.renderSecretsDryRunSummaryForTesting(report)
+
+        #expect(text.contains("🧭 Supervisor Brief · 当前工作台"))
+        #expect(text.contains("技能授权待处理"))
+        #expect(text.contains("查看：查看技能授权"))
+        #expect(text.contains("🔐 Secrets dry-run 摘要"))
+    }
+
+    @MainActor
+    @Test
     func doctorSummaryIncludesDurableCandidateMirrorDetailWhenPresent() {
         let manager = SupervisorManager.makeForTesting()
         manager.setSupervisorMemoryAssemblySnapshotForTesting(
@@ -606,6 +726,8 @@ struct SupervisorDoctorTests {
         evidenceItemsSelected: Int = 2,
         evidenceItemsOmitted: Int = 0,
         truncatedLayers: [String] = [],
+        scopedPromptRecoveryMode: String? = nil,
+        scopedPromptRecoverySections: [String]? = nil,
         durableCandidateMirrorStatus: SupervisorDurableCandidateMirrorStatus = .notNeeded,
         durableCandidateMirrorTarget: String? = nil,
         durableCandidateMirrorAttempted: Bool = false,
@@ -648,7 +770,9 @@ struct SupervisorDoctorTests {
             durableCandidateMirrorTarget: durableCandidateMirrorTarget,
             durableCandidateMirrorAttempted: durableCandidateMirrorAttempted,
             durableCandidateMirrorErrorCode: durableCandidateMirrorErrorCode,
-            durableCandidateLocalStoreRole: durableCandidateLocalStoreRole
+            durableCandidateLocalStoreRole: durableCandidateLocalStoreRole,
+            scopedPromptRecoveryMode: scopedPromptRecoveryMode,
+            scopedPromptRecoverySections: scopedPromptRecoverySections
         )
     }
 }

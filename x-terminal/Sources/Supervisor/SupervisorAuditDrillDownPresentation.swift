@@ -62,19 +62,33 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
             detailLine: normalizedDetail,
             blockerSummaries: normalizedBlockers
         )
+        let tone = officialTone(for: normalizedStatus, blockers: normalizedBlockers)
 
         return SupervisorAuditDrillDownPresentation(
             id: "official-skills-channel",
-            iconName: officialTone(for: normalizedStatus) == .critical ? "shippingbox.fill" : "shippingbox",
+            iconName: tone == .success ? "shippingbox" : "shippingbox.fill",
             title: "官方技能通道",
-            statusLabel: officialBadge(for: normalizedStatus),
-            tone: officialTone(for: normalizedStatus),
-            summary: normalizedStatus.isEmpty ? "当前还没有官方技能状态快照。" : normalizedStatus,
+            statusLabel: officialBadge(for: normalizedStatus, blockers: normalizedBlockers),
+            tone: tone,
+            summary: officialSummary(
+                statusLine: normalizedStatus,
+                blockers: normalizedBlockers,
+                primaryBlocker: primaryBlocker
+            ),
             detail: firstMeaningfulScalar([
+                officialRepairDetail(
+                    blocker: primaryBlocker,
+                    actionLabel: action?.label
+                ),
                 normalizedTransition,
-                normalizedLoop
+                normalizedLoop,
+                normalizedDetail
             ]),
             sections: [
+                officialRepairSection(
+                    primaryBlocker,
+                    actionLabel: action?.label
+                ),
                 compactSection(
                     title: "通道快照",
                     fields: [
@@ -84,14 +98,15 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
                         ("事件循环", normalizedLoop)
                     ]
                 ),
+                officialTopBlockersSection(normalizedBlockers),
                 compactSection(
                     title: "运行说明",
                     fields: [
                         ("模式", "由 Hub 托管的官方技能目录"),
-                        ("安全边界", "服务端审核与审批链仍保持最终权威")
+                        ("安全边界", "服务端审核与审批链仍保持最终权威"),
+                        ("默认策略", "先看 blocker / grant / 安装真相，再决定是否让模型继续调用")
                     ]
-                ),
-                officialTopBlockersSection(normalizedBlockers)
+                )
             ].compactMap { $0 },
             requestId: nil,
             actionLabel: action?.label,
@@ -105,7 +120,8 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
     }
 
     static func pendingHubGrant(
-        _ grant: SupervisorManager.SupervisorPendingGrant
+        _ grant: SupervisorManager.SupervisorPendingGrant,
+        relatedSkillActivity: SupervisorManager.SupervisorRecentSkillActivity? = nil
     ) -> SupervisorAuditDrillDownPresentation {
         let capabilityLabel = XTHubGrantPresentation.capabilityLabel(
             capability: grant.capability,
@@ -124,6 +140,14 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
             requestedTtlSec: grant.requestedTtlSec,
             requestedTokenCap: grant.requestedTokenCap
         ) ?? ""
+        let governedFields = pendingHubGrantGovernedFields(relatedSkillActivity)
+        let governedDetail = pendingHubGrantGovernedDetail(from: governedFields)
+        let skillFields = relatedSkillActivity.map {
+            skillIdentityFields(
+                requestedSkillId: $0.requestedSkillId,
+                effectiveSkillId: $0.skillId
+            )
+        } ?? []
 
         return SupervisorAuditDrillDownPresentation(
             id: "pending-grant:\(grant.id)",
@@ -133,6 +157,7 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
             tone: .attention,
             summary: summary,
             detail: firstMeaningfulScalar([
+                governedDetail,
                 normalizedScalar(grant.nextAction),
                 reason,
                 scope
@@ -142,6 +167,7 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
                     title: "请求",
                     fields: [
                         ("项目", normalizedScalar(grant.projectName)),
+                    ] + skillFields + [
                         ("能力", capabilityLabel),
                         ("模型", normalizedScalar(grant.modelId)),
                         ("授权请求", normalizedScalar(grant.grantRequestId)),
@@ -149,8 +175,8 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
                     ]
                 ),
                 compactSection(
-                    title: "范围",
-                    fields: [
+                    title: governedFields.isEmpty ? "范围" : "治理与范围",
+                    fields: governedFields + [
                         ("请求时长", durationLabel(seconds: grant.requestedTtlSec)),
                         ("Token 上限", tokenCapLabel(grant.requestedTokenCap)),
                         ("优先级", "P\(grant.priorityRank)"),
@@ -176,10 +202,14 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
     static func pendingSkillApproval(
         _ approval: SupervisorManager.SupervisorPendingSkillApproval
     ) -> SupervisorAuditDrillDownPresentation {
+        let activityItem = SupervisorSkillActivityPresentation.governedSkillPresentationItem(
+            for: approval
+        )
         let message = XTPendingApprovalPresentation.approvalMessage(
             toolName: approval.toolName,
             tool: approval.tool,
-            toolSummary: approval.toolSummary
+            toolSummary: approval.toolSummary,
+            activity: activityItem
         )
         let reason = XTPendingApprovalPresentation.supplementaryReason(
             approval.reason,
@@ -191,6 +221,21 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
             routingReasonCode: approval.routingReasonCode,
             routingExplanation: approval.routingExplanation
         ) ?? ""
+        let governedSummary = firstMeaningfulScalar([
+            SupervisorSkillActivityPresentation.governedShortSummary(for: approval) ?? "",
+            routingSummary
+        ])
+        let governedFields = governedContextFields(
+            from: SupervisorSkillActivityPresentation.governedApprovalContextLines(
+                requestID: approval.requestId,
+                skillID: approval.skillId,
+                requestedSkillID: approval.requestedSkillId,
+                toolName: approval.toolName,
+                status: SupervisorSkillCallStatus.awaitingAuthorization.rawValue,
+                deltaApproval: approval.deltaApproval,
+                readiness: approval.readiness
+            )
+        )
         let routingNarrative = SupervisorSkillActivityPresentation.routingNarrative(
             requestedSkillId: approval.requestedSkillId,
             effectiveSkillId: approval.skillId,
@@ -205,7 +250,7 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
         return SupervisorAuditDrillDownPresentation(
             id: "pending-approval:\(approval.id)",
             iconName: iconName(for: approval.tool),
-            title: "本地技能审批待处理",
+            title: SupervisorPendingSkillApprovalPresentation.drillDownTitle(for: approval),
             statusLabel: "待处理",
             tone: .attention,
             summary: normalizedScalar(message.summary),
@@ -229,7 +274,8 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
                     title: "工具意图",
                     fields: [
                         ("工具", displayToolName(approval.toolName, tool: approval.tool)),
-                        ("路由", routingSummary),
+                        ("路由", governedSummary),
+                    ] + governedFields + [
                         ("路由说明", routingNarrative),
                         ("路由判定", normalizedScalar(
                             SupervisorSkillActivityPresentation.routingReasonText(
@@ -244,8 +290,109 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
                 )
             ].compactMap { $0 },
             requestId: normalizedOptionalScalar(approval.requestId),
-            actionLabel: normalizedOptionalScalar(approval.actionURL) == nil ? nil : "打开审批",
+            actionLabel: normalizedOptionalScalar(approval.actionURL) == nil
+                ? nil
+                : SupervisorPendingSkillApprovalPresentation.openActionLabel(for: approval),
             actionURL: normalizedOptionalScalar(approval.actionURL),
+            includesEmbeddedSkillRecord: false
+        )
+    }
+
+    static func candidateReview(
+        _ item: HubIPCClient.SupervisorCandidateReviewItem,
+        projectNamesByID: [String: String]
+    ) -> SupervisorAuditDrillDownPresentation {
+        let projectIDs = candidateReviewProjectIDs(item)
+        let projectLabels = projectIDs.map { projectNamesByID[$0] ?? $0 }
+        let recordTypes = item.recordTypes
+            .map(normalizedScalar)
+            .filter { !$0.isEmpty }
+            .joined(separator: ", ")
+        let scopes = item.scopes
+            .map(normalizedScalar)
+            .filter { !$0.isEmpty }
+            .joined(separator: ", ")
+        let stateLabel = SupervisorCandidateReviewPresentation.stateText(item.reviewState)
+        let statusTone: Tone = {
+            switch normalizedScalar(item.reviewState).lowercased() {
+            case "rejected", "rolled_back":
+                return .critical
+            case "promoted":
+                return .success
+            case "pending_review", "staged", "in_review", "reviewed_pending_approval", "approved_for_writeback", "writeback_queued":
+                return .attention
+            default:
+                return .neutral
+            }
+        }()
+        let actionURL = XTDeepLinkURLBuilder.supervisorURL(
+            focusTarget: candidateReviewFocusRequestID(item) == nil ? nil : .candidateReview,
+            requestId: candidateReviewFocusRequestID(item)
+        )?.absoluteString
+
+        return SupervisorAuditDrillDownPresentation(
+            id: "candidate-review:\(normalizedScalar(item.requestId).isEmpty ? item.id : normalizedScalar(item.requestId))",
+            iconName: "square.stack.3d.up.badge.a.fill",
+            title: "候选记忆审查",
+            statusLabel: stateLabel,
+            tone: statusTone,
+            summary: firstMeaningfulScalar([
+                normalizedScalar(item.summaryLine),
+                "候选记忆已进入 Supervisor review queue"
+            ]),
+            detail: firstMeaningfulScalar([
+                projectLabels.joined(separator: "、"),
+                scopes,
+                recordTypes
+            ]),
+            sections: [
+                compactSection(
+                    title: "请求",
+                    fields: [
+                        ("request", normalizedScalar(item.requestId)),
+                        ("review", normalizedScalar(item.reviewId)),
+                        ("evidence", normalizedScalar(item.evidenceRef)),
+                        ("候选数量", item.candidateCount > 0 ? "\(item.candidateCount)" : "")
+                    ]
+                ),
+                compactSection(
+                    title: "范围",
+                    fields: [
+                        ("项目", projectLabels.joined(separator: "、")),
+                        ("scope", scopes),
+                        ("record types", recordTypes),
+                        ("promotion boundary", normalizedScalar(item.promotionBoundary)),
+                        ("promotion state", normalizedScalar(item.durablePromotionState))
+                    ]
+                ),
+                compactSection(
+                    title: "载体",
+                    fields: [
+                        ("carrier", normalizedScalar(item.carrierKind)),
+                        ("schema", normalizedScalar(item.carrierSchemaVersion)),
+                        ("mirror target", normalizedScalar(item.mirrorTarget)),
+                        ("local store role", normalizedScalar(item.localStoreRole)),
+                        ("device", normalizedScalar(item.deviceId)),
+                        ("thread", firstMeaningfulScalar([
+                            normalizedScalar(item.threadKey),
+                            normalizedScalar(item.threadId)
+                        ]))
+                    ]
+                ),
+                compactSection(
+                    title: "草稿边界",
+                    fields: [
+                        ("draft", normalizedScalar(item.pendingChangeId)),
+                        ("draft status", normalizedScalar(item.pendingChangeStatus)),
+                        ("edit session", normalizedScalar(item.editSessionId)),
+                        ("doc", normalizedScalar(item.docId)),
+                        ("writeback", normalizedScalar(item.writebackRef))
+                    ]
+                )
+            ].compactMap { $0 },
+            requestId: normalizedOptionalScalar(item.requestId),
+            actionLabel: normalizedOptionalScalar(actionURL) == nil ? nil : "打开 Supervisor",
+            actionURL: normalizedOptionalScalar(actionURL),
             includesEmbeddedSkillRecord: false
         )
     }
@@ -278,7 +425,7 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
                 governanceFields.append(("审查级别", level))
             }
             if let tier = governance.effectiveSupervisorTier?.displayName {
-                governanceFields.append(("Supervisor 档位", tier))
+                governanceFields.append(("S-Tier", tier))
             }
             if let depth = governance.effectiveWorkOrderDepth?.displayName {
                 governanceFields.append(("工单深度", depth))
@@ -287,6 +434,13 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
             if let ackStatus = governance.pendingGuidanceAckStatus?.displayName {
                 governanceFields.append(("指导确认", ackStatus))
             }
+            governanceFields.append((
+                "指导摘要",
+                firstMeaningfulScalar([
+                    governanceFieldValue("guidance_summary", in: fullRecord),
+                    normalizedScalar(governance.activeGuidanceSummary)
+                ])
+            ))
             governanceFields.append(("指导引用", firstMeaningfulScalar([
                 normalizedScalar(governance.pendingGuidanceId),
                 normalizedScalar(governance.latestGuidanceId)
@@ -298,7 +452,7 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
             effectiveSkillId: item.skillId
         )
         let blockedSummary = firstMeaningfulScalar([
-            fullRecordFieldValue("blocked_summary", in: fullRecord?.approvalFields ?? []),
+            governanceFieldValue("blocked_summary", in: fullRecord),
             XTGuardrailMessagePresentation.blockedSummary(
                 tool: item.tool,
                 toolLabel: displayToolName(item.toolName, tool: item.tool),
@@ -310,8 +464,24 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
             ) ?? ""
         ])
         let governanceTruth = firstMeaningfulScalar([
-            fullRecordFieldValue("governance_truth", in: fullRecord?.governanceFields ?? []),
-            fullRecordFieldValue("governance_truth", in: fullRecord?.approvalFields ?? [])
+            governanceFieldValue("governance_truth", in: fullRecord),
+            governanceTruthText(from: item.governance)
+        ])
+        let policySource = firstMeaningfulScalar([
+            governanceFieldValue("policy_source", in: fullRecord),
+            normalizedScalar(item.policySource)
+        ])
+        let policyReason = firstMeaningfulScalar([
+            governanceFieldValue("policy_reason", in: fullRecord),
+            normalizedScalar(item.policyReason)
+        ])
+        let governanceReason = firstMeaningfulScalar([
+            governanceFieldValue("governance_reason", in: fullRecord),
+            SupervisorSkillActivityPresentation.governanceReasonText(for: item) ?? ""
+        ])
+        let repairAction = firstMeaningfulScalar([
+            governanceFieldValue("repair_action", in: fullRecord),
+            repairActionSummary(for: item)
         ])
         let routingNarrative = SupervisorSkillActivityPresentation.routingNarrative(
             requestedSkillId: item.requestedSkillId,
@@ -320,6 +490,32 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
             routingReasonCode: item.record.routingReasonCode,
             routingExplanation: item.record.routingExplanation
         ) ?? ""
+        let governedSummary = firstMeaningfulScalar([
+            SupervisorSkillActivityPresentation.governedShortSummary(for: item) ?? "",
+            SupervisorSkillActivityPresentation.routingSummary(
+                requestedSkillId: item.requestedSkillId,
+                effectiveSkillId: item.skillId,
+                payload: item.record.payload,
+                routingReasonCode: item.record.routingReasonCode,
+                routingExplanation: item.record.routingExplanation
+            ) ?? ""
+        ])
+        var governedFields = governedContextFields(
+            from: SupervisorSkillActivityPresentation.governedApprovalContextLines(
+                requestID: item.requestId,
+                skillID: item.skillId,
+                requestedSkillID: item.requestedSkillId,
+                toolName: item.toolName,
+                status: item.status,
+                deltaApproval: item.record.deltaApproval,
+                readiness: item.record.readiness,
+                hubStateDirPath: item.record.hubStateDirPath
+            )
+        )
+        if normalizedOptionalScalar(item.record.hubStateDirPath) != nil,
+           !governedFields.contains(where: { $0.0 == "恢复上下文" }) {
+            governedFields.append(("恢复上下文", "已保存 Hub 执行上下文，可在批准后继续恢复执行。"))
+        }
 
         return SupervisorAuditDrillDownPresentation(
             id: item.id,
@@ -355,7 +551,8 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
                 compactSection(
                     title: "执行",
                     fields: [
-                        ("路由", normalizedScalar(SupervisorSkillActivityPresentation.routingLine(for: item) ?? "")),
+                        ("路由", governedSummary),
+                    ] + governedFields + [
                         ("路由说明", routingNarrative),
                         ("路由判定", normalizedScalar(
                             SupervisorSkillActivityPresentation.routingReasonText(
@@ -369,9 +566,11 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
                         ("授权", normalizedScalar(item.grantId)),
                         ("结果", normalizedScalar(item.resultSummary)),
                         ("拒绝码", normalizedScalar(item.denyCode)),
-                        ("策略来源", normalizedScalar(item.policySource)),
-                        ("策略原因", normalizedScalar(item.policyReason)),
+                        ("策略来源", policySource),
+                        ("策略原因", policyReason),
+                        ("治理原因", governanceReason),
                         ("阻塞说明", blockedSummary),
+                        ("修复动作", repairAction),
                         ("证据引用", normalizedScalar(item.resultEvidenceRef))
                     ]
                 ),
@@ -396,12 +595,12 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
     ) -> SupervisorAuditDrillDownPresentation {
         let requestSummary = record.requestMetadata.first?.value ?? ""
         let resultSummary = record.resultFields.first?.value ?? ""
-        let governanceTruth = firstMeaningfulScalar([
-            fullRecordFieldValue("governance_truth", in: record.governanceFields),
-            fullRecordFieldValue("governance_truth", in: record.approvalFields)
-        ])
-        let blockedSummary = fullRecordFieldValue("blocked_summary", in: record.approvalFields)
-        let policyReason = fullRecordFieldValue("policy_reason", in: record.approvalFields)
+        let governanceTruth = governanceFieldValue("governance_truth", in: record)
+        let blockedSummary = governanceFieldValue("blocked_summary", in: record)
+        let policySource = governanceFieldValue("policy_source", in: record)
+        let policyReason = governanceFieldValue("policy_reason", in: record)
+        let governanceReason = governanceFieldValue("governance_reason", in: record)
+        let repairAction = governanceFieldValue("repair_action", in: record)
         let preferredAction = preferredUIReviewAction(
             projectId: projectId,
             fallbackAction: nil,
@@ -436,9 +635,12 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
                 compactSection(
                     title: "治理",
                     fields: [
-                        ("治理真相", governanceTruth),
+                        ("策略来源", policySource),
+                        ("策略原因", policyReason),
+                        ("治理原因", governanceReason),
                         ("阻塞说明", blockedSummary),
-                        ("策略原因", policyReason)
+                        ("治理真相", governanceTruth),
+                        ("修复动作", repairAction)
                     ]
                 )
             ].compactMap { $0 },
@@ -476,6 +678,7 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
         )
         let relatedSkillLabel = relatedSkillActivity.map {
             let skillLabel = firstMeaningfulScalar([
+                SupervisorSkillActivityPresentation.governedShortSummary(for: $0) ?? "",
                 SupervisorSkillActivityPresentation.routingSummary(
                     requestedSkillId: $0.requestedSkillId,
                     effectiveSkillId: $0.skillId,
@@ -493,7 +696,7 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
             .joined(separator: " · ")
         } ?? ""
         let blockedSummary = firstMeaningfulScalar([
-            fullRecordFieldValue("blocked_summary", in: fullRecord?.approvalFields ?? []),
+            governanceFieldValue("blocked_summary", in: fullRecord),
             relatedSkillActivity.flatMap {
                 XTGuardrailMessagePresentation.blockedSummary(
                     tool: $0.tool,
@@ -507,12 +710,26 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
             } ?? ""
         ])
         let governanceTruth = firstMeaningfulScalar([
-            fullRecordFieldValue("governance_truth", in: fullRecord?.governanceFields ?? []),
-            fullRecordFieldValue("governance_truth", in: fullRecord?.approvalFields ?? [])
+            governanceFieldValue("governance_truth", in: fullRecord),
+            relatedSkillActivity.map { governanceTruthText(from: $0.governance) } ?? ""
+        ])
+        let policySource = firstMeaningfulScalar([
+            governanceFieldValue("policy_source", in: fullRecord),
+            normalizedScalar(relatedSkillActivity?.policySource ?? "")
         ])
         let policyReason = firstMeaningfulScalar([
-            fullRecordFieldValue("policy_reason", in: fullRecord?.approvalFields ?? []),
+            governanceFieldValue("policy_reason", in: fullRecord),
             relatedSkillActivity?.policyReason ?? ""
+        ])
+        let governanceReason = firstMeaningfulScalar([
+            governanceFieldValue("governance_reason", in: fullRecord),
+            relatedSkillActivity.flatMap {
+                SupervisorSkillActivityPresentation.governanceReasonText(for: $0)
+            } ?? ""
+        ])
+        let repairAction = firstMeaningfulScalar([
+            governanceFieldValue("repair_action", in: fullRecord),
+            relatedSkillActivity.flatMap { repairActionSummary(for: $0) } ?? ""
         ])
 
         return SupervisorAuditDrillDownPresentation(
@@ -551,9 +768,12 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
                         ("结果摘要", normalizedScalar(activity.resultSummary)),
                         ("策略", normalizedScalar(activity.policySummary)),
                         ("关联技能", relatedSkillLabel),
+                        ("策略来源", policySource),
+                        ("策略原因", policyReason),
+                        ("治理原因", governanceReason),
                         ("阻塞说明", blockedSummary),
                         ("治理真相", governanceTruth),
-                        ("策略原因", policyReason)
+                        ("修复动作", repairAction)
                     ]
                 ),
                 uiReviewEvidenceSection(fullRecord)
@@ -579,13 +799,61 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
         return Section(title: title, fields: filtered)
     }
 
+    private static func governanceFieldValue(
+        _ label: String,
+        in record: SupervisorSkillFullRecord?
+    ) -> String {
+        guard let record else { return "" }
+        return firstMeaningfulScalar([
+            fullRecordFieldValue(label, in: record.governanceFields),
+            fullRecordFieldValue(label, in: record.approvalFields)
+        ])
+    }
+
     private static func fullRecordFieldValue(
         _ label: String,
         in fields: [ProjectSkillRecordField]
     ) -> String {
-        fields.first(where: {
+        let value = fields.first(where: {
             $0.label.caseInsensitiveCompare(label) == .orderedSame
         })?.value ?? ""
+        if label.caseInsensitiveCompare("governance_truth") == .orderedSame {
+            return XTGovernanceTruthPresentation.displayText(value)
+        }
+        return value
+    }
+
+    private static func governanceTruthText(
+        from governance: SupervisorManager.SupervisorRecentSkillActivity.GovernanceSummary?
+    ) -> String {
+        guard let governance,
+              let summary = XTGovernanceTruthPresentation.effectiveTierSummary(
+                  configuredExecutionTier: governance.configuredExecutionTier?.rawValue,
+                  effectiveExecutionTier: governance.effectiveExecutionTier?.rawValue,
+                  configuredSupervisorTier: governance.configuredSupervisorTier?.rawValue,
+                  effectiveSupervisorTier: governance.effectiveSupervisorTier?.rawValue,
+                  reviewPolicyMode: governance.reviewPolicyMode?.rawValue,
+                  progressHeartbeatSeconds: governance.progressHeartbeatSeconds,
+                  reviewPulseSeconds: governance.reviewPulseSeconds,
+                  brainstormReviewSeconds: governance.brainstormReviewSeconds,
+                  compatSource: governance.compatSource?.rawValue
+              ) else {
+            return ""
+        }
+        return XTGovernanceTruthPresentation.displayText(summary)
+    }
+
+    private static func repairActionSummary(
+        for item: SupervisorManager.SupervisorRecentSkillActivity
+    ) -> String {
+        guard let repairHint = XTGuardrailMessagePresentation.repairHint(
+            denyCode: item.denyCode,
+            policySource: item.policySource,
+            policyReason: item.policyReason
+        ) else {
+            return ""
+        }
+        return "\(repairHint.buttonTitle)：\(repairHint.helpText)"
     }
 
     private static func skillIdentityFields(
@@ -609,6 +877,157 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
         ]
     }
 
+    private static func pendingHubGrantGovernedFields(
+        _ relatedSkillActivity: SupervisorManager.SupervisorRecentSkillActivity?
+    ) -> [(String, String)] {
+        guard let relatedSkillActivity else { return [] }
+
+        let activityItem = SupervisorSkillActivityPresentation.governedSkillPresentationItem(
+            requestID: relatedSkillActivity.requestId,
+            skillID: relatedSkillActivity.skillId,
+            requestedSkillID: normalizedOptionalScalar(relatedSkillActivity.requestedSkillId),
+            toolName: relatedSkillActivity.toolName,
+            status: relatedSkillActivity.status,
+            deltaApproval: relatedSkillActivity.record.deltaApproval,
+            readiness: relatedSkillActivity.record.readiness,
+            hubStateDirPath: relatedSkillActivity.record.hubStateDirPath
+        )
+
+        let deltaLines = XTPendingApprovalPresentation.approvalProfileDeltaLines(
+            for: activityItem
+        )
+        let readiness = relatedSkillActivity.record.readiness
+        var fields: [(String, String)] = []
+
+        if let headline = preferredGovernedDeltaHeadline(from: deltaLines) {
+            fields.append(("能力增量", headline))
+        }
+        if let executionReadiness = normalizedOptionalScalar(activityItem.executionReadiness) {
+            fields.append((
+                "执行就绪",
+                XTPendingApprovalPresentation.displayExecutionReadiness(executionReadiness)
+            ))
+        }
+        if let grantFloor = normalizedOptionalScalar(activityItem.grantFloor) {
+            fields.append((
+                "授权门槛",
+                XTPendingApprovalPresentation.displayGrantFloor(grantFloor)
+            ))
+        }
+        if let approvalFloor = normalizedOptionalScalar(activityItem.approvalFloor) {
+            fields.append((
+                "审批门槛",
+                XTPendingApprovalPresentation.displayApprovalFloor(approvalFloor)
+            ))
+        }
+        if !activityItem.intentFamilies.isEmpty {
+            fields.append((
+                "意图族",
+                XTPendingApprovalPresentation.displayIdentifierList(activityItem.intentFamilies)
+            ))
+        }
+        if !activityItem.capabilityFamilies.isEmpty {
+            fields.append((
+                "能力族",
+                XTPendingApprovalPresentation.displayCapabilityFamilies(activityItem.capabilityFamilies)
+            ))
+        }
+        if !activityItem.capabilityProfiles.isEmpty {
+            fields.append((
+                "能力档位",
+                XTPendingApprovalPresentation.displayIdentifierList(activityItem.capabilityProfiles)
+            ))
+        }
+        if let runtimeSurfaces = readiness?.requiredRuntimeSurfaces,
+           !runtimeSurfaces.isEmpty {
+            fields.append((
+                "运行面",
+                XTPendingApprovalPresentation.displayRuntimeSurfaceList(runtimeSurfaces)
+            ))
+        }
+        if let unblockActions = readiness?.unblockActions,
+           !unblockActions.isEmpty {
+            fields.append((
+                "解阻动作",
+                XTPendingApprovalPresentation.displayUnblockActionList(unblockActions)
+            ))
+        }
+        if normalizedOptionalScalar(activityItem.hubStateDirPath) != nil {
+            fields.append(("恢复上下文", "已保存 Hub 执行上下文，可在批准后继续恢复执行。"))
+        }
+
+        return fields
+    }
+
+    private static func pendingHubGrantGovernedDetail(
+        from fields: [(String, String)]
+    ) -> String {
+        let preferredLabels = ["能力增量", "执行就绪", "运行面", "解阻动作"]
+        for label in preferredLabels {
+            if let field = fields.first(where: { $0.0 == label }) {
+                return "\(field.0)：\(field.1)"
+            }
+        }
+        guard let field = fields.first else { return "" }
+        return "\(field.0)：\(field.1)"
+    }
+
+    private static func governedContextFields(
+        from lines: [String]
+    ) -> [(String, String)] {
+        var fields: [(String, String)] = []
+        var seenLabels = Set<String>()
+
+        for line in lines {
+            let normalizedLine = normalizedScalar(line).replacingOccurrences(of: " · ", with: "；")
+            for segment in normalizedLine.split(separator: "；") {
+                let normalizedSegment = normalizedScalar(String(segment))
+                guard let separatorIndex = normalizedSegment.firstIndex(of: "：") else {
+                    continue
+                }
+                let label = normalizedScalar(String(normalizedSegment[..<separatorIndex]))
+                let value = normalizedScalar(
+                    String(normalizedSegment[normalizedSegment.index(after: separatorIndex)...])
+                )
+                guard !label.isEmpty,
+                      !value.isEmpty,
+                      seenLabels.insert(label).inserted else {
+                    continue
+                }
+                fields.append((label, value))
+            }
+        }
+
+        return fields
+    }
+
+    private static func preferredGovernedDeltaHeadline(
+        from lines: [String]
+    ) -> String? {
+        lines.first(where: { $0.hasPrefix("新增放开：") })
+            ?? lines.first(where: { $0.hasPrefix("本次请求：") })
+            ?? lines.first(where: { $0.hasPrefix("当前可直接运行：") })
+    }
+
+    private static func candidateReviewProjectIDs(
+        _ item: HubIPCClient.SupervisorCandidateReviewItem
+    ) -> [String] {
+        var ids = [normalizedScalar(item.projectId)] + item.projectIds.map(normalizedScalar)
+        ids = ids.filter { !$0.isEmpty }
+        var deduped: [String] = []
+        var seen = Set<String>()
+        for id in ids where seen.insert(id).inserted {
+            deduped.append(id)
+        }
+        return deduped
+    }
+
+    private static func candidateReviewFocusRequestID(
+        _ item: HubIPCClient.SupervisorCandidateReviewItem
+    ) -> String? {
+        normalizedOptionalScalar(item.requestId) ?? normalizedOptionalScalar(item.reviewId)
+    }
+
     private static func officialTopBlockersSection(
         _ blockers: [AXOfficialSkillBlockerSummaryItem]
     ) -> Section? {
@@ -620,6 +1039,64 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
             return (label, value)
         }
         return compactSection(title: "重点包问题", fields: fields)
+    }
+
+    private static func officialRepairSection(
+        _ blocker: AXOfficialSkillBlockerSummaryItem?,
+        actionLabel: String?
+    ) -> Section? {
+        guard let blocker else { return nil }
+        let unblockActions = XTOfficialSkillsBlockerActionSupport.unblockActionLabels(for: blocker)
+        return compactSection(
+            title: "修复优先级",
+            fields: [
+                ("首要 blocker", officialBlockerFieldLabel(blocker)),
+                ("当前判断", XTOfficialSkillsBlockerActionSupport.headline(for: blocker)),
+                ("阻塞原因", normalizedScalar(blocker.whyNotRunnable)),
+                ("推荐动作", normalizedScalar(actionLabel ?? "")),
+                ("解阻动作", unblockActions.joined(separator: "、"))
+            ]
+        )
+    }
+
+    private static func officialSummary(
+        statusLine: String,
+        blockers: [AXOfficialSkillBlockerSummaryItem],
+        primaryBlocker: AXOfficialSkillBlockerSummaryItem?
+    ) -> String {
+        if let primaryBlocker {
+            let subject = officialBlockerFieldLabel(primaryBlocker)
+            let headline = XTOfficialSkillsBlockerActionSupport.headline(for: primaryBlocker)
+            if !subject.isEmpty {
+                return "\(subject)：\(headline)"
+            }
+            return headline
+        }
+        let normalizedStatus = normalizedScalar(statusLine)
+        if !normalizedStatus.isEmpty {
+            return normalizedStatus
+        }
+        if !blockers.isEmpty {
+            return "官方技能通道存在待处理 blocker。"
+        }
+        return "当前还没有官方技能状态快照。"
+    }
+
+    private static func officialRepairDetail(
+        blocker: AXOfficialSkillBlockerSummaryItem?,
+        actionLabel: String?
+    ) -> String {
+        guard let blocker else { return "" }
+        let whyNot = normalizedScalar(blocker.whyNotRunnable)
+        let action = normalizedScalar(actionLabel ?? "")
+        let unblock = XTOfficialSkillsBlockerActionSupport.unblockActionLabels(for: blocker)
+            .joined(separator: "、")
+        return firstMeaningfulScalar([
+            [whyNot.isEmpty ? nil : "卡点：\(whyNot)", action.isEmpty ? nil : "下一步：\(action)"]
+                .compactMap { $0 }
+                .joined(separator: " · "),
+            unblock.isEmpty ? "" : "解阻动作：\(unblock)"
+        ])
     }
 
     private static func uiReviewEvidenceSection(
@@ -652,7 +1129,7 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
         var fields: [(String, String)] = [
             ("指导合同", contract.kindText),
             ("指导摘要", contract.summaryText),
-            ("安全下一步", contract.nextSafeActionText)
+            ("安全下一步", contract.userVisibleNextSafeActionText)
         ]
 
         if let uiReview = contract.uiReviewRepair {
@@ -667,7 +1144,7 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
             fields.append(("主要阻塞", normalizedScalar(contract.primaryBlocker)))
         }
 
-        if let actions = normalizedOptionalScalar(contract.recommendedActionsText) {
+        if let actions = normalizedOptionalScalar(contract.userVisibleRecommendedActionsText) {
             fields.append(("建议动作", actions))
         }
 
@@ -881,6 +1358,11 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
         let subtitle = normalizedScalar(blocker.subtitle)
         let summary = normalizedScalar(blocker.summaryLine)
         let timeline = normalizedScalar(blocker.timelineLine)
+        let whyNot = normalizedScalar(blocker.whyNotRunnable)
+        let repairHeadline = XTOfficialSkillsBlockerActionSupport.headline(for: blocker)
+        let actionLabel = normalizedScalar(XTOfficialSkillsBlockerActionSupport.action(for: blocker)?.label ?? "")
+        let unblock = XTOfficialSkillsBlockerActionSupport.unblockActionLabels(for: blocker)
+            .joined(separator: "、")
 
         var parts: [String] = []
         if !state.isEmpty {
@@ -889,6 +1371,18 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
         if !subtitle.isEmpty,
            subtitle.caseInsensitiveCompare(normalizedScalar(blocker.title)) != .orderedSame {
             parts.append("技能=\(subtitle)")
+        }
+        if !repairHeadline.isEmpty {
+            parts.append("判断=\(repairHeadline)")
+        }
+        if !whyNot.isEmpty {
+            parts.append("卡点=\(whyNot)")
+        }
+        if !actionLabel.isEmpty {
+            parts.append("下一步=\(actionLabel)")
+        }
+        if !unblock.isEmpty {
+            parts.append("解阻=\(unblock)")
         }
         if !summary.isEmpty {
             parts.append(summary)
@@ -899,7 +1393,17 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
         return parts.joined(separator: " | ")
     }
 
-    private static func officialTone(for statusLine: String) -> Tone {
+    private static func officialTone(
+        for statusLine: String,
+        blockers: [AXOfficialSkillBlockerSummaryItem]
+    ) -> Tone {
+        if blockers.contains(where: { officialBlockerSeverity($0) == .critical }) {
+            return .critical
+        }
+        if blockers.contains(where: { officialBlockerSeverity($0) == .attention }) {
+            return .attention
+        }
+
         let normalized = statusLine.lowercased()
         if normalized.contains("official failed") || normalized.contains("official missing") {
             return .critical
@@ -910,8 +1414,11 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
         return .neutral
     }
 
-    private static func officialBadge(for statusLine: String) -> String {
-        switch officialTone(for: statusLine) {
+    private static func officialBadge(
+        for statusLine: String,
+        blockers: [AXOfficialSkillBlockerSummaryItem]
+    ) -> String {
+        switch officialTone(for: statusLine, blockers: blockers) {
         case .critical:
             return "降级"
         case .success:
@@ -920,6 +1427,21 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
             return "关注"
         case .neutral:
             return "观察"
+        }
+    }
+
+    private static func officialBlockerSeverity(
+        _ blocker: AXOfficialSkillBlockerSummaryItem
+    ) -> Tone {
+        switch normalizedScalar(blocker.stateLabel)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: " ") {
+        case "blocked", "revoked":
+            return .critical
+        case "degraded", "not installed", "not supported":
+            return .attention
+        default:
+            return .neutral
         }
     }
 
@@ -1027,6 +1549,8 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
             return "checklist"
         case .some(.memory_snapshot):
             return "memorychip"
+        case .some(.run_local_task):
+            return "cpu"
         default:
             return "hand.raised.fill"
         }
@@ -1074,10 +1598,14 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
             return "搜索"
         case .skills_search:
             return "搜索技能"
+        case .skills_pin:
+            return "更新技能可用性"
         case .summarize:
             return "总结内容"
         case .supervisorVoicePlayback:
             return "Supervisor 语音"
+        case .run_local_task:
+            return "本地模型任务"
         case .web_fetch:
             return "抓取网页"
         case .web_search:

@@ -123,6 +123,13 @@ struct SupervisorCrossLinkStoreTests {
         #expect(localMemory.contains("[CROSS_LINK_REFS]"))
         #expect(localMemory.contains("person_waiting_on_project"))
         #expect(localMemory.contains("Alex 在等亮亮 demo"))
+
+        let snapshot = try #require(
+            await manager.buildSupervisorMemoryAssemblySnapshotForTesting("Alex 还在等什么？")
+        )
+        let resolution = try #require(snapshot.memoryAssemblyResolution)
+        #expect(snapshot.servingObjectContract.contains("cross_link_refs"))
+        #expect(resolution.selectedServingObjects.contains("cross_link_refs"))
     }
 
     private func makeProject(id: String, name: String) -> AXProjectEntry {

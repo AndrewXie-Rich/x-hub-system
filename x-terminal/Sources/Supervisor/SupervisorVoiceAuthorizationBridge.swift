@@ -475,32 +475,48 @@ struct SupervisorVoiceAuthorizationBridge {
     private func nextActionForDenyCode(_ denyCode: String?) -> String {
         switch normalized(denyCode) {
         case "voice_only_forbidden":
-            return "先完成要求的 mobile confirmation，再 retry verify"
+            return "当前风险档禁止纯语音放行；先完成配对手机确认，再重新发起新的 challenge"
         case "mobile_confirmation_required":
-            return "先在配对移动端完成确认，再 retry verify"
+            return "当前 challenge 要求先完成 mobile confirmation；先在配对手机确认，再重新发起新的 challenge"
         case "challenge_missing":
-            return "先重新发起一个 challenge，再 retry verify"
+            return "这次 spoken response 没对上有效 challenge；请重新发起新的 challenge，不要复用旧口令"
         case "semantic_ambiguous":
-            return "把授权短语说得更清楚一些，然后 retry verify"
+            return "这次 challenge 已被拒绝；请更清楚地重复授权短语，并重新发起新的 challenge"
         case "device_not_bound":
-            return "先重新绑定预期语音设备，再 retry verify"
+            return "当前回复不是来自绑定设备；切回预期语音设备后，重新发起新的 challenge"
         case "challenge_expired":
-            return "当前 challenge 已过期，请重新发起 challenge 后再 retry verify"
+            return "当前 challenge 已过期；请重新发起新的 challenge，不要复用旧口令"
         case "replay_detected":
-            return "请重新发起 challenge，并使用新的 verify nonce"
+            return "当前 challenge 已被视为 replay；请重新发起 challenge，并使用新的 verify nonce"
         default:
-            return "这次授权已拒绝；先检查 deny_code，满足前置条件后再 retry verify"
+            return "这次授权已拒绝；先修复 deny_code 对应前置条件，再重新发起新的 challenge"
         }
     }
 
     private func nextActionForFailClosed(_ reasonCode: String?) -> String {
         switch normalized(reasonCode) {
         case "hub_env_missing":
-            return "先 repair Hub pairing/runtime profile，再重试 voice authorization"
+            return "Hub pairing/runtime profile 缺失；先修复 Hub pairing，再重新发起 voice authorization"
         case "voice_grant_file_ipc_not_supported":
-            return "先把 XT 切到 remote/grpc Hub transport；file IPC 不能处理 voice authorization"
+            return "当前 file IPC 不支持 voice authorization；先切到 remote/grpc Hub transport，再重新发起 challenge"
         case "node_missing":
-            return "先修复客户端运行时依赖，再重试 voice authorization"
+            return "本地运行时依赖缺失；先修复客户端依赖，再重新发起 voice authorization"
+        case "challenge_expired":
+            return "旧 challenge 已过期并已清理；不要复用旧口令，请重新发起新的 challenge"
+        case "challenge_missing":
+            return "当前 challenge 不存在或上下文已失效；请重新发起新的 challenge"
+        case "replay_detected":
+            return "当前 challenge 已进入 replay/fail-closed 处理；请清理旧状态后，用新的 challenge 和 verify nonce 重新开始"
+        case "mobile_confirmation_missing":
+            return "当前 challenge 仍保留；先完成配对手机确认，再用当前 challenge 继续核验"
+        case "voice_authorization_not_started":
+            return "当前没有活动中的语音挑战；请先发起新的 voice authorization"
+        case "request_id_empty", "template_id_empty", "challenge_id_empty", "verify_nonce_empty":
+            return "语音授权上下文不完整；请清理当前状态并重新发起新的 challenge"
+        case "user_cancelled":
+            return "这次 challenge 已取消；如果还要继续，请重新发起新的 voice authorization"
+        case "remote_voice_grant_challenge_failed", "remote_voice_grant_verify_failed":
+            return "远端 Hub 语音授权路由失败；先修复 pairing/transport，再重新发起新的 challenge"
         default:
             return "先继续阻塞受控动作，并优先修复上游 voice authorization route"
         }

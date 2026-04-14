@@ -1,6 +1,10 @@
+import Combine
 import SwiftUI
 
 struct SupervisorPortfolioBoardSection: View {
+    @Environment(\.openURL) private var openURL
+    @ObservedObject var supervisorManager: SupervisorManager
+
     let presentation: SupervisorPortfolioBoardPresentation
     let activeDrillDownPresentation: SupervisorProjectDrillDownPresentation?
     @Binding var selectedDrillDownScope: SupervisorProjectDrillDownScope
@@ -9,6 +13,11 @@ struct SupervisorPortfolioBoardSection: View {
     let onOpenProjectGovernance: (String, XTProjectGovernanceDestination) -> Void
     let onOpenProjectUIReview: (String) -> Void
     let onRefreshProjectUIReview: (String) -> Void
+
+    @State private var expandedActionEventIDs: Set<String> = []
+    @State private var actionFeedFeedbackMessage: String = ""
+    @State private var actionFeedFeedbackTone: SupervisorHeaderControlTone = .accent
+    @State private var actionFeedClock = Date()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -40,6 +49,24 @@ struct SupervisorPortfolioBoardSection: View {
                         }
                     }
                 }
+            }
+
+            if let reviewMemorySummary = presentation.overview.reviewMemorySummary {
+                PortfolioReviewMemorySummaryCard(summary: reviewMemorySummary)
+            }
+
+            if let prioritySummaryLine = presentation.overview.prioritySummaryLine {
+                Text(prioritySummaryLine)
+                    .font(.caption)
+                    .foregroundStyle(toneColor(.accent))
+                    .lineLimit(1)
+            }
+
+            if let priorityExplanationLine = presentation.overview.priorityExplanationLine {
+                Text(priorityExplanationLine)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
             }
 
             if let projectNotificationLine = presentation.overview.projectNotificationLine {
@@ -178,11 +205,43 @@ struct SupervisorPortfolioBoardSection: View {
                 }
 
                 if let recentActionFeedTitle = presentation.recentActionFeedTitle {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(recentActionFeedTitle)
-                            .font(.caption.weight(.semibold))
-                        ForEach(presentation.actionEventRows) { event in
-                            PortfolioActionEventRow(event: event)
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(recentActionFeedTitle)
+                                .font(.caption.weight(.semibold))
+                            Spacer()
+                            if let actionFeedStatusLine {
+                                Text(actionFeedStatusLine)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+
+                        if !actionFeedFeedbackMessage.isEmpty {
+                            Text(actionFeedFeedbackMessage)
+                                .font(.caption2)
+                                .foregroundStyle(toneColor(actionFeedFeedbackTone))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        if visibleActionEvents.isEmpty {
+                            Text(actionFeedEmptyStateText)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            ForEach(visibleActionEvents) { event in
+                                PortfolioActionEventRow(
+                                    event: event,
+                                    isUnread: actionEventIsUnread(event),
+                                    isExpanded: expandedActionEventIDs.contains(event.id),
+                                    onToggleDetails: { toggleActionEventDetails(event) },
+                                    onSnooze: { snoozeActionEvent(event) },
+                                    onMarkRead: { markActionEventRead(event) },
+                                    onOpenDestination: { openActionEventDestination(event) }
+                                )
+                            }
                         }
                     }
                 }
@@ -191,6 +250,18 @@ struct SupervisorPortfolioBoardSection: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .background(Color(NSColor.windowBackgroundColor))
+        .onReceive(
+            Timer.publish(every: 60, on: .main, in: .common).autoconnect()
+        ) { now in
+            actionFeedClock = now
+            reconcileActionFeedState(now: now)
+        }
+        .onAppear {
+            reconcileActionFeedState(now: actionFeedClock)
+        }
+        .onChange(of: actionFeedEventFingerprint) { _ in
+            reconcileActionFeedState(now: actionFeedClock)
+        }
     }
 
     private func toneColor(_ tone: SupervisorHeaderControlTone) -> Color {
@@ -206,6 +277,162 @@ struct SupervisorPortfolioBoardSection: View {
         case .danger:
             return .red
         }
+    }
+
+    private var visibleActionEvents: [SupervisorPortfolioActionEventPresentation] {
+        presentation.actionEventRows.filter { event in
+            supervisorManager.projectNotificationEventSnoozedUntil(
+                event.id,
+                now: actionFeedClock
+            ) == nil
+        }
+    }
+
+    private var snoozedActionEventCount: Int {
+        presentation.actionEventRows.reduce(into: 0) { count, event in
+            if supervisorManager.projectNotificationEventSnoozedUntil(
+                event.id,
+                now: actionFeedClock
+            ) != nil {
+                count += 1
+            }
+        }
+    }
+
+    private var actionFeedEventFingerprint: String {
+        presentation.actionEventRows.map(\.id).joined(separator: "|")
+    }
+
+    private var actionFeedStatusLine: String? {
+        guard !presentation.actionEventRows.isEmpty else { return nil }
+        let unreadCount = visibleActionEvents.filter(actionEventIsUnread(_:)).count
+        let readCount = max(0, visibleActionEvents.count - unreadCount)
+
+        var parts: [String] = []
+        if unreadCount > 0 {
+            parts.append("未读 \(unreadCount)")
+        }
+        if readCount > 0 {
+            parts.append("已读 \(readCount)")
+        }
+        if snoozedActionEventCount > 0 {
+            parts.append("稍后提醒 \(snoozedActionEventCount)")
+        }
+        if parts.isEmpty {
+            parts.append("当前无可见提醒")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var actionFeedEmptyStateText: String {
+        if snoozedActionEventCount > 0 {
+            return "当前提醒都被你先延后了；到点后会重新回到这里。"
+        }
+        return "最近没有新的配对或项目提醒。"
+    }
+
+    private func actionEventIsUnread(
+        _ event: SupervisorPortfolioActionEventPresentation
+    ) -> Bool {
+        supervisorManager.projectNotificationEventIsUnread(event)
+    }
+
+    private func toggleActionEventDetails(
+        _ event: SupervisorPortfolioActionEventPresentation
+    ) {
+        if expandedActionEventIDs.contains(event.id) {
+            expandedActionEventIDs.remove(event.id)
+        } else {
+            expandedActionEventIDs.insert(event.id)
+        }
+    }
+
+    private func markActionEventRead(
+        _ event: SupervisorPortfolioActionEventPresentation
+    ) {
+        supervisorManager.markProjectNotificationEventRead(
+            event.id,
+            now: actionFeedClock
+        )
+        actionFeedFeedbackMessage = "已将“\(event.title)”标记为已读。"
+        actionFeedFeedbackTone = .accent
+    }
+
+    private func snoozeActionEvent(
+        _ event: SupervisorPortfolioActionEventPresentation
+    ) {
+        let until = actionFeedClock.addingTimeInterval(60 * 60)
+        supervisorManager.snoozeProjectNotificationEvent(
+            event.id,
+            until: until,
+            now: actionFeedClock
+        )
+        expandedActionEventIDs.remove(event.id)
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
+        actionFeedFeedbackMessage = "“\(event.title)”已延后到 \(formatter.string(from: until)) 再提醒。"
+        actionFeedFeedbackTone = .warning
+    }
+
+    private func openActionEventDestination(
+        _ event: SupervisorPortfolioActionEventPresentation
+    ) {
+        switch event.destination {
+        case .projectDetail(let projectId):
+            onOpenProjectDetail(projectId)
+            supervisorManager.markProjectNotificationEventRead(
+                event.id,
+                now: actionFeedClock
+            )
+        case .openURL(let rawURL):
+            guard let url = URL(string: rawURL) else { return }
+            openURL(url)
+            supervisorManager.markProjectNotificationEventRead(
+                event.id,
+                now: actionFeedClock
+            )
+        case .none:
+            return
+        }
+    }
+
+    private func reconcileActionFeedState(
+        now: Date = Date()
+    ) {
+        supervisorManager.reconcileProjectNotificationCenterState(
+            activeEventIDs: presentation.actionEventRows.map(\.id),
+            now: now
+        )
+    }
+}
+
+private struct PortfolioReviewMemorySummaryCard: View {
+    let summary: SupervisorMemoryAssemblyCompactSummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: "brain.head.profile")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text(summary.headlineText)
+                    .font(.caption2.weight(.semibold))
+                    .lineLimit(2)
+                Spacer(minLength: 0)
+            }
+
+            if let detailText = summary.detailText {
+                Text(detailText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
+        .padding(8)
+        .background(Color(NSColor.controlBackgroundColor).opacity(0.45))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .help(summary.helpText)
     }
 }
 
@@ -326,6 +553,7 @@ private struct PortfolioProjectRow: View {
             if let governancePresentation {
                 ProjectGovernanceCompactSummaryView(
                     presentation: governancePresentation,
+                    configuration: .operationalDense,
                     showCallout: true,
                     onExecutionTierTap: { onOpenGovernance(.executionTier) },
                     onSupervisorTierTap: { onOpenGovernance(.supervisorTier) },
@@ -333,6 +561,32 @@ private struct PortfolioProjectRow: View {
                     onStatusTap: { onOpenGovernance(.overview) },
                     onCalloutTap: { onOpenGovernance(.overview) }
                 )
+            }
+
+            if let projectContextCompactSummary {
+                Button {
+                    onOpenGovernance(.overview)
+                } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: "text.line.first.and.arrowtriangle.forward")
+                            .font(.caption2)
+                        Text("Project Context · \(projectContextCompactSummary.headlineText)")
+                            .font(.caption2)
+                            .lineLimit(2)
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundStyle(.secondary)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(projectContextCompactSummary.helpText)
+
+                if let detailText = projectContextCompactSummary.detailText {
+                    Text(detailText)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
             }
 
             if let uiReviewSummaryLine = row.uiReviewSummaryLine {
@@ -348,6 +602,18 @@ private struct PortfolioProjectRow: View {
                     .foregroundStyle(toneColor(row.uiReviewTone ?? .neutral))
                 }
                 .buttonStyle(.plain)
+            }
+
+            if let priorityLine = row.priorityLine {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: "flag.fill")
+                        .font(.caption2)
+                    Text(priorityLine)
+                        .font(.caption2)
+                        .lineLimit(2)
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(toneColor(row.priorityTone ?? .neutral))
             }
 
             Text(row.actionLine)
@@ -381,6 +647,18 @@ private struct PortfolioProjectRow: View {
             projectId: row.id,
             appModel: appModel
         )
+    }
+
+    private var projectContext: AXProjectContext? {
+        appModel.projectContext(for: row.id)
+    }
+
+    private var projectContextCompactSummary: AXProjectContextAssemblyCompactSummary? {
+        guard let projectContext else { return nil }
+        return AXProjectContextAssemblyDiagnosticsStore.doctorSummary(
+            for: projectContext,
+            config: appModel.projectConfigSnapshot(for: projectContext)
+        ).compactSummary
     }
 
     private func toneColor(_ tone: SupervisorHeaderControlTone) -> Color {
@@ -755,30 +1033,139 @@ private enum SupervisorPortfolioGovernanceSurfaceSupport {
 
 private struct PortfolioActionEventRow: View {
     let event: SupervisorPortfolioActionEventPresentation
+    let isUnread: Bool
+    let isExpanded: Bool
+    let onToggleDetails: () -> Void
+    let onSnooze: () -> Void
+    let onMarkRead: () -> Void
+    let onOpenDestination: () -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Circle()
-                .fill(toneColor(event.tone))
-                .frame(width: 8, height: 8)
-                .padding(.top, 4)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
+                Circle()
+                    .fill(toneColor(event.tone))
+                    .frame(width: 8, height: 8)
+                    .padding(.top, 4)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(event.title)
-                    .font(.caption2.weight(.semibold))
-                Text(event.summaryLine)
-                    .font(.caption2)
-                    .lineLimit(2)
-                Text(event.nextLine)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                Text(event.whyLine)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(event.sourceLabel)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(toneColor(event.tone))
+                            .lineLimit(1)
+
+                        if let scopeLine = event.scopeLine {
+                            Text(scopeLine)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+
+                        Spacer(minLength: 0)
+
+                        Text(isUnread ? "未读" : "已读")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(isUnread ? toneColor(event.tone) : .secondary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(
+                                Capsule()
+                                    .fill(
+                                        isUnread
+                                            ? toneColor(event.tone).opacity(0.14)
+                                            : Color(NSColor.controlBackgroundColor)
+                                    )
+                            )
+                    }
+
+                    Text(event.title)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(2)
+
+                    Text(event.summaryLine)
+                        .font(.caption2)
+                        .lineLimit(2)
+
+                    Text(event.nextLine)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+
+                    Text(event.whyLine)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+
+            XTUIReviewActionStrip(
+                items: actionItems,
+                controlSize: .small,
+                font: .caption2
+            )
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(event.detailLines.enumerated()), id: \.offset) { entry in
+                        Text(entry.element)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    if event.destination != nil,
+                       let detailActionLabel = event.detailActionLabel {
+                        Button(detailActionLabel, action: onOpenDestination)
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .font(.caption2)
+                    }
+                }
+                .padding(8)
+                .background(Color(NSColor.controlBackgroundColor).opacity(0.45))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
         }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(NSColor.controlBackgroundColor).opacity(isUnread ? 0.6 : 0.45))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(
+                    isUnread ? toneColor(event.tone).opacity(0.28) : Color.clear,
+                    lineWidth: 1
+                )
+        )
+    }
+
+    private var actionItems: [XTUIReviewActionStripItem] {
+        [
+            XTUIReviewActionStripItem(
+                id: "details",
+                title: isExpanded ? "收起明细" : "查看明细",
+                systemImage: "text.justify.left",
+                style: .bordered,
+                action: onToggleDetails
+            ),
+            XTUIReviewActionStripItem(
+                id: "snooze",
+                title: "稍后提醒",
+                systemImage: "clock.arrow.circlepath",
+                style: .bordered,
+                action: onSnooze
+            ),
+            XTUIReviewActionStripItem(
+                id: "mark-read",
+                title: isUnread ? "标记已读" : "已读",
+                systemImage: "checkmark.circle",
+                style: .borderless,
+                isDisabled: !isUnread,
+                action: onMarkRead
+            )
+        ]
     }
 
     private func toneColor(_ tone: SupervisorHeaderControlTone) -> Color {

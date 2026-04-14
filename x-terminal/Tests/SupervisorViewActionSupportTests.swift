@@ -13,28 +13,221 @@ struct SupervisorViewActionSupportTests {
     }
 
     @Test
-    func triggerBigTaskFlowClearsDraftSendsPromptAndRequestsFocus() {
-        let candidate = SupervisorBigTaskCandidate(
-            goal: "搭一个能自动拆工单并持续推进的 Agent 平台",
-            fingerprint: "fp-big-task"
+    func prepareConversationPromptNormalizesTextAndRequestsFocus() {
+        var inputText = "stale draft"
+        var focusRequestCount = 0
+
+        SupervisorViewActionSupport.prepareConversationPrompt(
+            "  创建一个project  \n",
+            setInputText: { inputText = $0 },
+            requestConversationFocus: { focusRequestCount += 1 }
         )
-        var dismissedFingerprint: String?
+
+        #expect(inputText == "创建一个project")
+        #expect(focusRequestCount == 1)
+    }
+
+    @Test
+    func submitConversationPromptSendsMessageClearsDraftAndRequestsFocus() {
         var inputText = "stale draft"
         var sentMessages: [String] = []
         var focusRequestCount = 0
 
-        SupervisorViewActionSupport.triggerBigTaskFlow(
+        SupervisorViewActionSupport.submitConversationPrompt(
+            "  立项 \n",
+            currentInputText: "  立项 \n",
+            setInputText: { inputText = $0 },
+            sendMessage: { sentMessages.append($0) },
+            requestConversationFocus: { focusRequestCount += 1 }
+        )
+
+        #expect(inputText.isEmpty)
+        #expect(sentMessages == ["立项"])
+        #expect(focusRequestCount == 1)
+    }
+
+    @Test
+    func submitConversationPromptPreservesDifferentExistingDraft() {
+        var inputText = "继续整理上面的 blocker 分析"
+        var sentMessages: [String] = []
+        var focusRequestCount = 0
+
+        SupervisorViewActionSupport.submitConversationPrompt(
+            "创建一个project",
+            currentInputText: inputText,
+            setInputText: { inputText = $0 },
+            sendMessage: { sentMessages.append($0) },
+            requestConversationFocus: { focusRequestCount += 1 }
+        )
+
+        #expect(inputText == "继续整理上面的 blocker 分析")
+        #expect(sentMessages == ["创建一个project"])
+        #expect(focusRequestCount == 1)
+    }
+
+    @Test
+    func triggerBigTaskFlowClearsDraftPreparesControlPlaneSendsPromptAndRequestsFocus() async {
+        let candidate = SupervisorBigTaskCandidate(
+            goal: "搭一个能自动拆工单并持续推进的 Agent 平台",
+            fingerprint: "fp-big-task"
+        )
+        let fixture = await buildOneShotControlFixture()
+        let snapshot = OneShotControlPlaneSnapshot(
+            schemaVersion: "xt.one_shot_control_plane_snapshot.v1",
+            normalization: fixture.normalization,
+            planDecision: fixture.planning.decision,
+            seatGovernor: fixture.planning.seatGovernor,
+            runState: fixture.runState,
+            fieldFreeze: .ai1Core
+        )
+        var dismissedFingerprint: String?
+        var inputText = "stale draft"
+        var preparedSubmission: OneShotIntakeSubmission?
+        var sentMessages: [String] = []
+        var focusRequestCount = 0
+
+        await SupervisorViewActionSupport.triggerBigTaskFlow(
             candidate,
             setDismissedFingerprint: { dismissedFingerprint = $0 },
             setInputText: { inputText = $0 },
+            prepareOneShotControlPlane: { submission in
+                preparedSubmission = submission
+                return snapshot
+            },
             sendMessage: { sentMessages.append($0) },
             requestConversationFocus: { focusRequestCount += 1 }
         )
 
         #expect(dismissedFingerprint == candidate.fingerprint)
         #expect(inputText.isEmpty)
-        #expect(sentMessages == [SupervisorBigTaskAssist.prompt(for: candidate)])
+        let expectedSubmission = SupervisorBigTaskAssist.submission(for: candidate)
+        #expect(preparedSubmission?.requestID == expectedSubmission.requestID)
+        #expect(preparedSubmission?.userGoal == expectedSubmission.userGoal)
+        #expect(preparedSubmission?.contextRefs == expectedSubmission.contextRefs)
+        #expect(preparedSubmission?.preferredSplitProfile == expectedSubmission.preferredSplitProfile)
+        #expect(preparedSubmission?.participationMode == expectedSubmission.participationMode)
+        #expect(preparedSubmission?.deliveryMode == expectedSubmission.deliveryMode)
+        #expect(preparedSubmission?.allowAutoLaunch == expectedSubmission.allowAutoLaunch)
+        #expect(preparedSubmission?.auditRef == expectedSubmission.auditRef)
+        #expect(sentMessages == [SupervisorBigTaskAssist.prompt(for: candidate, controlPlane: snapshot)])
         #expect(focusRequestCount == 1)
+    }
+
+    @Test
+    func triggerBigTaskFlowBindsSelectedProjectWhenAvailable() async {
+        let candidate = SupervisorBigTaskCandidate(
+            goal: "继续推进当前项目的大版本改造",
+            fingerprint: "fp-big-task-project"
+        )
+        let project = AXProjectEntry(
+            projectId: "project-alpha",
+            rootPath: "/tmp/project-alpha",
+            displayName: "Alpha",
+            lastOpenedAt: 0,
+            manualOrderIndex: 0,
+            pinned: false,
+            statusDigest: nil,
+            currentStateSummary: nil,
+            nextStepSummary: nil,
+            blockerSummary: nil,
+            lastSummaryAt: nil,
+            lastEventAt: nil
+        )
+        let fixture = await buildOneShotControlFixture()
+        let snapshot = OneShotControlPlaneSnapshot(
+            schemaVersion: "xt.one_shot_control_plane_snapshot.v1",
+            normalization: fixture.normalization,
+            planDecision: fixture.planning.decision,
+            seatGovernor: fixture.planning.seatGovernor,
+            runState: fixture.runState,
+            fieldFreeze: .ai1Core
+        )
+        var preparedSubmission: OneShotIntakeSubmission?
+        var sentMessages: [String] = []
+
+        await SupervisorViewActionSupport.triggerBigTaskFlow(
+            candidate,
+            selectedProject: project,
+            setDismissedFingerprint: { _ in },
+            setInputText: { _ in },
+            prepareOneShotControlPlane: { submission in
+                preparedSubmission = submission
+                return snapshot
+            },
+            sendMessage: { sentMessages.append($0) },
+            requestConversationFocus: {}
+        )
+
+        let expectedSubmission = SupervisorBigTaskAssist.submission(
+            for: candidate,
+            selectedProject: project
+        )
+        #expect(preparedSubmission?.projectID == project.projectId)
+        #expect(preparedSubmission?.requestID == expectedSubmission.requestID)
+        #expect(preparedSubmission?.contextRefs == expectedSubmission.contextRefs)
+        #expect(
+            sentMessages == [
+                SupervisorBigTaskAssist.prompt(
+                    for: candidate,
+                    selectedProject: project,
+                    controlPlane: snapshot
+                )
+            ]
+        )
+    }
+
+    @Test
+    func triggerBigTaskFlowLeavesNewProjectCreationRequestsUnscoped() async throws {
+        let candidate = SupervisorBigTaskCandidate(
+            goal: "你建立一个项目，名字就叫 坦克大战。我要用默认的MVP。",
+            fingerprint: "fp-big-task-new-project"
+        )
+        let project = AXProjectEntry(
+            projectId: "project-alpha",
+            rootPath: "/tmp/project-alpha",
+            displayName: "Alpha",
+            lastOpenedAt: 0,
+            manualOrderIndex: 0,
+            pinned: false,
+            statusDigest: nil,
+            currentStateSummary: nil,
+            nextStepSummary: nil,
+            blockerSummary: nil,
+            lastSummaryAt: nil,
+            lastEventAt: nil
+        )
+        let fixture = await buildOneShotControlFixture()
+        let snapshot = OneShotControlPlaneSnapshot(
+            schemaVersion: "xt.one_shot_control_plane_snapshot.v1",
+            normalization: fixture.normalization,
+            planDecision: fixture.planning.decision,
+            seatGovernor: fixture.planning.seatGovernor,
+            runState: fixture.runState,
+            fieldFreeze: .ai1Core
+        )
+        var preparedSubmission: OneShotIntakeSubmission?
+        var sentMessages: [String] = []
+
+        await SupervisorViewActionSupport.triggerBigTaskFlow(
+            candidate,
+            selectedProject: project,
+            setDismissedFingerprint: { _ in },
+            setInputText: { _ in },
+            prepareOneShotControlPlane: { submission in
+                preparedSubmission = submission
+                return snapshot
+            },
+            sendMessage: { sentMessages.append($0) },
+            requestConversationFocus: {}
+        )
+
+        let expectedSubmission = SupervisorBigTaskAssist.submission(for: candidate)
+        #expect(preparedSubmission?.projectID == nil)
+        #expect(preparedSubmission?.requestID == expectedSubmission.requestID)
+        #expect(preparedSubmission?.contextRefs == expectedSubmission.contextRefs)
+        let prompt = try #require(sentMessages.first)
+        #expect(!prompt.contains("bound_project_name: Alpha"))
+        #expect(!prompt.contains("bound_project_id: project-alpha"))
     }
 
     @Test

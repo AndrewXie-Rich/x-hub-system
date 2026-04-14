@@ -95,6 +95,23 @@ enum SupervisorMemoryAssemblyDiagnostics {
             issues.append(syncIssue)
         }
 
+        let scopedRecoveryMode = snapshot.scopedPromptRecoveryMode?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let scopedRecoverySections = snapshot.normalizedScopedPromptRecoverySections
+        if scopedRecoveryMode == "explicit_hidden_project_focus",
+           scopedRecoverySections.isEmpty {
+            issues.append(
+                SupervisorMemoryAssemblyIssue(
+                    code: "memory_scoped_hidden_project_recovery_missing",
+                    severity: elevatedReview ? .blocking : .warning,
+                    summary: "显式 hidden project 聚焦时没有补回项目范围上下文",
+                    detail: """
+review=\(reviewLevel.rawValue) focus=\(focusedProjectId.isEmpty ? "(none)" : focusedProjectId) recovery_mode=\(scopedRecoveryMode) selected_sections=\(snapshot.selectedSections.isEmpty ? "(none)" : snapshot.selectedSections.joined(separator: ",")) omitted_sections=\(snapshot.omittedSections.isEmpty ? "(none)" : snapshot.omittedSections.joined(separator: ",")) raw_window=\(snapshot.rawWindowSelectedPairs)/\(snapshot.rawWindowFloorPairs)p continuity_floor_ok=\(snapshot.continuityFloorSatisfied)
+"""
+                )
+            )
+        }
+
         if let floor, let resolved, resolved.rank < floor.rank {
             issues.append(
                 SupervisorMemoryAssemblyIssue(
@@ -106,6 +123,45 @@ review=\(reviewLevel.rawValue) focus=\(focusedProjectId.isEmpty ? "(none)" : foc
 """
                 )
             )
+        }
+
+        let servingContract = Set(snapshot.servingObjectContract)
+        let unexpectedSections = snapshot.selectedSections.filter { !servingContract.contains($0) }
+        if !servingContract.isEmpty && !unexpectedSections.isEmpty {
+            issues.append(
+                SupervisorMemoryAssemblyIssue(
+                    code: "memory_unexpected_serving_object_included",
+                    severity: elevatedReview ? .blocking : .warning,
+                    summary: "Supervisor 实际注入超出 serving contract",
+                    detail: """
+review=\(reviewLevel.rawValue) focus=\(focusedProjectId.isEmpty ? "(none)" : focusedProjectId) contract=\(snapshot.servingObjectContract.joined(separator: ",")) selected_sections=\(snapshot.selectedSections.joined(separator: ",")) unexpected_sections=\(unexpectedSections.joined(separator: ","))
+"""
+                )
+            )
+        }
+
+        if let storedResolution = snapshot.memoryAssemblyResolution,
+           let actualizedResolution = snapshot.actualizedMemoryAssemblyResolution {
+            let policyPlanes = storedResolution.selectedPlanes
+            let actualPlanes = actualizedResolution.selectedPlanes
+            let policySelected = storedResolution.selectedServingObjects
+            let actualSelected = actualizedResolution.selectedServingObjects
+            let policyExcluded = storedResolution.excludedBlocks
+            let actualExcluded = actualizedResolution.excludedBlocks
+            if policyPlanes != actualPlanes
+                || policySelected != actualSelected
+                || policyExcluded != actualExcluded {
+                issues.append(
+                    SupervisorMemoryAssemblyIssue(
+                        code: "memory_resolution_projection_drift",
+                        severity: .warning,
+                        summary: "Supervisor memory resolution explainability 与实际 served prompt 不一致",
+                        detail: """
+review=\(reviewLevel.rawValue) focus=\(focusedProjectId.isEmpty ? "(none)" : focusedProjectId) contract=\(snapshot.servingObjectContract.isEmpty ? "(none)" : snapshot.servingObjectContract.joined(separator: ",")) selected_sections=\(snapshot.selectedSections.isEmpty ? "(none)" : snapshot.selectedSections.joined(separator: ",")) policy_selected_planes=\(policyPlanes.isEmpty ? "(none)" : policyPlanes.joined(separator: ",")) actual_selected_planes=\(actualPlanes.isEmpty ? "(none)" : actualPlanes.joined(separator: ",")) policy_selected_serving_objects=\(policySelected.isEmpty ? "(none)" : policySelected.joined(separator: ",")) actual_selected_serving_objects=\(actualSelected.isEmpty ? "(none)" : actualSelected.joined(separator: ",")) policy_excluded_blocks=\(policyExcluded.isEmpty ? "(none)" : policyExcluded.joined(separator: ",")) actual_excluded_blocks=\(actualExcluded.isEmpty ? "(none)" : actualExcluded.joined(separator: ","))
+"""
+                    )
+                )
+            }
         }
 
         let omittedStrategicAnchors = snapshot.omittedSections.filter { strategicAnchorSections.contains($0) }
@@ -148,6 +204,52 @@ focus=\(focusedProjectId) context_refs=\(snapshot.contextRefsSelected)/\(snapsho
 """
                 )
             )
+        }
+
+        if focusedStrategicReview &&
+            snapshot.latestReviewNoteAvailable &&
+            !snapshot.latestReviewNoteActualized {
+            issues.append(
+                SupervisorMemoryAssemblyIssue(
+                    code: "memory_latest_review_note_not_carried_forward",
+                    severity: elevatedReview ? .blocking : .warning,
+                    summary: "Focused review 丢失了最新 review note continuity",
+                    detail: """
+focus=\(focusedProjectId.isEmpty ? "(none)" : focusedProjectId) selected_sections=\(snapshot.selectedSections.isEmpty ? "(none)" : snapshot.selectedSections.joined(separator: ",")) omitted_sections=\(snapshot.omittedSections.isEmpty ? "(none)" : snapshot.omittedSections.joined(separator: ",")) carrier_present=\(snapshot.reviewGuidanceCarrierPresent) latest_review_available=\(snapshot.latestReviewNoteAvailable) latest_review_actualized=\(snapshot.latestReviewNoteActualized)
+"""
+                )
+            )
+        }
+
+        if snapshot.pendingAckGuidanceAvailable &&
+            !snapshot.pendingAckGuidanceActualized {
+            issues.append(
+                SupervisorMemoryAssemblyIssue(
+                    code: "memory_pending_guidance_ack_not_carried_forward",
+                    severity: elevatedReview ? .blocking : .warning,
+                    summary: "Pending guidance ack 没有进入后续 Supervisor memory assembly",
+                    detail: """
+focus=\(focusedProjectId.isEmpty ? "(none)" : focusedProjectId) selected_sections=\(snapshot.selectedSections.isEmpty ? "(none)" : snapshot.selectedSections.joined(separator: ",")) omitted_sections=\(snapshot.omittedSections.isEmpty ? "(none)" : snapshot.omittedSections.joined(separator: ",")) carrier_present=\(snapshot.reviewGuidanceCarrierPresent) pending_guidance_available=\(snapshot.pendingAckGuidanceAvailable) pending_guidance_actualized=\(snapshot.pendingAckGuidanceActualized) ack_status=\(snapshot.pendingAckGuidanceAckStatus.isEmpty ? "(none)" : snapshot.pendingAckGuidanceAckStatus) ack_required=\(snapshot.pendingAckGuidanceAckRequired?.description ?? "(none)") delivery=\(snapshot.pendingAckGuidanceDeliveryMode.isEmpty ? "(none)" : snapshot.pendingAckGuidanceDeliveryMode) intervention=\(snapshot.pendingAckGuidanceInterventionMode.isEmpty ? "(none)" : snapshot.pendingAckGuidanceInterventionMode) safe_point=\(snapshot.pendingAckGuidanceSafePointPolicy.isEmpty ? "(none)" : snapshot.pendingAckGuidanceSafePointPolicy)
+"""
+                )
+            )
+        } else if snapshot.latestGuidanceAvailable &&
+                    !snapshot.latestGuidanceActualized {
+            let latestAckStatus = snapshot.latestGuidanceAckStatus.trimmingCharacters(in: .whitespacesAndNewlines)
+            if latestAckStatus == SupervisorGuidanceAckStatus.pending.rawValue
+                || latestAckStatus == SupervisorGuidanceAckStatus.deferred.rawValue
+                || latestAckStatus == SupervisorGuidanceAckStatus.rejected.rawValue {
+                issues.append(
+                    SupervisorMemoryAssemblyIssue(
+                        code: "memory_guidance_ack_state_not_carried_forward",
+                        severity: .warning,
+                        summary: "最新 guidance 的 ack 状态没有进入后续 Supervisor memory assembly",
+                        detail: """
+focus=\(focusedProjectId.isEmpty ? "(none)" : focusedProjectId) selected_sections=\(snapshot.selectedSections.isEmpty ? "(none)" : snapshot.selectedSections.joined(separator: ",")) omitted_sections=\(snapshot.omittedSections.isEmpty ? "(none)" : snapshot.omittedSections.joined(separator: ",")) carrier_present=\(snapshot.reviewGuidanceCarrierPresent) latest_guidance_available=\(snapshot.latestGuidanceAvailable) latest_guidance_actualized=\(snapshot.latestGuidanceActualized) ack_status=\(latestAckStatus) ack_required=\(snapshot.latestGuidanceAckRequired?.description ?? "(none)") delivery=\(snapshot.latestGuidanceDeliveryMode.isEmpty ? "(none)" : snapshot.latestGuidanceDeliveryMode) intervention=\(snapshot.latestGuidanceInterventionMode.isEmpty ? "(none)" : snapshot.latestGuidanceInterventionMode) safe_point=\(snapshot.latestGuidanceSafePointPolicy.isEmpty ? "(none)" : snapshot.latestGuidanceSafePointPolicy)
+"""
+                    )
+                )
+            }
         }
 
         if snapshot.selectedSections.contains("dialogue_window"),
@@ -220,8 +322,9 @@ low_signal_samples=\(dropSamples)
             let detailSuffix = extra.isEmpty ? "" : " detail=\(extra)"
             let deliverySuffix = suffix(item.deliveryState, label: "delivery")
             let auditSuffix = suffix(item.primaryAuditRef, label: "audit_ref")
+            let evidenceSuffix = suffix(item.primaryEvidenceRef, label: "evidence_ref")
             let writebackSuffix = suffix(item.primaryWritebackRef, label: "writeback_ref")
-            return "scope=\(item.scopeKind) scope_id=\(item.scopeId) source=\(item.source) reason=\(reason)\(deliverySuffix)\(auditSuffix)\(writebackSuffix)\(detailSuffix)"
+            return "scope=\(item.scopeKind) scope_id=\(item.scopeId) source=\(item.source) reason=\(reason)\(deliverySuffix)\(auditSuffix)\(evidenceSuffix)\(writebackSuffix)\(detailSuffix)"
         }
         .joined(separator: "\n")
         return SupervisorMemoryAssemblyIssue(

@@ -117,6 +117,56 @@ private actor SupervisorBriefProjectionRequestProbe {
 }
 
 @MainActor
+private final class VoiceAuthorizationTalkLoopMockTranscriber: VoiceStreamingTranscriber {
+    let routeMode: VoiceRouteMode
+    private(set) var authorizationStatus: VoiceTranscriberAuthorizationStatus
+    private(set) var engineHealth: VoiceEngineHealth
+    private(set) var healthReasonCode: String?
+    private(set) var isRunning: Bool = false
+    private(set) var startCount: Int = 0
+
+    private var onChunk: ((VoiceTranscriptChunk) -> Void)?
+    private var onFailure: ((String) -> Void)?
+
+    init(
+        routeMode: VoiceRouteMode = .systemSpeechCompatibility,
+        authorizationStatus: VoiceTranscriberAuthorizationStatus = .authorized,
+        engineHealth: VoiceEngineHealth = .ready,
+        healthReasonCode: String? = nil
+    ) {
+        self.routeMode = routeMode
+        self.authorizationStatus = authorizationStatus
+        self.engineHealth = engineHealth
+        self.healthReasonCode = healthReasonCode
+    }
+
+    func requestAuthorization() async -> VoiceTranscriberAuthorizationStatus {
+        authorizationStatus
+    }
+
+    func refreshEngineHealth() async -> VoiceEngineHealth {
+        engineHealth
+    }
+
+    func startTranscribing(
+        onChunk: @escaping (VoiceTranscriptChunk) -> Void,
+        onFailure: @escaping (String) -> Void
+    ) throws {
+        guard authorizationStatus.isAuthorized else {
+            throw VoiceTranscriberError.notAuthorized
+        }
+        startCount += 1
+        isRunning = true
+        self.onChunk = onChunk
+        self.onFailure = onFailure
+    }
+
+    func stopTranscribing() {
+        isRunning = false
+    }
+}
+
+@MainActor
 struct SupervisorManagerVoiceAuthorizationTests {
     private static let gate = SupervisorManagerVoiceAuthorizationTestGate()
 
@@ -305,6 +355,7 @@ struct SupervisorManagerVoiceAuthorizationTests {
             #expect(manager.activeVoiceChallenge == nil)
             #expect(manager.voiceAuthorizationResolution?.state == .failClosed)
             #expect(manager.voiceAuthorizationResolution?.reasonCode == "user_cancelled")
+            #expect(!manager.canRestartLastVoiceAuthorizationChallengeFromUI())
             #expect(manager.messages.last?.content.contains("已取消语音授权挑战") == true)
         }
     }
@@ -603,6 +654,749 @@ struct SupervisorManagerVoiceAuthorizationTests {
     }
 
     @Test
+    func guardedOneShotVerifiedVoiceFollowUpUsesProjectionAndResumesTalkLoopListening() async throws {
+        try await Self.gate.run {
+            let fixture = try await makeVoiceAuthorizationTalkLoopFixture(now: 7_660)
+            let manager = fixture.manager
+            let voiceCoordinator = fixture.voiceCoordinator
+            let transcriber = fixture.transcriber
+            defer {
+                manager.resetVoiceAuthorizationState()
+                manager.resetOneShotControlPlaneState()
+                manager.clearMessages()
+                manager.endConversationSession(reasonCode: "test_cleanup")
+            }
+
+            let root = try makeProjectRoot(named: "voice-guarded-one-shot-followup")
+            defer { try? FileManager.default.removeItem(at: root) }
+
+            let project = AXProjectEntry(
+                projectId: oneShotTestProjectID,
+                rootPath: root.path,
+                displayName: "Guarded One-Shot",
+                lastOpenedAt: Date().timeIntervalSince1970,
+                manualOrderIndex: 0,
+                pinned: false,
+                statusDigest: "runtime=running",
+                currentStateSummary: "执行中",
+                nextStepSummary: "继续监控 lane-1",
+                blockerSummary: "",
+                lastSummaryAt: Date().timeIntervalSince1970,
+                lastEventAt: Date().timeIntervalSince1970
+            )
+            let appModel = AppModel()
+            appModel.registry = registry(with: [project])
+            appModel.selectedProjectId = project.projectId
+            var settings = configuredSettings(from: appModel.settingsStore.settings)
+            settings.voice.wakeMode = .wakePhrase
+            settings.voice.preferredRoute = .systemSpeechCompatibility
+            settings.voice.speechRateMultiplier = 1.35
+            appModel.settingsStore.settings = settings
+            manager.setAppModel(appModel)
+
+            let projectionProbe = SupervisorBriefProjectionRequestProbe()
+            manager.installPreparedOneShotLaunchExecutorForTesting { _, _, buildResult in
+                .launched(
+                    LaneLaunchReport(
+                        splitPlanID: buildResult.proposal.splitPlanId.uuidString.lowercased(),
+                        launchedLaneIDs: ["lane-1"],
+                        blockedLaneReasons: [:],
+                        deferredLaneIDs: [],
+                        concurrencyLimit: 1,
+                        reproducibilitySignature: "assign:[lane-1->root]::blocked:[]"
+                    )
+                )
+            }
+            manager.installSupervisorBriefProjectionFetcherForTesting { payload in
+                await projectionProbe.record(payload)
+                return HubIPCClient.SupervisorBriefProjectionResult(
+                    ok: true,
+                    source: "test",
+                    projection: Self.makeBriefProjection(
+                        projectId: payload.projectId,
+                        trigger: payload.trigger,
+                        topline: "one-shot 已进入真实执行。",
+                        blocker: "",
+                        next: "继续监控 lane-1。",
+                        pendingGrantCount: 0,
+                        ttsScript: [
+                            "Supervisor Hub 简报。one-shot 已进入真实执行。",
+                            "建议下一步：继续监控 lane-1。"
+                        ],
+                        auditRef: "audit-voice-guarded-one-shot-followup-1"
+                    ),
+                    reasonCode: nil
+                )
+            }
+            manager.installVoiceAuthorizationBridgeForTesting(
+                SupervisorVoiceAuthorizationBridge(
+                    issueHandler: { payload in
+                        HubIPCClient.VoiceGrantChallengeResult(
+                            ok: true,
+                            source: "test",
+                            challenge: makeChallenge(
+                                challengeId: "voice_chal_guarded_one_shot_followup",
+                                templateId: payload.templateId,
+                                actionDigest: payload.actionDigest,
+                                scopeDigest: payload.scopeDigest,
+                                amountDigest: payload.amountDigest ?? "",
+                                challengeCode: "112233",
+                                requiresMobileConfirm: false,
+                                allowVoiceOnly: true,
+                                riskLevel: payload.riskLevel,
+                                boundDeviceId: payload.boundDeviceId ?? "",
+                                mobileTerminalId: payload.mobileTerminalId ?? ""
+                            ),
+                            reasonCode: nil
+                        )
+                    },
+                    verifyHandler: { payload in
+                        makeVerifySuccess(
+                            challengeId: payload.challengeId,
+                            transcriptHash: "sha256:guarded-one-shot-followup",
+                            semanticMatchScore: payload.semanticMatchScore ?? 0,
+                            mobileConfirmed: payload.mobileConfirmed
+                        )
+                    }
+                )
+            )
+
+            _ = await manager.prepareOneShotControlPlane(submission: makeOneShotSubmission())
+            try await waitUntil("guarded one shot challenge issued") {
+                manager.activeVoiceChallenge?.challengeId == "voice_chal_guarded_one_shot_followup"
+            }
+
+            let resumeCountBeforeFollowUp = transcriber.startCount
+            manager.sendMessage("Approve guarded one-shot launch", fromVoice: true)
+
+            try await waitUntil("guarded one shot follow up brief emitted") {
+                manager.oneShotRunState?.state == .running &&
+                    manager.messages.contains(where: {
+                        $0.role == .assistant &&
+                            $0.content.contains("🧭 Supervisor Brief") &&
+                            $0.content.contains("one-shot 已进入真实执行。") &&
+                            $0.content.contains("继续监控 lane-1。")
+                    })
+            }
+
+            try await waitUntil("talk loop resumed after guarded one shot follow up", timeoutMs: 8_000) {
+                voiceCoordinator.isRecording &&
+                    transcriber.isRunning &&
+                    transcriber.startCount == resumeCountBeforeFollowUp + 1 &&
+                    voiceCoordinator.runtimeState.state == .listening &&
+                    voiceCoordinator.runtimeState.reasonCode == "talk_loop_resumed" &&
+                    manager.recentEventsForTesting().contains(where: {
+                        $0.contains("voice talk loop resumed: voice_auth_guarded_one_shot_follow_up")
+                    })
+            }
+
+            let projectionRequest = await projectionProbe.first()
+            #expect(projectionRequest?.projectId == oneShotTestProjectID)
+            #expect(projectionRequest?.trigger == "critical_path_changed")
+            #expect(manager.messages.contains(where: {
+                $0.role == .assistant &&
+                    $0.content.contains("语音授权已验证通过，正在继续执行")
+            }) == false)
+        }
+    }
+
+    @Test
+    func guardedOneShotVerifiedVoiceFollowUpHumanizesRescueGovernedReviewProjection() async throws {
+        try await Self.gate.run {
+            var spoken: [String] = []
+            let synthesizer = SupervisorSpeechSynthesizer(
+                deduper: SupervisorVoiceBriefDeduper(cooldown: 0),
+                speakSink: { spoken.append($0) }
+            )
+            let fixture = try await makeVoiceAuthorizationTalkLoopFixture(
+                now: 7_662,
+                supervisorSpeechSynthesizer: synthesizer
+            )
+            let manager = fixture.manager
+            let voiceCoordinator = fixture.voiceCoordinator
+            let transcriber = fixture.transcriber
+            defer {
+                manager.resetVoiceAuthorizationState()
+                manager.resetOneShotControlPlaneState()
+                manager.clearMessages()
+                manager.endConversationSession(reasonCode: "test_cleanup")
+            }
+
+            let root = try makeProjectRoot(named: "voice-guarded-one-shot-governed-review")
+            defer { try? FileManager.default.removeItem(at: root) }
+
+            let project = AXProjectEntry(
+                projectId: oneShotTestProjectID,
+                rootPath: root.path,
+                displayName: "Guarded One-Shot",
+                lastOpenedAt: Date().timeIntervalSince1970,
+                manualOrderIndex: 0,
+                pinned: false,
+                statusDigest: "runtime=running",
+                currentStateSummary: "执行中",
+                nextStepSummary: "继续监控 lane-1",
+                blockerSummary: "",
+                lastSummaryAt: Date().timeIntervalSince1970,
+                lastEventAt: Date().timeIntervalSince1970
+            )
+            let appModel = AppModel()
+            appModel.registry = registry(with: [project])
+            appModel.selectedProjectId = project.projectId
+            var settings = configuredSettings(from: appModel.settingsStore.settings)
+            settings.voice.wakeMode = .wakePhrase
+            settings.voice.preferredRoute = .systemSpeechCompatibility
+            settings.voice.speechRateMultiplier = 1.35
+            appModel.settingsStore.settings = settings
+            manager.setAppModel(appModel)
+
+            let projectionProbe = SupervisorBriefProjectionRequestProbe()
+            manager.installPreparedOneShotLaunchExecutorForTesting { _, _, buildResult in
+                .launched(
+                    LaneLaunchReport(
+                        splitPlanID: buildResult.proposal.splitPlanId.uuidString.lowercased(),
+                        launchedLaneIDs: ["lane-1"],
+                        blockedLaneReasons: [:],
+                        deferredLaneIDs: [],
+                        concurrencyLimit: 1,
+                        reproducibilitySignature: "assign:[lane-1->root]::blocked:[]"
+                    )
+                )
+            }
+            manager.installSupervisorBriefProjectionFetcherForTesting { payload in
+                await projectionProbe.record(payload)
+                return HubIPCClient.SupervisorBriefProjectionResult(
+                    ok: true,
+                    source: "test",
+                    projection: HubIPCClient.SupervisorBriefProjectionSnapshot(
+                        schemaVersion: "xhub.supervisor_brief_projection.v1",
+                        projectionId: "guarded-one-shot-governed-review-\(payload.projectId)",
+                        projectionKind: payload.projectionKind,
+                        projectId: payload.projectId,
+                        runId: "",
+                        missionId: "",
+                        trigger: payload.trigger,
+                        status: "attention_required",
+                        criticalBlocker: "Queued rescue governance review requires prompt supervisor attention.",
+                        topline: "Project \(payload.projectId) has queued rescue governance review. Supervisor heartbeat queued it via event-driven review trigger because of weak completion evidence.",
+                        nextBestAction: "Open the project and prioritize the queued rescue review before autonomous execution continues.",
+                        pendingGrantCount: 0,
+                        ttsScript: [
+                            "Project \(payload.projectId) has queued rescue governance review.",
+                            "Supervisor heartbeat queued it via event-driven review trigger because of weak completion evidence.",
+                            "Next best action: Open the project and prioritize the queued rescue review before autonomous execution continues."
+                        ],
+                        cardSummary: "GOVERNANCE REVIEW: queued rescue governance review.",
+                        evidenceRefs: ["memory://projection/guarded-one-shot-governed-review"],
+                        generatedAtMs: 1_777_000_610_000,
+                        expiresAtMs: 1_777_000_670_000,
+                        auditRef: "audit-guarded-one-shot-governed-review-1"
+                    ),
+                    reasonCode: nil
+                )
+            }
+            manager.installVoiceAuthorizationBridgeForTesting(
+                SupervisorVoiceAuthorizationBridge(
+                    issueHandler: { payload in
+                        HubIPCClient.VoiceGrantChallengeResult(
+                            ok: true,
+                            source: "test",
+                            challenge: makeChallenge(
+                                challengeId: "voice_chal_guarded_one_shot_governed_review",
+                                templateId: payload.templateId,
+                                actionDigest: payload.actionDigest,
+                                scopeDigest: payload.scopeDigest,
+                                amountDigest: payload.amountDigest ?? "",
+                                challengeCode: "112255",
+                                requiresMobileConfirm: false,
+                                allowVoiceOnly: true,
+                                riskLevel: payload.riskLevel,
+                                boundDeviceId: payload.boundDeviceId ?? "",
+                                mobileTerminalId: payload.mobileTerminalId ?? ""
+                            ),
+                            reasonCode: nil
+                        )
+                    },
+                    verifyHandler: { payload in
+                        makeVerifySuccess(
+                            challengeId: payload.challengeId,
+                            transcriptHash: "sha256:guarded-one-shot-governed-review",
+                            semanticMatchScore: payload.semanticMatchScore ?? 0,
+                            mobileConfirmed: payload.mobileConfirmed
+                        )
+                    }
+                )
+            )
+
+            _ = await manager.prepareOneShotControlPlane(submission: makeOneShotSubmission())
+            try await waitUntil("guarded one shot governed review challenge issued") {
+                manager.activeVoiceChallenge?.challengeId == "voice_chal_guarded_one_shot_governed_review"
+            }
+
+            let resumeCountBeforeFollowUp = transcriber.startCount
+            manager.sendMessage("Approve guarded one-shot launch", fromVoice: true)
+
+            try await waitUntil("guarded one shot rescue review follow up emitted") {
+                manager.oneShotRunState?.state == .running &&
+                    manager.messages.contains(where: {
+                        $0.role == .assistant &&
+                            $0.content.contains("救援审查已排队") &&
+                            $0.content.contains("完成声明证据偏弱") &&
+                            $0.content.contains("查看：打开项目并优先处理这次救援审查")
+                    })
+            }
+
+            try await waitUntil("talk loop resumed after guarded rescue review follow up", timeoutMs: 8_000) {
+                voiceCoordinator.isRecording &&
+                    transcriber.isRunning &&
+                    transcriber.startCount == resumeCountBeforeFollowUp + 1 &&
+                    voiceCoordinator.runtimeState.state == .listening &&
+                    voiceCoordinator.runtimeState.reasonCode == "talk_loop_resumed" &&
+                    manager.recentEventsForTesting().contains(where: {
+                        $0.contains("voice talk loop resumed: voice_auth_guarded_one_shot_follow_up")
+                    })
+            }
+
+            let projectionRequest = await projectionProbe.first()
+            #expect(projectionRequest?.projectId == oneShotTestProjectID)
+            #expect(projectionRequest?.trigger == "critical_path_changed")
+            #expect(manager.messages.contains(where: {
+                $0.role == .assistant &&
+                    $0.content.contains("rescue governance review")
+            }) == false)
+            #expect(spoken.contains(where: { $0.contains("救援审查已排队") }))
+            #expect(spoken.contains(where: { $0.contains("完成声明证据偏弱") }))
+            #expect(!spoken.contains(where: { $0.contains("rescue governance review") }))
+        }
+    }
+
+    @Test
+    func guardedOneShotVerifiedVoiceFollowUpUnavailableProjectionResumesTalkLoopListening() async throws {
+        try await Self.gate.run {
+            let fixture = try await makeVoiceAuthorizationTalkLoopFixture(now: 7_661)
+            let manager = fixture.manager
+            let voiceCoordinator = fixture.voiceCoordinator
+            let transcriber = fixture.transcriber
+            defer {
+                manager.resetVoiceAuthorizationState()
+                manager.resetOneShotControlPlaneState()
+                manager.clearMessages()
+                manager.endConversationSession(reasonCode: "test_cleanup")
+            }
+
+            manager.installPreparedOneShotLaunchExecutorForTesting { _, _, buildResult in
+                .launched(
+                    LaneLaunchReport(
+                        splitPlanID: buildResult.proposal.splitPlanId.uuidString.lowercased(),
+                        launchedLaneIDs: ["lane-1"],
+                        blockedLaneReasons: [:],
+                        deferredLaneIDs: [],
+                        concurrencyLimit: 1,
+                        reproducibilitySignature: "assign:[lane-1->root]::blocked:[]"
+                    )
+                )
+            }
+            manager.installSupervisorBriefProjectionFetcherForTesting { payload in
+                HubIPCClient.SupervisorBriefProjectionResult(
+                    ok: false,
+                    source: "test",
+                    projection: nil,
+                    reasonCode: "projection_unavailable"
+                )
+            }
+            manager.installVoiceAuthorizationBridgeForTesting(
+                SupervisorVoiceAuthorizationBridge(
+                    issueHandler: { payload in
+                        HubIPCClient.VoiceGrantChallengeResult(
+                            ok: true,
+                            source: "test",
+                            challenge: makeChallenge(
+                                challengeId: "voice_chal_guarded_one_shot_followup_unavailable",
+                                templateId: payload.templateId,
+                                actionDigest: payload.actionDigest,
+                                scopeDigest: payload.scopeDigest,
+                                amountDigest: payload.amountDigest ?? "",
+                                challengeCode: "112244",
+                                requiresMobileConfirm: false,
+                                allowVoiceOnly: true,
+                                riskLevel: payload.riskLevel,
+                                boundDeviceId: payload.boundDeviceId ?? "",
+                                mobileTerminalId: payload.mobileTerminalId ?? ""
+                            ),
+                            reasonCode: nil
+                        )
+                    },
+                    verifyHandler: { payload in
+                        makeVerifySuccess(
+                            challengeId: payload.challengeId,
+                            transcriptHash: "sha256:guarded-one-shot-followup-unavailable",
+                            semanticMatchScore: payload.semanticMatchScore ?? 0,
+                            mobileConfirmed: payload.mobileConfirmed
+                        )
+                    }
+                )
+            )
+
+            _ = await manager.prepareOneShotControlPlane(submission: makeOneShotSubmission())
+            try await waitUntil("guarded one shot unavailable challenge issued") {
+                manager.activeVoiceChallenge?.challengeId == "voice_chal_guarded_one_shot_followup_unavailable"
+            }
+
+            let resumeCountBeforeFollowUp = transcriber.startCount
+            manager.sendMessage("Approve guarded one-shot launch", fromVoice: true)
+
+            try await waitUntil("guarded one shot unavailable follow up emitted") {
+                manager.oneShotRunState?.state == .running &&
+                    manager.messages.contains(where: {
+                        $0.role == .assistant &&
+                            $0.content.contains("⚠️ Hub Brief 暂不可用") &&
+                            $0.content.contains("guarded one-shot 已进入真实执行") &&
+                            $0.content.contains("没有拿到 Hub 统一投影")
+                    })
+            }
+
+            try await waitUntil("talk loop resumed after guarded one shot unavailable follow up", timeoutMs: 8_000) {
+                voiceCoordinator.isRecording &&
+                    transcriber.isRunning &&
+                    transcriber.startCount == resumeCountBeforeFollowUp + 1 &&
+                    voiceCoordinator.runtimeState.state == .listening &&
+                    voiceCoordinator.runtimeState.reasonCode == "talk_loop_resumed" &&
+                    manager.recentEventsForTesting().contains(where: {
+                        $0.contains("voice talk loop resumed: voice_auth_guarded_one_shot_follow_up")
+                    })
+            }
+
+            #expect(manager.messages.contains(where: {
+                $0.role == .assistant &&
+                    $0.content.contains("🧭 Supervisor Brief")
+            }) == false)
+        }
+    }
+
+    @Test
+    func guardedOneShotVerifiedVoiceFollowUpReportsBlockedLaunchTruthfully() async throws {
+        try await Self.gate.run {
+            let manager = SupervisorManager.makeForTesting()
+            manager.resetVoiceAuthorizationState()
+            manager.resetOneShotControlPlaneState()
+            manager.clearMessages()
+            defer {
+                manager.resetVoiceAuthorizationState()
+                manager.resetOneShotControlPlaneState()
+                manager.clearMessages()
+            }
+
+            manager.installPreparedOneShotLaunchExecutorForTesting { _, _, buildResult in
+                .blocked(
+                    reason: "dependency_not_ready",
+                    report: LaneLaunchReport(
+                        splitPlanID: buildResult.proposal.splitPlanId.uuidString.lowercased(),
+                        launchedLaneIDs: [],
+                        blockedLaneReasons: ["lane-1": "dependency_not_ready"],
+                        deferredLaneIDs: [],
+                        concurrencyLimit: 1,
+                        reproducibilitySignature: "assign:[]::blocked:[lane-1=dependency_not_ready]"
+                    )
+                )
+            }
+            manager.installVoiceAuthorizationBridgeForTesting(
+                SupervisorVoiceAuthorizationBridge(
+                    issueHandler: { payload in
+                        HubIPCClient.VoiceGrantChallengeResult(
+                            ok: true,
+                            source: "test",
+                            challenge: makeChallenge(
+                                challengeId: "voice_chal_guarded_one_shot_blocked",
+                                templateId: payload.templateId,
+                                actionDigest: payload.actionDigest,
+                                scopeDigest: payload.scopeDigest,
+                                amountDigest: payload.amountDigest ?? "",
+                                challengeCode: "445577",
+                                requiresMobileConfirm: false,
+                                allowVoiceOnly: true,
+                                riskLevel: payload.riskLevel,
+                                boundDeviceId: payload.boundDeviceId ?? "",
+                                mobileTerminalId: payload.mobileTerminalId ?? ""
+                            ),
+                            reasonCode: nil
+                        )
+                    },
+                    verifyHandler: { payload in
+                        makeVerifySuccess(
+                            challengeId: payload.challengeId,
+                            transcriptHash: "sha256:guarded-one-shot-blocked",
+                            semanticMatchScore: payload.semanticMatchScore ?? 0,
+                            mobileConfirmed: payload.mobileConfirmed
+                        )
+                    }
+                )
+            )
+
+            _ = await manager.prepareOneShotControlPlane(submission: makeOneShotSubmission())
+            try await waitUntil("guarded one shot blocked challenge issued") {
+                manager.activeVoiceChallenge?.challengeId == "voice_chal_guarded_one_shot_blocked"
+            }
+
+            manager.sendMessage("Approve guarded one-shot launch", fromVoice: true)
+
+            try await waitUntil("guarded one shot blocked follow up emitted") {
+                manager.oneShotRunState?.state == .blocked &&
+                    manager.messages.contains(where: {
+                        $0.role == .assistant &&
+                            $0.content.contains("还没有进入执行") &&
+                            $0.content.contains("dependency_not_ready")
+                    })
+            }
+
+            #expect(manager.messages.contains(where: {
+                $0.role == .assistant &&
+                    $0.content.contains("语音授权已验证通过，正在继续执行")
+            }) == false)
+        }
+    }
+
+    @Test
+    func guardedOneShotBlockedVoiceFollowUpResumesTalkLoopListening() async throws {
+        try await Self.gate.run {
+            let fixture = try await makeVoiceAuthorizationTalkLoopFixture(now: 7_662)
+            let manager = fixture.manager
+            let voiceCoordinator = fixture.voiceCoordinator
+            let transcriber = fixture.transcriber
+            defer {
+                manager.resetVoiceAuthorizationState()
+                manager.resetOneShotControlPlaneState()
+                manager.clearMessages()
+                manager.endConversationSession(reasonCode: "test_cleanup")
+            }
+
+            manager.installPreparedOneShotLaunchExecutorForTesting { _, _, buildResult in
+                .blocked(
+                    reason: "dependency_not_ready",
+                    report: LaneLaunchReport(
+                        splitPlanID: buildResult.proposal.splitPlanId.uuidString.lowercased(),
+                        launchedLaneIDs: [],
+                        blockedLaneReasons: ["lane-1": "dependency_not_ready"],
+                        deferredLaneIDs: [],
+                        concurrencyLimit: 1,
+                        reproducibilitySignature: "assign:[]::blocked:[lane-1=dependency_not_ready]"
+                    )
+                )
+            }
+            manager.installVoiceAuthorizationBridgeForTesting(
+                SupervisorVoiceAuthorizationBridge(
+                    issueHandler: { payload in
+                        HubIPCClient.VoiceGrantChallengeResult(
+                            ok: true,
+                            source: "test",
+                            challenge: makeChallenge(
+                                challengeId: "voice_chal_guarded_one_shot_blocked_resume",
+                                templateId: payload.templateId,
+                                actionDigest: payload.actionDigest,
+                                scopeDigest: payload.scopeDigest,
+                                amountDigest: payload.amountDigest ?? "",
+                                challengeCode: "445578",
+                                requiresMobileConfirm: false,
+                                allowVoiceOnly: true,
+                                riskLevel: payload.riskLevel,
+                                boundDeviceId: payload.boundDeviceId ?? "",
+                                mobileTerminalId: payload.mobileTerminalId ?? ""
+                            ),
+                            reasonCode: nil
+                        )
+                    },
+                    verifyHandler: { payload in
+                        makeVerifySuccess(
+                            challengeId: payload.challengeId,
+                            transcriptHash: "sha256:guarded-one-shot-blocked-resume",
+                            semanticMatchScore: payload.semanticMatchScore ?? 0,
+                            mobileConfirmed: payload.mobileConfirmed
+                        )
+                    }
+                )
+            )
+
+            _ = await manager.prepareOneShotControlPlane(submission: makeOneShotSubmission())
+            try await waitUntil("guarded one shot blocked resume challenge issued") {
+                manager.activeVoiceChallenge?.challengeId == "voice_chal_guarded_one_shot_blocked_resume"
+            }
+
+            let resumeCountBeforeFollowUp = transcriber.startCount
+            manager.sendMessage("Approve guarded one-shot launch", fromVoice: true)
+
+            try await waitUntil("guarded one shot blocked resume follow up emitted") {
+                manager.oneShotRunState?.state == .blocked &&
+                    manager.messages.contains(where: {
+                        $0.role == .assistant &&
+                            $0.content.contains("还没有进入执行") &&
+                            $0.content.contains("dependency_not_ready")
+                    })
+            }
+
+            try await waitUntil("talk loop resumed after guarded one shot blocked follow up", timeoutMs: 8_000) {
+                voiceCoordinator.isRecording &&
+                    transcriber.isRunning &&
+                    transcriber.startCount == resumeCountBeforeFollowUp + 1 &&
+                    voiceCoordinator.runtimeState.state == .listening &&
+                    voiceCoordinator.runtimeState.reasonCode == "talk_loop_resumed" &&
+                    manager.recentEventsForTesting().contains(where: {
+                        $0.contains("voice talk loop resumed: voice_auth_guarded_one_shot_blocked")
+                    })
+            }
+        }
+    }
+
+    @Test
+    func guardedOneShotVerifiedVoiceFollowUpReportsFailClosedTruthfully() async throws {
+        try await Self.gate.run {
+            let manager = SupervisorManager.makeForTesting()
+            manager.resetVoiceAuthorizationState()
+            manager.resetOneShotControlPlaneState()
+            manager.clearMessages()
+            defer {
+                manager.resetVoiceAuthorizationState()
+                manager.resetOneShotControlPlaneState()
+                manager.clearMessages()
+            }
+
+            manager.installPreparedOneShotLaunchExecutorForTesting { _, _, _ in
+                .failedClosed(reason: "legacy_supervisor_runtime_unavailable")
+            }
+            manager.installVoiceAuthorizationBridgeForTesting(
+                SupervisorVoiceAuthorizationBridge(
+                    issueHandler: { payload in
+                        HubIPCClient.VoiceGrantChallengeResult(
+                            ok: true,
+                            source: "test",
+                            challenge: makeChallenge(
+                                challengeId: "voice_chal_guarded_one_shot_fail_closed_followup",
+                                templateId: payload.templateId,
+                                actionDigest: payload.actionDigest,
+                                scopeDigest: payload.scopeDigest,
+                                amountDigest: payload.amountDigest ?? "",
+                                challengeCode: "667788",
+                                requiresMobileConfirm: false,
+                                allowVoiceOnly: true,
+                                riskLevel: payload.riskLevel,
+                                boundDeviceId: payload.boundDeviceId ?? "",
+                                mobileTerminalId: payload.mobileTerminalId ?? ""
+                            ),
+                            reasonCode: nil
+                        )
+                    },
+                    verifyHandler: { payload in
+                        makeVerifySuccess(
+                            challengeId: payload.challengeId,
+                            transcriptHash: "sha256:guarded-one-shot-fail-closed-followup",
+                            semanticMatchScore: payload.semanticMatchScore ?? 0,
+                            mobileConfirmed: payload.mobileConfirmed
+                        )
+                    }
+                )
+            )
+
+            _ = await manager.prepareOneShotControlPlane(submission: makeOneShotSubmission())
+            try await waitUntil("guarded one shot fail closed challenge issued") {
+                manager.activeVoiceChallenge?.challengeId == "voice_chal_guarded_one_shot_fail_closed_followup"
+            }
+
+            manager.sendMessage("Approve guarded one-shot launch", fromVoice: true)
+
+            try await waitUntil("guarded one shot fail closed follow up emitted") {
+                manager.oneShotRunState?.state == .failedClosed &&
+                    manager.messages.contains(where: {
+                        $0.role == .assistant &&
+                            $0.content.contains("失败闭锁") &&
+                            $0.content.contains("legacy_supervisor_runtime_unavailable")
+                    })
+            }
+
+            #expect(manager.messages.contains(where: {
+                $0.role == .assistant &&
+                    $0.content.contains("语音授权已验证通过，正在继续执行")
+            }) == false)
+        }
+    }
+
+    @Test
+    func guardedOneShotFailClosedVoiceFollowUpResumesTalkLoopListening() async throws {
+        try await Self.gate.run {
+            let fixture = try await makeVoiceAuthorizationTalkLoopFixture(now: 7_663)
+            let manager = fixture.manager
+            let voiceCoordinator = fixture.voiceCoordinator
+            let transcriber = fixture.transcriber
+            defer {
+                manager.resetVoiceAuthorizationState()
+                manager.resetOneShotControlPlaneState()
+                manager.clearMessages()
+                manager.endConversationSession(reasonCode: "test_cleanup")
+            }
+
+            manager.installPreparedOneShotLaunchExecutorForTesting { _, _, _ in
+                .failedClosed(reason: "legacy_supervisor_runtime_unavailable")
+            }
+            manager.installVoiceAuthorizationBridgeForTesting(
+                SupervisorVoiceAuthorizationBridge(
+                    issueHandler: { payload in
+                        HubIPCClient.VoiceGrantChallengeResult(
+                            ok: true,
+                            source: "test",
+                            challenge: makeChallenge(
+                                challengeId: "voice_chal_guarded_one_shot_fail_closed_resume",
+                                templateId: payload.templateId,
+                                actionDigest: payload.actionDigest,
+                                scopeDigest: payload.scopeDigest,
+                                amountDigest: payload.amountDigest ?? "",
+                                challengeCode: "667789",
+                                requiresMobileConfirm: false,
+                                allowVoiceOnly: true,
+                                riskLevel: payload.riskLevel,
+                                boundDeviceId: payload.boundDeviceId ?? "",
+                                mobileTerminalId: payload.mobileTerminalId ?? ""
+                            ),
+                            reasonCode: nil
+                        )
+                    },
+                    verifyHandler: { payload in
+                        makeVerifySuccess(
+                            challengeId: payload.challengeId,
+                            transcriptHash: "sha256:guarded-one-shot-fail-closed-resume",
+                            semanticMatchScore: payload.semanticMatchScore ?? 0,
+                            mobileConfirmed: payload.mobileConfirmed
+                        )
+                    }
+                )
+            )
+
+            _ = await manager.prepareOneShotControlPlane(submission: makeOneShotSubmission())
+            try await waitUntil("guarded one shot fail closed resume challenge issued") {
+                manager.activeVoiceChallenge?.challengeId == "voice_chal_guarded_one_shot_fail_closed_resume"
+            }
+
+            let resumeCountBeforeFollowUp = transcriber.startCount
+            manager.sendMessage("Approve guarded one-shot launch", fromVoice: true)
+
+            try await waitUntil("guarded one shot fail closed resume follow up emitted") {
+                manager.oneShotRunState?.state == .failedClosed &&
+                    manager.messages.contains(where: {
+                        $0.role == .assistant &&
+                            $0.content.contains("失败闭锁") &&
+                            $0.content.contains("legacy_supervisor_runtime_unavailable")
+                    })
+            }
+
+            try await waitUntil("talk loop resumed after guarded one shot fail closed follow up", timeoutMs: 8_000) {
+                voiceCoordinator.isRecording &&
+                    transcriber.isRunning &&
+                    transcriber.startCount == resumeCountBeforeFollowUp + 1 &&
+                    voiceCoordinator.runtimeState.state == .listening &&
+                    voiceCoordinator.runtimeState.reasonCode == "talk_loop_resumed" &&
+                    manager.recentEventsForTesting().contains(where: {
+                        $0.contains("voice talk loop resumed: voice_auth_guarded_one_shot_fail_closed")
+                    })
+            }
+        }
+    }
+
+    @Test
     func verifiedVoiceAuthorizationFailsClosedWithoutExecutionRuntime() async {
         await Self.gate.run {
             let manager = SupervisorManager.makeForTesting()
@@ -667,8 +1461,8 @@ struct SupervisorManagerVoiceAuthorizationTests {
 
             #expect(resolution.state == .verified)
             #expect(manager.oneShotRunState?.state == .failedClosed)
-            #expect(manager.oneShotRunState?.topBlocker == "supervisor_model_unavailable")
-            #expect(manager.oneShotRunState?.userVisibleSummary == "failed closed: supervisor_model_unavailable")
+            #expect(manager.oneShotRunState?.topBlocker == "legacy_supervisor_runtime_unavailable")
+            #expect(manager.oneShotRunState?.userVisibleSummary == "failed closed: legacy_supervisor_runtime_unavailable")
             #expect(manager.messages.last?.content.contains("失败闭锁") == true)
         }
     }
@@ -947,7 +1741,16 @@ struct SupervisorManagerVoiceAuthorizationTests {
                 manager.voiceAuthorizationResolution?.state == .escalatedToMobile &&
                     manager.activeVoiceChallenge?.challengeId == "voice_chal_pending_grant_approve"
             }
-            #expect(manager.messages.last?.content.contains("来源：Slack / 私聊消息入口") == true)
+            try await waitUntil("pending grant source reply emitted") {
+                manager.messages.contains(where: {
+                    $0.role == .assistant &&
+                        $0.content.contains("Slack / 私聊消息入口")
+                })
+            }
+            #expect(manager.messages.contains(where: {
+                $0.role == .assistant &&
+                    $0.content.contains("Slack / 私聊消息入口")
+            }))
 
             let resolution = await manager.retryVoiceAuthorizationVerification(
                 transcript: "Approve Hub grant for Release Runtime",
@@ -975,6 +1778,126 @@ struct SupervisorManagerVoiceAuthorizationTests {
             #expect(spoken.contains(where: { $0.contains("mobile confirmation") }))
             #expect(spoken.contains(where: { $0.contains("Voice authorization verified") }))
             #expect(spoken.contains(where: { $0.contains("Supervisor Hub 简报") }))
+        }
+    }
+
+    @Test
+    func wakeHitDoesNotAutoAuthorizeHighRiskPendingGrantVoiceAction() async throws {
+        try await Self.gate.run {
+            var spoken: [String] = []
+            let synthesizer = SupervisorSpeechSynthesizer(
+                deduper: SupervisorVoiceBriefDeduper(cooldown: 0),
+                speakSink: { spoken.append($0) }
+            )
+            let now = Date(timeIntervalSince1970: 7_205)
+            let controller = SupervisorConversationSessionController.makeForTesting(
+                route: .systemSpeechCompatibility,
+                wakeMode: .wakePhrase,
+                nowProvider: { now }
+            )
+            let manager = SupervisorManager.makeForTesting(
+                supervisorSpeechSynthesizer: synthesizer,
+                conversationSessionController: controller
+            )
+            manager.resetVoiceAuthorizationState()
+            manager.clearMessages()
+            defer {
+                manager.resetVoiceAuthorizationState()
+                manager.clearMessages()
+                manager.endConversationSession(reasonCode: "test_cleanup")
+            }
+
+            let root = try makeProjectRoot(named: "voice-pending-grant-wake-challenge")
+            defer { try? FileManager.default.removeItem(at: root) }
+
+            let project = makeProjectEntry(root: root, displayName: "Release Runtime")
+            let grant = makePendingGrant(
+                project: project,
+                grantRequestId: "grant-release-wake-1",
+                capability: "web.fetch",
+                reason: "release production deploy"
+            )
+            let approveProbe = SupervisorPendingGrantApproveProbe()
+
+            let appModel = AppModel()
+            var settings = configuredSettings(from: appModel.settingsStore.settings)
+            settings.voice.wakeMode = .wakePhrase
+            settings.voice.preferredRoute = .systemSpeechCompatibility
+            appModel.settingsStore.settings = settings
+            appModel.registry = registry(with: [project])
+            appModel.selectedProjectId = project.projectId
+            manager.setAppModel(appModel)
+            manager.setPendingHubGrantsForTesting([grant], now: now)
+            manager.installSchedulerSnapshotRefreshOverrideForTesting { _ in }
+            manager.installPendingHubGrantApproveOverrideForTesting { grantRequestId, projectId, requestedTtlSec, requestedTokenCap, note in
+                await approveProbe.record(
+                    grantRequestId: grantRequestId,
+                    projectId: projectId,
+                    requestedTtlSec: requestedTtlSec,
+                    requestedTokenCap: requestedTokenCap,
+                    note: note
+                )
+                return HubIPCClient.PendingGrantActionResult(
+                    ok: true,
+                    decision: .approved,
+                    source: "test",
+                    grantRequestId: grantRequestId,
+                    grantId: grantRequestId,
+                    expiresAtMs: (Date().timeIntervalSince1970 + 900) * 1000.0,
+                    reasonCode: nil
+                )
+            }
+            manager.installVoiceAuthorizationBridgeForTesting(
+                SupervisorVoiceAuthorizationBridge(
+                    issueHandler: { payload in
+                        HubIPCClient.VoiceGrantChallengeResult(
+                            ok: true,
+                            source: "test",
+                            challenge: makeChallenge(
+                                challengeId: "voice_chal_pending_grant_after_wake",
+                                templateId: payload.templateId,
+                                actionDigest: payload.actionDigest,
+                                scopeDigest: payload.scopeDigest,
+                                amountDigest: payload.amountDigest ?? "",
+                                challengeCode: "661199",
+                                requiresMobileConfirm: true,
+                                allowVoiceOnly: false,
+                                riskLevel: payload.riskLevel,
+                                boundDeviceId: payload.boundDeviceId ?? "",
+                                mobileTerminalId: payload.mobileTerminalId ?? ""
+                            ),
+                            reasonCode: nil
+                        )
+                    },
+                    verifyHandler: { _ in
+                        makeVerifyFailure(reasonCode: "unexpected_verify")
+                    }
+                )
+            )
+
+            try await waitUntil("wake mode promoted for pending grant wake auth") {
+                manager.conversationSessionSnapshot.wakeMode == .wakePhrase
+            }
+
+            manager.handleVoiceWakeEventForTesting(
+                phrase: "supervisor",
+                route: .systemSpeechCompatibility,
+                timestamp: now.timeIntervalSince1970
+            )
+
+            #expect(manager.conversationSessionSnapshot.windowState == .conversing)
+            #expect(manager.conversationSessionSnapshot.openedBy == .wakePhrase)
+
+            manager.sendMessage("批准这个 release grant", fromVoice: true)
+
+            try await waitUntil("wake-triggered high risk action still asks challenge") {
+                manager.voiceAuthorizationResolution?.state == .escalatedToMobile &&
+                    manager.activeVoiceChallenge?.challengeId == "voice_chal_pending_grant_after_wake"
+            }
+
+            let approveCall = await approveProbe.first()
+            #expect(approveCall == nil)
+            #expect(spoken.contains(where: { $0.contains("mobile confirmation") }))
         }
     }
 
@@ -1256,7 +2179,7 @@ struct SupervisorManagerVoiceAuthorizationTests {
             try await waitUntil("pending grant deny fallback reply emitted") {
                 manager.messages.contains(where: {
                     $0.role == .assistant &&
-                        $0.content.contains("已拒绝 Local Runtime 的 本地模型调用 Hub 授权")
+                        $0.content.contains("已拒绝 Local Runtime 的 本地文本模型调用 Hub 授权")
                 })
             }
 
@@ -1267,7 +2190,7 @@ struct SupervisorManagerVoiceAuthorizationTests {
             #expect(manager.pendingHubGrants.isEmpty)
             #expect(spoken.contains(where: { $0.contains("Voice authorization challenge issued") }))
             #expect(spoken.contains(where: { $0.contains("Voice authorization verified") }))
-            #expect(spoken.contains(where: { $0.contains("已拒绝 Local Runtime 的 本地模型调用 Hub 授权") }))
+            #expect(spoken.contains(where: { $0.contains("已拒绝 Local Runtime 的 本地文本模型调用 Hub 授权") }))
         }
     }
 
@@ -1376,8 +2299,9 @@ struct SupervisorManagerVoiceAuthorizationTests {
             #expect(
                 manager.messages.contains(where: {
                     $0.role == .assistant &&
-                        $0.content.contains("来源：Slack / 私聊消息入口") &&
-                        $0.content.contains("来源：Telegram / 群聊消息入口")
+                        $0.content.contains("Runtime Alpha / 联网访问 / 授权单号：grant-alpha-1") &&
+                        $0.content.contains("Runtime Beta / 付费模型调用（openai/gpt-5.3-codex） / 授权单号：grant-beta-1") &&
+                        $0.content.contains("如果要指定某一笔，可以直接补授权单号")
                 })
             )
         }
@@ -1615,9 +2539,16 @@ struct SupervisorManagerVoiceAuthorizationTests {
             try await waitUntil("voice challenge issued for slack grant") {
                 manager.activeVoiceChallenge?.challengeId == "voice_chal_pending_grant_provider_scope"
             }
+            try await waitUntil("slack grant source reply emitted") {
+                manager.messages.contains(where: {
+                    $0.content.contains("Slack / 私聊消息入口")
+                })
+            }
 
             #expect(issuedProjectID == projectA.projectId)
-            #expect(manager.messages.last?.content.contains("Slack / 私聊消息入口") == true)
+            #expect(manager.messages.contains(where: {
+                $0.content.contains("Slack / 私聊消息入口")
+            }))
         }
     }
 
@@ -1800,6 +2731,523 @@ struct SupervisorManagerVoiceAuthorizationTests {
     }
 
     @Test
+    func pendingGrantVerifiedVoiceFollowUpBriefResumesTalkLoopListening() async throws {
+        try await Self.gate.run {
+            let fixture = try await makeVoiceAuthorizationTalkLoopFixture(now: 7_650)
+            let manager = fixture.manager
+            let voiceCoordinator = fixture.voiceCoordinator
+            let transcriber = fixture.transcriber
+            defer {
+                manager.resetVoiceAuthorizationState()
+                manager.clearMessages()
+                manager.endConversationSession(reasonCode: "test_cleanup")
+            }
+
+            let root = try makeProjectRoot(named: "voice-pending-grant-followup-resume")
+            defer { try? FileManager.default.removeItem(at: root) }
+
+            let project = makeProjectEntry(root: root, displayName: "Release Runtime")
+            let grant = makePendingGrant(
+                project: project,
+                grantRequestId: "grant-release-followup-resume-1",
+                capability: "web.fetch",
+                reason: "release production deploy"
+            )
+            let approveProbe = SupervisorPendingGrantApproveProbe()
+
+            let appModel = AppModel()
+            appModel.registry = registry(with: [project])
+            appModel.selectedProjectId = project.projectId
+            var settings = configuredSettings(from: appModel.settingsStore.settings)
+            settings.voice.wakeMode = .wakePhrase
+            settings.voice.preferredRoute = .systemSpeechCompatibility
+            settings.voice.speechRateMultiplier = 1.35
+            appModel.settingsStore.settings = settings
+            manager.setAppModel(appModel)
+            manager.setPendingHubGrantsForTesting([grant])
+            manager.installSchedulerSnapshotRefreshOverrideForTesting { _ in }
+            manager.installPendingHubGrantApproveOverrideForTesting { grantRequestId, projectId, requestedTtlSec, requestedTokenCap, note in
+                await approveProbe.record(
+                    grantRequestId: grantRequestId,
+                    projectId: projectId,
+                    requestedTtlSec: requestedTtlSec,
+                    requestedTokenCap: requestedTokenCap,
+                    note: note
+                )
+                return HubIPCClient.PendingGrantActionResult(
+                    ok: true,
+                    decision: .approved,
+                    source: "test",
+                    grantRequestId: grantRequestId,
+                    grantId: grantRequestId,
+                    expiresAtMs: (Date().timeIntervalSince1970 + 900) * 1000.0,
+                    reasonCode: nil
+                )
+            }
+            manager.installSupervisorBriefProjectionFetcherForTesting { payload in
+                HubIPCClient.SupervisorBriefProjectionResult(
+                    ok: true,
+                    source: "test",
+                    projection: Self.makeBriefProjection(
+                        projectId: payload.projectId,
+                        trigger: payload.trigger,
+                        topline: "发布路径已恢复。",
+                        blocker: "",
+                        next: "继续 release pipeline。",
+                        pendingGrantCount: 0,
+                        ttsScript: [
+                            "Supervisor Hub 简报。发布路径已恢复。",
+                            "建议下一步：继续 release pipeline。"
+                        ],
+                        auditRef: "audit-voice-grant-followup-resume-1"
+                    ),
+                    reasonCode: nil
+                )
+            }
+            manager.installVoiceAuthorizationBridgeForTesting(
+                SupervisorVoiceAuthorizationBridge(
+                    issueHandler: { payload in
+                        HubIPCClient.VoiceGrantChallengeResult(
+                            ok: true,
+                            source: "test",
+                            challenge: makeChallenge(
+                                challengeId: "voice_chal_pending_grant_followup_resume",
+                                templateId: payload.templateId,
+                                actionDigest: payload.actionDigest,
+                                scopeDigest: payload.scopeDigest,
+                                amountDigest: payload.amountDigest ?? "",
+                                challengeCode: "773312",
+                                requiresMobileConfirm: payload.requiresMobileConfirm,
+                                allowVoiceOnly: payload.allowVoiceOnly,
+                                riskLevel: payload.riskLevel,
+                                boundDeviceId: payload.boundDeviceId ?? "",
+                                mobileTerminalId: payload.mobileTerminalId ?? ""
+                            ),
+                            reasonCode: nil
+                        )
+                    },
+                    verifyHandler: { payload in
+                        HubIPCClient.VoiceGrantVerificationResult(
+                            ok: true,
+                            verified: true,
+                            decision: .allow,
+                            source: "test",
+                            denyCode: nil,
+                            challengeId: payload.challengeId,
+                            transcriptHash: "sha256:voice-grant-followup-resume",
+                            semanticMatchScore: payload.semanticMatchScore ?? 0,
+                            challengeMatch: true,
+                            deviceBindingOK: true,
+                            mobileConfirmed: payload.mobileConfirmed,
+                            reasonCode: nil
+                        )
+                    }
+                )
+            )
+
+            manager.sendMessage("批准这个 release grant", fromVoice: true)
+
+            try await waitUntil("pending grant challenge issued") {
+                manager.activeVoiceChallenge?.challengeId == "voice_chal_pending_grant_followup_resume"
+            }
+
+            try await waitUntil("talk loop resumed after pending grant prompt", timeoutMs: 8_000) {
+                voiceCoordinator.isRecording &&
+                    transcriber.isRunning &&
+                    transcriber.startCount >= 1 &&
+                    voiceCoordinator.runtimeState.state == .listening &&
+                    voiceCoordinator.runtimeState.reasonCode == "talk_loop_resumed" &&
+                    manager.recentEventsForTesting().contains(where: {
+                        $0.contains("voice talk loop resumed: pending_grant_voice_reply")
+                    })
+            }
+
+            let resumeCountBeforeFollowUp = transcriber.startCount
+            voiceCoordinator.stopRecording()
+            try await waitUntil("talk loop paused for next voice turn") {
+                !voiceCoordinator.isRecording && !transcriber.isRunning
+            }
+
+            manager.sendMessage("手机已确认，现在批准 release grant", fromVoice: true)
+
+            try await waitUntil("pending grant follow up brief emitted") {
+                manager.pendingHubGrants.isEmpty &&
+                    manager.activeVoiceChallenge == nil &&
+                    manager.messages.contains(where: {
+                        $0.role == .assistant &&
+                            $0.content.contains("🧭 Supervisor Brief") &&
+                            $0.content.contains("继续 release pipeline。")
+                    })
+            }
+
+            try await waitUntil("talk loop resumed after pending grant follow up", timeoutMs: 8_000) {
+                voiceCoordinator.isRecording &&
+                    transcriber.isRunning &&
+                    transcriber.startCount == resumeCountBeforeFollowUp + 1 &&
+                    voiceCoordinator.runtimeState.state == .listening &&
+                    voiceCoordinator.runtimeState.reasonCode == "talk_loop_resumed" &&
+                    manager.recentEventsForTesting().contains(where: {
+                        $0.contains("voice talk loop resumed: pending_grant_follow_up")
+                    })
+            }
+
+            let approveCall = await approveProbe.first()
+            #expect(approveCall?.grantRequestId == "grant-release-followup-resume-1")
+        }
+    }
+
+    @Test
+    func pendingGrantVerifiedVoiceFollowUpHumanizesGovernedReviewProjection() async throws {
+        try await Self.gate.run {
+            var spoken: [String] = []
+            let synthesizer = SupervisorSpeechSynthesizer(
+                deduper: SupervisorVoiceBriefDeduper(cooldown: 0),
+                speakSink: { spoken.append($0) }
+            )
+            let fixture = try await makeVoiceAuthorizationTalkLoopFixture(
+                now: 7_652,
+                supervisorSpeechSynthesizer: synthesizer
+            )
+            let manager = fixture.manager
+            let voiceCoordinator = fixture.voiceCoordinator
+            let transcriber = fixture.transcriber
+            defer {
+                manager.resetVoiceAuthorizationState()
+                manager.clearMessages()
+                manager.endConversationSession(reasonCode: "test_cleanup")
+            }
+
+            let root = try makeProjectRoot(named: "voice-pending-grant-followup-governed-review")
+            defer { try? FileManager.default.removeItem(at: root) }
+
+            let project = makeProjectEntry(root: root, displayName: "Review Runtime")
+            let grant = makePendingGrant(
+                project: project,
+                grantRequestId: "grant-release-followup-governed-review-1",
+                capability: "web.fetch",
+                reason: "release production deploy"
+            )
+            let approveProbe = SupervisorPendingGrantApproveProbe()
+
+            let appModel = AppModel()
+            appModel.registry = registry(with: [project])
+            appModel.selectedProjectId = project.projectId
+            var settings = configuredSettings(from: appModel.settingsStore.settings)
+            settings.voice.wakeMode = .wakePhrase
+            settings.voice.preferredRoute = .systemSpeechCompatibility
+            settings.voice.speechRateMultiplier = 1.35
+            appModel.settingsStore.settings = settings
+            manager.setAppModel(appModel)
+            manager.setPendingHubGrantsForTesting([grant])
+            manager.installSchedulerSnapshotRefreshOverrideForTesting { _ in }
+            manager.installPendingHubGrantApproveOverrideForTesting { grantRequestId, projectId, requestedTtlSec, requestedTokenCap, note in
+                await approveProbe.record(
+                    grantRequestId: grantRequestId,
+                    projectId: projectId,
+                    requestedTtlSec: requestedTtlSec,
+                    requestedTokenCap: requestedTokenCap,
+                    note: note
+                )
+                return HubIPCClient.PendingGrantActionResult(
+                    ok: true,
+                    decision: .approved,
+                    source: "test",
+                    grantRequestId: grantRequestId,
+                    grantId: grantRequestId,
+                    expiresAtMs: (Date().timeIntervalSince1970 + 900) * 1000.0,
+                    reasonCode: nil
+                )
+            }
+            manager.installSupervisorBriefProjectionFetcherForTesting { payload in
+                HubIPCClient.SupervisorBriefProjectionResult(
+                    ok: true,
+                    source: "test",
+                    projection: HubIPCClient.SupervisorBriefProjectionSnapshot(
+                        schemaVersion: "xhub.supervisor_brief_projection.v1",
+                        projectionId: "governed-review-followup-\(payload.projectId)",
+                        projectionKind: payload.projectionKind,
+                        projectId: payload.projectId,
+                        runId: "",
+                        missionId: "",
+                        trigger: payload.trigger,
+                        status: "attention_required",
+                        criticalBlocker: "",
+                        topline: "Project \(payload.projectId) has queued strategic governance review. Supervisor heartbeat queued it via no-progress brainstorm cadence because of long no progress.",
+                        nextBestAction: "Open the project and inspect why the queued governance review was scheduled.",
+                        pendingGrantCount: 0,
+                        ttsScript: [
+                            "Project \(payload.projectId) has queued strategic governance review.",
+                            "Supervisor heartbeat queued it via no-progress brainstorm cadence because of long no progress.",
+                            "Next best action: Open the project and inspect why the queued governance review was scheduled."
+                        ],
+                        cardSummary: "GOVERNANCE REVIEW: queued strategic governance review.",
+                        evidenceRefs: ["memory://projection/governed-review-followup"],
+                        generatedAtMs: 1_777_000_500_000,
+                        expiresAtMs: 1_777_000_560_000,
+                        auditRef: "audit-voice-grant-followup-governed-review-1"
+                    ),
+                    reasonCode: nil
+                )
+            }
+            manager.installVoiceAuthorizationBridgeForTesting(
+                SupervisorVoiceAuthorizationBridge(
+                    issueHandler: { payload in
+                        HubIPCClient.VoiceGrantChallengeResult(
+                            ok: true,
+                            source: "test",
+                            challenge: makeChallenge(
+                                challengeId: "voice_chal_pending_grant_followup_governed_review",
+                                templateId: payload.templateId,
+                                actionDigest: payload.actionDigest,
+                                scopeDigest: payload.scopeDigest,
+                                amountDigest: payload.amountDigest ?? "",
+                                challengeCode: "773314",
+                                requiresMobileConfirm: payload.requiresMobileConfirm,
+                                allowVoiceOnly: payload.allowVoiceOnly,
+                                riskLevel: payload.riskLevel,
+                                boundDeviceId: payload.boundDeviceId ?? "",
+                                mobileTerminalId: payload.mobileTerminalId ?? ""
+                            ),
+                            reasonCode: nil
+                        )
+                    },
+                    verifyHandler: { payload in
+                        HubIPCClient.VoiceGrantVerificationResult(
+                            ok: true,
+                            verified: true,
+                            decision: .allow,
+                            source: "test",
+                            denyCode: nil,
+                            challengeId: payload.challengeId,
+                            transcriptHash: "sha256:voice-grant-followup-governed-review",
+                            semanticMatchScore: payload.semanticMatchScore ?? 0,
+                            challengeMatch: true,
+                            deviceBindingOK: true,
+                            mobileConfirmed: payload.mobileConfirmed,
+                            reasonCode: nil
+                        )
+                    }
+                )
+            )
+
+            manager.sendMessage("批准这个 review grant", fromVoice: true)
+
+            try await waitUntil("pending grant governed review challenge issued") {
+                manager.activeVoiceChallenge?.challengeId == "voice_chal_pending_grant_followup_governed_review"
+            }
+
+            try await waitUntil("talk loop resumed after governed review prompt", timeoutMs: 8_000) {
+                voiceCoordinator.isRecording &&
+                    transcriber.isRunning &&
+                    voiceCoordinator.runtimeState.state == .listening &&
+                    manager.recentEventsForTesting().contains(where: {
+                        $0.contains("voice talk loop resumed: pending_grant_voice_reply")
+                    })
+            }
+
+            let resumeCountBeforeFollowUp = transcriber.startCount
+            voiceCoordinator.stopRecording()
+            try await waitUntil("talk loop paused before governed review follow up") {
+                !voiceCoordinator.isRecording && !transcriber.isRunning
+            }
+
+            manager.sendMessage("手机已确认，现在批准 review grant", fromVoice: true)
+
+            try await waitUntil("pending grant governed review follow up emitted") {
+                manager.pendingHubGrants.isEmpty &&
+                    manager.activeVoiceChallenge == nil &&
+                    manager.messages.contains(where: {
+                        $0.role == .assistant &&
+                            $0.content.contains("治理审查已排队") &&
+                            $0.content.contains("长时间无进展") &&
+                            $0.content.contains("查看：打开项目并查看这次治理审查")
+                    })
+            }
+
+            try await waitUntil("talk loop resumed after governed review follow up", timeoutMs: 8_000) {
+                voiceCoordinator.isRecording &&
+                    transcriber.isRunning &&
+                    transcriber.startCount == resumeCountBeforeFollowUp + 1 &&
+                    voiceCoordinator.runtimeState.state == .listening &&
+                    manager.recentEventsForTesting().contains(where: {
+                        $0.contains("voice talk loop resumed: pending_grant_follow_up")
+                    })
+            }
+
+            #expect(manager.messages.contains(where: {
+                $0.role == .assistant &&
+                    $0.content.contains("strategic governance review")
+            }) == false)
+            #expect(spoken.contains(where: { $0.contains("治理审查已排队") }))
+            #expect(spoken.contains(where: { $0.contains("长时间无进展") }))
+            #expect(!spoken.contains(where: { $0.contains("strategic governance review") }))
+
+            let approveCall = await approveProbe.first()
+            #expect(approveCall?.grantRequestId == "grant-release-followup-governed-review-1")
+        }
+    }
+
+    @Test
+    func pendingGrantVerifiedVoiceFollowUpUnavailableProjectionFailsClosedAndResumesTalkLoopListening() async throws {
+        try await Self.gate.run {
+            let fixture = try await makeVoiceAuthorizationTalkLoopFixture(now: 7_651)
+            let manager = fixture.manager
+            let voiceCoordinator = fixture.voiceCoordinator
+            let transcriber = fixture.transcriber
+            defer {
+                manager.resetVoiceAuthorizationState()
+                manager.clearMessages()
+                manager.endConversationSession(reasonCode: "test_cleanup")
+            }
+
+            let root = try makeProjectRoot(named: "voice-pending-grant-followup-unavailable")
+            defer { try? FileManager.default.removeItem(at: root) }
+
+            let project = makeProjectEntry(root: root, displayName: "Release Runtime")
+            let grant = makePendingGrant(
+                project: project,
+                grantRequestId: "grant-release-followup-unavailable-1",
+                capability: "web.fetch",
+                reason: "release production deploy"
+            )
+            let approveProbe = SupervisorPendingGrantApproveProbe()
+
+            let appModel = AppModel()
+            appModel.registry = registry(with: [project])
+            appModel.selectedProjectId = project.projectId
+            var settings = configuredSettings(from: appModel.settingsStore.settings)
+            settings.voice.wakeMode = .wakePhrase
+            settings.voice.preferredRoute = .systemSpeechCompatibility
+            settings.voice.speechRateMultiplier = 1.35
+            appModel.settingsStore.settings = settings
+            manager.setAppModel(appModel)
+            manager.setPendingHubGrantsForTesting([grant])
+            manager.installSchedulerSnapshotRefreshOverrideForTesting { _ in }
+            manager.installPendingHubGrantApproveOverrideForTesting { grantRequestId, projectId, requestedTtlSec, requestedTokenCap, note in
+                await approveProbe.record(
+                    grantRequestId: grantRequestId,
+                    projectId: projectId,
+                    requestedTtlSec: requestedTtlSec,
+                    requestedTokenCap: requestedTokenCap,
+                    note: note
+                )
+                return HubIPCClient.PendingGrantActionResult(
+                    ok: true,
+                    decision: .approved,
+                    source: "test",
+                    grantRequestId: grantRequestId,
+                    grantId: grantRequestId,
+                    expiresAtMs: (Date().timeIntervalSince1970 + 900) * 1000.0,
+                    reasonCode: nil
+                )
+            }
+            manager.installSupervisorBriefProjectionFetcherForTesting { _ in
+                HubIPCClient.SupervisorBriefProjectionResult(
+                    ok: false,
+                    source: "test",
+                    projection: nil,
+                    reasonCode: "projection_unavailable"
+                )
+            }
+            manager.installVoiceAuthorizationBridgeForTesting(
+                SupervisorVoiceAuthorizationBridge(
+                    issueHandler: { payload in
+                        HubIPCClient.VoiceGrantChallengeResult(
+                            ok: true,
+                            source: "test",
+                            challenge: makeChallenge(
+                                challengeId: "voice_chal_pending_grant_followup_unavailable",
+                                templateId: payload.templateId,
+                                actionDigest: payload.actionDigest,
+                                scopeDigest: payload.scopeDigest,
+                                amountDigest: payload.amountDigest ?? "",
+                                challengeCode: "773313",
+                                requiresMobileConfirm: payload.requiresMobileConfirm,
+                                allowVoiceOnly: payload.allowVoiceOnly,
+                                riskLevel: payload.riskLevel,
+                                boundDeviceId: payload.boundDeviceId ?? "",
+                                mobileTerminalId: payload.mobileTerminalId ?? ""
+                            ),
+                            reasonCode: nil
+                        )
+                    },
+                    verifyHandler: { payload in
+                        HubIPCClient.VoiceGrantVerificationResult(
+                            ok: true,
+                            verified: true,
+                            decision: .allow,
+                            source: "test",
+                            denyCode: nil,
+                            challengeId: payload.challengeId,
+                            transcriptHash: "sha256:voice-grant-followup-unavailable",
+                            semanticMatchScore: payload.semanticMatchScore ?? 0,
+                            challengeMatch: true,
+                            deviceBindingOK: true,
+                            mobileConfirmed: payload.mobileConfirmed,
+                            reasonCode: nil
+                        )
+                    }
+                )
+            )
+
+            manager.sendMessage("批准这个 release grant", fromVoice: true)
+
+            try await waitUntil("pending grant unavailable challenge issued") {
+                manager.activeVoiceChallenge?.challengeId == "voice_chal_pending_grant_followup_unavailable"
+            }
+
+            try await waitUntil("talk loop resumed after pending grant unavailable prompt", timeoutMs: 8_000) {
+                voiceCoordinator.isRecording &&
+                    transcriber.isRunning &&
+                    transcriber.startCount >= 1 &&
+                    voiceCoordinator.runtimeState.state == .listening &&
+                    voiceCoordinator.runtimeState.reasonCode == "talk_loop_resumed" &&
+                    manager.recentEventsForTesting().contains(where: {
+                        $0.contains("voice talk loop resumed: pending_grant_voice_reply")
+                    })
+            }
+
+            let resumeCountBeforeFollowUp = transcriber.startCount
+            voiceCoordinator.stopRecording()
+            try await waitUntil("talk loop paused before unavailable follow up") {
+                !voiceCoordinator.isRecording && !transcriber.isRunning
+            }
+
+            manager.sendMessage("手机已确认，现在批准 release grant", fromVoice: true)
+
+            try await waitUntil("pending grant unavailable follow up emitted") {
+                manager.pendingHubGrants.isEmpty &&
+                    manager.activeVoiceChallenge == nil &&
+                    manager.messages.contains(where: {
+                        $0.role == .assistant &&
+                            $0.content.contains("⚠️ Hub Brief 暂不可用") &&
+                            $0.content.contains("已批准 Release Runtime 的") &&
+                            $0.content.contains("没有拿到 Hub 统一投影") &&
+                            $0.content.contains("不在 XT 本地即兴拼接 Supervisor brief")
+                    })
+            }
+
+            try await waitUntil("talk loop resumed after pending grant unavailable follow up", timeoutMs: 8_000) {
+                voiceCoordinator.isRecording &&
+                    transcriber.isRunning &&
+                    transcriber.startCount == resumeCountBeforeFollowUp + 1 &&
+                    voiceCoordinator.runtimeState.state == .listening &&
+                    voiceCoordinator.runtimeState.reasonCode == "talk_loop_resumed" &&
+                    manager.recentEventsForTesting().contains(where: {
+                        $0.contains("voice talk loop resumed: pending_grant_follow_up")
+                    })
+            }
+
+            let approveCall = await approveProbe.first()
+            #expect(approveCall?.grantRequestId == "grant-release-followup-unavailable-1")
+            #expect(manager.messages.contains(where: {
+                $0.role == .assistant &&
+                    $0.content.contains("🧭 Supervisor Brief")
+            }) == false)
+        }
+    }
+
+    @Test
     func activeVoiceChallengeVoiceTurnSupportsRepeatAndCancelCommands() async throws {
         try await Self.gate.run {
             var spoken: [String] = []
@@ -1883,6 +3331,354 @@ struct SupervisorManagerVoiceAuthorizationTests {
     }
 
     @Test
+    func activeVoiceChallengeRepeatPromptResumesTalkLoopListening() async throws {
+        try await Self.gate.run {
+            let fixture = try await makeVoiceAuthorizationTalkLoopFixture(now: 7_610)
+            let manager = fixture.manager
+            let voiceCoordinator = fixture.voiceCoordinator
+            let transcriber = fixture.transcriber
+            defer {
+                manager.resetVoiceAuthorizationState()
+                manager.clearMessages()
+                manager.endConversationSession(reasonCode: "test_cleanup")
+            }
+
+            manager.installVoiceAuthorizationBridgeForTesting(
+                SupervisorVoiceAuthorizationBridge(
+                    issueHandler: { payload in
+                        HubIPCClient.VoiceGrantChallengeResult(
+                            ok: true,
+                            source: "test",
+                            challenge: makeChallenge(
+                                challengeId: "voice_chal_repeat_resume",
+                                templateId: payload.templateId,
+                                actionDigest: payload.actionDigest,
+                                scopeDigest: payload.scopeDigest,
+                                amountDigest: payload.amountDigest ?? "",
+                                challengeCode: "110022",
+                                requiresMobileConfirm: false,
+                                allowVoiceOnly: true,
+                                riskLevel: payload.riskLevel,
+                                boundDeviceId: payload.boundDeviceId ?? "",
+                                mobileTerminalId: payload.mobileTerminalId ?? ""
+                            ),
+                            reasonCode: nil
+                        )
+                    },
+                    verifyHandler: { _ in
+                        makeVerifyFailure(reasonCode: "unexpected_verify")
+                    }
+                )
+            )
+
+            _ = await manager.startVoiceAuthorization(
+                SupervisorVoiceAuthorizationRequest(
+                    requestId: "voice-repeat-resume",
+                    projectId: "project-repeat-resume",
+                    actionText: "Approve release",
+                    scopeText: "project=Release; source=Slack",
+                    riskTier: .high
+                )
+            )
+
+            #expect(transcriber.startCount == 0)
+            manager.sendMessage("再说一遍授权要求", fromVoice: true)
+
+            try await waitUntil("voice auth repeat prompt emitted") {
+                manager.messages.contains(where: {
+                    $0.role == .assistant &&
+                        $0.content.contains("高风险语音授权") &&
+                        $0.content.contains("110022") &&
+                        $0.content.contains("Approve release")
+                })
+            }
+
+            try await waitUntil("talk loop resumed after repeat prompt", timeoutMs: 7_500) {
+                voiceCoordinator.isRecording &&
+                    transcriber.isRunning &&
+                    transcriber.startCount == 1 &&
+                    voiceCoordinator.runtimeState.state == .listening &&
+                    voiceCoordinator.runtimeState.reasonCode == "talk_loop_resumed" &&
+                    manager.recentEventsForTesting().contains(where: {
+                        $0.contains("voice talk loop resumed: voice_auth_repeat_prompt")
+                    })
+            }
+        }
+    }
+
+    @Test
+    func activeVoiceChallengeCancelReplyResumesTalkLoopListening() async throws {
+        try await Self.gate.run {
+            let fixture = try await makeVoiceAuthorizationTalkLoopFixture(now: 7_620)
+            let manager = fixture.manager
+            let voiceCoordinator = fixture.voiceCoordinator
+            let transcriber = fixture.transcriber
+            defer {
+                manager.resetVoiceAuthorizationState()
+                manager.clearMessages()
+                manager.endConversationSession(reasonCode: "test_cleanup")
+            }
+
+            manager.installVoiceAuthorizationBridgeForTesting(
+                SupervisorVoiceAuthorizationBridge(
+                    issueHandler: { payload in
+                        HubIPCClient.VoiceGrantChallengeResult(
+                            ok: true,
+                            source: "test",
+                            challenge: makeChallenge(
+                                challengeId: "voice_chal_cancel_resume",
+                                templateId: payload.templateId,
+                                actionDigest: payload.actionDigest,
+                                scopeDigest: payload.scopeDigest,
+                                amountDigest: payload.amountDigest ?? "",
+                                challengeCode: "220011",
+                                requiresMobileConfirm: true,
+                                allowVoiceOnly: false,
+                                riskLevel: payload.riskLevel,
+                                boundDeviceId: payload.boundDeviceId ?? "",
+                                mobileTerminalId: payload.mobileTerminalId ?? ""
+                            ),
+                            reasonCode: nil
+                        )
+                    },
+                    verifyHandler: { _ in
+                        makeVerifyFailure(reasonCode: "unexpected_verify")
+                    }
+                )
+            )
+
+            _ = await manager.startVoiceAuthorization(
+                SupervisorVoiceAuthorizationRequest(
+                    requestId: "voice-cancel-resume",
+                    projectId: "project-cancel-resume",
+                    actionText: "Approve release",
+                    scopeText: "project=Release; source=Slack",
+                    riskTier: .high
+                )
+            )
+
+            #expect(transcriber.startCount == 0)
+            manager.sendMessage("取消当前语音授权", fromVoice: true)
+
+            try await waitUntil("voice auth cancel emitted") {
+                manager.activeVoiceChallenge == nil &&
+                    manager.voiceAuthorizationResolution?.reasonCode == "user_cancelled" &&
+                    manager.messages.contains(where: {
+                        $0.role == .assistant && $0.content.contains("已取消当前语音授权")
+                    })
+            }
+
+            try await waitUntil("talk loop resumed after cancel", timeoutMs: 4_000) {
+                voiceCoordinator.isRecording &&
+                    transcriber.isRunning &&
+                    transcriber.startCount == 1 &&
+                    voiceCoordinator.runtimeState.state == .listening &&
+                    voiceCoordinator.runtimeState.reasonCode == "talk_loop_resumed" &&
+                    manager.recentEventsForTesting().contains(where: {
+                        $0.contains("voice talk loop resumed: voice_auth_cancel")
+                    })
+            }
+        }
+    }
+
+    @Test
+    func activeVoiceChallengeSpeechInterruptPreservesChallengeAndAllowsLaterVerification() async throws {
+        try await Self.gate.run {
+            var interruptCount = 0
+            let synthesizer = SupervisorSpeechSynthesizer(
+                deduper: SupervisorVoiceBriefDeduper(cooldown: 0),
+                speakSink: { _ in },
+                interruptSink: {
+                    interruptCount += 1
+                    return true
+                }
+            )
+            let fixture = try await makeVoiceAuthorizationTalkLoopFixture(
+                now: 7_625,
+                supervisorSpeechSynthesizer: synthesizer
+            )
+            let manager = fixture.manager
+            let voiceCoordinator = fixture.voiceCoordinator
+            let transcriber = fixture.transcriber
+            defer {
+                manager.resetVoiceAuthorizationState()
+                manager.clearMessages()
+                manager.endConversationSession(reasonCode: "test_cleanup")
+            }
+
+            manager.installVoiceAuthorizationBridgeForTesting(
+                SupervisorVoiceAuthorizationBridge(
+                    issueHandler: { payload in
+                        HubIPCClient.VoiceGrantChallengeResult(
+                            ok: true,
+                            source: "test",
+                            challenge: makeChallenge(
+                                challengeId: "voice_chal_interrupt_preserve",
+                                templateId: payload.templateId,
+                                actionDigest: payload.actionDigest,
+                                scopeDigest: payload.scopeDigest,
+                                amountDigest: payload.amountDigest ?? "",
+                                challengeCode: "990011",
+                                requiresMobileConfirm: false,
+                                allowVoiceOnly: true,
+                                riskLevel: payload.riskLevel,
+                                boundDeviceId: payload.boundDeviceId ?? "",
+                                mobileTerminalId: payload.mobileTerminalId ?? ""
+                            ),
+                            reasonCode: nil
+                        )
+                    },
+                    verifyHandler: { payload in
+                        makeVerifySuccess(
+                            challengeId: payload.challengeId,
+                            transcriptHash: "sha256:voice-auth-interrupt-preserved",
+                            semanticMatchScore: payload.semanticMatchScore ?? 0.97,
+                            mobileConfirmed: payload.mobileConfirmed
+                        )
+                    }
+                )
+            )
+
+            _ = await manager.startVoiceAuthorization(
+                SupervisorVoiceAuthorizationRequest(
+                    requestId: "voice-interrupt-preserve",
+                    projectId: "project-interrupt-preserve",
+                    actionText: "Approve production release",
+                    scopeText: "project=Release Runtime; capability=production release; source=voice challenge; reason=需要确认生产发布",
+                    riskTier: .medium
+                )
+            )
+
+            let interruptCountBeforeSpeech = interruptCount
+
+            await voiceCoordinator.startRecording()
+            try await waitUntil("voice auth interrupt enters listening") {
+                voiceCoordinator.isRecording &&
+                    transcriber.isRunning &&
+                    transcriber.startCount == 1 &&
+                    voiceCoordinator.runtimeState.state == .listening &&
+                    manager.activeVoiceChallenge?.challengeId == "voice_chal_interrupt_preserve" &&
+                    manager.voiceAuthorizationResolution?.state == .pending
+            }
+
+            #expect(interruptCount == interruptCountBeforeSpeech + 1)
+
+            voiceCoordinator.stopRecording()
+            manager.sendMessage("Approve production release", fromVoice: true)
+
+            try await waitUntil("voice auth interrupt can still verify afterward") {
+                manager.activeVoiceChallenge == nil &&
+                    manager.voiceAuthorizationResolution?.state == .verified &&
+                    manager.messages.contains(where: {
+                        $0.role == .assistant &&
+                            $0.content.contains("语音授权已验证通过")
+                    })
+            }
+        }
+    }
+
+    @Test
+    func wakeHitDuringActiveVoiceChallengePreservesChallengeAndAllowsLaterVerification() async throws {
+        try await Self.gate.run {
+            let now = Date(timeIntervalSince1970: 7_626)
+            let controller = SupervisorConversationSessionController.makeForTesting(
+                route: .systemSpeechCompatibility,
+                wakeMode: .wakePhrase,
+                nowProvider: { now }
+            )
+            let manager = SupervisorManager.makeForTesting(
+                conversationSessionController: controller
+            )
+            manager.resetVoiceAuthorizationState()
+            manager.clearMessages()
+            defer {
+                manager.resetVoiceAuthorizationState()
+                manager.clearMessages()
+                manager.endConversationSession(reasonCode: "test_cleanup")
+            }
+
+            let appModel = AppModel()
+            var settings = configuredSettings(from: appModel.settingsStore.settings)
+            settings.voice.wakeMode = .wakePhrase
+            settings.voice.preferredRoute = .systemSpeechCompatibility
+            appModel.settingsStore.settings = settings
+            manager.setAppModel(appModel)
+
+            manager.installVoiceAuthorizationBridgeForTesting(
+                SupervisorVoiceAuthorizationBridge(
+                    issueHandler: { payload in
+                        HubIPCClient.VoiceGrantChallengeResult(
+                            ok: true,
+                            source: "test",
+                            challenge: makeChallenge(
+                                challengeId: "voice_chal_wake_preserve",
+                                templateId: payload.templateId,
+                                actionDigest: payload.actionDigest,
+                                scopeDigest: payload.scopeDigest,
+                                amountDigest: payload.amountDigest ?? "",
+                                challengeCode: "552211",
+                                requiresMobileConfirm: false,
+                                allowVoiceOnly: true,
+                                riskLevel: payload.riskLevel,
+                                boundDeviceId: payload.boundDeviceId ?? "",
+                                mobileTerminalId: payload.mobileTerminalId ?? ""
+                            ),
+                            reasonCode: nil
+                        )
+                    },
+                    verifyHandler: { payload in
+                        makeVerifySuccess(
+                            challengeId: payload.challengeId,
+                            transcriptHash: "sha256:voice-auth-wake-preserved",
+                            semanticMatchScore: payload.semanticMatchScore ?? 0.97,
+                            mobileConfirmed: payload.mobileConfirmed
+                        )
+                    }
+                )
+            )
+
+            try await waitUntil("wake mode promoted for active challenge preservation") {
+                manager.conversationSessionSnapshot.wakeMode == .wakePhrase
+            }
+
+            _ = await manager.startVoiceAuthorization(
+                SupervisorVoiceAuthorizationRequest(
+                    requestId: "voice-wake-preserve",
+                    projectId: "project-wake-preserve",
+                    actionText: "Approve production release",
+                    scopeText: "project=Release Runtime; capability=production release; source=wake challenge; reason=需要确认生产发布",
+                    riskTier: .medium
+                )
+            )
+
+            #expect(manager.activeVoiceChallenge?.challengeId == "voice_chal_wake_preserve")
+            #expect(manager.voiceAuthorizationResolution?.state == .pending)
+
+            manager.handleVoiceWakeEventForTesting(
+                phrase: "supervisor",
+                route: .systemSpeechCompatibility,
+                timestamp: now.timeIntervalSince1970 + 1
+            )
+
+            #expect(manager.conversationSessionSnapshot.windowState == .conversing)
+            #expect(manager.conversationSessionSnapshot.openedBy == .wakePhrase)
+            #expect(manager.activeVoiceChallenge?.challengeId == "voice_chal_wake_preserve")
+            #expect(manager.voiceAuthorizationResolution?.state == .pending)
+
+            manager.sendMessage("Approve production release", fromVoice: true)
+
+            try await waitUntil("wake preserved challenge can still verify") {
+                manager.activeVoiceChallenge == nil &&
+                    manager.voiceAuthorizationResolution?.state == .verified &&
+                    manager.messages.contains(where: {
+                        $0.role == .assistant &&
+                            $0.content.contains("语音授权已验证通过")
+                    })
+            }
+        }
+    }
+
+    @Test
     func activeVoiceChallengeStandaloneMobileConfirmationLatchesWithoutVerifying() async throws {
         try await Self.gate.run {
             var spoken: [String] = []
@@ -1961,6 +3757,88 @@ struct SupervisorManagerVoiceAuthorizationTests {
             #expect(verifyCount == 0)
             #expect(manager.voiceAuthorizationResolution?.state == .escalatedToMobile)
             #expect(spoken.contains(where: { $0.contains("已记录移动端确认") }))
+        }
+    }
+
+    @Test
+    func activeVoiceChallengeStandaloneMobileConfirmationReplyResumesTalkLoopListening() async throws {
+        try await Self.gate.run {
+            let fixture = try await makeVoiceAuthorizationTalkLoopFixture(now: 7_630)
+            let manager = fixture.manager
+            let voiceCoordinator = fixture.voiceCoordinator
+            let transcriber = fixture.transcriber
+            defer {
+                manager.resetVoiceAuthorizationState()
+                manager.clearMessages()
+                manager.endConversationSession(reasonCode: "test_cleanup")
+            }
+
+            manager.installVoiceAuthorizationBridgeForTesting(
+                SupervisorVoiceAuthorizationBridge(
+                    issueHandler: { payload in
+                        HubIPCClient.VoiceGrantChallengeResult(
+                            ok: true,
+                            source: "test",
+                            challenge: makeChallenge(
+                                challengeId: "voice_chal_mobile_confirmed_resume",
+                                templateId: payload.templateId,
+                                actionDigest: payload.actionDigest,
+                                scopeDigest: payload.scopeDigest,
+                                amountDigest: payload.amountDigest ?? "",
+                                challengeCode: "330044",
+                                requiresMobileConfirm: true,
+                                allowVoiceOnly: payload.allowVoiceOnly,
+                                riskLevel: payload.riskLevel,
+                                boundDeviceId: payload.boundDeviceId ?? "",
+                                mobileTerminalId: payload.mobileTerminalId ?? ""
+                            ),
+                            reasonCode: nil
+                        )
+                    },
+                    verifyHandler: { _ in
+                        makeVerifyFailure(reasonCode: "unexpected_verify")
+                    }
+                )
+            )
+
+            _ = await manager.startVoiceAuthorization(
+                SupervisorVoiceAuthorizationRequest(
+                    requestId: "voice-mobile-confirmed-resume",
+                    projectId: "project-mobile-confirmed-resume",
+                    actionText: "Approve release",
+                    scopeText: "project=Release; source=Slack",
+                    amountText: nil,
+                    riskTier: .high,
+                    boundDeviceId: "bt-headset-1",
+                    mobileTerminalId: "mobile-1",
+                    challengeCode: nil,
+                    ttlMs: 120_000
+                )
+            )
+
+            #expect(transcriber.startCount == 0)
+            manager.sendMessage("手机已确认", fromVoice: true)
+
+            try await waitUntil("standalone mobile confirmation emitted") {
+                manager.voiceAuthorizationMobileConfirmationLatched &&
+                    manager.activeVoiceChallenge?.challengeId == "voice_chal_mobile_confirmed_resume" &&
+                    manager.messages.contains(where: {
+                        $0.role == .assistant &&
+                            $0.content.contains("已记录移动端确认") &&
+                            $0.content.contains("继续说授权短语")
+                    })
+            }
+
+            try await waitUntil("talk loop resumed after mobile confirmation", timeoutMs: 4_000) {
+                voiceCoordinator.isRecording &&
+                    transcriber.isRunning &&
+                    transcriber.startCount == 1 &&
+                    voiceCoordinator.runtimeState.state == .listening &&
+                    voiceCoordinator.runtimeState.reasonCode == "talk_loop_resumed" &&
+                    manager.recentEventsForTesting().contains(where: {
+                        $0.contains("voice talk loop resumed: voice_auth_mobile_confirmed")
+                    })
+            }
         }
     }
 
@@ -2226,6 +4104,92 @@ struct SupervisorManagerVoiceAuthorizationTests {
             #expect(manager.activeVoiceChallenge == nil)
             #expect(manager.voiceAuthorizationMobileConfirmationLatched == false)
             #expect(await verifyProbe.count() == 2)
+        }
+    }
+
+    @Test
+    func activeVoiceChallengeFailClosedRetryReplyResumesTalkLoopListening() async throws {
+        try await Self.gate.run {
+            let fixture = try await makeVoiceAuthorizationTalkLoopFixture(now: 7_640)
+            let manager = fixture.manager
+            let voiceCoordinator = fixture.voiceCoordinator
+            let transcriber = fixture.transcriber
+            defer {
+                manager.resetVoiceAuthorizationState()
+                manager.clearMessages()
+                manager.endConversationSession(reasonCode: "test_cleanup")
+            }
+
+            manager.installVoiceAuthorizationBridgeForTesting(
+                SupervisorVoiceAuthorizationBridge(
+                    issueHandler: { payload in
+                        HubIPCClient.VoiceGrantChallengeResult(
+                            ok: true,
+                            source: "test",
+                            challenge: makeChallenge(
+                                challengeId: "voice_chal_retry_resume",
+                                templateId: payload.templateId,
+                                actionDigest: payload.actionDigest,
+                                scopeDigest: payload.scopeDigest,
+                                amountDigest: payload.amountDigest ?? "",
+                                challengeCode: "771100",
+                                requiresMobileConfirm: true,
+                                allowVoiceOnly: false,
+                                riskLevel: payload.riskLevel,
+                                boundDeviceId: payload.boundDeviceId ?? "",
+                                mobileTerminalId: payload.mobileTerminalId ?? ""
+                            ),
+                            reasonCode: nil
+                        )
+                    },
+                    verifyHandler: { payload in
+                        if !payload.mobileConfirmed {
+                            return makeVerifyFailure(reasonCode: "mobile_confirmation_missing")
+                        }
+                        return makeVerifySuccess(
+                            challengeId: payload.challengeId,
+                            transcriptHash: "sha256:retry-resume",
+                            semanticMatchScore: payload.semanticMatchScore ?? 0,
+                            mobileConfirmed: payload.mobileConfirmed
+                        )
+                    }
+                )
+            )
+
+            _ = await manager.startVoiceAuthorization(
+                SupervisorVoiceAuthorizationRequest(
+                    requestId: "voice-retry-resume",
+                    projectId: "project-retry-resume",
+                    actionText: "Approve release",
+                    scopeText: "project=Release; source=Slack",
+                    amountText: nil,
+                    riskTier: .high,
+                    boundDeviceId: "bt-headset-1",
+                    mobileTerminalId: "mobile-1",
+                    challengeCode: nil,
+                    ttlMs: 120_000
+                )
+            )
+
+            #expect(transcriber.startCount == 0)
+            manager.sendMessage("批准 release", fromVoice: true)
+
+            try await waitUntil("fail closed retry reply emitted", timeoutMs: 4_000) {
+                manager.voiceAuthorizationResolution?.state == .failClosed &&
+                    manager.voiceAuthorizationResolution?.reasonCode == "mobile_confirmation_missing" &&
+                    manager.activeVoiceChallenge?.challengeId == "voice_chal_retry_resume"
+            }
+
+            try await waitUntil("talk loop resumed after fail closed retry", timeoutMs: 8_000) {
+                voiceCoordinator.isRecording &&
+                    transcriber.isRunning &&
+                    transcriber.startCount == 1 &&
+                    voiceCoordinator.runtimeState.state == .listening &&
+                    voiceCoordinator.runtimeState.reasonCode == "talk_loop_resumed" &&
+                    manager.recentEventsForTesting().contains(where: {
+                        $0.contains("voice talk loop resumed: voice_auth_verification_reply")
+                    })
+            }
         }
     }
 
@@ -2560,6 +4524,52 @@ struct SupervisorManagerVoiceAuthorizationTests {
             .appendingPathComponent("\(name)-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
+    }
+
+    private func makeVoiceAuthorizationTalkLoopFixture(
+        now timestamp: TimeInterval,
+        supervisorSpeechSynthesizer: SupervisorSpeechSynthesizer? = nil
+    ) async throws -> (
+        manager: SupervisorManager,
+        voiceCoordinator: VoiceSessionCoordinator,
+        transcriber: VoiceAuthorizationTalkLoopMockTranscriber
+    ) {
+        let controller = SupervisorConversationSessionController.makeForTesting(
+            route: .systemSpeechCompatibility,
+            wakeMode: .wakePhrase,
+            nowProvider: { Date(timeIntervalSince1970: timestamp) }
+        )
+        let transcriber = VoiceAuthorizationTalkLoopMockTranscriber()
+        let voiceCoordinator = VoiceSessionCoordinator(
+            transcriber: transcriber,
+            preferences: .default()
+        )
+        let synthesizer = supervisorSpeechSynthesizer ?? SupervisorSpeechSynthesizer(
+            deduper: SupervisorVoiceBriefDeduper(cooldown: 0),
+            speakSink: { _ in }
+        )
+        let manager = SupervisorManager.makeForTesting(
+            supervisorSpeechSynthesizer: synthesizer,
+            conversationSessionController: controller,
+            voiceSessionCoordinator: voiceCoordinator
+        )
+        let appModel = AppModel()
+        var settings = appModel.settingsStore.settings
+        settings.voice.wakeMode = .wakePhrase
+        settings.voice.preferredRoute = .systemSpeechCompatibility
+        settings.voice.speechRateMultiplier = 1.35
+        appModel.settingsStore.settings = settings
+        manager.setAppModel(appModel)
+        await voiceCoordinator.refreshRouteAvailability()
+        try await waitUntil("voice route ready") {
+            manager.voiceRouteDecision.route == .systemSpeechCompatibility &&
+                manager.conversationSessionSnapshot.wakeMode == .wakePhrase
+        }
+        manager.openConversationSession(openedBy: .wakePhrase)
+        try await waitUntil("conversation opened") {
+            manager.conversationSessionSnapshot.isConversing
+        }
+        return (manager, voiceCoordinator, transcriber)
     }
 
     private func waitUntil(

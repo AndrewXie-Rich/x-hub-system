@@ -38,6 +38,14 @@ final class SplitProposalEngine {
                 .compactMap { laneIdByTaskId[$0] }
                 .sorted()
             let createChildProject = shouldCreateChildProject(task: task, riskTier: riskTier)
+            let artifacts = expectedArtifacts(for: task)
+            let dodChecklist = buildDoDChecklist(for: task, riskTier: riskTier)
+            let verificationContract = buildVerificationContract(
+                for: task,
+                riskTier: riskTier,
+                expectedArtifacts: artifacts,
+                dodChecklist: dodChecklist
+            )
 
             return SplitLaneProposal(
                 laneId: laneId,
@@ -46,8 +54,9 @@ final class SplitProposalEngine {
                 riskTier: riskTier,
                 budgetClass: budgetClass,
                 createChildProject: createChildProject,
-                expectedArtifacts: expectedArtifacts(for: task),
-                dodChecklist: buildDoDChecklist(for: task, riskTier: riskTier),
+                expectedArtifacts: artifacts,
+                dodChecklist: dodChecklist,
+                verificationContract: verificationContract,
                 estimatedEffortMs: Int(task.estimatedEffort * 1_000),
                 tokenBudget: budgetClass.tokenBudget,
                 sourceTaskId: task.id,
@@ -354,6 +363,17 @@ final class SplitProposalEngine {
             .filter { !$0.isEmpty }
     }
 
+    private func normalizeUniqueEntries(_ values: [String]) -> [String] {
+        var seen: Set<String> = []
+        var ordered: [String] = []
+        for value in values.map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) }) where !value.isEmpty {
+            if seen.insert(value).inserted {
+                ordered.append(value)
+            }
+        }
+        return ordered
+    }
+
     private func inferBudgetClass(for task: DecomposedTask, riskTier: SplitRiskTier) -> SplitBudgetClass {
         if riskTier == .critical {
             return .burst
@@ -433,6 +453,58 @@ final class SplitProposalEngine {
         }
 
         return checklist
+    }
+
+    private func buildVerificationContract(
+        for task: DecomposedTask,
+        riskTier: SplitRiskTier,
+        expectedArtifacts: [String],
+        dodChecklist: [String]
+    ) -> LaneVerificationContract {
+        let method: LaneVerificationMethod
+        let retryPolicy: LaneVerificationRetryPolicy
+        let holdPolicy: LaneVerificationHoldPolicy
+        let expectedState: String
+        var evidenceRequired = expectedArtifacts
+
+        switch task.type {
+        case .development, .bugfix, .refactoring, .testing:
+            method = .targetedChecksAndDiffReview
+            retryPolicy = riskTier >= .high ? .singleRetryThenEscalate : .boundedRetryThenHold
+            holdPolicy = .holdOnMismatch
+            expectedState = "Lane goal is satisfied, artifacts are updated, and targeted checks confirm no obvious regression."
+            evidenceRequired.append(contentsOf: ["diff_summary", "targeted_check_result"])
+        case .deployment:
+            method = .preflightAndSmoke
+            retryPolicy = riskTier >= .high ? .noAutoRetry : .singleRetryThenEscalate
+            holdPolicy = .holdUntilEvidence
+            expectedState = "Change is ready to ship, post-change smoke checks pass, and rollback readiness is recorded."
+            evidenceRequired.append(contentsOf: ["preflight_result", "smoke_result", "rollback_readiness"])
+        case .documentation, .research, .review, .design, .planning:
+            method = .artifactConsistencyReview
+            retryPolicy = .noAutoRetry
+            holdPolicy = .advisoryOnly
+            expectedState = "Produced artifacts are internally consistent, scoped correctly, and ready for handoff."
+            evidenceRequired.append(contentsOf: ["artifact_review_note", "consistency_summary"])
+        }
+
+        if riskTier >= .high {
+            evidenceRequired.append("grant_or_risk_exception_reference")
+        }
+
+        return LaneVerificationContract(
+            expectedState: expectedState,
+            verifyMethod: method,
+            retryPolicy: retryPolicy,
+            holdPolicy: holdPolicy,
+            evidenceRequired: normalizeUniqueEntries(evidenceRequired),
+            verificationChecklist: normalizeUniqueEntries(
+                [
+                    "expected_state_confirmed",
+                    "evidence_attached"
+                ] + dodChecklist
+            )
+        )
     }
 
     private func computeComplexityScore(

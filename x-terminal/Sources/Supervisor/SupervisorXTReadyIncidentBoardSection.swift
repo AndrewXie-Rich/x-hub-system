@@ -3,6 +3,7 @@ import SwiftUI
 struct SupervisorXTReadyIncidentBoardSection: View {
     let presentation: SupervisorXTReadyIncidentPresentation
     let canOpenCanonicalMemorySyncStatusFile: Bool
+    let onOpenFocusURL: (String) -> Void
     let onExportReport: () -> Void
     let onOpenReport: () -> Void
     let onRetryCanonicalMemorySync: () -> Void
@@ -35,6 +36,16 @@ struct SupervisorXTReadyIncidentBoardSection: View {
                 .disabled(!presentation.canOpenReport)
                 .help("打开导出文件")
 
+                Button {
+                    guard let url = presentation.supervisorVoiceActionURL else { return }
+                    onOpenFocusURL(url)
+                } label: {
+                    Image(systemName: "waveform.and.magnifyingglass")
+                }
+                .buttonStyle(.borderless)
+                .disabled(presentation.supervisorVoiceActionURL == nil)
+                .help(presentation.supervisorVoiceActionLabel ?? "打开 Supervisor 语音诊断")
+
                 Button(action: onRetryCanonicalMemorySync) {
                     Image(systemName: "arrow.triangle.2.circlepath")
                 }
@@ -53,6 +64,36 @@ struct SupervisorXTReadyIncidentBoardSection: View {
             SupervisorXTReadyIncidentLineView(presentation.strictE2ELine)
             SupervisorXTReadyIncidentLineView(presentation.missingIncidentLine)
             SupervisorXTReadyIncidentLineView(presentation.strictIssueLine)
+            if let connectivityIncidentHistoryLine = presentation.connectivityIncidentHistoryLine {
+                SupervisorXTReadyIncidentLineView(connectivityIncidentHistoryLine)
+            }
+            if let connectivityRepairLine = presentation.connectivityRepairLine {
+                SupervisorXTReadyIncidentLineView(connectivityRepairLine)
+            }
+            if let connectivityRepairDetailLine = presentation.connectivityRepairDetailLine {
+                SupervisorXTReadyIncidentLineView(connectivityRepairDetailLine)
+            }
+            if let pairedRouteStatusLine = presentation.pairedRouteStatusLine {
+                SupervisorXTReadyIncidentLineView(pairedRouteStatusLine)
+            }
+            if let pairedRouteLine = presentation.pairedRouteLine {
+                SupervisorXTReadyIncidentLineView(pairedRouteLine)
+            }
+            if let pairedRemoteEntryLine = presentation.pairedRemoteEntryLine {
+                SupervisorXTReadyIncidentLineView(pairedRemoteEntryLine)
+            }
+            if let freshPairReconnectSmokeLine = presentation.freshPairReconnectSmokeLine {
+                SupervisorXTReadyIncidentLineView(freshPairReconnectSmokeLine)
+            }
+            if let freshPairReconnectSmokeDetailLine = presentation.freshPairReconnectSmokeDetailLine {
+                SupervisorXTReadyIncidentLineView(freshPairReconnectSmokeDetailLine)
+            }
+            if let firstPairCompletionProofLine = presentation.firstPairCompletionProofLine {
+                SupervisorXTReadyIncidentLineView(firstPairCompletionProofLine)
+            }
+            if let firstPairCompletionProofDetailLine = presentation.firstPairCompletionProofDetailLine {
+                SupervisorXTReadyIncidentLineView(firstPairCompletionProofDetailLine)
+            }
             if let hubRuntimeLine = presentation.hubRuntimeLine {
                 SupervisorXTReadyIncidentLineView(hubRuntimeLine)
             }
@@ -73,6 +114,18 @@ struct SupervisorXTReadyIncidentBoardSection: View {
             }
             if let hubRuntimeRecommendedActionLine = presentation.hubRuntimeRecommendedActionLine {
                 SupervisorXTReadyIncidentLineView(hubRuntimeRecommendedActionLine)
+            }
+            if let supervisorVoiceLine = presentation.supervisorVoiceLine {
+                SupervisorXTReadyIncidentLineView(supervisorVoiceLine)
+            }
+            if let supervisorVoiceFreshnessLine = presentation.supervisorVoiceFreshnessLine {
+                SupervisorXTReadyIncidentLineView(supervisorVoiceFreshnessLine)
+            }
+            if let supervisorVoiceDetailLine = presentation.supervisorVoiceDetailLine {
+                SupervisorXTReadyIncidentLineView(supervisorVoiceDetailLine)
+            }
+            if let supervisorVoiceNextLine = presentation.supervisorVoiceNextLine {
+                SupervisorXTReadyIncidentLineView(supervisorVoiceNextLine)
             }
             SupervisorXTReadyIncidentLineView(presentation.memoryAssemblyLine)
             if let memoryAssemblyIssueLine = presentation.memoryAssemblyIssueLine {

@@ -13,6 +13,14 @@ enum SupervisorConversationOpenedBy: String, Codable, Equatable {
     case voiceReplyFollowup = "voice_reply_followup"
 }
 
+enum SupervisorConversationSessionEventKind: String, Codable, Equatable {
+    case wakeHit = "wake_hit"
+    case userTurn = "user_turn"
+    case assistantTurn = "assistant_turn"
+    case ttsSpoken = "tts_spoken"
+    case timeout
+}
+
 struct SupervisorConversationSessionPolicy: Codable, Equatable {
     var enabled: Bool
     var autoOpenOnWake: Bool
@@ -56,6 +64,10 @@ struct SupervisorConversationSessionSnapshot: Codable, Equatable {
     var reasonCode: String
     var auditRef: String?
 
+    var outwardState: SupervisorConversationSessionOutwardState {
+        SupervisorConversationSessionOutwardState(snapshot: self)
+    }
+
     static func idle(
         policy: SupervisorConversationSessionPolicy,
         wakeMode: VoiceWakeMode,
@@ -94,11 +106,56 @@ struct SupervisorConversationSessionSnapshot: Codable, Equatable {
     }
 }
 
+struct SupervisorConversationSessionOutwardState: Codable, Equatable {
+    var schemaVersion: String
+    var windowState: SupervisorConversationWindowState
+    var remainingTTLSeconds: Int
+    var reasonCode: String
+    var auditRef: String?
+
+    init(snapshot: SupervisorConversationSessionSnapshot) {
+        schemaVersion = snapshot.schemaVersion
+        windowState = snapshot.windowState
+        remainingTTLSeconds = snapshot.remainingTTLSeconds
+        reasonCode = snapshot.reasonCode
+        auditRef = snapshot.auditRef
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case windowState = "window_state"
+        case remainingTTLSeconds = "remaining_ttl_sec"
+        case reasonCode = "reason_code"
+        case auditRef = "audit_ref"
+    }
+}
+
+struct SupervisorConversationSessionEvent: Codable, Equatable {
+    var schemaVersion: String
+    var conversationId: String?
+    var event: SupervisorConversationSessionEventKind
+    var reasonCode: String
+    var remainingTTLSeconds: Int
+    var emittedAtMs: Double
+    var auditRef: String?
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case conversationId = "conversation_id"
+        case event
+        case reasonCode = "reason_code"
+        case remainingTTLSeconds = "remaining_ttl_sec"
+        case emittedAtMs = "emitted_at_ms"
+        case auditRef = "audit_ref"
+    }
+}
+
 @MainActor
 final class SupervisorConversationSessionController: ObservableObject {
     static let shared = SupervisorConversationSessionController()
 
     @Published private(set) var snapshot: SupervisorConversationSessionSnapshot
+    @Published private(set) var latestEvent: SupervisorConversationSessionEvent?
 
     private var policy: SupervisorConversationSessionPolicy
     private var route: VoiceRouteMode
@@ -174,32 +231,38 @@ final class SupervisorConversationSessionController: ObservableObject {
 
     func registerWakeHit(now: Date? = nil) {
         guard policy.enabled, policy.autoOpenOnWake, wakeMode != .pushToTalk else { return }
+        let current = now ?? nowProvider()
         let source: SupervisorConversationOpenedBy = wakeMode == .promptPhraseOnly ? .promptPhrase : .wakePhrase
         openConversation(
             openedBy: source,
             reasonCode: "wake_detected",
-            now: now ?? nowProvider()
+            now: current
         )
+        publishEvent(kind: .wakeHit, now: current)
     }
 
     func registerUserTurn(fromVoice: Bool, now: Date? = nil) {
         guard policy.enabled, policy.extendOnUserTurn else { return }
+        let current = now ?? nowProvider()
         let source: SupervisorConversationOpenedBy = fromVoice ? .wakePhrase : .manualButton
         openOrExtend(
             openedBy: source,
             reasonCode: "user_turn",
-            now: now ?? nowProvider()
+            now: current
         )
+        publishEvent(kind: .userTurn, now: current)
     }
 
     func registerAssistantTurn(spoken: Bool, now: Date? = nil) {
         guard policy.enabled, policy.extendOnAssistantTurn else { return }
+        let current = now ?? nowProvider()
         let reasonCode = spoken ? "tts_spoken" : "assistant_turn"
         openOrExtend(
             openedBy: .voiceReplyFollowup,
             reasonCode: reasonCode,
-            now: now ?? nowProvider()
+            now: current
         )
+        publishEvent(kind: spoken ? .ttsSpoken : .assistantTurn, now: current)
     }
 
     func holdConversationForFollowUp(
@@ -278,11 +341,24 @@ final class SupervisorConversationSessionController: ObservableObject {
                 route: route,
                 reasonCode: "ttl_expired"
             )
+            publishEvent(
+                kind: .timeout,
+                reasonCode: "timeout",
+                conversationId: nil,
+                now: current
+            )
             return
         }
 
         if !snapshot.keepOpenOverride, current >= expiryDate {
+            let expiredConversationId = snapshot.conversationId
             endConversation(reasonCode: "ttl_expired", now: current)
+            publishEvent(
+                kind: .timeout,
+                reasonCode: "timeout",
+                conversationId: expiredConversationId,
+                now: current
+            )
             return
         }
 
@@ -382,6 +458,25 @@ final class SupervisorConversationSessionController: ObservableObject {
         if let ticker {
             RunLoop.main.add(ticker, forMode: .common)
         }
+    }
+
+    private func publishEvent(
+        kind: SupervisorConversationSessionEventKind,
+        reasonCode: String? = nil,
+        conversationId: String? = nil,
+        now: Date
+    ) {
+        let emittedReasonCode = reasonCode ?? snapshot.reasonCode
+        let resolvedConversationId = conversationId ?? snapshot.conversationId
+        latestEvent = SupervisorConversationSessionEvent(
+            schemaVersion: "xt.supervisor_conversation_window_event.v1",
+            conversationId: resolvedConversationId,
+            event: kind,
+            reasonCode: emittedReasonCode,
+            remainingTTLSeconds: snapshot.remainingTTLSeconds,
+            emittedAtMs: now.timeIntervalSince1970.multiplied(by: 1000),
+            auditRef: policy.auditRef
+        )
     }
 }
 

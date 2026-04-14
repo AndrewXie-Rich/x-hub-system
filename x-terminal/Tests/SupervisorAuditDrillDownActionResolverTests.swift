@@ -32,9 +32,9 @@ struct SupervisorAuditDrillDownActionResolverTests {
         )
 
         #expect(selection?.source == .officialSkillsChannel)
-        #expect(selection?.presentation.title == "Official Skills Channel")
-        #expect(selection?.presentation.actionLabel == "Resolve grant blocker")
-        #expect(selection?.presentation.secondaryActions.map(\.label) == ["Review Secondary Skill"])
+        #expect(selection?.presentation.title == "官方技能通道")
+        #expect(selection?.presentation.actionLabel == "处理授权阻塞")
+        #expect(selection?.presentation.secondaryActions.map(\.label) == ["查看 Secondary Skill"])
     }
 
     @Test
@@ -154,7 +154,7 @@ struct SupervisorAuditDrillDownActionResolverTests {
         )
 
         #expect(selection?.source == .xtBuiltinGovernedSkills(builtinSkills))
-        #expect(selection?.presentation.actionLabel == "Open diagnostics")
+        #expect(selection?.presentation.actionLabel == "打开诊断")
     }
 
     private func context(

@@ -38,7 +38,7 @@ class SupervisorOrchestrator: ObservableObject {
 
     // MARK: - Private Properties
 
-    private let supervisor: SupervisorModel
+    private weak var runtimeHost: (any SupervisorProjectRuntimeHosting)?
     private let splitProposalEngine = SplitProposalEngine()
     private let promptFactory = PromptFactory()
     private let mergebackGateEvaluator = LaneMergebackGateEvaluator()
@@ -51,14 +51,14 @@ class SupervisorOrchestrator: ObservableObject {
 
     // Phase 2: 任务分解组件
     lazy var taskDecomposer = TaskDecomposer()
-    lazy var taskAssigner = TaskAssigner(supervisor: supervisor)
-    lazy var executionMonitor = ExecutionMonitor(supervisor: supervisor)
-    lazy var projectMaterializer = ProjectMaterializer(supervisor: supervisor)
+    lazy var taskAssigner = TaskAssigner(runtimeHost: runtimeHost)
+    lazy var executionMonitor = ExecutionMonitor(runtimeHost: runtimeHost)
+    lazy var projectMaterializer = ProjectMaterializer(runtimeHost: runtimeHost)
 
     // MARK: - Initialization
 
-    init(supervisor: SupervisorModel) {
-        self.supervisor = supervisor
+    init(runtimeHost: any SupervisorProjectRuntimeHosting) {
+        self.runtimeHost = runtimeHost
         self.resourcePool = ResourcePool()
     }
 
@@ -153,7 +153,7 @@ class SupervisorOrchestrator: ObservableObject {
             score += Int(project.blockedDuration / 60) * 10
         }
 
-        // 执行档位越高，越适合持续推进并占用更少人工协调带宽。
+        // A-Tier 越高，越适合持续推进并占用更少人工协调带宽。
         score += project.governanceParallelCapacity * 10
 
         return score
@@ -294,12 +294,12 @@ class SupervisorOrchestrator: ObservableObject {
         }
 
         // 切换到分配的模型（如果不同）
-        if project.currentModel.id != allocation.model.id {
+        if project.configuredCoderModelId != allocation.model.id {
             await project.changeModel(to: allocation.model)
         }
 
         // 通知 Supervisor 开始执行
-        await supervisor.onProjectExecutionStarted(project, model: allocation.model)
+        await runtimeHost?.onProjectExecutionStarted(project, model: allocation.model)
 
         // 实际执行逻辑由 ProjectAgent 处理
         // 这里只是调度和监控
@@ -332,7 +332,7 @@ class SupervisorOrchestrator: ObservableObject {
     /// 建议升级模型
     func suggestModelUpgrade(_ project: ProjectModel) async {
         // 通知 Supervisor 建议升级
-        await supervisor.suggestModelUpgrade(for: project)
+        await runtimeHost?.suggestModelUpgrade(for: project)
     }
 
     /// 重新调度
@@ -1115,7 +1115,7 @@ class SupervisorOrchestrator: ObservableObject {
     }
 
     private func preferredAnchorProject() -> ProjectModel? {
-        let candidates = supervisor.activeProjects.filter { $0.status == .running || $0.status == .pending }
+        let candidates = runtimeHost?.activeProjects.filter { $0.status == .running || $0.status == .pending } ?? []
         guard !candidates.isEmpty else { return nil }
 
         return candidates.sorted { lhs, rhs in

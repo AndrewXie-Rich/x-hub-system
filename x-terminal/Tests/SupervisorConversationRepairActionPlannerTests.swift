@@ -4,13 +4,13 @@ import Testing
 
 struct SupervisorConversationRepairActionPlannerTests {
     @Test
-    func xtChooseModelMapsToSettingsAIModelSection() {
+    func xtChooseModelMapsToSupervisorControlCenterModelTab() {
         let plan = SupervisorConversationRepairActionPlanner.plan(for: .xtChooseModel)
 
         #expect(
             plan == SupervisorConversationRepairActionPlan(
-                buttonTitle: "打开 XT AI 模型",
-                action: .openXTSettings(sectionId: "choose_model")
+                buttonTitle: "打开 AI 模型设置",
+                action: .openSupervisorControlCenter(sheet: .modelSettings)
             )
         )
     }
@@ -75,7 +75,7 @@ struct SupervisorConversationRepairActionPlannerTests {
 
         #expect(
             plan == SupervisorConversationRepairActionPlan(
-                buttonTitle: "打开 Pair Progress",
+                buttonTitle: "打开连接进度",
                 action: .openHubSetup(sectionId: "pair_progress")
             )
         )

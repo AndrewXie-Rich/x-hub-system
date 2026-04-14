@@ -12,6 +12,7 @@ struct SupervisorCockpitPresentationInput: Codable, Equatable {
     let xtReadyStrictE2EReady: Bool
     let xtReadyIssueCount: Int
     let xtReadyReportPath: String
+    let reviewMemorySummary: SupervisorMemoryAssemblyCompactSummary?
     let memoryAssemblyReady: Bool
     let memoryAssemblyIssueCount: Int
     let memoryAssemblyStatusLine: String
@@ -55,6 +56,7 @@ struct SupervisorCockpitPresentationInput: Codable, Equatable {
         xtReadyStrictE2EReady: Bool,
         xtReadyIssueCount: Int,
         xtReadyReportPath: String,
+        reviewMemorySummary: SupervisorMemoryAssemblyCompactSummary? = nil,
         memoryAssemblyReady: Bool = true,
         memoryAssemblyIssueCount: Int = 0,
         memoryAssemblyStatusLine: String = "ready",
@@ -97,6 +99,7 @@ struct SupervisorCockpitPresentationInput: Codable, Equatable {
         self.xtReadyStrictE2EReady = xtReadyStrictE2EReady
         self.xtReadyIssueCount = xtReadyIssueCount
         self.xtReadyReportPath = xtReadyReportPath
+        self.reviewMemorySummary = reviewMemorySummary
         self.memoryAssemblyReady = memoryAssemblyReady
         self.memoryAssemblyIssueCount = memoryAssemblyIssueCount
         self.memoryAssemblyStatusLine = memoryAssemblyStatusLine
@@ -141,6 +144,7 @@ struct SupervisorCockpitPresentationInput: Codable, Equatable {
         case xtReadyStrictE2EReady = "xt_ready_strict_e2e_ready"
         case xtReadyIssueCount = "xt_ready_issue_count"
         case xtReadyReportPath = "xt_ready_report_path"
+        case reviewMemorySummary = "review_memory_summary"
         case memoryAssemblyReady = "memory_assembly_ready"
         case memoryAssemblyIssueCount = "memory_assembly_issue_count"
         case memoryAssemblyStatusLine = "memory_assembly_status_line"
@@ -178,6 +182,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
     let intakeStatus: StatusExplanation
     let blockerStatus: StatusExplanation
     let releaseFreezeStatus: StatusExplanation
+    let reviewMemorySummary: SupervisorMemoryAssemblyCompactSummary?
     let plannerExplain: String
     let plannerMachineStatusRef: String
     let actions: [PrimaryActionRailAction]
@@ -190,6 +195,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
         case intakeStatus = "intake_status"
         case blockerStatus = "blocker_status"
         case releaseFreezeStatus = "release_freeze_status"
+        case reviewMemorySummary = "review_memory_summary"
         case plannerExplain = "planner_explain"
         case plannerMachineStatusRef = "planner_machine_status_ref"
         case actions
@@ -229,7 +235,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
         return map(
             input: SupervisorCockpitPresentationInput(
                 isProcessing: supervisorManager.isProcessing,
-                pendingGrantCount: supervisorManager.pendingHubGrants.count,
+                pendingGrantCount: supervisorManager.frontstagePendingHubGrants.count,
                 hasFreshPendingGrantSnapshot: supervisorManager.hasFreshPendingHubGrantSnapshot,
                 doctorStatusLine: supervisorManager.doctorStatusLine,
                 doctorSuggestionCount: supervisorManager.doctorSuggestionCards.count,
@@ -241,6 +247,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                 xtReadyStrictE2EReady: xtReadySnapshot.strictE2EReady,
                 xtReadyIssueCount: xtReadySnapshot.strictE2EIssues.count + xtReadySnapshot.missingIncidentCodes.count,
                 xtReadyReportPath: xtReadySnapshot.reportPath,
+                reviewMemorySummary: supervisorManager.supervisorMemoryAssemblySnapshot?.compactSummary,
                 memoryAssemblyReady: memoryReadiness.ready,
                 memoryAssemblyIssueCount: memoryReadiness.issues.count,
                 memoryAssemblyStatusLine: memoryReadiness.statusLine,
@@ -314,12 +321,24 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             let laneSuffix = input.nextDirectedResumeLane.map { " @ \($0)" } ?? ""
             return "directed_resume=\(action)\(laneSuffix)"
         }
+        let normalizedTopLaunchDenyCode = input.topLaunchDenyCode.map(
+            UITroubleshootKnowledgeBase.normalizedFailureCode
+        )
+        let topLaunchIssue = input.topLaunchDenyCode.flatMap(
+            UITroubleshootKnowledgeBase.issue(forFailureCode:)
+        )
+        let topLaunchDenyHighlight = normalizedTopLaunchDenyCode.map {
+            "top_launch_deny_code=\($0)"
+        } ?? ""
+        let topLaunchIssueHighlight = topLaunchIssue.map {
+            "top_launch_issue=\($0.rawValue)"
+        } ?? ""
 
         let intakeStatus: StatusExplanation
         let blockerStatus: StatusExplanation
         let plannerExplain: String
 
-        if input.pendingGrantCount > 0 || input.topLaunchDenyCode == "grant_required" || oneShotState == .awaitingGrant {
+        if input.pendingGrantCount > 0 || topLaunchIssue == .grantRequired || oneShotState == .awaitingGrant {
             intakeStatus = StatusExplanation(
                 state: .grantRequired,
                 headline: "one-shot intake 已接收，但等待风险授权",
@@ -330,6 +349,8 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                 hardLine: "grant_fail_closed must remain visible",
                 highlights: [
                     contractSummary,
+                    topLaunchDenyHighlight,
+                    topLaunchIssueHighlight,
                     "human_touchpoints=\(input.humanTouchpointCount)",
                     "denied_launches=\(input.deniedLaunchCount)",
                     "owner=\(oneShotOwner)"
@@ -337,45 +358,169 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             )
             blockerStatus = StatusExplanation(
                 state: .grantRequired,
-                headline: "Top blocker: \(oneShotTopBlocker == "none" ? "grant_required" : oneShotTopBlocker)",
+                headline: topBlockerHeadline(oneShotTopBlocker == "none" ? "grant_required" : oneShotTopBlocker),
                 whatHappened: "当前主 blocker 是 grant chain 未完成，auto-launch 被显式 deny。",
                 whyItHappened: "授权没完成前，这条路会继续被显式挡住，而不是悄悄回落成普通等待。",
                 userAction: directedResumeSummary ?? "在 grant center 完成审批，然后回到当前 intake。",
                 machineStatusRef: plannerMachineStatusRef,
                 hardLine: "high-risk path remains fail-closed",
-                highlights: [input.grantGateMode.map { "grant_gate_mode=\($0)" } ?? "", "next_target=\(oneShotNextTarget)"]
+                highlights: [
+                    input.grantGateMode.map { "grant_gate_mode=\($0)" } ?? "",
+                    topLaunchDenyHighlight,
+                    topLaunchIssueHighlight,
+                    "next_target=\(oneShotNextTarget)"
+                ]
                     .filter { !$0.isEmpty }
             )
             plannerExplain = "\(contractSummary)。当前链路：任务接入 → 规划说明 → 阻塞分诊 → 交付冻结。现在停在 awaiting_grant；grant gate 未变绿前不会自动继续。"
-        } else if input.topLaunchDenyCode == "permission_denied" || oneShotTopBlocker == "permission_denied" {
+        } else if topLaunchIssue == .permissionDenied || oneShotTopBlocker == "permission_denied" {
             intakeStatus = StatusExplanation(
                 state: .permissionDenied,
-                headline: "检测到 permission_denied，自动启动继续保持关闭",
-                whatHappened: "lane 启动阶段返回 permission_denied，所以当前链路不会被显示成可继续。",
+                headline: "检测到权限链路拒绝，自动启动继续保持关闭",
+                whatHappened: "lane 启动阶段返回了权限拒绝，所以当前链路不会被显示成可继续。",
                 whyItHappened: "权限拒绝必须直接可见，不能被包装成普通等待。",
                 userAction: directedResumeSummary ?? "先修复权限或授权配置，再重新发起 intake / resume。",
                 machineStatusRef: plannerMachineStatusRef,
                 hardLine: "permission_denied remains explicit",
-                highlights: [contractSummary, "top_launch_deny_code=permission_denied"].filter { !$0.isEmpty }
+                highlights: [
+                    contractSummary,
+                    topLaunchDenyHighlight,
+                    topLaunchIssueHighlight
+                ].filter { !$0.isEmpty }
             )
             blockerStatus = StatusExplanation(
                 state: .permissionDenied,
-                headline: "Top blocker: permission_denied",
+                headline: topBlockerHeadline("permission_denied"),
                 whatHappened: "当前主 blocker 是权限链路拒绝。",
                 whyItHappened: "runtime deny note 会在 UI 中保持可见，避免误导用户为普通等待态。",
                 userAction: directedResumeSummary ?? "先处理权限问题，再回到当前复杂任务。",
                 machineStatusRef: plannerMachineStatusRef,
                 hardLine: "authz must stay fail-closed",
-                highlights: ["denied_launches=\(input.deniedLaunchCount)"]
+                highlights: [
+                    topLaunchDenyHighlight,
+                    topLaunchIssueHighlight,
+                    "denied_launches=\(input.deniedLaunchCount)"
+                ].filter { !$0.isEmpty }
             )
-            plannerExplain = "\(contractSummary)。当前停在 permission_denied；lane launch deny 已把权限问题前移到 cockpit。"
-        } else if input.topLaunchDenyCode == "scope_expansion" || freezeDecision == "no_go" || !input.scopeFreezeBlockedExpansionItems.isEmpty {
+            plannerExplain = "\(contractSummary)。当前停在 \(displayBlockerLabel("permission_denied"))；lane launch deny 已把权限问题前移到 cockpit。"
+        } else if topLaunchIssue == .modelNotReady {
+            intakeStatus = StatusExplanation(
+                state: .diagnosticRequired,
+                headline: "检测到模型或 provider 未就绪，先收敛真实可执行模型",
+                whatHappened: "lane launch deny 指向 provider 尚未 ready、上游仍在等待，或目标模型不在 Hub 真实可用清单里，而不是授权链已经收敛。",
+                whyItHappened: "如果 cockpit 继续把这里显示成普通 access ready，用户会先去错入口，最后还是卡在 route truth。",
+                userAction: directedResumeSummary ?? "先去 Supervisor 控制中心检查 AI 模型，再回 XT 设置 → 诊断核对 route truth。",
+                machineStatusRef: plannerMachineStatusRef,
+                hardLine: "model_not_ready must remain visible",
+                highlights: [
+                    contractSummary,
+                    topLaunchDenyHighlight,
+                    topLaunchIssueHighlight,
+                    "repair_entry=Supervisor 控制中心 · AI 模型"
+                ].filter { !$0.isEmpty }
+            )
+            blockerStatus = StatusExplanation(
+                state: .diagnosticRequired,
+                headline: topBlockerHeadline("model_not_ready"),
+                whatHappened: "当前主 blocker 是模型或 provider 还没 ready。",
+                whyItHappened: "真实可执行模型没收敛前，cockpit 不能把当前 access 链路包成已就绪。",
+                userAction: directedResumeSummary ?? "先核对 model_id、provider ready 和 Hub 实际可用清单。",
+                machineStatusRef: plannerMachineStatusRef,
+                hardLine: "route truth must stay explicit",
+                highlights: [topLaunchDenyHighlight, "next_target=\(oneShotNextTarget)"].filter { !$0.isEmpty }
+            )
+            plannerExplain = "\(contractSummary)。当前停在 \(displayBlockerLabel("model_not_ready"))；需先让 provider / model inventory 真实收敛，再继续 one-shot launch。"
+        } else if topLaunchIssue == .connectorScopeBlocked {
+            intakeStatus = StatusExplanation(
+                state: .diagnosticRequired,
+                headline: "检测到远端导出或 connector scope 被阻断，先检查 Hub Recovery",
+                whatHappened: "lane launch deny 指向 remote export gate、设备远端导出策略、预算边界或用户远端偏好，当前 paid 远端不会被装成已可继续。",
+                whyItHappened: "如果 cockpit 继续只显示授权未完成或权限链路拒绝，会把真正的 Hub Recovery 和边界修复入口藏掉。",
+                userAction: directedResumeSummary ?? "先看 deny_code / audit_ref，再到 REL Flow Hub → 诊断与恢复检查 remote export gate。",
+                machineStatusRef: plannerMachineStatusRef,
+                hardLine: "connector_scope_blocked must remain visible",
+                highlights: [
+                    contractSummary,
+                    topLaunchDenyHighlight,
+                    topLaunchIssueHighlight,
+                    "repair_entry=REL Flow Hub → 诊断与恢复"
+                ].filter { !$0.isEmpty }
+            )
+            blockerStatus = StatusExplanation(
+                state: .diagnosticRequired,
+                headline: topBlockerHeadline("connector_scope_blocked"),
+                whatHappened: "当前主 blocker 是远端导出或 paid connector scope 被边界策略挡住。",
+                whyItHappened: "export gate 没恢复前，自动启动不能继续把远端链路显示成可放行。",
+                userAction: directedResumeSummary ?? "先修 remote export gate / 安全边界 / 预算，再回到当前 intake。",
+                machineStatusRef: plannerMachineStatusRef,
+                hardLine: "remote export boundary stays fail-closed",
+                highlights: [topLaunchDenyHighlight, "denied_launches=\(input.deniedLaunchCount)"].filter { !$0.isEmpty }
+            )
+            plannerExplain = "\(contractSummary)。当前停在 \(displayBlockerLabel("connector_scope_blocked"))；需先通过 Hub Recovery 还原 remote export gate / deny_code 对应边界。"
+        } else if topLaunchIssue == .paidModelAccessBlocked {
+            intakeStatus = StatusExplanation(
+                state: .diagnosticRequired,
+                headline: "检测到付费模型访问受阻，先回模型与预算入口",
+                whatHappened: "lane launch deny 指向设备 paid policy、模型 allowlist 或预算边界，当前 paid model 不会被装成已准备好。",
+                whyItHappened: "这类问题需要回真实模型与预算边界修复，不能被 cockpit 包成普通等待。",
+                userAction: directedResumeSummary ?? "先去 Supervisor 控制中心和 Hub 模型入口核对 allowlist、预算与模型绑定。",
+                machineStatusRef: plannerMachineStatusRef,
+                hardLine: "paid_model_access_blocked must remain visible",
+                highlights: [
+                    contractSummary,
+                    topLaunchDenyHighlight,
+                    topLaunchIssueHighlight,
+                    "repair_entry=REL Flow Hub → 模型与付费访问"
+                ].filter { !$0.isEmpty }
+            )
+            blockerStatus = StatusExplanation(
+                state: .diagnosticRequired,
+                headline: topBlockerHeadline("paid_model_access_blocked"),
+                whatHappened: "当前主 blocker 是付费模型资格或预算没有放行。",
+                whyItHappened: "paid model access 没恢复前，one-shot 入口不能继续暗示可自动启动。",
+                userAction: directedResumeSummary ?? "先核对 paid model 资格、allowlist 和 token budget。",
+                machineStatusRef: plannerMachineStatusRef,
+                hardLine: "paid access stays fail-closed",
+                highlights: [topLaunchDenyHighlight, topLaunchIssueHighlight].filter { !$0.isEmpty }
+            )
+            plannerExplain = "\(contractSummary)。当前停在 \(displayBlockerLabel("paid_model_access_blocked"))；需先修复 paid model allowlist / budget，再继续 launch。"
+        } else if topLaunchIssue == .pairingRepairRequired
+            || topLaunchIssue == .multipleHubsAmbiguous
+            || topLaunchIssue == .hubPortConflict
+            || topLaunchIssue == .hubUnreachable {
+            intakeStatus = StatusExplanation(
+                state: .blockedWaitingUpstream,
+                headline: "检测到连接修复型阻塞，先恢复 Hub 连接事实",
+                whatHappened: "lane launch deny 仍指向 Pair Hub、端口冲突、多 Hub 冲突或 Hub 不可达，所以 cockpit 不会把当前入口装成 access ready。",
+                whyItHappened: "只要连接事实没恢复，Hub 真实可用状态和授权链都不能被继续消费。",
+                userAction: directedResumeSummary ?? "先回 Pair Hub 或诊断入口修连接，再回来继续当前 one-shot。",
+                machineStatusRef: plannerMachineStatusRef,
+                hardLine: "hub_connectivity_blockers must remain visible",
+                highlights: [
+                    contractSummary,
+                    topLaunchDenyHighlight,
+                    topLaunchIssueHighlight,
+                    "repair_entry=Pair Hub"
+                ].filter { !$0.isEmpty }
+            )
+            blockerStatus = StatusExplanation(
+                state: .blockedWaitingUpstream,
+                headline: topBlockerHeadline(topLaunchIssue?.rawValue ?? "hub_connectivity_blocked"),
+                whatHappened: "当前主 blocker 是 Hub 连接、配对或路由可达性没有恢复。",
+                whyItHappened: "连接事实不成立时，cockpit 必须继续把 Pair Hub / diagnostics 摆在明面上。",
+                userAction: directedResumeSummary ?? "先恢复 Pair Hub 与 gRPC 可达，再回到当前复杂任务。",
+                machineStatusRef: plannerMachineStatusRef,
+                hardLine: "connectivity blockers stay explicit",
+                highlights: [topLaunchDenyHighlight, topLaunchIssueHighlight].filter { !$0.isEmpty }
+            )
+            plannerExplain = "\(contractSummary)。当前停在 \(displayBlockerLabel(topLaunchIssue?.rawValue ?? "hub_connectivity_blocked"))；需先恢复 Pair Hub / gRPC 可达性，再继续 one-shot launch。"
+        } else if normalizedTopLaunchDenyCode == "scope_expansion" || freezeDecision == "no_go" || !input.scopeFreezeBlockedExpansionItems.isEmpty {
             let blockedItems = input.scopeFreezeBlockedExpansionItems.joined(separator: ",")
-            let nextAction = input.scopeFreezeNextActions.first ?? "先收回 scope expansion"
+            let nextAction = input.scopeFreezeNextActions.first ?? "先收回超范围请求"
             intakeStatus = StatusExplanation(
                 state: .blockedWaitingUpstream,
                 headline: "已验证范围拒绝超范围请求",
-                whatHappened: "当前发布范围是 `\(freezeDecision)`，同时存在超出已验证主链的 scope expansion。",
+                whatHappened: "当前发布范围为 \(freezeDecisionLabel(freezeDecision))，同时存在超出已验证主链的扩范围请求。",
                 whyItHappened: "这类超范围请求会继续被挡住，直到回到已验证主链。",
                 userAction: nextAction,
                 machineStatusRef: plannerMachineStatusRef,
@@ -384,7 +529,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             )
             blockerStatus = StatusExplanation(
                 state: .blockedWaitingUpstream,
-                headline: "Top blocker: scope_expansion",
+                headline: topBlockerHeadline("scope_expansion"),
                 whatHappened: "当前主 blocker 是请求超出了已验证范围。",
                 whyItHappened: "范围已经被判定为 no-go，所以不能继续对内对外暗示已验证。",
                 userAction: nextAction,
@@ -392,7 +537,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                 hardLine: "validated-mainline-only stays enforced",
                 highlights: ["validated_scope=\(input.scopeFreezeValidatedScope.joined(separator: ","))"].filter { !$0.isEmpty }
             )
-            plannerExplain = "\(contractSummary)。当前停在 scope_expansion；需先回退到已验证主链，再重新计算 delivery freeze。"
+            plannerExplain = "\(contractSummary)。当前停在 \(displayBlockerLabel("scope_expansion"))；需先回退到已验证主链，再重新计算 delivery freeze。"
         } else if input.releaseBlockedByDoctorWithoutReport != 0 {
             intakeStatus = StatusExplanation(
                 state: .diagnosticRequired,
@@ -406,7 +551,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             )
             blockerStatus = StatusExplanation(
                 state: .diagnosticRequired,
-                headline: "Top blocker: diagnostic_required",
+                headline: topBlockerHeadline("diagnostic_required"),
                 whatHappened: "当前主 blocker 是 Doctor 证据链未就绪。",
                 whyItHappened: "缺少 Doctor 报告时，release line 不能被 UI 包装成已放行。",
                 userAction: "先运行 diagnostics，再回到 review delivery。",
@@ -414,7 +559,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                 hardLine: "release stays fail-closed without doctor report",
                 highlights: ["release_blocked_by_doctor_without_report=\(input.releaseBlockedByDoctorWithoutReport)"]
             )
-            plannerExplain = "\(contractSummary)。当前停在 diagnostic_required，因为 Doctor / secret scrub 证据尚未齐备。"
+            plannerExplain = "\(contractSummary)。当前停在 \(displayBlockerLabel("diagnostic_required"))，因为 Doctor / secret scrub 证据尚未齐备。"
         } else if oneShotState == .failedClosed {
             let recommendation = directedResumeSummary ?? input.scopeFreezeNextActions.first ?? "先修复当前 blocker，再重新发起这次 one-shot。"
             intakeStatus = StatusExplanation(
@@ -433,7 +578,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             )
             blockerStatus = StatusExplanation(
                 state: .blockedWaitingUpstream,
-                headline: "Top blocker: \(oneShotTopBlocker)",
+                headline: topBlockerHeadline(oneShotTopBlocker),
                 whatHappened: "当前主 blocker 来自这次 one-shot 的 fail-closed 判定。",
                 whyItHappened: "执行链已经明确挡住，所以 UI 不能回退成普通等待态。",
                 userAction: recommendation,
@@ -441,7 +586,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                 hardLine: "runtime blocker stays explicit",
                 highlights: [input.oneShotRuntimeState.map { "one_shot_state=\($0)" } ?? ""].filter { !$0.isEmpty }
             )
-            plannerExplain = "\(contractSummary)。当前停在 failed_closed；需先消除 blocker=\(oneShotTopBlocker)，再允许重试当前主链。"
+            plannerExplain = "\(contractSummary)。当前停在 failed_closed；需先消除当前阻塞：\(displayBlockerLabel(oneShotTopBlocker))，再允许重试当前主链。"
         } else if oneShotState == .blocked || input.laneSummary.failed > 0 || input.laneSummary.stalled > 0 || input.laneSummary.blocked > 0 {
             let abnormalStatus = input.abnormalLaneStatus ?? "lane_health_abnormal"
             let recommendation = directedResumeSummary ?? input.abnormalLaneRecommendation ?? "查看 lane 健康态与阻塞原因，按 next action 续推。"
@@ -462,7 +607,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             )
             blockerStatus = StatusExplanation(
                 state: .blockedWaitingUpstream,
-                headline: "Top blocker: \(oneShotTopBlocker == "none" ? abnormalStatus : oneShotTopBlocker)",
+                headline: topBlockerHeadline(oneShotTopBlocker == "none" ? abnormalStatus : oneShotTopBlocker),
                 whatHappened: oneShotState == .blocked ? "当前主 blocker 已被运行时直接标出来。" : "当前主 blocker 来自 lane 健康异常。",
                 whyItHappened: "planner 不会隐藏上游依赖；如果已有 baton，也只能按指定方向恢复。",
                 userAction: recommendation,
@@ -499,7 +644,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             )
             blockerStatus = StatusExplanation(
                 state: input.directedUnblockBatonCount > 0 ? .inProgress : .ready,
-                headline: input.directedUnblockBatonCount > 0 ? "Top blocker: directed_resume_available" : "Top blocker: none",
+                headline: input.directedUnblockBatonCount > 0 ? topBlockerHeadline("directed_resume_available") : topBlockerHeadline("none"),
                 whatHappened: input.directedUnblockBatonCount > 0 ? "当前没有新硬阻塞，但已存在 directed resume baton 可供续推。" : "当前没有 grant / doctor / lane 异常硬阻塞。",
                 whyItHappened: input.directedUnblockBatonCount > 0 ? "恢复范围已经收口到 continue_current_task_only。" : "执行还在进行，但没有需要立刻人工介入的硬阻塞。",
                 userAction: directedResumeSummary ?? "继续观察 planner explain，并在需要时 review delivery。",
@@ -530,7 +675,9 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             } else {
                 input.scopeFreezeNextActions.first ?? "先 review delivery，确认 XT-Ready issues 再决定是否推进。"
             }
-            let deliveryBlockerHeadline = memoryUnderfed ? "Top blocker: memory_context_underfed" : "Top blocker: review_delivery"
+            let deliveryBlockerHeadline = memoryUnderfed
+                ? topBlockerHeadline("memory_context_underfed")
+                : topBlockerHeadline("review_delivery")
             intakeStatus = StatusExplanation(
                 state: .diagnosticRequired,
                 headline: deliveryHeadline,
@@ -566,7 +713,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                 ]
             )
             plannerExplain = memoryUnderfed
-                ? "\(contractSummary)。当前停在 memory_context_underfed；需先补齐 strategic review memory，再进入可信的 delivery review。"
+                ? "\(contractSummary)。当前停在 \(displayBlockerLabel("memory_context_underfed"))；需先补齐 strategic review memory，再进入可信的 delivery review。"
                 : "\(contractSummary)。当前停在 delivery review，原因是 XT-Ready 仍有未消化问题。"
         } else if !input.memoryAssemblyReady || input.memoryAssemblyIssueCount > 0 {
             let topIssue = input.memoryAssemblyTopIssueCode ?? "memory_context_underfed"
@@ -586,7 +733,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             )
             blockerStatus = StatusExplanation(
                 state: .diagnosticRequired,
-                headline: "Top blocker: \(topIssue)",
+                headline: topBlockerHeadline(topIssue),
                 whatHappened: "当前主 blocker 是 Supervisor strategic memory 仍未准备好。",
                 whyItHappened: "memory assembly 的锚点、层级或证据链不完整时，Cockpit 不应把状态包装成 ready。",
                 userAction: "刷新 memory 并重做 focused strategic review 前的装配检查。",
@@ -597,14 +744,14 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                     "memory_top_issue=\(topIssue)"
                 ]
             )
-            plannerExplain = "\(contractSummary)。当前停在 \(topIssue)；需要先把 strategic memory 从 underfed 拉回 review-ready，才适合继续推进纠偏或评审。"
+            plannerExplain = "\(contractSummary)。当前停在 \(displayBlockerLabel(topIssue))；需要先把 strategic memory 从 underfed 拉回 review-ready，才适合继续推进纠偏或评审。"
         } else {
             intakeStatus = StatusExplanation(
                 state: .ready,
                 headline: "提交 one-shot intake 以开始复杂任务",
                 whatHappened: "Cockpit 已把任务接入、规划说明、阻塞卡和交付冻结收在同一个入口里。",
                 whyItHappened: "新的复杂任务从这里发起，后续状态也会持续显式展示。",
-                userAction: directedResumeSummary ?? "点击“提交 one-shot intake”，输入目标 / 约束 / 交付物 / 风险。",
+                userAction: directedResumeSummary ?? "点击“提交 one-shot intake”，输入目标 / 约束 / 交付物 / 风险。默认先按功能开发场景起步；如果这是原型、产品开局或大型项目，也直接写出来。",
                 machineStatusRef: plannerMachineStatusRef,
                 hardLine: "validated-mainline-only remains the only external scope",
                 highlights: [
@@ -615,10 +762,10 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             )
             blockerStatus = StatusExplanation(
                 state: input.directedUnblockBatonCount > 0 ? .inProgress : .ready,
-                headline: input.directedUnblockBatonCount > 0 ? "Top blocker: directed_resume_available" : "Top blocker: none",
+                headline: input.directedUnblockBatonCount > 0 ? topBlockerHeadline("directed_resume_available") : topBlockerHeadline("none"),
                 whatHappened: input.directedUnblockBatonCount > 0 ? "当前存在可执行的 directed resume baton。" : "当前没有显式 blocker；下一步会由这次 one-shot intake 启动 planner。",
                 whyItHappened: input.directedUnblockBatonCount > 0 ? "baton 已把恢复动作收口到继续当前任务，不允许 scope expand。" : "就算现在是 ready，也会明确告诉你下一步，而不是留空。",
-                userAction: directedResumeSummary ?? "提交 one-shot intake，随后观察 planner explain 与 blocker card。",
+                userAction: directedResumeSummary ?? "提交 one-shot intake，默认先走功能开发场景；提交后继续看 planner explain 与 blocker card。",
                 machineStatusRef: plannerMachineStatusRef,
                 hardLine: "grant / scope / secret blocker will still fail-closed once triggered",
                 highlights: ["xt_ready_status=\(input.xtReadyStatus)"]
@@ -633,7 +780,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
 
         let releaseFreezeStatus = StatusExplanation(
             state: releaseFreezeState,
-            headline: "已验证主链 / 交付冻结 (\(freezeDecision))",
+            headline: "已验证主链 / 交付冻结（\(freezeDecisionLabel(freezeDecision))）",
             whatHappened: "Cockpit 只围绕 \(validatedScope.joined(separator: " → ")) 这条已验证主链来展示与复盘；对外表述也只用允许的口径。",
             whyItHappened: "这一轮只沿已验证范围推进，不把未验证功能重新拉回当前界面。",
             userAction: releaseNextAction,
@@ -650,14 +797,14 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             PrimaryActionRailAction(
                 id: "submit_intake",
                 title: "提交 one-shot intake",
-                subtitle: directedResumeSummary ?? "把复杂任务送进 planner，并持续显示发生了什么、为什么、下一步",
+                subtitle: directedResumeSummary ?? "默认按功能开发场景起步，把复杂任务送进 planner，并持续显示发生了什么、为什么、下一步",
                 systemImage: "paperplane.circle.fill",
                 style: .primary
             ),
             PrimaryActionRailAction(
                 id: "approve_risk",
                 title: "审批风险授权",
-                subtitle: input.grantGateMode.map { "grant_required 时先走授权（\($0)）" } ?? "grant_required 时先走授权，不越过 fail-closed 边界",
+                subtitle: input.grantGateMode.map { "遇到 Hub 授权阻塞时先完成授权（\($0)）" } ?? "遇到 Hub 授权阻塞时先完成授权，不越过 fail-closed 边界",
                 systemImage: "checkmark.shield",
                 style: .secondary
             ),
@@ -676,6 +823,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             intakeStatus: intakeStatus,
             blockerStatus: blockerStatus,
             releaseFreezeStatus: releaseFreezeStatus,
+            reviewMemorySummary: input.reviewMemorySummary,
             plannerExplain: plannerExplain,
             plannerMachineStatusRef: plannerMachineStatusRef,
             actions: actions,
@@ -691,6 +839,27 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                 "xt.one_shot_replay_regression.v1.scenarios"
             ]
         )
+    }
+
+    private static func topBlockerHeadline(_ raw: String) -> String {
+        "Top blocker: \(displayBlockerLabel(raw))"
+    }
+
+    private static func displayBlockerLabel(_ raw: String) -> String {
+        SupervisorBlockerPresentation.label(raw)
+    }
+
+    private static func freezeDecisionLabel(_ raw: String) -> String {
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "go":
+            return "go（仅按已验证主链收口）"
+        case "no_go":
+            return "no-go（当前禁止扩范围）"
+        case "pending":
+            return "待确认（pending）"
+        default:
+            return raw
+        }
     }
 
     private static func buildRuntimeStageRail(
@@ -719,7 +888,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             "state=\(oneShotState?.rawValue ?? "none")",
             "owner=\(oneShotOwner)",
             "next=\(oneShotNextTarget)",
-            oneShotTopBlocker == "none" ? nil : "blocker=\(oneShotTopBlocker)"
+            oneShotTopBlocker == "none" ? nil : "当前阻塞：\(displayBlockerLabel(oneShotTopBlocker))"
         ]
         .compactMap { $0 }
         .joined(separator: " · ")
@@ -752,7 +921,12 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
         oneShotState: OneShotRunStateStatus?,
         oneShotTopBlocker: String
     ) -> SupervisorRuntimeStageItemPresentation {
-        if input.topLaunchDenyCode == "permission_denied" || oneShotTopBlocker == "permission_denied" {
+        let topLaunchIssue = input.topLaunchDenyCode.flatMap(
+            UITroubleshootKnowledgeBase.issue(forFailureCode:)
+        )
+        let supervisorRouteHint = supervisorRouteGovernanceHint(for: oneShotTopBlocker)
+
+        if topLaunchIssue == .permissionDenied || oneShotTopBlocker == "permission_denied" {
             return SupervisorRuntimeStageItemPresentation(
                 id: "access",
                 title: "授权",
@@ -764,7 +938,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             )
         }
 
-        if input.pendingGrantCount > 0 || input.topLaunchDenyCode == "grant_required" || oneShotState == .awaitingGrant {
+        if input.pendingGrantCount > 0 || topLaunchIssue == .grantRequired || oneShotState == .awaitingGrant {
             return SupervisorRuntimeStageItemPresentation(
                 id: "access",
                 title: "授权",
@@ -774,6 +948,74 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                 actionID: "resolve_access",
                 actionLabel: "打开授权"
             )
+        }
+
+        if topLaunchIssue == .modelNotReady || topLaunchIssue == .paidModelAccessBlocked {
+            return SupervisorRuntimeStageItemPresentation(
+                id: "access",
+                title: "授权",
+                detail: topLaunchIssue == .paidModelAccessBlocked
+                    ? "付费模型资格、allowlist 或预算仍未收敛，需先回模型入口核对。"
+                    : "模型 / provider 还没 ready，需先核对真实可执行模型与路由。",
+                progress: .blocked,
+                surfaceState: .diagnosticRequired,
+                actionID: "open_model_route_readiness",
+                actionLabel: topLaunchIssue == .paidModelAccessBlocked ? "检查付费模型" : "检查模型"
+            )
+        }
+
+        if topLaunchIssue == .connectorScopeBlocked {
+            return SupervisorRuntimeStageItemPresentation(
+                id: "access",
+                title: "授权",
+                detail: "远端导出或 paid connector scope 被边界挡住，需先检查 Hub Recovery。",
+                progress: .blocked,
+                surfaceState: .diagnosticRequired,
+                actionID: "open_hub_recovery",
+                actionLabel: "检查 Hub Recovery"
+            )
+        }
+
+        if topLaunchIssue == .pairingRepairRequired
+            || topLaunchIssue == .multipleHubsAmbiguous
+            || topLaunchIssue == .hubPortConflict
+            || topLaunchIssue == .hubUnreachable {
+            return SupervisorRuntimeStageItemPresentation(
+                id: "access",
+                title: "授权",
+                detail: "Hub 连接或配对事实还没恢复，需先回 Pair Hub / diagnostics 修连接。",
+                progress: .blocked,
+                surfaceState: .blockedWaitingUpstream,
+                actionID: "pair_hub",
+                actionLabel: "检查 Hub"
+            )
+        }
+
+        if let supervisorRouteHint {
+            switch supervisorRouteHint.blockedPlane {
+            case .grantReady:
+                return SupervisorRuntimeStageItemPresentation(
+                    id: "access",
+                    title: "授权",
+                    detail: supervisorRouteHint.summaryText,
+                    progress: .blocked,
+                    surfaceState: .permissionDenied,
+                    actionID: "resolve_access",
+                    actionLabel: "检查治理"
+                )
+            case .routeReady:
+                return SupervisorRuntimeStageItemPresentation(
+                    id: "access",
+                    title: "授权",
+                    detail: supervisorRouteHint.summaryText,
+                    progress: .blocked,
+                    surfaceState: .blockedWaitingUpstream,
+                    actionID: "pair_hub",
+                    actionLabel: "检查路由"
+                )
+            default:
+                break
+            }
         }
 
         if let oneShotState,
@@ -806,6 +1048,13 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
         oneShotTopBlocker: String,
         oneShotSummary: String
     ) -> SupervisorRuntimeStageItemPresentation {
+        let supervisorRouteHint = supervisorRouteGovernanceHint(for: oneShotTopBlocker)
+        let blockerIssue = UITroubleshootKnowledgeBase.issue(forFailureCode: oneShotTopBlocker)
+        let blockerRepairAction = cockpitRepairAction(
+            for: blockerIssue,
+            supervisorRouteHint: supervisorRouteHint
+        )
+
         switch oneShotState {
         case .planning, .launching, .running, .resuming, .mergeback:
             return SupervisorRuntimeStageItemPresentation(
@@ -826,24 +1075,36 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                 id: "runtime",
                 title: "执行",
                 detail: oneShotSummary.isEmpty
-                    ? "当前执行被 \(oneShotTopBlocker) 挡住。"
+                    ? runtimeBlockedSummary(
+                        oneShotTopBlocker: oneShotTopBlocker,
+                        supervisorRouteHint: supervisorRouteHint
+                    )
                     : oneShotSummary,
                 progress: .blocked,
-                surfaceState: .blockedWaitingUpstream,
-                actionID: hasDirectedResume ? "directed_resume" : nil,
-                actionLabel: hasDirectedResume ? "继续泳道" : nil
+                surfaceState: cockpitSurfaceState(
+                    for: blockerIssue,
+                    supervisorRouteHint: supervisorRouteHint
+                ),
+                actionID: hasDirectedResume ? "directed_resume" : blockerRepairAction?.id,
+                actionLabel: hasDirectedResume ? "继续泳道" : blockerRepairAction?.label
             )
         case .failedClosed:
             return SupervisorRuntimeStageItemPresentation(
                 id: "runtime",
                 title: "执行",
                 detail: oneShotSummary.isEmpty
-                    ? "runtime 已 fail-closed，blocker=\(oneShotTopBlocker)。"
+                    ? failedClosedRuntimeSummary(
+                        oneShotTopBlocker: oneShotTopBlocker,
+                        supervisorRouteHint: supervisorRouteHint
+                    )
                     : oneShotSummary,
                 progress: .blocked,
-                surfaceState: oneShotTopBlocker == "permission_denied" ? .permissionDenied : .blockedWaitingUpstream,
-                actionID: nil,
-                actionLabel: nil
+                surfaceState: cockpitSurfaceState(
+                    for: blockerIssue,
+                    supervisorRouteHint: supervisorRouteHint
+                ),
+                actionID: blockerRepairAction?.id,
+                actionLabel: blockerRepairAction?.label
             )
         case .deliveryFreeze, .completed:
             return SupervisorRuntimeStageItemPresentation(
@@ -878,6 +1139,94 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
         }
     }
 
+    private static func cockpitSurfaceState(
+        for issue: UITroubleshootIssue?,
+        supervisorRouteHint: XTSupervisorRouteGovernanceHint? = nil
+    ) -> XTUISurfaceState {
+        if let supervisorRouteHint {
+            switch supervisorRouteHint.blockedPlane {
+            case .grantReady:
+                return .permissionDenied
+            case .routeReady:
+                return .blockedWaitingUpstream
+            default:
+                break
+            }
+        }
+
+        switch issue {
+        case .grantRequired:
+            return .grantRequired
+        case .permissionDenied:
+            return .permissionDenied
+        case .modelNotReady, .connectorScopeBlocked, .paidModelAccessBlocked:
+            return .diagnosticRequired
+        default:
+            return .blockedWaitingUpstream
+        }
+    }
+
+    private static func cockpitRepairAction(
+        for issue: UITroubleshootIssue?,
+        supervisorRouteHint: XTSupervisorRouteGovernanceHint? = nil
+    ) -> (id: String, label: String)? {
+        if let supervisorRouteHint {
+            switch supervisorRouteHint.blockedPlane {
+            case .grantReady:
+                return ("resolve_access", "检查治理")
+            case .routeReady:
+                return ("pair_hub", "检查路由")
+            default:
+                break
+            }
+        }
+
+        switch issue {
+        case .grantRequired:
+            return ("resolve_access", "打开授权")
+        case .permissionDenied:
+            return ("resolve_access", "打开修复")
+        case .modelNotReady:
+            return ("open_model_route_readiness", "检查模型")
+        case .paidModelAccessBlocked:
+            return ("open_model_route_readiness", "检查付费模型")
+        case .connectorScopeBlocked:
+            return ("open_hub_recovery", "检查 Hub Recovery")
+        case .pairingRepairRequired, .multipleHubsAmbiguous, .hubPortConflict, .hubUnreachable:
+            return ("pair_hub", "检查 Hub")
+        case .none:
+            return nil
+        }
+    }
+
+    private static func supervisorRouteGovernanceHint(
+        for blockerCode: String
+    ) -> XTSupervisorRouteGovernanceHint? {
+        XTRouteTruthPresentation.supervisorRouteGovernanceHint(
+            routeReasonCode: blockerCode
+        )
+    }
+
+    private static func runtimeBlockedSummary(
+        oneShotTopBlocker: String,
+        supervisorRouteHint: XTSupervisorRouteGovernanceHint?
+    ) -> String {
+        if let supervisorRouteHint {
+            return supervisorRouteHint.summaryText
+        }
+        return "当前执行被\(displayBlockerLabel(oneShotTopBlocker))挡住。"
+    }
+
+    private static func failedClosedRuntimeSummary(
+        oneShotTopBlocker: String,
+        supervisorRouteHint: XTSupervisorRouteGovernanceHint?
+    ) -> String {
+        if let supervisorRouteHint {
+            return "runtime 已 fail-closed。\(supervisorRouteHint.summaryText)"
+        }
+        return "runtime 已 fail-closed，当前阻塞：\(displayBlockerLabel(oneShotTopBlocker))。"
+    }
+
     private static func runtimeFreezeStage(
         input: SupervisorCockpitPresentationInput,
         oneShotState: OneShotRunStateStatus?,
@@ -889,8 +1238,8 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                 id: "freeze",
                 title: "冻结",
                 detail: input.scopeFreezeBlockedExpansionItems.isEmpty
-                    ? "当前交付范围为 \(freezeDecision)。"
-                    : "blocked_expansion=\(input.scopeFreezeBlockedExpansionItems.joined(separator: ","))",
+                    ? "当前交付范围为 \(freezeDecisionLabel(freezeDecision))。"
+                    : "超出已验证范围的项：\(input.scopeFreezeBlockedExpansionItems.joined(separator: "，"))",
                 progress: .blocked,
                 surfaceState: .blockedWaitingUpstream,
                 actionID: "review_delivery",

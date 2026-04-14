@@ -11,6 +11,7 @@ enum SupervisorViewCardActionExecution {
         case setAuditDrillDown(SupervisorAuditDrillDownSelection?)
         case openURL(String)
         case openProjectGovernance(projectId: String, destination: XTProjectGovernanceDestination)
+        case stageSupervisorCandidateReview(HubIPCClient.SupervisorCandidateReviewItem)
         case approvePendingGrant(SupervisorManager.SupervisorPendingGrant)
         case denyPendingGrant(SupervisorManager.SupervisorPendingGrant)
         case approvePendingSkillApproval(SupervisorManager.SupervisorPendingSkillApproval)
@@ -37,6 +38,8 @@ enum SupervisorViewCardActionExecution {
             return .openURL(rawURL)
         case .openProjectGovernance(let projectId, let destination):
             return .openProjectGovernance(projectId: projectId, destination: destination)
+        case .stageSupervisorCandidateReview(let item):
+            return .stageSupervisorCandidateReview(item)
         case .approvePendingGrant(let grant):
             return .approvePendingGrant(grant)
         case .denyPendingGrant(let grant):
@@ -69,6 +72,8 @@ enum SupervisorViewCardActionExecution {
             openURL(url)
         case .openProjectGovernance(let projectId, let destination):
             openProjectGovernance(projectId, destination)
+        case .stageSupervisorCandidateReview(let item):
+            supervisor.stageSupervisorCandidateReview(item)
         case .approvePendingGrant(let grant):
             supervisor.approvePendingHubGrant(grant)
         case .denyPendingGrant(let grant):

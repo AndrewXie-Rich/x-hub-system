@@ -10,6 +10,8 @@ struct SupervisorEventLoopActionPresentation: Equatable {
     ) -> SupervisorEventLoopActionPresentation? {
         let triggerSource = normalizedScalar(activity.triggerSource).lowercased()
         let projectId = normalizedScalar(activity.projectId)
+        let grantRequestId = normalizedScalar(activity.grantRequestId)
+        let grantCapability = normalizedScalar(activity.grantCapability)
 
         if actionRequestsUIReview(activity),
            !projectId.isEmpty,
@@ -23,6 +25,34 @@ struct SupervisorEventLoopActionPresentation: Equatable {
                 url: url,
                 requestId: nil
             )
+        }
+
+        if requestId(for: activity) == nil,
+           (!grantRequestId.isEmpty || !grantCapability.isEmpty) {
+            if !projectId.isEmpty,
+               let url = XTDeepLinkURLBuilder.projectURL(
+                    projectId: projectId,
+                    pane: .chat,
+                    openTarget: .supervisor,
+                    grantRequestId: grantRequestId.isEmpty ? nil : grantRequestId,
+                    grantCapability: grantCapability.isEmpty ? nil : grantCapability
+               )?.absoluteString {
+                return SupervisorEventLoopActionPresentation(
+                    label: "打开授权",
+                    url: url,
+                    requestId: nil
+                )
+            }
+            if let url = XTDeepLinkURLBuilder.supervisorURL(
+                grantRequestId: grantRequestId.isEmpty ? nil : grantRequestId,
+                grantCapability: grantCapability.isEmpty ? nil : grantCapability
+            )?.absoluteString {
+                return SupervisorEventLoopActionPresentation(
+                    label: "打开授权",
+                    url: url,
+                    requestId: nil
+                )
+            }
         }
 
         if let requestId = requestId(for: activity) {
@@ -59,6 +89,20 @@ struct SupervisorEventLoopActionPresentation: Equatable {
            )?.absoluteString {
             return SupervisorEventLoopActionPresentation(
                 label: "打开项目",
+                url: url,
+                requestId: nil
+            )
+        }
+
+        if normalizedScalar(activity.reasonCode).lowercased() == "memory_scoped_hidden_project_recovery_missing",
+           let url = XTDeepLinkURLBuilder.settingsURL(
+                sectionId: "diagnostics",
+                title: "补回 hidden project 上下文",
+                detail: "打开诊断，检查 explicit hidden project focus 是否补回项目范围上下文。",
+                refreshReason: "supervisor_event_loop_hidden_project_scoped_recovery"
+           )?.absoluteString {
+            return SupervisorEventLoopActionPresentation(
+                label: "打开诊断",
                 url: url,
                 requestId: nil
             )

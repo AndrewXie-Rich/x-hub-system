@@ -30,7 +30,25 @@ struct SupervisorMemoryWorkingSetWindowTests {
 
     @Test
     func localMemoryWorkingSetUsesRecentRawContextDefaultProfile() async {
-        let manager = SupervisorManager.makeForTesting()
+        let manager = makeSupervisorManager()
+        let (appModel, cleanup) = makeIsolatedAppModel(
+            registry: registry(with: []),
+            selectedProjectId: AXProjectRegistry.globalHomeId
+        )
+        defer { cleanup() }
+        manager.setAppModel(appModel)
+        manager.cancelSupervisorMemoryRefreshForTesting()
+        HubIPCClient.installHubRouteDecisionOverrideForTesting {
+            HubRouteDecision(
+                mode: .auto,
+                hasRemoteProfile: false,
+                preferRemote: false,
+                allowFileFallback: true,
+                requiresRemote: false,
+                remoteUnavailableReasonCode: nil
+            )
+        }
+        defer { HubIPCClient.resetMemoryContextResolutionOverrideForTesting() }
         manager.messages = makeConversation(turns: 10)
 
         let localMemory = await manager.buildSupervisorLocalMemoryV1ForTesting("继续推进当前项目")
@@ -55,7 +73,7 @@ struct SupervisorMemoryWorkingSetWindowTests {
     @Test
     func explicitCrossProjectDrillDownAddsStructuredWorkingSetNotFullHistory() async throws {
         let now = Date(timeIntervalSince1970: 1_773_500_500).timeIntervalSince1970
-        let manager = SupervisorManager.makeForTesting()
+        let manager = makeSupervisorManager()
         let projectRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("xt_w3_35_cross_drill_\(UUID().uuidString)")
         let project = AXProjectEntry(
@@ -114,41 +132,18 @@ struct SupervisorMemoryWorkingSetWindowTests {
     }
 
     @Test
-    func reviewProfileExpandsFocusedStrategicConversationWindowToDeepDive() async throws {
-        let manager = SupervisorManager.makeForTesting()
+    func focusedStrategicReviewRespectsSTierCeilingWhileKeepingStrategicWindow() async throws {
+        let manager = makeSupervisorManager()
         let root = try makeProjectRoot(named: "supervisor-review-window-m3")
         defer { try? FileManager.default.removeItem(at: root) }
         let project = makeProjectEntry(root: root, displayName: "亮亮")
-        let appModel = AppModel()
-        appModel.registry = registry(with: [project])
-        appModel.selectedProjectId = project.projectId
-        manager.setAppModel(appModel)
-        manager.messages = makeConversation(turns: 14)
-
-        let localMemory = await manager.buildSupervisorLocalMemoryV1ForTesting(
-            "审查当前项目的上下文记忆，给出最具体的执行方案"
+        let (appModel, cleanup) = makeIsolatedAppModel(
+            registry: registry(with: [project]),
+            selectedProjectId: project.projectId
         )
-        let dialogueWindowLines = Set(extractDialogueWindowLines(from: localMemory))
-
-        #expect(!dialogueWindowLines.contains("- user: user-turn-1"))
-        #expect(!dialogueWindowLines.contains("- user: user-turn-2"))
-        #expect(dialogueWindowLines.contains("- user: user-turn-3"))
-        #expect(dialogueWindowLines.contains("- assistant: assistant-turn-3"))
-        #expect(dialogueWindowLines.contains("- user: user-turn-14"))
-        #expect(dialogueWindowLines.contains("- assistant: assistant-turn-14"))
-        #expect(localMemory.contains("window_profile: standard_12_pairs"))
-        #expect(localMemory.contains("raw_window_selected_pairs: 12"))
-        #expect(localMemory.contains("[SERVING_GOVERNOR]"))
-        #expect(localMemory.contains("review_level_hint: r2_strategic"))
-        #expect(localMemory.contains("profile_floor: m3_deep_dive"))
-        #expect(localMemory.contains("minimum_pack: portfolio_brief, focused_project_anchor_pack, longterm_outline, delta_feed, conflict_set, context_refs, evidence_pack"))
-        #expect(localMemory.contains("[SERVING_PROFILE]"))
-        #expect(localMemory.contains("profile_id: m3_deep_dive"))
-    }
-
-    @Test
-    func strategicReviewWithoutFocusedProjectStaysAtPlanReviewWindow() async {
-        let manager = SupervisorManager.makeForTesting()
+        defer { cleanup() }
+        manager.setAppModel(appModel)
+        manager.cancelSupervisorMemoryRefreshForTesting()
         manager.messages = makeConversation(turns: 14)
 
         let localMemory = await manager.buildSupervisorLocalMemoryV1ForTesting(
@@ -168,14 +163,58 @@ struct SupervisorMemoryWorkingSetWindowTests {
         #expect(localMemory.contains("review_level_hint: r2_strategic"))
         #expect(localMemory.contains("profile_floor: m2_plan_review"))
         #expect(localMemory.contains("minimum_pack: portfolio_brief, focused_project_anchor_pack, longterm_outline, delta_feed, conflict_set, context_refs"))
-        #expect(!localMemory.contains("minimum_pack: portfolio_brief, focused_project_anchor_pack, longterm_outline, delta_feed, conflict_set, context_refs, evidence_pack"))
         #expect(localMemory.contains("[SERVING_PROFILE]"))
         #expect(localMemory.contains("profile_id: m2_plan_review"))
+        #expect(localMemory.contains("[EVIDENCE_PACK]"))
+    }
+
+    @Test
+    func strategicReviewWithoutFocusedProjectCanUseDeepDiveWhenNoSTierCeilingApplies() async {
+        let manager = makeSupervisorManager()
+        manager.messages = makeConversation(turns: 14)
+
+        let localMemory = await manager.buildSupervisorLocalMemoryV1ForTesting(
+            "审查当前项目的上下文记忆，给出最具体的执行方案"
+        )
+        let dialogueWindowLines = Set(extractDialogueWindowLines(from: localMemory))
+
+        #expect(!dialogueWindowLines.contains("- user: user-turn-1"))
+        #expect(!dialogueWindowLines.contains("- user: user-turn-2"))
+        #expect(dialogueWindowLines.contains("- user: user-turn-3"))
+        #expect(dialogueWindowLines.contains("- assistant: assistant-turn-3"))
+        #expect(dialogueWindowLines.contains("- user: user-turn-14"))
+        #expect(dialogueWindowLines.contains("- assistant: assistant-turn-14"))
+        #expect(localMemory.contains("window_profile: standard_12_pairs"))
+        #expect(localMemory.contains("raw_window_selected_pairs: 12"))
+        #expect(localMemory.contains("[SERVING_GOVERNOR]"))
+        #expect(localMemory.contains("review_level_hint: r2_strategic"))
+        #expect(localMemory.contains("profile_floor: m2_plan_review"))
+        #expect(localMemory.contains("minimum_pack: portfolio_brief, focused_project_anchor_pack, longterm_outline, delta_feed, conflict_set, context_refs, evidence_pack"))
+        #expect(localMemory.contains("[SERVING_PROFILE]"))
+        #expect(localMemory.contains("profile_id: m3_deep_dive"))
     }
 
     @Test
     func recentRawContextDropsLowSignalTailAndAddsRollingDigest() async {
-        let manager = SupervisorManager.makeForTesting()
+        let manager = makeSupervisorManager()
+        let (appModel, cleanup) = makeIsolatedAppModel(
+            registry: registry(with: []),
+            selectedProjectId: AXProjectRegistry.globalHomeId
+        )
+        defer { cleanup() }
+        manager.setAppModel(appModel)
+        manager.cancelSupervisorMemoryRefreshForTesting()
+        HubIPCClient.installHubRouteDecisionOverrideForTesting {
+            HubRouteDecision(
+                mode: .auto,
+                hasRemoteProfile: false,
+                preferRemote: false,
+                allowFileFallback: true,
+                requiresRemote: false,
+                remoteUnavailableReasonCode: nil
+            )
+        }
+        defer { HubIPCClient.resetMemoryContextResolutionOverrideForTesting() }
         manager.messages = makeConversationWithLowSignalTail()
 
         let localMemory = await manager.buildSupervisorLocalMemoryV1ForTesting("继续推进")
@@ -193,6 +232,23 @@ struct SupervisorMemoryWorkingSetWindowTests {
         #expect(localMemory.contains("- assistant: assistant-turn-14"))
         #expect(localMemory.contains("- user-turn-2"))
         #expect(localMemory.contains("- assistant-turn-1"))
+    }
+
+    @Test
+    func conversationLocalFallbackKeepsGovernorMetadataButOmitsProjectSectionsOutsideRoleAwareContract() async {
+        let manager = makeSupervisorManager()
+
+        let localMemory = await manager.buildSupervisorLocalMemoryV1ForTesting(
+            "明天上午提醒我开会，再顺便总结一下今天安排"
+        )
+
+        #expect(localMemory.contains("[SERVING_GOVERNOR]"))
+        #expect(localMemory.contains("minimum_pack: portfolio_brief, focused_project_anchor_pack, delta_feed"))
+        #expect(localMemory.contains("[DIALOGUE_WINDOW]"))
+        #expect(!localMemory.contains("[PORTFOLIO_BRIEF]"))
+        #expect(!localMemory.contains("[FOCUSED_PROJECT_ANCHOR_PACK]"))
+        #expect(!localMemory.contains("[DELTA_FEED]"))
+        #expect(!localMemory.contains("[EVIDENCE_PACK]"))
     }
 
     @Test
@@ -229,14 +285,17 @@ struct SupervisorMemoryWorkingSetWindowTests {
         }
         defer { HubIPCClient.resetMemoryContextResolutionOverrideForTesting() }
 
-        let manager = SupervisorManager.makeForTesting()
+        let manager = makeSupervisorManager()
         let root = try makeProjectRoot(named: "supervisor-remote-memory-m3")
         defer { try? FileManager.default.removeItem(at: root) }
         let project = makeProjectEntry(root: root, displayName: "亮亮")
-        let appModel = AppModel()
-        appModel.registry = registry(with: [project])
-        appModel.selectedProjectId = project.projectId
+        let (appModel, cleanup) = makeIsolatedAppModel(
+            registry: registry(with: [project]),
+            selectedProjectId: project.projectId
+        )
+        defer { cleanup() }
         manager.setAppModel(appModel)
+        manager.cancelSupervisorMemoryRefreshForTesting()
         _ = await manager.buildSupervisorMemoryV1ForTesting(
             "审查当前项目的上下文记忆，给出最具体的执行方案"
         )
@@ -245,7 +304,7 @@ struct SupervisorMemoryWorkingSetWindowTests {
         let strategicAttempt = snapshot.last {
             $0.reviewLevelHint == SupervisorReviewLevel.r2Strategic.rawValue
         }
-        #expect(strategicAttempt?.servingProfile == XTMemoryServingProfile.m3DeepDive.rawValue)
+        #expect(strategicAttempt?.servingProfile == XTMemoryServingProfile.m2PlanReview.rawValue)
     }
 
     @Test
@@ -282,7 +341,7 @@ struct SupervisorMemoryWorkingSetWindowTests {
         }
         defer { HubIPCClient.resetMemoryContextResolutionOverrideForTesting() }
 
-        let manager = SupervisorManager.makeForTesting()
+        let manager = makeSupervisorManager()
         let rootA = try makeProjectRoot(named: "supervisor-remote-memory-unfocused-a")
         let rootB = try makeProjectRoot(named: "supervisor-remote-memory-unfocused-b")
         defer {
@@ -291,10 +350,13 @@ struct SupervisorMemoryWorkingSetWindowTests {
         }
         let projectA = makeProjectEntry(root: rootA, displayName: "项目 A")
         let projectB = makeProjectEntry(root: rootB, displayName: "项目 B")
-        let appModel = AppModel()
-        appModel.registry = registry(with: [projectA, projectB])
-        appModel.selectedProjectId = AXProjectRegistry.globalHomeId
+        let (appModel, cleanup) = makeIsolatedAppModel(
+            registry: registry(with: [projectA, projectB]),
+            selectedProjectId: AXProjectRegistry.globalHomeId
+        )
+        defer { cleanup() }
         manager.setAppModel(appModel)
+        manager.cancelSupervisorMemoryRefreshForTesting()
         _ = await manager.buildSupervisorMemoryV1ForTesting(
             "审查当前项目的上下文记忆，给出最具体的执行方案"
         )
@@ -307,8 +369,8 @@ struct SupervisorMemoryWorkingSetWindowTests {
     }
 
     @Test
-    func focusedStrategicReviewDefaultsToM3AndExpandsLineageAndEvidence() async throws {
-        let manager = SupervisorManager.makeForTesting()
+    func focusedStrategicReviewRespectsCeilingAndStillCarriesLineageAndEvidence() async throws {
+        let manager = makeSupervisorManager()
         let root = try makeProjectRoot(named: "supervisor-strategic-m3")
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -317,10 +379,13 @@ struct SupervisorMemoryWorkingSetWindowTests {
         project.nextStepSummary = "先完成验证，再决定是否改路"
         project.blockerSummary = "release gate 还没绿"
 
-        let appModel = AppModel()
-        appModel.registry = registry(with: [project])
-        appModel.selectedProjectId = project.projectId
+        let (appModel, cleanup) = makeIsolatedAppModel(
+            registry: registry(with: [project]),
+            selectedProjectId: project.projectId
+        )
+        defer { cleanup() }
         manager.setAppModel(appModel)
+        manager.cancelSupervisorMemoryRefreshForTesting()
 
         let ctx = AXProjectContext(root: root)
         try SupervisorProjectSpecCapsuleStore.save(
@@ -395,31 +460,35 @@ struct SupervisorMemoryWorkingSetWindowTests {
             "审查亮亮项目的上下文记忆，给出最具体的执行方案"
         )
 
-        #expect(localMemory.contains("profile_id: m3_deep_dive"))
+        #expect(localMemory.contains("profile_id: m2_plan_review"))
         #expect(localMemory.contains("review_level_hint: r2_strategic"))
-        #expect(localMemory.contains("profile_floor: m3_deep_dive"))
-        #expect(localMemory.contains("minimum_pack: portfolio_brief, focused_project_anchor_pack, longterm_outline, delta_feed, conflict_set, context_refs, evidence_pack"))
+        #expect(localMemory.contains("profile_floor: m2_plan_review"))
+        #expect(localMemory.contains("minimum_pack: portfolio_brief, focused_project_anchor_pack, longterm_outline, delta_feed, conflict_set, context_refs"))
         #expect(localMemory.contains("decision_lineage:"))
-        #expect(localMemory.contains("category: risk_posture"))
+        #expect(localMemory.contains("- risk_posture=当前阶段优先稳态验证，不接受高波动战略切换。"))
+        #expect(localMemory.contains("- scope_freeze=在 release gate 通过前，不允许提前切换到新战略路径。"))
         #expect(localMemory.contains("blocker_lineage:"))
         #expect(localMemory.contains("current_blocker: release gate 还没绿"))
         #expect(localMemory.contains("guidance_guardrail: (none)"))
-        #expect(localMemory.contains("why_included=durable_background_outline"))
-        #expect(localMemory.contains("why_included=decision_lineage_anchor"))
-        #expect(localMemory.contains("why_included=active_blocker_lineage"))
+        #expect(localMemory.contains("why_included=stable_goal_and_done_definition"))
+        #expect(localMemory.contains("why_included=approved_decision_anchor"))
+        #expect(localMemory.contains("why_included=recent_project_messages"))
     }
 
     @Test
     func focusedProjectAnchorPackIncludesLatestUIReviewSummary() async throws {
-        let manager = SupervisorManager.makeForTesting()
+        let manager = makeSupervisorManager()
         let root = try makeProjectRoot(named: "supervisor-ui-review-anchor")
         defer { try? FileManager.default.removeItem(at: root) }
 
         let project = makeProjectEntry(root: root, displayName: "亮亮")
-        let appModel = AppModel()
-        appModel.registry = registry(with: [project])
-        appModel.selectedProjectId = project.projectId
+        let (appModel, cleanup) = makeIsolatedAppModel(
+            registry: registry(with: [project]),
+            selectedProjectId: project.projectId
+        )
+        defer { cleanup() }
         manager.setAppModel(appModel)
+        manager.cancelSupervisorMemoryRefreshForTesting()
 
         let ctx = AXProjectContext(root: root)
         let bundle = XTUIObservationBundle(
@@ -564,21 +633,160 @@ struct SupervisorMemoryWorkingSetWindowTests {
     }
 
     @Test
+    func focusedProjectMemoryIncludesHeartbeatProjectionAcrossAnchorWorkingSetAndRefs() async throws {
+        let manager = makeSupervisorManager()
+        let root = try makeProjectRoot(named: "supervisor-heartbeat-memory-injection")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let (appModel, cleanup) = makeIsolatedAppModel(
+            registry: registry(with: [project]),
+            selectedProjectId: project.projectId
+        )
+        defer { cleanup() }
+        manager.setAppModel(appModel)
+        manager.cancelSupervisorMemoryRefreshForTesting()
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        let recoveryDecision = HeartbeatRecoveryDecision(
+            action: .repairRoute,
+            urgency: .urgent,
+            reasonCode: "route_health_regressed",
+            summary: "Repair route before retrying verification.",
+            sourceSignals: ["route_flaky", "queue_stall"],
+            anomalyTypes: [.routeFlaky, .queueStall],
+            blockedLaneReasons: [.runtimeError],
+            blockedLaneCount: 1,
+            stalledLaneCount: 1,
+            failedLaneCount: 0,
+            recoveringLaneCount: 0,
+            requiresUserAction: false
+        )
+        let artifact = try #require(
+            writeHeartbeatProjection(
+                ctx: ctx,
+                projectId: project.projectId,
+                projectName: project.displayName,
+                visibility: .shown,
+                reasonCodes: ["open_anomalies_present", "recovery_decision_active"],
+                whatChangedText: "验证连续多次停在 route 健康问题。",
+                whyImportantText: "这已经不是单次抖动，继续重试只会重复空转。",
+                systemNextStepText: "系统会先修复 route / dispatch 健康，再尝试恢复执行。",
+                statusDigest: "verification stalled with repeated route issues",
+                currentStateSummary: "Verify is blocked on route instability",
+                nextStepSummary: "Repair route then retry smoke suite",
+                blockerSummary: "route keeps degrading during verify",
+                qualityBand: .hollow,
+                qualityScore: 18,
+                weakReasons: ["evidence_weak", "hollow_progress"],
+                openAnomalyTypes: [.routeFlaky, .queueStall],
+                projectPhase: .verify,
+                executionStatus: .blocked,
+                riskTier: .high,
+                recoveryDecision: recoveryDecision,
+                repeatCount: 3,
+                projectMemoryContext: makeHeartbeatProjectMemoryContext()
+            )
+        )
+        let appModelCtx = try #require(appModel.projectContext(for: project.projectId))
+        #expect(appModelCtx.heartbeatMemoryProjectionURL.path == ctx.heartbeatMemoryProjectionURL.path)
+
+        let immediateProjection = try #require(XTHeartbeatMemoryProjectionStore.load(for: ctx))
+        #expect(immediateProjection.canonicalProjection.statusDigest == artifact.canonicalProjection.statusDigest)
+        #expect(immediateProjection.canonicalProjection.currentStateSummary == artifact.canonicalProjection.currentStateSummary)
+        #expect(immediateProjection.workingSetProjection == artifact.workingSetProjection)
+
+        let appModelProjection = try #require(XTHeartbeatMemoryProjectionStore.load(for: appModelCtx))
+        #expect(appModelProjection.canonicalProjection.statusDigest == artifact.canonicalProjection.statusDigest)
+        #expect(appModelProjection.canonicalProjection.currentStateSummary == artifact.canonicalProjection.currentStateSummary)
+        #expect(appModelProjection.workingSetProjection == artifact.workingSetProjection)
+
+        let localMemory = await manager.buildSupervisorLocalMemoryV1ForTesting(
+            "审查亮亮项目的上下文记忆，给出最具体的执行方案"
+        )
+        let postBuildProjection = try #require(XTHeartbeatMemoryProjectionStore.load(for: ctx))
+
+        #expect(artifact.workingSetProjection.eligible == true)
+        #expect(postBuildProjection.canonicalProjection.statusDigest == artifact.canonicalProjection.statusDigest)
+        #expect(postBuildProjection.canonicalProjection.currentStateSummary == artifact.canonicalProjection.currentStateSummary)
+        #expect(postBuildProjection.workingSetProjection == artifact.workingSetProjection)
+        #expect(localMemory.contains("heartbeat_status_digest: verification stalled with repeated route issues"))
+        #expect(localMemory.contains("heartbeat_current_state: Verify is blocked on route instability"))
+        #expect(localMemory.contains("heartbeat_project_memory_source: latest_coder_usage"))
+        #expect(localMemory.contains("heartbeat_project_memory_resolution: trigger=review_guidance_follow_up effective_depth=deep ceiling=m3_deep_dive ceiling_hit=false"))
+        #expect(localMemory.contains("heartbeat_project_memory_actual: serving_objects=recent_project_dialogue, project_anchor_pack, workflow_summary"))
+        #expect(localMemory.contains("heartbeat_project_memory_digest_in_project_ai: present=true visibility=shown reason_codes=project_memory_attention, recovery_decision_active"))
+        #expect(localMemory.contains("[heartbeat_digest]"))
+        #expect(localMemory.contains("project_memory_source: latest_coder_usage"))
+        #expect(localMemory.contains("project_memory_resolution: trigger=review_guidance_follow_up effective_depth=deep ceiling=m3_deep_dive ceiling_hit=false"))
+        #expect(localMemory.contains("project_memory_actual: serving_objects=recent_project_dialogue, project_anchor_pack, workflow_summary"))
+        #expect(localMemory.contains("project_memory_digest_in_project_ai: present=true visibility=shown reason_codes=project_memory_attention, recovery_decision_active"))
+        #expect(localMemory.contains("what_changed: 验证连续多次停在 route 健康问题。"))
+        #expect(localMemory.contains("recovery: action=repair_route urgency=urgent reason=route_health_regressed"))
+        #expect(localMemory.contains("source_scope=heartbeat_projection"))
+        #expect(localMemory.contains("source_scope=project_memory_policy"))
+        #expect(localMemory.contains("source_scope=project_memory_policy_resolution"))
+        #expect(localMemory.contains("source_scope=project_memory_resolution"))
+        #expect(localMemory.contains(sanitizeSupervisorPromptIdentifiers(ctx.heartbeatMemoryProjectionURL.path)))
+        #expect(localMemory.contains(sanitizeSupervisorPromptIdentifiers("audit://policy/project-memory")))
+        #expect(localMemory.contains(sanitizeSupervisorPromptIdentifiers("audit://policy-resolution/project-memory")))
+        #expect(localMemory.contains(sanitizeSupervisorPromptIdentifiers("audit://resolution/project-memory")))
+        #expect(
+            localMemory.contains(
+                sanitizeSupervisorPromptIdentifiers(
+                    "hub://project/\(project.projectId)/canonical/xterminal.project.heartbeat.summary_json"
+                )
+            )
+        )
+    }
+
+    @Test
     func focusedStrategicAssemblySnapshotCapturesSectionsAndTruncationTelemetry() async throws {
-        let manager = SupervisorManager.makeForTesting()
+        let manager = makeSupervisorManager()
         let root = try makeProjectRoot(named: "supervisor-assembly-snapshot-m3")
         defer { try? FileManager.default.removeItem(at: root) }
 
         let project = makeProjectEntry(root: root, displayName: "亮亮")
-        let appModel = AppModel()
-        appModel.registry = registry(with: [project])
-        appModel.selectedProjectId = project.projectId
+        let (appModel, cleanup) = makeIsolatedAppModel(
+            registry: registry(with: [project]),
+            selectedProjectId: project.projectId
+        )
+        defer { cleanup() }
         manager.setAppModel(appModel)
+        manager.cancelSupervisorMemoryRefreshForTesting()
+        HubIPCClient.installHubRouteDecisionOverrideForTesting {
+            HubRouteDecision(
+                mode: .auto,
+                hasRemoteProfile: false,
+                preferRemote: false,
+                allowFileFallback: true,
+                requiresRemote: false,
+                remoteUnavailableReasonCode: nil
+            )
+        }
 
         HubIPCClient.installMemoryContextResolutionOverrideForTesting { route, mode, _ in
             HubIPCClient.MemoryContextResolutionResult(
                 response: HubIPCClient.MemoryContextResponsePayload(
-                    text: "[MEMORY_V1]\n[/MEMORY_V1]",
+                    text: """
+[MEMORY_V1]
+[DIALOGUE_WINDOW]
+window_profile: standard_12_pairs
+[/DIALOGUE_WINDOW]
+[FOCUSED_PROJECT_ANCHOR_PACK]
+project=project-alpha
+[/FOCUSED_PROJECT_ANCHOR_PACK]
+[CONTEXT_REFS]
+selected_items:
+- ref_id=context://1
+[/CONTEXT_REFS]
+[EVIDENCE_PACK]
+selected_items:
+- ref_id=evidence://1
+[/EVIDENCE_PACK]
+[/MEMORY_V1]
+""",
                     source: "test_override",
                     resolvedMode: mode.rawValue,
                     requestedProfile: route.servingProfile.rawValue,
@@ -613,17 +821,19 @@ struct SupervisorMemoryWorkingSetWindowTests {
             "审查亮亮项目的上下文记忆，给出最具体的执行方案"
         )
 
-        #expect(snapshot?.requestedProfile == XTMemoryServingProfile.m3DeepDive.rawValue)
-        #expect(snapshot?.profileFloor == XTMemoryServingProfile.m3DeepDive.rawValue)
-        #expect(snapshot?.resolvedProfile == XTMemoryServingProfile.m3DeepDive.rawValue)
+        #expect(snapshot?.requestedProfile == XTMemoryServingProfile.m2PlanReview.rawValue)
+        #expect(snapshot?.profileFloor == XTMemoryServingProfile.m2PlanReview.rawValue)
+        #expect(snapshot?.resolvedProfile == XTMemoryServingProfile.m2PlanReview.rawValue)
         #expect(snapshot?.focusedProjectId == project.projectId)
         #expect(snapshot?.rawWindowProfile == XTSupervisorRecentRawContextProfile.standard12Pairs.rawValue)
         #expect(snapshot?.rawWindowFloorPairs == 8)
         #expect(snapshot?.rawWindowSelectedPairs == 0)
         #expect(snapshot?.rawWindowSource == "xt_cache")
+        #expect(snapshot?.servingObjectContract.contains("longterm_outline") == true)
         #expect(snapshot?.selectedSections.contains("focused_project_anchor_pack") == true)
         #expect(snapshot?.selectedSections.contains("dialogue_window") == true)
         #expect(snapshot?.selectedSections.contains("evidence_pack") == true)
+        #expect(snapshot?.omittedSections.contains("longterm_outline") == true)
         #expect(snapshot?.contextRefsSelected ?? 0 > 0)
         #expect(snapshot?.evidenceItemsSelected ?? 0 > 0)
         #expect(snapshot?.truncatedLayers == ["l1_canonical"])
@@ -632,13 +842,32 @@ struct SupervisorMemoryWorkingSetWindowTests {
     }
 
     @Test
-    func unfocusedStrategicAssemblySnapshotReportsM2AndOmittedDeepDiveSections() async throws {
-        let manager = SupervisorManager.makeForTesting()
+    func unfocusedStrategicAssemblySnapshotKeepsDeepDiveTargetWhileProgressiveDisclosureResolvesAtM2() async throws {
+        let manager = makeSupervisorManager()
+        HubIPCClient.installHubRouteDecisionOverrideForTesting {
+            HubRouteDecision(
+                mode: .auto,
+                hasRemoteProfile: false,
+                preferRemote: false,
+                allowFileFallback: true,
+                requiresRemote: false,
+                remoteUnavailableReasonCode: nil
+            )
+        }
 
         HubIPCClient.installMemoryContextResolutionOverrideForTesting { route, mode, _ in
             HubIPCClient.MemoryContextResolutionResult(
                 response: HubIPCClient.MemoryContextResponsePayload(
-                    text: "[MEMORY_V1]\n[/MEMORY_V1]",
+                    text: """
+[MEMORY_V1]
+[DIALOGUE_WINDOW]
+window_profile: standard_12_pairs
+[/DIALOGUE_WINDOW]
+[DELTA_FEED]
+delta=keep moving
+[/DELTA_FEED]
+[/MEMORY_V1]
+""",
                     source: "test_override",
                     resolvedMode: mode.rawValue,
                     requestedProfile: route.servingProfile.rawValue,
@@ -673,7 +902,7 @@ struct SupervisorMemoryWorkingSetWindowTests {
             "审查当前项目的上下文记忆，给出最具体的执行方案"
         )
 
-        #expect(snapshot?.requestedProfile == XTMemoryServingProfile.m2PlanReview.rawValue)
+        #expect(snapshot?.requestedProfile == XTMemoryServingProfile.m3DeepDive.rawValue)
         #expect(snapshot?.profileFloor == XTMemoryServingProfile.m2PlanReview.rawValue)
         #expect(snapshot?.resolvedProfile == XTMemoryServingProfile.m2PlanReview.rawValue)
         #expect(snapshot?.focusedProjectId == nil)
@@ -682,6 +911,8 @@ struct SupervisorMemoryWorkingSetWindowTests {
         #expect(snapshot?.rawWindowSource == "xt_cache")
         #expect(snapshot?.selectedSections.contains("delta_feed") == true)
         #expect(snapshot?.selectedSections.contains("dialogue_window") == true)
+        #expect(snapshot?.servingObjectContract.contains("portfolio_brief") == true)
+        #expect(snapshot?.attemptedProfiles == [XTMemoryServingProfile.m2PlanReview.rawValue])
         #expect(snapshot?.omittedSections.contains("focused_project_anchor_pack") == true)
         #expect(snapshot?.omittedSections.contains("portfolio_brief") == true)
         #expect(snapshot?.omittedSections.contains("context_refs") == true)
@@ -690,8 +921,36 @@ struct SupervisorMemoryWorkingSetWindowTests {
     }
 
     @Test
+    func heartbeatGovernanceReviewSnapshotCarriesReviewSemanticsIntoMemoryExplainability() async {
+        let manager = makeSupervisorManager()
+
+        let snapshot = await manager.buildSupervisorMemoryAssemblySnapshotForTesting(
+            """
+自动按 project governance 执行周期 review。
+trigger=heartbeat
+project_ref=Project Delta
+project_id=project-delta
+review_trigger=periodic_pulse
+review_level_hint=r1_pulse
+review_run_kind=pulse
+policy_reason=pulse_review_due depth=execution_ready
+""",
+            triggerSource: "heartbeat"
+        )
+
+        #expect(snapshot?.assemblyPurpose == XTSupervisorMemoryAssemblyPurpose.governanceReview.rawValue)
+        #expect(snapshot?.memoryResolutionTrigger == "heartbeat_periodic_pulse_review")
+        #expect(snapshot?.triggerSource == "heartbeat")
+        #expect(snapshot?.governanceReviewTrigger == SupervisorReviewTrigger.periodicPulse.rawValue)
+        #expect(snapshot?.governanceReviewRunKind == SupervisorReviewRunKind.pulse.rawValue)
+        #expect(snapshot?.continuityDrillDownLines.contains("trigger_source=heartbeat") == true)
+        #expect(snapshot?.continuityDrillDownLines.contains("governance_review_trigger=periodic_pulse") == true)
+        #expect(snapshot?.continuityDrillDownLines.contains("governance_review_run_kind=pulse") == true)
+    }
+
+    @Test
     func supervisorAssemblySnapshotCanUseHubThreadAsContinuitySource() async throws {
-        let manager = SupervisorManager.makeForTesting()
+        let manager = makeSupervisorManager()
 
         HubIPCClient.installHubRouteDecisionOverrideForTesting {
             HubRouteDecision(
@@ -764,7 +1023,7 @@ struct SupervisorMemoryWorkingSetWindowTests {
 
     @Test
     func supervisorAssemblySnapshotCanMergeHubThreadWithLocalTail() async throws {
-        let manager = SupervisorManager.makeForTesting()
+        let manager = makeSupervisorManager()
         manager.messages = [
             SupervisorMessage(id: "u2", role: .user, content: "user-turn-2", isVoice: false, timestamp: 2),
             SupervisorMessage(id: "a2", role: .assistant, content: "assistant-turn-2", isVoice: false, timestamp: 3),
@@ -843,15 +1102,18 @@ struct SupervisorMemoryWorkingSetWindowTests {
 
     @Test
     func focusedProjectReviewAutoAddsGovernedRetrievalSnippets() async throws {
-        let manager = SupervisorManager.makeForTesting()
+        let manager = makeSupervisorManager()
         let root = try makeProjectRoot(named: "supervisor-memory-retrieval")
         defer { try? FileManager.default.removeItem(at: root) }
 
         let project = makeProjectEntry(root: root, displayName: "亮亮")
-        let appModel = AppModel()
-        appModel.registry = registry(with: [project])
-        appModel.selectedProjectId = project.projectId
+        let (appModel, cleanup) = makeIsolatedAppModel(
+            registry: registry(with: [project]),
+            selectedProjectId: project.projectId
+        )
+        defer { cleanup() }
         manager.setAppModel(appModel)
+        manager.cancelSupervisorMemoryRefreshForTesting()
 
         HubIPCClient.installMemoryRetrievalOverrideForTesting { payload, _ in
             HubIPCClient.MemoryRetrievalResponsePayload(
@@ -900,15 +1162,18 @@ struct SupervisorMemoryWorkingSetWindowTests {
 
     @Test
     func focusedProjectReviewSurfacesRetrievalDenyMetadata() async throws {
-        let manager = SupervisorManager.makeForTesting()
+        let manager = makeSupervisorManager()
         let root = try makeProjectRoot(named: "supervisor-memory-retrieval-denied")
         defer { try? FileManager.default.removeItem(at: root) }
 
         let project = makeProjectEntry(root: root, displayName: "亮亮")
-        let appModel = AppModel()
-        appModel.registry = registry(with: [project])
-        appModel.selectedProjectId = project.projectId
+        let (appModel, cleanup) = makeIsolatedAppModel(
+            registry: registry(with: [project]),
+            selectedProjectId: project.projectId
+        )
+        defer { cleanup() }
         manager.setAppModel(appModel)
+        manager.cancelSupervisorMemoryRefreshForTesting()
 
         HubIPCClient.installMemoryRetrievalOverrideForTesting { payload, _ in
             HubIPCClient.MemoryRetrievalResponsePayload(
@@ -971,6 +1236,12 @@ struct SupervisorMemoryWorkingSetWindowTests {
         return out
     }
 
+    private func makeSupervisorManager() -> SupervisorManager {
+        SupervisorManager.makeForTesting(
+            enableAutomaticSupervisorMemorySnapshotRefresh: false
+        )
+    }
+
     private func makeConversationWithLowSignalTail() -> [SupervisorMessage] {
         var out = makeConversation(turns: 14)
         out.append(
@@ -1012,6 +1283,44 @@ struct SupervisorMemoryWorkingSetWindowTests {
         return out
     }
 
+    private func makeIsolatedAppModel(
+        registry: AXProjectRegistry,
+        selectedProjectId: String
+    ) -> (AppModel, () -> Void) {
+        AXTrustedAutomationPermissionOwnerReadiness.installCurrentProviderForTesting {
+            makeSupervisorMemoryPermissionReadiness()
+        }
+        let appModel = AppModel()
+        appModel.settingsStore.settings = .default()
+        appModel.registry = registry
+        appModel.selectedProjectId = selectedProjectId
+        return (
+            appModel,
+            { AXTrustedAutomationPermissionOwnerReadiness.resetCurrentProviderForTesting() }
+        )
+    }
+
+    private func makeSupervisorMemoryPermissionReadiness() -> AXTrustedAutomationPermissionOwnerReadiness {
+        AXTrustedAutomationPermissionOwnerReadiness(
+            schemaVersion: AXTrustedAutomationPermissionOwnerReadiness.currentSchemaVersion,
+            ownerID: "memory-test-owner",
+            ownerType: "xterminal_app",
+            bundleID: "com.xterminal.tests",
+            installState: "ready",
+            mode: "test",
+            accessibility: .granted,
+            automation: .granted,
+            screenRecording: .granted,
+            fullDiskAccess: .granted,
+            inputMonitoring: .granted,
+            canPromptUser: false,
+            managedByMDM: false,
+            overallState: "ready",
+            openSettingsActions: [],
+            auditRef: "audit-supervisor-memory-working-set-tests"
+        )
+    }
+
     private func registry(with projects: [AXProjectEntry]) -> AXProjectRegistry {
         AXProjectRegistry(
             version: AXProjectRegistry.currentVersion,
@@ -1046,6 +1355,193 @@ struct SupervisorMemoryWorkingSetWindowTests {
         )
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
+    }
+
+    private func writeHeartbeatProjection(
+        ctx: AXProjectContext,
+        projectId: String,
+        projectName: String,
+        visibility: XTHeartbeatDigestVisibilityDecision,
+        reasonCodes: [String],
+        whatChangedText: String,
+        whyImportantText: String,
+        systemNextStepText: String,
+        statusDigest: String = "build continues with fresh evidence",
+        currentStateSummary: String = "Build is active",
+        nextStepSummary: String = "Continue current implementation slice",
+        blockerSummary: String = "",
+        qualityBand: HeartbeatQualityBand = .strong,
+        qualityScore: Int = 88,
+        weakReasons: [String] = [],
+        openAnomalyTypes: [HeartbeatAnomalyType] = [],
+        projectPhase: HeartbeatProjectPhase? = .build,
+        executionStatus: HeartbeatExecutionStatus? = .active,
+        riskTier: HeartbeatRiskTier? = .low,
+        recoveryDecision: HeartbeatRecoveryDecision? = nil,
+        repeatCount: Int = 0,
+        projectMemoryContext: XTHeartbeatProjectMemoryContextSnapshot? = nil
+    ) -> XTHeartbeatMemoryProjectionArtifact? {
+        let updatedAtMs: Int64 = 1_778_910_120_000
+        let openAnomalies = openAnomalyTypes.enumerated().map { index, anomalyType in
+            HeartbeatAnomalyNote(
+                anomalyId: "anomaly-\(projectId)-\(index)-\(anomalyType.rawValue)",
+                projectId: projectId,
+                anomalyType: anomalyType,
+                severity: .concern,
+                confidence: 0.9,
+                reason: anomalyType.displayName,
+                evidenceRefs: [],
+                detectedAtMs: updatedAtMs,
+                recommendedEscalation: .pulseReview
+            )
+        }
+        let schedule = SupervisorReviewScheduleState(
+            schemaVersion: SupervisorReviewScheduleState.currentSchemaVersion,
+            projectId: projectId,
+            updatedAtMs: updatedAtMs,
+            lastHeartbeatAtMs: updatedAtMs,
+            lastObservedProgressAtMs: updatedAtMs - 20_000,
+            lastPulseReviewAtMs: 0,
+            lastBrainstormReviewAtMs: 0,
+            lastTriggerReviewAtMs: [:],
+            nextHeartbeatDueAtMs: updatedAtMs + 300_000,
+            nextPulseReviewDueAtMs: updatedAtMs + 900_000,
+            nextBrainstormReviewDueAtMs: updatedAtMs + 1_800_000,
+            latestQualitySnapshot: nil,
+            openAnomalies: openAnomalies,
+            lastHeartbeatFingerprint: "hb-\(projectId)",
+            lastHeartbeatRepeatCount: repeatCount,
+            latestProjectPhase: projectPhase,
+            latestExecutionStatus: executionStatus,
+            latestRiskTier: riskTier
+        )
+        let snapshot = XTProjectHeartbeatGovernanceDoctorSnapshot(
+            projectId: projectId,
+            projectName: projectName,
+            statusDigest: statusDigest,
+            currentStateSummary: currentStateSummary,
+            nextStepSummary: nextStepSummary,
+            blockerSummary: blockerSummary,
+            lastHeartbeatAtMs: updatedAtMs,
+            latestQualityBand: qualityBand,
+            latestQualityScore: qualityScore,
+            weakReasons: weakReasons,
+            openAnomalyTypes: openAnomalyTypes,
+            projectPhase: projectPhase,
+            executionStatus: executionStatus,
+            riskTier: riskTier,
+            cadence: makeHeartbeatCadence(updatedAtMs: updatedAtMs),
+            digestExplainability: XTHeartbeatDigestExplainability(
+                visibility: visibility,
+                reasonCodes: reasonCodes,
+                whatChangedText: whatChangedText,
+                whyImportantText: whyImportantText,
+                systemNextStepText: systemNextStepText
+            ),
+            recoveryDecision: recoveryDecision,
+            projectMemoryReadiness: nil,
+            projectMemoryContext: projectMemoryContext
+        )
+        let canonical = SupervisorProjectHeartbeatCanonicalSync.record(
+            snapshot: snapshot,
+            generatedAtMs: updatedAtMs
+        )
+        return XTHeartbeatMemoryProjectionStore.record(
+            ctx: ctx,
+            snapshot: snapshot,
+            schedule: schedule,
+            canonicalRecord: canonical,
+            generatedAtMs: updatedAtMs
+        )
+    }
+
+    private func makeHeartbeatProjectMemoryContext() -> XTHeartbeatProjectMemoryContextSnapshot {
+        XTHeartbeatProjectMemoryContextSnapshot(
+            diagnosticsSource: "latest_coder_usage",
+            projectMemoryPolicy: XTProjectMemoryPolicySnapshot(
+                configuredRecentProjectDialogueProfile: .standard12Pairs,
+                configuredProjectContextDepth: .balanced,
+                recommendedRecentProjectDialogueProfile: .deep20Pairs,
+                recommendedProjectContextDepth: .deep,
+                effectiveRecentProjectDialogueProfile: .deep20Pairs,
+                effectiveProjectContextDepth: .deep,
+                aTierMemoryCeiling: .m3DeepDive,
+                auditRef: "audit://policy/project-memory"
+            ),
+            policyMemoryAssemblyResolution: XTMemoryAssemblyResolution(
+                role: .projectAI,
+                dominantMode: "project_execution",
+                trigger: "config_policy",
+                configuredDepth: "balanced",
+                recommendedDepth: "deep",
+                effectiveDepth: "deep",
+                ceilingFromTier: XTMemoryServingProfile.m3DeepDive.rawValue,
+                ceilingHit: false,
+                selectedSlots: ["recent_project_dialogue", "project_anchor_pack"],
+                selectedPlanes: ["project_execution", "workflow"],
+                selectedServingObjects: ["recent_project_dialogue", "project_anchor_pack"],
+                excludedBlocks: ["personal_memory"],
+                budgetSummary: "project_memory_budget=ok",
+                auditRef: "audit://policy-resolution/project-memory"
+            ),
+            memoryAssemblyResolution: XTMemoryAssemblyResolution(
+                role: .projectAI,
+                dominantMode: "project_execution",
+                trigger: "review_guidance_follow_up",
+                configuredDepth: "balanced",
+                recommendedDepth: "deep",
+                effectiveDepth: "deep",
+                ceilingFromTier: XTMemoryServingProfile.m3DeepDive.rawValue,
+                ceilingHit: false,
+                selectedSlots: ["recent_project_dialogue", "project_anchor_pack", "workflow"],
+                selectedPlanes: ["project_execution", "workflow", "evidence"],
+                selectedServingObjects: ["recent_project_dialogue", "project_anchor_pack", "workflow_summary"],
+                excludedBlocks: ["personal_memory"],
+                budgetSummary: "project_memory_budget=fit",
+                auditRef: "audit://resolution/project-memory"
+            ),
+            heartbeatDigestWorkingSetPresent: true,
+            heartbeatDigestVisibility: "shown",
+            heartbeatDigestReasonCodes: ["project_memory_attention", "recovery_decision_active"]
+        )
+    }
+
+    private func makeHeartbeatCadence(
+        updatedAtMs: Int64
+    ) -> SupervisorCadenceExplainability {
+        SupervisorCadenceExplainability(
+            progressHeartbeat: SupervisorCadenceDimensionExplainability(
+                dimension: .progressHeartbeat,
+                configuredSeconds: 300,
+                recommendedSeconds: 300,
+                effectiveSeconds: 300,
+                effectiveReasonCodes: ["configured"],
+                nextDueAtMs: updatedAtMs + 300_000,
+                nextDueReasonCodes: ["heartbeat_active"],
+                isDue: false
+            ),
+            reviewPulse: SupervisorCadenceDimensionExplainability(
+                dimension: .reviewPulse,
+                configuredSeconds: 900,
+                recommendedSeconds: 900,
+                effectiveSeconds: 900,
+                effectiveReasonCodes: ["configured"],
+                nextDueAtMs: updatedAtMs + 900_000,
+                nextDueReasonCodes: ["pulse_pending"],
+                isDue: false
+            ),
+            brainstormReview: SupervisorCadenceDimensionExplainability(
+                dimension: .brainstormReview,
+                configuredSeconds: 1800,
+                recommendedSeconds: 1800,
+                effectiveSeconds: 1800,
+                effectiveReasonCodes: ["configured"],
+                nextDueAtMs: updatedAtMs + 1_800_000,
+                nextDueReasonCodes: ["brainstorm_pending"],
+                isDue: false
+            ),
+            eventFollowUpCooldownSeconds: 120
+        )
     }
 
     private func extractDialogueWindowLines(from localMemory: String) -> [String] {

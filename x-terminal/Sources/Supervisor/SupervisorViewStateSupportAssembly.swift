@@ -23,31 +23,34 @@ extension SupervisorViewStateSupport {
 
     static func selectedAutomationLastLaunchRef(
         appModel: AppModel,
+        supervisor: SupervisorManager,
         selectedAutomationProject: AXProjectEntry?
     ) -> String {
         guard selectedAutomationProject != nil else { return "" }
-        return (appModel.projectConfig?.lastAutomationLaunchRef ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return supervisor.automationPresentationRunRef(for: selectedAutomationProject)
     }
 
     static func cockpitActionContext(
         inputText: String,
         cockpitPresentation: SupervisorCockpitPresentation,
         supervisor: SupervisorManager,
+        legacyRuntime: XTLegacySupervisorRuntimeContext,
         appModel: AppModel
     ) -> SupervisorCockpitActionResolver.Context {
         SupervisorCockpitActionResolver.Context(
             inputText: inputText,
             reviewReportPath: cockpitPresentation.reviewReportPath,
-            replayEvidencePath: appModel.supervisor.orchestrator.latestReplayHarnessReport?
+            replayEvidencePath: legacyRuntime.orchestrator.latestReplayHarnessReport?
                 .evidenceRefs
                 .first,
-            firstPendingGrantActionURL: supervisor.pendingHubGrants.first?.actionURL,
-            firstPendingSkillApprovalActionURL: supervisor.pendingSupervisorSkillApprovals.first?.actionURL,
+            firstPendingGrantActionURL: supervisor.frontstagePendingHubGrants.first?.actionURL,
+            firstPendingSkillApprovalActionURL: supervisor.frontstagePendingSupervisorSkillApprovals.first?.actionURL,
+            selectedProjectID: appModel.selectedProjectId,
+            runtimeBlockerCode: supervisor.oneShotRunState?.topBlocker,
             runtimeAccessSurfaceState: cockpitPresentation.runtimeStageRail.items
                 .first(where: { $0.id == "access" })?
                 .surfaceState,
-            directedUnblockBaton: appModel.supervisor.orchestrator.executionMonitor
+            directedUnblockBaton: legacyRuntime.monitor
                 .directedUnblockBatons
                 .first
         )
@@ -57,28 +60,37 @@ extension SupervisorViewStateSupport {
         appModel: AppModel,
         supervisor: SupervisorManager,
         dashboardPresentations: SupervisorViewRuntimePresentationSupport.DashboardPresentationBundle,
+        showHeartbeatFeed: Bool,
         showSignalCenter: Bool
     ) -> SupervisorHeaderControls.Context {
         let heartbeatPresentation = SupervisorHeartbeatPresentation.map(
-            entries: supervisor.heartbeatHistory
+            entries: supervisor.heartbeatHistory,
+            historicalProjectBoundaryRepairStatusLine: appModel.historicalProjectBoundaryRepairStatusLine,
+            doctorPresentation: dashboardPresentations.doctor
         )
         return SupervisorHeaderControls.Context(
             hasFocusRequest: appModel.supervisorFocusRequest != nil,
-            pendingHubGrantCount: supervisor.pendingHubGrants.count,
-            pendingSkillApprovalCount: supervisor.pendingSupervisorSkillApprovals.count,
+            pendingHubGrantCount: supervisor.frontstagePendingHubGrants.count,
+            pendingSkillApprovalCount: supervisor.frontstagePendingSupervisorSkillApprovals.count,
             hasLatestHeartbeat: supervisor.latestHeartbeat != nil,
             highestHeartbeatPriority: SupervisorHeartbeatPresentation.highestPriority(
-                entries: supervisor.heartbeatHistory
+                entries: supervisor.heartbeatHistory,
+                historicalProjectBoundaryRepairStatusLine: appModel.historicalProjectBoundaryRepairStatusLine,
+                doctorPresentation: dashboardPresentations.doctor
             ),
             heartbeatOverview: heartbeatPresentation.overview,
             hasLatestRuntimeActivity: supervisor.latestRuntimeActivity != nil,
             signalCenterOverview: SupervisorSignalCenterOverviewPresentationMapper.map(
                 pendingHubGrantPresentation: dashboardPresentations.pendingHubGrant,
                 pendingSkillApprovalPresentation: dashboardPresentations.pendingSkillApproval,
+                candidateReviewPresentation: dashboardPresentations.candidateReview,
+                doctorPresentation: dashboardPresentations.doctor,
+                projectCreationPresentation: supervisor.projectCreationStatusPresentation(),
                 runtimeActivityPresentation: dashboardPresentations.runtimeActivity,
                 automationPresentation: dashboardPresentations.automation,
                 laneHealthPresentation: dashboardPresentations.laneHealth
             ),
+            isHeartbeatFeedVisible: showHeartbeatFeed,
             isSignalCenterVisible: showSignalCenter,
             requestedWindowSheet: supervisor.requestedWindowSheet
         )

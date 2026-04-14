@@ -29,7 +29,8 @@ struct XTAutomationRuntimePatchOverlay: Codable, Equatable, Sendable {
     private static func normalizedMergePatch(_ patch: [String: JSONValue]) -> [String: JSONValue] {
         let allowedKeys = Set([
             "action_graph",
-            "verify_commands"
+            "verify_commands",
+            "verification_contract"
         ])
 
         var normalized: [String: JSONValue] = [:]
@@ -44,7 +45,8 @@ struct XTAutomationRuntimePatchOverlay: Codable, Equatable, Sendable {
 
 func xtAutomationRuntimePatchOverlay(
     revisedActionGraph: [XTAutomationRecipeAction]?,
-    revisedVerifyCommands: [String]?
+    revisedVerifyCommands: [String]?,
+    revisedVerificationContract: XTAutomationVerificationContract? = nil
 ) -> XTAutomationRuntimePatchOverlay? {
     var patch: [String: JSONValue] = [:]
 
@@ -54,6 +56,10 @@ func xtAutomationRuntimePatchOverlay(
     }
     if let revisedVerifyCommands {
         patch["verify_commands"] = .array(revisedVerifyCommands.map(JSONValue.string))
+    }
+    if let revisedVerificationContract,
+       let encoded = xtAutomationJSONValue(from: revisedVerificationContract) {
+        patch["verification_contract"] = encoded
     }
 
     guard !patch.isEmpty else { return nil }
@@ -69,7 +75,11 @@ func xtAutomationApplyRuntimePatchOverlay(
     _ overlay: XTAutomationRuntimePatchOverlay,
     baseRecipe: AXAutomationRecipeRuntimeBinding,
     baseVerifyCommands: [String]
-) -> (recipeOverride: AXAutomationRecipeRuntimeBinding?, verifyCommandsOverride: [String]?) {
+) -> (
+    recipeOverride: AXAutomationRecipeRuntimeBinding?,
+    verifyCommandsOverride: [String]?,
+    verificationContractOverride: XTAutomationVerificationContract?
+) {
     let normalizedOverlay = overlay.normalized()
     let baseObject: JSONValue = .object([
         "action_graph": xtAutomationJSONValue(from: baseRecipe.actionGraph) ?? .array([]),
@@ -80,7 +90,7 @@ func xtAutomationApplyRuntimePatchOverlay(
         patch: .object(normalizedOverlay.mergePatch)
     )
     guard case .object(let object) = patched else {
-        return (nil, nil)
+        return (nil, nil, nil)
     }
 
     var recipeOverride: AXAutomationRecipeRuntimeBinding?
@@ -98,7 +108,16 @@ func xtAutomationApplyRuntimePatchOverlay(
         verifyCommandsOverride = xtAutomationRuntimeStringArray(from: patchedVerifyCommands)
     }
 
-    return (recipeOverride, verifyCommandsOverride)
+    let verificationContractOverride: XTAutomationVerificationContract? = {
+        if normalizedOverlay.mergePatch["verification_contract"] != nil,
+           let value = object["verification_contract"],
+           let decoded = xtAutomationDecodedJSONValue(value, as: XTAutomationVerificationContract.self) {
+            return decoded
+        }
+        return nil
+    }()
+
+    return (recipeOverride, verifyCommandsOverride, verificationContractOverride)
 }
 
 func xtAutomationApplyMergePatch(base: JSONValue, patch: JSONValue) -> JSONValue {

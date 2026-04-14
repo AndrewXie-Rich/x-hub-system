@@ -12,9 +12,10 @@ struct SupervisorAutomationRuntimeActionDescriptor: Equatable, Identifiable {
     var action: SupervisorAutomationRuntimeAction
     var label: String
     var isEnabled: Bool
+    var helpText: String
 
     var id: String {
-        "\(label)|\(isEnabled)|\(action)"
+        "\(label)|\(isEnabled)|\(helpText)|\(action)"
     }
 }
 
@@ -23,6 +24,22 @@ enum SupervisorAutomationRuntimeActionResolver {
         var hasSelectedProject: Bool
         var hasRecipe: Bool
         var hasLastLaunchRef: Bool
+        var runtimeReadiness: AXProjectGovernanceRuntimeReadinessSnapshot? = nil
+
+        var executionHoldSummary: String? {
+            guard let runtimeReadiness,
+                  runtimeReadiness.requiresA4RuntimeReady,
+                  !runtimeReadiness.runtimeReady else {
+                return nil
+            }
+
+            let summary = runtimeReadiness.summaryLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            let missing = runtimeReadiness.missingSummaryLine?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if summary.isEmpty { return missing.isEmpty ? nil : missing }
+            if missing.isEmpty { return summary }
+            return "\(summary) \(missing)"
+        }
     }
 
     static let defaultAdvanceStates: [XTAutomationRunState] = [
@@ -42,7 +59,8 @@ enum SupervisorAutomationRuntimeActionResolver {
         SupervisorAutomationRuntimeActionDescriptor(
             action: action,
             label: label(for: action),
-            isEnabled: isEnabled(action, context: context)
+            isEnabled: isEnabled(action, context: context),
+            helpText: helpText(for: action, context: context)
         )
     }
 
@@ -91,9 +109,68 @@ enum SupervisorAutomationRuntimeActionResolver {
         case .status:
             return context.hasSelectedProject
         case .start:
-            return context.hasSelectedProject && context.hasRecipe
-        case .recover, .cancel, .advance:
+            return context.hasSelectedProject
+                && context.executionHoldSummary == nil
+                && context.hasRecipe
+        case .recover, .advance:
+            return context.hasSelectedProject
+                && context.executionHoldSummary == nil
+                && context.hasLastLaunchRef
+        case .cancel:
             return context.hasSelectedProject && context.hasLastLaunchRef
+        }
+    }
+
+    private static func helpText(
+        for action: SupervisorAutomationRuntimeAction,
+        context: Context
+    ) -> String {
+        switch action {
+        case .status:
+            return context.hasSelectedProject
+                ? "刷新当前项目的自动化执行状态"
+                : "先选中一个项目，再查看自动化执行状态"
+        case .start:
+            if !context.hasSelectedProject {
+                return "先选中一个项目，再启动自动化执行"
+            }
+            if let hold = context.executionHoldSummary {
+                return hold
+            }
+            if !context.hasRecipe {
+                return "当前项目还没有激活执行配方，暂时无法启动"
+            }
+            return "启动当前项目的自动化执行"
+        case .recover:
+            if !context.hasSelectedProject {
+                return "先选中一个项目，再恢复最近一次自动化运行"
+            }
+            if let hold = context.executionHoldSummary {
+                return hold
+            }
+            if !context.hasLastLaunchRef {
+                return "当前还没有最近一次运行引用，暂时无法恢复"
+            }
+            return "从最近一次运行和检查点恢复自动化执行"
+        case .cancel:
+            if !context.hasSelectedProject {
+                return "先选中一个项目，再取消当前自动化运行"
+            }
+            if !context.hasLastLaunchRef {
+                return "当前还没有最近一次运行引用，暂时无法取消"
+            }
+            return "取消当前自动化运行"
+        case .advance(let state):
+            if !context.hasSelectedProject {
+                return "先选中一个项目，再手动推进自动化状态"
+            }
+            if let hold = context.executionHoldSummary {
+                return hold
+            }
+            if !context.hasLastLaunchRef {
+                return "当前还没有最近一次运行引用，暂时无法推进状态"
+            }
+            return "手动把当前自动化运行推进到\(advanceStateLabel(state))"
         }
     }
 

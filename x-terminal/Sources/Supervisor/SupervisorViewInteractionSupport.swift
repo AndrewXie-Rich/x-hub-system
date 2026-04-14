@@ -3,6 +3,7 @@ import SwiftUI
 extension SupervisorViewInteractionCoordinator {
     var headerEffectDependencies: SupervisorViewHeaderEffects.Dependencies {
         SupervisorViewActionSupport.headerEffectDependencies(
+            setHeartbeatFeedVisible: { ui.showHeartbeatFeed = $0 },
             setSignalCenterVisible: { ui.showSignalCenter = $0 },
             focusSignalCenterOverview: { action in
                 switch action {
@@ -10,7 +11,7 @@ extension SupervisorViewInteractionCoordinator {
                     appModel.requestSupervisorBoardFocus(anchorID: anchorID)
                 }
             },
-            setWindowSheet: { ui.activeWindowSheet = $0 },
+            setWindowSheet: openDetachedSupervisorToolWindow,
             clearRequestedWindowSheet: { supervisor.clearRequestedWindowSheet() },
             clearConversation: { supervisor.clearMessages() },
             setHeartbeatScale: { ui.heartbeatIconScale = $0 }
@@ -23,12 +24,29 @@ extension SupervisorViewInteractionCoordinator {
             requestConversationFocus: requestConversationFocus,
             refreshPendingHubGrants: { supervisor.refreshPendingHubGrantSnapshotNow() },
             refreshSupervisorDoctorReport: { supervisor.refreshSupervisorDoctorReport() },
-            setWindowSheet: { ui.activeWindowSheet = $0 },
+            setWindowSheet: openDetachedSupervisorToolWindow,
             openURL: { url in
                 openURL(url)
             },
             openWindow: { windowID in
                 openWindow(id: windowID)
+            },
+            openProjectGovernance: { projectId, destination, title, detail in
+                ui.selectedPortfolioProjectID = projectId
+                appModel.selectedProjectId = projectId
+                SupervisorViewActionSupport.refreshSelectedPortfolioDrillDown(
+                    supervisor: supervisor,
+                    selectedProjectID: projectId,
+                    selectedScope: ui.selectedPortfolioDrillDownScope,
+                    setSelectedProjectID: { ui.selectedPortfolioProjectID = $0 },
+                    setSelectedScope: { ui.selectedPortfolioDrillDownScope = $0 }
+                )
+                appModel.requestProjectSettingsFocus(
+                    projectId: projectId,
+                    destination: destination,
+                    title: title,
+                    detail: detail
+                )
             },
             setFocusedSplitLane: { ui.focusedSplitLaneID = $0 }
         )
@@ -47,6 +65,7 @@ extension SupervisorViewInteractionCoordinator {
         SupervisorViewActionSupport.focusRequestExecutionDependencies(
             currentSelectedProjectID: appModel.selectedProjectId,
             currentRefreshAttemptNonce: ui.supervisorFocusRefreshAttemptNonce,
+            setHeartbeatFeedVisible: { ui.showHeartbeatFeed = $0 },
             setSignalCenterVisible: { ui.showSignalCenter = $0 },
             setSelectedPortfolioProjectID: { ui.selectedPortfolioProjectID = $0 },
             selectProject: { appModel.selectProject($0) },
@@ -57,11 +76,13 @@ extension SupervisorViewInteractionCoordinator {
             },
             setHighlightedPendingHubGrantAnchor: { ui.highlightedPendingHubGrantAnchor = $0 },
             setHighlightedPendingSkillApprovalAnchor: { ui.highlightedPendingSupervisorSkillApprovalAnchor = $0 },
+            setHighlightedCandidateReviewAnchor: { ui.highlightedSupervisorCandidateReviewAnchor = $0 },
             setHighlightedRecentSkillActivityRequestID: { ui.highlightedRecentSupervisorSkillActivityRequestID = $0 },
             setAuditDrillDown: { ui.selectedSupervisorAuditDrillDown = $0 },
             setRefreshAttemptNonce: { ui.supervisorFocusRefreshAttemptNonce = $0 },
             refreshPendingHubGrants: { supervisor.refreshPendingHubGrantSnapshotNow() },
             refreshPendingSkillApprovals: { supervisor.refreshPendingSupervisorSkillApprovalsNow() },
+            refreshCandidateReviews: { supervisor.refreshSupervisorCandidateReviewSnapshotNow() },
             refreshRecentSkillActivities: { supervisor.refreshRecentSupervisorSkillActivitiesNow() },
             completeRequest: { request in
                 ui.supervisorFocusRefreshAttemptNonce = nil

@@ -149,7 +149,11 @@ final class LaneAllocator {
                 continue
             }
 
-            let estimatedCost = estimateLaneCost(lane: lane, project: best.project)
+            let estimatedCost = estimateLaneCost(
+                lane: lane,
+                project: best.project,
+                modelInfo: best.project.configuredCoderModelInfo
+            )
             projectedLoad[best.project.id, default: 0] += 1
             projectedCost[best.project.id, default: 0] += estimatedCost
 
@@ -199,18 +203,24 @@ final class LaneAllocator {
             )
         }
 
-        let risk = evaluateRiskFit(lane: lane, project: project)
-        let budget = evaluateBudgetFit(lane: lane, project: project, projectedExtraCost: projectedCost)
+        let modelInfo = project.configuredCoderModelInfo
+        let risk = evaluateRiskFit(lane: lane, project: project, modelInfo: modelInfo)
+        let budget = evaluateBudgetFit(
+            lane: lane,
+            project: project,
+            modelInfo: modelInfo,
+            projectedExtraCost: projectedCost
+        )
         let load = evaluateLoadFit(project: project, projectedLoad: projectedLoad)
-        let skill = evaluateSkillFit(lane: lane, project: project)
+        let skill = evaluateSkillFit(lane: lane, project: project, modelInfo: modelInfo)
         let reliability = evaluateReliabilityFit(lane: lane, project: project)
+        let profile = chooseAgentProfile(lane: lane, project: project, modelInfo: modelInfo)
 
         let total = risk.fit * riskWeight
             + budget.fit * budgetWeight
             + load * loadWeight
             + skill.fit * skillWeight
             + reliability.fit * reliabilityWeight
-        let profile = chooseAgentProfile(lane: lane, project: project)
 
         var reasons: [String] = []
         var eligible = true
@@ -271,9 +281,13 @@ final class LaneAllocator {
         )
     }
 
-    private func evaluateRiskFit(lane: MaterializedLane, project: ProjectModel) -> (fit: Double, hardBlocked: Bool) {
+    private func evaluateRiskFit(
+        lane: MaterializedLane,
+        project: ProjectModel,
+        modelInfo: ModelInfo
+    ) -> (fit: Double, hardBlocked: Bool) {
         let capabilityRange = Double(ModelCapability.expert.rawValue - ModelCapability.basic.rawValue)
-        let capabilityScore = Double(project.currentModel.capability.rawValue - ModelCapability.basic.rawValue) / max(1, capabilityRange)
+        let capabilityScore = Double(modelInfo.capability.rawValue - ModelCapability.basic.rawValue) / max(1, capabilityRange)
         let executionScore = project.governanceSchedulingAutonomyScore
         let supervisionScore = project.governanceSchedulingRiskSupportScore
 
@@ -301,9 +315,10 @@ final class LaneAllocator {
     private func evaluateBudgetFit(
         lane: MaterializedLane,
         project: ProjectModel,
+        modelInfo: ModelInfo,
         projectedExtraCost: Double
     ) -> (fit: Double, hardBlocked: Bool) {
-        let estimatedLaneCost = estimateLaneCost(lane: lane, project: project)
+        let estimatedLaneCost = estimateLaneCost(lane: lane, project: project, modelInfo: modelInfo)
         let remainingBudget = max(0, project.budget.daily - project.costTracker.totalCost - projectedExtraCost)
 
         let normalizedFit = remainingBudget / max(estimatedLaneCost, 0.05)
@@ -311,11 +326,11 @@ final class LaneAllocator {
 
         switch lane.plan.budgetClass {
         case .economy:
-            if (project.currentModel.costPerMillionTokens ?? 0) > 5 {
+            if (modelInfo.costPerMillionTokens ?? 0) > 5 {
                 fit *= 0.7
             }
         case .premium:
-            if project.currentModel.capability.rawValue < ModelCapability.advanced.rawValue {
+            if modelInfo.capability.rawValue < ModelCapability.advanced.rawValue {
                 fit *= 0.75
             }
         case .balanced:
@@ -334,11 +349,12 @@ final class LaneAllocator {
 
     private func evaluateSkillFit(
         lane: MaterializedLane,
-        project: ProjectModel
+        project: ProjectModel,
+        modelInfo: ModelInfo
     ) -> (fit: Double, hardBlocked: Bool, requiredCount: Int, matchedCount: Int) {
         let requiredSkills = laneRequiredSkills(lane: lane)
         let hasExplicitRequirements = hasExplicitSkillRequirements(lane: lane)
-        let projectSkills = projectSkillProfile(project: project)
+        let projectSkills = projectSkillProfile(project: project, modelInfo: modelInfo)
 
         let requiredCount = requiredSkills.count
         let matchedCount = requiredSkills.intersection(projectSkills).count
@@ -352,7 +368,7 @@ final class LaneAllocator {
         // High capability models can compensate partially for sparse history tags.
         let capabilityBoost = min(
             0.20,
-            Double(project.currentModel.capability.rawValue - ModelCapability.basic.rawValue) * 0.05
+            Double(modelInfo.capability.rawValue - ModelCapability.basic.rawValue) * 0.05
         )
         let fit = max(0, min(1, overlapFit + capabilityBoost))
         let hardBlocked = hasExplicitRequirements
@@ -409,11 +425,15 @@ final class LaneAllocator {
         }.count
     }
 
-    private func estimateLaneCost(lane: MaterializedLane, project: ProjectModel) -> Double {
+    private func estimateLaneCost(
+        lane: MaterializedLane,
+        project: ProjectModel,
+        modelInfo: ModelInfo
+    ) -> Double {
         let hours = max(0.25, lane.task.estimatedEffort / 3600.0)
         let tokensPerHour = 50_000.0
         let tokenMillions = (hours * tokensPerHour) / 1_000_000.0
-        let unitCost = project.currentModel.costPerMillionTokens ?? 0.05
+        let unitCost = modelInfo.costPerMillionTokens ?? 0.05
 
         var cost = tokenMillions * unitCost
         switch lane.plan.budgetClass {
@@ -428,10 +448,14 @@ final class LaneAllocator {
         return max(0.01, cost)
     }
 
-    private func chooseAgentProfile(lane: MaterializedLane, project: ProjectModel) -> String {
+    private func chooseAgentProfile(
+        lane: MaterializedLane,
+        project: ProjectModel,
+        modelInfo: ModelInfo
+    ) -> String {
         let skillToken = primarySkillToken(for: lane)
         if lane.plan.riskTier >= .high {
-            let trustProfile = project.currentModel.capability.rawValue >= ModelCapability.advanced.rawValue
+            let trustProfile = modelInfo.capability.rawValue >= ModelCapability.advanced.rawValue
                 ? "trusted_high"
                 : "trusted_medium"
             return "\(trustProfile)_skill_\(skillToken)"
@@ -439,7 +463,7 @@ final class LaneAllocator {
 
         switch lane.plan.budgetClass {
         case .economy:
-            return project.currentModel.isLocal
+            return modelInfo.isLocal
                 ? "cost_optimized_local_skill_\(skillToken)"
                 : "cost_optimized_remote_skill_\(skillToken)"
         case .balanced:
@@ -475,9 +499,9 @@ final class LaneAllocator {
         }
     }
 
-    private func projectSkillProfile(project: ProjectModel) -> Set<String> {
+    private func projectSkillProfile(project: ProjectModel, modelInfo: ModelInfo) -> Set<String> {
         var tokens: [String] = []
-        tokens.append(contentsOf: project.currentModel.suitableFor)
+        tokens.append(contentsOf: modelInfo.suitableFor)
         tokens.append(project.taskDescription)
         tokens.append(contentsOf: project.taskQueue.map(\.description))
 

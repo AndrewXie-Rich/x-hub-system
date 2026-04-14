@@ -28,6 +28,43 @@ struct SupervisorManagerVoicePlaybackRuntimeTests {
     }
 
     @Test
+    func speakSupervisorVoiceTextWritesFallbackPlaybackTruthIntoRuntimeLog() {
+        var spoken: [String] = []
+        let synthesizer = SupervisorSpeechSynthesizer(
+            deduper: SupervisorVoiceBriefDeduper(cooldown: 1),
+            speakSink: { spoken.append($0) },
+            hubVoicePackSpeakSink: { _, _, _ in
+                .unavailable(reasonCode: "hub_voice_pack_runtime_failed", detail: "")
+            },
+            playbackResolutionResolver: { _ in
+                VoicePlaybackResolution(
+                    requestedPreference: .hubVoicePack,
+                    resolvedSource: .hubVoicePack,
+                    preferredHubVoicePackID: "hub.voice.zh.warm",
+                    resolvedHubVoicePackID: "hub.voice.zh.warm",
+                    reasonCode: "preferred_hub_voice_pack_ready",
+                    fallbackFrom: .hubVoicePack
+                )
+            }
+        )
+        let manager = SupervisorManager.makeForTesting(
+            supervisorSpeechSynthesizer: synthesizer
+        )
+
+        let outcome = manager.speakSupervisorVoiceText("请继续汇总当前项目进度。")
+
+        #expect(outcome == .spoken)
+        #expect(spoken == ["请继续汇总当前项目进度。"])
+        #expect(manager.voicePlaybackActivity.state == .fallbackPlayed)
+        #expect(manager.latestRuntimeActivity?.text.contains("voice_playback") == true)
+        #expect(manager.latestRuntimeActivity?.text.contains("state=fallback_played") == true)
+        #expect(manager.latestRuntimeActivity?.text.contains("output=system_speech") == true)
+        #expect(manager.latestRuntimeActivity?.text.contains("fallback_from=hub_voice_pack") == true)
+        #expect(manager.latestRuntimeActivity?.text.contains("provider=hub_voice_pack") == true)
+        #expect(manager.latestRuntimeActivity?.text.contains("why=hub_voice_pack_runtime_failed") == true)
+    }
+
+    @Test
     func upstreamVoiceDispatchSuppressesRapidSameSourceRepeat() {
         var spoken: [String] = []
         let synthesizer = SupervisorSpeechSynthesizer(
@@ -37,6 +74,12 @@ struct SupervisorManagerVoicePlaybackRuntimeTests {
         let manager = SupervisorManager.makeForTesting(
             supervisorSpeechSynthesizer: synthesizer
         )
+        let appModel = AppModel()
+        var voice = appModel.settingsStore.settings.voice
+        voice.wakeMode = .wakePhrase
+        voice.autoReportMode = .summary
+        appModel.settingsStore.settings = appModel.settingsStore.settings.setting(voice: voice)
+        manager.setAppModel(appModel)
         let job = SupervisorVoiceTTSJob(
             trigger: .completed,
             priority: .normal,
@@ -68,6 +111,90 @@ struct SupervisorManagerVoicePlaybackRuntimeTests {
         #expect(manager.latestRuntimeActivity?.text.contains("voice_dispatch") == true)
         #expect(manager.latestRuntimeActivity?.text.contains("state=suppressed") == true)
         #expect(manager.latestRuntimeActivity?.text.contains("reason=source_duplicate_suppressed") == true)
+    }
+
+    @Test
+    func pushToTalkSuppressesPassiveHeartbeatVoiceDispatch() {
+        var spoken: [String] = []
+        let synthesizer = SupervisorSpeechSynthesizer(
+            deduper: SupervisorVoiceBriefDeduper(cooldown: 0),
+            speakSink: { spoken.append($0) }
+        )
+        let manager = SupervisorManager.makeForTesting(
+            supervisorSpeechSynthesizer: synthesizer
+        )
+        let appModel = AppModel()
+        var voice = appModel.settingsStore.settings.voice
+        voice.wakeMode = .pushToTalk
+        voice.autoReportMode = .summary
+        appModel.settingsStore.settings = appModel.settingsStore.settings.setting(voice: voice)
+        manager.setAppModel(appModel)
+
+        let outcome = manager.dispatchSupervisorVoiceJobForTesting(
+            SupervisorVoiceTTSJob(
+                trigger: .completed,
+                priority: .normal,
+                script: ["后台心跳：Atlas 项目状态稳定。"],
+                dedupeKey: "heartbeat-ptt"
+            ),
+            source: "heartbeat",
+            suppressRapidSameSourceRepeat: true,
+            now: Date(timeIntervalSince1970: 10)
+        )
+
+        #expect(outcome == .suppressed("passive_background_voice_suppressed"))
+        #expect(spoken.isEmpty)
+        #expect(manager.latestRuntimeActivity?.text.contains("voice_dispatch") == true)
+        #expect(manager.latestRuntimeActivity?.text.contains("source=heartbeat") == true)
+        #expect(manager.latestRuntimeActivity?.text.contains("reason=passive_background_voice_suppressed") == true)
+    }
+
+    @Test
+    func speakSupervisorVoiceTextStillSpeaksInPushToTalkMode() {
+        var spoken: [String] = []
+        let synthesizer = SupervisorSpeechSynthesizer(
+            deduper: SupervisorVoiceBriefDeduper(cooldown: 0),
+            speakSink: { spoken.append($0) }
+        )
+        let manager = SupervisorManager.makeForTesting(
+            supervisorSpeechSynthesizer: synthesizer
+        )
+        let appModel = AppModel()
+        var voice = appModel.settingsStore.settings.voice
+        voice.wakeMode = .pushToTalk
+        voice.autoReportMode = .summary
+        appModel.settingsStore.settings = appModel.settingsStore.settings.setting(voice: voice)
+        manager.setAppModel(appModel)
+
+        let outcome = manager.speakSupervisorVoiceText("这是显式语音回复。")
+
+        #expect(outcome == .spoken)
+        #expect(spoken == ["这是显式语音回复。"])
+    }
+
+    @Test
+    func pushToTalkSuppressesPassiveCalendarReminderVoiceDispatch() {
+        var spoken: [String] = []
+        let synthesizer = SupervisorSpeechSynthesizer(
+            deduper: SupervisorVoiceBriefDeduper(cooldown: 0),
+            speakSink: { spoken.append($0) }
+        )
+        let manager = SupervisorManager.makeForTesting(
+            supervisorSpeechSynthesizer: synthesizer
+        )
+        let appModel = AppModel()
+        var voice = appModel.settingsStore.settings.voice
+        voice.wakeMode = .pushToTalk
+        voice.autoReportMode = .summary
+        appModel.settingsStore.settings = appModel.settingsStore.settings.setting(voice: voice)
+        manager.setAppModel(appModel)
+
+        let outcome = manager.speakSupervisorCalendarReminderText("十点会议还有十五分钟开始。")
+
+        #expect(outcome == .suppressed("passive_background_voice_suppressed"))
+        #expect(spoken.isEmpty)
+        #expect(manager.latestRuntimeActivity?.text.contains("source=calendar_reminder") == true)
+        #expect(manager.latestRuntimeActivity?.text.contains("reason=passive_background_voice_suppressed") == true)
     }
 
     @Test
@@ -112,6 +239,12 @@ struct SupervisorManagerVoicePlaybackRuntimeTests {
         let manager = SupervisorManager.makeForTesting(
             supervisorSpeechSynthesizer: synthesizer
         )
+        let appModel = AppModel()
+        var voice = appModel.settingsStore.settings.voice
+        voice.wakeMode = .wakePhrase
+        voice.autoReportMode = .summary
+        appModel.settingsStore.settings = appModel.settingsStore.settings.setting(voice: voice)
+        manager.setAppModel(appModel)
 
         let first = manager.dispatchSupervisorVoiceJobForTesting(
             SupervisorVoiceTTSJob(

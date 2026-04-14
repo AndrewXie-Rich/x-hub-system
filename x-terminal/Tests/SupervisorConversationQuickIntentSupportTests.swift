@@ -88,7 +88,7 @@ struct SupervisorConversationQuickIntentSupportTests {
     }
 
     @Test
-    func awaitingAuthorizationAndFallbackSurfaceDiagnosticIntents() {
+    func awaitingAuthorizationAndLocalFallbackSurfaceDiagnosticIntents() {
         let intents = SupervisorConversationQuickIntentSupport.build(
             context: SupervisorConversationQuickIntentContext(
                 workMode: .guidedProgress,
@@ -100,13 +100,38 @@ struct SupervisorConversationQuickIntentSupportTests {
                 hubInteractive: true,
                 hubRemoteConnected: true,
                 lastReplyExecutionMode: "local_fallback_after_remote_error",
-                lastRemoteFailureReasonCode: "hub_downgraded_to_local"
+                lastRemoteFailureReasonCode: "runtime_not_running"
             )
         )
 
         #expect(intents.map(\.id) == ["awaiting_authorization", "hub_status"])
         #expect(intents[0].tone == .caution)
         #expect(intents[1].tone == .diagnostic)
-        #expect(intents[1].helpText.contains("hub downgraded to local"))
+        #expect(intents[1].helpText.contains("远端失败后本地兜底"))
+        #expect(intents[1].helpText.contains("runtime not running"))
+    }
+
+    @Test
+    func hubDowngradeUsesDedicatedDiagnosticCopy() {
+        let intents = SupervisorConversationQuickIntentSupport.build(
+            context: SupervisorConversationQuickIntentContext(
+                workMode: .guidedProgress,
+                selectedProject: nil,
+                resumeProject: nil,
+                todayFocus: nil,
+                awaitingAuthorizationProject: nil,
+                awaitingAuthorizationCount: 0,
+                hubInteractive: true,
+                hubRemoteConnected: true,
+                lastReplyExecutionMode: "hub_downgraded_to_local",
+                lastRemoteFailureReasonCode: "remote_export_blocked"
+            )
+        )
+
+        #expect(intents.map(\.id) == ["hub_status"])
+        #expect(intents[0].tone == .diagnostic)
+        #expect(intents[0].prompt.contains("Hub 最近把远端请求降到了本地"))
+        #expect(intents[0].helpText.contains("由 Hub 在执行阶段把远端请求降到了本地"))
+        #expect(intents[0].helpText.contains("remote export blocked"))
     }
 }

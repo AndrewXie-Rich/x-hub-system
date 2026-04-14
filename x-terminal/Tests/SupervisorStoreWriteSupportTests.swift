@@ -138,6 +138,60 @@ struct SupervisorStoreWriteSupportTests {
         installScopedOutOfSpaceOverride(root: root, capture: capture)
         defer { SupervisorStoreWriteSupport.resetWriteBehaviorForTesting() }
 
+        let deltaApproval = XTSkillProfileDeltaApproval(
+            schemaVersion: XTSkillProfileDeltaApproval.currentSchemaVersion,
+            requestId: "request-1",
+            projectId: "proj-alpha",
+            projectName: "Project Alpha",
+            requestedSkillId: "agent-browser",
+            effectiveSkillId: "guarded-automation",
+            toolName: ToolName.deviceBrowserControl.rawValue,
+            currentRunnableProfiles: ["observe_only"],
+            requestedProfiles: ["browser_operator"],
+            deltaProfiles: ["browser_operator"],
+            currentRunnableCapabilityFamilies: ["repo.read"],
+            requestedCapabilityFamilies: ["web.navigate", "web.dom.write"],
+            deltaCapabilityFamilies: ["web.navigate", "web.dom.write"],
+            grantFloor: XTSkillGrantFloor.none.rawValue,
+            approvalFloor: XTSkillApprovalFloor.localApproval.rawValue,
+            requestedTTLSeconds: 900,
+            reason: "waiting for local governed approval",
+            summary: "当前可直接运行：observe_only；本次请求：browser_operator；新增放开：browser_operator；grant=none；approval=local_approval",
+            disposition: "pending",
+            auditRef: "audit-delta-1"
+        )
+        let readiness = XTSkillExecutionReadiness(
+            schemaVersion: XTSkillExecutionReadiness.currentSchemaVersion,
+            projectId: "proj-alpha",
+            skillId: "guarded-automation",
+            packageSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            publisherID: "xt_builtin",
+            policyScope: "xt_builtin",
+            intentFamilies: ["browser.operate"],
+            capabilityFamilies: ["web.navigate", "web.dom.write"],
+            capabilityProfiles: ["browser_operator"],
+            discoverabilityState: "discoverable",
+            installabilityState: "installable",
+            pinState: "xt_builtin",
+            resolutionState: "resolved",
+            executionReadiness: XTSkillExecutionReadinessState.localApprovalRequired.rawValue,
+            runnableNow: false,
+            denyCode: "local_approval_required",
+            reasonCode: "approval floor local_approval requires local confirmation",
+            grantFloor: XTSkillGrantFloor.none.rawValue,
+            approvalFloor: XTSkillApprovalFloor.localApproval.rawValue,
+            requiredGrantCapabilities: [],
+            requiredRuntimeSurfaces: ["device_browser_runtime"],
+            stateLabel: XTSkillCapabilityProfileSupport.readinessLabel(XTSkillExecutionReadinessState.localApprovalRequired.rawValue),
+            installHint: "install browser runtime",
+            unblockActions: ["approve_local_skill_request"],
+            auditRef: "audit-readiness-1",
+            doctorAuditRef: "",
+            vetterAuditRef: "",
+            resolvedSnapshotId: "snapshot-1",
+            grantSnapshotRef: ""
+        )
+
         try SupervisorProjectSkillCallStore.upsert(
             SupervisorSkillCallRecord(
                 schemaVersion: SupervisorSkillCallRecord.currentSchemaVersion,
@@ -154,6 +208,10 @@ struct SupervisorStoreWriteSupportTests {
                 resultSummary: "snapshot refreshed",
                 denyCode: "",
                 resultEvidenceRef: "evidence://memory/1",
+                profileDeltaRef: "evidence://memory/1#profile_delta",
+                deltaApproval: deltaApproval,
+                readinessRef: "evidence://memory/1#readiness",
+                readiness: readiness,
                 requiredCapability: nil,
                 grantRequestId: nil,
                 grantId: nil,
@@ -171,6 +229,10 @@ struct SupervisorStoreWriteSupportTests {
         #expect(options[1].isEmpty)
         #expect(snapshot.calls.count == 1)
         #expect(snapshot.calls.first?.requestId == "request-1")
+        #expect(snapshot.calls.first?.profileDeltaRef == "evidence://memory/1#profile_delta")
+        #expect(snapshot.calls.first?.deltaApproval?.deltaProfiles == ["browser_operator"])
+        #expect(snapshot.calls.first?.readinessRef == "evidence://memory/1#readiness")
+        #expect(snapshot.calls.first?.readiness?.executionReadiness == XTSkillExecutionReadinessState.localApprovalRequired.rawValue)
     }
 
     @Test
@@ -429,6 +491,60 @@ struct SupervisorStoreWriteSupportTests {
         installScopedOutOfSpaceOverride(root: root, capture: capture)
         defer { SupervisorStoreWriteSupport.resetWriteBehaviorForTesting() }
 
+        let deltaApproval = XTSkillProfileDeltaApproval(
+            schemaVersion: XTSkillProfileDeltaApproval.currentSchemaVersion,
+            requestId: requestId,
+            projectId: "proj-alpha",
+            projectName: "Project Alpha",
+            requestedSkillId: "memory_snapshot",
+            effectiveSkillId: "memory_snapshot",
+            toolName: ToolName.memory_snapshot.rawValue,
+            currentRunnableProfiles: ["observe_only"],
+            requestedProfiles: ["observe_only"],
+            deltaProfiles: [],
+            currentRunnableCapabilityFamilies: ["repo.read"],
+            requestedCapabilityFamilies: ["repo.read"],
+            deltaCapabilityFamilies: [],
+            grantFloor: XTSkillGrantFloor.none.rawValue,
+            approvalFloor: XTSkillApprovalFloor.none.rawValue,
+            requestedTTLSeconds: 900,
+            reason: "ready",
+            summary: "当前可直接运行：observe_only；本次请求：observe_only；这次没有新增 profile；grant=none；approval=none",
+            disposition: "approved",
+            auditRef: "audit-delta-evidence-1"
+        )
+        let readiness = XTSkillExecutionReadiness(
+            schemaVersion: XTSkillExecutionReadiness.currentSchemaVersion,
+            projectId: "proj-alpha",
+            skillId: "memory_snapshot",
+            packageSHA256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            publisherID: "xt_builtin",
+            policyScope: "xt_builtin",
+            intentFamilies: ["memory.read"],
+            capabilityFamilies: ["repo.read"],
+            capabilityProfiles: ["observe_only"],
+            discoverabilityState: "discoverable",
+            installabilityState: "installable",
+            pinState: "xt_builtin",
+            resolutionState: "resolved",
+            executionReadiness: XTSkillExecutionReadinessState.ready.rawValue,
+            runnableNow: true,
+            denyCode: "",
+            reasonCode: "request-scoped authorization satisfied",
+            grantFloor: XTSkillGrantFloor.none.rawValue,
+            approvalFloor: XTSkillApprovalFloor.none.rawValue,
+            requiredGrantCapabilities: [],
+            requiredRuntimeSurfaces: ["project_local_fs"],
+            stateLabel: XTSkillCapabilityProfileSupport.readinessLabel(XTSkillExecutionReadinessState.ready.rawValue),
+            installHint: "",
+            unblockActions: [],
+            auditRef: "audit-readiness-evidence-1",
+            doctorAuditRef: "",
+            vetterAuditRef: "",
+            resolvedSnapshotId: "snapshot-evidence-1",
+            grantSnapshotRef: ""
+        )
+
         let record = SupervisorSkillCallRecord(
             schemaVersion: SupervisorSkillCallRecord.currentSchemaVersion,
             requestId: requestId,
@@ -444,6 +560,10 @@ struct SupervisorStoreWriteSupportTests {
             resultSummary: "memory refreshed",
             denyCode: "",
             resultEvidenceRef: nil,
+            profileDeltaRef: nil,
+            deltaApproval: deltaApproval,
+            readinessRef: nil,
+            readiness: readiness,
             requiredCapability: nil,
             grantRequestId: nil,
             grantId: nil,
@@ -468,6 +588,10 @@ struct SupervisorStoreWriteSupportTests {
         #expect(ref == "local://supervisor_skill_results/\(requestId).json")
         #expect(loaded.requestId == requestId)
         #expect(loaded.rawOutput == "snapshot ok")
+        #expect(loaded.profileDeltaRef == "\(ref!)#profile_delta")
+        #expect(loaded.deltaApproval?.requestId == requestId)
+        #expect(loaded.readinessRef == "\(ref!)#readiness")
+        #expect(loaded.readiness?.executionReadiness == XTSkillExecutionReadinessState.ready.rawValue)
     }
 
     @Test

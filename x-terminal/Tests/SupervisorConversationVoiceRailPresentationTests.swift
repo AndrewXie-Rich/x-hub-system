@@ -59,6 +59,44 @@ struct SupervisorConversationVoiceRailPresentationTests {
     }
 
     @Test
+    func routeReasonChipHumanizesUserVisibleRouteFailure() {
+        let presentation = SupervisorConversationVoiceRailPresentationBuilder.build(
+            routeDecision: makeRouteDecision(),
+            readinessSnapshot: makeSnapshot(
+                overallState: .diagnosticRequired,
+                checks: [
+                    makeCheck(
+                        kind: .talkLoopReadiness,
+                        state: .diagnosticRequired,
+                        reasonCode: "voice_runtime_degraded",
+                        headline: "Talk loop requires repair",
+                        summary: "The runtime needs route repair.",
+                        nextStep: "Repair the current route."
+                    )
+                ]
+            ),
+            authorizationStatus: .authorized,
+            runtimeState: SupervisorVoiceRuntimeState(
+                state: .idle,
+                route: .funasrStreaming,
+                recognizedText: "",
+                reasonCode: "fallback_reason_code=provider_not_ready;deny_code=policy_remote_denied"
+            ),
+            conversationSession: makeSession(
+                windowState: .armed,
+                wakeMode: .pushToTalk,
+                route: .funasrStreaming
+            ),
+            playbackActivity: .empty,
+            activeHealthReasonCode: ""
+        )
+
+        let chip = presentation.chips.first(where: { $0.id == "reason" })
+        #expect(chip?.text == "原因：provider 尚未 ready（provider_not_ready）")
+        #expect(chip?.prefersMonospacedText == false)
+    }
+
+    @Test
     func permissionDeniedNoticeSurfacesPermissionFixPath() {
         let presentation = SupervisorConversationVoiceRailPresentationBuilder.build(
             routeDecision: makeRouteDecision(
@@ -205,6 +243,138 @@ struct SupervisorConversationVoiceRailPresentationTests {
     }
 
     @Test
+    func playbackFallbackCreatesVisibleNoticeWhenReadinessIsHealthy() {
+        let presentation = SupervisorConversationVoiceRailPresentationBuilder.build(
+            routeDecision: makeRouteDecision(),
+            readinessSnapshot: makeSnapshot(
+                overallState: .ready,
+                checks: [
+                    makeCheck(
+                        kind: .talkLoopReadiness,
+                        state: .ready,
+                        reasonCode: "talk_loop_ready",
+                        headline: "Talk loop foundation is ready",
+                        summary: "The live voice route is healthy enough.",
+                        nextStep: "Use wake or push-to-talk to start a new Supervisor voice turn."
+                    )
+                ]
+            ),
+            authorizationStatus: .authorized,
+            runtimeState: .idle,
+            conversationSession: makeSession(
+                windowState: .conversing,
+                remainingTTLSeconds: 45,
+                wakeMode: .wakePhrase,
+                route: .funasrStreaming
+            ),
+            playbackActivity: VoicePlaybackActivity(
+                state: .fallbackPlayed,
+                configuredResolution: VoicePlaybackResolution(
+                    requestedPreference: .hubVoicePack,
+                    resolvedSource: .systemSpeech,
+                    preferredHubVoicePackID: "hub.voice.zh.warm",
+                    resolvedHubVoicePackID: "",
+                    reasonCode: "preferred_hub_voice_pack_unavailable",
+                    fallbackFrom: .hubVoicePack
+                ),
+                actualSource: .systemSpeech,
+                reasonCode: "hub_voice_pack_runtime_failed",
+                detail: "",
+                provider: "hub_voice_pack",
+                modelID: "hub.voice.zh.warm",
+                engineName: "",
+                speakerId: "",
+                deviceBackend: "system_speech",
+                nativeTTSUsed: nil,
+                fallbackMode: "hub_voice_pack_unavailable",
+                fallbackReasonCode: "hub_voice_pack_runtime_failed",
+                audioFormat: "",
+                voiceName: "",
+                updatedAt: 42
+            ),
+            activeHealthReasonCode: ""
+        )
+
+        #expect(presentation.notice?.state == .inProgress)
+        #expect(presentation.notice?.title == "最近一次播放已回退")
+        #expect(presentation.notice?.summary == "播放已从 Hub 语音包 回退到 系统语音。")
+        #expect(
+            presentation.notice?.nextStep
+                == "如果你想恢复 Hub 语音包，请打开 Supervisor 设置，检查语音包是否仍在 Hub Library，且本机 Hub IPC 已报告 ready。"
+        )
+        #expect(presentation.notice?.repairEntry == .homeSupervisor)
+        #expect(presentation.chips.contains { $0.id == "playback" })
+    }
+
+    @Test
+    func manualTextRouteShowsPermissionAsNotNeededInsteadOfUnavailable() {
+        let presentation = SupervisorConversationVoiceRailPresentationBuilder.build(
+            routeDecision: makeRouteDecision(
+                route: .manualText,
+                reasonCode: "manual_text_only",
+                wakeCapability: "none"
+            ),
+            readinessSnapshot: makeSnapshot(overallState: .inProgress, checks: []),
+            authorizationStatus: .unavailable,
+            permissionSnapshot: VoicePermissionSnapshot(
+                microphone: .authorized,
+                speechRecognition: .authorized
+            ),
+            runtimeState: SupervisorVoiceRuntimeState(
+                state: .idle,
+                route: .manualText,
+                recognizedText: "",
+                reasonCode: nil
+            ),
+            conversationSession: makeSession(
+                windowState: .hidden,
+                wakeMode: .pushToTalk,
+                route: .manualText
+            ),
+            playbackActivity: .empty,
+            activeHealthReasonCode: ""
+        )
+
+        let chip = presentation.chips.first(where: { $0.id == "auth" })
+        #expect(chip?.text == "权限：当前链路不需要")
+        #expect(chip?.state == .ready)
+    }
+
+    @Test
+    func liveCaptureRoutePrefersPermissionSnapshotOverUnavailableEngineStateForPermissionChip() {
+        let presentation = SupervisorConversationVoiceRailPresentationBuilder.build(
+            routeDecision: makeRouteDecision(
+                route: .systemSpeechCompatibility,
+                reasonCode: "system_speech_recognizer_unavailable",
+                wakeCapability: "push_to_talk_only"
+            ),
+            readinessSnapshot: makeSnapshot(overallState: .diagnosticRequired, checks: []),
+            authorizationStatus: .unavailable,
+            permissionSnapshot: VoicePermissionSnapshot(
+                microphone: .authorized,
+                speechRecognition: .authorized
+            ),
+            runtimeState: SupervisorVoiceRuntimeState(
+                state: .idle,
+                route: .systemSpeechCompatibility,
+                recognizedText: "",
+                reasonCode: "system_speech_recognizer_unavailable"
+            ),
+            conversationSession: makeSession(
+                windowState: .hidden,
+                wakeMode: .pushToTalk,
+                route: .systemSpeechCompatibility
+            ),
+            playbackActivity: .empty,
+            activeHealthReasonCode: "system_speech_recognizer_unavailable"
+        )
+
+        let chip = presentation.chips.first(where: { $0.id == "auth" })
+        #expect(chip?.text == "权限：已授权")
+        #expect(chip?.state == .ready)
+    }
+
+    @Test
     func advisoryNoticeUsesOverallSummaryWhenCorePathIsReady() {
         let wakeCheck = makeCheck(
             kind: .wakeProfileReadiness,
@@ -255,6 +425,56 @@ struct SupervisorConversationVoiceRailPresentationTests {
         #expect(presentation.notice?.title == wakeCheck.headline)
         #expect(presentation.notice?.summary == snapshot.overallSummary)
         #expect(presentation.notice?.nextStep == wakeCheck.nextStep)
+    }
+
+    @Test
+    func proofAwarePairingAdvisoryNoticeUsesOverallSummaryWhenCorePathIsReady() {
+        let pairingCheck = makeCheck(
+            kind: .pairingValidity,
+            state: .inProgress,
+            reasonCode: "local_pairing_ready_remote_unverified",
+            headline: "同网首配已完成，正在验证正式异网入口",
+            summary: "同网首配和 Hub 本地批准已经完成，XT 也拿到了正式异网入口（host=hub.tailnet.example）。",
+            nextStep: "先保留当前配对档案，等待这轮正式异网验证结束；如果长时间不通过，再检查 Hub 的 stable remote host、relay / tailnet / DNS 和端口可达性。",
+            repairEntry: .xtPairHub
+        )
+        let talkLoopCheck = makeCheck(
+            kind: .talkLoopReadiness,
+            state: .ready,
+            reasonCode: "talk_loop_ready",
+            headline: "Talk loop foundation is ready",
+            summary: "The live voice route is healthy enough.",
+            nextStep: "Use wake or push-to-talk to start a new Supervisor voice turn."
+        )
+        let snapshot = VoiceReadinessSnapshot(
+            schemaVersion: VoiceReadinessSnapshot.currentSchemaVersion,
+            generatedAtMs: 0,
+            overallState: .inProgress,
+            overallSummary: "首个任务已可启动，但配对有效性仍需修复：同网首配已完成，正在验证正式异网入口",
+            primaryReasonCode: "local_pairing_ready_remote_unverified",
+            orderedFixes: [pairingCheck.nextStep],
+            checks: [pairingCheck, talkLoopCheck],
+            nodeSync: .empty
+        )
+
+        let presentation = SupervisorConversationVoiceRailPresentationBuilder.build(
+            routeDecision: makeRouteDecision(),
+            readinessSnapshot: snapshot,
+            authorizationStatus: .authorized,
+            runtimeState: .idle,
+            conversationSession: makeSession(
+                windowState: .armed,
+                wakeMode: .wakePhrase,
+                route: .funasrStreaming
+            ),
+            playbackActivity: .empty,
+            activeHealthReasonCode: ""
+        )
+
+        #expect(presentation.notice?.title == pairingCheck.headline)
+        #expect(presentation.notice?.summary == snapshot.overallSummary)
+        #expect(presentation.notice?.nextStep == pairingCheck.nextStep)
+        #expect(presentation.notice?.repairEntry == .xtPairHub)
     }
 
     @Test

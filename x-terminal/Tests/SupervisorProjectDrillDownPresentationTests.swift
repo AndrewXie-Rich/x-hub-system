@@ -315,7 +315,7 @@ struct SupervisorProjectDrillDownPresentationTests {
         #expect(governanceSection.lines.contains(where: { $0.text.contains("待确认指导：优先插入 · 在安全点重规划") }))
         #expect(governanceSection.lines.contains(where: { $0.text == "指导合同：监督重规划" }))
         #expect(governanceSection.lines.contains(where: { $0.text == "阻塞：API uncertainty" }))
-        #expect(governanceSection.lines.contains(where: { $0.text == "下一个安全动作：apply_supervisor_replan" }))
+        #expect(governanceSection.lines.contains(where: { $0.text == "下一个安全动作：先按当前重规划处理" }))
         #expect(governanceSection.lines.contains(where: {
             $0.text == "建议动作：Freeze the API contract before adding more skills."
         }))
@@ -730,5 +730,144 @@ struct SupervisorProjectDrillDownPresentationTests {
         #expect(presentation.sections[0].lines.map(\.text) == ["scope-safe rules denied recent access"])
         #expect(presentation.sections[0].lines.map(\.tone) == [.warning])
         #expect(presentation.latestUIReview == nil)
+    }
+
+    @Test
+    func mapHumanizesStructuredGuidanceFallbackWhenContractResolutionFails() throws {
+        let pollutedGuidance = SupervisorGuidanceInjectionRecord(
+            schemaVersion: SupervisorGuidanceInjectionRecord.currentSchemaVersion,
+            injectionId: "guidance-polluted",
+            reviewId: "review-polluted",
+            projectId: "project-delta",
+            targetRole: .coder,
+            deliveryMode: .priorityInsert,
+            interventionMode: .replanNextSafePoint,
+            safePointPolicy: .nextStepBoundary,
+            guidanceText: "收到，我会按《Release Runtime》这条指导继续推进：verdict=watchsummary=当前没有待处理的 Hub 授权。effective_supervisor_tier=s3_strategic_coacheffective_work_order_depth=execution_readywork_order_ref=plan:plan-release-runtime-v1",
+            ackStatus: .pending,
+            ackRequired: true,
+            effectiveSupervisorTier: .s3StrategicCoach,
+            effectiveWorkOrderDepth: .executionReady,
+            workOrderRef: "plan:plan-release-runtime-v1",
+            ackNote: "",
+            injectedAtMs: 500,
+            ackUpdatedAtMs: 500,
+            expiresAtMs: 0,
+            retryAtMs: 0,
+            retryCount: 0,
+            maxRetryCount: 0,
+            auditRef: "audit-guidance-polluted"
+        )
+        let snapshot = SupervisorProjectDrillDownSnapshot(
+            updatedAt: 500,
+            projectId: "project-delta",
+            projectName: "Project Delta",
+            openedReason: "explicit_portfolio_drilldown",
+            status: .allowed,
+            requestedScope: .capsuleOnly,
+            grantedScope: .capsuleOnly,
+            capsule: nil,
+            specCapsule: nil,
+            decisionRails: nil,
+            latestReview: nil,
+            latestGuidance: pollutedGuidance,
+            pendingAckGuidance: pollutedGuidance,
+            followUpRhythmSummary: nil,
+            memoryCompactionRollup: nil,
+            workflow: nil,
+            recentMessages: [],
+            denyReason: nil,
+            refs: []
+        )
+
+        let presentation = SupervisorProjectDrillDownPresentationMapper.map(
+            snapshot: snapshot,
+            allowedScopes: [.capsuleOnly],
+            selectedScope: .capsuleOnly,
+            governanceTags: [],
+            runtimeSummary: nil,
+            latestUIReview: nil,
+            governanceNowMs: 1_000
+        )
+
+        let governanceSection = try #require(presentation.sections.first(where: { $0.id == "governance" }))
+        #expect(governanceSection.lines.contains(where: { $0.text.contains("当前没有待处理的 Hub 授权。") }))
+        #expect(!governanceSection.lines.contains(where: { $0.text.contains("verdict=") }))
+        #expect(!governanceSection.lines.contains(where: { $0.text.contains("effective_supervisor_tier") }))
+    }
+
+    @Test
+    func mapResolvesWrappedStructuredGuidanceContractBeforeFallback() throws {
+        let wrappedGuidance = SupervisorGuidanceInjectionRecord(
+            schemaVersion: SupervisorGuidanceInjectionRecord.currentSchemaVersion,
+            injectionId: "guidance-wrapped-contract",
+            reviewId: "review-wrapped-contract",
+            projectId: "project-epsilon",
+            targetRole: .coder,
+            deliveryMode: .priorityInsert,
+            interventionMode: .replanNextSafePoint,
+            safePointPolicy: .nextStepBoundary,
+            guidanceText: """
+收到，我会按《Release Runtime》这条指导继续推进：summary=当前没有待处理的 Hub 授权。
+contract_kind=grant_resolution
+primary_blocker=grant_required
+next_safe_action=open_hub_grants
+recommended_actions=Open Hub grant approval for this project | Retry the governed step after grant approval
+""",
+            ackStatus: .pending,
+            ackRequired: true,
+            effectiveSupervisorTier: .s3StrategicCoach,
+            effectiveWorkOrderDepth: .executionReady,
+            workOrderRef: "plan:grant-wrapped-1",
+            ackNote: "",
+            injectedAtMs: 500,
+            ackUpdatedAtMs: 500,
+            expiresAtMs: 0,
+            retryAtMs: 0,
+            retryCount: 0,
+            maxRetryCount: 0,
+            auditRef: "audit-guidance-wrapped-contract"
+        )
+        let snapshot = SupervisorProjectDrillDownSnapshot(
+            updatedAt: 500,
+            projectId: "project-epsilon",
+            projectName: "Project Epsilon",
+            openedReason: "explicit_portfolio_drilldown",
+            status: .allowed,
+            requestedScope: .capsuleOnly,
+            grantedScope: .capsuleOnly,
+            capsule: nil,
+            specCapsule: nil,
+            decisionRails: nil,
+            latestReview: nil,
+            latestGuidance: wrappedGuidance,
+            pendingAckGuidance: wrappedGuidance,
+            followUpRhythmSummary: nil,
+            memoryCompactionRollup: nil,
+            workflow: nil,
+            recentMessages: [],
+            denyReason: nil,
+            refs: []
+        )
+
+        let presentation = SupervisorProjectDrillDownPresentationMapper.map(
+            snapshot: snapshot,
+            allowedScopes: [.capsuleOnly],
+            selectedScope: .capsuleOnly,
+            governanceTags: [],
+            runtimeSummary: nil,
+            latestUIReview: nil,
+            governanceNowMs: 1_000
+        )
+
+        let governanceSection = try #require(presentation.sections.first(where: { $0.id == "governance" }))
+        #expect(governanceSection.lines.contains(where: { $0.text == "指导合同：授权处理" }))
+        #expect(governanceSection.lines.contains(where: { $0.text == "摘要：当前没有待处理的 Hub 授权。" }))
+        #expect(governanceSection.lines.contains(where: { $0.text == "阻塞：Hub 授权未完成（grant_required）" }))
+        #expect(governanceSection.lines.contains(where: { $0.text == "下一个安全动作：打开 Hub 授权面板" }))
+        #expect(governanceSection.lines.contains(where: {
+            $0.text == "建议动作：Open Hub grant approval for this project | Retry the governed step after grant approval"
+        }))
+        #expect(!governanceSection.lines.contains(where: { $0.text.contains("收到，我会按《Release Runtime》这条指导继续推进") }))
     }
 }

@@ -20,6 +20,9 @@ struct SupervisorPortfolioOverviewPresentationTests {
         #expect(presentation.title == "项目总览")
         #expect(presentation.countBadges.map(\.count) == [0, 0, 0, 0])
         #expect(presentation.metricBadgeRows.count == 2)
+        #expect(presentation.prioritySummaryLine == nil)
+        #expect(presentation.priorityExplanationLine == nil)
+        #expect(presentation.reviewMemorySummary == nil)
         #expect(presentation.emptyStateText?.isEmpty == false)
         #expect(presentation.todayQueue == nil)
         #expect(presentation.closeOutQueue == nil)
@@ -65,7 +68,21 @@ struct SupervisorPortfolioOverviewPresentationTests {
                     memoryFreshness: .fresh,
                     updatedAt: 980,
                     recentMessageCount: 2,
-                    shadowedBackgroundNoteCount: 1
+                    shadowedBackgroundNoteCount: 1,
+                    prioritySnapshot: SupervisorPortfolioPrioritySnapshot(
+                        projectId: "p-auth",
+                        priorityScore: 8,
+                        priorityBand: .critical,
+                        factors: SupervisorPortfolioPriorityFactors(
+                            risk: 3,
+                            userValue: 2,
+                            staleness: 0,
+                            blockerSeverity: 3,
+                            deadlinePressure: 0,
+                            evidenceWeakness: 0
+                        ),
+                        computedAtMs: 1_000_000
+                    )
                 )
             ]
         )
@@ -115,6 +132,8 @@ struct SupervisorPortfolioOverviewPresentationTests {
         #expect(presentation.iconName == "square.stack.3d.up.fill")
         #expect(presentation.iconTone == .accent)
         #expect(presentation.statusLine == "1 个项目 · 2 个进行中 · 1 个阻塞 · 1 个待授权 · 1 个已完成")
+        #expect(presentation.prioritySummaryLine == "当前先看：Auth Project（紧急优先级）")
+        #expect(presentation.priorityExplanationLine == "为什么先看：待授权会直接卡住推进，正式决策与背景偏好边界待清理")
         #expect(presentation.projectNotificationLine == "2 projects changed")
         #expect(presentation.infrastructureStatusLine == "基础设施 · official healthy")
         #expect(presentation.infrastructureTransitionLine == "最近切换 · failed -> healthy")
@@ -134,7 +153,7 @@ struct SupervisorPortfolioOverviewPresentationTests {
         #expect(presentation.closeOutQueue == nil)
         #expect(presentation.criticalQueue?.title == "高优先队列")
         #expect(presentation.criticalQueue?.rows.map(\.text) == [
-            "Auth Project：authorization_required。下一步：Approve grant",
+            "Auth Project：授权未完成（authorization_required）。下一步：Approve grant",
             "Blocked Project：Missing fixture。下一步：Restore fixture"
         ])
         #expect(presentation.criticalQueue?.rows.map(\.tone) == [.danger, .warning])
@@ -367,5 +386,74 @@ struct SupervisorPortfolioOverviewPresentationTests {
         #expect(presentation.closeOutQueue?.rows.map(\.tone) == [.warning, .accent])
         #expect(presentation.closeOutQueue?.rows.first?.recommendedNextAction.contains("归档") == true)
         #expect(presentation.closeOutQueue?.rows.last?.recommendedNextAction.contains("收口") == true)
+    }
+
+    @Test
+    func mapIncludesSupervisorReviewMemorySummaryWhenAssemblySnapshotExists() {
+        let assemblySnapshot = SupervisorMemoryAssemblySnapshot(
+            source: "hub",
+            resolutionSource: "hub_memory",
+            updatedAt: 5,
+            assemblyPurpose: XTSupervisorMemoryAssemblyPurpose.portfolioReview.rawValue,
+            reviewLevelHint: "r3_periodic",
+            requestedProfile: "balanced",
+            profileFloor: "balanced",
+            resolvedProfile: "balanced",
+            attemptedProfiles: ["balanced"],
+            progressiveUpgradeCount: 0,
+            focusedProjectId: nil,
+            configuredRawWindowProfile: XTSupervisorRecentRawContextProfile.standard12Pairs.rawValue,
+            recommendedRawWindowProfile: XTSupervisorRecentRawContextProfile.deep20Pairs.rawValue,
+            effectiveRawWindowProfile: XTSupervisorRecentRawContextProfile.deep20Pairs.rawValue,
+            configuredReviewMemoryDepth: XTSupervisorReviewMemoryDepthProfile.planReview.rawValue,
+            recommendedReviewMemoryDepth: XTSupervisorReviewMemoryDepthProfile.deepDive.rawValue,
+            effectiveReviewMemoryDepth: XTSupervisorReviewMemoryDepthProfile.deepDive.rawValue,
+            sTierReviewMemoryCeiling: XTMemoryServingProfile.m3DeepDive.rawValue,
+            reviewMemoryCeilingHit: false,
+            purposeScopedReviewMemoryCap: nil,
+            purposeScopedReviewMemoryCapApplied: false,
+            rawWindowProfile: XTSupervisorRecentRawContextProfile.deep20Pairs.rawValue,
+            rawWindowFloorPairs: 8,
+            rawWindowCeilingPairs: 20,
+            rawWindowSelectedPairs: 12,
+            eligibleMessages: 12,
+            lowSignalDroppedMessages: 0,
+            rawWindowSource: "xt_cache",
+            rollingDigestPresent: false,
+            continuityFloorSatisfied: true,
+            truncationAfterFloor: false,
+            continuityTraceLines: [],
+            lowSignalDropSampleLines: [],
+            selectedSections: ["l1_canonical"],
+            omittedSections: [],
+            contextRefsSelected: 1,
+            contextRefsOmitted: 0,
+            evidenceItemsSelected: 1,
+            evidenceItemsOmitted: 0,
+            budgetTotalTokens: 1000,
+            usedTotalTokens: 500,
+            truncatedLayers: [],
+            freshness: "fresh",
+            cacheHit: false,
+            denyCode: nil,
+            downgradeCode: nil,
+            reasonCode: nil,
+            compressionPolicy: "balanced"
+        )
+
+        let presentation = SupervisorPortfolioOverviewPresentationMapper.map(
+            snapshot: .empty,
+            actionability: .empty,
+            projectNotificationStatusLine: nil,
+            hasProjectNotificationActivity: false,
+            infrastructureStatusLine: "",
+            infrastructureTransitionLine: "",
+            assemblySnapshot: assemblySnapshot
+        )
+
+        #expect(presentation.reviewMemorySummary?.headlineText == "Review Memory · Deep Dive / ceiling Deep Dive")
+        #expect(presentation.reviewMemorySummary?.detailText?.contains("Recent Raw Context Deep") == true)
+        #expect(presentation.reviewMemorySummary?.detailText?.contains("purpose Portfolio Review") == true)
+        #expect(presentation.reviewMemorySummary?.helpText.contains("S-Tier 只提供 Supervisor 的 review-memory ceiling") == true)
     }
 }

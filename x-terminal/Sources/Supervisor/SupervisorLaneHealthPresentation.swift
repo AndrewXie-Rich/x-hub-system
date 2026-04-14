@@ -119,10 +119,10 @@ enum SupervisorLaneHealthPresentation {
         return SupervisorLaneHealthRowPresentation(
             laneID: lane.laneID,
             isFocused: isFocused,
-            title: "\(lane.laneID) · \(lane.status.rawValue)",
+            title: "\(lane.laneID) · \(statusText(lane.status))",
             statusIconName: statusIconName(lane.status),
             statusTone: statusTone(lane.status),
-            reasonLine: "reason=\(lane.blockedReason?.rawValue ?? "none") · next=\(lane.nextActionRecommendation)",
+            reasonLine: "原因：\(blockedReasonText(lane.blockedReason)) · 下一步：\(nextActionText(lane.nextActionRecommendation))",
             reasonTone: (lane.status == .failed || lane.status == .stalled) ? .warning : .neutral,
             contractText: contract.map(SupervisorGuidanceContractLinePresentation.contractLine),
             nextSafeActionText: contract.map(SupervisorGuidanceContractLinePresentation.nextSafeActionLine),
@@ -158,6 +158,25 @@ enum SupervisorLaneHealthPresentation {
             return .success
         case .waiting, .completed:
             return .neutral
+        }
+    }
+
+    private static func statusText(_ status: LaneHealthStatus) -> String {
+        switch status {
+        case .waiting:
+            return "等待中"
+        case .running:
+            return "运行中"
+        case .blocked:
+            return "阻塞"
+        case .stalled:
+            return "停滞"
+        case .failed:
+            return "失败"
+        case .recovering:
+            return "恢复中"
+        case .completed:
+            return "已完成"
         }
     }
 
@@ -315,6 +334,57 @@ enum SupervisorLaneHealthPresentation {
         case .uiReviewRepair:
             return "repair_before_execution"
         }
+    }
+
+    private static func blockedReasonText(_ reason: LaneBlockedReason?) -> String {
+        guard let reason else { return "无显式阻塞原因（none）" }
+        switch reason {
+        case .skillPreflightFailed:
+            return "技能预检失败（\(reason.rawValue)）"
+        case .skillGrantPending:
+            return "技能授权待处理（\(reason.rawValue)）"
+        case .skillRuntimeError:
+            return "技能运行失败（\(reason.rawValue)）"
+        case .grantPending:
+            return "等待授权（\(reason.rawValue)）"
+        case .awaitingInstruction:
+            return "等待用户指令（\(reason.rawValue)）"
+        case .dependencyBlocked:
+            return "依赖任务未完成（\(reason.rawValue)）"
+        case .runtimeError:
+            return "运行时错误（\(reason.rawValue)）"
+        case .quotaExceeded:
+            return "额度已超限（\(reason.rawValue)）"
+        case .authzDenied:
+            return "授权被拒绝（\(reason.rawValue)）"
+        case .webhookUnhealthy:
+            return "Webhook 不健康（\(reason.rawValue)）"
+        case .authChallengeLoop:
+            return "授权挑战循环未收敛（\(reason.rawValue)）"
+        case .queueStarvation:
+            return "队列饥饿（\(reason.rawValue)）"
+        case .restartDrain:
+            return "等待重启排空（\(reason.rawValue)）"
+        case .contextOverflow:
+            return "上下文超限（\(reason.rawValue)）"
+        case .routeOriginUnavailable:
+            return "原始路由不可用（\(reason.rawValue)）"
+        case .dispatchIdleTimeout:
+            return "派发空转超时（\(reason.rawValue)）"
+        case .unknown:
+            return "未知阻塞原因（\(reason.rawValue)）"
+        }
+    }
+
+    private static func nextActionText(_ raw: String) -> String {
+        let trimmed = normalizedScalar(raw) ?? "none"
+        if trimmed.lowercased() == "none" {
+            return "暂无（none）"
+        }
+        return SupervisorGuidanceTextPresentation.actionDisplayText(
+            trimmed,
+            includeRawToken: true
+        ) ?? "\(trimmed.replacingOccurrences(of: "_", with: " "))（\(trimmed)）"
     }
 
     private static func normalizedScalar(_ raw: String?) -> String? {

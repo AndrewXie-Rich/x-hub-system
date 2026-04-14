@@ -342,6 +342,7 @@ struct SplitLaneProposal: Identifiable, Codable, Equatable {
     var createChildProject: Bool
     var expectedArtifacts: [String]
     var dodChecklist: [String]
+    var verificationContract: LaneVerificationContract? = nil
     var estimatedEffortMs: Int
     var tokenBudget: Int
     var sourceTaskId: UUID?

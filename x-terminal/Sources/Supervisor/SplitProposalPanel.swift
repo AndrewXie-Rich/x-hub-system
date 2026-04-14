@@ -311,9 +311,10 @@ struct SplitProposalPanel: View {
                     .font(.caption)
                     .fontWeight(.semibold)
                 ForEach(validation.issues.prefix(4)) { issue in
-                    Text("• [\(issue.severity.rawValue)] \(issue.code)")
+                    Text("• \(SplitProposalPanelPresentation.validationIssueSummary(issue))")
                         .font(.caption2)
                         .foregroundStyle(issue.severity == .blocking ? .red : .secondary)
+                        .lineLimit(2)
                 }
             }
         }
@@ -326,14 +327,15 @@ struct SplitProposalPanel: View {
                 Text("提示词契约 · \(promptResult.contracts.count)/\(promptResult.expectedLaneCount)")
                     .font(.caption)
                     .fontWeight(.semibold)
-                Text(promptResult.status.rawValue)
+                Text("状态：\(SplitProposalPanelPresentation.promptStatusText(promptResult.status))")
                     .font(.caption2)
                     .foregroundStyle(promptResult.status == .ready ? .green : .red)
                 if !promptResult.lintResult.issues.isEmpty {
                     ForEach(promptResult.lintResult.issues.prefix(4)) { issue in
-                        Text("• [\(issue.severity.rawValue)] \(issue.code)")
+                        Text("• \(SplitProposalPanelPresentation.promptLintIssueSummary(issue))")
                             .font(.caption2)
                             .foregroundStyle(issue.severity == .error ? .red : .secondary)
+                            .lineLimit(2)
                     }
                 }
             }
@@ -357,7 +359,7 @@ struct SplitProposalPanel: View {
                 if !launch.blockedLaneReasons.isEmpty {
                     let detail = launch.blockedLaneReasons
                         .sorted { $0.key < $1.key }
-                        .map { "\($0.key):\($0.value)" }
+                        .map { SplitProposalPanelPresentation.launchBlockedLaneSummary(laneID: $0.key, reason: $0.value) }
                         .joined(separator: " | ")
                     Text(detail)
                         .font(.caption2)
@@ -378,7 +380,7 @@ struct SplitProposalPanel: View {
                     .font(.caption)
                     .fontWeight(.semibold)
                 ForEach(incidents.reversed(), id: \.id) { incident in
-                    Text("• \(incident.incidentCode) → \(incident.proposedAction.rawValue) · deny=\(incident.denyCode) · latency=\(incident.takeoverLatencyMs ?? -1)ms")
+                    Text("• \(SplitProposalPanelPresentation.incidentSummary(for: incident))")
                         .font(.caption2)
                         .foregroundStyle(incident.requiresUserAck ? .orange : .secondary)
                         .lineLimit(2)
@@ -412,12 +414,12 @@ struct SplitProposalPanel: View {
                     .foregroundStyle(.secondary)
 
                 if hotspots.isEmpty {
-                    Text("• 当前无 blocked/stalled/failed lane")
+                    Text("• 当前无阻塞/停滞/失败泳道")
                         .font(.caption2)
                         .foregroundStyle(.green)
                 } else {
                     ForEach(Array(hotspots), id: \.laneID) { lane in
-                        Text("• \(lane.laneID) -> \(lane.status.rawValue) · reason=\(lane.blockedReason?.rawValue ?? "none") · action=\(lane.nextActionRecommendation)")
+                        Text("• \(SplitProposalPanelPresentation.hotspotSummary(for: lane))")
                             .font(.caption2)
                             .foregroundStyle(lane.status == .failed || lane.status == .stalled ? .orange : .secondary)
                             .lineLimit(2)
@@ -431,7 +433,7 @@ struct SplitProposalPanel: View {
     private var auditTrailSection: some View {
         if let last = orchestrator.splitAuditTrail.last {
             VStack(alignment: .leading, spacing: 3) {
-                Text("审计: \(last.eventType.rawValue) · \(relativeTime(last.at))")
+                Text("审计：\(SplitProposalPanelPresentation.auditEventText(last.eventType)) · \(relativeTime(last.at))")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
 
@@ -439,13 +441,13 @@ struct SplitProposalPanel: View {
                     switch decoded {
                     case .splitOverridden(let payload):
                         Text(
-                            "覆写 \(payload.overrideCount) · 阻塞项 \(payload.blockingIssueCount) · 高风险确认 \(payload.highRiskHardToSoftConfirmedCount) · 回放 \(payload.isReplay ? "yes" : "no")"
+                            "覆写 \(payload.overrideCount) · 阻塞项 \(payload.blockingIssueCount) · 高风险确认 \(payload.highRiskHardToSoftConfirmedCount) · 回放 \(SplitProposalPanelPresentation.replayFlagText(payload.isReplay))"
                         )
                         .font(.caption2)
                         .foregroundStyle(payload.blockingIssueCount > 0 ? .orange : .secondary)
 
                         if !payload.blockingIssueCodes.isEmpty {
-                            Text("阻塞码：\(payload.blockingIssueCodes.joined(separator: ","))")
+                            Text("阻塞项：\(SplitProposalPanelPresentation.blockingIssueCodesText(payload.blockingIssueCodes))")
                                 .font(.caption2)
                                 .foregroundStyle(.orange)
                                 .lineLimit(2)

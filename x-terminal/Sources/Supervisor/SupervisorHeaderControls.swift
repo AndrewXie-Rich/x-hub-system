@@ -9,6 +9,7 @@ enum SupervisorHeaderControlTone: String, Equatable {
 }
 
 enum SupervisorHeaderButtonKind: Equatable {
+    case operations
     case heartbeat
     case supervisorSettings
     case modelSettings
@@ -38,6 +39,7 @@ struct SupervisorHeaderButtonChrome: Equatable {
 }
 
 enum SupervisorHeaderAction: Equatable {
+    case operationsButtonTapped
     case heartbeatButtonTapped
     case focusSignalCenterOverview(SupervisorSignalCenterOverviewAction)
     case supervisorSettingsTapped
@@ -76,11 +78,13 @@ enum SupervisorHeaderControls {
         var heartbeatOverview: SupervisorHeartbeatOverviewPresentation?
         var hasLatestRuntimeActivity: Bool
         var signalCenterOverview: SupervisorSignalCenterOverviewPresentation?
+        var isHeartbeatFeedVisible: Bool = false
         var isSignalCenterVisible: Bool
         var requestedWindowSheet: SupervisorManager.SupervisorWindowSheet?
     }
 
     enum Effect: Equatable {
+        case setHeartbeatFeed(Bool)
         case setSignalCenter(Bool)
         case focusSignalCenterOverview(SupervisorSignalCenterOverviewAction)
         case setWindowSheet(SupervisorManager.SupervisorWindowSheet?)
@@ -92,52 +96,25 @@ enum SupervisorHeaderControls {
     struct Plan: Equatable {
         var effects: [Effect]
     }
-
-    private enum PrimarySignal: Equatable {
-        case heartbeat(SupervisorHeartbeatOverviewPresentation)
-        case signalCenter(SupervisorSignalCenterOverviewPresentation)
-
-        var priority: SupervisorHeartbeatPriority {
-            switch self {
-            case .heartbeat(let overview):
-                return overview.priority
-            case .signalCenter(let overview):
-                return overview.priority
-            }
-        }
-
-        var tone: SupervisorHeaderControlTone {
-            switch self {
-            case .heartbeat(let overview):
-                return overview.priorityTone
-            case .signalCenter(let overview):
-                return overview.priorityTone
-            }
-        }
-
-        var headlineText: String {
-            switch self {
-            case .heartbeat(let overview):
-                return overview.headlineText
-            case .signalCenter(let overview):
-                return overview.headlineText
-            }
-        }
-    }
-
     static func presentation(
         for kind: SupervisorHeaderButtonKind,
         context: Context
     ) -> SupervisorHeaderButtonPresentation {
         switch kind {
+        case .operations:
+            return SupervisorHeaderButtonPresentation(
+                iconName: operationsIconName(context: context),
+                label: nil,
+                tone: operationsTone(context: context),
+                helpText: operationsHelpText(context: context),
+                chrome: operationsChrome(context: context)
+            )
         case .heartbeat:
-            let heartbeatTone = heartbeatTone(context: context)
-            let heartbeatHelpText = heartbeatHelpText(context: context)
             return SupervisorHeaderButtonPresentation(
                 iconName: heartbeatIconName(context: context),
                 label: nil,
-                tone: heartbeatTone,
-                helpText: heartbeatHelpText,
+                tone: heartbeatTone(context: context),
+                helpText: heartbeatHelpText(context: context),
                 chrome: heartbeatChrome(context: context)
             )
         case .supervisorSettings:
@@ -145,7 +122,7 @@ enum SupervisorHeaderControls {
                 iconName: "slider.horizontal.3",
                 label: nil,
                 tone: .neutral,
-                helpText: "打开 Supervisor Control Center（含 AI 模型）",
+                helpText: "在当前 Supervisor 主窗口打开 Control Center（含 AI 模型）",
                 chrome: .plain
             )
         case .modelSettings:
@@ -153,7 +130,7 @@ enum SupervisorHeaderControls {
                 iconName: "gearshape.fill",
                 label: nil,
                 tone: .neutral,
-                helpText: "打开 Supervisor Control Center 的 AI 模型页签",
+                helpText: "在当前 Supervisor 主窗口打开 Control Center 的 AI 模型页签",
                 chrome: .plain
             )
         case .clearConversation:
@@ -172,11 +149,22 @@ enum SupervisorHeaderControls {
         context: Context
     ) -> Plan {
         switch action {
+        case .operationsButtonTapped:
+            let nextVisible = !context.isSignalCenterVisible
+            let effects: [Effect] = nextVisible
+                ? [.setHeartbeatFeed(false), .setSignalCenter(true)]
+                : [.setSignalCenter(false)]
+            return Plan(effects: effects)
         case .heartbeatButtonTapped:
-            return Plan(effects: [.setSignalCenter(!context.isSignalCenterVisible)])
+            let nextVisible = !context.isHeartbeatFeedVisible
+            let effects: [Effect] = nextVisible
+                ? [.setSignalCenter(false), .setHeartbeatFeed(true)]
+                : [.setHeartbeatFeed(false)]
+            return Plan(effects: effects)
         case .focusSignalCenterOverview(let action):
             return Plan(
                 effects: [
+                    .setHeartbeatFeed(false),
                     .setSignalCenter(true),
                     .focusSignalCenterOverview(action)
                 ]
@@ -197,13 +185,13 @@ enum SupervisorHeaderControls {
         switch event {
         case .focusRequestChanged:
             guard context.hasFocusRequest else { return nil }
-            return Plan(effects: [.setSignalCenter(true)])
+            return Plan(effects: [.setHeartbeatFeed(false), .setSignalCenter(true)])
         case .pendingHubGrantsChanged:
             guard context.pendingHubGrantCount > 0 else { return nil }
-            return Plan(effects: [.setSignalCenter(true)])
+            return Plan(effects: [.setHeartbeatFeed(false), .setSignalCenter(true)])
         case .pendingSkillApprovalsChanged:
             guard context.pendingSkillApprovalCount > 0 else { return nil }
-            return Plan(effects: [.setSignalCenter(true)])
+            return Plan(effects: [.setHeartbeatFeed(false), .setSignalCenter(true)])
         case .requestedWindowSheetChanged:
             guard let requested = context.requestedWindowSheet else { return nil }
             return Plan(effects: [.setWindowSheet(requested), .clearRequestedWindowSheet])
@@ -241,49 +229,111 @@ enum SupervisorHeaderControls {
         )
     }
 
+    private static func operationsTone(context: Context) -> SupervisorHeaderControlTone {
+        if let overview = context.signalCenterOverview {
+            return overview.priority == .stable ? .neutral : overview.priorityTone
+        }
+        return .neutral
+    }
+
+    private static func operationsHelpText(context: Context) -> String {
+        let verb = context.isSignalCenterVisible ? "收起" : "打开"
+        if let overview = context.signalCenterOverview {
+            return "\(verb) Supervisor 看板（当前：\(overview.headlineText)）"
+        }
+        return "\(verb) Supervisor 看板"
+    }
+
     private static func heartbeatTone(context: Context) -> SupervisorHeaderControlTone {
-        if let primarySignal = primarySignal(context: context) {
-            return primarySignal.tone
+        if let overview = context.heartbeatOverview {
+            return overview.priorityTone
         }
         return context.hasLatestHeartbeat ? .danger : .neutral
     }
 
     private static func heartbeatHelpText(context: Context) -> String {
-        if let primarySignal = primarySignal(context: context) {
-            return "打开 Supervisor 信号中心（当前：\(primarySignal.headlineText)）"
+        let verb = context.isHeartbeatFeedVisible ? "收起" : "打开"
+        if let overview = context.heartbeatOverview {
+            return "\(verb) Supervisor 心跳（当前：\(overview.headlineText)）"
         }
         if let priority = context.highestHeartbeatPriority {
-            return "打开 Supervisor 信号中心（当前：\(priority.label)）"
+            return "\(verb) Supervisor 心跳（当前：\(priority.label)）"
         }
-        return "打开 Supervisor 信号中心"
+        return "\(verb) Supervisor 心跳"
+    }
+
+    private static func operationsChrome(context: Context) -> SupervisorHeaderButtonChrome {
+        guard let overview = context.signalCenterOverview else {
+            return context.isSignalCenterVisible
+                ? SupervisorHeaderButtonChrome(
+                    tone: .neutral,
+                    fillOpacity: 0.10,
+                    strokeOpacity: 0.16,
+                    shadowOpacity: 0
+                )
+                : .plain
+        }
+
+        switch overview.priority {
+        case .immediate:
+            return SupervisorHeaderButtonChrome(
+                tone: overview.priorityTone,
+                fillOpacity: context.isSignalCenterVisible ? 0.22 : 0.18,
+                strokeOpacity: context.isSignalCenterVisible ? 0.32 : 0.30,
+                shadowOpacity: 0.16
+            )
+        case .attention:
+            return SupervisorHeaderButtonChrome(
+                tone: overview.priorityTone,
+                fillOpacity: context.isSignalCenterVisible ? 0.18 : 0.16,
+                strokeOpacity: context.isSignalCenterVisible ? 0.30 : 0.28,
+                shadowOpacity: 0.12
+            )
+        case .watch:
+            return SupervisorHeaderButtonChrome(
+                tone: overview.priorityTone,
+                fillOpacity: context.isSignalCenterVisible ? 0.16 : 0.14,
+                strokeOpacity: context.isSignalCenterVisible ? 0.24 : 0.22,
+                shadowOpacity: 0.08
+            )
+        case .stable:
+            return context.isSignalCenterVisible
+                ? SupervisorHeaderButtonChrome(
+                    tone: .neutral,
+                    fillOpacity: 0.10,
+                    strokeOpacity: 0.16,
+                    shadowOpacity: 0
+                )
+                : .plain
+        }
     }
 
     private static func heartbeatChrome(context: Context) -> SupervisorHeaderButtonChrome {
-        if let primarySignal = primarySignal(context: context) {
-            switch primarySignal.priority {
+        if let overview = context.heartbeatOverview {
+            switch overview.priority {
             case .immediate:
                 return SupervisorHeaderButtonChrome(
-                    tone: primarySignal.tone,
-                    fillOpacity: context.isSignalCenterVisible ? 0.22 : 0.18,
-                    strokeOpacity: context.isSignalCenterVisible ? 0.32 : 0.30,
+                    tone: overview.priorityTone,
+                    fillOpacity: context.isHeartbeatFeedVisible ? 0.22 : 0.18,
+                    strokeOpacity: context.isHeartbeatFeedVisible ? 0.32 : 0.30,
                     shadowOpacity: 0.16
                 )
             case .attention:
                 return SupervisorHeaderButtonChrome(
-                    tone: primarySignal.tone,
-                    fillOpacity: context.isSignalCenterVisible ? 0.18 : 0.16,
-                    strokeOpacity: context.isSignalCenterVisible ? 0.30 : 0.28,
+                    tone: overview.priorityTone,
+                    fillOpacity: context.isHeartbeatFeedVisible ? 0.18 : 0.16,
+                    strokeOpacity: context.isHeartbeatFeedVisible ? 0.30 : 0.28,
                     shadowOpacity: 0.12
                 )
             case .watch:
                 return SupervisorHeaderButtonChrome(
-                    tone: primarySignal.tone,
-                    fillOpacity: context.isSignalCenterVisible ? 0.16 : 0.14,
-                    strokeOpacity: context.isSignalCenterVisible ? 0.24 : 0.22,
+                    tone: overview.priorityTone,
+                    fillOpacity: context.isHeartbeatFeedVisible ? 0.16 : 0.14,
+                    strokeOpacity: context.isHeartbeatFeedVisible ? 0.24 : 0.22,
                     shadowOpacity: 0.08
                 )
             case .stable:
-                return context.isSignalCenterVisible
+                return context.isHeartbeatFeedVisible
                     ? SupervisorHeaderButtonChrome(
                         tone: .neutral,
                         fillOpacity: 0.10,
@@ -303,7 +353,7 @@ enum SupervisorHeaderControls {
             )
         }
 
-        if context.isSignalCenterVisible {
+        if context.isHeartbeatFeedVisible {
             return SupervisorHeaderButtonChrome(
                 tone: .neutral,
                 fillOpacity: 0.10,
@@ -315,11 +365,15 @@ enum SupervisorHeaderControls {
         return .plain
     }
 
-    private static func heartbeatIconName(context: Context) -> String {
+    private static func operationsIconName(context: Context) -> String {
         if context.isSignalCenterVisible || hasNonStableSignalCenterSignal(context: context) {
-            return "heart.fill"
+            return "square.grid.2x2.fill"
         }
-        return context.hasLatestHeartbeat ? "heart.fill" : "heart"
+        return "square.grid.2x2"
+    }
+
+    private static func heartbeatIconName(context: Context) -> String {
+        (context.isHeartbeatFeedVisible || context.hasLatestHeartbeat) ? "heart.fill" : "heart"
     }
 
     private static func shouldPulseSignalCenter(context: Context) -> Bool {
@@ -329,27 +383,6 @@ enum SupervisorHeaderControls {
         return context.pendingHubGrantCount > 0
             || context.pendingSkillApprovalCount > 0
             || context.hasLatestRuntimeActivity
-    }
-
-    private static func primarySignal(context: Context) -> PrimarySignal? {
-        let heartbeatSignal = context.heartbeatOverview.map(PrimarySignal.heartbeat)
-        let signalCenterSignal = context.signalCenterOverview
-            .flatMap { $0.priority != .stable ? $0 : nil }
-            .map(PrimarySignal.signalCenter)
-
-        switch (heartbeatSignal, signalCenterSignal) {
-        case let (.some(heartbeat), .some(signalCenter)):
-            if signalCenter.priority.rawValue <= heartbeat.priority.rawValue {
-                return signalCenter
-            }
-            return heartbeat
-        case let (.some(heartbeat), nil):
-            return heartbeat
-        case let (nil, .some(signalCenter)):
-            return signalCenter
-        case (nil, nil):
-            return nil
-        }
     }
 
     private static func hasNonStableSignalCenterSignal(context: Context) -> Bool {

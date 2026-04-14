@@ -19,8 +19,10 @@ struct SupervisorSystemPromptBuilder {
 
         lines.append(contentsOf: buildTimeSection(params))
         lines.append(contentsOf: buildRuntimeSection(params, isMinimal: isMinimal))
-        lines.append(contentsOf: buildWorkModeSection(params))
-        lines.append(contentsOf: buildPrivacyModeSection(params))
+        if !isMinimal {
+            lines.append(contentsOf: buildWorkModeSection(params))
+            lines.append(contentsOf: buildPrivacyModeSection(params))
+        }
         lines.append(contentsOf: buildConversationStyleSection(params, isMinimal: isMinimal))
         lines.append(contentsOf: buildPersonalAssistantContextSection(params))
         lines.append(contentsOf: buildPersonalMemoryContextSection(params))
@@ -28,7 +30,8 @@ struct SupervisorSystemPromptBuilder {
         lines.append(contentsOf: buildPersonalReviewContextSection(params))
         lines.append(contentsOf: buildTurnRoutingSection(params))
         lines.append(contentsOf: buildTurnContextAssemblySection(params))
-        lines.append(contentsOf: buildMemorySection(params))
+        lines.append(contentsOf: buildAttachmentContextSection(params))
+        lines.append(contentsOf: buildMemorySection(params, isMinimal: isMinimal))
         lines.append(contentsOf: buildReviewDisciplineSection(isMinimal: isMinimal))
         lines.append(contentsOf: buildTaskSection(params, isMinimal: isMinimal))
         lines.append(contentsOf: buildActionProtocolSection(isMinimal: isMinimal))
@@ -73,6 +76,10 @@ struct SupervisorSystemPromptBuilder {
             "Managed project count: \(params.runtimeInfo.projectCount)",
             "Preferred supervisor model id: \(preferredModel)",
             "Supervisor model route summary: \(params.runtimeInfo.supervisorModelRouteSummary)",
+            "Last remote success at: \(formattedPromptTimestamp(params.runtimeInfo.lastRemoteSuccessAt, timeZoneIdentifier: params.userTimezone) ?? "(none recorded)")",
+            "Last remote failure at: \(formattedPromptTimestamp(params.runtimeInfo.lastRemoteFailureAt, timeZoneIdentifier: params.userTimezone) ?? "(none recorded)")",
+            "Portfolio snapshot updated at: \(formattedPromptTimestamp(params.runtimeInfo.portfolioSnapshotUpdatedAt, timeZoneIdentifier: params.userTimezone) ?? "(none recorded)")",
+            "Canonical memory sync last failure at: \(formattedPromptTimestamp(params.runtimeInfo.canonicalMemorySyncLastFailureAt, timeZoneIdentifier: params.userTimezone) ?? "(none recorded)")",
         ]
         if let retrieval = cleaned(params.runtimeInfo.retrievalModelSummary) {
             lines.append("Retrieval helper models: \(retrieval)")
@@ -291,8 +298,10 @@ struct SupervisorSystemPromptBuilder {
             "- Assistant plane: \(assembly.assistantPlaneDepth.rawValue)",
             "- Project plane: \(assembly.projectPlaneDepth.rawValue)",
             "- Cross-link plane: \(assembly.crossLinkPlaneDepth.rawValue)",
-            "- Selected slots: \(assembly.selectedSlots.map(\.rawValue).joined(separator: ", "))",
-            "- Omitted slots: \(assembly.omittedSlots.map(\.rawValue).joined(separator: ", "))",
+            "- Requested slots: \(assembly.requestedSlots.isEmpty ? "(none)" : assembly.requestedSlots.map(\.rawValue).joined(separator: ", "))",
+            "- Selected slots: \(assembly.selectedSlots.isEmpty ? "(none)" : assembly.selectedSlots.map(\.rawValue).joined(separator: ", "))",
+            "- Omitted requested slots: \(assembly.omittedSlots.isEmpty ? "(none)" : assembly.omittedSlots.map(\.rawValue).joined(separator: ", "))",
+            "- Requested refs: \(assembly.requestedRefs.isEmpty ? "(none)" : assembly.requestedRefs.joined(separator: ", "))",
             "- Selected refs: \(assembly.selectedRefs.isEmpty ? "(none)" : assembly.selectedRefs.joined(separator: ", "))"
         ]
 
@@ -309,17 +318,34 @@ struct SupervisorSystemPromptBuilder {
             lines.append("- Assembly reasons: \(assembly.assemblyReason.joined(separator: " | "))")
         }
 
-        lines.append("- Treat selected slots as the intended serving contract for this turn. If a requested slot is omitted or unavailable, say so instead of fabricating missing memory.")
+        lines.append("- Treat requested slots as routing intent and selected slots/refs as the actual injected context for this turn.")
+        lines.append("- If a requested slot is omitted or unavailable, say so instead of fabricating missing memory.")
         lines.append("")
         return lines
     }
 
-    private func buildMemorySection(_ params: SupervisorSystemPromptParams) -> [String] {
+    private func buildMemorySection(
+        _ params: SupervisorSystemPromptParams,
+        isMinimal: Bool
+    ) -> [String] {
         var lines = [
             "## Memory Context",
             "Use the following Memory v1 context as the primary project working set for this turn:",
         ]
         lines.append(contentsOf: buildMemoryReadinessSection(params.memoryReadiness))
+        if isMinimal {
+            lines.append(contentsOf: [
+                "- Check [PORTFOLIO_BRIEF] first for global board state, then drill into one project only if the turn needs it.",
+                "- Use [FOCUSED_PROJECT_ANCHOR_PACK] as the main review anchor for goal, done definition, constraints, approved decisions, blocker lineage, and active workflow.",
+                "- Use [LONGTERM_OUTLINE] plus [DELTA_FEED] to separate durable rationale from recent changes.",
+                "- If [CONFLICT_SET], [CONTEXT_REFS], or [EVIDENCE_PACK] exist, use them before overturning strategy or asserting project history.",
+                "- Keep planning grounded in the focused project's next step, blocker, pending steps, and recent relevant messages.",
+                params.memoryV1,
+                ""
+            ])
+            return lines
+        }
+
         lines.append(contentsOf: [
             "- If Memory Context contains [PORTFOLIO_BRIEF], inspect it first to understand the global project board before you drill into one project.",
             "- If Memory Context contains [FOCUSED_PROJECT_ANCHOR_PACK], inspect that section first when the user asks you to review project memory/context or propose the next execution plan.",
@@ -343,6 +369,21 @@ struct SupervisorSystemPromptBuilder {
         return lines
     }
 
+    private func buildAttachmentContextSection(
+        _ params: SupervisorSystemPromptParams
+    ) -> [String] {
+        guard let rawSummary = cleaned(params.attachmentSummary) else { return [] }
+        let heading = "Attachment Context:\n"
+        let summary = rawSummary.hasPrefix(heading)
+            ? String(rawSummary.dropFirst(heading.count))
+            : rawSummary
+        return [
+            "## Attachment Context",
+            summary,
+            ""
+        ]
+    }
+
     private func buildMemoryReadinessSection(
         _ readiness: SupervisorMemoryAssemblyReadiness?
     ) -> [String] {
@@ -359,6 +400,9 @@ struct SupervisorSystemPromptBuilder {
         lines.append("- Strategic memory is currently underfed. Do not present a confident strategic correction, project-complete verdict, or replay of project history as reliable.")
         lines.append("- First state that the current memory supply is insufficient for strategic correction, then ask the user for the long-term goal and done criteria, the key decision reasons, the current blocker plus what has been tried, the trusted logs/results/receipts to use as evidence, and enough memory depth before you re-steer the project.")
         lines.append("- Until that gap is repaired, you may still help with immediate blocker, grant, and next-step handling that is explicitly grounded in the current Memory Context, but do not invent missing background.")
+        if readiness.issueCodes.contains("memory_scoped_hidden_project_recovery_missing") {
+            lines.append("- If the current gap is missing scoped hidden-project recovery, do not reconstruct that hidden project's history from frontstage, portfolio, or generic board memory. State that explicit hidden-project recovery failed, ask for a governed re-open or fresh explicit focus turn, and only rely on project-scoped refs after they are actually recovered.")
+        }
         if !readiness.issues.isEmpty {
             let issueSummary = readiness.issues
                 .prefix(3)
@@ -419,55 +463,82 @@ struct SupervisorSystemPromptBuilder {
     }
 
     private func buildActionProtocolSection(isMinimal: Bool) -> [String] {
+        if isMinimal {
+            var lines = [
+                "## Action Protocol",
+                "- If the user is asking about identity, capabilities, weather, travel, opinions, or ordinary conversation, do not emit action tags.",
+                "- Only emit action tags when the user clearly wants execution such as project creation, model reassignment, governed review, or skill dispatch.",
+                "- If the user asks you to continue, advance, or push a focused project forward and Memory Context already contains a concrete next step or active workflow, treat that as execution intent instead of replying with status only.",
+                "- For review or planning requests that do not clearly ask for immediate execution, do not emit action tags; return a concrete plan with sequence, checkpoints, blockers, and the first action to take.",
+                "- Never invent action tags, project ids, job ids, step ids, or unsupported skill payload fields."
+            ]
+            lines.append("- If Memory Context contains skills_registry, only use listed governed skill ids and prefer the focused project's registry before any global-safe registry.")
+            lines.append("")
+            return lines
+        }
+
         var lines = [
             "## Action Protocol",
-            "- If the user is asking about identity, capabilities, weather, travel, opinions, or ordinary conversation, do not emit action tags.",
+            "- If the user is asking about identity, weather, travel, opinions, or ordinary conversation, do not emit action tags.",
+            "- Exception: if the user is asking whether a governed skill exists, what skill can do a task, or asks you to find/install/enable a skill, treat that as governed discovery intent rather than plain conversation.",
             "- Only emit action tags when the user clearly wants execution such as project creation or model reassignment.",
             "- If the user asks you to continue, advance, or push a focused project forward, and Memory Context already contains a concrete next step or active workflow for that project, treat that as execution intent instead of replying with status only.",
             "- If the user asks you to review project memory/context and give an execution plan, inspect the focused project brief first and return the most specific executable plan you can without inventing facts that are not in Memory Context.",
             "- For review or planning requests that do not clearly ask for immediate execution, do not emit action tags; return a concrete plan with sequence, dependencies, checkpoints, blockers, and the first action to take.",
             "- If Memory Context contains skills_registry, only CALL_SKILL skill_ids that appear in that focused-project registry snapshot.",
-            "- Use each skills_registry item's risk, grant, caps, dispatch, variant, dispatch_note, and payload hints to shape CALL_SKILL payloads; do not invent unsupported arguments or hidden tool routes.",
+            "- If Memory Context contains a Supervisor-global skills_registry with `project=Supervisor Global`, use CALL_GLOBAL_SKILL for those listed global-safe skill_ids instead of fabricating project/job/step ids.",
+            "- Use each skills_registry item's risk, grant, caps, dispatch, variant, dispatch_note, and payload hints to shape CALL_SKILL / CALL_GLOBAL_SKILL payloads; do not invent unsupported arguments or hidden tool routes.",
+            "- When no focused project is selected and the global skills_registry contains find-skills, use it first for capability discovery before suggesting install/import/manual steps.",
+            "- Questions like '有没有做 PPT 的 skill'、'能不能用 skill 做 X'、'帮我找一个 skill' count as discovery intent. If find-skills is available, emit CALL_GLOBAL_SKILL or CALL_SKILL instead of claiming the skill stack is unavailable.",
+            "- After discovery, if the user wants a skill made available through Hub, use the dedicated global enable/request skill with the exact skill_id and package_sha256 returned by find-skills. Do not invent package_sha256.",
+            "- If the focused project's `skills_registry` lacks `local-ocr`, `local-vision`, `local-transcribe`, `local-tts`, or `local-embeddings`, but Memory Context also contains `supervisor_global_skills_registry` with `find-skills` and `request-skill-enable`, use CALL_GLOBAL_SKILL to discover the wrapper first and then request enablement with the exact discovery `skill_id` and `package_sha256` instead of claiming Hub cannot do multimodal work.",
             "- Treat `routing: prefers_builtin=...` and `routing: entrypoints=...` as skill-family metadata. Wrapper ids, entrypoint ids, and builtin ids may describe one governed execution family.",
             "- If the user explicitly names a registered wrapper or entrypoint skill_id, preserve that exact registered skill_id in CALL_SKILL when it matches the requested intent; do not silently swap it to a sibling family member just because the runtime may converge on the same builtin.",
             "- If the user asks for a capability without naming a specific skill_id, and the relevant skills_registry family advertises `routing: prefers_builtin=...`, choose that preferred builtin instead of an arbitrary sibling wrapper.",
             "- Do not emit duplicate CALL_SKILL actions across sibling entrypoints in the same routed family for one intent. One well-formed governed call is enough.",
             "- If a skills_registry item says grant=yes or has high/critical risk, expect an approval or awaiting-authorization transition unless Memory Context already shows a valid grant path.",
+            "- If focused-project skills_registry shows source=xt_builtin_skill_registry, that still counts as a valid governed registry for the listed XT builtin skills; do not downgrade to plain chat just because Hub package index is unavailable.",
             "- If a skills_registry item says scope=xt_builtin, treat it as an XT native governed skill that is already available locally; do not tell the user to install, import, or enable it through Hub package lifecycle first.",
             "- If the user does not name a different installed wrapper/entrypoint and skills_registry contains guarded-automation, prefer it for trusted automation readiness checks and governed browser actions instead of inventing direct browser/device execution paths outside the registry.",
             "- If skills_registry contains supervisor-voice, prefer it for local Supervisor playback status / preview / speak / stop requests instead of answering as if voice control were only descriptive.",
+            "- If skills_registry contains local-ocr, prefer it for OCR, screenshot text extraction, and image-to-text requests instead of pretending the text was already available in chat context.",
+            "- If skills_registry contains local-vision, prefer it for screenshot, diagram, and image understanding requests instead of answering from guesswork without a governed multimodal call.",
+            "- If skills_registry contains local-transcribe, prefer it for audio transcription and speech-to-text requests instead of asking the user to manually summarize the recording.",
+            "- If skills_registry contains local-tts, prefer it for explicit text-to-speech or audio artifact requests instead of answering as text only.",
+            "- If skills_registry contains local-embeddings, prefer it for embedding, retrieval-indexing, or vectorization requests instead of silently converting them into text generation.",
             "- If you emit UPSERT_PLAN for a focused project, match the effective_work_order_depth shown in Memory Context as a minimum detail floor instead of defaulting to a vague one-line plan.",
             "- For strong or capable focused projects, execution_ready can stay concise when step titles are specific and the plan already carries dependencies, checkpoints, or failure metadata; do not add filler detail fields just to look formal.",
             "- Never use action tags for examples, hypotheticals, or explanations."
         ]
 
-        if !isMinimal {
-            lines.append("When you need an action, use the exact tags below:")
-            lines.append("1) Create project")
-            lines.append("[CREATE_PROJECT]Project Name[/CREATE_PROJECT]")
-            lines.append("")
-            lines.append("2) Assign one project's model")
-            lines.append("[ASSIGN_MODEL]project_ref|role|model_id[/ASSIGN_MODEL]")
-            lines.append("")
-            lines.append("3) Assign all projects' model")
-            lines.append("[ASSIGN_MODEL_ALL]role|model_id[/ASSIGN_MODEL_ALL]")
-            lines.append("")
-            lines.append("4) Create a governed job for a project")
-            lines.append(#"[CREATE_JOB]{"project_ref":"project_ref_or_empty","goal":"clear executable goal","priority":"critical|high|normal|low","source":"user|supervisor|heartbeat|incident|external_trigger|skill_callback|grant_resolution","current_owner":"supervisor"}[/CREATE_JOB]"#)
-            lines.append("")
-            lines.append("5) Upsert a governed plan payload")
-            lines.append(#"[UPSERT_PLAN]{"project_ref":"project_ref_or_empty","job_id":"job-id","plan_id":"plan-id","steps":[{"step_id":"step-001","title":"step title"}]}[/UPSERT_PLAN]"#)
-            lines.append("")
-            lines.append("6) Call a governed skill")
-            lines.append(#"[CALL_SKILL]{"project_ref":"project_ref_or_empty","job_id":"job-id","step_id":"step-001","skill_id":"skill.id","payload":{"key":"value"}}[/CALL_SKILL]"#)
-            lines.append("")
-            lines.append("7) Cancel a governed skill request")
-            lines.append(#"[CANCEL_SKILL]{"project_ref":"project_ref_or_empty","request_id":"call-id","reason":"brief reason"}[/CANCEL_SKILL]"#)
-            lines.append("")
-            lines.append("Constraint: if assigning models in a turn, output either ASSIGN_MODEL or ASSIGN_MODEL_ALL, not both.")
-            lines.append("Constraint: CREATE_JOB / UPSERT_PLAN / CALL_SKILL / CANCEL_SKILL must use a single JSON object body.")
-            lines.append("Constraint: only use governed execution tags when the user clearly wants execution, or when the runtime explicitly opened a non-user orchestration round.")
-        }
+        lines.append("When you need an action, use the exact tags below:")
+        lines.append("1) Create project")
+        lines.append("[CREATE_PROJECT]Project Name[/CREATE_PROJECT]")
+        lines.append("")
+        lines.append("2) Assign one project's model")
+        lines.append("[ASSIGN_MODEL]project_ref|role|model_id[/ASSIGN_MODEL]")
+        lines.append("")
+        lines.append("3) Assign all projects' model")
+        lines.append("[ASSIGN_MODEL_ALL]role|model_id[/ASSIGN_MODEL_ALL]")
+        lines.append("")
+        lines.append("4) Create a governed job for a project")
+        lines.append(#"[CREATE_JOB]{"project_ref":"project_ref_or_empty","goal":"clear executable goal","priority":"critical|high|normal|low","source":"user|supervisor|heartbeat|incident|external_trigger|skill_callback|grant_resolution","current_owner":"supervisor"}[/CREATE_JOB]"#)
+        lines.append("")
+        lines.append("5) Upsert a governed plan payload")
+        lines.append(#"[UPSERT_PLAN]{"project_ref":"project_ref_or_empty","job_id":"job-id","plan_id":"plan-id","steps":[{"step_id":"step-001","title":"step title"}]}[/UPSERT_PLAN]"#)
+        lines.append("")
+        lines.append("6) Call a governed skill")
+        lines.append(#"[CALL_SKILL]{"project_ref":"project_ref_or_empty","job_id":"job-id","step_id":"step-001","skill_id":"skill.id","payload":{"key":"value"}}[/CALL_SKILL]"#)
+        lines.append("")
+        lines.append("7) Call a Supervisor-global governed skill")
+        lines.append(#"[CALL_GLOBAL_SKILL]{"skill_id":"skill.id","payload":{"key":"value"}}[/CALL_GLOBAL_SKILL]"#)
+        lines.append("")
+        lines.append("8) Cancel a governed skill request")
+        lines.append(#"[CANCEL_SKILL]{"project_ref":"project_ref_or_empty","request_id":"call-id","reason":"brief reason"}[/CANCEL_SKILL]"#)
+        lines.append("")
+        lines.append("Constraint: if assigning models in a turn, output either ASSIGN_MODEL or ASSIGN_MODEL_ALL, not both.")
+        lines.append("Constraint: CREATE_JOB / UPSERT_PLAN / CALL_SKILL / CALL_GLOBAL_SKILL / CANCEL_SKILL must use a single JSON object body.")
+        lines.append("Constraint: only use governed execution tags when the user clearly wants execution, or when the runtime explicitly opened a non-user orchestration round.")
 
         lines.append("")
         return lines
@@ -495,5 +566,17 @@ struct SupervisorSystemPromptBuilder {
         guard let text else { return nil }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func formattedPromptTimestamp(
+        _ timestamp: TimeInterval?,
+        timeZoneIdentifier: String
+    ) -> String? {
+        guard let timestamp, timestamp > 0 else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: timeZoneIdentifier) ?? .current
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss XXXXX"
+        return formatter.string(from: Date(timeIntervalSince1970: timestamp))
     }
 }

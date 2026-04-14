@@ -50,10 +50,35 @@ struct SupervisorSignalCenterOverviewPresentation: Equatable {
 
 typealias SupervisorOperationsOverviewPresentation = SupervisorSignalCenterOverviewPresentation
 
+struct SupervisorProjectCreationStatusPresentation: Equatable {
+    var priority: SupervisorHeartbeatPriority
+    var priorityTone: SupervisorHeaderControlTone
+    var reasonCode: String
+    var headlineText: String
+    var detailText: String
+    var metadataText: String
+    var projectNameText: String?
+    var goalText: String?
+    var trackText: String?
+    var recommendedCommands: [String]
+}
+
 enum SupervisorSignalCenterOverviewPresentationMapper {
     static func map(
         pendingHubGrantPresentation: SupervisorPendingHubGrantBoardPresentation,
         pendingSkillApprovalPresentation: SupervisorPendingSkillApprovalBoardPresentation,
+        candidateReviewPresentation: SupervisorCandidateReviewBoardPresentation = SupervisorCandidateReviewPresentation.board(
+            items: [],
+            source: "",
+            hasFreshSnapshot: false,
+            updatedAt: 0,
+            inFlightRequestIDs: [],
+            hubInteractive: false,
+            projectNamesByID: [:],
+                focusedRowAnchor: nil
+        ),
+        doctorPresentation: SupervisorDoctorBoardPresentation? = nil,
+        projectCreationPresentation: SupervisorProjectCreationStatusPresentation? = nil,
         runtimeActivityPresentation: SupervisorRuntimeActivityBoardPresentation,
         automationPresentation: SupervisorAutomationRuntimePresentation,
         laneHealthPresentation: SupervisorLaneHealthBoardPresentation
@@ -85,7 +110,9 @@ enum SupervisorSignalCenterOverviewPresentationMapper {
                 priority: .immediate,
                 priorityText: SupervisorHeartbeatPriority.immediate.label,
                 priorityTone: .warning,
-                headlineText: "待审批技能",
+                headlineText: SupervisorPendingSkillApprovalPresentation.overviewHeadline(
+                    for: firstApproval
+                ),
                 detailText: firstApproval.nextStepText ?? firstApproval.summary,
                 metadataText: [
                     "\(pendingSkillApprovalPresentation.rows.count) 项待处理",
@@ -99,9 +126,17 @@ enum SupervisorSignalCenterOverviewPresentationMapper {
                     action: .scrollToBoard(
                         SupervisorFocusPresentation.pendingSupervisorSkillApprovalBoardAnchorID
                     ),
-                    label: "查看技能审批",
+                    label: SupervisorPendingSkillApprovalPresentation.overviewFocusLabel(
+                        for: firstApproval
+                    ),
                     tone: .warning
                 )
+            )
+        }
+
+        if let projectCreationPresentation {
+            return projectCreationOverview(
+                projectCreationPresentation: projectCreationPresentation
             )
         }
 
@@ -134,6 +169,35 @@ enum SupervisorSignalCenterOverviewPresentationMapper {
             laneHealthPresentation: laneHealthPresentation
         ) {
             return laneHealthOverview
+        }
+
+        if let doctorTruthOverview = doctorTruthOverviewIfNeeded(
+            doctorPresentation: doctorPresentation
+        ) {
+            return doctorTruthOverview
+        }
+
+        if let firstCandidateReview = candidateReviewPresentation.rows.first {
+            return SupervisorSignalCenterOverviewPresentation(
+                priority: .attention,
+                priorityText: SupervisorHeartbeatPriority.attention.label,
+                priorityTone: .accent,
+                headlineText: "候选记忆待审查",
+                detailText: firstCandidateReview.summary,
+                metadataText: [
+                    "\(candidateReviewPresentation.rows.count) 项待处理",
+                    candidateReviewPresentation.snapshotText,
+                    firstCandidateReview.reviewStateText,
+                    firstCandidateReview.ageText
+                ]
+                .filter { !$0.isEmpty }
+                .joined(separator: " · "),
+                focusAction: SupervisorSignalCenterOverviewActionDescriptor(
+                    action: .scrollToBoard(SupervisorFocusPresentation.candidateReviewBoardAnchorID),
+                    label: "查看候选审查",
+                    tone: .accent
+                )
+            )
         }
 
         if let firstRuntimeEvent = runtimeActivityPresentation.rows.first {
@@ -171,6 +235,43 @@ enum SupervisorSignalCenterOverviewPresentationMapper {
             detailText: "当前没有待处理授权、待批技能或新的运行动态，信号中心主要保持待命。",
             metadataText: automationMetadata(automationPresentation),
             focusAction: nil
+        )
+    }
+
+    private static func doctorTruthOverviewIfNeeded(
+        doctorPresentation: SupervisorDoctorBoardPresentation?
+    ) -> SupervisorSignalCenterOverviewPresentation? {
+        guard let doctorPresentation,
+              let statusLine = trimmedRuntimeValue(doctorPresentation.skillDoctorTruthStatusLine),
+              let detailLine = trimmedRuntimeValue(doctorPresentation.skillDoctorTruthDetailLine) else {
+            return nil
+        }
+
+        let priorityTone = doctorPresentation.skillDoctorTruthTone
+        let priority: SupervisorHeartbeatPriority
+        switch doctorPresentation.skillDoctorTruthTone {
+        case .danger:
+            priority = .attention
+        case .warning:
+            priority = .attention
+        case .accent:
+            priority = .watch
+        case .success, .neutral:
+            return nil
+        }
+
+        return SupervisorSignalCenterOverviewPresentation(
+            priority: priority,
+            priorityText: priority.label,
+            priorityTone: priorityTone,
+            headlineText: "技能 doctor truth 需要处理",
+            detailText: statusLine,
+            metadataText: detailLine,
+            focusAction: SupervisorSignalCenterOverviewActionDescriptor(
+                action: .scrollToBoard(SupervisorFocusPresentation.doctorBoardAnchorID),
+                label: "查看体检",
+                tone: priorityTone
+            )
         )
     }
 
@@ -261,8 +362,8 @@ enum SupervisorSignalCenterOverviewPresentationMapper {
         let firstAbnormalRow = laneHealthPresentation.rows.first {
             $0.statusTone == .danger || $0.statusTone == .warning
         }
-        let detailText = trimmedRuntimeValue(firstAbnormalRow?.contractText)
-            ?? trimmedRuntimeValue(firstAbnormalRow?.reasonLine)
+        let detailText = sanitizedLaneHealthOverviewText(firstAbnormalRow?.reasonLine)
+            ?? sanitizedLaneHealthOverviewText(laneHealthPresentation.statusLine)
             ?? laneHealthPresentation.summaryLine
 
         return SupervisorSignalCenterOverviewPresentation(
@@ -272,9 +373,8 @@ enum SupervisorSignalCenterOverviewPresentationMapper {
             headlineText: "泳道健康需要关注",
             detailText: detailText,
             metadataText: [
-                trimmedRuntimeValue(firstAbnormalRow?.nextSafeActionText),
-                trimmedRuntimeValue(firstAbnormalRow?.title),
-                laneHealthPresentation.summaryLine
+                sanitizedLaneHealthOverviewText(firstAbnormalRow?.title),
+                sanitizedLaneHealthOverviewText(laneHealthPresentation.statusLine)
             ]
             .compactMap { $0 }
             .joined(separator: " · "),
@@ -282,6 +382,31 @@ enum SupervisorSignalCenterOverviewPresentationMapper {
                 action: .scrollToBoard(SupervisorFocusPresentation.laneHealthBoardAnchorID),
                 label: "查看泳道健康",
                 tone: priorityTone
+            )
+        )
+    }
+
+    private static func projectCreationOverview(
+        projectCreationPresentation: SupervisorProjectCreationStatusPresentation
+    ) -> SupervisorSignalCenterOverviewPresentation {
+        let metadataText = [
+            trimmedRuntimeValue(projectCreationPresentation.metadataText),
+            "诊断码：\(projectCreationPresentation.reasonCode)"
+        ]
+        .compactMap { $0 }
+        .joined(separator: " · ")
+
+        return SupervisorSignalCenterOverviewPresentation(
+            priority: projectCreationPresentation.priority,
+            priorityText: projectCreationPresentation.priority.label,
+            priorityTone: projectCreationPresentation.priorityTone,
+            headlineText: projectCreationPresentation.headlineText,
+            detailText: projectCreationPresentation.detailText,
+            metadataText: metadataText,
+            focusAction: SupervisorSignalCenterOverviewActionDescriptor(
+                action: .scrollToBoard(SupervisorFocusPresentation.projectCreationBoardAnchorID),
+                label: "查看创建状态",
+                tone: projectCreationPresentation.priorityTone
             )
         )
     }
@@ -305,6 +430,15 @@ enum SupervisorSignalCenterOverviewPresentationMapper {
     private static func trimmedRuntimeValue(_ raw: String?) -> String? {
         let trimmed = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func sanitizedLaneHealthOverviewText(_ raw: String?) -> String? {
+        guard let trimmed = trimmedRuntimeValue(raw) else { return nil }
+        let stripped = trimmed
+            .replacingOccurrences(of: #"（[a-z0-9_]+）"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\s{2,}"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return stripped.isEmpty ? nil : stripped
     }
 }
 

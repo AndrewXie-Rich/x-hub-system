@@ -7,6 +7,43 @@ extension SupervisorViewActionSupport {
         return min(max(180, bounded), 360)
     }
 
+    static func prepareConversationPrompt(
+        _ prompt: String,
+        setInputText: @escaping (String) -> Void,
+        requestConversationFocus: @escaping () -> Void
+    ) {
+        guard
+            let payload = SupervisorConversationComposerSupport
+                .submissionTransition(draft: prompt)?
+                .payload
+        else {
+            return
+        }
+
+        setInputText(payload)
+        requestConversationFocus()
+    }
+
+    static func submitConversationPrompt(
+        _ prompt: String,
+        currentInputText: String,
+        setInputText: @escaping (String) -> Void,
+        sendMessage: @escaping (String) -> Void,
+        requestConversationFocus: @escaping () -> Void
+    ) {
+        guard let transition = SupervisorConversationComposerSupport.submissionTransition(draft: prompt)
+        else {
+            return
+        }
+
+        let preservedDraft = currentInputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if preservedDraft.isEmpty || preservedDraft == transition.payload {
+            setInputText(transition.nextInput)
+        }
+        sendMessage(transition.payload)
+        requestConversationFocus()
+    }
+
     static func handleViewAppear(
         supervisor: SupervisorManager,
         appModel: AppModel,
@@ -53,15 +90,31 @@ extension SupervisorViewActionSupport {
 
     static func triggerBigTaskFlow(
         _ candidate: SupervisorBigTaskCandidate,
+        selectedProject: AXProjectEntry? = nil,
+        selectedProjectTemplate: AXProjectGovernanceTemplatePreview? = nil,
         setDismissedFingerprint: @escaping (String?) -> Void,
         setInputText: @escaping (String) -> Void,
+        prepareOneShotControlPlane: @escaping (OneShotIntakeSubmission) async -> OneShotControlPlaneSnapshot,
         sendMessage: @escaping (String) -> Void,
         requestConversationFocus: @escaping () -> Void
-    ) {
+    ) async {
         setDismissedFingerprint(candidate.fingerprint)
         setInputText("")
-        sendMessage(SupervisorBigTaskAssist.prompt(for: candidate))
         requestConversationFocus()
+        let submission = SupervisorBigTaskAssist.submission(
+            for: candidate,
+            selectedProject: selectedProject,
+            selectedProjectTemplate: selectedProjectTemplate
+        )
+        let controlPlane = await prepareOneShotControlPlane(submission)
+        sendMessage(
+            SupervisorBigTaskAssist.prompt(
+                for: candidate,
+                selectedProject: selectedProject,
+                selectedProjectTemplate: selectedProjectTemplate,
+                controlPlane: controlPlane
+            )
+        )
     }
 
     static func performAutomationRuntimeAction(

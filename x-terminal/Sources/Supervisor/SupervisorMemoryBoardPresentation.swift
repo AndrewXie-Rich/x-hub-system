@@ -154,7 +154,7 @@ enum SupervisorMemoryBoardPresentationMapper {
                 memorySource: memorySource,
                 projectCount: digestRows.count
             ),
-            modeSourceText: "当前记忆来源：\(memorySourceLabel(memorySource)) · 用途：\(memoryUseModeLabel(mode))",
+            modeSourceText: "当前记忆来源：\(explainableMemorySourceLabel(memorySource)) · 用途：\(memoryUseModeLabel(mode))",
             continuityStatusLine: continuitySummaryLine,
             continuityDetailLine: continuitySummaryDetailLine,
             continuityDrillDownLines: continuityDrillDownDetailLines,
@@ -227,6 +227,8 @@ enum SupervisorMemoryBoardPresentationMapper {
         switch normalizedScalar(replyExecutionMode) {
         case "remote_model":
             return "本轮已接上连续对话与背景记忆"
+        case "hub_downgraded_to_local":
+            return "远端请求被降到本地，但仍带着记忆继续回复"
         case "local_fallback_after_remote_error":
             return "远端失败后，已带着记忆回退到本地回复"
         case "local_preflight":
@@ -251,12 +253,14 @@ enum SupervisorMemoryBoardPresentationMapper {
         assemblySnapshot: SupervisorMemoryAssemblySnapshot?
     ) -> String? {
         let mode = normalizedScalar(replyExecutionMode)
-        let memoryUsedThisTurn = mode == "remote_model" || mode == "local_fallback_after_remote_error"
+        let memoryUsedThisTurn = mode == "remote_model"
+            || mode == "hub_downgraded_to_local"
+            || mode == "local_fallback_after_remote_error"
         let failure = normalizedScalar(failureReasonCode)
         var parts: [String] = []
 
         if memoryUsedThisTurn {
-            parts.append("本轮从\(memorySourceLabel(memorySource))带入连续对话与背景记忆。")
+            parts.append("本轮从\(explainableMemorySourceLabel(memorySource))带入连续对话与背景记忆。")
             if let snapshot = assemblySnapshot {
                 let floorText = snapshot.continuityFloorSatisfied
                     ? "已满足至少 \(snapshot.rawWindowFloorPairs) 组的连续性底线"
@@ -278,6 +282,23 @@ enum SupervisorMemoryBoardPresentationMapper {
                   !normalizedScalar(actualModelId).isEmpty,
                   normalizedScalar(requestedModelId) != normalizedScalar(actualModelId) {
             parts.append("本轮实际运行模型与请求模型不同，系统已自动切到可用模型。")
+        }
+
+        if let snapshot = assemblySnapshot,
+           let remoteSnapshotCacheHumanLine = snapshot.remoteSnapshotCacheHumanLine {
+            parts.append("连续性快照：\(remoteSnapshotCacheHumanLine)。")
+        }
+        if let snapshot = assemblySnapshot,
+           let remotePromptBudgetHumanLine = snapshot.remotePromptBudgetHumanLine {
+            parts.append("\(remotePromptBudgetHumanLine)。")
+        }
+        if let snapshot = assemblySnapshot,
+           let scopedPromptRecoveryHumanLine = snapshot.scopedPromptRecoveryHumanLine {
+            parts.append("\(scopedPromptRecoveryHumanLine)。")
+        }
+        if let snapshot = assemblySnapshot,
+           let reviewMemoryDepthHumanLine = snapshot.reviewMemoryDepthHumanLine {
+            parts.append("\(reviewMemoryDepthHumanLine)。")
         }
 
         let merged = parts
@@ -336,6 +357,11 @@ enum SupervisorMemoryBoardPresentationMapper {
             detailLines.append(
                 "已带入：\(assembly.selectedSlots.isEmpty ? "（无）" : assembly.selectedSlots.map(slotLabel).joined(separator: "、"))"
             )
+            if !assembly.omittedSlots.isEmpty {
+                detailLines.append(
+                    "请求未满足：\(assembly.omittedSlots.map(slotLabel).joined(separator: "、"))"
+                )
+            }
         }
 
         if let candidates = writebackCandidatesLine(writeback) {
@@ -508,7 +534,9 @@ enum SupervisorMemoryBoardPresentationMapper {
             sourceText: "记忆来源：\(memorySourceLabel(digest.source))",
             goalText: "目标：\(digest.goal)",
             nextText: "下一步：\(digest.nextStep)",
-            blockerText: blocker == "(无)" || blocker.isEmpty ? nil : "阻塞：\(blocker)"
+            blockerText: blocker == "(无)" || blocker.isEmpty
+                ? nil
+                : SupervisorBlockerPresentation.blockerLine(blocker)
         )
     }
 
@@ -598,7 +626,7 @@ enum SupervisorMemoryBoardPresentationMapper {
         }
         if let error = nonEmpty(writeback.mirrorErrorCode),
            writeback.mirrorStatus != .mirroredToHub {
-            line += " · reason=\(error)"
+            line += " · mirror reason：\(mirrorReasonText(error))"
         }
         return line
     }
@@ -737,6 +765,12 @@ enum SupervisorMemoryBoardPresentationMapper {
         guard let snapshot else { return nil }
 
         var parts: [String] = []
+        if let actualizedSelectedServingObjectHumanLine = snapshot.actualizedSelectedServingObjectHumanLine {
+            parts.append(actualizedSelectedServingObjectHumanLine)
+        }
+        if let actualizedExcludedBlockHumanLine = snapshot.actualizedExcludedBlockHumanLine {
+            parts.append(actualizedExcludedBlockHumanLine)
+        }
         if !snapshot.omittedSections.isEmpty {
             parts.append("未带入：\(snapshot.omittedSections.map(sectionLabel).joined(separator: "、"))")
         }
@@ -744,6 +778,24 @@ enum SupervisorMemoryBoardPresentationMapper {
            let budgetTotalTokens = snapshot.budgetTotalTokens,
            budgetTotalTokens > 0 {
             parts.append("上下文预算：\(usedTotalTokens)/\(budgetTotalTokens) tokens")
+        }
+        if let remotePromptBudgetHumanLine = snapshot.remotePromptBudgetHumanLine {
+            parts.append(remotePromptBudgetHumanLine)
+        }
+        if let scopedPromptRecoveryHumanLine = snapshot.scopedPromptRecoveryHumanLine {
+            parts.append(scopedPromptRecoveryHumanLine)
+        }
+        if let assemblyPurposeHumanLine = snapshot.assemblyPurposeHumanLine {
+            parts.append(assemblyPurposeHumanLine)
+        }
+        if let governanceReviewHumanLine = snapshot.governanceReviewHumanLine {
+            parts.append(governanceReviewHumanLine)
+        }
+        if let recentRawContextPolicyHumanLine = snapshot.recentRawContextPolicyHumanLine {
+            parts.append(recentRawContextPolicyHumanLine)
+        }
+        if let reviewMemoryDepthHumanLine = snapshot.reviewMemoryDepthHumanLine {
+            parts.append(reviewMemoryDepthHumanLine)
         }
         let merged = parts.joined(separator: " · ").trimmingCharacters(in: .whitespacesAndNewlines)
         return merged.isEmpty ? nil : merged
@@ -779,6 +831,10 @@ enum SupervisorMemoryBoardPresentationMapper {
         XTMemorySourceTruthPresentation.label(raw)
     }
 
+    private static func explainableMemorySourceLabel(_ raw: String) -> String {
+        XTMemorySourceTruthPresentation.explainableLabel(raw)
+    }
+
     private static func profileLabel(_ raw: String) -> String {
         switch normalizedScalar(raw) {
         case "balanced":
@@ -800,6 +856,8 @@ enum SupervisorMemoryBoardPresentationMapper {
 
     private static func failureReasonLabel(_ raw: String) -> String {
         switch normalizedScalar(raw) {
+        case "downgrade_to_local":
+            return "Hub 在执行阶段把远端请求降到了本地"
         case "runtime_not_running":
             return "远端模型当前未运行"
         case "remote_route_not_preferred":
@@ -859,6 +917,9 @@ enum SupervisorMemoryBoardPresentationMapper {
             coverageParts.append("\(snapshot.evidenceItemsSelected) 条执行证据")
         }
         lines.append(coverageParts.joined(separator: "，") + "。")
+        if let scopedPromptRecoveryHumanLine = snapshot.scopedPromptRecoveryHumanLine {
+            lines.append("\(scopedPromptRecoveryHumanLine)。")
+        }
 
         var hygieneParts: [String] = []
         if snapshot.lowSignalDroppedMessages > 0 {
@@ -881,7 +942,7 @@ enum SupervisorMemoryBoardPresentationMapper {
             lines.append(hygieneParts.joined(separator: "，") + "。")
         }
 
-        return Array(lines.prefix(3))
+        return Array(lines.prefix(4))
     }
 
     private static func continuityMirrorLine(
@@ -898,7 +959,7 @@ enum SupervisorMemoryBoardPresentationMapper {
         }
         if let error = nonEmpty(snapshot.durableCandidateMirrorErrorCode),
            snapshot.durableCandidateMirrorStatus != .mirroredToHub {
-            line += "（reason=\(error)）"
+            line += "（mirror reason：\(mirrorReasonText(error))）"
         }
         return line
     }
@@ -1140,6 +1201,25 @@ enum SupervisorMemoryBoardPresentationMapper {
         let trimmed = normalizedScalar(raw)
         guard !trimmed.isEmpty else { return "暂无" }
         return trimmed.replacingOccurrences(of: "_", with: " ")
+    }
+
+    private static func mirrorReasonText(_ raw: String) -> String {
+        switch normalizedScalar(raw) {
+        case "remote_route_not_preferred":
+            return "当前远端路由不是首选（remote_route_not_preferred）"
+        case "runtime_not_running":
+            return "Hub 远端运行时未启动（runtime_not_running）"
+        case "hub_append_failed":
+            return "Hub append 未成功完成（hub_append_failed）"
+        case "candidate_payload_empty":
+            return "候选负载为空，Hub 无法接收（candidate_payload_empty）"
+        case "supervisor_candidate_session_participation_invalid":
+            return "candidate session participation 非法（supervisor_candidate_session_participation_invalid）"
+        case "supervisor_candidate_session_participation_denied":
+            return "candidate 不允许进入 scoped_write 会话（supervisor_candidate_session_participation_denied）"
+        default:
+            return raw
+        }
     }
 
     private static func nonEmpty(_ raw: String?) -> String? {

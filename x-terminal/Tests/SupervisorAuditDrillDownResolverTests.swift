@@ -160,8 +160,89 @@ struct SupervisorAuditDrillDownResolverTests {
 
         #expect(selection?.source == .xtBuiltinGovernedSkills(builtinSkills))
         #expect(selection?.fullRecord == nil)
-        #expect(selection?.presentation.title == "XT Native Governed Skills")
-        #expect(selection?.presentation.statusLabel == "builtin")
+        #expect(selection?.presentation.title == "XT 内建受治理技能")
+        #expect(selection?.presentation.statusLabel == "内建")
+    }
+
+    @Test
+    func infrastructureCandidateReviewItemResolvesUnderlyingReviewSelection() {
+        let candidate = HubIPCClient.SupervisorCandidateReviewItem(
+            schemaVersion: "v1",
+            reviewId: "review-1",
+            requestId: "req-1",
+            evidenceRef: "audit://candidate/1",
+            reviewState: "pending_review",
+            durablePromotionState: "candidate_only",
+            promotionBoundary: "project",
+            deviceId: "device-1",
+            userId: "user-1",
+            appId: "xt",
+            threadId: "thread-1",
+            threadKey: "thread-key-1",
+            projectId: "project-alpha",
+            projectIds: [],
+            scopes: ["project_memory"],
+            recordTypes: ["canonical"],
+            auditRefs: [],
+            idempotencyKeys: [],
+            candidateCount: 3,
+            summaryLine: "归并了 3 条候选记忆",
+            mirrorTarget: "xt_local_store",
+            localStoreRole: "cache",
+            carrierKind: "review_bundle",
+            carrierSchemaVersion: "v1",
+            pendingChangeId: "",
+            pendingChangeStatus: "",
+            editSessionId: "",
+            docId: "",
+            writebackRef: "",
+            stageCreatedAtMs: 0,
+            stageUpdatedAtMs: 0,
+            latestEmittedAtMs: 20_000,
+            createdAtMs: 18_000,
+            updatedAtMs: 20_000
+        )
+        let context = SupervisorAuditDrillDownResolver.Context(
+            officialSkillsStatusLine: "official healthy",
+            officialSkillsTransitionLine: "synced",
+            officialSkillsDetailLine: "pkg=4 ready=4",
+            officialSkillsTopBlockerSummaries: [],
+            eventLoopStatusLine: "idle",
+            pendingHubGrants: [],
+            pendingSupervisorSkillApprovals: [],
+            candidateReviews: [candidate],
+            candidateReviewProjectNamesByID: ["project-alpha": "Project Alpha"],
+            recentSupervisorSkillActivities: [],
+            recentSupervisorEventLoopActivities: []
+        )
+        let item = SupervisorInfrastructureFeedPresentation.Item(
+            id: "candidate-review-req-1",
+            kind: .candidateReview,
+            iconName: "square.stack.3d.up.badge.a.fill",
+            title: "候选记忆审查",
+            summary: "待处理 1 项",
+            detail: "Project Alpha",
+            badgeText: "待审查",
+            tone: .attention,
+            timestamp: 20,
+            contractText: "合同： 候选记忆审查 · blocker=pending_review",
+            nextSafeActionText: "安全下一步： 打开候选记忆审查面板 · 建议动作：转入审查",
+            actionURL: nil,
+            actionLabel: nil
+        )
+
+        let selection = SupervisorAuditDrillDownResolver.selection(
+            for: item,
+            context: context
+        ) { _, _, _ in
+            nil
+        }
+
+        #expect(selection?.source == .candidateReview(candidate))
+        #expect(selection?.fullRecord == nil)
+        #expect(selection?.presentation.title == "候选记忆审查")
+        #expect(selection?.presentation.statusLabel == "待转入审查")
+        #expect(selection?.presentation.summary == "归并了 3 条候选记忆")
     }
 
     @Test
@@ -259,6 +340,46 @@ struct SupervisorAuditDrillDownResolverTests {
             SupervisorAuditDrillDownResolver.refreshFingerprint(context: baseContext)
                 != SupervisorAuditDrillDownResolver.refreshFingerprint(context: updatedContext)
         )
+    }
+
+    @Test
+    func infrastructureMemoryAssemblyItemDoesNotResolveAuditDrillDownSelection() {
+        let context = SupervisorAuditDrillDownResolver.Context(
+            officialSkillsStatusLine: "official healthy",
+            officialSkillsTransitionLine: "synced",
+            officialSkillsDetailLine: "pkg=4 ready=4",
+            officialSkillsTopBlockerSummaries: [],
+            eventLoopStatusLine: "idle",
+            pendingHubGrants: [],
+            pendingSupervisorSkillApprovals: [],
+            recentSupervisorSkillActivities: [],
+            recentSupervisorEventLoopActivities: []
+        )
+        let item = SupervisorInfrastructureFeedPresentation.Item(
+            id: "memory-assembly-hidden-project-scoped-recovery",
+            kind: .memoryAssembly,
+            iconName: "brain.head.profile",
+            title: "记忆装配提醒",
+            summary: "显式 hidden project 聚焦时没有补回项目范围上下文",
+            detail: "显式 hidden focus 后仍未补回项目范围上下文",
+            badgeText: "阻断",
+            tone: .critical,
+            timestamp: nil,
+            contractText: "合同： memory_assembly · blocker=memory_scoped_hidden_project_recovery_missing",
+            nextSafeActionText: "安全下一步： 打开诊断并重建 hidden project 记忆",
+            actionURL: "xterminal://settings?section_id=diagnostics",
+            actionLabel: "打开诊断"
+        )
+
+        let selection = SupervisorAuditDrillDownResolver.selection(
+            for: item,
+            context: context
+        ) { _, _, _ in
+            Issue.record("memory assembly infrastructure item should not load a drill-down record")
+            return nil
+        }
+
+        #expect(selection == nil)
     }
 
     private func fullRecord(requestId: String, projectName: String) -> SupervisorSkillFullRecord {

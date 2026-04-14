@@ -14,6 +14,60 @@ enum SupervisorPortfolioMemoryFreshness: String, Codable, Sendable {
     case stale
 }
 
+enum SupervisorPortfolioPriorityBand: String, Codable, Sendable {
+    case critical
+    case high
+    case normal
+    case low
+
+    var displayName: String {
+        switch self {
+        case .critical:
+            return "紧急"
+        case .high:
+            return "高"
+        case .normal:
+            return "常规"
+        case .low:
+            return "低"
+        }
+    }
+}
+
+struct SupervisorPortfolioPriorityFactors: Equatable, Codable, Sendable {
+    var risk: Int
+    var userValue: Int
+    var staleness: Int
+    var blockerSeverity: Int
+    var deadlinePressure: Int
+    var evidenceWeakness: Int
+
+    enum CodingKeys: String, CodingKey {
+        case risk
+        case userValue = "user_value"
+        case staleness
+        case blockerSeverity = "blocker_severity"
+        case deadlinePressure = "deadline_pressure"
+        case evidenceWeakness = "evidence_weakness"
+    }
+}
+
+struct SupervisorPortfolioPrioritySnapshot: Equatable, Codable, Sendable {
+    var projectId: String
+    var priorityScore: Int
+    var priorityBand: SupervisorPortfolioPriorityBand
+    var factors: SupervisorPortfolioPriorityFactors
+    var computedAtMs: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case projectId = "project_id"
+        case priorityScore = "priority_score"
+        case priorityBand = "priority_band"
+        case factors
+        case computedAtMs = "computed_at_ms"
+    }
+}
+
 enum SupervisorProjectActionSeverity: String, Codable, Sendable {
     case silentLog = "silent_log"
     case badgeOnly = "badge_only"
@@ -53,6 +107,7 @@ struct SupervisorPortfolioProjectCard: Identifiable, Equatable, Codable, Sendabl
     var weakOnlyBackgroundNoteCount: Int
     var decisionAssist: SupervisorDecisionBlockerAssist?
     var memoryCompactionSignal: SupervisorMemoryCompactionSignal?
+    var prioritySnapshot: SupervisorPortfolioPrioritySnapshot?
 
     var id: String { projectId }
 
@@ -72,6 +127,7 @@ struct SupervisorPortfolioProjectCard: Identifiable, Equatable, Codable, Sendabl
         case weakOnlyBackgroundNoteCount = "weak_only_background_note_count"
         case decisionAssist = "decision_assist"
         case memoryCompactionSignal = "memory_compaction_signal"
+        case prioritySnapshot = "priority_snapshot"
     }
 
     init(
@@ -89,7 +145,8 @@ struct SupervisorPortfolioProjectCard: Identifiable, Equatable, Codable, Sendabl
         shadowedBackgroundNoteCount: Int = 0,
         weakOnlyBackgroundNoteCount: Int = 0,
         decisionAssist: SupervisorDecisionBlockerAssist? = nil,
-        memoryCompactionSignal: SupervisorMemoryCompactionSignal? = nil
+        memoryCompactionSignal: SupervisorMemoryCompactionSignal? = nil,
+        prioritySnapshot: SupervisorPortfolioPrioritySnapshot? = nil
     ) {
         self.projectId = projectId
         self.displayName = displayName
@@ -106,6 +163,7 @@ struct SupervisorPortfolioProjectCard: Identifiable, Equatable, Codable, Sendabl
         self.weakOnlyBackgroundNoteCount = max(0, weakOnlyBackgroundNoteCount)
         self.decisionAssist = decisionAssist
         self.memoryCompactionSignal = memoryCompactionSignal
+        self.prioritySnapshot = prioritySnapshot
     }
 
     init(from decoder: Decoder) throws {
@@ -125,7 +183,8 @@ struct SupervisorPortfolioProjectCard: Identifiable, Equatable, Codable, Sendabl
             shadowedBackgroundNoteCount: try container.decodeIfPresent(Int.self, forKey: .shadowedBackgroundNoteCount) ?? 0,
             weakOnlyBackgroundNoteCount: try container.decodeIfPresent(Int.self, forKey: .weakOnlyBackgroundNoteCount) ?? 0,
             decisionAssist: try container.decodeIfPresent(SupervisorDecisionBlockerAssist.self, forKey: .decisionAssist),
-            memoryCompactionSignal: try container.decodeIfPresent(SupervisorMemoryCompactionSignal.self, forKey: .memoryCompactionSignal)
+            memoryCompactionSignal: try container.decodeIfPresent(SupervisorMemoryCompactionSignal.self, forKey: .memoryCompactionSignal),
+            prioritySnapshot: try container.decodeIfPresent(SupervisorPortfolioPrioritySnapshot.self, forKey: .prioritySnapshot)
         )
     }
 
@@ -146,6 +205,7 @@ struct SupervisorPortfolioProjectCard: Identifiable, Equatable, Codable, Sendabl
         try container.encode(weakOnlyBackgroundNoteCount, forKey: .weakOnlyBackgroundNoteCount)
         try container.encodeIfPresent(decisionAssist, forKey: .decisionAssist)
         try container.encodeIfPresent(memoryCompactionSignal, forKey: .memoryCompactionSignal)
+        try container.encodeIfPresent(prioritySnapshot, forKey: .prioritySnapshot)
     }
 
     var hasDecisionRailSignal: Bool {
@@ -246,7 +306,12 @@ enum SupervisorPortfolioSnapshotBuilder {
         from digests: [SupervisorManager.SupervisorMemoryProjectDigest],
         now: Double = Date().timeIntervalSince1970
     ) -> SupervisorPortfolioSnapshot {
-        let cards = digests.map { makeCard(from: $0, now: now) }.sorted(by: compareCards)
+        let cards = digests.map { digest -> SupervisorPortfolioProjectCard in
+            var card = makeCard(from: digest, now: now)
+            card.prioritySnapshot = makePrioritySnapshot(for: card, now: now)
+            return card
+        }
+        .sorted(by: compareCards)
         let counts = cards.reduce(into: SupervisorPortfolioProjectCounts.zero) { partial, card in
             switch card.projectState {
             case .active:
@@ -291,6 +356,48 @@ enum SupervisorPortfolioSnapshotBuilder {
             criticalQueue: criticalQueue,
             projects: cards
         )
+    }
+
+    static func card(
+        from entry: AXProjectEntry,
+        now: Double = Date().timeIntervalSince1970
+    ) -> SupervisorPortfolioProjectCard {
+        let runtimeState = normalizedNonPlaceholder(
+            entry.statusDigest,
+            fallback: normalizedNonPlaceholder(entry.currentStateSummary, fallback: "")
+        )
+        let currentAction = normalizedNonPlaceholder(
+            entry.currentStateSummary,
+            fallback: runtimeState
+        )
+        let blocker = normalizedNonPlaceholder(entry.blockerSummary, fallback: "")
+        let nextStep = normalizedNonPlaceholder(entry.nextStepSummary, fallback: "继续当前任务")
+        let updatedAt = max(
+            entry.lastOpenedAt,
+            max(entry.lastSummaryAt ?? 0, entry.lastEventAt ?? 0)
+        )
+
+        var card = SupervisorPortfolioProjectCard(
+            projectId: entry.projectId,
+            displayName: entry.displayName,
+            projectState: projectState(
+                runtimeState: runtimeState,
+                currentAction: currentAction,
+                blocker: blocker,
+                nextStep: nextStep
+            ),
+            runtimeState: runtimeState.isEmpty ? currentAction : runtimeState,
+            currentAction: currentAction.isEmpty
+                ? (runtimeState.isEmpty ? "项目状态已更新" : runtimeState)
+                : currentAction,
+            topBlocker: blocker,
+            nextStep: nextStep,
+            memoryFreshness: memoryFreshness(updatedAt: updatedAt, now: now),
+            updatedAt: updatedAt,
+            recentMessageCount: 0
+        )
+        card.prioritySnapshot = makePrioritySnapshot(for: card, now: now)
+        return card
     }
 
     static func makeActionEvent(
@@ -422,7 +529,31 @@ enum SupervisorPortfolioSnapshotBuilder {
         return SupervisorProjectCapsuleBuilder.card(from: capsule, recentMessageCount: digest.recentMessageCount)
     }
 
+    static func topPriorityCard(
+        in cards: [SupervisorPortfolioProjectCard]
+    ) -> SupervisorPortfolioProjectCard? {
+        cards.sorted(by: compareCards).first
+    }
+
+    static func priorityWhyText(
+        for card: SupervisorPortfolioProjectCard
+    ) -> String {
+        let reasons = uniqueOrderedFragments(priorityReasonFragments(for: card))
+        if reasons.isEmpty {
+            return "当前无明显 blocker，保持正常跟进即可。"
+        }
+        return Array(reasons.prefix(2)).joined(separator: "，")
+    }
+
     private static func compareCards(_ lhs: SupervisorPortfolioProjectCard, _ rhs: SupervisorPortfolioProjectCard) -> Bool {
+        if let leftPriority = lhs.prioritySnapshot,
+           let rightPriority = rhs.prioritySnapshot {
+            let bandDelta = priorityBandRank(leftPriority.priorityBand) - priorityBandRank(rightPriority.priorityBand)
+            if bandDelta != 0 { return bandDelta < 0 }
+            if leftPriority.priorityScore != rightPriority.priorityScore {
+                return leftPriority.priorityScore > rightPriority.priorityScore
+            }
+        }
         let lp = priority(for: lhs.projectState)
         let rp = priority(for: rhs.projectState)
         if lp != rp { return lp < rp }
@@ -432,9 +563,9 @@ enum SupervisorPortfolioSnapshotBuilder {
 
     private static func priority(for state: SupervisorPortfolioProjectState) -> Int {
         switch state {
-        case .blocked:
-            return 0
         case .awaitingAuthorization:
+            return 0
+        case .blocked:
             return 1
         case .active:
             return 2
@@ -516,6 +647,249 @@ enum SupervisorPortfolioSnapshotBuilder {
         if age <= 300 { return .fresh }
         if age <= 1_800 { return .ttlCached }
         return .stale
+    }
+
+    private static func makePrioritySnapshot(
+        for card: SupervisorPortfolioProjectCard,
+        now: Double
+    ) -> SupervisorPortfolioPrioritySnapshot {
+        let factors = priorityFactors(for: card)
+        let score = factors.risk
+            + factors.userValue
+            + factors.staleness
+            + factors.blockerSeverity
+            + factors.deadlinePressure
+            + factors.evidenceWeakness
+        return SupervisorPortfolioPrioritySnapshot(
+            projectId: card.projectId,
+            priorityScore: score,
+            priorityBand: priorityBand(for: score),
+            factors: factors,
+            computedAtMs: max(0, Int64((now * 1000.0).rounded()))
+        )
+    }
+
+    private static func priorityFactors(
+        for card: SupervisorPortfolioProjectCard
+    ) -> SupervisorPortfolioPriorityFactors {
+        SupervisorPortfolioPriorityFactors(
+            risk: riskFactor(for: card),
+            userValue: userValueFactor(for: card),
+            staleness: stalenessFactor(for: card),
+            blockerSeverity: blockerSeverityFactor(for: card),
+            deadlinePressure: deadlinePressureFactor(for: card),
+            evidenceWeakness: evidenceWeaknessFactor(for: card)
+        )
+    }
+
+    private static func priorityBand(for score: Int) -> SupervisorPortfolioPriorityBand {
+        switch score {
+        case 8...:
+            return .critical
+        case 5...:
+            return .high
+        case 2...:
+            return .normal
+        default:
+            return .low
+        }
+    }
+
+    private static func priorityBandRank(
+        _ band: SupervisorPortfolioPriorityBand
+    ) -> Int {
+        switch band {
+        case .critical:
+            return 0
+        case .high:
+            return 1
+        case .normal:
+            return 2
+        case .low:
+            return 3
+        }
+    }
+
+    private static func riskFactor(
+        for card: SupervisorPortfolioProjectCard
+    ) -> Int {
+        switch card.projectState {
+        case .awaitingAuthorization:
+            return 3
+        case .blocked:
+            return card.decisionAssist?.failClosed == true ? 3 : 2
+        case .active:
+            return card.memoryFreshness == .stale ? 2 : 1
+        case .idle:
+            return card.memoryFreshness == .stale ? 1 : 0
+        case .completed:
+            return card.memoryCompactionSignal?.archiveCandidate == true ? 1 : 0
+        }
+    }
+
+    private static func userValueFactor(
+        for card: SupervisorPortfolioProjectCard
+    ) -> Int {
+        let base: Int
+        switch card.projectState {
+        case .awaitingAuthorization, .blocked, .active:
+            base = 2
+        case .idle:
+            base = 1
+        case .completed:
+            base = 0
+        }
+        if card.recentMessageCount >= 5 {
+            return min(3, base + 1)
+        }
+        return base
+    }
+
+    private static func stalenessFactor(
+        for card: SupervisorPortfolioProjectCard
+    ) -> Int {
+        switch card.memoryFreshness {
+        case .fresh:
+            return 0
+        case .ttlCached:
+            return 1
+        case .stale:
+            return card.projectState == .completed ? 1 : 2
+        }
+    }
+
+    private static func blockerSeverityFactor(
+        for card: SupervisorPortfolioProjectCard
+    ) -> Int {
+        if card.projectState == .awaitingAuthorization {
+            return 3
+        }
+        if let assist = card.decisionAssist {
+            return assist.failClosed ? 3 : 2
+        }
+        if !card.topBlocker.isEmpty {
+            return card.projectState == .blocked ? 2 : 1
+        }
+        return 0
+    }
+
+    private static func deadlinePressureFactor(
+        for card: SupervisorPortfolioProjectCard
+    ) -> Int {
+        guard card.projectState == .completed else { return 0 }
+        guard let signal = card.memoryCompactionSignal else { return 0 }
+        return signal.archiveCandidate ? 1 : (signal.rolledUpCount > 0 ? 1 : 0)
+    }
+
+    private static func evidenceWeaknessFactor(
+        for card: SupervisorPortfolioProjectCard
+    ) -> Int {
+        var score = 0
+        if !card.missingSpecFields.isEmpty {
+            score += 2
+        }
+        if card.hasDecisionRailSignal {
+            score += 1
+        }
+        if card.projectState != .completed && !hasConcreteNextStep(card.nextStep) {
+            score += 2
+        }
+        if card.projectState != .completed && card.memoryFreshness == .stale {
+            score += 1
+        }
+        return min(3, score)
+    }
+
+    private static func priorityReasonFragments(
+        for card: SupervisorPortfolioProjectCard
+    ) -> [String] {
+        var fragments: [String] = []
+
+        if card.projectState == .awaitingAuthorization {
+            fragments.append("待授权会直接卡住推进")
+        } else if let assist = card.decisionAssist {
+            fragments.append(
+                assist.failClosed
+                    ? "存在需审批的决策辅助"
+                    : "已有默认建议待确认"
+            )
+        } else if card.projectState == .blocked {
+            fragments.append("存在明确 blocker，需要优先解阻")
+        }
+
+        if card.memoryFreshness == .stale && card.projectState != .completed {
+            fragments.append("项目记忆已过期")
+        } else if card.memoryFreshness == .ttlCached,
+                  card.projectState == .awaitingAuthorization || card.projectState == .blocked {
+            fragments.append("当前上下文已开始老化")
+        }
+
+        if !card.missingSpecFields.isEmpty {
+            fragments.append("规格字段仍有缺口")
+        }
+
+        if card.projectState != .completed && !hasConcreteNextStep(card.nextStep) {
+            fragments.append("下一步还不够具体")
+        }
+
+        if card.hasDecisionRailSignal {
+            fragments.append("正式决策与背景偏好边界待清理")
+        }
+
+        if let signal = card.memoryCompactionSignal,
+           card.projectState == .completed {
+            fragments.append(
+                signal.archiveCandidate
+                    ? "项目已完成但仍待确认归档"
+                    : "项目已完成且待确认收口"
+            )
+        }
+
+        if fragments.isEmpty {
+            switch card.projectState {
+            case .active:
+                fragments.append("当前执行仍在推进，适合继续跟进")
+            case .idle:
+                fragments.append("当前处于暂停或排队态，只需低频观察")
+            case .completed:
+                fragments.append("当前已进入低频跟踪阶段")
+            case .blocked, .awaitingAuthorization:
+                break
+            }
+        }
+
+        return fragments
+    }
+
+    private static func uniqueOrderedFragments(
+        _ fragments: [String]
+    ) -> [String] {
+        var ordered: [String] = []
+        for fragment in fragments {
+            let trimmed = fragment.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !ordered.contains(trimmed) else { continue }
+            ordered.append(trimmed)
+        }
+        return ordered
+    }
+
+    private static func hasConcreteNextStep(_ text: String) -> Bool {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized.isEmpty { return false }
+        let placeholders = [
+            "(暂无)",
+            "(无)",
+            "(none)",
+            "继续当前任务",
+            "continue current task",
+            "keep monitoring",
+            "monitor current task",
+            "same as current",
+            "待补充",
+            "unknown",
+            "n/a",
+        ]
+        return !placeholders.contains(normalized)
     }
 
     private static func looksLikeAuthorization(_ text: String) -> Bool {

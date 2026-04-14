@@ -22,6 +22,23 @@ struct SupervisorFocusPresentationTests {
     }
 
     @Test
+    func boardFocusSupportsMemoryBoardAnchor() {
+        let request = AXSupervisorFocusRequest(
+            nonce: 11,
+            projectId: nil,
+            subject: .board(anchorID: SupervisorFocusPresentation.memoryBoardAnchorID)
+        )
+
+        let resolution = SupervisorFocusPresentation.resolveBoard(
+            request: request,
+            anchorID: SupervisorFocusPresentation.memoryBoardAnchorID
+        )
+
+        #expect(resolution.selectedProjectId == nil)
+        #expect(resolution.boardAnchorID == SupervisorFocusPresentation.memoryBoardAnchorID)
+    }
+
+    @Test
     func approvalFocusResolvesProjectAndHighlightFromPendingApproval() {
         let request = AXSupervisorFocusRequest(
             nonce: 1,
@@ -110,6 +127,63 @@ struct SupervisorFocusPresentationTests {
         #expect(resolution.highlightedGrantAnchor == nil)
         #expect(resolution.matchedGrant == nil)
         #expect(!resolution.refreshPendingHubGrants)
+    }
+
+    @Test
+    func candidateReviewFocusResolvesProjectAndHighlightFromReviewQueue() {
+        let request = AXSupervisorFocusRequest(
+            nonce: 31,
+            projectId: nil,
+            subject: .candidateReview(requestId: "req-review-1")
+        )
+        let item = HubIPCClient.SupervisorCandidateReviewItem(
+            schemaVersion: "v1",
+            reviewId: "review-1",
+            requestId: "req-review-1",
+            evidenceRef: "audit://candidate/1",
+            reviewState: "pending_review",
+            durablePromotionState: "candidate_only",
+            promotionBoundary: "project",
+            deviceId: "device-1",
+            userId: "user-1",
+            appId: "xt",
+            threadId: "thread-1",
+            threadKey: "thread-key-1",
+            projectId: "project-review",
+            projectIds: [],
+            scopes: ["project_memory"],
+            recordTypes: ["canonical"],
+            auditRefs: [],
+            idempotencyKeys: [],
+            candidateCount: 2,
+            summaryLine: "归并了 2 条候选记忆",
+            mirrorTarget: "xt_local_store",
+            localStoreRole: "cache",
+            carrierKind: "review_bundle",
+            carrierSchemaVersion: "v1",
+            pendingChangeId: "",
+            pendingChangeStatus: "",
+            editSessionId: "",
+            docId: "",
+            writebackRef: "",
+            stageCreatedAtMs: 0,
+            stageUpdatedAtMs: 0,
+            latestEmittedAtMs: 1_000,
+            createdAtMs: 900,
+            updatedAtMs: 1_000
+        )
+
+        let resolution = SupervisorFocusPresentation.resolveCandidateReview(
+            request: request,
+            requestId: "req-review-1",
+            candidateReviews: [item]
+        )
+
+        #expect(resolution.selectedProjectId == "project-review")
+        #expect(resolution.boardAnchorID == SupervisorFocusPresentation.candidateReviewBoardAnchorID)
+        #expect(resolution.highlightedCandidateReviewAnchor == SupervisorFocusPresentation.candidateReviewRowAnchor(item))
+        #expect(resolution.matchedCandidateReview == item)
+        #expect(!resolution.refreshCandidateReviews)
     }
 
     @Test

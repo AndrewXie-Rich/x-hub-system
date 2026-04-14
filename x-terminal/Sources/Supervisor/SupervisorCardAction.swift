@@ -4,6 +4,7 @@ enum SupervisorCardAction: Equatable {
     case openAudit(SupervisorAuditDrillDownAction)
     case openURL(label: String, url: String)
     case openProjectGovernance(projectId: String, destination: XTProjectGovernanceDestination)
+    case stageSupervisorCandidateReview(HubIPCClient.SupervisorCandidateReviewItem)
     case approvePendingGrant(SupervisorManager.SupervisorPendingGrant)
     case denyPendingGrant(SupervisorManager.SupervisorPendingGrant)
     case approvePendingSkillApproval(SupervisorManager.SupervisorPendingSkillApproval)
@@ -30,6 +31,23 @@ struct SupervisorCardActionDescriptor: Equatable, Identifiable {
 }
 
 enum SupervisorCardActionResolver {
+    static func candidateReviewActions(
+        _ item: HubIPCClient.SupervisorCandidateReviewItem,
+        inFlight: Bool,
+        canAct: Bool
+    ) -> [SupervisorCardActionDescriptor] {
+        let reviewState = normalizedScalar(item.reviewState)?.lowercased() ?? ""
+        guard reviewState == "pending_review" else { return [] }
+        return [
+            .init(
+                action: .stageSupervisorCandidateReview(item),
+                label: "转入审查",
+                style: .prominent,
+                isEnabled: canAct && !inFlight
+            )
+        ]
+    }
+
     static func pendingHubGrantActions(
         _ grant: SupervisorManager.SupervisorPendingGrant,
         inFlight: Bool,
@@ -98,12 +116,7 @@ enum SupervisorCardActionResolver {
         }
 
         actions.append(
-            .init(
-                action: .approvePendingSkillApproval(approval),
-                label: "批准",
-                style: .prominent,
-                isEnabled: true
-            )
+            SupervisorPendingSkillApprovalPresentation.prominentActionDescriptor(for: approval)
         )
         actions.append(
             .init(
@@ -272,6 +285,12 @@ enum SupervisorCardActionResolver {
         )
 
         switch detail.source {
+        case .candidateReview(let item):
+            actions.append(contentsOf: candidateReviewActions(
+                item,
+                inFlight: false,
+                canAct: true
+            ))
         case .pendingGrant(let grant):
             actions.append(
                 .init(

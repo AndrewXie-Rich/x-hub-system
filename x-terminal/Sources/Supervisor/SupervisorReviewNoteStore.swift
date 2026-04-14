@@ -11,6 +11,30 @@ enum SupervisorReviewTrigger: String, Codable, Sendable {
     case preDoneSummary = "pre_done_summary"
     case manualRequest = "manual_request"
     case userOverride = "user_override"
+
+    // Backward compatibility for older fixtures/snapshots that still use `.manual`.
+    static let manual: Self = .manualRequest
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try container.decode(String.self)
+        if rawValue == "manual" {
+            self = .manualRequest
+            return
+        }
+        guard let value = Self(rawValue: rawValue) else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unknown SupervisorReviewTrigger raw value: \(rawValue)"
+            )
+        }
+        self = value
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
 }
 
 enum SupervisorReviewLevel: String, Codable, Sendable {

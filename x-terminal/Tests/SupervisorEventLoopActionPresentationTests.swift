@@ -156,4 +156,71 @@ struct SupervisorEventLoopActionPresentationTests {
             )
         )
     }
+
+    @Test
+    func hiddenProjectRecoveryIssueFallsBackToDiagnostics() throws {
+        let activity = SupervisorManager.SupervisorEventLoopActivity(
+            id: "evt-5",
+            createdAt: 10,
+            updatedAt: 20,
+            triggerSource: "incident",
+            status: "completed",
+            reasonCode: "memory_scoped_hidden_project_recovery_missing",
+            dedupeKey: "memory_assembly:hidden_project_scoped_recovery:abc123",
+            projectId: "",
+            projectName: "Memory Assembly",
+            triggerSummary: "blocker_detected · 显式 hidden project 聚焦后，项目范围记忆没有补回。",
+            resultSummary: "open diagnostics",
+            policySummary: "review=Blocker Detected · next=open_diagnostics"
+        )
+
+        let action = try #require(SupervisorEventLoopActionPresentation.action(for: activity))
+
+        #expect(action.label == "打开诊断")
+        #expect(action.requestId == nil)
+        #expect(action.url.contains("section_id=diagnostics"))
+        #expect(action.url.contains("refresh_reason=supervisor_event_loop_hidden_project_scoped_recovery"))
+    }
+
+    @Test
+    func heartbeatGrantRecoveryRoutesToGrantFocusWhenGrantMetadataIsPresent() throws {
+        let activity = SupervisorManager.SupervisorEventLoopActivity(
+            id: "evt-6",
+            createdAt: 10,
+            updatedAt: 20,
+            triggerSource: "heartbeat",
+            status: "completed",
+            reasonCode: "grant_follow_up_required",
+            dedupeKey: "heartbeat_recovery_follow_up:project-theta:request_grant_follow_up:grant_follow_up_required",
+            projectId: "project-theta",
+            projectName: "Project Theta",
+            triggerSummary: "Project Theta 需要 grant / 授权跟进",
+            resultSummary: "已为《Project Theta》排队 grant / 授权跟进。",
+            policySummary: "cadence=active",
+            grantRequestId: "grant-heartbeat-1",
+            grantCapability: "ai.generate.paid"
+        )
+
+        let action = try #require(SupervisorEventLoopActionPresentation.action(for: activity))
+        let url = URL(string: action.url)
+        let route = try #require(url.flatMap(XTDeepLinkParser.parse))
+
+        #expect(action.label == "打开授权")
+        #expect(action.requestId == nil)
+        #expect(
+            route == .project(
+                XTDeepLinkProjectRoute(
+                    projectId: "project-theta",
+                    pane: .chat,
+                    openTarget: .supervisor,
+                    focusTarget: .grant,
+                    requestId: nil,
+                    grantRequestId: "grant-heartbeat-1",
+                    grantCapability: "ai.generate.paid",
+                    grantReason: nil,
+                    resumeRequested: false
+                )
+            )
+        )
+    }
 }

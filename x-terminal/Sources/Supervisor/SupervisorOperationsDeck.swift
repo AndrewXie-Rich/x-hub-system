@@ -16,6 +16,7 @@ struct SupervisorSignalCenterDeck: View {
     let onCockpitAction: (PrimaryActionRailAction) -> Void
     let onRuntimeStageTap: (SupervisorRuntimeStageItemPresentation) -> Void
     let onPersonalAssistantPrompt: (String) -> Void
+    let onProjectCreationQuickSend: (String) -> Void
     let portfolioPresentation: SupervisorPortfolioBoardPresentation
     let activeDrillDownPresentation: SupervisorProjectDrillDownPresentation?
     @Binding var selectedDrillDownScope: SupervisorProjectDrillDownScope
@@ -35,6 +36,8 @@ struct SupervisorSignalCenterDeck: View {
     let eventLoopPresentation: SupervisorEventLoopBoardPresentation
     let pendingHubGrantPresentation: SupervisorPendingHubGrantBoardPresentation
     let onRefreshPendingHubGrants: () -> Void
+    let candidateReviewPresentation: SupervisorCandidateReviewBoardPresentation
+    let onRefreshCandidateReviews: () -> Void
     let onCardAction: (SupervisorCardAction) -> Void
     let doctorPresentation: SupervisorDoctorBoardPresentation
     let doctorSuggestionCards: [SupervisorDoctorSuggestionCard]
@@ -57,10 +60,17 @@ struct SupervisorSignalCenterDeck: View {
     let onExportXTReadyReport: () -> Void
     let onOpenXTReadyReport: () -> Void
 
+    private var projectCreationPresentation: SupervisorProjectCreationStatusPresentation? {
+        supervisorManager.projectCreationStatusPresentation()
+    }
+
     private var overviewPresentation: SupervisorSignalCenterOverviewPresentation {
         SupervisorSignalCenterOverviewPresentationMapper.map(
             pendingHubGrantPresentation: pendingHubGrantPresentation,
             pendingSkillApprovalPresentation: pendingSkillApprovalPresentation,
+            candidateReviewPresentation: candidateReviewPresentation,
+            doctorPresentation: doctorPresentation,
+            projectCreationPresentation: projectCreationPresentation,
             runtimeActivityPresentation: runtimeActivityPresentation,
             automationPresentation: automationPresentation,
             laneHealthPresentation: laneHealthPresentation
@@ -73,6 +83,10 @@ struct SupervisorSignalCenterDeck: View {
         )
     }
 
+    private var reviewMemorySummary: SupervisorMemoryAssemblyCompactSummary? {
+        supervisorManager.supervisorMemoryAssemblySnapshot?.compactSummary
+    }
+
     var body: some View {
         SupervisorSignalCenterPanel(
             maxHeight: maxHeight,
@@ -81,12 +95,15 @@ struct SupervisorSignalCenterDeck: View {
             pendingSkillApprovals: pendingSkillApprovals,
             recentSkillActivities: recentSkillActivities,
             overviewPresentation: overviewPresentation,
+            reviewMemorySummary: reviewMemorySummary,
             onProcessFocusRequest: onProcessFocusRequest
         ) {
             SupervisorDashboardBoards(
+                includeHeartbeatBoard: false,
                 heartbeatEntries: supervisorManager.heartbeatHistory,
                 onOpenFocusURL: onOpenFocusURL,
                 runtimeActivityPresentation: runtimeActivityPresentation,
+                projectCreationPresentation: projectCreationPresentation,
                 primarySignalPresentation: primarySignalPresentation,
                 onPrimarySignalAction: onPrimarySignalAction,
                 supervisorManager: supervisorManager,
@@ -95,6 +112,7 @@ struct SupervisorSignalCenterDeck: View {
                 onCockpitAction: onCockpitAction,
                 onRuntimeStageTap: onRuntimeStageTap,
                 onPersonalAssistantPrompt: onPersonalAssistantPrompt,
+                onProjectCreationQuickSend: onProjectCreationQuickSend,
                 portfolioPresentation: portfolioPresentation,
                 activeDrillDownPresentation: activeDrillDownPresentation,
                 selectedDrillDownScope: $selectedDrillDownScope,
@@ -114,6 +132,8 @@ struct SupervisorSignalCenterDeck: View {
                 eventLoopPresentation: eventLoopPresentation,
                 pendingHubGrantPresentation: pendingHubGrantPresentation,
                 onRefreshPendingHubGrants: onRefreshPendingHubGrants,
+                candidateReviewPresentation: candidateReviewPresentation,
+                onRefreshCandidateReviews: onRefreshCandidateReviews,
                 onCardAction: onCardAction,
                 doctorPresentation: doctorPresentation,
                 doctorSuggestionCards: doctorSuggestionCards,

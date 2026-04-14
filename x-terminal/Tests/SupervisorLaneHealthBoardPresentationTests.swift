@@ -8,7 +8,7 @@ struct SupervisorLaneHealthBoardPresentationTests {
     func mapBuildsEmptySnapshotState() {
         let presentation = SupervisorLaneHealthBoardPresentationMapper.map(
             snapshot: nil,
-            statusLine: "lane health: idle",
+            statusLine: "泳道健康：空闲",
             filter: .abnormal,
             focusedLaneID: nil,
             splitPlanTextByLaneID: [:],
@@ -18,7 +18,7 @@ struct SupervisorLaneHealthBoardPresentationTests {
         #expect(presentation.iconName == "heart.text.square.fill")
         #expect(presentation.iconTone == .neutral)
         #expect(presentation.title == "泳道健康态")
-        #expect(presentation.statusLine == "lane health: idle")
+        #expect(presentation.statusLine == "泳道健康：空闲")
         #expect(presentation.summaryLine == "running=0 · blocked=0 · stalled=0 · failed=0 · waiting=0 · recovering=0")
         #expect(presentation.rows.isEmpty)
         #expect(presentation.emptyStateText == "暂无 lane 运行快照。启动多泳道后会自动展示 running/blocked/stalled/failed。")

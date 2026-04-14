@@ -1,8 +1,14 @@
 import Foundation
 
 enum SupervisorFocusPresentation {
+    static let heartbeatBoardAnchorID =
+        "supervisor.dashboard.heartbeatBoard"
     static let runtimeActivityBoardAnchorID =
         "supervisor.dashboard.runtimeActivityBoard"
+    static let projectCreationBoardAnchorID =
+        "supervisor.dashboard.projectCreationBoard"
+    static let memoryBoardAnchorID =
+        "supervisor.dashboard.memoryBoard"
     static let automationRuntimeBoardAnchorID =
         "supervisor.dashboard.automationRuntimeBoard"
     static let laneHealthBoardAnchorID =
@@ -11,6 +17,10 @@ enum SupervisorFocusPresentation {
         "supervisor.dashboard.pendingSupervisorSkillApprovalBoard"
     static let pendingHubGrantBoardAnchorID =
         "supervisor.dashboard.pendingHubGrantBoard"
+    static let candidateReviewBoardAnchorID =
+        "supervisor.dashboard.candidateReviewBoard"
+    static let doctorBoardAnchorID =
+        "supervisor.dashboard.doctorBoard"
     static let recentSupervisorSkillActivityBoardAnchorID =
         "supervisor.dashboard.recentSupervisorSkillActivityBoard"
 
@@ -33,6 +43,14 @@ enum SupervisorFocusPresentation {
         var highlightedGrantAnchor: String?
         var matchedGrant: SupervisorManager.SupervisorPendingGrant?
         var refreshPendingHubGrants: Bool
+    }
+
+    struct CandidateReviewResolution: Equatable {
+        var selectedProjectId: String?
+        var boardAnchorID: String
+        var highlightedCandidateReviewAnchor: String?
+        var matchedCandidateReview: HubIPCClient.SupervisorCandidateReviewItem?
+        var refreshCandidateReviews: Bool
     }
 
     struct SkillRecordResolution: Equatable {
@@ -106,6 +124,30 @@ enum SupervisorFocusPresentation {
         )
     }
 
+    static func resolveCandidateReview(
+        request: AXSupervisorFocusRequest,
+        requestId: String,
+        candidateReviews: [HubIPCClient.SupervisorCandidateReviewItem]
+    ) -> CandidateReviewResolution {
+        let resolvedProjectId = resolvedProjectIdForCandidateReviewFocus(
+            explicitProjectId: request.projectId,
+            requestId: requestId,
+            candidateReviews: candidateReviews
+        )
+        let matchedCandidateReview = matchingCandidateReview(
+            projectId: resolvedProjectId ?? request.projectId,
+            requestId: requestId,
+            candidateReviews: candidateReviews
+        )
+        return CandidateReviewResolution(
+            selectedProjectId: normalizedFocusToken(resolvedProjectId),
+            boardAnchorID: candidateReviewBoardAnchorID,
+            highlightedCandidateReviewAnchor: matchedCandidateReview.map(candidateReviewRowAnchor),
+            matchedCandidateReview: matchedCandidateReview,
+            refreshCandidateReviews: candidateReviews.isEmpty
+        )
+    }
+
     static func resolveSkillRecord(
         request: AXSupervisorFocusRequest,
         requestId: String,
@@ -159,6 +201,15 @@ enum SupervisorFocusPresentation {
         _ approval: SupervisorManager.SupervisorPendingSkillApproval
     ) -> String {
         "supervisor.pendingSupervisorSkillApproval.\(approval.requestId)"
+    }
+
+    static func candidateReviewRowAnchor(
+        _ item: HubIPCClient.SupervisorCandidateReviewItem
+    ) -> String {
+        let requestId = normalizedFocusToken(item.requestId)
+            ?? normalizedFocusToken(item.reviewId)
+            ?? item.id
+        return "supervisor.candidateReview.\(requestId)"
     }
 
     static func recentSkillActivityRowAnchor(
@@ -222,6 +273,22 @@ enum SupervisorFocusPresentation {
         )?.projectId
     }
 
+    private static func resolvedProjectIdForCandidateReviewFocus(
+        explicitProjectId: String?,
+        requestId: String,
+        candidateReviews: [HubIPCClient.SupervisorCandidateReviewItem]
+    ) -> String? {
+        let explicit = normalizedFocusToken(explicitProjectId)
+        if let explicit, !explicit.isEmpty {
+            return explicit
+        }
+        return matchingCandidateReview(
+            projectId: nil,
+            requestId: requestId,
+            candidateReviews: candidateReviews
+        ).flatMap(primaryProjectId(for:))
+    }
+
     private static func matchingPendingSupervisorSkillApproval(
         projectId: String?,
         requestId: String,
@@ -274,6 +341,28 @@ enum SupervisorFocusPresentation {
         return candidates.count == 1 ? candidates[0] : nil
     }
 
+    private static func matchingCandidateReview(
+        projectId: String?,
+        requestId: String,
+        candidateReviews: [HubIPCClient.SupervisorCandidateReviewItem]
+    ) -> HubIPCClient.SupervisorCandidateReviewItem? {
+        let normalizedProjectId = normalizedFocusToken(projectId)
+        let normalizedRequestId = normalizedFocusToken(requestId)
+        guard let normalizedRequestId, !normalizedRequestId.isEmpty else {
+            return nil
+        }
+
+        return candidateReviews.first { item in
+            let projectMatches = normalizedProjectId == nil
+                || candidateProjectIDs(item).contains(normalizedProjectId!)
+            let itemRequestId = normalizedFocusToken(item.requestId)
+            let itemReviewId = normalizedFocusToken(item.reviewId)
+            return projectMatches && (
+                itemRequestId == normalizedRequestId || itemReviewId == normalizedRequestId
+            )
+        }
+    }
+
     private static func matchingRecentSupervisorSkillActivity(
         projectId: String?,
         requestId: String,
@@ -291,5 +380,23 @@ enum SupervisorFocusPresentation {
             return projectMatches
                 && item.requestId.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedRequestId
         }
+    }
+
+    private static func candidateProjectIDs(
+        _ item: HubIPCClient.SupervisorCandidateReviewItem
+    ) -> [String] {
+        let ids = [normalizedFocusToken(item.projectId)] + item.projectIds.map(normalizedFocusToken)
+        var deduped: [String] = []
+        var seen = Set<String>()
+        for case let id? in ids where seen.insert(id).inserted {
+            deduped.append(id)
+        }
+        return deduped
+    }
+
+    private static func primaryProjectId(
+        for item: HubIPCClient.SupervisorCandidateReviewItem
+    ) -> String? {
+        candidateProjectIDs(item).first
     }
 }

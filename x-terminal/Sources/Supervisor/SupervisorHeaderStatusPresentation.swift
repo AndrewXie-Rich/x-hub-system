@@ -65,6 +65,8 @@ enum SupervisorHeaderStatusResolver {
             return "已回退"
         case "local_runtime":
             return "本地"
+        case "local_preflight", "local_direct_reply", "local_direct_action", "hub_brief_projection":
+            return "控制"
         case "remote_error":
             return "失败"
         default:
@@ -81,6 +83,8 @@ enum SupervisorHeaderStatusResolver {
         case "hub_downgraded_to_local", "local_fallback_after_remote_error":
             return .warning
         case "local_runtime":
+            return .caution
+        case "local_preflight", "local_direct_reply", "local_direct_action", "hub_brief_projection":
             return .caution
         case "remote_error":
             return .danger

@@ -62,6 +62,7 @@ enum SupervisorAutomationRuntimePresentationMapper {
         var trustedStatus: AXTrustedAutomationProjectStatus?
         var trustedRequiredPermissions: [String]
         var retryTrigger: String
+        var runtimeReadiness: AXProjectGovernanceRuntimeReadinessSnapshot? = nil
     }
 
     static func map(input: Input) -> SupervisorAutomationRuntimePresentation {
@@ -69,7 +70,8 @@ enum SupervisorAutomationRuntimePresentationMapper {
         let actionContext = SupervisorAutomationRuntimeActionResolver.Context(
             hasSelectedProject: input.project != nil,
             hasRecipe: input.recipe != nil,
-            hasLastLaunchRef: !trimmedLastLaunchRef.isEmpty
+            hasLastLaunchRef: !trimmedLastLaunchRef.isEmpty,
+            runtimeReadiness: input.runtimeReadiness
         )
         let currentRunMatchesSelection = !trimmedLastLaunchRef.isEmpty
             && input.currentCheckpoint?.runID == trimmedLastLaunchRef
@@ -192,6 +194,30 @@ enum SupervisorAutomationRuntimePresentationMapper {
             }
         }
 
+        if let runtimeReadiness = input.runtimeReadiness,
+           runtimeReadiness.requiresA4RuntimeReady {
+            detailRows.append(
+                line(
+                    id: "runtime_readiness",
+                    text: runtimeReadiness.summaryLine,
+                    tone: runtimeReadiness.runtimeReady ? .success : .warning,
+                    lineLimit: 2
+                )
+            )
+
+            if let missingSummary = runtimeReadiness.missingSummaryLine,
+               !trimmed(missingSummary).isEmpty {
+                detailRows.append(
+                    line(
+                        id: "runtime_readiness_missing",
+                        text: missingSummary,
+                        tone: .warning,
+                        lineLimit: 2
+                    )
+                )
+            }
+        }
+
         detailRows.append(
             line(
                 id: "last_launch",
@@ -253,6 +279,27 @@ enum SupervisorAutomationRuntimePresentationMapper {
                         tone: verification.ok ? .secondary : .warning
                     )
                 )
+                if let contract = verification.contract {
+                    detailRows.append(
+                        line(
+                            id: "verify_contract",
+                            text: humanizedVerificationContract(contract),
+                            tone: .secondary,
+                            lineLimit: 3
+                        )
+                    )
+                }
+            }
+
+            if let blocker = report.structuredBlocker {
+                detailRows.append(
+                    line(
+                        id: "structured_blocker",
+                        text: "结构化阻塞：\(blocker.summary) · \(blocker.stage.rawValue) · next=\(blocker.nextSafeAction)",
+                        tone: blocker.retryEligible ? .warning : .secondary,
+                        lineLimit: 2
+                    )
+                )
             }
         }
 
@@ -268,6 +315,17 @@ enum SupervisorAutomationRuntimePresentationMapper {
                     tone: .secondary
                 )
             )
+            if let stepLine = currentStepLine(for: checkpoint) {
+                detailRows.append(
+                    line(
+                        id: "checkpoint_step",
+                        text: stepLine,
+                        tone: checkpoint.currentStepState == .blocked || checkpoint.currentStepState == .retryWait
+                            ? .warning
+                            : .secondary
+                    )
+                )
+            }
         } else if !trimmedLastLaunchRef.isEmpty {
             detailRows.append(
                 line(
@@ -343,6 +401,16 @@ enum SupervisorAutomationRuntimePresentationMapper {
                     )
                 )
             }
+            if let revisedVerificationContract = retryPackage.revisedVerificationContract {
+                detailRows.append(
+                    line(
+                        id: "retry_revised_verification_contract",
+                        text: "重试验证合同：\(humanizedVerificationContract(revisedVerificationContract).replacingOccurrences(of: "验证合同：", with: ""))",
+                        tone: .secondary,
+                        lineLimit: 2
+                    )
+                )
+            }
 
             let runtimePatchOverlayKeys = xtAutomationRuntimePatchOverlayKeys(
                 retryPackage.runtimePatchOverlay
@@ -390,6 +458,16 @@ enum SupervisorAutomationRuntimePresentationMapper {
                     tone: .secondary
                 )
             )
+            if let descriptor = retryPackage.retryReasonDescriptor {
+                detailRows.append(
+                    line(
+                        id: "retry_reason_descriptor",
+                        text: "重试原因：\(descriptor.summary) · \(descriptor.category.rawValue) · strategy=\(descriptor.strategy)",
+                        tone: .secondary,
+                        lineLimit: 2
+                    )
+                )
+            }
             detailRows.append(
                 line(
                     id: "retry_handoff",
@@ -468,6 +546,27 @@ enum SupervisorAutomationRuntimePresentationMapper {
         let holdReason = trimmed(input.latestExecutionReport?.holdReason)
         let detail = trimmed(input.latestExecutionReport?.detail)
         let trustedState = input.trustedStatus?.state
+        let runtimeReadiness = input.runtimeReadiness
+
+        if let runtimeReadiness,
+           runtimeReadiness.requiresA4RuntimeReady,
+           !runtimeReadiness.runtimeReady {
+            return SupervisorGuidanceContractSummary(
+                kind: .incidentRecovery,
+                trigger: "Automation Runtime",
+                reviewLevel: "",
+                verdict: "",
+                summary: runtimeReadiness.summaryLine,
+                primaryBlocker: "",
+                currentState: "a4_runtime_not_ready",
+                nextStep: "",
+                nextSafeAction: "inspect_incident_and_replan",
+                recommendedActions: [],
+                workOrderRef: "",
+                effectiveSupervisorTier: "",
+                effectiveWorkOrderDepth: ""
+            )
+        }
 
         if trustedState == .blocked {
             let blocker = firstNonEmpty([
@@ -683,6 +782,29 @@ enum SupervisorAutomationRuntimePresentationMapper {
         }
     }
 
+    private static func currentStepLine(for checkpoint: XTAutomationRunCheckpoint) -> String? {
+        let title = firstNonEmpty([
+            checkpoint.currentStepTitle ?? "",
+            checkpoint.currentStepID ?? ""
+        ])
+        let summary = checkpoint.currentStepSummary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let state = checkpoint.currentStepState?.displayName ?? ""
+
+        var parts: [String] = []
+        if let title, !title.isEmpty {
+            parts.append(title)
+        }
+        if !state.isEmpty {
+            parts.append(state)
+        }
+        if !summary.isEmpty {
+            parts.append(summary)
+        }
+
+        guard !parts.isEmpty else { return nil }
+        return "当前步骤：\(parts.joined(separator: " · "))"
+    }
+
     private static func humanizedTrustedAutomationState(
         _ state: AXTrustedAutomationProjectState
     ) -> String {
@@ -710,6 +832,56 @@ enum SupervisorAutomationRuntimePresentationMapper {
             return "已回收"
         case .suppressed:
             return "已抑制"
+        }
+    }
+
+    private static func humanizedVerificationContract(
+        _ contract: XTAutomationVerificationContract
+    ) -> String {
+        let evidenceText = contract.evidenceRequired ? "证据必需" : "证据可选"
+        return "验证合同：\(humanizedVerificationMethod(contract.verifyMethod)) · 目标=\(humanizedExpectedState(contract.expectedState)) · 失败后=\(humanizedVerificationRetryPolicy(contract.retryPolicy)) · \(evidenceText)"
+    }
+
+    private static func humanizedVerificationMethod(_ value: String) -> String {
+        switch value {
+        case "project_verify_commands":
+            return "项目校验命令"
+        case "project_verify_commands_override":
+            return "覆写校验命令"
+        case "project_verify_commands_missing":
+            return "项目校验命令缺失"
+        case "project_verify_commands_override_missing":
+            return "覆写校验命令缺失"
+        case "recipe_action_verify_commands":
+            return "步骤自带校验命令"
+        case "recipe_action_verify_commands_missing":
+            return "步骤自带校验命令缺失"
+        case "mixed_verify_commands":
+            return "混合校验命令"
+        case "mixed_verify_commands_missing":
+            return "混合校验命令缺失"
+        default:
+            return value
+        }
+    }
+
+    private static func humanizedExpectedState(_ value: String) -> String {
+        switch value {
+        case "post_change_verification_passes":
+            return "变更后验证通过"
+        default:
+            return value
+        }
+    }
+
+    private static func humanizedVerificationRetryPolicy(_ value: String) -> String {
+        switch value {
+        case "retry_failed_verify_commands_within_budget":
+            return "预算内只重试失败验证"
+        case "manual_retry_or_replan":
+            return "人工重试或重规划"
+        default:
+            return value
         }
     }
 

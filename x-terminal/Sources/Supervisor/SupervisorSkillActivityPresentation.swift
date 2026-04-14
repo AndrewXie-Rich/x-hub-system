@@ -35,9 +35,13 @@ enum SupervisorSkillActivityPresentation {
         case "blocked":
             return "技能调用受阻"
         case "awaiting_authorization":
-            return item.requiredCapability.isEmpty
-                ? "等待本地审批"
-                : "等待 Hub 授权 · \(humanCapabilityLabel(item.requiredCapability))"
+            if isAwaitingRequestScopedLocalApproval(item) {
+                return "等待本地审批"
+            }
+            let capability = item.requiredCapability.trimmingCharacters(in: .whitespacesAndNewlines)
+            return capability.isEmpty
+                ? "等待 Hub 授权"
+                : "等待 Hub 授权 · \(humanCapabilityLabel(capability))"
         case "running":
             return "技能调用进行中"
         case "queued":
@@ -81,7 +85,10 @@ enum SupervisorSkillActivityPresentation {
         case "running":
             return "ellipsis.circle.fill"
         case "awaiting_authorization":
-            return item.requiredCapability.isEmpty ? "hand.raised.fill" : "lock.shield.fill"
+            if isAwaitingRequestScopedLocalApproval(item) {
+                return "hand.raised.fill"
+            }
+            return "lock.shield.fill"
         case "completed":
             return "checkmark.circle.fill"
         case "failed":
@@ -102,7 +109,10 @@ enum SupervisorSkillActivityPresentation {
     static func actionButtonTitle(for item: SupervisorManager.SupervisorRecentSkillActivity) -> String {
         switch normalizedStatus(item.status) {
         case "awaiting_authorization":
-            return item.requiredCapability.isEmpty ? "打开审批" : "打开授权"
+            if isAwaitingRequestScopedLocalApproval(item) {
+                return "打开审批"
+            }
+            return "打开授权"
         default:
             if actionURLGovernanceDestination(item.actionURL) == .uiReview {
                 return "打开 UI 审查"
@@ -296,7 +306,7 @@ enum SupervisorSkillActivityPresentation {
             default:
                 return ProjectSkillRecordField(
                     label: displayFieldLabel(field.label),
-                    value: field.value
+                    value: displayFieldValue(field.label, field.value)
                 )
             }
         }
@@ -305,10 +315,15 @@ enum SupervisorSkillActivityPresentation {
     static func displayMetadataFields(
         _ fields: [ProjectSkillRecordField]
     ) -> [ProjectSkillRecordField] {
-        fields.map { field in
+        let context = Dictionary(uniqueKeysWithValues: fields.map { ($0.label, $0.value) })
+        return fields.map { field in
             ProjectSkillRecordField(
                 label: displayFieldLabel(field.label),
-                value: field.value
+                value: displayFieldValue(
+                    field.label,
+                    field.value,
+                    context: context
+                )
             )
         }
     }
@@ -318,16 +333,16 @@ enum SupervisorSkillActivityPresentation {
         let hasGovernanceTruth = governanceTruthLine(for: item) != nil
         var parts: [String] = []
         if let verdict = governance.latestReviewVerdict?.displayName {
-            parts.append(verdict)
+            parts.append(displayFieldValue("review_verdict", verdict))
         }
         if let level = governance.latestReviewLevel?.displayName {
-            parts.append(level)
+            parts.append(displayFieldValue("review_level", level))
         }
         if !hasGovernanceTruth, let tier = governance.effectiveSupervisorTier?.displayName {
-            parts.append(tier)
+            parts.append(displayFieldValue("supervisor_tier", tier))
         }
         if !hasGovernanceTruth, let depth = governance.effectiveWorkOrderDepth?.displayName {
-            parts.append(depth)
+            parts.append(displayFieldValue("work_order_depth", depth))
         }
         let workOrderRef = nonEmpty(governance.workOrderRef)
         if let workOrderRef {
@@ -338,6 +353,9 @@ enum SupervisorSkillActivityPresentation {
     }
 
     static func governanceTruthLine(for item: SupervisorManager.SupervisorRecentSkillActivity) -> String? {
+        if let persisted = nonEmpty(item.governanceTruth) {
+            return persisted
+        }
         guard let governance = item.governance else { return nil }
         return XTGovernanceTruthPresentation.truthLine(
             configuredExecutionTier: governance.configuredExecutionTier?.rawValue,
@@ -352,12 +370,21 @@ enum SupervisorSkillActivityPresentation {
         )
     }
 
+    static func displayGovernanceTruthLine(
+        for item: SupervisorManager.SupervisorRecentSkillActivity
+    ) -> String? {
+        governanceTruthLine(for: item).map(XTGovernanceTruthPresentation.displayText)
+    }
+
     static func blockedSummaryLine(for item: SupervisorManager.SupervisorRecentSkillActivity) -> String? {
         guard let summary = blockedSummaryText(for: item) else { return nil }
         return "阻塞说明： \(summary)"
     }
 
     static func blockedSummaryText(for item: SupervisorManager.SupervisorRecentSkillActivity) -> String? {
+        if let persisted = nonEmpty(item.blockedSummary) {
+            return persisted
+        }
         let toolLabel = toolBadge(for: item)
         let target = item.toolSummary.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -366,7 +393,7 @@ enum SupervisorSkillActivityPresentation {
             return XTGuardrailMessagePresentation.awaitingApprovalMessage(
                 toolLabel: toolLabel,
                 target: target,
-                requiredCapability: item.requiredCapability,
+                requiredCapability: isAwaitingRequestScopedLocalApproval(item) ? "" : item.requiredCapability,
                 denyCode: item.denyCode
             ).summary
         case "blocked":
@@ -400,22 +427,29 @@ enum SupervisorSkillActivityPresentation {
     static func followUpRhythmLine(for item: SupervisorManager.SupervisorRecentSkillActivity) -> String? {
         guard let governance = item.governance else { return nil }
         guard let summary = nonEmpty(governance.followUpRhythmSummary) else { return nil }
-        return "跟进节奏： \(summary)"
+        return "跟进节奏： \(displayFieldValue("follow_up_rhythm", summary))"
     }
 
     static func pendingGuidanceLine(for item: SupervisorManager.SupervisorRecentSkillActivity) -> String? {
         guard let governance = item.governance else { return nil }
         guard let ackStatus = governance.pendingGuidanceAckStatus else { return nil }
-        var parts = ["指导： \(ackStatus.displayName)"]
-        parts.append(governance.pendingGuidanceRequired ? "必答" : "可选")
+        var parts = [
+            displayFieldValue(
+                "pending_guidance_ack",
+                "\(ackStatus.displayName) · \(governance.pendingGuidanceRequired ? "required" : "optional")"
+            )
+        ]
         if let latestDelivery = governance.latestGuidanceDeliveryMode?.displayName {
-            parts.append(latestDelivery)
+            parts.append(displayFieldValue("latest_guidance_delivery", latestDelivery))
+        }
+        if let guidanceSummary = activeGuidanceSummary(for: governance) {
+            parts.append(guidanceSummary)
         }
         let guidanceId = nonEmpty(governance.pendingGuidanceId) ?? nonEmpty(governance.latestGuidanceId)
         if let guidanceId {
             parts.append("id=\(guidanceId)")
         }
-        return parts.joined(separator: " · ")
+        return "指导： " + parts.joined(separator: " · ")
     }
 
     static func guidanceContractLine(for item: SupervisorManager.SupervisorRecentSkillActivity) -> String? {
@@ -426,6 +460,76 @@ enum SupervisorSkillActivityPresentation {
     static func guidanceNextSafeActionLine(for item: SupervisorManager.SupervisorRecentSkillActivity) -> String? {
         guard let contract = item.governance?.guidanceContract else { return nil }
         return SupervisorGuidanceContractLinePresentation.nextSafeActionLine(for: contract)
+    }
+
+    static func governedShortSummary(
+        for item: SupervisorManager.SupervisorRecentSkillActivity
+    ) -> String? {
+        XTPendingApprovalPresentation.governedSkillShortSummary(
+            for: governedSkillPresentationItem(for: item)
+        )
+    }
+
+    static func governedShortSummary(
+        for approval: SupervisorManager.SupervisorPendingSkillApproval
+    ) -> String? {
+        XTPendingApprovalPresentation.governedSkillShortSummary(
+            for: governedSkillPresentationItem(for: approval)
+        )
+    }
+
+    static func governedDetailLines(
+        for item: SupervisorManager.SupervisorRecentSkillActivity
+    ) -> [String] {
+        XTPendingApprovalPresentation.governedSkillDetailLines(
+            for: governedSkillPresentationItem(for: item)
+        )
+    }
+
+    static func governedDetailLines(
+        for approval: SupervisorManager.SupervisorPendingSkillApproval
+    ) -> [String] {
+        XTPendingApprovalPresentation.governedSkillDetailLines(
+            for: governedSkillPresentationItem(for: approval)
+        )
+    }
+
+    static func preferredCardSummary(
+        for item: SupervisorManager.SupervisorRecentSkillActivity
+    ) -> String {
+        if shouldPreferGovernedCardSummary(item),
+           let governedSummary = governedShortSummary(for: item) {
+            return governedSummary
+        }
+
+        let displaySkill = displaySkillSummary(for: item)
+        if !displaySkill.isEmpty {
+            return displaySkill
+        }
+
+        return governedShortSummary(for: item) ?? ""
+    }
+
+    static func cardGovernedDetailLines(
+        for item: SupervisorManager.SupervisorRecentSkillActivity,
+        limit: Int = 2
+    ) -> [String] {
+        guard limit > 0, shouldPreferGovernedCardSummary(item) else { return [] }
+
+        switch normalizedStatus(item.status) {
+        case "awaiting_authorization", "failed", "blocked":
+            return []
+        default:
+            break
+        }
+
+        let lines = governedDetailLines(for: item)
+            .filter(shouldDisplayCardGovernedDetailLine)
+        guard !lines.isEmpty else { return [] }
+
+        return prioritizedCardGovernedDetailLines(lines)
+            .prefix(limit)
+            .map { $0 }
     }
 
     static func body(for item: SupervisorManager.SupervisorRecentSkillActivity) -> String {
@@ -448,18 +552,21 @@ enum SupervisorSkillActivityPresentation {
                 ? "\(skillLabel)正在执行\(toolLabel)。"
                 : "\(skillLabel)正在对 \(target) 执行\(toolLabel)。"
         case "awaiting_authorization":
-            return XTGuardrailMessagePresentation.awaitingApprovalBody(
-                toolLabel: toolLabel,
-                target: target,
-                requiredCapability: item.requiredCapability,
-                denyCode: item.denyCode
+            return appendCapabilityContext(
+                XTGuardrailMessagePresentation.awaitingApprovalBody(
+                    toolLabel: toolLabel,
+                    target: target,
+                    requiredCapability: isAwaitingRequestScopedLocalApproval(item) ? "" : item.requiredCapability,
+                    denyCode: item.denyCode
+                ),
+                item: item
             )
         case "completed":
             if !item.resultSummary.isEmpty { return item.resultSummary }
             return "\(skillLabel)已通过\(toolLabel)完成。"
         case "failed":
             if !item.denyCode.isEmpty || !item.policySource.isEmpty {
-                return XTGuardrailMessagePresentation.blockedBody(
+                let body = blockedSummaryText(for: item) ?? XTGuardrailMessagePresentation.blockedBody(
                     tool: item.tool,
                     toolLabel: toolLabel,
                     denyCode: item.denyCode,
@@ -468,11 +575,15 @@ enum SupervisorSkillActivityPresentation {
                     requiredCapability: item.requiredCapability,
                     fallbackSummary: item.resultSummary
                 )
+                return appendCapabilityContext(
+                    prefixGovernanceTruthIfNeeded(body: body, item: item),
+                    item: item
+                )
             }
             if !item.resultSummary.isEmpty { return item.resultSummary }
             return "\(skillLabel)在执行\(toolLabel)时失败。"
         case "blocked":
-            return XTGuardrailMessagePresentation.blockedBody(
+            let body = blockedSummaryText(for: item) ?? XTGuardrailMessagePresentation.blockedBody(
                 tool: item.tool,
                 toolLabel: toolLabel,
                 denyCode: item.denyCode,
@@ -481,12 +592,16 @@ enum SupervisorSkillActivityPresentation {
                 requiredCapability: item.requiredCapability,
                 fallbackSummary: item.resultSummary
             )
+            return appendCapabilityContext(
+                prefixGovernanceTruthIfNeeded(body: body, item: item),
+                item: item
+            )
         case "canceled":
             if !item.resultSummary.isEmpty { return item.resultSummary }
             return "\(skillLabel)已取消。"
         default:
             if !item.denyCode.isEmpty || !item.policySource.isEmpty {
-                return XTGuardrailMessagePresentation.blockedBody(
+                let body = blockedSummaryText(for: item) ?? XTGuardrailMessagePresentation.blockedBody(
                     tool: item.tool,
                     toolLabel: toolLabel,
                     denyCode: item.denyCode,
@@ -494,6 +609,10 @@ enum SupervisorSkillActivityPresentation {
                     policyReason: item.policyReason,
                     requiredCapability: item.requiredCapability,
                     fallbackSummary: item.resultSummary
+                )
+                return appendCapabilityContext(
+                    prefixGovernanceTruthIfNeeded(body: body, item: item),
+                    item: item
                 )
             }
             if !item.resultSummary.isEmpty { return item.resultSummary }
@@ -529,15 +648,52 @@ enum SupervisorSkillActivityPresentation {
         if !item.grantRequestId.isEmpty { lines.append("grant_request_id=\(item.grantRequestId)") }
         if !item.grantId.isEmpty { lines.append("grant_id=\(item.grantId)") }
         if !item.resultEvidenceRef.isEmpty { lines.append("result_evidence_ref=\(item.resultEvidenceRef)") }
+        if let profileDeltaRef = nonEmpty(record.profileDeltaRef) {
+            lines.append("profile_delta_ref=\(profileDeltaRef)")
+        }
+        if let readinessRef = nonEmpty(record.readinessRef) {
+            lines.append("readiness_ref=\(readinessRef)")
+        }
         if !item.resultSummary.isEmpty { lines.append("result_summary=\(item.resultSummary)") }
         if !item.denyCode.isEmpty { lines.append("deny_code=\(item.denyCode)") }
         if !item.policySource.isEmpty { lines.append("policy_source=\(item.policySource)") }
         if !item.policyReason.isEmpty { lines.append("policy_reason=\(item.policyReason)") }
+        if let deltaApproval = record.deltaApproval {
+            lines.append("approval_summary=\(deltaApproval.summary)")
+            lines.append("current_runnable_profiles=\(deltaApproval.currentRunnableProfiles.joined(separator: ","))")
+            lines.append("requested_profiles=\(deltaApproval.requestedProfiles.joined(separator: ","))")
+            lines.append("delta_profiles=\(deltaApproval.deltaProfiles.joined(separator: ","))")
+            lines.append("current_runnable_capability_families=\(deltaApproval.currentRunnableCapabilityFamilies.joined(separator: ","))")
+            lines.append("requested_capability_families=\(deltaApproval.requestedCapabilityFamilies.joined(separator: ","))")
+            lines.append("delta_capability_families=\(deltaApproval.deltaCapabilityFamilies.joined(separator: ","))")
+            lines.append("grant_floor=\(deltaApproval.grantFloor)")
+            lines.append("approval_floor=\(deltaApproval.approvalFloor)")
+        }
+        if let readiness = record.readiness {
+            lines.append("execution_readiness=\(readiness.executionReadiness)")
+            lines.append("state_label=\(readiness.stateLabel)")
+            lines.append("readiness_reason_code=\(readiness.reasonCode)")
+            lines.append("required_runtime_surfaces=\(readiness.requiredRuntimeSurfaces.joined(separator: ","))")
+            lines.append("unblock_actions=\(readiness.unblockActions.joined(separator: ","))")
+            if record.deltaApproval == nil {
+                lines.append("grant_floor=\(readiness.grantFloor)")
+                lines.append("approval_floor=\(readiness.approvalFloor)")
+            }
+        }
+        if let governanceReason = governanceReasonText(for: item) {
+            lines.append("governance_reason=\(governanceReason)")
+        }
         if let blockedSummary = blockedSummaryText(for: item) {
             lines.append("blocked_summary=\(blockedSummary)")
         }
         if let governanceTruth = governanceTruthLine(for: item) {
             lines.append("governance_truth=\(governanceTruth)")
+        }
+        if let repairAction = repairActionText(for: item) {
+            lines.append("repair_action=\(repairAction)")
+        }
+        if let guidanceSummary = item.governance.flatMap(activeGuidanceSummary(for:)) {
+            lines.append("guidance_summary=\(guidanceSummary)")
         }
         if let guidanceContract = item.governance?.guidanceContract {
             lines.append("guidance_contract=\(guidanceContract.kind.rawValue)")
@@ -545,9 +701,6 @@ enum SupervisorSkillActivityPresentation {
                 lines.append("primary_blocker=\(guidanceContract.primaryBlocker)")
             }
             if let uiReview = guidanceContract.uiReviewRepair {
-                if !uiReview.repairAction.isEmpty {
-                    lines.append("repair_action=\(uiReview.repairAction)")
-                }
                 if !uiReview.repairFocus.isEmpty {
                     lines.append("repair_focus=\(uiReview.repairFocus)")
                 }
@@ -568,7 +721,7 @@ enum SupervisorSkillActivityPresentation {
     }
 
     static func isAwaitingLocalApproval(_ item: SupervisorManager.SupervisorRecentSkillActivity) -> Bool {
-        normalizedStatus(item.status) == "awaiting_authorization" && item.requiredCapability.isEmpty
+        normalizedStatus(item.status) == "awaiting_authorization" && isAwaitingRequestScopedLocalApproval(item)
     }
 
     static func canRetry(_ item: SupervisorManager.SupervisorRecentSkillActivity) -> Bool {
@@ -652,19 +805,131 @@ enum SupervisorSkillActivityPresentation {
         let approvalPolicyReason = firstNonEmpty(record?.policyReason, evidence?.policyReason, events.last?.policyReason)
         let approvalRequiredCapability = firstNonEmpty(record?.requiredCapability, events.last?.requiredCapability)
         let latestResultSummary = firstNonEmpty(evidence?.resultSummary, record?.resultSummary, events.last?.resultSummary)
-        let approvalBlockedSummary = XTGuardrailMessagePresentation.blockedSummary(
-            tool: firstNonEmpty(record?.toolName, evidence?.toolName, events.last?.toolName).flatMap(ToolName.init(rawValue:)),
-            toolLabel: displayToolName(
-                firstNonEmpty(record?.toolName, evidence?.toolName, events.last?.toolName) ?? "",
-                tool: nil
-            ),
-            denyCode: approvalDenyCode ?? "",
-            policySource: approvalPolicySource ?? "",
-            policyReason: approvalPolicyReason ?? "",
-            requiredCapability: approvalRequiredCapability ?? "",
-            fallbackSummary: latestResultSummary ?? "",
-            fallbackDetail: ""
+        let persistedDeltaApproval = record?.deltaApproval ?? evidence?.deltaApproval
+        let persistedReadiness = record?.readiness ?? evidence?.readiness
+        let profileDeltaRef = firstNonEmpty(
+            record?.profileDeltaRef,
+            evidence?.profileDeltaRef,
+            latestRawEventScalar("profile_delta_ref", from: events)
         )
+        let readinessRef = firstNonEmpty(
+            record?.readinessRef,
+            evidence?.readinessRef,
+            latestRawEventScalar("readiness_ref", from: events)
+        )
+        let approvalSummary = firstNonEmpty(
+            persistedDeltaApproval?.summary,
+            latestRawEventScalar("approval_summary", from: events)
+        )
+        let currentRunnableProfiles = firstNonEmptyStringArray(
+            persistedDeltaApproval?.currentRunnableProfiles ?? [],
+            latestRawEventStringArray("current_runnable_profiles", from: events)
+        )
+        let requestedProfiles = firstNonEmptyStringArray(
+            persistedDeltaApproval?.requestedProfiles ?? [],
+            latestRawEventStringArray("requested_profiles", from: events)
+        )
+        let deltaProfiles = firstNonEmptyStringArray(
+            persistedDeltaApproval?.deltaProfiles ?? [],
+            latestRawEventStringArray("delta_profiles", from: events)
+        )
+        let currentRunnableFamilies = firstNonEmptyStringArray(
+            persistedDeltaApproval?.currentRunnableCapabilityFamilies ?? [],
+            latestRawEventStringArray("current_runnable_capability_families", from: events)
+        )
+        let requestedFamilies = firstNonEmptyStringArray(
+            persistedDeltaApproval?.requestedCapabilityFamilies ?? [],
+            latestRawEventStringArray("requested_capability_families", from: events)
+        )
+        let deltaFamilies = firstNonEmptyStringArray(
+            persistedDeltaApproval?.deltaCapabilityFamilies ?? [],
+            latestRawEventStringArray("delta_capability_families", from: events)
+        )
+        let intentFamilies = firstNonEmptyStringArray(
+            persistedReadiness?.intentFamilies ?? [],
+            latestRawEventStringArray("intent_families", from: events)
+        )
+        let capabilityFamilies = firstNonEmptyStringArray(
+            persistedReadiness?.capabilityFamilies ?? [],
+            latestRawEventStringArray("capability_families", from: events)
+        )
+        let capabilityProfiles = firstNonEmptyStringArray(
+            persistedReadiness?.capabilityProfiles ?? [],
+            latestRawEventStringArray("capability_profiles", from: events)
+        )
+        let executionReadiness = firstNonEmpty(
+            persistedReadiness?.executionReadiness,
+            latestRawEventScalar("execution_readiness", from: events)
+        )
+        let readinessStateLabel = firstNonEmpty(
+            persistedReadiness?.stateLabel,
+            latestRawEventScalar("state_label", from: events)
+        )
+        let readinessReasonCode = firstNonEmpty(
+            persistedReadiness?.reasonCode,
+            latestRawEventScalar("readiness_reason_code", from: events)
+        )
+        let requiredRuntimeSurfaces = firstNonEmptyStringArray(
+            persistedReadiness?.requiredRuntimeSurfaces ?? [],
+            latestRawEventStringArray("required_runtime_surfaces", from: events)
+        )
+        let unblockActions = firstNonEmptyStringArray(
+            persistedReadiness?.unblockActions ?? [],
+            latestRawEventStringArray("unblock_actions", from: events)
+        )
+        let grantFloor = firstNonEmpty(
+            persistedDeltaApproval?.grantFloor,
+            persistedReadiness?.grantFloor,
+            latestRawEventScalar("grant_floor", from: events)
+        )
+        let approvalFloor = firstNonEmpty(
+            persistedDeltaApproval?.approvalFloor,
+            persistedReadiness?.approvalFloor,
+            latestRawEventScalar("approval_floor", from: events)
+        )
+        let resolvedToolName = firstNonEmpty(record?.toolName, evidence?.toolName, events.last?.toolName) ?? ""
+        let resolvedTool = ToolName(rawValue: resolvedToolName)
+        let approvalGovernanceReason = firstNonEmpty(
+            latestRawEventScalar("governance_reason", from: events),
+            XTGuardrailMessagePresentation.governanceReasonSummary(
+                tool: resolvedTool,
+                toolLabel: displayToolName(
+                    resolvedToolName,
+                    tool: resolvedTool
+                ),
+                denyCode: approvalDenyCode ?? "",
+                policySource: approvalPolicySource ?? "",
+                policyReason: approvalPolicyReason ?? "",
+                requiredCapability: approvalRequiredCapability ?? ""
+            )
+        )
+        let approvalBlockedSummary = firstNonEmpty(
+            latestRawEventScalar("blocked_summary", from: events),
+            XTGuardrailMessagePresentation.blockedSummary(
+                tool: resolvedTool,
+                toolLabel: displayToolName(
+                    resolvedToolName,
+                    tool: resolvedTool
+                ),
+                denyCode: approvalDenyCode ?? "",
+                policySource: approvalPolicySource ?? "",
+                policyReason: approvalPolicyReason ?? "",
+                requiredCapability: approvalRequiredCapability ?? "",
+                fallbackSummary: latestResultSummary ?? "",
+                fallbackDetail: ""
+            )
+        )
+        let approvalRepairAction = firstNonEmpty(
+            latestRawEventScalar("repair_action", from: events),
+            repairActionSummary(
+                denyCode: approvalDenyCode ?? "",
+                policySource: approvalPolicySource ?? "",
+                policyReason: approvalPolicyReason ?? ""
+            )
+        )
+        let activeGuidanceSummary = activeGuidance.map {
+            SupervisorGuidanceTextPresentation.summary($0.guidanceText, maxChars: 220)
+        }
 
         let requestMetadata = recordFields([
             ("project_name", projectName),
@@ -675,6 +940,9 @@ enum SupervisorSkillActivityPresentation {
             ("step_id", firstNonEmpty(record?.stepId, evidence?.stepId, events.last?.stepId)),
             ("requested_skill_id", firstNonEmpty(record?.requestedSkillId, evidence?.requestedSkillId, events.last?.requestedSkillId)),
             ("skill_id", firstNonEmpty(record?.skillId, evidence?.skillId, events.last?.skillId)),
+            ("intent_families", joinedListText(intentFamilies)),
+            ("capability_families", joinedListText(capabilityFamilies)),
+            ("capability_profiles", joinedListText(capabilityProfiles)),
             (
                 "routing_resolution",
                 resolvedRoutingResolution(
@@ -698,19 +966,34 @@ enum SupervisorSkillActivityPresentation {
             ("required_capability", approvalRequiredCapability),
             ("grant_request_id", firstNonEmpty(record?.grantRequestId, events.last?.grantRequestId)),
             ("grant_id", firstNonEmpty(record?.grantId, events.last?.grantId)),
+            ("profile_delta_ref", profileDeltaRef),
+            ("approval_summary", approvalSummary),
+            ("current_runnable_profiles", joinedListText(currentRunnableProfiles)),
+            ("requested_profiles", joinedListText(requestedProfiles)),
+            ("delta_profiles", joinedListText(deltaProfiles)),
+            ("current_runnable_capability_families", joinedListText(currentRunnableFamilies)),
+            ("requested_capability_families", joinedListText(requestedFamilies)),
+            ("delta_capability_families", joinedListText(deltaFamilies)),
+            ("grant_floor", grantFloor),
+            ("approval_floor", approvalFloor),
             ("deny_code", approvalDenyCode),
-            ("policy_source", approvalPolicySource),
-            ("policy_reason", approvalPolicyReason),
-            ("blocked_summary", approvalBlockedSummary),
             ("trigger_source", firstNonEmpty(evidence?.triggerSource, events.last?.triggerSource))
         ])
-        let governanceTruth = events
-            .reversed()
-            .compactMap { XTGovernanceTruthPresentation.effectiveTierSummary(from: $0.rawObject) }
-            .first
+        let governanceTruth = firstNonEmpty(
+            latestRawEventScalar("governance_truth", from: events),
+            events
+                .reversed()
+                .compactMap { XTGovernanceTruthPresentation.effectiveTierSummary(from: $0.rawObject) }
+                .first
+        )
 
         let governanceFields = recordFields([
+            ("policy_source", approvalPolicySource),
+            ("policy_reason", approvalPolicyReason),
+            ("governance_reason", approvalGovernanceReason),
+            ("blocked_summary", approvalBlockedSummary),
             ("governance_truth", governanceTruth),
+            ("repair_action", approvalRepairAction),
             ("latest_review_id", latestReview?.reviewId),
             ("review_verdict", latestReview?.verdict.displayName),
             ("review_level", latestReview?.reviewLevel.displayName),
@@ -736,12 +1019,19 @@ enum SupervisorSkillActivityPresentation {
                     "\($0.ackStatus.displayName) · \($0.ackRequired ? "required" : "optional")"
                 }
             ),
+            ("guidance_summary", activeGuidanceSummary),
             ("follow_up_rhythm", SupervisorReviewPolicyEngine.eventFollowUpCadenceLabel(governance: resolvedGovernance))
         ])
 
         let resultFields = recordFields([
             ("result_status", firstNonEmpty(evidence?.status, record?.status.rawValue, events.last?.status)),
             ("result_summary", latestResultSummary),
+            ("readiness_ref", readinessRef),
+            ("execution_readiness", executionReadiness),
+            ("state_label", readinessStateLabel),
+            ("readiness_reason_code", readinessReasonCode),
+            ("required_runtime_surfaces", joinedListText(requiredRuntimeSurfaces)),
+            ("unblock_actions", joinedListText(unblockActions)),
             ("raw_output_chars", evidence.flatMap { $0.rawOutputChars > 0 ? String($0.rawOutputChars) : nil })
         ])
 
@@ -857,7 +1147,7 @@ enum SupervisorSkillActivityPresentation {
             lines.append("")
             lines.append("== 审批记录 ==")
             for entry in record.approvalHistory {
-                lines.append(formattedTimelineEntry(entry))
+                lines.append(displayFormattedTimelineEntry(entry))
             }
         }
 
@@ -865,7 +1155,7 @@ enum SupervisorSkillActivityPresentation {
             lines.append("")
             lines.append("== 事件时间线 ==")
             for entry in record.timeline {
-                lines.append(formattedTimelineEntry(entry))
+                lines.append(displayFormattedTimelineEntry(entry))
             }
         }
 
@@ -889,25 +1179,26 @@ enum SupervisorSkillActivityPresentation {
     static func displayFullRecordText(_ record: SupervisorSkillFullRecord) -> String {
         var lines: [String] = [
             "Supervisor 技能完整记录",
-            "project_name=\(record.projectName)",
-            "request_id=\(record.requestID)"
+            "项目：\(record.projectName)",
+            "请求单号：\(record.requestID)"
         ]
 
-        if !record.latestStatus.isEmpty {
-            lines.append("latest_status=\(record.latestStatus)")
+        let displayStatus = nonEmpty(record.latestStatusLabel) ?? statusLabel(for: record.latestStatus)
+        if !displayStatus.isEmpty {
+            lines.append("最新状态：\(displayStatus)")
         }
 
-        appendRecordSection(
+        appendDisplayRecordSection(
             "请求信息",
             fields: displayRequestMetadataFields(record.requestMetadata),
             into: &lines
         )
-        appendRecordSection(
+        appendDisplayRecordSection(
             "审批状态",
             fields: displayMetadataFields(record.approvalFields),
             into: &lines
         )
-        appendRecordSection(
+        appendDisplayRecordSection(
             "治理上下文",
             fields: displayMetadataFields(record.governanceFields),
             into: &lines
@@ -925,7 +1216,7 @@ enum SupervisorSkillActivityPresentation {
             lines.append(toolArgs)
         }
 
-        appendRecordSection(
+        appendDisplayRecordSection(
             "执行结果",
             fields: displayMetadataFields(record.resultFields),
             into: &lines
@@ -943,13 +1234,13 @@ enum SupervisorSkillActivityPresentation {
             lines.append(rawOutput)
         }
 
-        appendRecordSection(
+        appendDisplayRecordSection(
             "证据引用",
             fields: displayMetadataFields(record.evidenceFields),
             into: &lines
         )
 
-        appendRecordSection(
+        appendDisplayRecordSection(
             "UI 审查代理证据",
             fields: displayMetadataFields(record.uiReviewAgentEvidenceFields),
             into: &lines
@@ -965,7 +1256,7 @@ enum SupervisorSkillActivityPresentation {
             lines.append("")
             lines.append("== 审批记录 ==")
             for entry in record.approvalHistory {
-                lines.append(formattedTimelineEntry(entry))
+                lines.append(displayFormattedTimelineEntry(entry))
             }
         }
 
@@ -973,7 +1264,7 @@ enum SupervisorSkillActivityPresentation {
             lines.append("")
             lines.append("== 事件时间线 ==")
             for entry in record.timeline {
-                lines.append(formattedTimelineEntry(entry))
+                lines.append(displayFormattedTimelineEntry(entry))
             }
         }
 
@@ -1040,6 +1331,82 @@ enum SupervisorSkillActivityPresentation {
         return "\(label)=\(value)"
     }
 
+    static func governanceReasonText(
+        for item: SupervisorManager.SupervisorRecentSkillActivity
+    ) -> String? {
+        if let persisted = nonEmpty(item.governanceReason) {
+            return persisted
+        }
+        return XTGuardrailMessagePresentation.governanceReasonSummary(
+            tool: item.tool,
+            toolLabel: displayToolName(item.toolName, tool: item.tool),
+            denyCode: item.denyCode,
+            policySource: item.policySource,
+            policyReason: item.policyReason,
+            requiredCapability: item.requiredCapability
+        )
+    }
+
+    private static func governanceReasonText(
+        for event: SupervisorSkillRawEvent
+    ) -> String? {
+        let tool = ToolName(rawValue: event.toolName)
+        return XTGuardrailMessagePresentation.governanceReasonSummary(
+            tool: tool,
+            toolLabel: displayToolName(event.toolName, tool: tool),
+            denyCode: event.denyCode,
+            policySource: event.policySource,
+            policyReason: event.policyReason,
+            requiredCapability: event.requiredCapability
+        )
+    }
+
+    private static func repairActionSummary(
+        denyCode: String,
+        policySource: String,
+        policyReason: String
+    ) -> String? {
+        guard let repairHint = XTGuardrailMessagePresentation.repairHint(
+            denyCode: denyCode,
+            policySource: policySource,
+            policyReason: policyReason
+        ) else {
+            return nil
+        }
+        return "\(repairHint.buttonTitle)：\(repairHint.helpText)"
+    }
+
+    private static func repairActionText(
+        for item: SupervisorManager.SupervisorRecentSkillActivity
+    ) -> String? {
+        if let persisted = nonEmpty(item.repairAction) {
+            return persisted
+        }
+        if let uiReviewAction = item.governance?.guidanceContract?.uiReviewRepair?.repairAction,
+           let normalized = nonEmpty(uiReviewAction) {
+            return normalized
+        }
+        return repairActionSummary(
+            denyCode: item.denyCode,
+            policySource: item.policySource,
+            policyReason: item.policyReason
+        )
+    }
+
+    private static func prefixGovernanceTruthIfNeeded(
+        body: String,
+        item: SupervisorManager.SupervisorRecentSkillActivity
+    ) -> String {
+        guard XTGuardrailMessagePresentation.shouldShowGovernanceTruth(
+            denyCode: item.denyCode,
+            policySource: item.policySource
+        ),
+        let governanceTruth = displayGovernanceTruthLine(for: item) else {
+            return body
+        }
+        return "\(governanceTruth) \(body)"
+    }
+
     private static func loadEvents(
         ctx: AXProjectContext,
         requestID: String
@@ -1101,7 +1468,7 @@ enum SupervisorSkillActivityPresentation {
             resultSummary: stringValue(object["result_summary"]) ?? "",
             denyCode: stringValue(object["deny_code"]) ?? "",
             policySource: stringValue(object["policy_source"]) ?? "",
-            policyReason: stringValue(object["policy_reason"]) ?? "",
+            policyReason: resolvedPolicyReason(object),
             requiredCapability: stringValue(object["required_capability"]) ?? "",
             grantRequestId: stringValue(object["grant_request_id"]) ?? "",
             grantId: stringValue(object["grant_id"]) ?? "",
@@ -1113,6 +1480,17 @@ enum SupervisorSkillActivityPresentation {
             rawObject: object,
             lineIndex: lineIndex
         )
+    }
+
+    private static func resolvedPolicyReason(
+        _ object: [String: JSONValue]
+    ) -> String {
+        let policySource = stringValue(object["policy_source"]) ?? ""
+        if policySource == "project_autonomy_policy",
+           let runtimeSurfacePolicyReason = stringValue(object["runtime_surface_policy_reason"]) {
+            return runtimeSurfacePolicyReason
+        }
+        return stringValue(object["policy_reason"]) ?? ""
     }
 
     private static func timelineEntry(
@@ -1146,19 +1524,19 @@ enum SupervisorSkillActivityPresentation {
                     grantRequestId: event.grantRequestId
                 )
             }
-            return "Waiting for local approval"
+            return "等待本地审批"
         case "queued":
-            return "Queued governed dispatch"
+            return "已进入受治理执行队列"
         case "running":
-            return "Executing \(displayToolName(event.toolName, tool: nil))"
+            return "正在执行\(displayToolName(event.toolName, tool: nil))"
         case "completed":
-            return "Supervisor skill completed"
+            return "Supervisor 技能已完成"
         case "failed":
-            return "Supervisor skill failed"
+            return "Supervisor 技能失败"
         case "blocked":
-            return "Supervisor skill blocked"
+            return "Supervisor 技能受阻"
         case "canceled":
-            return "Supervisor skill canceled"
+            return "Supervisor 技能已取消"
         default:
             if !event.action.isEmpty {
                 return "\(event.type) action=\(event.action)"
@@ -1176,6 +1554,15 @@ enum SupervisorSkillActivityPresentation {
         }
         if !event.requestedSkillId.isEmpty {
             lines.append("requested_skill_id=\(event.requestedSkillId)")
+        }
+        if let intentFamilies = joinedListText(stringArrayValue(event.rawObject["intent_families"])) {
+            lines.append("intent_families=\(intentFamilies)")
+        }
+        if let capabilityFamilies = joinedListText(stringArrayValue(event.rawObject["capability_families"])) {
+            lines.append("capability_families=\(capabilityFamilies)")
+        }
+        if let capabilityProfiles = joinedListText(stringArrayValue(event.rawObject["capability_profiles"])) {
+            lines.append("capability_profiles=\(capabilityProfiles)")
         }
         let routingPayload = (!event.routingReasonCode.isEmpty || !event.routingExplanation.isEmpty)
             ? [String: JSONValue]()
@@ -1198,11 +1585,66 @@ enum SupervisorSkillActivityPresentation {
         if !event.denyCode.isEmpty {
             lines.append("deny_code=\(event.denyCode)")
         }
+        if let profileDeltaRef = stringValue(event.rawObject["profile_delta_ref"]) {
+            lines.append("profile_delta_ref=\(profileDeltaRef)")
+        }
+        if let readinessRef = stringValue(event.rawObject["readiness_ref"]) {
+            lines.append("readiness_ref=\(readinessRef)")
+        }
+        if let approvalSummary = stringValue(event.rawObject["approval_summary"]) {
+            lines.append("approval_summary=\(approvalSummary)")
+        }
+        if let currentRunnableProfiles = joinedListText(stringArrayValue(event.rawObject["current_runnable_profiles"])) {
+            lines.append("current_runnable_profiles=\(currentRunnableProfiles)")
+        }
+        if let requestedProfiles = joinedListText(stringArrayValue(event.rawObject["requested_profiles"])) {
+            lines.append("requested_profiles=\(requestedProfiles)")
+        }
+        if let deltaProfiles = joinedListText(stringArrayValue(event.rawObject["delta_profiles"])) {
+            lines.append("delta_profiles=\(deltaProfiles)")
+        }
+        if let currentFamilies = joinedListText(stringArrayValue(event.rawObject["current_runnable_capability_families"])) {
+            lines.append("current_runnable_capability_families=\(currentFamilies)")
+        }
+        if let requestedFamilies = joinedListText(stringArrayValue(event.rawObject["requested_capability_families"])) {
+            lines.append("requested_capability_families=\(requestedFamilies)")
+        }
+        if let deltaFamilies = joinedListText(stringArrayValue(event.rawObject["delta_capability_families"])) {
+            lines.append("delta_capability_families=\(deltaFamilies)")
+        }
+        if let executionReadiness = stringValue(event.rawObject["execution_readiness"]) {
+            lines.append("execution_readiness=\(executionReadiness)")
+        }
+        if let readinessReasonCode = stringValue(event.rawObject["readiness_reason_code"]) {
+            lines.append("readiness_reason_code=\(readinessReasonCode)")
+        }
+        if let grantFloor = stringValue(event.rawObject["grant_floor"]) {
+            lines.append("grant_floor=\(grantFloor)")
+        }
+        if let approvalFloor = stringValue(event.rawObject["approval_floor"]) {
+            lines.append("approval_floor=\(approvalFloor)")
+        }
+        if let requiredRuntimeSurfaces = joinedListText(stringArrayValue(event.rawObject["required_runtime_surfaces"])) {
+            lines.append("required_runtime_surfaces=\(requiredRuntimeSurfaces)")
+        }
+        if let unblockActions = joinedListText(stringArrayValue(event.rawObject["unblock_actions"])) {
+            lines.append("unblock_actions=\(unblockActions)")
+        }
         if !event.policySource.isEmpty {
             lines.append("policy_source=\(event.policySource)")
         }
         if !event.policyReason.isEmpty {
             lines.append("policy_reason=\(event.policyReason)")
+        }
+        if let governanceReason = governanceReasonText(for: event) {
+            lines.append("governance_reason=\(governanceReason)")
+        }
+        if let governanceTruth = XTGuardrailMessagePresentation.governanceTruthLine(
+            from: event.rawObject,
+            denyCode: event.denyCode,
+            policySource: event.policySource
+        ) {
+            lines.append("governance_truth=\(governanceTruth)")
         }
         if !event.requiredCapability.isEmpty {
             lines.append("required_capability=\(event.requiredCapability)")
@@ -1246,6 +1688,19 @@ enum SupervisorSkillActivityPresentation {
         }
     }
 
+    private static func appendDisplayRecordSection(
+        _ title: String,
+        fields: [ProjectSkillRecordField],
+        into lines: inout [String]
+    ) {
+        guard !fields.isEmpty else { return }
+        lines.append("")
+        lines.append("== \(title) ==")
+        for field in fields {
+            lines.append("\(field.label)：\(field.value)")
+        }
+    }
+
     private static func formattedTimelineEntry(
         _ entry: ProjectSkillRecordTimelineEntry
     ) -> String {
@@ -1261,6 +1716,21 @@ enum SupervisorSkillActivityPresentation {
         return lines.joined(separator: "\n")
     }
 
+    private static func displayFormattedTimelineEntry(
+        _ entry: ProjectSkillRecordTimelineEntry
+    ) -> String {
+        var lines: [String] = [
+            "[\(entry.timestamp)] 状态：\(entry.statusLabel.isEmpty ? "未知" : entry.statusLabel)"
+        ]
+        if !entry.summary.isEmpty {
+            lines.append("摘要：\(entry.summary)")
+        }
+        if let detail = displayTimelineDetail(entry.detail) {
+            lines.append(detail)
+        }
+        return lines.joined(separator: "\n")
+    }
+
     private static func recordFields(
         _ pairs: [(String, String?)]
     ) -> [ProjectSkillRecordField] {
@@ -1268,6 +1738,12 @@ enum SupervisorSkillActivityPresentation {
             guard let value = nonEmpty(value) else { return nil }
             return ProjectSkillRecordField(label: label, value: value)
         }
+    }
+
+    private static func activeGuidanceSummary(
+        for governance: SupervisorManager.SupervisorRecentSkillActivity.GovernanceSummary
+    ) -> String? {
+        nonEmpty(governance.activeGuidanceSummary)
     }
 
     private static func displayFieldLabel(_ rawLabel: String) -> String {
@@ -1284,6 +1760,22 @@ enum SupervisorSkillActivityPresentation {
             return "计划"
         case "step_id":
             return "步骤"
+        case "requested_skill_id":
+            return "请求技能"
+        case "skill_id":
+            return "生效技能"
+        case "intent_families":
+            return "意图族"
+        case "capability_families":
+            return "能力族"
+        case "capability_profiles":
+            return "能力档位"
+        case "routing_resolution":
+            return "路由"
+        case "routing_reason_code":
+            return "路由判定"
+        case "routing_explanation":
+            return "路由说明"
         case "tool_name":
             return "工具"
         case "latest_status":
@@ -1296,16 +1788,50 @@ enum SupervisorSkillActivityPresentation {
             return "更新时间"
         case "required_capability":
             return "所需能力"
+        case "profile_delta_ref":
+            return "能力增量引用"
+        case "approval_summary":
+            return "能力增量摘要"
+        case "current_runnable_profiles":
+            return "当前可直接运行档位"
+        case "requested_profiles":
+            return "本次请求档位"
+        case "delta_profiles":
+            return "新增放开档位"
+        case "current_runnable_capability_families":
+            return "当前可直接运行能力族"
+        case "requested_capability_families":
+            return "本次请求能力族"
+        case "delta_capability_families":
+            return "新增放开能力族"
+        case "grant_floor":
+            return "授权门槛"
+        case "approval_floor":
+            return "审批门槛"
+        case "readiness_ref":
+            return "执行就绪引用"
+        case "execution_readiness":
+            return "执行就绪"
+        case "state_label":
+            return "状态标签"
+        case "readiness_reason_code":
+            return "就绪原因"
+        case "required_runtime_surfaces":
+            return "所需运行面"
+        case "unblock_actions":
+            return "解阻动作"
         case "grant_request_id":
             return "授权请求"
         case "grant_id":
             return "授权"
         case "deny_code":
-            return "拒绝码"
+            return "拒绝原因"
         case "policy_source":
             return "策略来源"
         case "policy_reason":
             return "策略原因"
+        case "governance_reason":
+            return "治理原因"
         case "blocked_summary":
             return "阻塞说明"
         case "governance_truth":
@@ -1332,6 +1858,8 @@ enum SupervisorSkillActivityPresentation {
             return "待确认指导"
         case "pending_guidance_ack":
             return "待确认指导状态"
+        case "guidance_summary":
+            return "指导摘要"
         case "follow_up_rhythm":
             return "跟进节奏"
         case "result_status":
@@ -1367,6 +1895,205 @@ enum SupervisorSkillActivityPresentation {
         default:
             return rawLabel
         }
+    }
+
+    private static func displayTimelineDetail(
+        _ detail: String?
+    ) -> String? {
+        guard let detail = nonEmpty(detail) else { return nil }
+        let context = fieldContext(from: detail)
+        let lines = detail
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { displayTimelineDetailLine(String($0), context: context) }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func displayTimelineDetailLine(
+        _ line: String,
+        context: [String: String]
+    ) -> String {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        guard let separatorIndex = trimmed.firstIndex(of: "=") else {
+            return trimmed
+        }
+        let rawLabel = String(trimmed[..<separatorIndex])
+        let rawValue = String(trimmed[trimmed.index(after: separatorIndex)...])
+        let value = displayFieldValue(rawLabel, rawValue, context: context)
+        return "\(displayFieldLabel(rawLabel))：\(value)"
+    }
+
+    private static func displayFieldValue(
+        _ rawLabel: String,
+        _ rawValue: String,
+        context: [String: String] = [:]
+    ) -> String {
+        let baseValue = ProjectSkillActivityPresentation.displayFieldValue(
+            rawLabel,
+            rawValue,
+            context: context
+        )
+        let trimmedLabel = rawLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedValue = baseValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedValue.isEmpty else { return baseValue }
+
+        switch trimmedLabel {
+        case "routing_reason_code":
+            return routingReasonText(trimmedValue) ?? baseValue
+        case "review_verdict":
+            return localizedReviewVerdict(trimmedValue)
+        case "review_level":
+            return localizedReviewLevel(trimmedValue)
+        case "supervisor_tier":
+            return localizedSupervisorTier(trimmedValue)
+        case "work_order_depth":
+            return localizedWorkOrderDepth(trimmedValue)
+        case "latest_guidance_delivery":
+            return localizedGuidanceDeliveryMode(trimmedValue)
+        case "pending_guidance_ack":
+            return localizedGuidanceAck(trimmedValue)
+        case "follow_up_rhythm":
+            return ProjectGovernanceActivityDisplay.displayValue(
+                label: "follow_up_rhythm",
+                value: trimmedValue
+            )
+        case "result_status", "latest_status":
+            return statusLabel(for: trimmedValue)
+        default:
+            return baseValue
+        }
+    }
+
+    private static func fieldContext(
+        from detail: String
+    ) -> [String: String] {
+        var context: [String: String] = [:]
+        for line in detail.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = String(line).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty,
+                  let separatorIndex = trimmed.firstIndex(of: "=") else {
+                continue
+            }
+            let key = String(trimmed[..<separatorIndex])
+            let value = String(trimmed[trimmed.index(after: separatorIndex)...])
+            context[key] = value
+        }
+        return context
+    }
+
+    private static func localizedReviewVerdict(_ value: String) -> String {
+        switch normalizedDisplayToken(value) {
+        case "on_track":
+            return "进展正常"
+        case "watch":
+            return "需要关注"
+        case "better_path_found":
+            return "发现更优路径"
+        case "wrong_direction":
+            return "方向错误"
+        case "high_risk":
+            return "高风险"
+        default:
+            return ProjectGovernanceActivityDisplay.displayValue(label: "verdict", value: value)
+        }
+    }
+
+    private static func localizedReviewLevel(_ value: String) -> String {
+        switch normalizedDisplayToken(value) {
+        case "r1_pulse":
+            return "R1 脉冲"
+        case "r2_strategic":
+            return "R2 战略"
+        case "r3_rescue":
+            return "R3 救援"
+        default:
+            return ProjectGovernanceActivityDisplay.displayValue(label: "level", value: value)
+        }
+    }
+
+    private static func localizedSupervisorTier(_ value: String) -> String {
+        switch normalizedDisplayToken(value) {
+        case "s0_silent_audit":
+            return "S0 静默审计"
+        case "s1_milestone_review":
+            return "S1 里程碑审查"
+        case "s2_periodic_review":
+            return "S2 周期审查"
+        case "s3_strategic_coach":
+            return "S3 战略教练"
+        case "s4_tight_supervision":
+            return "S4 紧密监督"
+        default:
+            return ProjectGovernanceActivityDisplay.displayValue(label: "supervisor_tier", value: value)
+        }
+    }
+
+    private static func localizedWorkOrderDepth(_ value: String) -> String {
+        switch normalizedDisplayToken(value) {
+        case "none":
+            return "无"
+        case "brief":
+            return "简要"
+        case "milestone_contract":
+            return "里程碑合同"
+        case "execution_ready":
+            return "执行就绪"
+        case "step_locked_rescue":
+            return "锁步救援"
+        default:
+            return ProjectGovernanceActivityDisplay.displayValue(label: "work_order_depth", value: value)
+        }
+    }
+
+    private static func localizedGuidanceDeliveryMode(_ value: String) -> String {
+        switch normalizedDisplayToken(value) {
+        case "context_append":
+            return "上下文追加"
+        case "priority_insert":
+            return "优先插入"
+        case "replan_request":
+            return "请求重规划"
+        case "stop_signal":
+            return "停止信号"
+        default:
+            return ProjectGovernanceActivityDisplay.displayValue(label: "delivery", value: value)
+        }
+    }
+
+    private static func localizedGuidanceAck(_ value: String) -> String {
+        let components = value
+            .split(separator: "·", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !components.isEmpty else { return value }
+
+        let localized = components.map { component in
+            switch normalizedDisplayToken(component) {
+            case "pending":
+                return "待确认"
+            case "accepted":
+                return "已接受"
+            case "deferred":
+                return "已暂缓"
+            case "rejected":
+                return "已拒绝"
+            case "required":
+                return "必答"
+            case "optional":
+                return "可选"
+            default:
+                return component
+            }
+        }
+        return localized.joined(separator: " · ")
+    }
+
+    private static func normalizedDisplayToken(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
     }
 
     private static func skillRoutingSummary(
@@ -1588,6 +2315,8 @@ enum SupervisorSkillActivityPresentation {
             return "搜索"
         case .skills_search:
             return "搜索技能"
+        case .skills_pin:
+            return "更新技能可用性"
         case .summarize:
             return "总结内容"
         case .supervisorVoicePlayback:
@@ -1626,8 +2355,225 @@ enum SupervisorSkillActivityPresentation {
         return text
     }
 
+    private static func appendCapabilityContext(
+        _ body: String,
+        item: SupervisorManager.SupervisorRecentSkillActivity
+    ) -> String {
+        var lines: [String] = [body]
+        lines.append(
+            contentsOf: governedApprovalContextLines(
+                requestID: item.requestId,
+                skillID: item.skillId,
+                requestedSkillID: item.requestedSkillId,
+                toolName: item.toolName,
+                status: item.status,
+                deltaApproval: item.record.deltaApproval,
+                readiness: item.record.readiness,
+                hubStateDirPath: item.record.hubStateDirPath
+            )
+        )
+        return lines.joined(separator: "\n")
+    }
+
+    static func governedApprovalContextLines(
+        requestID: String,
+        skillID: String,
+        requestedSkillID: String?,
+        toolName: String,
+        status: String,
+        deltaApproval: XTSkillProfileDeltaApproval?,
+        readiness: XTSkillExecutionReadiness?,
+        hubStateDirPath: String? = nil
+    ) -> [String] {
+        let activityItem = governedSkillPresentationItem(
+            requestID: requestID,
+            skillID: skillID,
+            requestedSkillID: requestedSkillID,
+            toolName: toolName,
+            status: status,
+            deltaApproval: deltaApproval,
+            readiness: readiness,
+            hubStateDirPath: hubStateDirPath
+        )
+
+        let deltaLines = XTPendingApprovalPresentation.approvalProfileDeltaLines(for: activityItem)
+        var lines: [String] = []
+
+        if let headline = preferredGovernedDeltaHeadline(from: deltaLines) {
+            lines.append("能力增量：\(headline)")
+        }
+        if let gateLine = deltaLines.first(where: { $0.hasPrefix("授权门槛：") }) {
+            lines.append(gateLine)
+        }
+
+        let runtimeSurfaces = readiness?.requiredRuntimeSurfaces ?? []
+        let unblockActions = readiness?.unblockActions ?? []
+        let readinessText = nonEmpty(activityItem.executionReadiness).map {
+            XTPendingApprovalPresentation.displayExecutionReadiness($0)
+        }
+        if readinessText != nil || !runtimeSurfaces.isEmpty || !unblockActions.isEmpty {
+            var parts: [String] = []
+            if let readinessText {
+                parts.append("执行就绪：\(readinessText)")
+            }
+            if !runtimeSurfaces.isEmpty {
+                parts.append(
+                    "运行面：\(XTPendingApprovalPresentation.displayRuntimeSurfaceList(runtimeSurfaces))"
+                )
+            }
+            if !unblockActions.isEmpty {
+                parts.append(
+                    "解阻动作：\(XTPendingApprovalPresentation.displayUnblockActionList(unblockActions))"
+                )
+            }
+            lines.append(parts.joined(separator: "；"))
+        }
+
+        return lines
+    }
+
+    static func governedSkillPresentationItem(
+        for item: SupervisorManager.SupervisorRecentSkillActivity
+    ) -> ProjectSkillActivityItem {
+        governedSkillPresentationItem(
+            requestID: item.requestId,
+            skillID: item.skillId,
+            requestedSkillID: item.requestedSkillId,
+            toolName: item.toolName,
+            status: item.status,
+            deltaApproval: item.record.deltaApproval,
+            readiness: item.record.readiness,
+            hubStateDirPath: item.record.hubStateDirPath
+        )
+    }
+
+    static func governedSkillPresentationItem(
+        for approval: SupervisorManager.SupervisorPendingSkillApproval
+    ) -> ProjectSkillActivityItem {
+        governedSkillPresentationItem(
+            requestID: approval.requestId,
+            skillID: approval.skillId,
+            requestedSkillID: approval.requestedSkillId,
+            toolName: approval.toolName,
+            status: SupervisorSkillCallStatus.awaitingAuthorization.rawValue,
+            deltaApproval: approval.deltaApproval,
+            readiness: approval.readiness
+        )
+    }
+
+    static func governedSkillPresentationItem(
+        requestID: String,
+        skillID: String,
+        requestedSkillID: String?,
+        toolName: String,
+        status: String,
+        deltaApproval: XTSkillProfileDeltaApproval?,
+        readiness: XTSkillExecutionReadiness?,
+        hubStateDirPath: String? = nil
+    ) -> ProjectSkillActivityItem {
+        ProjectSkillActivityItem(
+            requestID: requestID,
+            skillID: skillID,
+            requestedSkillID: requestedSkillID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+            intentFamilies: readiness?.intentFamilies ?? [],
+            capabilityFamilies: readiness?.capabilityFamilies ?? [],
+            capabilityProfiles: readiness?.capabilityProfiles ?? [],
+            toolName: toolName,
+            status: status,
+            createdAt: 0,
+            resolutionSource: "",
+            toolArgs: [:],
+            routingReasonCode: "",
+            routingExplanation: "",
+            hubStateDirPath: hubStateDirPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+            executionReadiness: readiness?.executionReadiness ?? "",
+            approvalSummary: deltaApproval?.summary ?? "",
+            currentRunnableProfiles: deltaApproval?.currentRunnableProfiles ?? [],
+            requestedProfiles: deltaApproval?.requestedProfiles ?? [],
+            deltaProfiles: deltaApproval?.deltaProfiles ?? [],
+            currentRunnableCapabilityFamilies: deltaApproval?.currentRunnableCapabilityFamilies ?? [],
+            requestedCapabilityFamilies: deltaApproval?.requestedCapabilityFamilies ?? [],
+            deltaCapabilityFamilies: deltaApproval?.deltaCapabilityFamilies ?? [],
+            grantFloor: deltaApproval?.grantFloor ?? readiness?.grantFloor ?? "",
+            approvalFloor: deltaApproval?.approvalFloor ?? readiness?.approvalFloor ?? "",
+            requiredCapability: "",
+            resultSummary: "",
+            detail: "",
+            denyCode: "",
+            authorizationDisposition: ""
+        )
+    }
+
+    private static func isAwaitingRequestScopedLocalApproval(
+        _ item: SupervisorManager.SupervisorRecentSkillActivity
+    ) -> Bool {
+        if item.record.readiness?.executionReadiness == XTSkillExecutionReadinessState.localApprovalRequired.rawValue {
+            return true
+        }
+        if item.record.readiness?.executionReadiness == XTSkillExecutionReadinessState.grantRequired.rawValue {
+            return false
+        }
+        return item.requiredCapability.isEmpty
+    }
+
     private static func normalizedStatus(_ raw: String) -> String {
         raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func shouldPreferGovernedCardSummary(
+        _ item: SupervisorManager.SupervisorRecentSkillActivity
+    ) -> Bool {
+        if normalizedStatus(item.status) == "awaiting_authorization" {
+            return true
+        }
+        if item.record.deltaApproval != nil || item.record.readiness != nil {
+            return true
+        }
+        return nonEmpty(item.record.hubStateDirPath) != nil
+    }
+
+    private static func shouldDisplayCardGovernedDetailLine(
+        _ line: String
+    ) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        return !trimmed.hasPrefix("生效技能：")
+            && !trimmed.hasPrefix("请求技能：")
+    }
+
+    private static func prioritizedCardGovernedDetailLines(
+        _ lines: [String]
+    ) -> [String] {
+        lines.enumerated()
+            .sorted { lhs, rhs in
+                let leftPriority = cardGovernedDetailPriority(lhs.element)
+                let rightPriority = cardGovernedDetailPriority(rhs.element)
+                if leftPriority != rightPriority {
+                    return leftPriority < rightPriority
+                }
+                return lhs.offset < rhs.offset
+            }
+            .map(\.element)
+    }
+
+    private static func cardGovernedDetailPriority(
+        _ line: String
+    ) -> Int {
+        if line.hasPrefix("执行就绪：") { return 0 }
+        if line.hasPrefix("治理闸门：") { return 1 }
+        if line.hasPrefix("恢复上下文：") { return 2 }
+        if line.hasPrefix("能力档位：") { return 3 }
+        if line.hasPrefix("能力族：") { return 4 }
+        if line.hasPrefix("意图族：") { return 5 }
+        return 6
+    }
+
+    private static func preferredGovernedDeltaHeadline(
+        from lines: [String]
+    ) -> String? {
+        lines.first(where: { $0.hasPrefix("新增放开：") })
+            ?? lines.first(where: { $0.hasPrefix("本次请求：") })
+            ?? lines.first(where: { $0.hasPrefix("当前可直接运行：") })
     }
 
     private static func actionURLGovernanceDestination(
@@ -1650,6 +2596,31 @@ enum SupervisorSkillActivityPresentation {
             }
         }
         return nil
+    }
+
+    private static func latestRawEventScalar(
+        _ key: String,
+        from events: [SupervisorSkillRawEvent]
+    ) -> String? {
+        for event in events.reversed() {
+            if let value = nonEmpty(event.rawObject[key]?.stringValue) {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private static func latestRawEventStringArray(
+        _ key: String,
+        from events: [SupervisorSkillRawEvent]
+    ) -> [String] {
+        for event in events.reversed() {
+            let values = stringArrayValue(event.rawObject[key])
+            if !values.isEmpty {
+                return values
+            }
+        }
+        return []
     }
 
     private static func nonEmpty(_ value: String?) -> String? {
@@ -1684,6 +2655,41 @@ enum SupervisorSkillActivityPresentation {
         default:
             return nil
         }
+    }
+
+    private static func stringArrayValue(_ value: JSONValue?) -> [String] {
+        switch value {
+        case .array(let values):
+            return values.compactMap {
+                $0.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            .filter { !$0.isEmpty }
+        case .string(let text):
+            return text
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        default:
+            return []
+        }
+    }
+
+    private static func firstNonEmptyStringArray(
+        _ arrays: [String]...
+    ) -> [String] {
+        for array in arrays where !array.isEmpty {
+            return array
+        }
+        return []
+    }
+
+    private static func joinedListText(
+        _ values: [String]
+    ) -> String? {
+        let normalized = values
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return normalized.isEmpty ? nil : normalized.joined(separator: ", ")
     }
 
     private static func jsonObjectValue(_ value: JSONValue?) -> [String: JSONValue] {

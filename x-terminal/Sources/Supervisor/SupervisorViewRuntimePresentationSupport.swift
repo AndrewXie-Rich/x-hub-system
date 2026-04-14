@@ -12,6 +12,7 @@ enum SupervisorViewRuntimePresentationSupport {
         let recentSkillActivity: SupervisorRecentSkillActivityBoardPresentation
         let eventLoop: SupervisorEventLoopBoardPresentation
         let pendingHubGrant: SupervisorPendingHubGrantBoardPresentation
+        let candidateReview: SupervisorCandidateReviewBoardPresentation
         let doctor: SupervisorDoctorBoardPresentation
         let automation: SupervisorAutomationRuntimePresentation
         let laneHealth: SupervisorLaneHealthBoardPresentation
@@ -29,6 +30,7 @@ enum SupervisorViewRuntimePresentationSupport {
         selectedPortfolioDrillDownScope: SupervisorProjectDrillDownScope,
         highlightedPendingSkillApprovalAnchor: String?,
         highlightedPendingHubGrantAnchor: String?,
+        highlightedCandidateReviewAnchor: String?,
         laneHealthFilter: SupervisorLaneHealthFilter,
         focusedSplitLaneID: String?,
         xtReadySnapshot: SupervisorManager.XTReadyIncidentExportSnapshot? = nil
@@ -53,7 +55,7 @@ enum SupervisorViewRuntimePresentationSupport {
 
         return DashboardPresentationBundle(
             runtimeActivity: SupervisorRuntimeActivityPresentation.map(
-                entries: supervisor.runtimeActivityEntries
+                entries: supervisor.frontstageRuntimeActivityEntries
             ),
             portfolio: portfolio,
             activeProjectDrillDown: activeProjectDrillDown,
@@ -79,8 +81,14 @@ enum SupervisorViewRuntimePresentationSupport {
                 hubInteractive: appModel.hubInteractive,
                 focusedRowAnchor: highlightedPendingHubGrantAnchor
             ),
+            candidateReview: supervisorCandidateReviewBoardPresentation(
+                supervisor: supervisor,
+                hubInteractive: appModel.hubInteractive,
+                focusedRowAnchor: highlightedCandidateReviewAnchor
+            ),
             doctor: doctorBoardPresentation(
-                supervisor: supervisor
+                supervisor: supervisor,
+                appModel: appModel
             ),
             automation: automationRuntimePresentation(
                 supervisor: supervisor,
@@ -111,12 +119,14 @@ enum SupervisorViewRuntimePresentationSupport {
         selectedLastLaunchRef: String
     ) -> SupervisorAutomationRuntimePresentation {
         let projectConfig = selectedProject.map {
-            appModel.projectConfig ?? .default(forProjectRoot: ctxRoot(for: $0))
+            appModel.projectConfigSnapshot(for: $0.projectId)
+                ?? .default(forProjectRoot: ctxRoot(for: $0))
         }
+        let permissionReadiness = AXTrustedAutomationPermissionOwnerReadiness.current()
         let trustedStatus = selectedProject.flatMap { project in
             projectConfig?.trustedAutomationStatus(
                 forProjectRoot: ctxRoot(for: project),
-                permissionReadiness: AXTrustedAutomationPermissionOwnerReadiness.current(),
+                permissionReadiness: permissionReadiness,
                 requiredDeviceToolGroups: selectedRecipe?.requiredDeviceToolGroups ?? []
             )
         }
@@ -125,6 +135,15 @@ enum SupervisorViewRuntimePresentationSupport {
                 forDeviceToolGroups: $0.deviceToolGroups
             )
         } ?? []
+        let runtimeReadiness: AXProjectGovernanceRuntimeReadinessSnapshot? = {
+            guard let project = selectedProject, let projectConfig else { return nil }
+            let resolved = xtResolveProjectGovernance(
+                projectRoot: ctxRoot(for: project),
+                config: projectConfig,
+                permissionReadiness: permissionReadiness
+            )
+            return resolved.runtimeReadinessSnapshot
+        }()
 
         return SupervisorAutomationRuntimePresentationMapper.map(
             input: .init(
@@ -140,7 +159,8 @@ enum SupervisorViewRuntimePresentationSupport {
                 recoveryDecision: supervisor.automationRecoveryDecision,
                 trustedStatus: trustedStatus,
                 trustedRequiredPermissions: trustedRequiredPermissions,
-                retryTrigger: supervisor.automationRetryTriggerForTesting()
+                retryTrigger: supervisor.automationRetryTriggerForTesting(),
+                runtimeReadiness: runtimeReadiness
             )
         )
     }

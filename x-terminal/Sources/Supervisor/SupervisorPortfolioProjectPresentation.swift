@@ -18,6 +18,8 @@ struct SupervisorPortfolioProjectRowPresentation: Equatable, Identifiable {
     var isSelected: Bool
     var actionabilityTags: [SupervisorPortfolioTagPresentation]
     var governanceTags: [SupervisorPortfolioTagPresentation]
+    var priorityLine: String? = nil
+    var priorityTone: SupervisorHeaderControlTone? = nil
     var uiReviewSummaryLine: String?
     var uiReviewTone: SupervisorHeaderControlTone?
     var actionLine: String
@@ -50,6 +52,8 @@ enum SupervisorPortfolioProjectRowPresentationMapper {
                 governed: governed,
                 templatePreview: templatePreview
             ),
+            priorityLine: priorityLine(card),
+            priorityTone: priorityTone(card),
             uiReviewSummaryLine: latestUIReview?.compactStatusText,
             uiReviewTone: latestUIReview.map(uiReviewTone),
             actionLine: "当前动作：\(card.currentAction)",
@@ -227,11 +231,13 @@ enum SupervisorPortfolioProjectRowPresentationMapper {
         _ profile: AXProjectGovernanceTemplate
     ) -> SupervisorHeaderControlTone {
         switch profile {
-        case .conservative:
+        case .prototype, .legacyObserve:
             return .neutral
-        case .safe:
+        case .feature:
             return .success
-        case .agent:
+        case .largeProject, .inception:
+            return .accent
+        case .highGovernance:
             return .warning
         case .custom:
             return .accent
@@ -252,9 +258,34 @@ enum SupervisorPortfolioProjectRowPresentationMapper {
     }
 
     private static func normalizedBlockerLine(_ blocker: String) -> String? {
-        let trimmed = blocker.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        return "阻塞：\(trimmed)"
+        SupervisorBlockerPresentation.blockerLine(blocker)
+    }
+
+    private static func priorityLine(
+        _ card: SupervisorPortfolioProjectCard
+    ) -> String? {
+        guard let priority = card.prioritySnapshot,
+              priority.priorityBand == .critical || priority.priorityBand == .high else {
+            return nil
+        }
+        return "优先级：\(priority.priorityBand.displayName) · \(SupervisorPortfolioSnapshotBuilder.priorityWhyText(for: card))"
+    }
+
+    private static func priorityTone(
+        _ card: SupervisorPortfolioProjectCard
+    ) -> SupervisorHeaderControlTone? {
+        guard let band = card.prioritySnapshot?.priorityBand,
+              band == .critical || band == .high else {
+            return nil
+        }
+        switch band {
+        case .critical:
+            return .danger
+        case .high:
+            return .warning
+        case .normal, .low:
+            return nil
+        }
     }
 
     private static func decisionRailTags(

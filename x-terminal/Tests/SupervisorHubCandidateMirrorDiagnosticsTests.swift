@@ -37,7 +37,7 @@ struct SupervisorHubCandidateMirrorDiagnosticsTests {
         #expect(
             presentation.detailLines.contains {
                 $0.contains("Hub mirror：Hub 镜像失败")
-                    && $0.contains("reason=remote_route_not_preferred")
+                    && $0.contains("mirror reason：当前远端路由不是首选（remote_route_not_preferred）")
             }
         )
         #expect(
@@ -82,7 +82,7 @@ struct SupervisorHubCandidateMirrorDiagnosticsTests {
         #expect(
             presentation.detailLines.contains {
                 $0.contains("Hub mirror：仅保留本地 fallback")
-                    && $0.contains("reason=supervisor_candidate_session_participation_denied")
+                    && $0.contains("mirror reason：candidate 不允许进入 scoped_write 会话（supervisor_candidate_session_participation_denied）")
             }
         )
     }

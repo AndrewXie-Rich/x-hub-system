@@ -146,7 +146,7 @@ struct SupervisorAutoLaunchPolicyTests {
         let engine = OneShotAutonomyPolicyEngine()
         let project = ProjectModel(
             name: "XT-W3-26 Runtime",
-            taskDescription: "execution tier should drive auto launch",
+            taskDescription: "A-Tier should drive auto launch",
             modelName: "gpt-4.1",
             autonomyLevel: .manual,
             executionTier: .a3DeliverAuto,
@@ -179,7 +179,7 @@ struct SupervisorAutoLaunchPolicyTests {
         let engine = OneShotAutonomyPolicyEngine()
         let project = ProjectModel(
             name: "XT-W3-26 Runtime",
-            taskDescription: "legacy shadow should not elevate low execution tier",
+            taskDescription: "legacy shadow should not elevate low A-Tier",
             modelName: "gpt-4.1",
             autonomyLevel: .fullAuto,
             executionTier: .a1Plan,

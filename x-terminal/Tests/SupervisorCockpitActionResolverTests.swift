@@ -12,7 +12,7 @@ struct SupervisorCockpitActionResolverTests {
         )
 
         #expect(plan?.effects == [
-            .setInputText("请开始一个复杂任务：目标 / 约束 / 交付物 / 风险"),
+            .setInputText("请开始一个复杂任务：目标 / 约束 / 交付物 / 风险。默认先按功能开发场景（A2 Repo Auto + S2）收敛；如果这是原型 / 产品开局 / 大型项目，也请直接说明。"),
             .requestConversationFocus
         ])
     }
@@ -65,6 +65,62 @@ struct SupervisorCockpitActionResolverTests {
     }
 
     @Test
+    func resolveAccessOpensProjectGovernanceForSupervisorGrantBlocker() {
+        let plan = SupervisorCockpitActionResolver.resolve(
+            .runtimeStage(runtimeStage("resolve_access")),
+            context: context(
+                selectedProjectID: "project-alpha",
+                runtimeBlockerCode: "device_permission_owner_missing",
+                runtimeAccessSurfaceState: .permissionDenied
+            )
+        )
+
+        #expect(plan?.effects.count == 1)
+        guard let effect = plan?.effects.first else {
+            Issue.record("Expected a governance repair effect")
+            return
+        }
+
+        switch effect {
+        case .openProjectGovernance(let projectId, let destination, let title, let detail):
+            #expect(projectId == "project-alpha")
+            #expect(destination == .overview)
+            #expect(title == "治理拦截修复")
+            #expect(detail?.contains("grant / governance 面还没就绪") == true)
+            #expect(detail?.contains("blocked_plane=grant_ready") == true)
+            #expect(detail?.contains("blocker_code=device_permission_owner_missing") == true)
+            #expect(detail?.contains("repair_direction=") == true)
+        default:
+            Issue.record("Expected openProjectGovernance, got \(effect)")
+        }
+    }
+
+    @Test
+    func openModelRouteReadinessOpensModelSettingsSheet() {
+        let plan = SupervisorCockpitActionResolver.resolve(
+            .runtimeStage(runtimeStage("open_model_route_readiness")),
+            context: context()
+        )
+
+        #expect(plan?.effects == [.presentWindowSheet(.modelSettings)])
+    }
+
+    @Test
+    func hubRecoveryAndPairHubActionsOpenHubSetupWindow() {
+        let hubRecoveryPlan = SupervisorCockpitActionResolver.resolve(
+            .runtimeStage(runtimeStage("open_hub_recovery")),
+            context: context()
+        )
+        #expect(hubRecoveryPlan?.effects == [.openWindow("hub_setup")])
+
+        let pairHubPlan = SupervisorCockpitActionResolver.resolve(
+            .runtimeStage(runtimeStage("pair_hub")),
+            context: context()
+        )
+        #expect(pairHubPlan?.effects == [.openWindow("hub_setup")])
+    }
+
+    @Test
     func directedResumeUsesBatonToFocusLaneAndDraftResumeMessage() {
         let baton = DirectedUnblockBaton(
             schemaVersion: "xt.directed_unblock_baton.v1",
@@ -112,6 +168,8 @@ struct SupervisorCockpitActionResolverTests {
         replayEvidencePath: String? = nil,
         firstPendingGrantActionURL: String? = nil,
         firstPendingSkillApprovalActionURL: String? = nil,
+        selectedProjectID: String? = nil,
+        runtimeBlockerCode: String? = nil,
         runtimeAccessSurfaceState: XTUISurfaceState? = nil,
         directedUnblockBaton: DirectedUnblockBaton? = nil
     ) -> SupervisorCockpitActionResolver.Context {
@@ -121,6 +179,8 @@ struct SupervisorCockpitActionResolverTests {
             replayEvidencePath: replayEvidencePath,
             firstPendingGrantActionURL: firstPendingGrantActionURL,
             firstPendingSkillApprovalActionURL: firstPendingSkillApprovalActionURL,
+            selectedProjectID: selectedProjectID,
+            runtimeBlockerCode: runtimeBlockerCode,
             runtimeAccessSurfaceState: runtimeAccessSurfaceState,
             directedUnblockBaton: directedUnblockBaton
         )

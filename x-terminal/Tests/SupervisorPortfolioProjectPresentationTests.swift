@@ -16,7 +16,21 @@ struct SupervisorPortfolioProjectPresentationTests {
             nextStep: "Approve the pending grant",
             memoryFreshness: .ttlCached,
             updatedAt: 42,
-            recentMessageCount: 5
+            recentMessageCount: 5,
+            prioritySnapshot: SupervisorPortfolioPrioritySnapshot(
+                projectId: "project-alpha",
+                priorityScore: 9,
+                priorityBand: .critical,
+                factors: SupervisorPortfolioPriorityFactors(
+                    risk: 3,
+                    userValue: 3,
+                    staleness: 1,
+                    blockerSeverity: 3,
+                    deadlinePressure: 0,
+                    evidenceWeakness: 0
+                ),
+                computedAtMs: 42_000
+            )
         )
         let actionability = [
             SupervisorPortfolioActionabilityItem(
@@ -37,11 +51,11 @@ struct SupervisorPortfolioProjectPresentationTests {
             pairedDeviceId: "device-1"
         )
         let templatePreview = AXProjectGovernanceTemplatePreview(
-            configuredProfile: .safe,
-            effectiveProfile: .agent,
-            configuredDeviceAuthorityPosture: .projectBound,
+            configuredProfile: .feature,
+            effectiveProfile: .highGovernance,
+            configuredDeviceAuthorityPosture: .off,
             effectiveDeviceAuthorityPosture: .deviceGoverned,
-            configuredSupervisorScope: .focusedProject,
+            configuredSupervisorScope: .portfolio,
             effectiveSupervisorScope: .deviceGoverned,
             configuredGrantPosture: .guidedAuto,
             effectiveGrantPosture: .envelopeAuto,
@@ -101,17 +115,19 @@ struct SupervisorPortfolioProjectPresentationTests {
         #expect(presentation.actionabilityTags.map(\.tone) == [.danger])
         #expect(
             presentation.governanceTags.map(\.title) ==
-                ["安全", "运行时 Agent", "设备级受治理", "包络预授权", "本地自动批", "可读路径 2"]
+                ["功能开发", "运行时 高治理", "设备级受治理", "包络预授权", "本地自动批", "可读路径 2"]
         )
         #expect(
             presentation.governanceTags.map(\.tone) ==
                 [.success, .warning, .success, .warning, .warning, .accent]
         )
+        #expect(presentation.priorityLine == "优先级：紧急 · 待授权会直接卡住推进，当前上下文已开始老化")
+        #expect(presentation.priorityTone == .danger)
         #expect(presentation.uiReviewSummaryLine == "UI review · 需关注 · 未看到关键操作")
         #expect(presentation.uiReviewTone == .warning)
         #expect(presentation.actionLine == "当前动作：Waiting for approval")
         #expect(presentation.nextLine == "下一步：Approve the pending grant")
-        #expect(presentation.blockerLine == "阻塞：grant_required")
+        #expect(presentation.blockerLine == "阻塞：Hub 授权未完成（grant_required）")
     }
 
     @Test
@@ -153,9 +169,38 @@ struct SupervisorPortfolioProjectPresentationTests {
         #expect(!presentation.isSelected)
         #expect(presentation.actionabilityTags.isEmpty)
         #expect(presentation.governanceTags.map(\.title) == ["可读路径 1"])
+        #expect(presentation.priorityLine == nil)
+        #expect(presentation.priorityTone == nil)
         #expect(presentation.uiReviewSummaryLine == nil)
         #expect(presentation.uiReviewTone == nil)
         #expect(presentation.blockerLine == nil)
+    }
+
+    @Test
+    func mapHumanizesCompositeRemoteBoundaryBlocker() {
+        let card = SupervisorPortfolioProjectCard(
+            projectId: "project-remote",
+            displayName: "Project Remote",
+            projectState: .blocked,
+            runtimeState: "blocked",
+            currentAction: "Wait for remote route recovery",
+            topBlocker: "grant_required;deny_code=remote_export_blocked",
+            nextStep: "Repair remote export gate",
+            memoryFreshness: .ttlCached,
+            updatedAt: 21,
+            recentMessageCount: 1
+        )
+
+        let presentation = SupervisorPortfolioProjectRowPresentationMapper.map(
+            card: card,
+            actionabilityItems: [],
+            isSelected: false,
+            governed: nil,
+            templatePreview: nil,
+            latestUIReview: nil
+        )
+
+        #expect(presentation.blockerLine == "阻塞：Hub remote export gate 阻断了远端请求（remote_export_blocked）")
     }
 
     @Test

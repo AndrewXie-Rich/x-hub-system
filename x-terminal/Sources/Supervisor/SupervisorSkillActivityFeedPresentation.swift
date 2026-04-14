@@ -110,15 +110,41 @@ struct SupervisorSkillActivityFeedPresentation: Equatable {
     private static func isAwaitingLocalApproval(
         _ item: SupervisorManager.SupervisorRecentSkillActivity
     ) -> Bool {
-        normalizedStatus(item.status) == "awaiting_authorization"
-            && item.requiredCapability.isEmpty
+        guard normalizedStatus(item.status) == "awaiting_authorization" else {
+            return false
+        }
+
+        if item.record.readiness?.executionReadiness
+            == XTSkillExecutionReadinessState.localApprovalRequired.rawValue {
+            return true
+        }
+
+        if item.record.readiness?.executionReadiness
+            == XTSkillExecutionReadinessState.grantRequired.rawValue {
+            return false
+        }
+
+        return item.requiredCapability.isEmpty
     }
 
     private static func isAwaitingHubGrant(
         _ item: SupervisorManager.SupervisorRecentSkillActivity
     ) -> Bool {
-        normalizedStatus(item.status) == "awaiting_authorization"
-            && !item.requiredCapability.isEmpty
+        guard normalizedStatus(item.status) == "awaiting_authorization" else {
+            return false
+        }
+
+        if item.record.readiness?.executionReadiness
+            == XTSkillExecutionReadinessState.localApprovalRequired.rawValue {
+            return false
+        }
+
+        if item.record.readiness?.executionReadiness
+            == XTSkillExecutionReadinessState.grantRequired.rawValue {
+            return true
+        }
+
+        return !item.requiredCapability.isEmpty
     }
 
     private static func isRecoveryCandidate(

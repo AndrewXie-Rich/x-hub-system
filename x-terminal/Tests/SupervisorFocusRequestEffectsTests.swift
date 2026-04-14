@@ -84,6 +84,57 @@ struct SupervisorFocusRequestEffectsTests {
     }
 
     @Test
+    func candidateReviewPlanSelectsRowAndNoRefreshWhenCandidateMatches() {
+        let request = AXSupervisorFocusRequest(
+            nonce: 7,
+            projectId: nil,
+            subject: .candidateReview(requestId: "req-review-1")
+        )
+        let candidate = candidateReview(
+            requestId: "req-review-1",
+            reviewId: "review-1",
+            projectId: "project-review"
+        )
+
+        let plan = SupervisorFocusRequestEffects.candidateReview(
+            request: request,
+            requestId: "req-review-1",
+            candidateReviews: [candidate]
+        )
+
+        #expect(plan.selectedProjectId == "project-review")
+        #expect(plan.boardAnchorID == SupervisorFocusPresentation.candidateReviewBoardAnchorID)
+        #expect(plan.rowAnchorID == SupervisorFocusPresentation.candidateReviewRowAnchor(candidate))
+        #expect(plan.highlights.candidateReviewAnchor == plan.rowAnchorID)
+        #expect(plan.highlights.pendingHubGrantAnchor == nil)
+        #expect(plan.highlights.pendingSupervisorSkillApprovalAnchor == nil)
+        #expect(plan.highlights.recentSkillActivityRequestId == nil)
+        #expect(plan.auditDrillDown == nil)
+        #expect(plan.refresh == nil)
+    }
+
+    @Test
+    func candidateReviewPlanRequestsRefreshWhenQueueIsEmpty() {
+        let request = AXSupervisorFocusRequest(
+            nonce: 8,
+            projectId: "project-review",
+            subject: .candidateReview(requestId: "req-review-2")
+        )
+
+        let plan = SupervisorFocusRequestEffects.candidateReview(
+            request: request,
+            requestId: "req-review-2",
+            candidateReviews: []
+        )
+
+        #expect(plan.selectedProjectId == "project-review")
+        #expect(plan.boardAnchorID == SupervisorFocusPresentation.candidateReviewBoardAnchorID)
+        #expect(plan.rowAnchorID == nil)
+        #expect(plan.highlights.candidateReviewAnchor == nil)
+        #expect(plan.refresh == .candidateReviews)
+    }
+
+    @Test
     func grantPlanRequestsRefreshWhenGrantListIsEmpty() {
         let request = AXSupervisorFocusRequest(
             nonce: 2,
@@ -294,6 +345,49 @@ struct SupervisorFocusRequestEffectsTests {
             approvalHistory: [],
             timeline: [],
             supervisorEvidenceJSON: nil
+        )
+    }
+
+    private func candidateReview(
+        requestId: String,
+        reviewId: String,
+        projectId: String
+    ) -> HubIPCClient.SupervisorCandidateReviewItem {
+        HubIPCClient.SupervisorCandidateReviewItem(
+            schemaVersion: "v1",
+            reviewId: reviewId,
+            requestId: requestId,
+            evidenceRef: "audit://candidate/\(requestId)",
+            reviewState: "pending_review",
+            durablePromotionState: "candidate_only",
+            promotionBoundary: "project",
+            deviceId: "device-1",
+            userId: "user-1",
+            appId: "xt",
+            threadId: "thread-1",
+            threadKey: "thread-key-1",
+            projectId: projectId,
+            projectIds: [],
+            scopes: ["project_memory"],
+            recordTypes: ["canonical"],
+            auditRefs: [],
+            idempotencyKeys: [],
+            candidateCount: 2,
+            summaryLine: "归并了 2 条候选记忆",
+            mirrorTarget: "xt_local_store",
+            localStoreRole: "cache",
+            carrierKind: "review_bundle",
+            carrierSchemaVersion: "v1",
+            pendingChangeId: "",
+            pendingChangeStatus: "",
+            editSessionId: "",
+            docId: "",
+            writebackRef: "",
+            stageCreatedAtMs: 0,
+            stageUpdatedAtMs: 0,
+            latestEmittedAtMs: 1_000,
+            createdAtMs: 900,
+            updatedAtMs: 1_000
         )
     }
 }

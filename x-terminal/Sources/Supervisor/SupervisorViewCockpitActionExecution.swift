@@ -10,6 +10,7 @@ enum SupervisorViewCockpitActionExecution {
         let setWindowSheet: (SupervisorManager.SupervisorWindowSheet?) -> Void
         let openURL: (URL) -> Void
         let openWindow: (String) -> Void
+        let openProjectGovernance: (String, XTProjectGovernanceDestination, String?, String?) -> Void
         let setFocusedSplitLane: (String) -> Void
     }
 
@@ -39,6 +40,8 @@ enum SupervisorViewCockpitActionExecution {
                 }
             case .openWindow(let windowID):
                 dependencies.openWindow(windowID)
+            case .openProjectGovernance(let projectId, let destination, let title, let detail):
+                dependencies.openProjectGovernance(projectId, destination, title, detail)
             case .setFocusedSplitLane(let laneID):
                 dependencies.setFocusedSplitLane(laneID)
             }

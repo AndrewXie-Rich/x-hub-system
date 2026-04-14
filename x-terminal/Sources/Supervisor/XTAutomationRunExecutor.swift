@@ -22,6 +22,44 @@ struct XTAutomationVerificationCommandOutcome: Codable, Equatable, Identifiable,
     var id: String { commandID }
 }
 
+struct XTAutomationVerificationContract: Codable, Equatable, Sendable {
+    var expectedState: String
+    var verifyMethod: String
+    var retryPolicy: String
+    var holdPolicy: String
+    var evidenceRequired: Bool
+    var triggerActionIDs: [String]
+    var verifyCommands: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case expectedState = "expected_state"
+        case verifyMethod = "verify_method"
+        case retryPolicy = "retry_policy"
+        case holdPolicy = "hold_policy"
+        case evidenceRequired = "evidence_required"
+        case triggerActionIDs = "trigger_action_ids"
+        case verifyCommands = "verify_commands"
+    }
+
+    init(
+        expectedState: String,
+        verifyMethod: String,
+        retryPolicy: String,
+        holdPolicy: String,
+        evidenceRequired: Bool,
+        triggerActionIDs: [String],
+        verifyCommands: [String]
+    ) {
+        self.expectedState = expectedState
+        self.verifyMethod = verifyMethod
+        self.retryPolicy = retryPolicy
+        self.holdPolicy = holdPolicy
+        self.evidenceRequired = evidenceRequired
+        self.triggerActionIDs = triggerActionIDs
+        self.verifyCommands = verifyCommands
+    }
+}
+
 struct XTAutomationVerificationReport: Codable, Equatable, Sendable {
     var required: Bool
     var executed: Bool
@@ -30,6 +68,27 @@ struct XTAutomationVerificationReport: Codable, Equatable, Sendable {
     var holdReason: String
     var detail: String
     var commandResults: [XTAutomationVerificationCommandOutcome]
+    var contract: XTAutomationVerificationContract? = nil
+
+    init(
+        required: Bool,
+        executed: Bool,
+        commandCount: Int,
+        passedCommandCount: Int,
+        holdReason: String,
+        detail: String,
+        commandResults: [XTAutomationVerificationCommandOutcome],
+        contract: XTAutomationVerificationContract? = nil
+    ) {
+        self.required = required
+        self.executed = executed
+        self.commandCount = commandCount
+        self.passedCommandCount = passedCommandCount
+        self.holdReason = holdReason
+        self.detail = detail
+        self.commandResults = commandResults
+        self.contract = contract
+    }
 
     var ok: Bool {
         guard required else { return true }
@@ -54,6 +113,7 @@ struct XTAutomationRunHandoffArtifact: Codable, Equatable, Sendable {
     var runID: String
     var lineage: XTAutomationRunLineage?
     var recipeRef: String
+    var deliveryRef: String? = nil
     var finalState: XTAutomationRunState
     var holdReason: String
     var detail: String
@@ -61,12 +121,18 @@ struct XTAutomationRunHandoffArtifact: Codable, Equatable, Sendable {
     var verificationReport: XTAutomationVerificationReport?
     var workspaceDiffReport: XTAutomationWorkspaceDiffReport?
     var suggestedNextActions: [String]
+    var structuredBlocker: XTAutomationBlockerDescriptor? = nil
+    var currentStepID: String? = nil
+    var currentStepTitle: String? = nil
+    var currentStepState: XTAutomationRunStepState? = nil
+    var currentStepSummary: String? = nil
 }
 
 struct XTAutomationRunExecutionReport: Equatable, Sendable {
     var runID: String
     var lineage: XTAutomationRunLineage? = nil
     var recipeRef: String
+    var deliveryRef: String? = nil
     var totalActionCount: Int
     var executedActionCount: Int
     var succeededActionCount: Int
@@ -78,6 +144,18 @@ struct XTAutomationRunExecutionReport: Equatable, Sendable {
     var workspaceDiffReport: XTAutomationWorkspaceDiffReport?
     var handoffArtifactPath: String?
     var auditRef: String
+    var structuredBlocker: XTAutomationBlockerDescriptor? = nil
+    var currentStepID: String? = nil
+    var currentStepTitle: String? = nil
+    var currentStepState: XTAutomationRunStepState? = nil
+    var currentStepSummary: String? = nil
+}
+
+private struct XTAutomationStepContextSnapshot: Equatable, Sendable {
+    var stepID: String?
+    var stepTitle: String?
+    var stepState: XTAutomationRunStepState?
+    var stepSummary: String?
 }
 
 final class XTAutomationRunExecutor {
@@ -97,12 +175,14 @@ final class XTAutomationRunExecutor {
         ctx: AXProjectContext,
         lineage: XTAutomationRunLineage? = nil,
         verifyCommandsOverride: [String]? = nil,
+        verificationContractOverride: XTAutomationVerificationContract? = nil,
         now: Date = Date()
     ) async -> XTAutomationRunExecutionReport {
         let auditRef = "audit-xt-auto-exec-\(xtAutomationActionToken(runID, fallback: "run"))-\(Int(now.timeIntervalSince1970))"
         let actions = recipe.actionGraph
         let config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: ctx.root)
         let resolvedLineage = xtAutomationResolvedLineage(lineage, fallbackRunID: runID)
+        let deliveryRef = xtAutomationPersistedRunDeliveryRef(for: runID, ctx: ctx)
 
         let startRow: [String: Any] = [
             "type": "automation_execution",
@@ -125,6 +205,7 @@ final class XTAutomationRunExecutor {
                     runID: runID,
                     lineage: resolvedLineage,
                     recipeRef: recipe.ref,
+                    deliveryRef: deliveryRef,
                     totalActionCount: 0,
                     executedActionCount: 0,
                     succeededActionCount: 0,
@@ -135,7 +216,8 @@ final class XTAutomationRunExecutor {
                     verificationReport: nil,
                     workspaceDiffReport: nil,
                     handoffArtifactPath: nil,
-                    auditRef: auditRef
+                    auditRef: auditRef,
+                    currentStepSummary: "automation action graph is empty"
                 ),
                 ctx: ctx,
                 createdAt: now
@@ -147,10 +229,16 @@ final class XTAutomationRunExecutor {
 
         for (index, action) in actions.enumerated() {
             if Task.isCancelled {
+                let stepContext = xtAutomationActionStepContext(
+                    action: action,
+                    state: .blocked,
+                    summary: "automation execution task cancelled"
+                )
                 let report = XTAutomationRunExecutionReport(
                     runID: runID,
                     lineage: resolvedLineage,
                     recipeRef: recipe.ref,
+                    deliveryRef: deliveryRef,
                     totalActionCount: actions.count,
                     executedActionCount: outcomes.count,
                     succeededActionCount: outcomes.filter(\.ok).count,
@@ -161,7 +249,11 @@ final class XTAutomationRunExecutor {
                     verificationReport: nil,
                     workspaceDiffReport: nil,
                     handoffArtifactPath: nil,
-                    auditRef: auditRef
+                    auditRef: auditRef,
+                    currentStepID: stepContext.stepID,
+                    currentStepTitle: stepContext.stepTitle,
+                    currentStepState: stepContext.stepState,
+                    currentStepSummary: stepContext.stepSummary
                 )
                 return finalize(report: report, ctx: ctx, createdAt: Date())
             }
@@ -173,11 +265,17 @@ final class XTAutomationRunExecutor {
                 actionIndex: index,
                 config: config,
                 ctx: ctx,
+                now: now,
                 auditRef: auditRef
             )
             if let preflightFailure {
                 outcomes.append(preflightFailure)
                 if !action.continueOnFailure {
+                    let stepContext = xtAutomationActionStepContext(
+                        action: action,
+                        state: .blocked,
+                        summary: preflightFailure.detail
+                    )
                     let preflightHoldReason = preflightFailure.denyCode.trimmingCharacters(in: .whitespacesAndNewlines)
                     let preflightDetail: String
                     if preflightHoldReason == "automation_patch_check_failed" {
@@ -189,6 +287,7 @@ final class XTAutomationRunExecutor {
                         runID: runID,
                         lineage: resolvedLineage,
                         recipeRef: recipe.ref,
+                        deliveryRef: deliveryRef,
                         totalActionCount: actions.count,
                         executedActionCount: outcomes.count,
                         succeededActionCount: outcomes.filter(\.ok).count,
@@ -201,7 +300,11 @@ final class XTAutomationRunExecutor {
                         verificationReport: nil,
                         workspaceDiffReport: nil,
                         handoffArtifactPath: nil,
-                        auditRef: auditRef
+                        auditRef: auditRef,
+                        currentStepID: stepContext.stepID,
+                        currentStepTitle: stepContext.stepTitle,
+                        currentStepState: stepContext.stepState,
+                        currentStepSummary: stepContext.stepSummary
                     )
                     return finalize(report: report, ctx: ctx, createdAt: Date())
                 }
@@ -267,10 +370,16 @@ final class XTAutomationRunExecutor {
                 )
 
                 if !ok && !action.continueOnFailure {
+                    let stepContext = xtAutomationActionStepContext(
+                        action: action,
+                        state: .blocked,
+                        summary: detail
+                    )
                     let report = XTAutomationRunExecutionReport(
                         runID: runID,
                         lineage: resolvedLineage,
                         recipeRef: recipe.ref,
+                        deliveryRef: deliveryRef,
                         totalActionCount: actions.count,
                         executedActionCount: outcomes.count,
                         succeededActionCount: outcomes.filter(\.ok).count,
@@ -281,7 +390,11 @@ final class XTAutomationRunExecutor {
                         verificationReport: nil,
                         workspaceDiffReport: nil,
                         handoffArtifactPath: nil,
-                        auditRef: auditRef
+                        auditRef: auditRef,
+                        currentStepID: stepContext.stepID,
+                        currentStepTitle: stepContext.stepTitle,
+                        currentStepState: stepContext.stepState,
+                        currentStepSummary: stepContext.stepSummary
                     )
                     return finalize(report: report, ctx: ctx, createdAt: Date())
                 }
@@ -318,10 +431,16 @@ final class XTAutomationRunExecutor {
                 )
 
                 if !action.continueOnFailure {
+                    let stepContext = xtAutomationActionStepContext(
+                        action: action,
+                        state: .blocked,
+                        summary: detail
+                    )
                     let report = XTAutomationRunExecutionReport(
                         runID: runID,
                         lineage: resolvedLineage,
                         recipeRef: recipe.ref,
+                        deliveryRef: deliveryRef,
                         totalActionCount: actions.count,
                         executedActionCount: outcomes.count,
                         succeededActionCount: outcomes.filter(\.ok).count,
@@ -332,7 +451,11 @@ final class XTAutomationRunExecutor {
                         verificationReport: nil,
                         workspaceDiffReport: nil,
                         handoffArtifactPath: nil,
-                        auditRef: auditRef
+                        auditRef: auditRef,
+                        currentStepID: stepContext.stepID,
+                        currentStepTitle: stepContext.stepTitle,
+                        currentStepState: stepContext.stepState,
+                        currentStepSummary: stepContext.stepSummary
                     )
                     return finalize(report: report, ctx: ctx, createdAt: Date())
                 }
@@ -354,13 +477,20 @@ final class XTAutomationRunExecutor {
             actions: actions,
             actionOutcomes: outcomes,
             verifyCommandsOverride: verifyCommandsOverride,
+            verificationContractOverride: verificationContractOverride,
+            now: now,
             auditRef: auditRef
         )
         if let verificationReport, !verificationReport.ok {
+            let stepContext = xtAutomationVerificationStepContext(
+                report: verificationReport,
+                state: .blocked
+            )
             let report = XTAutomationRunExecutionReport(
                 runID: runID,
                 lineage: resolvedLineage,
                 recipeRef: recipe.ref,
+                deliveryRef: deliveryRef,
                 totalActionCount: actions.count,
                 executedActionCount: outcomes.count,
                 succeededActionCount: outcomes.filter(\.ok).count,
@@ -371,7 +501,11 @@ final class XTAutomationRunExecutor {
                 verificationReport: verificationReport,
                 workspaceDiffReport: workspaceDiffReport,
                 handoffArtifactPath: nil,
-                auditRef: auditRef
+                auditRef: auditRef,
+                currentStepID: stepContext.stepID,
+                currentStepTitle: stepContext.stepTitle,
+                currentStepState: stepContext.stepState,
+                currentStepSummary: stepContext.stepSummary
             )
             return finalize(report: report, ctx: ctx, createdAt: Date())
         }
@@ -385,10 +519,18 @@ final class XTAutomationRunExecutor {
             verificationReport: verificationReport,
             workspaceDiffReport: workspaceDiffReport
         )
+        let finalStepContext = xtAutomationCompletionStepContext(
+            actions: actions,
+            outcomes: outcomes,
+            verificationReport: verificationReport,
+            finalState: allOK ? .delivered : .blocked,
+            detail: executionDetail
+        )
         let report = XTAutomationRunExecutionReport(
             runID: runID,
             lineage: resolvedLineage,
             recipeRef: recipe.ref,
+            deliveryRef: deliveryRef,
             totalActionCount: actions.count,
             executedActionCount: outcomes.count,
             succeededActionCount: succeeded,
@@ -399,7 +541,11 @@ final class XTAutomationRunExecutor {
             verificationReport: verificationReport,
             workspaceDiffReport: workspaceDiffReport,
             handoffArtifactPath: nil,
-            auditRef: auditRef
+            auditRef: auditRef,
+            currentStepID: finalStepContext.stepID,
+            currentStepTitle: finalStepContext.stepTitle,
+            currentStepState: finalStepContext.stepState,
+            currentStepSummary: finalStepContext.stepSummary
         )
         return finalize(report: report, ctx: ctx, createdAt: Date())
     }
@@ -411,13 +557,15 @@ final class XTAutomationRunExecutor {
         actionIndex: Int,
         config: AXProjectConfig,
         ctx: AXProjectContext,
+        now: Date,
         auditRef: String
     ) async -> XTAutomationActionExecutionOutcome? {
         let policyDecision = await xtAutomationRuntimePolicyDecision(
             recipe: recipe,
             action: action,
             config: config,
-            projectRoot: ctx.root
+            projectRoot: ctx.root,
+            now: now
         )
         if !policyDecision.allowed {
             let outcome = XTAutomationActionExecutionOutcome(
@@ -556,6 +704,8 @@ final class XTAutomationRunExecutor {
         actions: [XTAutomationRecipeAction],
         actionOutcomes: [XTAutomationActionExecutionOutcome],
         verifyCommandsOverride: [String]?,
+        verificationContractOverride: XTAutomationVerificationContract?,
+        now: Date,
         auditRef: String
     ) async -> XTAutomationVerificationReport? {
         let successfulActionIDs = Set(actionOutcomes.filter(\.ok).map(\.actionID))
@@ -565,11 +715,43 @@ final class XTAutomationRunExecutor {
         }
         guard !verifyTriggers.isEmpty else { return nil }
 
-        let configuredCommands = (verifyCommandsOverride?.isEmpty == false ? verifyCommandsOverride! : config.verifyCommands)
-        let commands = AXProjectStackDetector
-            .filterApplicableVerifyCommands(configuredCommands, forProjectRoot: ctx.root)
+        let configuredCommands = AXProjectStackDetector
+            .filterApplicableVerifyCommands(
+                verifyCommandsOverride?.isEmpty == false ? verifyCommandsOverride! : config.verifyCommands,
+                forProjectRoot: ctx.root
+            )
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+        let verificationContracts = verifyTriggers.compactMap { action in
+            action.resolvedVerificationContract(
+                projectVerifyAfterChanges: config.verifyAfterChanges,
+                projectVerifyCommands: configuredCommands,
+                verifyCommandsOverrideUsed: verifyCommandsOverride?.isEmpty == false,
+                automationSelfIterateEnabled: config.automationSelfIterateEnabled
+            )
+        }
+        guard !verificationContracts.isEmpty else { return nil }
+
+        let mergedVerificationContract = xtAutomationResolvedVerificationContract(
+            primary: verificationContractOverride,
+            fallback: xtAutomationMergedVerificationContract(verificationContracts)
+        )
+        let commands = AXProjectStackDetector
+            .filterApplicableVerifyCommands(mergedVerificationContract.verifyCommands, forProjectRoot: ctx.root)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let verificationContract = XTAutomationVerificationContract(
+            expectedState: mergedVerificationContract.expectedState,
+            verifyMethod: xtAutomationVerificationMethodAdjustedForResolvedCommands(
+                mergedVerificationContract.verifyMethod,
+                commands: commands
+            ),
+            retryPolicy: mergedVerificationContract.retryPolicy,
+            holdPolicy: mergedVerificationContract.holdPolicy,
+            evidenceRequired: mergedVerificationContract.evidenceRequired,
+            triggerActionIDs: mergedVerificationContract.triggerActionIDs,
+            verifyCommands: commands
+        )
 
         AXProjectStore.appendRawLog(
             [
@@ -578,8 +760,9 @@ final class XTAutomationRunExecutor {
                 "created_at": Date().timeIntervalSince1970,
                 "run_id": runID,
                 "recipe_ref": recipe.ref,
-                "trigger_action_ids": verifyTriggers.map(\.actionID),
+                "trigger_action_ids": verificationContract.triggerActionIDs,
                 "command_count": commands.count,
+                "verification_contract": xtAutomationVerificationContractFoundationValue(verificationContract),
                 "audit_ref": auditRef,
             ],
             for: ctx
@@ -593,7 +776,8 @@ final class XTAutomationRunExecutor {
                 passedCommandCount: 0,
                 holdReason: "automation_verify_commands_missing",
                 detail: "verification required but no verify commands are configured",
-                commandResults: []
+                commandResults: [],
+                contract: verificationContract
             )
             logVerificationCompletion(runID: runID, recipeRef: recipe.ref, report: report, ctx: ctx, auditRef: auditRef)
             return report
@@ -609,7 +793,8 @@ final class XTAutomationRunExecutor {
                     passedCommandCount: outcomes.filter(\.ok).count,
                     holdReason: "automation_verification_cancelled",
                     detail: "verification cancelled",
-                    commandResults: outcomes
+                    commandResults: outcomes,
+                    contract: verificationContract
                 )
                 logVerificationCompletion(runID: runID, recipeRef: recipe.ref, report: report, ctx: ctx, auditRef: auditRef)
                 return report
@@ -628,7 +813,8 @@ final class XTAutomationRunExecutor {
                 recipe: recipe,
                 action: verificationAction,
                 config: config,
-                projectRoot: ctx.root
+                projectRoot: ctx.root,
+                now: now
             )
             if !policyDecision.allowed {
                 let detail = xtAutomationTruncate(
@@ -668,7 +854,8 @@ final class XTAutomationRunExecutor {
                         ? "automation_verify_preflight_failed"
                         : policyDecision.denyCode,
                     detail: "verify_preflight_failed:\(index + 1)/\(commands.count) \(command)",
-                    commandResults: outcomes
+                    commandResults: outcomes,
+                    contract: verificationContract
                 )
                 logVerificationCompletion(runID: runID, recipeRef: recipe.ref, report: report, ctx: ctx, auditRef: auditRef)
                 return report
@@ -719,7 +906,8 @@ final class XTAutomationRunExecutor {
                         passedCommandCount: outcomes.filter(\.ok).count,
                         holdReason: "automation_verify_failed",
                         detail: "verify_failed:\(index + 1)/\(commands.count) \(command)",
-                        commandResults: outcomes
+                        commandResults: outcomes,
+                        contract: verificationContract
                     )
                     logVerificationCompletion(runID: runID, recipeRef: recipe.ref, report: report, ctx: ctx, auditRef: auditRef)
                     return report
@@ -755,7 +943,8 @@ final class XTAutomationRunExecutor {
                     passedCommandCount: outcomes.filter(\.ok).count,
                     holdReason: "automation_verify_execution_error",
                     detail: "verify_error:\(index + 1)/\(commands.count) \(command)",
-                    commandResults: outcomes
+                    commandResults: outcomes,
+                    contract: verificationContract
                 )
                 logVerificationCompletion(runID: runID, recipeRef: recipe.ref, report: report, ctx: ctx, auditRef: auditRef)
                 return report
@@ -769,7 +958,8 @@ final class XTAutomationRunExecutor {
             passedCommandCount: outcomes.count,
             holdReason: "",
             detail: "verify_passed:\(outcomes.count)/\(commands.count)",
-            commandResults: outcomes
+            commandResults: outcomes,
+            contract: verificationContract
         )
         logVerificationCompletion(runID: runID, recipeRef: recipe.ref, report: report, ctx: ctx, auditRef: auditRef)
         return report
@@ -883,6 +1073,18 @@ final class XTAutomationRunExecutor {
         createdAt: Date
     ) -> XTAutomationRunExecutionReport {
         var finalizedReport = report
+        if finalizedReport.structuredBlocker == nil {
+            finalizedReport.structuredBlocker = xtAutomationStructuredBlocker(
+                finalState: finalizedReport.finalState,
+                holdReason: finalizedReport.holdReason,
+                detail: finalizedReport.detail,
+                verificationReport: finalizedReport.verificationReport,
+                currentStepID: finalizedReport.currentStepID,
+                currentStepTitle: finalizedReport.currentStepTitle,
+                currentStepState: finalizedReport.currentStepState,
+                currentStepSummary: finalizedReport.currentStepSummary
+            )
+        }
         finalizedReport.handoffArtifactPath = persistHandoffArtifact(
             report: finalizedReport,
             ctx: ctx,
@@ -899,6 +1101,7 @@ final class XTAutomationRunExecutor {
             "parent_run_id": lineage.parentRunID.isEmpty ? NSNull() : lineage.parentRunID,
             "retry_depth": lineage.retryDepth,
             "recipe_ref": finalizedReport.recipeRef,
+            "delivery_ref": finalizedReport.deliveryRef ?? NSNull(),
             "final_state": finalizedReport.finalState.rawValue,
             "hold_reason": finalizedReport.holdReason,
             "detail": finalizedReport.detail,
@@ -908,6 +1111,16 @@ final class XTAutomationRunExecutor {
             "verification": finalizedReport.verificationReport.map(xtAutomationVerificationFoundationValue) ?? NSNull(),
             "workspace_diff": finalizedReport.workspaceDiffReport.map(xtAutomationWorkspaceDiffFoundationValue) ?? NSNull(),
             "handoff_artifact_path": finalizedReport.handoffArtifactPath ?? NSNull(),
+            "blocker": finalizedReport.structuredBlocker.map(xtAutomationBlockerFoundationValue) ?? NSNull(),
+            "blocker_code": finalizedReport.structuredBlocker?.code ?? NSNull(),
+            "blocker_summary": finalizedReport.structuredBlocker?.summary ?? NSNull(),
+            "blocker_stage": finalizedReport.structuredBlocker?.stage.rawValue ?? NSNull(),
+            "blocker_next_safe_action": finalizedReport.structuredBlocker?.nextSafeAction ?? NSNull(),
+            "blocker_retry_eligible": finalizedReport.structuredBlocker?.retryEligible ?? NSNull(),
+            "current_step_id": finalizedReport.currentStepID ?? NSNull(),
+            "current_step_title": finalizedReport.currentStepTitle ?? NSNull(),
+            "current_step_state": finalizedReport.currentStepState?.rawValue ?? NSNull(),
+            "current_step_summary": finalizedReport.currentStepSummary ?? NSNull(),
             "audit_ref": finalizedReport.auditRef,
         ]
         AXProjectStore.appendRawLog(completionRow, for: ctx)
@@ -927,13 +1140,19 @@ final class XTAutomationRunExecutor {
             runID: report.runID,
             lineage: report.lineage,
             recipeRef: report.recipeRef,
+            deliveryRef: report.deliveryRef,
             finalState: report.finalState,
             holdReason: report.holdReason,
             detail: report.detail,
             actionResults: report.actionResults,
             verificationReport: report.verificationReport,
             workspaceDiffReport: report.workspaceDiffReport,
-            suggestedNextActions: xtAutomationSuggestedNextActions(for: report)
+            suggestedNextActions: xtAutomationSuggestedNextActions(for: report),
+            structuredBlocker: report.structuredBlocker,
+            currentStepID: report.currentStepID,
+            currentStepTitle: report.currentStepTitle,
+            currentStepState: report.currentStepState,
+            currentStepSummary: report.currentStepSummary
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -945,6 +1164,85 @@ final class XTAutomationRunExecutor {
             return nil
         }
     }
+}
+
+private func xtAutomationActionStepContext(
+    action: XTAutomationRecipeAction,
+    state: XTAutomationRunStepState,
+    summary: String
+) -> XTAutomationStepContextSnapshot {
+    XTAutomationStepContextSnapshot(
+        stepID: xtAutomationNormalizedOptionalStepValue(action.actionID),
+        stepTitle: xtAutomationResolvedStepTitle(action.title, fallback: action.actionID),
+        stepState: state,
+        stepSummary: xtAutomationNormalizedOptionalStepValue(summary)
+    )
+}
+
+private func xtAutomationVerificationStepContext(
+    report: XTAutomationVerificationReport,
+    state: XTAutomationRunStepState
+) -> XTAutomationStepContextSnapshot {
+    XTAutomationStepContextSnapshot(
+        stepID: "verification",
+        stepTitle: "Run project verification",
+        stepState: state,
+        stepSummary: xtAutomationNormalizedOptionalStepValue(report.detail)
+            ?? (report.ok ? "verification passed" : "verification blocked")
+    )
+}
+
+private func xtAutomationCompletionStepContext(
+    actions: [XTAutomationRecipeAction],
+    outcomes: [XTAutomationActionExecutionOutcome],
+    verificationReport: XTAutomationVerificationReport?,
+    finalState: XTAutomationRunState,
+    detail: String
+) -> XTAutomationStepContextSnapshot {
+    if let verificationReport {
+        return xtAutomationVerificationStepContext(
+            report: verificationReport,
+            state: finalState == .delivered ? .done : .blocked
+        )
+    }
+
+    if let failedOutcome = outcomes.last(where: { !$0.ok }),
+       let action = actions.first(where: { $0.actionID == failedOutcome.actionID }) {
+        return xtAutomationActionStepContext(
+            action: action,
+            state: .blocked,
+            summary: failedOutcome.detail
+        )
+    }
+
+    if let lastOutcome = outcomes.last,
+       let action = actions.first(where: { $0.actionID == lastOutcome.actionID }) {
+        return xtAutomationActionStepContext(
+            action: action,
+            state: finalState == .delivered ? .done : .blocked,
+            summary: lastOutcome.detail
+        )
+    }
+
+    return XTAutomationStepContextSnapshot(
+        stepID: nil,
+        stepTitle: nil,
+        stepState: finalState == .delivered ? .done : .blocked,
+        stepSummary: xtAutomationNormalizedOptionalStepValue(detail)
+    )
+}
+
+private func xtAutomationResolvedStepTitle(_ rawTitle: String, fallback: String) -> String {
+    let trimmedTitle = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !trimmedTitle.isEmpty {
+        return trimmedTitle
+    }
+    return fallback.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+private func xtAutomationNormalizedOptionalStepValue(_ rawValue: String?) -> String? {
+    let trimmed = (rawValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
 }
 
 private func xtAutomationJSONObject(_ value: JSONValue?) -> [String: JSONValue]? {
@@ -1058,8 +1356,152 @@ private func xtAutomationExecutionDetail(
     return [base, verifyDetail].joined(separator: "; ")
 }
 
-private func xtAutomationVerificationFoundationValue(_ report: XTAutomationVerificationReport) -> [String: Any] {
+private func xtAutomationMergedVerificationContract(
+    _ contracts: [XTAutomationVerificationContract]
+) -> XTAutomationVerificationContract {
+    guard let first = contracts.first else {
+        return XTAutomationVerificationContract(
+            expectedState: "post_change_verification_passes",
+            verifyMethod: "project_verify_commands_missing",
+            retryPolicy: "manual_retry_or_replan",
+            holdPolicy: "block_run_and_emit_structured_blocker",
+            evidenceRequired: true,
+            triggerActionIDs: [],
+            verifyCommands: []
+        )
+    }
+
+    let methods = xtAutomationNormalizedVerificationScalars(contracts.map(\.verifyMethod))
+    let verifyCommands = xtAutomationNormalizedVerificationScalars(contracts.flatMap(\.verifyCommands))
+    let hasProjectMethod = methods.contains(where: xtAutomationIsProjectVerificationMethod)
+    let hasRecipeMethod = methods.contains(where: { !xtAutomationIsProjectVerificationMethod($0) })
+    let verifyMethod: String = {
+        if methods.count == 1, let only = methods.first {
+            return xtAutomationVerificationMethodAdjustedForResolvedCommands(only, commands: verifyCommands)
+        }
+        if hasProjectMethod && hasRecipeMethod {
+            return verifyCommands.isEmpty ? "mixed_verify_commands_missing" : "mixed_verify_commands"
+        }
+        if hasRecipeMethod {
+            return verifyCommands.isEmpty ? "recipe_action_verify_commands_missing" : "recipe_action_verify_commands"
+        }
+        if let firstProjectMethod = methods.first(where: xtAutomationIsProjectVerificationMethod) {
+            return xtAutomationVerificationMethodAdjustedForResolvedCommands(firstProjectMethod, commands: verifyCommands)
+        }
+        return verifyCommands.isEmpty ? "project_verify_commands_missing" : "project_verify_commands"
+    }()
+    let retryPolicy: String = {
+        let policies = Set(xtAutomationNormalizedVerificationScalars(contracts.map(\.retryPolicy)))
+        if policies.contains("manual_retry_or_replan") {
+            return "manual_retry_or_replan"
+        }
+        if policies.contains("retry_failed_verify_commands_within_budget") {
+            return "retry_failed_verify_commands_within_budget"
+        }
+        return xtAutomationNormalizedVerificationScalars(contracts.map(\.retryPolicy)).first ?? first.retryPolicy
+    }()
+
+    return XTAutomationVerificationContract(
+        expectedState: xtAutomationNormalizedVerificationScalars(contracts.map(\.expectedState)).first ?? first.expectedState,
+        verifyMethod: verifyMethod,
+        retryPolicy: retryPolicy,
+        holdPolicy: xtAutomationNormalizedVerificationScalars(contracts.map(\.holdPolicy)).first ?? first.holdPolicy,
+        evidenceRequired: contracts.contains(where: \.evidenceRequired),
+        triggerActionIDs: xtAutomationNormalizedVerificationScalars(contracts.flatMap(\.triggerActionIDs)),
+        verifyCommands: verifyCommands
+    )
+}
+
+private func xtAutomationResolvedVerificationContract(
+    primary: XTAutomationVerificationContract?,
+    fallback: XTAutomationVerificationContract
+) -> XTAutomationVerificationContract {
+    guard let primary else { return fallback }
+
+    let expectedState = primary.expectedState.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        ? fallback.expectedState
+        : primary.expectedState
+    let verifyMethod = primary.verifyMethod.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        ? fallback.verifyMethod
+        : primary.verifyMethod
+    let retryPolicy = primary.retryPolicy.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        ? fallback.retryPolicy
+        : primary.retryPolicy
+    let holdPolicy = primary.holdPolicy.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        ? fallback.holdPolicy
+        : primary.holdPolicy
+    let triggerActionIDs = primary.triggerActionIDs.isEmpty
+        ? fallback.triggerActionIDs
+        : xtAutomationNormalizedVerificationScalars(primary.triggerActionIDs)
+    let verifyCommands = primary.verifyCommands.isEmpty
+        ? fallback.verifyCommands
+        : xtAutomationNormalizedVerificationScalars(primary.verifyCommands)
+
+    return XTAutomationVerificationContract(
+        expectedState: expectedState,
+        verifyMethod: verifyMethod,
+        retryPolicy: retryPolicy,
+        holdPolicy: holdPolicy,
+        evidenceRequired: primary.evidenceRequired,
+        triggerActionIDs: triggerActionIDs,
+        verifyCommands: verifyCommands
+    )
+}
+
+private func xtAutomationVerificationMethodAdjustedForResolvedCommands(
+    _ method: String,
+    commands: [String]
+) -> String {
+    let normalized = method.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !normalized.isEmpty else {
+        return commands.isEmpty ? "project_verify_commands_missing" : "project_verify_commands"
+    }
+    if xtAutomationIsProjectVerificationMethod(normalized) {
+        let usesOverride = normalized.contains("override")
+        return commands.isEmpty
+            ? (usesOverride ? "project_verify_commands_override_missing" : "project_verify_commands_missing")
+            : (usesOverride ? "project_verify_commands_override" : "project_verify_commands")
+    }
+    if normalized == "recipe_action_verify_commands" || normalized == "recipe_action_verify_commands_missing" {
+        return commands.isEmpty ? "recipe_action_verify_commands_missing" : "recipe_action_verify_commands"
+    }
+    if normalized == "mixed_verify_commands" || normalized == "mixed_verify_commands_missing" {
+        return commands.isEmpty ? "mixed_verify_commands_missing" : "mixed_verify_commands"
+    }
+    return normalized
+}
+
+private func xtAutomationIsProjectVerificationMethod(_ method: String) -> Bool {
+    method.hasPrefix("project_verify_commands")
+}
+
+private func xtAutomationNormalizedVerificationScalars(_ values: [String]) -> [String] {
+    var seen = Set<String>()
+    var normalized: [String] = []
+    for value in values {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { continue }
+        normalized.append(trimmed)
+    }
+    return normalized
+}
+
+private func xtAutomationVerificationContractFoundationValue(
+    _ contract: XTAutomationVerificationContract
+) -> [String: Any] {
     [
+        "expected_state": contract.expectedState,
+        "verify_method": contract.verifyMethod,
+        "retry_policy": contract.retryPolicy,
+        "hold_policy": contract.holdPolicy,
+        "evidence_required": contract.evidenceRequired,
+        "trigger_action_ids": contract.triggerActionIDs,
+        "verify_commands": contract.verifyCommands,
+    ]
+}
+
+private func xtAutomationVerificationFoundationValue(_ report: XTAutomationVerificationReport) -> [String: Any] {
+    var object: [String: Any] = [
         "required": report.required,
         "executed": report.executed,
         "command_count": report.commandCount,
@@ -1075,6 +1517,10 @@ private func xtAutomationVerificationFoundationValue(_ report: XTAutomationVerif
             ]
         }
     ]
+    if let contract = report.contract {
+        object["verification_contract"] = xtAutomationVerificationContractFoundationValue(contract)
+    }
+    return object
 }
 
 private func xtAutomationWorkspaceDiffFoundationValue(_ report: XTAutomationWorkspaceDiffReport) -> [String: Any] {
@@ -1085,6 +1531,21 @@ private func xtAutomationWorkspaceDiffFoundationValue(_ report: XTAutomationWork
         "diff_chars": report.diffChars,
         "detail": report.detail,
         "excerpt": report.excerpt,
+    ]
+}
+
+private func xtAutomationBlockerFoundationValue(_ blocker: XTAutomationBlockerDescriptor) -> [String: Any] {
+    [
+        "code": blocker.code,
+        "summary": blocker.summary,
+        "stage": blocker.stage.rawValue,
+        "detail": blocker.detail,
+        "next_safe_action": blocker.nextSafeAction,
+        "retry_eligible": blocker.retryEligible,
+        "current_step_id": blocker.currentStepID ?? NSNull(),
+        "current_step_title": blocker.currentStepTitle ?? NSNull(),
+        "current_step_state": blocker.currentStepState?.rawValue ?? NSNull(),
+        "current_step_summary": blocker.currentStepSummary ?? NSNull(),
     ]
 }
 

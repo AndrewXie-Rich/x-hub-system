@@ -1,9 +1,11 @@
 import SwiftUI
 
 struct SupervisorDashboardBoards: View {
+    let includeHeartbeatBoard: Bool
     let heartbeatEntries: [SupervisorManager.HeartbeatFeedEntry]
     let onOpenFocusURL: (String) -> Void
     let runtimeActivityPresentation: SupervisorRuntimeActivityBoardPresentation
+    let projectCreationPresentation: SupervisorProjectCreationStatusPresentation?
     let primarySignalPresentation: SupervisorPrimarySignalPresentation?
     let onPrimarySignalAction: (SupervisorSignalCenterOverviewAction) -> Void
     let supervisorManager: SupervisorManager
@@ -12,6 +14,7 @@ struct SupervisorDashboardBoards: View {
     let onCockpitAction: (PrimaryActionRailAction) -> Void
     let onRuntimeStageTap: (SupervisorRuntimeStageItemPresentation) -> Void
     let onPersonalAssistantPrompt: (String) -> Void
+    let onProjectCreationQuickSend: (String) -> Void
     let portfolioPresentation: SupervisorPortfolioBoardPresentation
     let activeDrillDownPresentation: SupervisorProjectDrillDownPresentation?
     @Binding var selectedDrillDownScope: SupervisorProjectDrillDownScope
@@ -31,6 +34,8 @@ struct SupervisorDashboardBoards: View {
     let eventLoopPresentation: SupervisorEventLoopBoardPresentation
     let pendingHubGrantPresentation: SupervisorPendingHubGrantBoardPresentation
     let onRefreshPendingHubGrants: () -> Void
+    let candidateReviewPresentation: SupervisorCandidateReviewBoardPresentation
+    let onRefreshCandidateReviews: () -> Void
     let onCardAction: (SupervisorCardAction) -> Void
     let doctorPresentation: SupervisorDoctorBoardPresentation
     let doctorSuggestionCards: [SupervisorDoctorSuggestionCard]
@@ -55,13 +60,26 @@ struct SupervisorDashboardBoards: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            SupervisorHeartbeatBoardSection(
-                entries: heartbeatEntries,
-                primarySignalPresentation: primarySignalPresentation,
-                onOpenFocus: onOpenFocusURL,
-                onPrimarySignalAction: onPrimarySignalAction
-            )
-            Divider()
+            if includeHeartbeatBoard {
+                SupervisorHeartbeatBoardSection(
+                    entries: heartbeatEntries,
+                    doctorPresentation: doctorPresentation,
+                    primarySignalPresentation: primarySignalPresentation,
+                    onOpenFocus: onOpenFocusURL,
+                    onPrimarySignalAction: onPrimarySignalAction
+                )
+                .id(SupervisorFocusPresentation.heartbeatBoardAnchorID)
+                Divider()
+            }
+            if let projectCreationPresentation {
+                SupervisorProjectCreationBoardSection(
+                    presentation: projectCreationPresentation,
+                    onQuickPrompt: onPersonalAssistantPrompt,
+                    onQuickSend: onProjectCreationQuickSend
+                )
+                .id(SupervisorFocusPresentation.projectCreationBoardAnchorID)
+                Divider()
+            }
             SupervisorRuntimeActivityBoardSection(
                 presentation: runtimeActivityPresentation,
                 onAction: onCardAction
@@ -81,6 +99,7 @@ struct SupervisorDashboardBoards: View {
             SupervisorPersonalAssistantSummaryBoard(onQuickPrompt: onPersonalAssistantPrompt)
             Divider()
             SupervisorPortfolioBoardSection(
+                supervisorManager: supervisorManager,
                 presentation: portfolioPresentation,
                 activeDrillDownPresentation: activeDrillDownPresentation,
                 selectedDrillDownScope: $selectedDrillDownScope,
@@ -100,6 +119,7 @@ struct SupervisorDashboardBoards: View {
                 presentation: memoryPresentation,
                 onRefresh: onRefreshMemory
             )
+            .id(SupervisorFocusPresentation.memoryBoardAnchorID)
             Divider()
             SupervisorPendingSkillApprovalBoardSection(
                 presentation: pendingSkillApprovalPresentation,
@@ -128,6 +148,13 @@ struct SupervisorDashboardBoards: View {
             )
             .id(SupervisorFocusPresentation.pendingHubGrantBoardAnchorID)
             Divider()
+            SupervisorCandidateReviewBoardSection(
+                presentation: candidateReviewPresentation,
+                onRefresh: onRefreshCandidateReviews,
+                onAction: onCardAction
+            )
+            .id(SupervisorFocusPresentation.candidateReviewBoardAnchorID)
+            Divider()
             SupervisorDoctorBoardSection(
                 presentation: doctorPresentation,
                 suggestionCards: doctorSuggestionCards,
@@ -136,6 +163,7 @@ struct SupervisorDashboardBoards: View {
                 onRetryCanonicalMemorySync: onRetryCanonicalMemorySync,
                 onOpenCanonicalMemorySyncStatusFile: onOpenCanonicalMemorySyncStatusFile
             )
+            .id(SupervisorFocusPresentation.doctorBoardAnchorID)
             Divider()
             SupervisorAutomationRuntimeBoardSection(
                 presentation: automationPresentation,
@@ -165,6 +193,7 @@ struct SupervisorDashboardBoards: View {
             SupervisorXTReadyIncidentBoardSection(
                 presentation: xtReadyIncidentPresentation,
                 canOpenCanonicalMemorySyncStatusFile: canOpenCanonicalMemorySyncStatusFile,
+                onOpenFocusURL: onOpenFocusURL,
                 onExportReport: onExportXTReadyReport,
                 onOpenReport: onOpenXTReadyReport,
                 onRetryCanonicalMemorySync: onRetryCanonicalMemorySync,

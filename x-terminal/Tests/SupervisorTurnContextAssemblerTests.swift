@@ -5,7 +5,7 @@ import Testing
 struct SupervisorTurnContextAssemblerTests {
 
     @Test
-    func hybridAssemblySelectsCrossLinkRefsAndProjectCapsule() {
+    func hybridAssemblySeparatesRequestedSlotsFromActualSelection() {
         let result = SupervisorTurnContextAssembler.assemble(
             SupervisorTurnContextAssemblyRequest(
                 routingDecision: SupervisorTurnRoutingDecision(
@@ -25,11 +25,21 @@ struct SupervisorTurnContextAssemblerTests {
             )
         )
 
+        #expect(result.requestedSlots == [
+            .dialogueWindow,
+            .personalCapsule,
+            .focusedProjectCapsule,
+            .portfolioBrief,
+            .crossLinkRefs,
+            .evidencePack
+        ])
         #expect(result.selectedSlots.contains(.dialogueWindow))
         #expect(result.selectedSlots.contains(.personalCapsule))
         #expect(result.selectedSlots.contains(.focusedProjectCapsule))
-        #expect(result.selectedSlots.contains(.crossLinkRefs))
+        #expect(result.selectedSlots.contains(.portfolioBrief))
+        #expect(!result.selectedSlots.contains(.crossLinkRefs))
         #expect(result.selectedSlots.contains(.evidencePack))
+        #expect(result.omittedSlots == [.crossLinkRefs])
         #expect(result.selectedRefs.contains("focused_project_capsule"))
         #expect(!result.selectedRefs.contains("cross_link_refs"))
         #expect(result.dominantPlane == "assistant_plane + project_plane")
@@ -57,19 +67,124 @@ struct SupervisorTurnContextAssemblerTests {
                 hasPortfolioBrief: true,
                 hasFocusedProjectCapsule: true,
                 hasCrossLinkRefs: true,
-                hasEvidencePack: true
+                hasEvidencePack: true,
+                renderedRefs: ["dialogue_window", "portfolio_brief"],
+                contractRefs: [
+                    "dialogue_window",
+                    "portfolio_brief",
+                    "focused_project_anchor_pack",
+                    "cross_link_refs",
+                    "evidence_pack"
+                ]
             )
         )
 
+        #expect(result.requestedSlots == [.dialogueWindow, .portfolioBrief])
         #expect(result.selectedSlots == [.dialogueWindow, .portfolioBrief])
-        #expect(result.omittedSlots.contains(.focusedProjectCapsule))
-        #expect(result.omittedSlots.contains(.crossLinkRefs))
+        #expect(result.omittedSlots.isEmpty)
         #expect(result.dominantPlane == "project_plane(portfolio_brief)")
         #expect(result.continuityLaneDepth == .full)
         #expect(result.assistantPlaneDepth == .light)
         #expect(result.projectPlaneDepth == .portfolioFirst)
         #expect(result.crossLinkPlaneDepth == .selected)
         #expect(result.assemblyReason.contains("portfolio_review_avoids_single_project_dump_by_default"))
+    }
+
+    @Test
+    func hybridAssemblyUsesServingContractAndRenderedRefsForOmissionReasons() {
+        let result = SupervisorTurnContextAssembler.assemble(
+            SupervisorTurnContextAssemblyRequest(
+                routingDecision: SupervisorTurnRoutingDecision(
+                    mode: .hybrid,
+                    focusedProjectId: "proj-liangliang",
+                    focusedProjectName: "亮亮",
+                    focusedPersonName: "Alex",
+                    focusedCommitmentId: "commitment-demo",
+                    confidence: 0.95,
+                    routingReasons: ["explicit_project_mention:亮亮", "explicit_person_mention:Alex"]
+                ),
+                hasPersonalCapsule: true,
+                hasPortfolioBrief: true,
+                hasFocusedProjectCapsule: true,
+                hasCrossLinkRefs: true,
+                hasEvidencePack: true,
+                renderedRefs: [
+                    "dialogue_window",
+                    "portfolio_brief",
+                    "focused_project_anchor_pack",
+                    "context_refs",
+                    "evidence_pack"
+                ],
+                contractRefs: [
+                    "dialogue_window",
+                    "portfolio_brief",
+                    "focused_project_anchor_pack",
+                    "context_refs",
+                    "evidence_pack"
+                ]
+            )
+        )
+
+        #expect(result.selectedSlots == [
+            .dialogueWindow,
+            .personalCapsule,
+            .focusedProjectCapsule,
+            .portfolioBrief,
+            .evidencePack
+        ])
+        #expect(result.selectedRefs == [
+            "dialogue_window",
+            "personal_capsule",
+            "portfolio_brief",
+            "focused_project_anchor_pack",
+            "context_refs",
+            "evidence_pack"
+        ])
+        #expect(result.omittedSlots == [.crossLinkRefs])
+        #expect(result.assemblyReason.contains("cross_link_refs_requested_but_not_in_serving_contract"))
+    }
+
+    @Test
+    func projectAssemblyKeepsReviewAndGuidanceContinuityRefsVisible() {
+        let result = SupervisorTurnContextAssembler.assemble(
+            SupervisorTurnContextAssemblyRequest(
+                routingDecision: SupervisorTurnRoutingDecision(
+                    mode: .projectFirst,
+                    focusedProjectId: "proj-liangliang",
+                    focusedProjectName: "亮亮",
+                    focusedPersonName: nil,
+                    focusedCommitmentId: nil,
+                    confidence: 0.92,
+                    routingReasons: ["current_project_pointer:亮亮"]
+                ),
+                hasPersonalCapsule: true,
+                hasPortfolioBrief: true,
+                hasFocusedProjectCapsule: true,
+                hasCrossLinkRefs: false,
+                hasEvidencePack: true,
+                renderedRefs: [
+                    "dialogue_window",
+                    "portfolio_brief",
+                    "focused_project_anchor_pack",
+                    "latest_review_note",
+                    "latest_guidance",
+                    "pending_ack_guidance",
+                    "evidence_pack"
+                ],
+                contractRefs: [
+                    "dialogue_window",
+                    "portfolio_brief",
+                    "focused_project_anchor_pack",
+                    "context_refs",
+                    "evidence_pack"
+                ]
+            )
+        )
+
+        #expect(result.selectedSlots.contains(.focusedProjectCapsule))
+        #expect(result.selectedRefs.contains("latest_review_note"))
+        #expect(result.selectedRefs.contains("latest_guidance"))
+        #expect(result.selectedRefs.contains("pending_ack_guidance"))
     }
 
     @Test
@@ -95,6 +210,8 @@ struct SupervisorTurnContextAssemblerTests {
                     currentCommitmentId: nil,
                     lastTurnMode: .projectFirst
                 ),
+                requestedSlots: [.dialogueWindow, .personalCapsule, .focusedProjectCapsule, .portfolioBrief, .evidencePack],
+                requestedRefs: ["dialogue_window", "personal_capsule", "focused_project_capsule", "portfolio_brief", "evidence_pack"],
                 selectedSlots: [.dialogueWindow, .personalCapsule, .focusedProjectCapsule, .portfolioBrief, .evidencePack],
                 selectedRefs: ["dialogue_window", "personal_capsule", "focused_project_capsule", "portfolio_brief", "evidence_pack"],
                 omittedSlots: [.crossLinkRefs],
@@ -130,8 +247,10 @@ struct SupervisorTurnContextAssemblerTests {
         #expect(prompt.contains("Assistant plane: light"))
         #expect(prompt.contains("Project plane: full"))
         #expect(prompt.contains("Cross-link plane: off"))
+        #expect(prompt.contains("Requested slots: dialogue_window, personal_capsule, focused_project_capsule, portfolio_brief, evidence_pack"))
         #expect(prompt.contains("Selected slots: dialogue_window, personal_capsule, focused_project_capsule, portfolio_brief, evidence_pack"))
-        #expect(prompt.contains("Omitted slots: cross_link_refs"))
+        #expect(prompt.contains("Omitted requested slots: cross_link_refs"))
+        #expect(prompt.contains("Requested refs: dialogue_window, personal_capsule, focused_project_capsule, portfolio_brief, evidence_pack"))
         #expect(prompt.contains("Selected refs: dialogue_window, personal_capsule, focused_project_capsule, portfolio_brief, evidence_pack"))
         #expect(prompt.contains("Assembly reasons: project_first_keeps_personal_capsule_light | project_first_requires_focused_project_capsule"))
     }

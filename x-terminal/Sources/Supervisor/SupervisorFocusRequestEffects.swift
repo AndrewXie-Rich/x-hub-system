@@ -4,18 +4,21 @@ enum SupervisorFocusRequestEffects {
     struct Context: Equatable {
         var pendingHubGrants: [SupervisorManager.SupervisorPendingGrant]
         var pendingSupervisorSkillApprovals: [SupervisorManager.SupervisorPendingSkillApproval]
+        var candidateReviews: [HubIPCClient.SupervisorCandidateReviewItem] = []
         var recentSupervisorSkillActivities: [SupervisorManager.SupervisorRecentSkillActivity]
     }
 
     struct Highlights: Equatable {
         var pendingHubGrantAnchor: String?
         var pendingSupervisorSkillApprovalAnchor: String?
+        var candidateReviewAnchor: String?
         var recentSkillActivityRequestId: String?
     }
 
     enum Refresh: Equatable {
         case pendingHubGrants
         case pendingSupervisorSkillApprovals
+        case candidateReviews
         case recentSupervisorSkillActivities
     }
 
@@ -63,6 +66,12 @@ enum SupervisorFocusRequestEffects {
                 requestId: requestId,
                 pendingApprovals: context.pendingSupervisorSkillApprovals
             )
+        case let .candidateReview(requestId):
+            return candidateReview(
+                request: request,
+                requestId: requestId,
+                candidateReviews: context.candidateReviews
+            )
         case let .skillRecord(requestId):
             return skillRecord(
                 request: request,
@@ -90,6 +99,7 @@ enum SupervisorFocusRequestEffects {
             highlights: Highlights(
                 pendingHubGrantAnchor: nil,
                 pendingSupervisorSkillApprovalAnchor: nil,
+                candidateReviewAnchor: nil,
                 recentSkillActivityRequestId: nil
             ),
             auditDrillDown: nil,
@@ -117,11 +127,42 @@ enum SupervisorFocusRequestEffects {
             highlights: Highlights(
                 pendingHubGrantAnchor: nil,
                 pendingSupervisorSkillApprovalAnchor: resolution.highlightedApprovalAnchor,
+                candidateReviewAnchor: nil,
                 recentSkillActivityRequestId: nil
             ),
             auditDrillDown: nil,
             refresh: resolution.matchedApproval == nil && resolution.refreshPendingApprovals
                 ? .pendingSupervisorSkillApprovals
+                : nil
+        )
+    }
+
+    static func candidateReview(
+        request: AXSupervisorFocusRequest,
+        requestId: String,
+        candidateReviews: [HubIPCClient.SupervisorCandidateReviewItem]
+    ) -> Plan {
+        let resolution = SupervisorFocusPresentation.resolveCandidateReview(
+            request: request,
+            requestId: requestId,
+            candidateReviews: candidateReviews
+        )
+
+        return Plan(
+            selectedProjectId: resolution.selectedProjectId,
+            boardAnchorID: resolution.boardAnchorID,
+            rowAnchorID: resolution.matchedCandidateReview.map(
+                SupervisorFocusPresentation.candidateReviewRowAnchor
+            ),
+            highlights: Highlights(
+                pendingHubGrantAnchor: nil,
+                pendingSupervisorSkillApprovalAnchor: nil,
+                candidateReviewAnchor: resolution.highlightedCandidateReviewAnchor,
+                recentSkillActivityRequestId: nil
+            ),
+            auditDrillDown: nil,
+            refresh: resolution.matchedCandidateReview == nil && resolution.refreshCandidateReviews
+                ? .candidateReviews
                 : nil
         )
     }
@@ -148,6 +189,7 @@ enum SupervisorFocusRequestEffects {
             highlights: Highlights(
                 pendingHubGrantAnchor: resolution.highlightedGrantAnchor,
                 pendingSupervisorSkillApprovalAnchor: nil,
+                candidateReviewAnchor: nil,
                 recentSkillActivityRequestId: nil
             ),
             auditDrillDown: nil,
@@ -173,6 +215,7 @@ enum SupervisorFocusRequestEffects {
         let highlights = Highlights(
             pendingHubGrantAnchor: nil,
             pendingSupervisorSkillApprovalAnchor: nil,
+            candidateReviewAnchor: nil,
             recentSkillActivityRequestId: resolution.highlightedSkillActivityRequestId
         )
 

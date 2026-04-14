@@ -122,13 +122,15 @@ enum SupervisorProjectDrillDownPresentationMapper {
                 line(id: "capsule-next", text: "下一步：\(capsule.nextStep)", tone: .secondary),
             ]
             if let blocker = nonEmpty(capsule.topBlocker) {
-                lines.append(
-                    line(
-                        id: "capsule-blocker",
-                        text: "阻塞：\(blocker)",
-                        tone: .warning
+                if let blockerLine = SupervisorBlockerPresentation.blockerLine(blocker) {
+                    lines.append(
+                        line(
+                            id: "capsule-blocker",
+                            text: blockerLine,
+                            tone: .warning
+                        )
                     )
-                )
+                }
             }
             sections.append(
                 SupervisorProjectDrillDownSectionPresentation(
@@ -568,6 +570,49 @@ enum SupervisorProjectDrillDownPresentationMapper {
             )
         }
 
+        if let cadence = snapshot.cadenceExplainability {
+            lines.append(
+                line(
+                    id: "governance-cadence-configured",
+                    text: "已配置节奏：\(cadenceSummaryText(cadence, selector: \.configuredSeconds))",
+                    tone: .secondary,
+                    lineLimit: 3
+                )
+            )
+            lines.append(
+                line(
+                    id: "governance-cadence-recommended",
+                    text: "建议节奏：\(cadenceSummaryText(cadence, selector: \.recommendedSeconds))",
+                    tone: .secondary,
+                    lineLimit: 3
+                )
+            )
+            lines.append(
+                line(
+                    id: "governance-cadence-effective",
+                    text: "生效节奏：\(cadenceSummaryText(cadence, selector: \.effectiveSeconds))",
+                    tone: .secondary,
+                    lineLimit: 3
+                )
+            )
+            lines.append(
+                line(
+                    id: "governance-cadence-reason",
+                    text: "节奏原因：\(cadenceReasonSummaryText(cadence))",
+                    tone: .secondary,
+                    lineLimit: 4
+                )
+            )
+            lines.append(
+                line(
+                    id: "governance-cadence-due",
+                    text: "到期判断：\(cadenceDueSummaryText(cadence))",
+                    tone: .secondary,
+                    lineLimit: 4
+                )
+            )
+        }
+
         if let review = snapshot.latestReview {
             lines.append(
                 line(
@@ -674,6 +719,60 @@ enum SupervisorProjectDrillDownPresentationMapper {
         return lines
     }
 
+    private static func cadenceSummaryText(
+        _ cadence: SupervisorCadenceExplainability,
+        selector: KeyPath<SupervisorCadenceDimensionExplainability, Int>
+    ) -> String {
+        [
+            "心跳 \(governanceDisplayDurationLabel(cadence.progressHeartbeat[keyPath: selector]))",
+            "脉冲 \(governanceDisplayDurationLabel(cadence.reviewPulse[keyPath: selector]))",
+            "脑暴 \(governanceDisplayDurationLabel(cadence.brainstormReview[keyPath: selector]))"
+        ].joined(separator: " · ")
+    }
+
+    private static func cadenceReasonSummaryText(
+        _ cadence: SupervisorCadenceExplainability
+    ) -> String {
+        [
+            cadenceDimensionReasonSummary("心跳", dimension: cadence.progressHeartbeat),
+            cadenceDimensionReasonSummary("脉冲", dimension: cadence.reviewPulse),
+            cadenceDimensionReasonSummary("脑暴", dimension: cadence.brainstormReview)
+        ].joined(separator: " | ")
+    }
+
+    private static func cadenceDueSummaryText(
+        _ cadence: SupervisorCadenceExplainability
+    ) -> String {
+        [
+            cadenceDimensionDueSummary("心跳", dimension: cadence.progressHeartbeat),
+            cadenceDimensionDueSummary("脉冲", dimension: cadence.reviewPulse),
+            cadenceDimensionDueSummary("脑暴", dimension: cadence.brainstormReview)
+        ].joined(separator: " | ")
+    }
+
+    private static func cadenceDimensionReasonSummary(
+        _ title: String,
+        dimension: SupervisorCadenceDimensionExplainability
+    ) -> String {
+        "\(title)：\(localizedCadenceReasonCodes(dimension.effectiveReasonCodes))"
+    }
+
+    private static func cadenceDimensionDueSummary(
+        _ title: String,
+        dimension: SupervisorCadenceDimensionExplainability
+    ) -> String {
+        let state = dimension.isDue ? "已到期" : "未到期"
+        return "\(title)：\(state)，\(localizedCadenceReasonCodes(dimension.nextDueReasonCodes))"
+    }
+
+    private static func localizedCadenceReasonCodes(_ codes: [String]) -> String {
+        HeartbeatGovernanceUserFacingText.cadenceReasonSummary(codes, empty: "无")
+    }
+
+    private static func localizedCadenceReasonCode(_ code: String) -> String {
+        HeartbeatGovernanceUserFacingText.cadenceReasonText(code) ?? code
+    }
+
     private static func guidanceReview(
         snapshot: SupervisorProjectDrillDownSnapshot,
         guidance: SupervisorGuidanceInjectionRecord
@@ -698,7 +797,7 @@ enum SupervisorProjectDrillDownPresentationMapper {
             return [
                 line(
                     id: "\(prefix)-text",
-                    text: "指导：\(governanceScalar(guidance.guidanceText))",
+                    text: "指导：\(governanceScalar(SupervisorGuidanceTextPresentation.summary(guidance.guidanceText, maxChars: 220)))",
                     tone: .secondary,
                     lineLimit: 3
                 )
@@ -739,25 +838,27 @@ enum SupervisorProjectDrillDownPresentationMapper {
                 )
             }
         } else if !contract.primaryBlocker.isEmpty {
-            lines.append(
-                line(
-                    id: "\(prefix)-blocker",
-                    text: "阻塞：\(contract.primaryBlocker)",
-                    tone: primaryTone,
-                    lineLimit: 3
+            if let blockerLine = SupervisorBlockerPresentation.blockerLine(contract.primaryBlocker) {
+                lines.append(
+                    line(
+                        id: "\(prefix)-blocker",
+                        text: blockerLine,
+                        tone: primaryTone,
+                        lineLimit: 3
+                    )
                 )
-            )
+            }
         }
 
         lines.append(
             line(
                 id: "\(prefix)-next-safe-action",
-                text: "下一个安全动作：\(contract.nextSafeActionText)",
+                text: "下一个安全动作：\(contract.userVisibleNextSafeActionText)",
                 tone: .secondary
             )
         )
 
-        if let actions = contract.recommendedActionsText {
+        if let actions = contract.userVisibleRecommendedActionsText {
             lines.append(
                 line(
                     id: "\(prefix)-recommended-actions",

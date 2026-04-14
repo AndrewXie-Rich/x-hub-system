@@ -36,7 +36,7 @@ final class SupervisorCalendarVoiceBridge {
     static func live() -> SupervisorCalendarVoiceBridge {
         SupervisorCalendarVoiceBridge(
             speechSink: { script in
-                SupervisorManager.shared.speakSupervisorVoiceText(script)
+                SupervisorManager.shared.speakSupervisorCalendarReminderText(script)
             },
             notificationSink: { reminder, title, body in
                 livePostLocalNotification(reminder: reminder, title: title, body: body)
@@ -396,8 +396,7 @@ final class SupervisorCalendarVoiceBridge {
     }
 
     private static func canPostLocalSupervisorNotifications() -> Bool {
-        let bundleURL = Bundle.main.bundleURL.path.lowercased()
-        if bundleURL.contains("/swift/pm") || bundleURL.contains(".xctest") {
+        if ProcessInfo.processInfo.isRunningUnderAutomatedTests {
             return false
         }
         return true

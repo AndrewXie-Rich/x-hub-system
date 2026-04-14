@@ -10,6 +10,7 @@ extension SupervisorViewActionSupport {
         setWindowSheet: @escaping (SupervisorManager.SupervisorWindowSheet?) -> Void,
         openURL: @escaping (URL) -> Void,
         openWindow: @escaping (String) -> Void,
+        openProjectGovernance: @escaping (String, XTProjectGovernanceDestination, String?, String?) -> Void,
         setFocusedSplitLane: @escaping (String) -> Void
     ) -> SupervisorViewCockpitActionExecution.Dependencies {
         .init(
@@ -20,6 +21,7 @@ extension SupervisorViewActionSupport {
             setWindowSheet: setWindowSheet,
             openURL: openURL,
             openWindow: openWindow,
+            openProjectGovernance: openProjectGovernance,
             setFocusedSplitLane: setFocusedSplitLane
         )
     }
@@ -51,6 +53,7 @@ extension SupervisorViewActionSupport {
         setWindowSheet: @escaping (SupervisorManager.SupervisorWindowSheet?) -> Void,
         openURL: @escaping (URL) -> Void,
         openWindow: @escaping (String) -> Void,
+        openProjectGovernance: @escaping (String, XTProjectGovernanceDestination, String?, String?) -> Void,
         setFocusedSplitLane: @escaping (String) -> Void
     ) {
         performCockpitAction(
@@ -64,6 +67,7 @@ extension SupervisorViewActionSupport {
                 setWindowSheet: setWindowSheet,
                 openURL: openURL,
                 openWindow: openWindow,
+                openProjectGovernance: openProjectGovernance,
                 setFocusedSplitLane: setFocusedSplitLane
             )
         )

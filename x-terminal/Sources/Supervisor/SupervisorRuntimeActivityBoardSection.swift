@@ -39,6 +39,34 @@ struct SupervisorRuntimeActivityBoardSection: View {
                                 .textSelection(.enabled)
                                 .fixedSize(horizontal: false, vertical: true)
 
+                            if let blockedSummaryText = entry.blockedSummaryText {
+                                Text(blockedSummaryText)
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
+                                    .lineLimit(2)
+                            }
+
+                            if let governanceTruthText = entry.governanceTruthText {
+                                Text(governanceTruthText)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+
+                            if let governanceReasonText = entry.governanceReasonText {
+                                Text(governanceReasonText)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+
+                            if let policyReasonText = entry.policyReasonText {
+                                Text(policyReasonText)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+
                             if let contractText = entry.contractText {
                                 Text(contractText)
                                     .font(.caption2)

@@ -43,7 +43,7 @@ class SupervisorModel: ObservableObject {
         self.chatSession = ChatSessionModel()
 
         // 延迟初始化 orchestrator（需要 self）
-        self.orchestrator = SupervisorOrchestrator(supervisor: self)
+        self.orchestrator = SupervisorOrchestrator(runtimeHost: self)
 
         // 设置定时更新
         setupAutoUpdate()
@@ -293,6 +293,18 @@ class SupervisorModel: ObservableObject {
 
     deinit {
         updateTimer?.invalidate()
+    }
+}
+
+extension SupervisorModel: SupervisorProjectRuntimeHosting {
+    var taskAssignerForRuntime: TaskAssigner? {
+        orchestrator?.taskAssigner
+    }
+
+    func addActiveProjectIfNeeded(_ project: ProjectModel) {
+        if !activeProjects.contains(where: { $0.id == project.id }) {
+            activeProjects.append(project)
+        }
     }
 }
 

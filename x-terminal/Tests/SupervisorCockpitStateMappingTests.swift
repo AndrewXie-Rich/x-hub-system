@@ -24,6 +24,7 @@ struct SupervisorCockpitStateMappingTests {
         )
 
         #expect(presentation.intakeStatus.state == .grantRequired)
+        #expect(presentation.blockerStatus.headline.contains("Hub 授权未完成"))
         #expect(presentation.blockerStatus.headline.contains("grant_required"))
         #expect(presentation.releaseFreezeStatus.state == .releaseFrozen)
         #expect(presentation.actions.first?.id == "submit_intake")
@@ -31,6 +32,7 @@ struct SupervisorCockpitStateMappingTests {
         #expect(stage(presentation, id: "access")?.progress == .active)
         #expect(stage(presentation, id: "runtime")?.progress == .pending)
         #expect(stage(presentation, id: "access")?.actionID == "resolve_access")
+        #expect(presentation.actions.first(where: { $0.id == "approve_risk" })?.subtitle?.contains("grant_required") == false)
     }
 
     @Test
@@ -125,6 +127,39 @@ struct SupervisorCockpitStateMappingTests {
     }
 
     @Test
+    func reviewMemorySummarySurfacesAsIndependentCockpitTruth() {
+        let summary = SupervisorMemoryAssemblyCompactSummary(
+            headlineText: "Review Memory · Deep Dive / ceiling Deep Dive",
+            detailText: "Recent Raw Context Deep · 12 pairs · configured/recommended Plan Review/Deep Dive · purpose Portfolio Review",
+            helpText: "S-Tier 只提供 Supervisor 的 review-memory ceiling；Recent Raw Context 和 Review Memory Depth 仍由 role-aware resolver 单独计算。"
+        )
+
+        let presentation = SupervisorCockpitPresentation.map(
+            input: SupervisorCockpitPresentationInput(
+                isProcessing: false,
+                pendingGrantCount: 0,
+                hasFreshPendingGrantSnapshot: true,
+                doctorStatusLine: "Doctor 已通过（0 个告警）",
+                doctorSuggestionCount: 0,
+                releaseBlockedByDoctorWithoutReport: 0,
+                laneSummary: .empty,
+                abnormalLaneStatus: nil,
+                abnormalLaneRecommendation: nil,
+                xtReadyStatus: "ready",
+                xtReadyStrictE2EReady: true,
+                xtReadyIssueCount: 0,
+                xtReadyReportPath: "build/xt_ready_gate_e2e_report.json",
+                reviewMemorySummary: summary
+            )
+        )
+
+        #expect(presentation.intakeStatus.state == .ready)
+        #expect(presentation.reviewMemorySummary?.headlineText == summary.headlineText)
+        #expect(presentation.reviewMemorySummary?.detailText == summary.detailText)
+        #expect(presentation.reviewMemorySummary?.helpText.contains("S-Tier 只提供 Supervisor 的 review-memory ceiling") == true)
+    }
+
+    @Test
     func oneShotAwaitingGrantMapsGrantRequiredWithoutPendingGrantSnapshot() {
         let presentation = SupervisorCockpitPresentation.map(
             input: SupervisorCockpitPresentationInput(
@@ -152,11 +187,13 @@ struct SupervisorCockpitStateMappingTests {
 
         #expect(presentation.intakeStatus.state == .grantRequired)
         #expect(presentation.intakeStatus.whatHappened.contains("授权门"))
+        #expect(presentation.blockerStatus.headline.contains("Hub 授权未完成"))
         #expect(presentation.blockerStatus.headline.contains("grant_required"))
         #expect(presentation.plannerExplain.contains("awaiting_grant"))
         #expect(stage(presentation, id: "access")?.surfaceState == .grantRequired)
         #expect(stage(presentation, id: "runtime")?.progress == .pending)
         #expect(stage(presentation, id: "access")?.actionLabel == "打开授权")
+        #expect(presentation.runtimeStageRail.summary.contains("Hub 授权未完成"))
     }
 
     @Test
@@ -273,6 +310,76 @@ struct SupervisorCockpitStateMappingTests {
         #expect(stage(presentation, id: "runtime")?.actionLabel == "继续泳道")
     }
 
+    @Test
+    func supervisorGrantBlockerPromotesGovernanceRepairInCockpit() {
+        let presentation = SupervisorCockpitPresentation.map(
+            input: SupervisorCockpitPresentationInput(
+                isProcessing: false,
+                pendingGrantCount: 0,
+                hasFreshPendingGrantSnapshot: true,
+                doctorStatusLine: "Doctor 已通过（0 个告警）",
+                doctorSuggestionCount: 0,
+                releaseBlockedByDoctorWithoutReport: 0,
+                laneSummary: .empty,
+                abnormalLaneStatus: nil,
+                abnormalLaneRecommendation: nil,
+                xtReadyStatus: "blocked_waiting_upstream",
+                xtReadyStrictE2EReady: true,
+                xtReadyIssueCount: 0,
+                xtReadyReportPath: "build/xt_ready_gate_e2e_report.json",
+                oneShotRuntimeState: OneShotRunStateStatus.blocked.rawValue,
+                oneShotRuntimeOwner: "supervisor",
+                oneShotRuntimeTopBlocker: "device_permission_owner_missing",
+                oneShotRuntimeSummary: "",
+                oneShotRuntimeNextTarget: "project_governance",
+                oneShotRuntimeActiveLaneCount: 0
+            )
+        )
+
+        #expect(stage(presentation, id: "access")?.surfaceState == .permissionDenied)
+        #expect(stage(presentation, id: "access")?.actionID == "resolve_access")
+        #expect(stage(presentation, id: "access")?.actionLabel == "检查治理")
+        #expect(stage(presentation, id: "runtime")?.surfaceState == .permissionDenied)
+        #expect(stage(presentation, id: "runtime")?.actionID == "resolve_access")
+        #expect(stage(presentation, id: "runtime")?.actionLabel == "检查治理")
+        #expect(stage(presentation, id: "runtime")?.detail?.contains("grant / governance 面还没就绪") == true)
+    }
+
+    @Test
+    func supervisorRouteBlockerPromotesRouteRepairInCockpit() {
+        let presentation = SupervisorCockpitPresentation.map(
+            input: SupervisorCockpitPresentationInput(
+                isProcessing: false,
+                pendingGrantCount: 0,
+                hasFreshPendingGrantSnapshot: true,
+                doctorStatusLine: "Doctor 已通过（0 个告警）",
+                doctorSuggestionCount: 0,
+                releaseBlockedByDoctorWithoutReport: 0,
+                laneSummary: .empty,
+                abnormalLaneStatus: nil,
+                abnormalLaneRecommendation: nil,
+                xtReadyStatus: "blocked_waiting_upstream",
+                xtReadyStrictE2EReady: true,
+                xtReadyIssueCount: 0,
+                xtReadyReportPath: "build/xt_ready_gate_e2e_report.json",
+                oneShotRuntimeState: OneShotRunStateStatus.blocked.rawValue,
+                oneShotRuntimeOwner: "supervisor",
+                oneShotRuntimeTopBlocker: "preferred_device_offline",
+                oneShotRuntimeSummary: "",
+                oneShotRuntimeNextTarget: "pair_hub",
+                oneShotRuntimeActiveLaneCount: 0
+            )
+        )
+
+        #expect(stage(presentation, id: "access")?.surfaceState == .blockedWaitingUpstream)
+        #expect(stage(presentation, id: "access")?.actionID == "pair_hub")
+        #expect(stage(presentation, id: "access")?.actionLabel == "检查路由")
+        #expect(stage(presentation, id: "runtime")?.surfaceState == .blockedWaitingUpstream)
+        #expect(stage(presentation, id: "runtime")?.actionID == "pair_hub")
+        #expect(stage(presentation, id: "runtime")?.actionLabel == "检查路由")
+        #expect(stage(presentation, id: "runtime")?.detail?.contains("route plane is not ready") == false)
+    }
+
 
     @Test
     func runtimeContractsMapPermissionDenyScopeFreezeAndReplay() {
@@ -313,6 +420,7 @@ struct SupervisorCockpitStateMappingTests {
         )
 
         #expect(presentation.intakeStatus.state == .permissionDenied)
+        #expect(presentation.blockerStatus.headline.contains("权限链路拒绝"))
         #expect(presentation.blockerStatus.headline.contains("permission_denied"))
         #expect(presentation.releaseFreezeStatus.state == .blockedWaitingUpstream)
         #expect(presentation.plannerExplain.contains("auto_launch=mainline_only"))
@@ -321,6 +429,186 @@ struct SupervisorCockpitStateMappingTests {
         #expect(presentation.consumedFrozenFields.contains("xt.one_shot_replay_regression.v1.scenarios"))
         #expect(stage(presentation, id: "access")?.actionID == "resolve_access")
         #expect(stage(presentation, id: "freeze")?.actionID == "review_delivery")
+        #expect(presentation.actions.first(where: { $0.id == "approve_risk" })?.subtitle?.contains("grant_required") == false)
+    }
+
+    @Test
+    func launchDenyTaxonomyMapsCockpitToModelHubAndConnectivityRepairEntrypoints() {
+        let modelNotReady = SupervisorCockpitPresentation.map(
+            input: SupervisorCockpitPresentationInput(
+                isProcessing: false,
+                pendingGrantCount: 0,
+                hasFreshPendingGrantSnapshot: true,
+                doctorStatusLine: "Doctor 已通过（0 个告警）",
+                doctorSuggestionCount: 0,
+                releaseBlockedByDoctorWithoutReport: 0,
+                laneSummary: .empty,
+                abnormalLaneStatus: nil,
+                abnormalLaneRecommendation: nil,
+                xtReadyStatus: "ready",
+                xtReadyStrictE2EReady: true,
+                xtReadyIssueCount: 0,
+                xtReadyReportPath: "build/xt_ready_gate_e2e_report.json",
+                deniedLaunchCount: 1,
+                topLaunchDenyCode: "provider_not_ready"
+            )
+        )
+        #expect(modelNotReady.intakeStatus.state == .diagnosticRequired)
+        #expect(modelNotReady.intakeStatus.headline.contains("模型或 provider 未就绪"))
+        #expect(modelNotReady.blockerStatus.headline.contains("模型或 provider 未就绪"))
+        #expect(modelNotReady.blockerStatus.headline.contains("model_not_ready"))
+        #expect(stage(modelNotReady, id: "access")?.surfaceState == .diagnosticRequired)
+        #expect(stage(modelNotReady, id: "access")?.actionID == "open_model_route_readiness")
+        #expect(stage(modelNotReady, id: "access")?.actionLabel == "检查模型")
+
+        let connectorScopeBlocked = SupervisorCockpitPresentation.map(
+            input: SupervisorCockpitPresentationInput(
+                isProcessing: false,
+                pendingGrantCount: 0,
+                hasFreshPendingGrantSnapshot: true,
+                doctorStatusLine: "Doctor 已通过（0 个告警）",
+                doctorSuggestionCount: 0,
+                releaseBlockedByDoctorWithoutReport: 0,
+                laneSummary: .empty,
+                abnormalLaneStatus: nil,
+                abnormalLaneRecommendation: nil,
+                xtReadyStatus: "ready",
+                xtReadyStrictE2EReady: true,
+                xtReadyIssueCount: 0,
+                xtReadyReportPath: "build/xt_ready_gate_e2e_report.json",
+                deniedLaunchCount: 1,
+                topLaunchDenyCode: "grant_required;deny_code=remote_export_blocked"
+            )
+        )
+        #expect(connectorScopeBlocked.intakeStatus.state == .diagnosticRequired)
+        #expect(connectorScopeBlocked.intakeStatus.headline.contains("远端导出或 connector scope 被阻断"))
+        #expect(connectorScopeBlocked.blockerStatus.headline.contains("远端导出或 connector scope 被阻断"))
+        #expect(connectorScopeBlocked.blockerStatus.headline.contains("connector_scope_blocked"))
+        #expect(stage(connectorScopeBlocked, id: "access")?.surfaceState == .diagnosticRequired)
+        #expect(stage(connectorScopeBlocked, id: "access")?.actionID == "open_hub_recovery")
+        #expect(stage(connectorScopeBlocked, id: "access")?.actionLabel == "检查 Hub Recovery")
+
+        let paidModelBlocked = SupervisorCockpitPresentation.map(
+            input: SupervisorCockpitPresentationInput(
+                isProcessing: false,
+                pendingGrantCount: 0,
+                hasFreshPendingGrantSnapshot: true,
+                doctorStatusLine: "Doctor 已通过（0 个告警）",
+                doctorSuggestionCount: 0,
+                releaseBlockedByDoctorWithoutReport: 0,
+                laneSummary: .empty,
+                abnormalLaneStatus: nil,
+                abnormalLaneRecommendation: nil,
+                xtReadyStatus: "ready",
+                xtReadyStrictE2EReady: true,
+                xtReadyIssueCount: 0,
+                xtReadyReportPath: "build/xt_ready_gate_e2e_report.json",
+                deniedLaunchCount: 1,
+                topLaunchDenyCode: "device_paid_model_not_allowed"
+            )
+        )
+        #expect(paidModelBlocked.intakeStatus.state == .diagnosticRequired)
+        #expect(paidModelBlocked.intakeStatus.headline.contains("付费模型访问受阻"))
+        #expect(stage(paidModelBlocked, id: "access")?.actionID == "open_model_route_readiness")
+        #expect(stage(paidModelBlocked, id: "access")?.actionLabel == "检查付费模型")
+
+        let connectivityBlocked = SupervisorCockpitPresentation.map(
+            input: SupervisorCockpitPresentationInput(
+                isProcessing: false,
+                pendingGrantCount: 0,
+                hasFreshPendingGrantSnapshot: true,
+                doctorStatusLine: "Doctor 已通过（0 个告警）",
+                doctorSuggestionCount: 0,
+                releaseBlockedByDoctorWithoutReport: 0,
+                laneSummary: .empty,
+                abnormalLaneStatus: nil,
+                abnormalLaneRecommendation: nil,
+                xtReadyStatus: "ready",
+                xtReadyStrictE2EReady: true,
+                xtReadyIssueCount: 0,
+                xtReadyReportPath: "build/xt_ready_gate_e2e_report.json",
+                deniedLaunchCount: 1,
+                topLaunchDenyCode: "grpc_unavailable"
+            )
+        )
+        #expect(connectivityBlocked.intakeStatus.state == .blockedWaitingUpstream)
+        #expect(connectivityBlocked.intakeStatus.headline.contains("连接修复型阻塞"))
+        #expect(stage(connectivityBlocked, id: "access")?.surfaceState == .blockedWaitingUpstream)
+        #expect(stage(connectivityBlocked, id: "access")?.actionID == "pair_hub")
+        #expect(stage(connectivityBlocked, id: "access")?.actionLabel == "检查 Hub")
+    }
+
+    @Test
+    func failedClosedRuntimeTaxonomyPromotesIssueSpecificRepairAction() {
+        let presentation = SupervisorCockpitPresentation.map(
+            input: SupervisorCockpitPresentationInput(
+                isProcessing: false,
+                pendingGrantCount: 0,
+                hasFreshPendingGrantSnapshot: true,
+                doctorStatusLine: "Doctor 已通过（0 个告警）",
+                doctorSuggestionCount: 0,
+                releaseBlockedByDoctorWithoutReport: 0,
+                laneSummary: .empty,
+                abnormalLaneStatus: nil,
+                abnormalLaneRecommendation: nil,
+                xtReadyStatus: "ready",
+                xtReadyStrictE2EReady: true,
+                xtReadyIssueCount: 0,
+                xtReadyReportPath: "build/xt_ready_gate_e2e_report.json",
+                oneShotRuntimeState: OneShotRunStateStatus.failedClosed.rawValue,
+                oneShotRuntimeOwner: "xt_l2",
+                oneShotRuntimeTopBlocker: "provider_not_ready",
+                oneShotRuntimeSummary: "远端 provider 尚未 ready，当前 one-shot 已 fail-closed。",
+                oneShotRuntimeNextTarget: "model_route_readiness",
+                oneShotRuntimeActiveLaneCount: 0
+            )
+        )
+
+        #expect(stage(presentation, id: "runtime")?.surfaceState == .diagnosticRequired)
+        #expect(stage(presentation, id: "runtime")?.actionID == "open_model_route_readiness")
+        #expect(stage(presentation, id: "runtime")?.actionLabel == "检查模型")
+    }
+
+    @Test
+    func cockpitHumanizesRuntimeFallbackDetailAndGrantActionSubtitle() {
+        let presentation = SupervisorCockpitPresentation.map(
+            input: SupervisorCockpitPresentationInput(
+                isProcessing: false,
+                pendingGrantCount: 0,
+                hasFreshPendingGrantSnapshot: true,
+                doctorStatusLine: "Doctor 已通过（0 个告警）",
+                doctorSuggestionCount: 0,
+                releaseBlockedByDoctorWithoutReport: 0,
+                laneSummary: LaneHealthSummary(
+                    total: 1,
+                    running: 0,
+                    blocked: 1,
+                    stalled: 0,
+                    failed: 0,
+                    waiting: 0,
+                    recovering: 0,
+                    completed: 0
+                ),
+                abnormalLaneStatus: nil,
+                abnormalLaneRecommendation: nil,
+                xtReadyStatus: "blocked_waiting_upstream",
+                xtReadyStrictE2EReady: true,
+                xtReadyIssueCount: 0,
+                xtReadyReportPath: "build/xt_ready_gate_e2e_report.json",
+                grantGateMode: "fail_closed",
+                oneShotRuntimeState: OneShotRunStateStatus.blocked.rawValue,
+                oneShotRuntimeOwner: "xt_l2",
+                oneShotRuntimeTopBlocker: "provider_not_ready",
+                oneShotRuntimeSummary: "",
+                oneShotRuntimeNextTarget: "model_route_readiness",
+                oneShotRuntimeActiveLaneCount: 1
+            )
+        )
+
+        #expect(stage(presentation, id: "runtime")?.detail?.contains("provider 尚未 ready") == true)
+        #expect(presentation.runtimeStageRail.summary.contains("当前阻塞：provider 尚未 ready"))
+        #expect(presentation.actions.first(where: { $0.id == "approve_risk" })?.subtitle?.contains("Hub 授权阻塞") == true)
+        #expect(presentation.actions.first(where: { $0.id == "approve_risk" })?.subtitle?.contains("grant_required") == false)
     }
 
     @Test

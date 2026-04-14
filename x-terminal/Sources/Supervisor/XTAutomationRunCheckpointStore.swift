@@ -1,5 +1,31 @@
 import Foundation
 
+enum XTAutomationRunStepState: String, Codable, Equatable {
+    case pending
+    case inProgress = "in_progress"
+    case verifying
+    case blocked
+    case retryWait = "retry_wait"
+    case done
+
+    var displayName: String {
+        switch self {
+        case .pending:
+            return "待开始"
+        case .inProgress:
+            return "执行中"
+        case .verifying:
+            return "验证中"
+        case .blocked:
+            return "已阻塞"
+        case .retryWait:
+            return "等待重试"
+        case .done:
+            return "已完成"
+        }
+    }
+}
+
 struct XTAutomationRunCheckpoint: Codable, Equatable, Identifiable {
     static let currentSchemaVersion = "xt.automation_run_checkpoint.v1"
 
@@ -13,6 +39,10 @@ struct XTAutomationRunCheckpoint: Codable, Equatable, Identifiable {
     let resumeToken: String
     let checkpointRef: String
     let stableIdentity: Bool
+    let currentStepID: String?
+    let currentStepTitle: String?
+    let currentStepState: XTAutomationRunStepState?
+    let currentStepSummary: String?
     let auditRef: String
 
     var id: String { checkpointRef }
@@ -28,7 +58,45 @@ struct XTAutomationRunCheckpoint: Codable, Equatable, Identifiable {
         case resumeToken = "resume_token"
         case checkpointRef = "checkpoint_ref"
         case stableIdentity = "stable_identity"
+        case currentStepID = "current_step_id"
+        case currentStepTitle = "current_step_title"
+        case currentStepState = "current_step_state"
+        case currentStepSummary = "current_step_summary"
         case auditRef = "audit_ref"
+    }
+
+    init(
+        schemaVersion: String,
+        runID: String,
+        recipeID: String,
+        state: XTAutomationRunState,
+        attempt: Int,
+        lastTransition: String,
+        retryAfterSeconds: Int,
+        resumeToken: String,
+        checkpointRef: String,
+        stableIdentity: Bool,
+        currentStepID: String? = nil,
+        currentStepTitle: String? = nil,
+        currentStepState: XTAutomationRunStepState? = nil,
+        currentStepSummary: String? = nil,
+        auditRef: String
+    ) {
+        self.schemaVersion = schemaVersion
+        self.runID = runID
+        self.recipeID = recipeID
+        self.state = state
+        self.attempt = attempt
+        self.lastTransition = lastTransition
+        self.retryAfterSeconds = retryAfterSeconds
+        self.resumeToken = resumeToken
+        self.checkpointRef = checkpointRef
+        self.stableIdentity = stableIdentity
+        self.currentStepID = xtAutomationNormalizedOptionalScalar(currentStepID)
+        self.currentStepTitle = xtAutomationNormalizedOptionalScalar(currentStepTitle)
+        self.currentStepState = currentStepState
+        self.currentStepSummary = xtAutomationNormalizedOptionalScalar(currentStepSummary)
+        self.auditRef = auditRef
     }
 }
 
@@ -39,7 +107,23 @@ enum XTAutomationRestartRecoveryAction: String, Codable, Equatable {
     case suppressed
 }
 
+enum XTAutomationRestartRecoveryMode: String, Codable, Equatable {
+    case automatic
+    case operatorOverride = "operator_override"
+
+    var respectsRetryBackoff: Bool {
+        switch self {
+        case .automatic:
+            return true
+        case .operatorOverride:
+            return false
+        }
+    }
+}
+
 struct XTAutomationRestartRecoveryDecision: Codable, Equatable {
+    static let currentSchemaVersion = "xt.automation_restart_recovery_decision.v1"
+
     let schemaVersion: String
     let runID: String
     let recipeID: String
@@ -89,6 +173,10 @@ final class XTAutomationRunCheckpointStore {
         recipeID: String,
         initialState: XTAutomationRunState = .queued,
         retryAfterSeconds: Int = 0,
+        currentStepID: String? = nil,
+        currentStepTitle: String? = nil,
+        currentStepState: XTAutomationRunStepState? = nil,
+        currentStepSummary: String? = nil,
         auditRef: String
     ) -> XTAutomationRunCheckpoint {
         let checkpoint = makeCheckpoint(
@@ -97,6 +185,10 @@ final class XTAutomationRunCheckpointStore {
             previous: nil,
             nextState: initialState,
             retryAfterSeconds: retryAfterSeconds,
+            currentStepID: currentStepID,
+            currentStepTitle: currentStepTitle,
+            currentStepState: currentStepState,
+            currentStepSummary: currentStepSummary,
             auditRef: auditRef
         )
         current = checkpoint
@@ -110,6 +202,10 @@ final class XTAutomationRunCheckpointStore {
     func transition(
         to nextState: XTAutomationRunState,
         retryAfterSeconds: Int = 0,
+        currentStepID: String? = nil,
+        currentStepTitle: String? = nil,
+        currentStepState: XTAutomationRunStepState? = nil,
+        currentStepSummary: String? = nil,
         auditRef: String
     ) -> XTAutomationRunCheckpoint {
         guard let current else {
@@ -129,11 +225,42 @@ final class XTAutomationRunCheckpointStore {
             previous: current,
             nextState: nextState,
             retryAfterSeconds: retryAfterSeconds,
+            currentStepID: currentStepID,
+            currentStepTitle: currentStepTitle,
+            currentStepState: currentStepState,
+            currentStepSummary: currentStepSummary,
             auditRef: auditRef
         )
         self.current = checkpoint
         self.history.append(checkpoint)
         return checkpoint
+    }
+
+    @discardableResult
+    func restore(
+        checkpoints: [XTAutomationRunCheckpoint],
+        wasCancelled: Bool = false,
+        cancelAuditRef: String = ""
+    ) -> XTAutomationRunCheckpoint? {
+        guard let latestCheckpoint = checkpoints.last else {
+            current = nil
+            history = []
+            cancelled = wasCancelled
+            self.cancelAuditRef = wasCancelled
+                ? cancelAuditRef.trimmingCharacters(in: .whitespacesAndNewlines)
+                : ""
+            return nil
+        }
+
+        // Persisted checkpoint reconstruction must preserve the original truth
+        // instead of re-deriving identity and attempt metadata.
+        current = latestCheckpoint
+        history = checkpoints
+        cancelled = wasCancelled
+        self.cancelAuditRef = wasCancelled
+            ? cancelAuditRef.trimmingCharacters(in: .whitespacesAndNewlines)
+            : ""
+        return latestCheckpoint
     }
 
     func markCancelled(auditRef: String) {
@@ -143,12 +270,13 @@ final class XTAutomationRunCheckpointStore {
 
     func recoverAfterRestart(
         checkpointAgeSeconds: Int,
+        recoveryMode: XTAutomationRestartRecoveryMode = .automatic,
         staleAfterSeconds: Int = 900,
         auditRef: String
     ) -> XTAutomationRestartRecoveryDecision {
         guard let checkpoint = current else {
             return XTAutomationRestartRecoveryDecision(
-                schemaVersion: "xt.automation_restart_recovery_decision.v1",
+                schemaVersion: XTAutomationRestartRecoveryDecision.currentSchemaVersion,
                 runID: "run-missing",
                 recipeID: "unknown",
                 recoveredState: .failed,
@@ -165,6 +293,7 @@ final class XTAutomationRunCheckpointStore {
             for: checkpoint,
             wasCancelled: cancelled,
             checkpointAgeSeconds: checkpointAgeSeconds,
+            recoveryMode: recoveryMode,
             staleAfterSeconds: staleAfterSeconds,
             maxAttempts: maxAttempts,
             auditRef: auditRef
@@ -175,11 +304,18 @@ final class XTAutomationRunCheckpointStore {
         for checkpoint: XTAutomationRunCheckpoint,
         wasCancelled: Bool,
         checkpointAgeSeconds: Int,
+        recoveryMode: XTAutomationRestartRecoveryMode = .automatic,
         staleAfterSeconds: Int = 900,
         maxAttempts: Int = 3,
         auditRef: String
     ) -> XTAutomationRestartRecoveryDecision {
         let stableIdentityPass = checkpoint.stableIdentity && !checkpoint.runID.isEmpty
+        let normalizedCheckpointAgeSeconds = max(0, checkpointAgeSeconds)
+        let retryBackoffPending =
+            recoveryMode.respectsRetryBackoff
+            && recoverableStates.contains(checkpoint.state)
+            && checkpoint.retryAfterSeconds > 0
+            && normalizedCheckpointAgeSeconds < checkpoint.retryAfterSeconds
 
         let decision: XTAutomationRestartRecoveryAction
         let holdReason: String
@@ -187,12 +323,20 @@ final class XTAutomationRunCheckpointStore {
         if wasCancelled {
             decision = .suppressed
             holdReason = "manual_cancelled"
-        } else if checkpointAgeSeconds > staleAfterSeconds && checkpoint.state != .delivered && checkpoint.state != .failed {
+        } else if normalizedCheckpointAgeSeconds > staleAfterSeconds
+                    && checkpoint.state != .delivered
+                    && checkpoint.state != .failed {
             decision = .scavenged
             holdReason = "stale_run_scavenged"
+        } else if !stableIdentityPass {
+            decision = .hold
+            holdReason = "stable_identity_failed"
         } else if checkpoint.attempt > max(1, maxAttempts) {
             decision = .hold
             holdReason = "retry_budget_exhausted"
+        } else if retryBackoffPending {
+            decision = .hold
+            holdReason = "retry_after_not_elapsed"
         } else if recoverableStates.contains(checkpoint.state) {
             decision = .resume
             holdReason = ""
@@ -202,7 +346,7 @@ final class XTAutomationRunCheckpointStore {
         }
 
         return XTAutomationRestartRecoveryDecision(
-            schemaVersion: "xt.automation_restart_recovery_decision.v1",
+            schemaVersion: XTAutomationRestartRecoveryDecision.currentSchemaVersion,
             runID: checkpoint.runID,
             recipeID: checkpoint.recipeID,
             recoveredState: checkpoint.state,
@@ -221,6 +365,10 @@ final class XTAutomationRunCheckpointStore {
         previous: XTAutomationRunCheckpoint?,
         nextState: XTAutomationRunState,
         retryAfterSeconds: Int,
+        currentStepID: String?,
+        currentStepTitle: String?,
+        currentStepState: XTAutomationRunStepState?,
+        currentStepSummary: String?,
         auditRef: String
     ) -> XTAutomationRunCheckpoint {
         let nextIndex = (history.count + 1)
@@ -232,6 +380,22 @@ final class XTAutomationRunCheckpointStore {
         )
         let lastTransition = previous.map { "\($0.state.rawValue)_to_\(nextState.rawValue)" }
             ?? "bootstrap_to_\(nextState.rawValue)"
+        let resolvedStepID = xtAutomationNormalizedOptionalScalar(currentStepID) ?? previous?.currentStepID
+        let resolvedStepTitle = xtAutomationNormalizedOptionalScalar(currentStepTitle) ?? previous?.currentStepTitle
+        let resolvedStepSummary = xtAutomationNormalizedOptionalScalar(currentStepSummary) ?? previous?.currentStepSummary
+        let hasStepContext =
+            resolvedStepID != nil ||
+            resolvedStepTitle != nil ||
+            resolvedStepSummary != nil ||
+            previous?.currentStepState != nil
+        let resolvedStepState = currentStepState
+            ?? (hasStepContext
+                ? xtAutomationDerivedStepState(
+                    for: nextState,
+                    retryAfterSeconds: retryAfterSeconds,
+                    previous: previous?.currentStepState
+                )
+                : nil)
         return XTAutomationRunCheckpoint(
             schemaVersion: XTAutomationRunCheckpoint.currentSchemaVersion,
             runID: runID,
@@ -243,6 +407,10 @@ final class XTAutomationRunCheckpointStore {
             resumeToken: xtAutomationResumeToken(runID: runID, attempt: attempt, state: nextState),
             checkpointRef: xtAutomationCheckpointRef(index: nextIndex),
             stableIdentity: previous?.runID == nil || previous?.runID == runID,
+            currentStepID: resolvedStepID,
+            currentStepTitle: resolvedStepTitle,
+            currentStepState: resolvedStepState,
+            currentStepSummary: resolvedStepSummary,
             auditRef: auditRef
         )
     }
@@ -259,6 +427,10 @@ final class XTAutomationRunCheckpointStore {
             resumeToken: xtAutomationResumeToken(runID: runID, attempt: 1, state: .failed),
             checkpointRef: xtAutomationCheckpointRef(index: 1),
             stableIdentity: false,
+            currentStepID: nil,
+            currentStepTitle: nil,
+            currentStepState: nil,
+            currentStepSummary: nil,
             auditRef: auditRef
         )
     }
@@ -284,6 +456,28 @@ private func xtAutomationResumeToken(runID: String, attempt: Int, state: XTAutom
 private func xtAutomationCheckpointRef(index: Int) -> String {
     let normalizedIndex = String(format: "%03d", max(1, index))
     return "build/reports/xt_w3_25_run_checkpoint_\(normalizedIndex).v1.json"
+}
+
+private func xtAutomationDerivedStepState(
+    for runState: XTAutomationRunState,
+    retryAfterSeconds: Int,
+    previous: XTAutomationRunStepState?
+) -> XTAutomationRunStepState {
+    switch runState {
+    case .queued:
+        return .pending
+    case .running:
+        return previous == .verifying ? .verifying : .inProgress
+    case .blocked, .takeover, .downgraded, .failed:
+        return retryAfterSeconds > 0 ? .retryWait : .blocked
+    case .delivered:
+        return .done
+    }
+}
+
+func xtAutomationNormalizedOptionalScalar(_ rawValue: String?) -> String? {
+    let trimmed = (rawValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
 }
 
 private func xtAutomationNormalizedRunToken(_ runID: String) -> String {

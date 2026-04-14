@@ -65,7 +65,49 @@ enum SupervisorVoiceScriptBuilder {
         return normalizeScript(script, trigger: .blocked)
     }
 
+    static func recoveryHeartbeatScript(
+        trigger: SupervisorVoiceJobTrigger,
+        projectName: String,
+        summary: String,
+        detail: String,
+        priorityReason: String?,
+        progressLine: String?,
+        nextStepLine: String?
+    ) -> [String] {
+        let trimmedSummary = inline(summary, maxChars: 48)
+        let trimmedDetail = inline(detail, maxChars: 56)
+        let trimmedReason = inline(priorityReason ?? "", maxChars: 44)
+
+        var script = [
+            trigger == .authorization
+                ? "先说最重要的。当前有一项恢复授权要先处理。"
+                : "先说最重要的。当前有一项恢复跟进要先处理。"
+        ]
+        if !trimmedSummary.isEmpty {
+            script.append(trimmedSummary)
+        } else {
+            script.append("\(spokenProjectName(projectName)) 当前有一项恢复动作需要先处理。")
+        }
+        if !trimmedDetail.isEmpty, trimmedDetail != trimmedSummary {
+            script.append(trimmedDetail)
+        }
+        if !trimmedReason.isEmpty {
+            script.append("为什么先看它：\(trimmedReason)。")
+        }
+        if let progressLine {
+            script.append(progressLine)
+        }
+        if let nextStepLine {
+            let next = inline(nextStepLine, maxChars: 44)
+            if !next.isEmpty {
+                script.append("你现在只需要：\(next)。")
+            }
+        }
+        return normalizeScript(script, trigger: trigger)
+    }
+
     static func voiceReadinessHeartbeatScript(
+        kind: VoiceReadinessCheckKind,
         readyForFirstTask: Bool,
         headline: String,
         summary: String,
@@ -73,7 +115,23 @@ enum SupervisorVoiceScriptBuilder {
         nextStepLine: String?
     ) -> [String] {
         var script: [String]
-        if readyForFirstTask {
+        if kind == .pairingValidity {
+            if readyForFirstTask {
+                script = [
+                    "先报当前状态。首个任务已经能做，但配对续连还需要确认。",
+                    inline(summary, maxChars: 56).isEmpty
+                        ? "当前正式异网入口还没有完成验证。"
+                        : "\(inline(summary, maxChars: 56))。"
+                ]
+            } else {
+                script = [
+                    "先报当前状态。当前配对续连还没恢复。",
+                    inline(headline, maxChars: 52).isEmpty
+                        ? "当前正式异网入口还没有恢复。"
+                        : "当前卡在：\(inline(headline, maxChars: 52))。"
+                ]
+            }
+        } else if readyForFirstTask {
             script = [
                 "先报当前状态。语音首个任务已经能做，但还有一项修复别忘了。",
                 inline(summary, maxChars: 56).isEmpty
@@ -127,6 +185,7 @@ enum SupervisorVoiceScriptBuilder {
 
     static func pendingSkillApprovalAnnouncementScript(
         pendingCount: Int,
+        authorizationMode: SupervisorPendingSkillAuthorizationMode = .localApproval,
         projectName: String,
         skillSummary: String,
         routingSummary: String?,
@@ -134,12 +193,29 @@ enum SupervisorVoiceScriptBuilder {
         reasonSummary: String?
     ) -> [String] {
         var script: [String] = []
-        if pendingCount > 1 {
-            script.append("先说最重要的。当前有 \(max(2, pendingCount)) 条待处理的本地技能调用，我先报最早的一条。")
-        } else {
-            script.append("先说最重要的。现在有一条新的本地技能调用待你审批。")
+        switch authorizationMode {
+        case .localApproval:
+            if pendingCount > 1 {
+                script.append("先说最重要的。当前有 \(max(2, pendingCount)) 条待处理的本地技能调用，我先报最早的一条。")
+            } else {
+                script.append("先说最重要的。现在有一条新的本地技能调用待你审批。")
+            }
+            script.append("\(spokenProjectName(projectName)) 现在需要你确认：\(inline(skillSummary, maxChars: 40))。")
+        case .hubGrant:
+            if pendingCount > 1 {
+                script.append("先说最重要的。当前有 \(max(2, pendingCount)) 条待处理的技能授权，我先报最早的一条。")
+            } else {
+                script.append("先说最重要的。现在有一条新的技能授权待处理。")
+            }
+            script.append("\(spokenProjectName(projectName)) 现在需要你处理授权：\(inline(skillSummary, maxChars: 40))。")
+        case .blocked:
+            if pendingCount > 1 {
+                script.append("先说最重要的。当前有 \(max(2, pendingCount)) 条待处理的技能治理阻塞，我先报最早的一条。")
+            } else {
+                script.append("先说最重要的。现在有一条新的技能治理阻塞待处理。")
+            }
+            script.append("\(spokenProjectName(projectName)) 现在需要你处理治理阻塞：\(inline(skillSummary, maxChars: 40))。")
         }
-        script.append("\(spokenProjectName(projectName)) 现在需要你确认：\(inline(skillSummary, maxChars: 40))。")
         if let routingSummary {
             script.append("系统说明：\(inline(routingSummary, maxChars: 96))。")
         }
@@ -149,20 +225,34 @@ enum SupervisorVoiceScriptBuilder {
         if let reasonSummary {
             script.append("当前卡在：\(inline(reasonSummary, maxChars: 40))。")
         }
-        script.append("我说完后会继续听。你可以直接说，可以，或者不行。也可以说，批准这个技能调用，或者拒绝这个技能调用。")
+        switch authorizationMode {
+        case .localApproval:
+            script.append("我说完后会继续听。你可以直接说，可以，或者不行。也可以说，批准这个技能调用，或者拒绝这个技能调用。")
+        case .hubGrant:
+            script.append("我说完后会继续听。这条需要先到 Hub 授权面板处理；如果你现在不想继续，也可以直接说，拒绝这个技能调用。")
+        case .blocked:
+            script.append("我说完后会继续听。这条需要先按阻塞提示处理；如果你现在不想继续，也可以直接说，拒绝这个技能调用。")
+        }
         return normalizeScript(script, trigger: .authorization)
     }
 
     static func stableHeartbeatScript(
-        projectCount: Int,
+        activeProjectCount: Int,
+        managedProjectCount: Int,
         queueCount: Int,
         leadProjectName: String,
         progressLine: String?,
         nextStepLine: String?
     ) -> [String] {
-        var script = [
-            "先报当前状态。现在有 \(max(1, projectCount)) 个项目在跑，没有新的阻塞。"
-        ]
+        var script: [String] = []
+        if activeProjectCount > 0 {
+            script.append("先报当前状态。现在有 \(activeProjectCount) 个项目在跑，没有新的阻塞。")
+        } else if managedProjectCount > 0 {
+            script.append("先报当前状态。当前没有项目在跑，也没有新的阻塞。")
+            script.append("我这边接管了 \(managedProjectCount) 个项目，先按优先级盯下一步。")
+        } else {
+            script.append("先报当前状态。当前还没有项目在跑，也没有新的阻塞。")
+        }
         if queueCount > 0 {
             script.append("\(queueCount) 个项目还在排队，我先盯着 \(spokenProjectName(leadProjectName))。")
         } else if progressLine == nil {
@@ -181,11 +271,15 @@ enum SupervisorVoiceScriptBuilder {
         projectName: String,
         routeReason: String?,
         failureAction: String?,
+        routeHint: String?,
+        followUpLine: String?,
         progressLine: String?,
         nextStepLine: String?
     ) -> [String] {
         let trimmedReason = inline(routeReason ?? "", maxChars: 32)
         let trimmedAction = inline(failureAction ?? "", maxChars: 40)
+        let trimmedHint = inline(routeHint ?? "", maxChars: 52)
+        let trimmedFollowUp = inline(followUpLine ?? "", maxChars: 52)
 
         var script = [
             "先报当前状态。现在没有新的阻塞，但模型路由值得先看一下。"
@@ -198,11 +292,23 @@ enum SupervisorVoiceScriptBuilder {
         if !trimmedAction.isEmpty {
             script.append("最近一次失败停在：\(trimmedAction)。")
         }
+        if !trimmedHint.isEmpty {
+            script.append("方向上更像：\(trimmedHint)。")
+        }
+        if !trimmedFollowUp.isEmpty {
+            script.append("\(trimmedFollowUp)。")
+        }
         if let progressLine {
             script.append(progressLine)
         }
         if let nextStepLine {
-            script.append("如果你现在要介入，先 \(inline(nextStepLine, maxChars: 40))。")
+            let normalizedNextStep = nextStepLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if normalizedNextStep.contains("/route diagnose")
+                || normalizedNextStep.localizedCaseInsensitiveContains("route diagnose") {
+                script.append("如果你现在要介入，先看 route diagnose。")
+            } else {
+                script.append("如果你现在要介入，先 \(inline(normalizedNextStep, maxChars: 40))。")
+            }
         } else {
             script.append("如果你现在要介入，先看 route diagnose。")
         }

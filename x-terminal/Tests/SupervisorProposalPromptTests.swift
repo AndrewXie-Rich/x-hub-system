@@ -129,6 +129,9 @@ struct SplitProposalEngineTests {
         #expect(laneTwo.dependsOn == ["lane-1"])
         #expect(laneOne.dodChecklist.isEmpty == false)
         #expect(laneTwo.dodChecklist.isEmpty == false)
+        #expect(laneOne.verificationContract?.verifyMethod == .artifactConsistencyReview)
+        #expect(laneTwo.verificationContract?.verifyMethod == .targetedChecksAndDiffReview)
+        #expect(laneTwo.verificationContract?.verificationChecklist.isEmpty == false)
         #expect(result.proposal.complexityScore > 0)
         #expect(result.proposal.tokenBudgetTotal > 0)
     }
@@ -406,6 +409,14 @@ struct PromptFactoryTests {
             createChildProject: false,
             expectedArtifacts: ["endpoint_code"],
             dodChecklist: ["tests_or_checks_passed"],
+            verificationContract: LaneVerificationContract(
+                expectedState: "Endpoint works and targeted checks pass.",
+                verifyMethod: .targetedChecksAndDiffReview,
+                retryPolicy: .boundedRetryThenHold,
+                holdPolicy: .holdOnMismatch,
+                evidenceRequired: ["endpoint_code", "targeted_check_result"],
+                verificationChecklist: ["expected_state_confirmed", "evidence_attached", "tests_or_checks_passed"]
+            ),
             estimatedEffortMs: 2_000,
             tokenBudget: 2_000,
             sourceTaskId: nil,
@@ -431,6 +442,9 @@ struct PromptFactoryTests {
         #expect(result.status == .ready)
         #expect(result.lanePromptCoverageComplete)
         #expect(result.canLaunch)
+        #expect(result.contracts.first?.verificationContract?.verifyMethod == .targetedChecksAndDiffReview)
+        #expect(result.contracts.first?.compiledPrompt.contains("[Verification Contract]") == true)
+        #expect(result.contracts.first?.compiledPrompt.contains("targeted checks + diff review") == true)
     }
 }
 

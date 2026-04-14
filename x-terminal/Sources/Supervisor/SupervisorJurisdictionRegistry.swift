@@ -110,14 +110,26 @@ struct SupervisorJurisdictionRegistry: Equatable, Codable, Sendable {
     }
 
     func allowsEventVisibility(_ event: SupervisorProjectActionEvent) -> Bool {
-        switch role(for: event.projectId) {
+        allowsEventVisibility(
+            projectId: event.projectId,
+            eventType: event.eventType,
+            severity: event.severity
+        )
+    }
+
+    func allowsEventVisibility(
+        projectId: String,
+        eventType: SupervisorProjectActionEventType,
+        severity: SupervisorProjectActionSeverity
+    ) -> Bool {
+        switch role(for: projectId) {
         case .owner, .observer:
             return true
         case .triageOnly:
-            return event.eventType == .blocked ||
-                event.eventType == .awaitingAuthorization ||
-                event.severity == .authorizationRequired ||
-                event.severity == .interruptNow
+            return eventType == .blocked ||
+                eventType == .awaitingAuthorization ||
+                severity == .authorizationRequired ||
+                severity == .interruptNow
         }
     }
 

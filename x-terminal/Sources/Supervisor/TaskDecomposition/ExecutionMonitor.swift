@@ -6,7 +6,7 @@ class ExecutionMonitor: ObservableObject {
 
     // MARK: - 属性
 
-    weak var supervisor: SupervisorModel?
+    weak var runtimeHost: (any SupervisorProjectRuntimeHosting)?
 
     /// 任务执行状态
     @Published var taskStates: [UUID: TaskExecutionState] = [:]
@@ -67,8 +67,8 @@ class ExecutionMonitor: ObservableObject {
 
     // MARK: - 初始化
 
-    init(supervisor: SupervisorModel? = nil) {
-        self.supervisor = supervisor
+    init(runtimeHost: (any SupervisorProjectRuntimeHosting)? = nil) {
+        self.runtimeHost = runtimeHost
     }
 
     deinit {
@@ -936,13 +936,13 @@ class ExecutionMonitor: ObservableObject {
     }
 
     private func retryTask(_ taskId: UUID) async {
-        guard let supervisor,
+        guard let runtimeHost,
               var state = taskStates[taskId] else { return }
 
         state.attempts += 1
         taskStates[taskId] = state
 
-        if let assigner = supervisor.orchestrator?.taskAssigner {
+        if let assigner = runtimeHost.taskAssignerForRuntime {
             await assigner.reassignTask(taskId)
         }
     }

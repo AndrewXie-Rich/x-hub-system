@@ -45,7 +45,7 @@ enum SupervisorPortfolioBoardPresentationMapper {
             actionEventRows: displayedEvents,
             activeDrillDown: activeDrillDown,
             recentUIReviewFeedTitle: displayedUIReviewRows.isEmpty ? nil : "最近 UI 审查",
-            recentActionFeedTitle: displayedEvents.isEmpty ? nil : "最近项目动作"
+            recentActionFeedTitle: displayedEvents.isEmpty ? nil : "提醒中心"
         )
     }
 }

@@ -35,6 +35,51 @@ enum SupervisorSkillRoutingCompatibilityHint: Equatable {
                     "browser.runtime.inspect"
                 ]
             )
+        case "local-embeddings", "local.embeddings", "local_embeddings":
+            return .compatibleEntrypoints(
+                entries: [
+                    "embedding",
+                    "embeddings",
+                    "vector.embed",
+                    "vector_embed"
+                ]
+            )
+        case "local-transcribe", "local.transcribe", "local_transcribe":
+            return .compatibleEntrypoints(
+                entries: [
+                    "transcribe",
+                    "transcription",
+                    "speech-to-text",
+                    "stt"
+                ]
+            )
+        case "local-vision", "local.vision", "local_vision":
+            return .compatibleEntrypoints(
+                entries: [
+                    "vision",
+                    "vision-understand",
+                    "image.describe",
+                    "image.inspect"
+                ]
+            )
+        case "local-ocr", "local.ocr", "local_ocr":
+            return .compatibleEntrypoints(
+                entries: [
+                    "ocr",
+                    "image-ocr",
+                    "image.extract_text",
+                    "screenshot.ocr"
+                ]
+            )
+        case "local-tts", "local.tts", "local_tts":
+            return .compatibleEntrypoints(
+                entries: [
+                    "tts",
+                    "text-to-speech",
+                    "speech.synthesize",
+                    "speech.speak"
+                ]
+            )
         case "agent-browser", "agent_browser", "agent.browser":
             if registryItems.contains(where: {
                 AXSkillsLibrary.canonicalSupervisorSkillID($0.skillId) == "guarded-automation"

@@ -275,6 +275,85 @@ struct SupervisorPendingHubGrantBoardSection: View {
     }
 }
 
+struct SupervisorCandidateReviewBoardSection: View {
+    let presentation: SupervisorCandidateReviewBoardPresentation
+    let onRefresh: () -> Void
+    let onAction: (SupervisorCardAction) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Image(systemName: presentation.iconName)
+                    .foregroundColor(toneColor(presentation.iconTone))
+                Text(presentation.title)
+                    .font(.headline)
+
+                Spacer()
+
+                Text(presentation.snapshotText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Button(action: onRefresh) {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .help("刷新 candidate review 快照")
+            }
+
+            if let freshnessWarningText = presentation.freshnessWarningText {
+                Text(freshnessWarningText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let footerNote = presentation.footerNote {
+                Text(footerNote)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let emptyStateText = presentation.emptyStateText {
+                Text(emptyStateText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(presentation.rows) { item in
+                            SupervisorCandidateReviewRowView(
+                                item: item,
+                                onAction: onAction
+                            )
+                            .id(item.anchorID)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                .frame(maxHeight: 178)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(Color(NSColor.windowBackgroundColor))
+    }
+
+    private func toneColor(_ tone: SupervisorHeaderControlTone) -> Color {
+        switch tone {
+        case .neutral:
+            return .secondary
+        case .accent:
+            return .accentColor
+        case .success:
+            return .green
+        case .warning:
+            return .orange
+        case .danger:
+            return .red
+        }
+    }
+}
+
 private struct SupervisorPendingSkillApprovalRowView: View {
     let approval: SupervisorPendingSkillApprovalRowPresentation
     let onAction: (SupervisorCardAction) -> Void
@@ -337,7 +416,7 @@ private struct SupervisorPendingSkillApprovalRowView: View {
                 Text(noteText)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .lineLimit(3)
             }
 
             HStack(alignment: .center, spacing: 8) {
@@ -439,7 +518,7 @@ private struct SupervisorRecentSkillActivityCardView: View {
             }
 
             HStack(spacing: 8) {
-                let displaySkill = SupervisorSkillActivityPresentation.displaySkillSummary(for: item)
+                let summaryText = SupervisorSkillActivityPresentation.preferredCardSummary(for: item)
 
                 Text(item.projectName)
                     .font(.system(.caption, design: .rounded))
@@ -449,9 +528,9 @@ private struct SupervisorRecentSkillActivityCardView: View {
                     .background(Color.secondary.opacity(0.08))
                     .cornerRadius(6)
 
-                if !displaySkill.isEmpty {
-                    Text(displaySkill)
-                        .font(.system(.caption, design: .monospaced))
+                if !summaryText.isEmpty {
+                    Text(summaryText)
+                        .font(.system(.caption, design: .rounded))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
@@ -472,23 +551,19 @@ private struct SupervisorRecentSkillActivityCardView: View {
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
 
+            let governedCardLines = SupervisorSkillActivityPresentation.cardGovernedDetailLines(for: item)
+            if !governedCardLines.isEmpty {
+                ForEach(governedCardLines, id: \.self) { line in
+                    Text(line)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+
             if !item.toolSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text("目标：\(item.toolSummary)")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-
-            if let workflowLine = SupervisorSkillActivityPresentation.workflowLine(for: item) {
-                Text(workflowLine)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            if let routingLine = SupervisorSkillActivityPresentation.routingLine(for: item) {
-                Text(routingLine)
-                    .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
@@ -500,7 +575,7 @@ private struct SupervisorRecentSkillActivityCardView: View {
                     .lineLimit(2)
             }
 
-            if let governanceTruthLine = SupervisorSkillActivityPresentation.governanceTruthLine(for: item) {
+            if let governanceTruthLine = SupervisorSkillActivityPresentation.displayGovernanceTruthLine(for: item) {
                 Text(governanceTruthLine)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -594,7 +669,7 @@ private struct SupervisorRecentSkillActivityCardView: View {
         case "running":
             return .mint
         case "awaiting_authorization":
-            return item.requiredCapability.isEmpty ? .yellow : .orange
+            return SupervisorSkillActivityPresentation.isAwaitingLocalApproval(item) ? .yellow : .orange
         case "completed":
             return .green
         case "failed":
@@ -624,6 +699,8 @@ private struct SupervisorRecentSkillActivityCardView: View {
             item.denyCode,
             item.policySource,
             item.policyReason,
+            SupervisorSkillActivityPresentation.preferredCardSummary(for: item),
+            SupervisorSkillActivityPresentation.cardGovernedDetailLines(for: item).joined(separator: "||"),
             SupervisorSkillActivityPresentation.blockedSummaryLine(for: item) ?? "",
             SupervisorSkillActivityPresentation.governanceTruthLine(for: item) ?? "",
             item.grantRequestId,
@@ -713,6 +790,13 @@ private struct SupervisorEventLoopActivityRowView: View {
 
             if let governanceTruthText = item.governanceTruthText {
                 Text(governanceTruthText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            if let governanceReasonText = item.governanceReasonText {
+                Text(governanceReasonText)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -821,6 +905,7 @@ private struct SupervisorEventLoopActivityRowView: View {
         parts.append(item.actionDescriptors.map { "\($0.label):\($0.isEnabled)" }.joined(separator: ","))
         parts.append(item.blockedSummaryText ?? "")
         parts.append(item.governanceTruthText ?? "")
+        parts.append(item.governanceReasonText ?? "")
         parts.append(item.policyReasonText ?? "")
         return parts.joined(separator: "|")
     }
@@ -859,6 +944,13 @@ private struct SupervisorPendingHubGrantRowView: View {
             Text(grant.summary)
                 .font(.caption)
                 .lineLimit(2)
+
+            ForEach(Array(grant.governedContextLines.enumerated()), id: \.offset) { _, line in
+                Text(line)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
 
             if let supplementaryReasonText = grant.supplementaryReasonText {
                 Text(supplementaryReasonText)
@@ -940,6 +1032,7 @@ private struct SupervisorPendingHubGrantRowView: View {
             grant.title,
             grant.ageText,
             grant.summary,
+            grant.governedContextLines.joined(separator: "\n"),
             grant.supplementaryReasonText ?? "",
             grant.priorityReasonText ?? "",
             grant.nextActionText ?? "",
@@ -947,6 +1040,122 @@ private struct SupervisorPendingHubGrantRowView: View {
             grant.grantIdentifierText,
             String(grant.isInFlight),
             grant.actionDescriptors.map { "\($0.label):\($0.isEnabled)" }.joined(separator: ",")
+        ].joined(separator: "|")
+    }
+}
+
+private struct SupervisorCandidateReviewRowView: View {
+    let item: SupervisorCandidateReviewRowPresentation
+    let onAction: (SupervisorCardAction) -> Void
+    @StateObject private var updateFeedback = XTTransientUpdateFeedbackState()
+    @State private var lastObservedSignature: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(item.title)
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+
+                Spacer(minLength: 8)
+
+                Text(item.ageText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if updateFeedback.showsBadge {
+                    XTTransientUpdateBadge(
+                        tint: .accentColor,
+                        font: .system(.caption2, design: .monospaced),
+                        fontWeight: .semibold,
+                        horizontalPadding: 8,
+                        verticalPadding: 4
+                    )
+                }
+            }
+
+            Text(item.summary)
+                .font(.caption)
+                .lineLimit(2)
+
+            Text(item.reviewStateText)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            if let scopeText = item.scopeText {
+                Text(scopeText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            if let draftText = item.draftText {
+                Text(draftText)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            HStack(alignment: .center, spacing: 8) {
+                Text(item.evidenceText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+
+                Spacer(minLength: 8)
+
+                if item.isInFlight {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+
+                SupervisorInlineActionStrip(
+                    actions: item.actionDescriptors,
+                    style: .regular,
+                    onAction: onAction
+                )
+            }
+        }
+        .padding(10)
+        .xtTransientUpdateCardChrome(
+            cornerRadius: 10,
+            isFocused: item.isFocused,
+            isUpdated: updateFeedback.isHighlighted,
+            focusTint: .accentColor,
+            updateTint: .accentColor,
+            baseBackground: item.isFocused ? Color.accentColor.opacity(0.14) : Color.secondary.opacity(0.08),
+            baseBorder: item.isFocused ? Color.accentColor.opacity(0.65) : Color.clear,
+            baseLineWidth: item.isFocused ? 1.5 : 1,
+            emphasizedLineWidth: 1.5,
+            updateBackgroundOpacity: 0.12,
+            updateBorderOpacity: 0.32,
+            updateShadowOpacity: 0.12
+        )
+        .onAppear {
+            lastObservedSignature = observedSignature
+        }
+        .onChange(of: observedSignature) { newValue in
+            defer { lastObservedSignature = newValue }
+            guard let lastObservedSignature, lastObservedSignature != newValue else { return }
+            updateFeedback.trigger()
+        }
+        .onDisappear {
+            updateFeedback.cancel(resetState: true)
+        }
+    }
+
+    private var observedSignature: String {
+        [
+            item.title,
+            item.ageText,
+            item.summary,
+            item.reviewStateText,
+            item.scopeText ?? "",
+            item.draftText ?? "",
+            item.evidenceText,
+            String(item.isInFlight),
+            item.actionDescriptors.map { "\($0.label):\($0.isEnabled)" }.joined(separator: ",")
         ].joined(separator: "|")
     }
 }

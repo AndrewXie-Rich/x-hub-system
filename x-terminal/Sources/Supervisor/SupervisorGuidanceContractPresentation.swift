@@ -84,8 +84,16 @@ struct SupervisorGuidanceContractSummary: Equatable, Sendable {
         return actions.joined(separator: " | ")
     }
 
+    var userVisibleRecommendedActionsText: String? {
+        SupervisorGuidanceTextPresentation.actionsDisplayText(recommendedActions)
+    }
+
     var nextSafeActionText: String {
         normalized(nextSafeAction) ?? "(none)"
+    }
+
+    var userVisibleNextSafeActionText: String {
+        SupervisorGuidanceTextPresentation.actionDisplayText(nextSafeAction) ?? "(none)"
     }
 
     private func normalized(_ value: String?) -> String? {
@@ -140,9 +148,20 @@ enum SupervisorGuidanceContractLinePresentation {
     static func nextSafeActionLine(
         for contract: SupervisorGuidanceContractSummary
     ) -> String {
-        var parts = ["安全下一步： \(contract.nextSafeActionText)"]
-        if let actions = normalized(contract.recommendedActionsText) {
-            parts.append("actions=\(actions)")
+        nextSafeActionLine(
+            nextSafeAction: contract.nextSafeAction,
+            recommendedActions: contract.recommendedActions
+        )
+    }
+
+    static func nextSafeActionLine(
+        nextSafeAction: String,
+        recommendedActions: [String] = []
+    ) -> String {
+        let visibleNextSafeAction = SupervisorGuidanceTextPresentation.actionDisplayText(nextSafeAction) ?? "(none)"
+        var parts = ["安全下一步： \(visibleNextSafeAction)"]
+        if let actions = SupervisorGuidanceTextPresentation.actionsDisplayText(recommendedActions) {
+            parts.append("建议动作：\(actions)")
         }
         return parts.joined(separator: " · ")
     }
@@ -306,26 +325,17 @@ enum SupervisorGuidanceContractResolver {
     private static func parsedGuidanceText(
         _ text: String
     ) -> (summary: String, fields: [String: String]) {
-        let lines = text
+        let normalized = SupervisorGuidanceTextPresentation.normalizedText(text)
+        let lines = normalized
             .split(whereSeparator: \.isNewline)
             .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
 
-        var summary = ""
-        var fields: [String: String] = [:]
-        for line in lines {
-            if let eq = line.firstIndex(of: "=") {
-                let key = String(line[..<eq]).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                let value = String(line[line.index(after: eq)...]).trimmingCharacters(in: .whitespacesAndNewlines)
-                if !key.isEmpty {
-                    fields[key] = value
-                    continue
-                }
-            }
-            if summary.isEmpty {
-                summary = line
-            }
-        }
+        let fields = SupervisorGuidanceTextPresentation.fields(normalized)
+        let summary = firstNonEmpty([
+            fields["summary"],
+            lines.first(where: { !$0.contains("=") })
+        ]) ?? ""
 
         return (summary, fields)
     }

@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import XTerminal
 
+@Suite(.serialized)
 struct SupervisorProjectNotificationPolicyTests {
     private func writeTestHubStatus(base: URL) throws {
         let ipcDir = base.appendingPathComponent("ipc_events", isDirectory: true)
@@ -75,9 +76,9 @@ struct SupervisorProjectNotificationPolicyTests {
             eventType: .progressed,
             severity: .silentLog,
             actionTitle: "项目推进：Decision Rail Project",
-            actionSummary: "Decision rail cleanup: 1 shadowed background note",
-            whyItMatters: "Shadowed background notes should stay visibly non-binding so the approved decision remains the only hard constraint.",
-            nextAction: "Review 1 shadowed background note for Decision Rail Project and confirm it stays non-binding under the approved decision.",
+            actionSummary: "决策护栏清理：1 条被遮蔽背景说明",
+            whyItMatters: "被遮蔽的背景说明应继续明确保持非约束状态，避免盖过已批准决策。",
+            nextAction: "检查 Decision Rail Project 的1 条被遮蔽背景说明，确认它在已批准决策下继续保持非约束。",
             occurredAt: 1
         )
 
@@ -85,6 +86,28 @@ struct SupervisorProjectNotificationPolicyTests {
 
         #expect(decision.channel == .briefCard)
         #expect(decision.recommendation.recommendationType == .decisionRailCleanup)
+    }
+
+    @Test
+    func policyHumanizesInterruptSystemMessage() {
+        let event = SupervisorProjectActionEvent(
+            eventId: "auth-humanized",
+            projectId: "p-auth",
+            projectName: "Auth Project",
+            eventType: .awaitingAuthorization,
+            severity: .authorizationRequired,
+            actionTitle: "项目待授权：Auth Project",
+            actionSummary: "grant_required;deny_code=remote_export_blocked",
+            whyItMatters: "needs approval",
+            nextAction: "Approve paid model access",
+            occurredAt: 1
+        )
+
+        let decision = SupervisorProjectNotificationPolicy.decide(for: event)
+
+        #expect(decision.channel == .interruptNow)
+        #expect(decision.systemMessage?.contains("变化：Hub remote export gate 阻断了远端请求（remote_export_blocked）") == true)
+        #expect(decision.systemMessage?.contains("当前阻塞：用户 / Hub 授权") == true)
     }
 
     @MainActor
@@ -251,6 +274,76 @@ struct SupervisorProjectNotificationPolicyTests {
         #expect(titles.contains("项目待授权：Auth Project"))
         #expect(titles.filter { $0 == "项目待授权：Auth Project" }.count == 1)
         #expect(!titles.contains("新增项目：Created Project"))
+    }
+
+    @Test
+    func notificationCenterStateNormalizesExpiredSnoozesAndReadDedupes() {
+        let state = SupervisorProjectNotificationCenterState(
+            readEventIDs: [" evt-1 ", "evt-1", "", "evt-2"],
+            snoozedUntilByEventID: [
+                " evt-1 ": 120,
+                "evt-2": 30,
+                "": 90
+            ]
+        )
+
+        let normalized = state.normalized(
+            now: Date(timeIntervalSince1970: 60),
+            activeEventIDs: Set(["evt-1", "evt-2", "evt-3"])
+        )
+
+        #expect(normalized.readEventIDs == ["evt-1", "evt-2"])
+        #expect(normalized.snoozedUntilByEventID.keys.sorted() == ["evt-1"])
+        #expect(normalized.snoozedUntil(eventID: "evt-1", now: Date(timeIntervalSince1970: 61)) != nil)
+        #expect(normalized.snoozedUntil(eventID: "evt-2", now: Date(timeIntervalSince1970: 61)) == nil)
+    }
+
+    @MainActor
+    @Test
+    func managerPersistsNotificationCenterReadAndSnoozeStateAcrossRestart() throws {
+        let registryBase = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xt_notification_center_state_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: registryBase, withIntermediateDirectories: true)
+        let envKey = "XTERMINAL_PROJECT_REGISTRY_BASE_DIR"
+        let previous = ProcessInfo.processInfo.environment[envKey]
+        setenv(envKey, registryBase.path, 1)
+        defer {
+            if let previous {
+                setenv(envKey, previous, 1)
+            } else {
+                unsetenv(envKey)
+            }
+            try? FileManager.default.removeItem(at: registryBase)
+        }
+
+        let firstManager = SupervisorManager.makeForTesting(
+            persistSupervisorRuntimeState: true
+        )
+        firstManager.markProjectNotificationEventRead(
+            "pairing:repair",
+            now: Date(timeIntervalSince1970: 10)
+        )
+        firstManager.snoozeProjectNotificationEvent(
+            "event-1",
+            until: Date(timeIntervalSince1970: 3_600),
+            now: Date(timeIntervalSince1970: 10)
+        )
+
+        let secondManager = SupervisorManager.makeForTesting(
+            persistSupervisorRuntimeState: true
+        )
+        let runtimeStateURL = registryBase
+            .appendingPathComponent("supervisor", isDirectory: true)
+            .appendingPathComponent("runtime_state.json")
+
+        #expect(FileManager.default.fileExists(atPath: runtimeStateURL.path))
+        #expect(secondManager.supervisorProjectNotificationCenterState.readEventIDs.contains("pairing:repair"))
+        #expect(
+            secondManager.projectNotificationEventSnoozedUntil(
+                "event-1",
+                now: Date(timeIntervalSince1970: 20)
+            )?.timeIntervalSince1970 == 3_600
+        )
     }
 
     private func waitForNotificationFiles(in eventDir: URL, expectedCount: Int) throws -> [URL] {

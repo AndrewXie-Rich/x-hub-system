@@ -60,6 +60,10 @@ struct SupervisorCockpitSummarySection: View {
                 onTap: onStageTap
             )
 
+            if let reviewMemorySummary = presentation.reviewMemorySummary {
+                CockpitReviewMemorySummaryCard(summary: reviewMemorySummary)
+            }
+
             StatusExplanationCard(explanation: presentation.intakeStatus)
 
             VStack(alignment: .leading, spacing: 12) {
@@ -154,5 +158,51 @@ struct SupervisorCockpitSummarySection: View {
         }
 
         onTap(action)
+    }
+}
+
+private struct CockpitReviewMemorySummaryCard: View {
+    let summary: SupervisorMemoryAssemblyCompactSummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Image(systemName: "brain.head.profile")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Supervisor Review Memory")
+                        .font(UIThemeTokens.sectionFont())
+                    Text(summary.headlineText)
+                        .font(UIThemeTokens.bodyFont().weight(.semibold))
+                }
+
+                Spacer(minLength: 12)
+            }
+
+            if let detailText = summary.detailText {
+                Text(detailText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Text("这里显示的是最近一次真正装给 Supervisor 的 review-memory 真相，不是治理档位本身。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: UIThemeTokens.cardRadius)
+                .fill(UIThemeTokens.secondaryCardBackground)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: UIThemeTokens.cardRadius)
+                .stroke(UIThemeTokens.subtleBorder, lineWidth: 1)
+        )
+        .help(summary.helpText)
     }
 }

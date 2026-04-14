@@ -4,6 +4,10 @@ struct SupervisorRuntimeActivityRowPresentation: Equatable, Identifiable {
     var id: String
     var timeText: String
     var text: String
+    var blockedSummaryText: String?
+    var governanceTruthText: String?
+    var governanceReasonText: String?
+    var policyReasonText: String?
     var contractText: String?
     var nextSafeActionText: String?
     var actionDescriptors: [SupervisorCardActionDescriptor]
@@ -51,6 +55,10 @@ enum SupervisorRuntimeActivityPresentation {
                         locale: locale
                     ),
                     text: entry.text,
+                    blockedSummaryText: blockedSummaryText(for: entry.text),
+                    governanceTruthText: governanceTruthText(for: entry.text),
+                    governanceReasonText: governanceReasonText(for: entry.text),
+                    policyReasonText: policyReasonText(for: entry.text),
                     contractText: contract.map(SupervisorGuidanceContractLinePresentation.contractLine),
                     nextSafeActionText: contract.map(SupervisorGuidanceContractLinePresentation.nextSafeActionLine),
                     actionDescriptors: actionDescriptors(for: contract),
@@ -185,6 +193,22 @@ enum SupervisorRuntimeActivityPresentation {
         return nil
     }
 
+    private static func blockedSummaryText(for text: String) -> String? {
+        labeledValue(in: text, key: "blocked_summary").map { "阻塞说明： \($0)" }
+    }
+
+    private static func governanceTruthText(for text: String) -> String? {
+        labeledValue(in: text, key: "governance_truth").map(XTGovernanceTruthPresentation.displayText)
+    }
+
+    private static func governanceReasonText(for text: String) -> String? {
+        labeledValue(in: text, key: "governance_reason").map { "治理原因： \($0)" }
+    }
+
+    private static func policyReasonText(for text: String) -> String? {
+        labeledValue(in: text, key: "policy_reason").map { "策略原因： \($0)" }
+    }
+
     private static func keyValueTokens(
         _ text: String,
         separators: CharacterSet
@@ -202,6 +226,21 @@ enum SupervisorRuntimeActivityPresentation {
             out[key] = value
         }
         return out
+    }
+
+    private static func labeledValue(
+        in text: String,
+        key: String
+    ) -> String? {
+        let escapedKey = NSRegularExpression.escapedPattern(for: key)
+        let pattern = "(?:^|\\n| · )\(escapedKey)=([\\s\\S]*?)(?=(?:\\n| · )[A-Za-z_]+=|$)"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = regex.firstMatch(in: text, range: range),
+              let valueRange = Range(match.range(at: 1), in: text) else {
+            return nil
+        }
+        return normalizedToken(String(text[valueRange]))
     }
 
     private static func normalizedToken(_ value: String?) -> String? {

@@ -33,6 +33,8 @@ struct SupervisorDoctorSuggestionCard: Codable, Equatable, Identifiable {
     var why: String
     var actions: [String]
     var verifyHint: String?
+    var actionLabel: String? = nil
+    var actionURL: String? = nil
 }
 
 struct SupervisorDoctorSummary: Codable, Equatable {
@@ -1130,6 +1132,8 @@ enum SupervisorDoctorChecker {
             return .p2
         case "memory_canonical_sync_delivery_failed":
             return issue.severity == .blocking ? .p0 : .p1
+        case "memory_scoped_hidden_project_recovery_missing":
+            return issue.severity == .blocking ? .p0 : .p1
         case "memory_review_floor_not_met":
             return issue.severity == .blocking ? .p0 : .p1
         default:
@@ -1145,6 +1149,8 @@ enum SupervisorDoctorChecker {
             return "没有 snapshot 时，Doctor 无法判断 Supervisor 的 strategic review 是否拿到了足够背景。"
         case "memory_canonical_sync_delivery_failed":
             return "canonical memory 最近没有成功同步进 Hub 时，Supervisor 看到的项目背景和当前状态可能已经落后于真实进展。"
+        case "memory_scoped_hidden_project_recovery_missing":
+            return "用户已经显式聚焦 hidden project，但 memory assembly 仍没补回该项目自己的工作集、recent events 或最近对话时，Supervisor 会在缺少项目真上下文的情况下做判断。"
         case "memory_review_floor_not_met":
             return "resolved profile 低于 review floor 时，Supervisor 做战略纠偏时只会看到被压缩过的浅层上下文。"
         case "memory_strategic_anchor_underfed":
@@ -1171,6 +1177,11 @@ enum SupervisorDoctorChecker {
             return [
                 "先修复 canonical memory 的投递链路，再重新同步当前项目 / Supervisor 的 canonical memory。",
                 "确认 `canonical_memory_sync_status.json` 中相关 scope 的最新状态变回 ok=true，再重新运行 doctor / incident export。"
+            ]
+        case "memory_scoped_hidden_project_recovery_missing":
+            return [
+                "重新对该 hidden project 发起一次显式聚焦回合，确认 focused project / focus pointer 命中后再生成 memory assembly。",
+                "打开 XT Diagnostics 检查 scoped recovery 是否至少补回当前项目摘要、recent events、项目活动和最近对话。"
             ]
         case "memory_review_floor_not_met":
             return [
@@ -1207,6 +1218,8 @@ enum SupervisorDoctorChecker {
             return "doctor / incident export 不再出现 memory_assembly_snapshot_missing"
         case "memory_canonical_sync_delivery_failed":
             return "canonical_memory_sync_status 中相关 scope 的最新条目恢复为 ok=true"
+        case "memory_scoped_hidden_project_recovery_missing":
+            return "snapshot.scopedPromptRecoverySections 不再为空，并补回 focused project 的项目范围上下文"
         case "memory_review_floor_not_met":
             return "memory snapshot 中 resolvedProfile >= profileFloor"
         case "memory_strategic_anchor_underfed":

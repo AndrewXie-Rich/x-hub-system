@@ -17,6 +17,10 @@ struct SupervisorSystemPromptRuntimeInfo: Equatable {
     var supervisorModelRouteSummary: String
     var retrievalModelSummary: String?
     var memorySource: String
+    var lastRemoteSuccessAt: TimeInterval?
+    var lastRemoteFailureAt: TimeInterval?
+    var portfolioSnapshotUpdatedAt: TimeInterval?
+    var canonicalMemorySyncLastFailureAt: TimeInterval?
 }
 
 struct SupervisorSystemPromptParams: Equatable {
@@ -34,6 +38,7 @@ struct SupervisorSystemPromptParams: Equatable {
     var userTimezone: String
     var userTime: String
     var userMessage: String
+    var attachmentSummary: String = ""
     var memoryV1: String
     var promptMode: SupervisorSystemPromptMode
     var extraSystemPrompt: String?
@@ -55,8 +60,13 @@ enum SupervisorSystemPromptParamsBuilder {
         preferredSupervisorModelId: String?,
         supervisorModelRouteSummary: String,
         memorySource: String,
+        lastRemoteSuccessAt: TimeInterval? = nil,
+        lastRemoteFailureAt: TimeInterval? = nil,
+        portfolioSnapshotUpdatedAt: TimeInterval? = nil,
+        canonicalMemorySyncLastFailureAt: TimeInterval? = nil,
         projectCount: Int,
         userMessage: String,
+        attachmentSummary: String = "",
         memoryV1: String,
         promptMode: SupervisorSystemPromptMode = .full,
         extraSystemPrompt: String? = nil,
@@ -90,10 +100,15 @@ enum SupervisorSystemPromptParamsBuilder {
                 supervisorModelRouteSummary: supervisorModelRouteSummary,
                 retrievalModelSummary: retrievalModelSummary,
                 memorySource: memorySource,
+                lastRemoteSuccessAt: lastRemoteSuccessAt,
+                lastRemoteFailureAt: lastRemoteFailureAt,
+                portfolioSnapshotUpdatedAt: portfolioSnapshotUpdatedAt,
+                canonicalMemorySyncLastFailureAt: canonicalMemorySyncLastFailureAt,
             ),
             userTimezone: timeZone.identifier,
             userTime: formattedUserTime(now: now, timeZone: timeZone, locale: locale),
             userMessage: userMessage,
+            attachmentSummary: attachmentSummary.trimmingCharacters(in: .whitespacesAndNewlines),
             memoryV1: memoryV1,
             promptMode: promptMode,
             extraSystemPrompt: extraSystemPrompt,

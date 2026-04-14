@@ -3,10 +3,12 @@ import Testing
 @testable import XTerminal
 
 struct XTAutomationRunExecutorTests {
+    private static let runtimeGate = HubGlobalStateTestGate.shared
     private static let permissionGate = TrustedAutomationPermissionTestGate.shared
 
     @Test
     func executorDeliversWhenAllRecipeActionsSucceed() async throws {
+        try await Self.runtimeGate.run {
         let root = try makeProjectRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -43,6 +45,7 @@ struct XTAutomationRunExecutorTests {
                 requiredToolGroups: ["group:full"],
                 actionGraph: [
                     XTAutomationRecipeAction(
+                        actionID: "project_snapshot",
                         title: "Project snapshot",
                         tool: .project_snapshot,
                         successBodyContains: "project_root="
@@ -65,11 +68,21 @@ struct XTAutomationRunExecutorTests {
         #expect(report.executedActionCount == 1)
         #expect(report.succeededActionCount == 1)
         #expect(report.holdReason.isEmpty)
-        try expectHandoffArtifactExists(report: report, root: root)
+        #expect(report.currentStepID == "project_snapshot")
+        #expect(report.currentStepTitle == "Project snapshot")
+        #expect(report.currentStepState == .done)
+        #expect(report.currentStepSummary == "project_root=/tmp/example")
+        let artifact = try expectHandoffArtifactExists(report: report, root: root)
+        #expect(artifact.currentStepID == "project_snapshot")
+        #expect(artifact.currentStepTitle == "Project snapshot")
+        #expect(artifact.currentStepState == .done)
+        #expect(artifact.currentStepSummary == "project_root=/tmp/example")
+        }
     }
 
     @Test
     func executorBlocksWhenActionExpectationFails() async throws {
+        try await Self.runtimeGate.run {
         let root = try makeProjectRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -106,6 +119,7 @@ struct XTAutomationRunExecutorTests {
                 requiredToolGroups: ["group:full"],
                 actionGraph: [
                     XTAutomationRecipeAction(
+                        actionID: "project_snapshot",
                         title: "Project snapshot",
                         tool: .project_snapshot,
                         successBodyContains: "project_root="
@@ -129,11 +143,21 @@ struct XTAutomationRunExecutorTests {
         #expect(report.succeededActionCount == 0)
         #expect(report.holdReason == "automation_action_failed")
         #expect(report.actionResults.first?.detail == "expected_body_missing:project_root=")
-        try expectHandoffArtifactExists(report: report, root: root)
+        #expect(report.currentStepID == "project_snapshot")
+        #expect(report.currentStepTitle == "Project snapshot")
+        #expect(report.currentStepState == .blocked)
+        #expect(report.currentStepSummary == "expected_body_missing:project_root=")
+        let artifact = try expectHandoffArtifactExists(report: report, root: root)
+        #expect(artifact.currentStepID == "project_snapshot")
+        #expect(artifact.currentStepTitle == "Project snapshot")
+        #expect(artifact.currentStepState == .blocked)
+        #expect(artifact.currentStepSummary == "expected_body_missing:project_root=")
+        }
     }
 
     @Test
     func executorUsesHumanSummaryForSecretVaultBrowserFillSuccess() async throws {
+        try await Self.runtimeGate.run {
         try await Self.permissionGate.run {
             let root = try makeProjectRoot()
             defer { try? FileManager.default.removeItem(at: root) }
@@ -225,13 +249,15 @@ struct XTAutomationRunExecutorTests {
             )
 
             #expect(report.finalState == .delivered)
-            #expect(report.actionResults.first?.detail.contains("Secret Vault credential") == true)
+            #expect(report.actionResults.first?.detail.contains("Secret Vault 凭据") == true)
             #expect(report.actionResults.first?.detail.contains("input[type=password]") == true)
+        }
         }
     }
 
     @Test
     func executorRunsProjectVerificationAfterMutationActionAndDeliversWhenVerifyPasses() async throws {
+        try await Self.runtimeGate.run {
         let root = try makeProjectRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         try markAsSwiftPackage(root)
@@ -240,6 +266,10 @@ struct XTAutomationRunExecutorTests {
         var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
         config.verifyCommands = ["swift test --filter SmokeTests"]
         config.verifyAfterChanges = true
+        config = config.settingProjectGovernance(
+            executionTier: .a2RepoAuto,
+            supervisorInterventionTier: .s2PeriodicReview
+        )
         try AXProjectStore.saveConfig(config, for: ctx)
 
         let executor = XTAutomationRunExecutor { call, _ in
@@ -311,17 +341,33 @@ struct XTAutomationRunExecutorTests {
         #expect(report.verificationReport?.commandCount == 1)
         #expect(report.verificationReport?.passedCommandCount == 1)
         #expect(report.verificationReport?.detail == "verify_passed:1/1")
+        #expect(report.verificationReport?.contract?.expectedState == "post_change_verification_passes")
+        #expect(report.verificationReport?.contract?.verifyMethod == "project_verify_commands")
+        #expect(report.verificationReport?.contract?.retryPolicy == "manual_retry_or_replan")
+        #expect(report.verificationReport?.contract?.holdPolicy == "block_run_and_emit_structured_blocker")
+        #expect(report.verificationReport?.contract?.evidenceRequired == true)
+        #expect(report.verificationReport?.contract?.verifyCommands == ["swift test --filter SmokeTests"])
         #expect(report.workspaceDiffReport?.attempted == true)
         #expect(report.workspaceDiffReport?.captured == true)
         #expect(report.workspaceDiffReport?.fileCount == 1)
         #expect(report.workspaceDiffReport?.detail == "diff_captured:1_files")
         #expect(report.detail.contains("verify 1/1"))
         #expect(report.detail.contains("diff 1 files"))
-        try expectHandoffArtifactExists(report: report, root: root)
+        #expect(report.currentStepID == "verification")
+        #expect(report.currentStepTitle == "Run project verification")
+        #expect(report.currentStepState == .done)
+        #expect(report.currentStepSummary == "verify_passed:1/1")
+        let artifact = try expectHandoffArtifactExists(report: report, root: root)
+        #expect(artifact.currentStepID == "verification")
+        #expect(artifact.currentStepTitle == "Run project verification")
+        #expect(artifact.currentStepState == .done)
+        #expect(artifact.currentStepSummary == "verify_passed:1/1")
+        }
     }
 
     @Test
     func executorBlocksWhenRequiredVerificationFails() async throws {
+        try await Self.runtimeGate.run {
         let root = try makeProjectRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         try markAsSwiftPackage(root)
@@ -330,6 +376,10 @@ struct XTAutomationRunExecutorTests {
         var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
         config.verifyCommands = ["swift test --filter SmokeTests"]
         config.verifyAfterChanges = true
+        config = config.settingProjectGovernance(
+            executionTier: .a2RepoAuto,
+            supervisorInterventionTier: .s2PeriodicReview
+        )
         try AXProjectStore.saveConfig(config, for: ctx)
 
         let callOrder = LockedStringCollector()
@@ -404,15 +454,126 @@ struct XTAutomationRunExecutorTests {
         #expect(report.verificationReport?.passedCommandCount == 0)
         #expect(report.verificationReport?.holdReason == "automation_verify_failed")
         #expect(report.verificationReport?.detail == "verify_failed:1/1 swift test --filter SmokeTests")
+        #expect(report.verificationReport?.contract?.verifyMethod == "project_verify_commands")
+        #expect(report.verificationReport?.contract?.retryPolicy == "manual_retry_or_replan")
+        #expect(report.verificationReport?.contract?.verifyCommands == ["swift test --filter SmokeTests"])
         #expect(report.detail == "verify_failed:1/1 swift test --filter SmokeTests")
         #expect(report.workspaceDiffReport?.captured == true)
+        #expect(report.currentStepID == "verification")
+        #expect(report.currentStepTitle == "Run project verification")
+        #expect(report.currentStepState == .blocked)
+        #expect(report.currentStepSummary == "verify_failed:1/1 swift test --filter SmokeTests")
         let values = await callOrder.values()
         #expect(values == ["git_apply_check", "git_apply", "git_diff", "run_command"])
-        try expectHandoffArtifactExists(report: report, root: root)
+        let artifact = try expectHandoffArtifactExists(report: report, root: root)
+        #expect(artifact.currentStepID == "verification")
+        #expect(artifact.currentStepTitle == "Run project verification")
+        #expect(artifact.currentStepState == .blocked)
+        #expect(artifact.currentStepSummary == "verify_failed:1/1 swift test --filter SmokeTests")
+        }
+    }
+
+    @Test
+    func executorPrefersActionScopedVerificationContractCommands() async throws {
+        try await Self.runtimeGate.run {
+        let root = try makeProjectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try markAsSwiftPackage(root)
+
+        let ctx = AXProjectContext(root: root)
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config.verifyCommands = ["swift test --filter ProjectWide"]
+        config.verifyAfterChanges = true
+        config = config.settingProjectGovernance(
+            executionTier: .a2RepoAuto,
+            supervisorInterventionTier: .s2PeriodicReview
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let callOrder = LockedStringCollector()
+        let executor = XTAutomationRunExecutor { call, _ in
+            await callOrder.append(call.tool.rawValue)
+            switch call.tool {
+            case .write_file:
+                return ToolResult(id: call.id, tool: call.tool, ok: true, output: "ok")
+            case .git_diff:
+                return ToolResult(
+                    id: call.id,
+                    tool: call.tool,
+                    ok: true,
+                    output: """
+                    diff --git a/README.md b/README.md
+                    @@ -0,0 +1 @@
+                    +hello
+                    """
+                )
+            case .run_command:
+                #expect(call.args["command"] == .string("swift test --filter ActionScoped"))
+                return ToolResult(id: call.id, tool: call.tool, ok: true, output: "exit: 0\nActionScoped passed")
+            default:
+                Issue.record("Unexpected tool \(call.tool.rawValue)")
+                return ToolResult(id: call.id, tool: call.tool, ok: false, output: "unexpected_tool")
+            }
+        }
+
+        let report = await executor.execute(
+            runID: "run-executor-action-contract",
+            recipe: AXAutomationRecipeRuntimeBinding(
+                recipeID: "xt-auto-executor-action-contract",
+                recipeVersion: 1,
+                lifecycleState: .ready,
+                goal: "write file and verify with action-scoped contract",
+                triggerRefs: ["xt.automation_trigger_envelope.v1:manual/retry"],
+                deliveryTargets: ["channel://telegram/project-a"],
+                acceptancePackRef: "build/reports/acceptance.json",
+                executionProfile: .balanced,
+                touchMode: .guidedTouch,
+                innovationLevel: .l1,
+                laneStrategy: .singleLane,
+                requiredToolGroups: ["group:full"],
+                actionGraph: [
+                    XTAutomationRecipeAction(
+                        title: "Write file",
+                        tool: .write_file,
+                        args: [
+                            "path": .string("README.md"),
+                            "content": .string("hello")
+                        ],
+                        verificationContract: XTAutomationRecipeVerificationSpec(
+                            retryPolicy: "manual_retry_or_replan",
+                            verifyCommands: ["swift test --filter ActionScoped"]
+                        )
+                    )
+                ],
+                requiresTrustedAutomation: false,
+                trustedDeviceID: "",
+                workspaceBindingHash: "",
+                grantPolicyRef: "policy://automation-trigger/project-a",
+                rolloutStatus: .active,
+                lastEditedAtMs: 1_773_300_010_500,
+                lastEditAuditRef: "audit-xt-auto-executor-action-contract",
+                lastLaunchRef: ""
+            ),
+            ctx: ctx,
+            now: Date(timeIntervalSince1970: 1_773_300_010.5)
+        )
+
+        #expect(report.finalState == .delivered)
+        #expect(report.verificationReport?.required == true)
+        #expect(report.verificationReport?.executed == true)
+        #expect(report.verificationReport?.commandCount == 1)
+        #expect(report.verificationReport?.passedCommandCount == 1)
+        #expect(report.verificationReport?.contract?.verifyMethod == "recipe_action_verify_commands")
+        #expect(report.verificationReport?.contract?.verifyCommands == ["swift test --filter ActionScoped"])
+        #expect(report.verificationReport?.contract?.triggerActionIDs == ["write_file_1"])
+        let values = await callOrder.values()
+        #expect(values == ["write_file", "git_diff", "run_command"])
+        }
     }
 
     @Test
     func executorBlocksVerificationWhenProjectToolPolicyDeniesRunCommand() async throws {
+        try await Self.runtimeGate.run {
         let root = try makeProjectRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         try markAsSwiftPackage(root)
@@ -421,6 +582,10 @@ struct XTAutomationRunExecutorTests {
         var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
         config.verifyCommands = ["swift test --filter SmokeTests"]
         config.verifyAfterChanges = true
+        config = config.settingProjectGovernance(
+            executionTier: .a2RepoAuto,
+            supervisorInterventionTier: .s2PeriodicReview
+        )
         config = config.settingToolPolicy(deny: ["run_command"])
         try AXProjectStore.saveConfig(config, for: ctx)
 
@@ -492,18 +657,28 @@ struct XTAutomationRunExecutorTests {
         #expect(report.verificationReport?.passedCommandCount == 0)
         #expect(report.verificationReport?.holdReason == "automation_tool_policy_denied")
         #expect(report.verificationReport?.detail == "verify_preflight_failed:1/1 swift test --filter SmokeTests")
+        #expect(report.verificationReport?.contract?.verifyMethod == "project_verify_commands")
+        #expect(report.verificationReport?.contract?.holdPolicy == "block_run_and_emit_structured_blocker")
         #expect(report.workspaceDiffReport?.captured == true)
         let values = await callOrder.values()
         #expect(values == ["write_file", "git_diff"])
         try expectHandoffArtifactExists(report: report, root: root)
+        }
     }
 
     @Test
     func executorBlocksWhenGitApplyPrecheckFails() async throws {
+        try await Self.runtimeGate.run {
         let root = try makeProjectRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
         let ctx = AXProjectContext(root: root)
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config = config.settingProjectGovernance(
+            executionTier: .a2RepoAuto,
+            supervisorInterventionTier: .s2PeriodicReview
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
         let callOrder = LockedStringCollector()
         let executor = XTAutomationRunExecutor { call, _ in
             await callOrder.append(call.tool.rawValue)
@@ -568,14 +743,22 @@ struct XTAutomationRunExecutorTests {
         let values = await callOrder.values()
         #expect(values == ["git_apply_check"])
         try expectHandoffArtifactExists(report: report, root: root)
+        }
     }
 
     @Test
     func conservativeExecutionProfileBlocksMutationToolsBeforeExecution() async throws {
+        try await Self.runtimeGate.run {
         let root = try makeProjectRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
         let ctx = AXProjectContext(root: root)
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config = config.settingProjectGovernance(
+            executionTier: .a2RepoAuto,
+            supervisorInterventionTier: .s2PeriodicReview
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
         let callOrder = LockedStringCollector()
         let executor = XTAutomationRunExecutor { call, _ in
             await callOrder.append(call.tool.rawValue)
@@ -627,10 +810,12 @@ struct XTAutomationRunExecutorTests {
         let values = await callOrder.values()
         #expect(values.isEmpty)
         try expectHandoffArtifactExists(report: report, root: root)
+        }
     }
 
     @Test
     func balancedExecutionProfileBlocksDeviceAutomationTools() async throws {
+        try await Self.runtimeGate.run {
         let root = try makeProjectRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -685,10 +870,12 @@ struct XTAutomationRunExecutorTests {
         let values = await callOrder.values()
         #expect(values.isEmpty)
         try expectHandoffArtifactExists(report: report, root: root)
+        }
     }
 
     @Test
     func aggressiveExecutionProfileAllowsDeviceAutomationTools() async throws {
+        try await Self.runtimeGate.run {
         try await Self.permissionGate.run {
             let root = try makeProjectRoot()
             defer { try? FileManager.default.removeItem(at: root) }
@@ -779,14 +966,22 @@ struct XTAutomationRunExecutorTests {
             #expect(values == ["device.ui.observe"])
             try expectHandoffArtifactExists(report: report, root: root)
         }
+        }
     }
 
     @Test
     func executorBlocksDangerousRunCommandForUnattendedAutomation() async throws {
+        try await Self.runtimeGate.run {
         let root = try makeProjectRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
         let ctx = AXProjectContext(root: root)
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config = config.settingProjectGovernance(
+            executionTier: .a2RepoAuto,
+            supervisorInterventionTier: .s2PeriodicReview
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
         let callOrder = LockedStringCollector()
         let executor = XTAutomationRunExecutor { call, _ in
             await callOrder.append(call.tool.rawValue)
@@ -836,15 +1031,21 @@ struct XTAutomationRunExecutorTests {
         let values = await callOrder.values()
         #expect(values.isEmpty)
         try expectHandoffArtifactExists(report: report, root: root)
+        }
     }
 
     @Test
     func executorBlocksWhenProjectToolPolicyDeniesRunCommand() async throws {
+        try await Self.runtimeGate.run {
         let root = try makeProjectRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
         let ctx = AXProjectContext(root: root)
         var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config = config.settingProjectGovernance(
+            executionTier: .a2RepoAuto,
+            supervisorInterventionTier: .s2PeriodicReview
+        )
         config = config.settingToolPolicy(deny: ["run_command"])
         try AXProjectStore.saveConfig(config, for: ctx)
 
@@ -898,15 +1099,21 @@ struct XTAutomationRunExecutorTests {
         let values = await callOrder.values()
         #expect(values.isEmpty)
         try expectHandoffArtifactExists(report: report, root: root)
+        }
     }
 
     @Test
     func executorBlocksWhenProjectToolPolicyDeniesWriteFile() async throws {
+        try await Self.runtimeGate.run {
         let root = try makeProjectRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
         let ctx = AXProjectContext(root: root)
         var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config = config.settingProjectGovernance(
+            executionTier: .a2RepoAuto,
+            supervisorInterventionTier: .s2PeriodicReview
+        )
         config = config.settingToolPolicy(deny: ["write_file"])
         try AXProjectStore.saveConfig(config, for: ctx)
 
@@ -961,10 +1168,12 @@ struct XTAutomationRunExecutorTests {
         let values = await callOrder.values()
         #expect(values.isEmpty)
         try expectHandoffArtifactExists(report: report, root: root)
+        }
     }
 
     @Test
     func executorBlocksTrustedDeviceAutomationWhenProjectPolicyDeniesDeviceSurface() async throws {
+        try await Self.runtimeGate.run {
         let root = try makeProjectRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -1037,10 +1246,12 @@ struct XTAutomationRunExecutorTests {
         let values = await callOrder.values()
         #expect(values.isEmpty)
         try expectHandoffArtifactExists(report: report, root: root)
+        }
     }
 
     @Test
     func executorBlocksTrustedDeviceAutomationWhenPermissionOwnerIsMissing() async throws {
+        try await Self.runtimeGate.run {
         try await Self.permissionGate.run {
             let root = try makeProjectRoot()
             defer { try? FileManager.default.removeItem(at: root) }
@@ -1124,10 +1335,12 @@ struct XTAutomationRunExecutorTests {
             #expect(values.isEmpty)
             try expectHandoffArtifactExists(report: report, root: root)
         }
+        }
     }
 
     @Test
     func executorBlocksDeviceUIStepWhenTrustedAutomationIsNotArmedForActPhase() async throws {
+        try await Self.runtimeGate.run {
         try await Self.permissionGate.run {
             let root = try makeProjectRoot()
             defer { try? FileManager.default.removeItem(at: root) }
@@ -1212,6 +1425,7 @@ struct XTAutomationRunExecutorTests {
             #expect(values.isEmpty)
             try expectHandoffArtifactExists(report: report, root: root)
         }
+        }
     }
 
     private func makeProjectRoot() throws -> URL {
@@ -1237,13 +1451,17 @@ struct XTAutomationRunExecutorTests {
         try package.write(to: packageURL, atomically: true, encoding: .utf8)
     }
 
+    @discardableResult
     private func expectHandoffArtifactExists(
         report: XTAutomationRunExecutionReport,
         root: URL
-    ) throws {
+    ) throws -> XTAutomationRunHandoffArtifact {
         let handoffPath = try #require(report.handoffArtifactPath)
         let absolute = root.appendingPathComponent(handoffPath)
         #expect(FileManager.default.fileExists(atPath: absolute.path))
+        return try #require(
+            xtAutomationDecodeJSON(from: absolute, as: XTAutomationRunHandoffArtifact.self)
+        )
     }
 }
 

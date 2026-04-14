@@ -49,7 +49,7 @@ enum XTSupervisorWorkMode: String, Codable, CaseIterable, Identifiable {
         case .guidedProgress:
             return "实际效果：可以主动给计划、提醒和下一步；但执行层面仍会收回到 manual。"
         case .governedAutomation:
-            return "实际效果：允许主动推进；但执行权限仍会被 A-tier、S-tier、授权、runtime readiness 和 fail-closed gate 继续收紧。"
+            return "实际效果：允许主动推进；但执行权限仍会被 A-Tier、S-Tier、授权、runtime readiness 和 fail-closed gate 继续收紧。"
         }
     }
 
@@ -60,7 +60,7 @@ enum XTSupervisorWorkMode: String, Codable, CaseIterable, Identifiable {
         case .guidedProgress:
             return "You may proactively suggest plans, next steps, and reminders, but stay proposal-first. Do not autonomously launch governed coder/skill/tool execution."
         case .governedAutomation:
-            return "You may proactively suggest plans and, when user intent plus governance allow it, initiate governed coder/skill/tool execution. Never bypass grants, A-tier, S-tier, runtime readiness, or fail-closed safety gates."
+            return "You may proactively suggest plans and, when user intent plus governance allow it, initiate governed coder/skill/tool execution. Never bypass grants, A-Tier, S-Tier, runtime readiness, or fail-closed safety gates."
         }
     }
 

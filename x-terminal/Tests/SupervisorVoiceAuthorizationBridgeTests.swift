@@ -210,7 +210,170 @@ struct SupervisorVoiceAuthorizationBridgeTests {
 
         #expect(resolution.state == .denied)
         #expect(resolution.denyCode == "semantic_ambiguous")
-        #expect(resolution.nextAction.contains("retry verify"))
+        #expect(resolution.nextAction.contains("重新发起新的 challenge"))
+    }
+
+    @Test
+    func replayDeniedResolutionRequiresFreshChallengeAndNonce() async {
+        let challenge = makeChallenge(
+            challengeId: "voice_chal_replay",
+            requiresMobileConfirm: false,
+            allowVoiceOnly: true,
+            riskLevel: "medium"
+        )
+
+        let bridge = SupervisorVoiceAuthorizationBridge(
+            issueHandler: { _ in
+                HubIPCClient.VoiceGrantChallengeResult(
+                    ok: true,
+                    source: "hub_memory_v1_grpc",
+                    challenge: challenge,
+                    reasonCode: nil
+                )
+            },
+            verifyHandler: { payload in
+                HubIPCClient.VoiceGrantVerificationResult(
+                    ok: true,
+                    verified: false,
+                    decision: .deny,
+                    source: "hub_memory_v1_grpc",
+                    denyCode: "replay_detected",
+                    challengeId: payload.challengeId,
+                    transcriptHash: "sha256:replay-transcript",
+                    semanticMatchScore: payload.semanticMatchScore ?? 0,
+                    challengeMatch: true,
+                    deviceBindingOK: true,
+                    mobileConfirmed: false,
+                    reasonCode: nil
+                )
+            }
+        )
+
+        let resolution = await bridge.authorize(
+            request: SupervisorVoiceAuthorizationRequest(
+                requestId: "voice-auth-replay",
+                projectId: "project-atlas",
+                actionText: "Approve payment",
+                scopeText: "Atlas vendor settlement",
+                amountText: "USD 500",
+                riskTier: .medium
+            ),
+            verification: SupervisorVoiceAuthorizationVerificationInput(
+                requestId: "voice-auth-replay-verify",
+                challengeCode: "123456",
+                transcript: "Approve payment",
+                semanticMatchScore: 0.99,
+                actionText: "Approve payment",
+                scopeText: "Atlas vendor settlement",
+                amountText: "USD 500",
+                verifyNonce: "nonce-replay"
+            )
+        )
+
+        #expect(resolution.state == .denied)
+        #expect(resolution.denyCode == "replay_detected")
+        #expect(resolution.nextAction.contains("新的 verify nonce"))
+        #expect(resolution.nextAction.contains("重新发起 challenge"))
+    }
+
+    @Test
+    func failClosedChallengeExpiredRequiresFreshChallenge() async {
+        let challenge = makeChallenge(
+            challengeId: "voice_chal_expired",
+            requiresMobileConfirm: true,
+            allowVoiceOnly: false,
+            riskLevel: "high"
+        )
+
+        let bridge = SupervisorVoiceAuthorizationBridge(
+            issueHandler: { _ in
+                HubIPCClient.VoiceGrantChallengeResult(
+                    ok: true,
+                    source: "hub_memory_v1_grpc",
+                    challenge: challenge,
+                    reasonCode: nil
+                )
+            },
+            verifyHandler: { _ in
+                makeVerifyFailure(reasonCode: "challenge_expired")
+            }
+        )
+
+        let resolution = await bridge.authorize(
+            request: SupervisorVoiceAuthorizationRequest(
+                requestId: "voice-auth-expired",
+                projectId: "project-atlas",
+                actionText: "Approve payment",
+                scopeText: "Atlas vendor settlement",
+                amountText: "USD 500",
+                riskTier: .high
+            ),
+            verification: SupervisorVoiceAuthorizationVerificationInput(
+                requestId: "voice-auth-expired-verify",
+                challengeCode: "123456",
+                transcript: "Approve payment",
+                semanticMatchScore: 0.99,
+                actionText: "Approve payment",
+                scopeText: "Atlas vendor settlement",
+                amountText: "USD 500",
+                verifyNonce: "nonce-expired"
+            )
+        )
+
+        #expect(resolution.state == .failClosed)
+        #expect(resolution.reasonCode == "challenge_expired")
+        #expect(resolution.nextAction.contains("不要复用旧口令"))
+        #expect(resolution.nextAction.contains("重新发起新的 challenge"))
+    }
+
+    @Test
+    func failClosedMobileConfirmationMissingKeepsCurrentChallengeRetryable() async {
+        let challenge = makeChallenge(
+            challengeId: "voice_chal_mobile_missing",
+            requiresMobileConfirm: true,
+            allowVoiceOnly: false,
+            riskLevel: "high"
+        )
+
+        let bridge = SupervisorVoiceAuthorizationBridge(
+            issueHandler: { _ in
+                HubIPCClient.VoiceGrantChallengeResult(
+                    ok: true,
+                    source: "hub_memory_v1_grpc",
+                    challenge: challenge,
+                    reasonCode: nil
+                )
+            },
+            verifyHandler: { _ in
+                makeVerifyFailure(reasonCode: "mobile_confirmation_missing")
+            }
+        )
+
+        let resolution = await bridge.authorize(
+            request: SupervisorVoiceAuthorizationRequest(
+                requestId: "voice-auth-mobile-missing",
+                projectId: "project-atlas",
+                actionText: "Approve payment",
+                scopeText: "Atlas vendor settlement",
+                amountText: "USD 500",
+                riskTier: .high
+            ),
+            verification: SupervisorVoiceAuthorizationVerificationInput(
+                requestId: "voice-auth-mobile-missing-verify",
+                challengeCode: "123456",
+                transcript: "Approve payment",
+                semanticMatchScore: 0.99,
+                actionText: "Approve payment",
+                scopeText: "Atlas vendor settlement",
+                amountText: "USD 500",
+                verifyNonce: "nonce-mobile-missing"
+            )
+        )
+
+        #expect(resolution.state == .failClosed)
+        #expect(resolution.reasonCode == "mobile_confirmation_missing")
+        #expect(resolution.nextAction.contains("当前 challenge 仍保留"))
+        #expect(resolution.nextAction.contains("当前 challenge"))
     }
 
     @Test
@@ -242,7 +405,7 @@ struct SupervisorVoiceAuthorizationBridgeTests {
 
         #expect(resolution.state == .failClosed)
         #expect(resolution.reasonCode == "hub_env_missing")
-        #expect(resolution.nextAction.contains("repair Hub pairing"))
+        #expect(resolution.nextAction.contains("修复 Hub pairing"))
     }
 
     private func makeChallenge(

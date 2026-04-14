@@ -94,7 +94,7 @@ struct SupervisorMergebackQualityGateTests {
     @Test
     func orchestratorProductionPathBuildsAndExportsMergebackQualityReport() throws {
         let supervisor = SupervisorModel()
-        let orchestrator = SupervisorOrchestrator(supervisor: supervisor)
+        let orchestrator = SupervisorOrchestrator(runtimeHost: supervisor)
         let splitPlanID = "split-xt-w3-11-production-pass"
         let taskIDs = [
             "lane-clean": UUID(),
@@ -207,7 +207,7 @@ struct SupervisorMergebackQualityGateTests {
     @Test
     func orchestratorProductionPathFailsClosedWhenContractsRollbackOrAutoTriageAreMissing() {
         let supervisor = SupervisorModel()
-        let orchestrator = SupervisorOrchestrator(supervisor: supervisor)
+        let orchestrator = SupervisorOrchestrator(runtimeHost: supervisor)
         let taskID = UUID()
         let materialization = MaterializationResult(
             splitPlanID: "split-xt-w3-11-production-fail",

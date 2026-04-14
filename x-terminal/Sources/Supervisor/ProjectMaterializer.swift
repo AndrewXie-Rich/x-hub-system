@@ -43,9 +43,38 @@ struct SupervisorLanePlan: Identifiable {
     let createChildProject: Bool
     let expectedArtifacts: [String]
     let dodChecklist: [String]
+    let verificationContract: LaneVerificationContract?
     let source: LanePlanSource
     let metadata: [String: String]
     let task: DecomposedTask
+
+    init(
+        laneID: String,
+        goal: String,
+        dependsOn: [String],
+        riskTier: LaneRiskTier,
+        budgetClass: LaneBudgetClass,
+        createChildProject: Bool,
+        expectedArtifacts: [String],
+        dodChecklist: [String],
+        verificationContract: LaneVerificationContract? = nil,
+        source: LanePlanSource,
+        metadata: [String: String],
+        task: DecomposedTask
+    ) {
+        self.laneID = laneID
+        self.goal = goal
+        self.dependsOn = dependsOn
+        self.riskTier = riskTier
+        self.budgetClass = budgetClass
+        self.createChildProject = createChildProject
+        self.expectedArtifacts = expectedArtifacts
+        self.dodChecklist = dodChecklist
+        self.verificationContract = verificationContract
+        self.source = source
+        self.metadata = metadata
+        self.task = task
+    }
 }
 
 struct LineageWriteOperation: Identifiable {
@@ -100,7 +129,7 @@ struct MaterializationResult {
 /// XT-W2-10 Hybrid 落盘器
 @MainActor
 final class ProjectMaterializer {
-    weak var supervisor: SupervisorModel?
+    weak var runtimeHost: (any SupervisorProjectRuntimeHosting)?
 
     private let hardSplitDurationThreshold: TimeInterval = 45 * 60
     private let parallelFanOutThreshold = 2
@@ -111,8 +140,8 @@ final class ProjectMaterializer {
         let reasons: [String]
     }
 
-    init(supervisor: SupervisorModel? = nil) {
-        self.supervisor = supervisor
+    init(runtimeHost: (any SupervisorProjectRuntimeHosting)? = nil) {
+        self.runtimeHost = runtimeHost
     }
 
     func materialize(
@@ -121,7 +150,7 @@ final class ProjectMaterializer {
         splitPlanID explicitSplitPlanID: String? = nil
     ) async -> MaterializationResult {
         let splitPlanID = explicitSplitPlanID ?? "split-\(UUID().uuidString.lowercased())"
-        let anchorProject = rootProject ?? supervisor?.activeProjects.first
+        let anchorProject = rootProject ?? runtimeHost?.activeProjects.first
         let lanePlans = buildLanePlans(from: tasks)
 
         var lanes: [MaterializedLane] = []
@@ -196,6 +225,9 @@ final class ProjectMaterializer {
             metadata["expected_artifacts"] = plan.expectedArtifacts.joined(separator: ",")
             metadata["dod_checklist"] = plan.dodChecklist.joined(separator: " | ")
             metadata["split_plan_source"] = plan.source.rawValue
+            if let verificationContract = plan.verificationContract {
+                applyVerificationContractMetadata(verificationContract, to: &metadata)
+            }
             if let targetProject {
                 metadata["project_id"] = targetProject.id.uuidString
             }
@@ -285,6 +317,9 @@ final class ProjectMaterializer {
             task.metadata["split_plan_source"] = LanePlanSource.aiXT1.rawValue
             task.metadata["source_split_plan_id"] = proposal.splitPlanId.uuidString.lowercased()
             task.metadata["token_budget"] = "\(lane.tokenBudget)"
+            if let verificationContract = lane.verificationContract {
+                applyVerificationContractMetadata(verificationContract, to: &task.metadata)
+            }
             return task
         }
 
@@ -326,6 +361,13 @@ final class ProjectMaterializer {
 
             let expectedArtifacts = parseList(metadata["expected_artifacts"], separator: ",", fallback: defaultArtifacts(for: task.type))
             let dodChecklist = parseList(metadata["dod_checklist"], separator: "|", fallback: defaultDoDChecklist(for: task.type))
+            let verificationContract = buildVerificationContract(
+                metadata: metadata,
+                task: task,
+                riskTier: riskTier,
+                expectedArtifacts: expectedArtifacts,
+                dodChecklist: dodChecklist
+            )
 
             return SupervisorLanePlan(
                 laneID: laneID,
@@ -336,6 +378,7 @@ final class ProjectMaterializer {
                 createChildProject: createChildProject,
                 expectedArtifacts: expectedArtifacts,
                 dodChecklist: dodChecklist,
+                verificationContract: verificationContract,
                 source: source,
                 metadata: metadata,
                 task: task
@@ -384,14 +427,14 @@ final class ProjectMaterializer {
     }
 
     private func ensureChildProject(for plan: SupervisorLanePlan, parent: ProjectModel?) async -> ProjectModel? {
-        guard let supervisor else {
+        guard let runtimeHost else {
             return createDetachedChildProject(for: plan, parent: parent)
         }
 
         let parentName = parent?.name ?? "Root"
         let childName = "\(parentName) · \(plan.laneID)"
 
-        if let existing = supervisor.activeProjects.first(where: { $0.name == childName }) {
+        if let existing = runtimeHost.activeProjects.first(where: { $0.name == childName }) {
             // Existing pinned child projects may come from older sessions with stale model profile.
             // Refresh capability/autonomy so high-risk lanes do not fail allocation before execution.
             applySuggestedExecutionProfile(to: existing, for: plan)
@@ -414,8 +457,8 @@ final class ProjectMaterializer {
         )
         applySuggestedExecutionProfile(to: childProject, for: plan)
 
-        supervisor.activeProjects.append(childProject)
-        await supervisor.onProjectCreated(childProject)
+        runtimeHost.addActiveProjectIfNeeded(childProject)
+        await runtimeHost.onProjectCreated(childProject)
 
         return childProject
     }
@@ -619,6 +662,97 @@ final class ProjectMaterializer {
         return fallback
     }
 
+    private func parseVerificationMethod(_ raw: String?) -> LaneVerificationMethod? {
+        guard let raw else { return nil }
+        return LaneVerificationMethod(rawValue: raw.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    private func parseVerificationRetryPolicy(_ raw: String?) -> LaneVerificationRetryPolicy? {
+        guard let raw else { return nil }
+        return LaneVerificationRetryPolicy(rawValue: raw.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    private func parseVerificationHoldPolicy(_ raw: String?) -> LaneVerificationHoldPolicy? {
+        guard let raw else { return nil }
+        return LaneVerificationHoldPolicy(rawValue: raw.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    private func buildVerificationContract(
+        metadata: [String: String],
+        task: DecomposedTask,
+        riskTier: LaneRiskTier,
+        expectedArtifacts: [String],
+        dodChecklist: [String]
+    ) -> LaneVerificationContract {
+        if let expectedState = metadata["verification_expected_state"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !expectedState.isEmpty,
+           let verifyMethod = parseVerificationMethod(metadata["verification_method"]),
+           let retryPolicy = parseVerificationRetryPolicy(metadata["verification_retry_policy"]),
+           let holdPolicy = parseVerificationHoldPolicy(metadata["verification_hold_policy"]) {
+            return LaneVerificationContract(
+                expectedState: expectedState,
+                verifyMethod: verifyMethod,
+                retryPolicy: retryPolicy,
+                holdPolicy: holdPolicy,
+                evidenceRequired: parseList(metadata["verification_evidence_required"], separator: "|", fallback: expectedArtifacts),
+                verificationChecklist: parseList(
+                    metadata["verification_checklist"],
+                    separator: "|",
+                    fallback: ["expected_state_confirmed", "evidence_attached"] + dodChecklist
+                )
+            )
+        }
+
+        let splitRiskTier: SplitRiskTier = {
+            switch riskTier {
+            case .low: return .low
+            case .medium: return .medium
+            case .high: return .high
+            case .critical: return .critical
+            }
+        }()
+
+        let method: LaneVerificationMethod
+        let retryPolicy: LaneVerificationRetryPolicy
+        let holdPolicy: LaneVerificationHoldPolicy
+        let expectedState: String
+        var evidenceRequired = expectedArtifacts
+
+        switch task.type {
+        case .development, .bugfix, .refactoring, .testing:
+            method = .targetedChecksAndDiffReview
+            retryPolicy = splitRiskTier >= .high ? .singleRetryThenEscalate : .boundedRetryThenHold
+            holdPolicy = .holdOnMismatch
+            expectedState = "Lane goal is satisfied, artifacts are updated, and targeted checks confirm no obvious regression."
+            evidenceRequired.append(contentsOf: ["diff_summary", "targeted_check_result"])
+        case .deployment:
+            method = .preflightAndSmoke
+            retryPolicy = splitRiskTier >= .high ? .noAutoRetry : .singleRetryThenEscalate
+            holdPolicy = .holdUntilEvidence
+            expectedState = "Change is ready to ship, post-change smoke checks pass, and rollback readiness is recorded."
+            evidenceRequired.append(contentsOf: ["preflight_result", "smoke_result", "rollback_readiness"])
+        case .documentation, .research, .review, .design, .planning:
+            method = .artifactConsistencyReview
+            retryPolicy = .noAutoRetry
+            holdPolicy = .advisoryOnly
+            expectedState = "Produced artifacts are internally consistent, scoped correctly, and ready for handoff."
+            evidenceRequired.append(contentsOf: ["artifact_review_note", "consistency_summary"])
+        }
+
+        if splitRiskTier >= .high {
+            evidenceRequired.append("grant_or_risk_exception_reference")
+        }
+
+        return LaneVerificationContract(
+            expectedState: expectedState,
+            verifyMethod: method,
+            retryPolicy: retryPolicy,
+            holdPolicy: holdPolicy,
+            evidenceRequired: dedupList(evidenceRequired),
+            verificationChecklist: dedupList(["expected_state_confirmed", "evidence_attached"] + dodChecklist)
+        )
+    }
+
     private func parseList(_ raw: String?, separator: Character, fallback: [String]) -> [String] {
         if let raw, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return raw
@@ -629,12 +763,35 @@ final class ProjectMaterializer {
         return fallback
     }
 
+    private func applyVerificationContractMetadata(
+        _ contract: LaneVerificationContract,
+        to metadata: inout [String: String]
+    ) {
+        metadata["verification_expected_state"] = contract.expectedState
+        metadata["verification_method"] = contract.verifyMethod.rawValue
+        metadata["verification_retry_policy"] = contract.retryPolicy.rawValue
+        metadata["verification_hold_policy"] = contract.holdPolicy.rawValue
+        metadata["verification_evidence_required"] = dedupList(contract.evidenceRequired).joined(separator: "|")
+        metadata["verification_checklist"] = dedupList(contract.verificationChecklist).joined(separator: "|")
+    }
+
     private func dedup(_ reasons: [String]) -> [String] {
         var seen: Set<String> = []
         var ordered: [String] = []
         for reason in reasons where !reason.isEmpty {
             if seen.insert(reason).inserted {
                 ordered.append(reason)
+            }
+        }
+        return ordered
+    }
+
+    private func dedupList(_ values: [String]) -> [String] {
+        var seen: Set<String> = []
+        var ordered: [String] = []
+        for value in values.map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) }) where !value.isEmpty {
+            if seen.insert(value).inserted {
+                ordered.append(value)
             }
         }
         return ordered

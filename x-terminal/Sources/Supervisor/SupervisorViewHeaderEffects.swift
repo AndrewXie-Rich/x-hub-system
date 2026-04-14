@@ -3,6 +3,7 @@ import Foundation
 @MainActor
 enum SupervisorViewHeaderEffects {
     struct Dependencies {
+        let setHeartbeatFeedVisible: (Bool) -> Void
         let setSignalCenterVisible: (Bool) -> Void
         let focusSignalCenterOverview: (SupervisorSignalCenterOverviewAction) -> Void
         let setWindowSheet: (SupervisorManager.SupervisorWindowSheet?) -> Void
@@ -17,6 +18,8 @@ enum SupervisorViewHeaderEffects {
     ) {
         for effect in plan.effects {
             switch effect {
+            case .setHeartbeatFeed(let isVisible):
+                dependencies.setHeartbeatFeedVisible(isVisible)
             case .setSignalCenter(let isVisible):
                 dependencies.setSignalCenterVisible(isVisible)
             case .focusSignalCenterOverview(let action):

@@ -11,7 +11,7 @@ enum SupervisorSkillCallStatus: String, Codable, Sendable {
 }
 
 struct SupervisorSkillCallRecord: Identifiable, Equatable, Codable, Sendable {
-    static let currentSchemaVersion = "xt.supervisor_skill_call.v1"
+    static let currentSchemaVersion = "xt.supervisor_skill_call.v2"
 
     var schemaVersion: String
     var requestId: String
@@ -32,9 +32,14 @@ struct SupervisorSkillCallRecord: Identifiable, Equatable, Codable, Sendable {
     var policySource: String? = nil
     var policyReason: String? = nil
     var resultEvidenceRef: String?
+    var profileDeltaRef: String? = nil
+    var deltaApproval: XTSkillProfileDeltaApproval? = nil
+    var readinessRef: String? = nil
+    var readiness: XTSkillExecutionReadiness? = nil
     var requiredCapability: String?
     var grantRequestId: String?
     var grantId: String?
+    var hubStateDirPath: String? = nil
     var createdAtMs: Int64
     var updatedAtMs: Int64
     var auditRef: String
@@ -61,9 +66,14 @@ struct SupervisorSkillCallRecord: Identifiable, Equatable, Codable, Sendable {
         case policySource = "policy_source"
         case policyReason = "policy_reason"
         case resultEvidenceRef = "result_evidence_ref"
+        case profileDeltaRef = "profile_delta_ref"
+        case deltaApproval = "delta_approval"
+        case readinessRef = "readiness_ref"
+        case readiness
         case requiredCapability = "required_capability"
         case grantRequestId = "grant_request_id"
         case grantId = "grant_id"
+        case hubStateDirPath = "hub_state_dir_path"
         case createdAtMs = "created_at_ms"
         case updatedAtMs = "updated_at_ms"
         case auditRef = "audit_ref"

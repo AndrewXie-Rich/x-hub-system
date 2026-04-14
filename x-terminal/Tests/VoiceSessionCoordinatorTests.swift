@@ -119,6 +119,96 @@ struct VoiceSessionCoordinatorTests {
         #expect(coordinator.runtimeState.reasonCode == "talk_loop_resumed")
         #expect(coordinator.recognizedText.isEmpty)
     }
+
+    @Test
+    func startConversationCaptureAutoCommitsFinalTranscript() async {
+        let transcriber = MockVoiceStreamingTranscriber()
+        let coordinator = VoiceSessionCoordinator(
+            transcriber: transcriber,
+            preferences: .default()
+        )
+
+        let started = await coordinator.startConversationCapture()
+        #expect(started)
+        #expect(coordinator.isRecording)
+        #expect(coordinator.runtimeState.reasonCode == "voice_call_started")
+
+        transcriber.emit(.init(kind: .final, text: "汇报一下当前进度"))
+
+        #expect(!coordinator.isRecording)
+        #expect(coordinator.runtimeState.state == .completed)
+        #expect(coordinator.lastCommittedUtterance?.text == "汇报一下当前进度")
+        #expect(coordinator.lastCommittedUtterance?.captureSource == .continuousConversation)
+        #expect(coordinator.lastCommittedUtterance?.trigger == .finalTranscript)
+    }
+
+    @Test
+    func manualRecordingPublishesCommittedUtteranceOnlyAfterStop() async {
+        let transcriber = MockVoiceStreamingTranscriber()
+        let coordinator = VoiceSessionCoordinator(
+            transcriber: transcriber,
+            preferences: .default()
+        )
+
+        await coordinator.startRecording()
+        transcriber.emit(.init(kind: .final, text: "先别自动提交"))
+
+        #expect(coordinator.isRecording)
+        #expect(coordinator.lastCommittedUtterance == nil)
+
+        coordinator.stopRecording()
+
+        #expect(coordinator.lastCommittedUtterance?.text == "先别自动提交")
+        #expect(coordinator.lastCommittedUtterance?.captureSource == .manualComposer)
+        #expect(coordinator.lastCommittedUtterance?.trigger == .manualStop)
+    }
+
+    @Test
+    func wakeArmedCapturePromotesToWakeFollowupAndCommitsWithWakePhrase() async {
+        let transcriber = MockVoiceStreamingTranscriber(routeMode: .funasrStreaming)
+        let coordinator = VoiceSessionCoordinator(
+            transcriber: transcriber,
+            preferences: .default()
+        )
+
+        let started = await coordinator.startWakeArmedCapture()
+        #expect(started)
+        #expect(coordinator.currentCaptureSource == .wakeArmed)
+
+        transcriber.emit(.init(kind: .partial, text: "supervisor", isWakeMatch: true))
+
+        #expect(coordinator.currentCaptureSource == .wakeFollowup)
+        #expect(coordinator.lastWakeEvent?.phrase == "supervisor")
+
+        transcriber.emit(.init(kind: .final, text: "supervisor /automation"))
+
+        #expect(!coordinator.isRecording)
+        #expect(coordinator.lastCommittedUtterance?.captureSource == .wakeFollowup)
+        #expect(coordinator.lastCommittedUtterance?.wakePhrase == "supervisor")
+        #expect(coordinator.lastCommittedUtterance?.text == "supervisor /automation")
+    }
+
+    @Test
+    func duplicateWakeArmedStartAttemptsCollapseIntoSingleCaptureBootstrap() async {
+        let transcriber = MockVoiceStreamingTranscriber(routeMode: .funasrStreaming)
+        transcriber.refreshEngineHealthDelayNs = 50_000_000
+        transcriber.requestAuthorizationDelayNs = 50_000_000
+        let coordinator = VoiceSessionCoordinator(
+            transcriber: transcriber,
+            preferences: .default()
+        )
+
+        async let first = coordinator.startWakeArmedCapture()
+        async let second = coordinator.startWakeArmedCapture()
+        let (firstStarted, secondStarted) = await (first, second)
+
+        #expect(firstStarted)
+        #expect(!secondStarted)
+        #expect(coordinator.isRecording)
+        #expect(transcriber.refreshEngineHealthCallCount == 1)
+        #expect(transcriber.requestAuthorizationCallCount == 1)
+        #expect(transcriber.startTranscribingCallCount == 1)
+    }
 }
 
 @MainActor
@@ -128,6 +218,12 @@ private final class MockVoiceStreamingTranscriber: VoiceStreamingTranscriber {
     private(set) var engineHealth: VoiceEngineHealth
     private(set) var healthReasonCode: String?
     private(set) var isRunning: Bool = false
+    private(set) var requestAuthorizationCallCount: Int = 0
+    private(set) var refreshEngineHealthCallCount: Int = 0
+    private(set) var startTranscribingCallCount: Int = 0
+
+    var requestAuthorizationDelayNs: UInt64 = 0
+    var refreshEngineHealthDelayNs: UInt64 = 0
 
     private var onChunk: ((VoiceTranscriptChunk) -> Void)?
     private var onFailure: ((String) -> Void)?
@@ -145,11 +241,19 @@ private final class MockVoiceStreamingTranscriber: VoiceStreamingTranscriber {
     }
 
     func requestAuthorization() async -> VoiceTranscriberAuthorizationStatus {
-        authorizationStatus
+        requestAuthorizationCallCount += 1
+        if requestAuthorizationDelayNs > 0 {
+            try? await Task.sleep(nanoseconds: requestAuthorizationDelayNs)
+        }
+        return authorizationStatus
     }
 
     func refreshEngineHealth() async -> VoiceEngineHealth {
-        engineHealth
+        refreshEngineHealthCallCount += 1
+        if refreshEngineHealthDelayNs > 0 {
+            try? await Task.sleep(nanoseconds: refreshEngineHealthDelayNs)
+        }
+        return engineHealth
     }
 
     func startTranscribing(
@@ -159,6 +263,7 @@ private final class MockVoiceStreamingTranscriber: VoiceStreamingTranscriber {
         guard authorizationStatus.isAuthorized else {
             throw VoiceTranscriberError.notAuthorized
         }
+        startTranscribingCallCount += 1
         isRunning = true
         self.onChunk = onChunk
         self.onFailure = onFailure

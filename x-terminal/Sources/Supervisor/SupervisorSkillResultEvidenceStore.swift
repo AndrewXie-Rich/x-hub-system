@@ -1,7 +1,7 @@
 import Foundation
 
 struct SupervisorSkillResultEvidence: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = "xt.supervisor_skill_result_evidence.v1"
+    static let currentSchemaVersion = "xt.supervisor_skill_result_evidence.v2"
 
     var schemaVersion: String
     var requestId: String
@@ -20,6 +20,10 @@ struct SupervisorSkillResultEvidence: Codable, Equatable, Sendable {
     var policySource: String? = nil
     var policyReason: String? = nil
     var resultEvidenceRef: String
+    var profileDeltaRef: String? = nil
+    var deltaApproval: XTSkillProfileDeltaApproval? = nil
+    var readinessRef: String? = nil
+    var readiness: XTSkillExecutionReadiness? = nil
     var rawOutputRef: String?
     var rawOutputPreview: String
     var rawOutputChars: Int
@@ -49,6 +53,10 @@ struct SupervisorSkillResultEvidence: Codable, Equatable, Sendable {
         case policySource = "policy_source"
         case policyReason = "policy_reason"
         case resultEvidenceRef = "result_evidence_ref"
+        case profileDeltaRef = "profile_delta_ref"
+        case deltaApproval = "delta_approval"
+        case readinessRef = "readiness_ref"
+        case readiness
         case rawOutputRef = "raw_output_ref"
         case rawOutputPreview = "raw_output_preview"
         case rawOutputChars = "raw_output_chars"
@@ -63,6 +71,19 @@ struct SupervisorSkillResultEvidence: Codable, Equatable, Sendable {
 }
 
 enum SupervisorSkillResultEvidenceStore {
+    static func resultEvidenceRef(requestId: String) -> String {
+        let normalizedRequestId = requestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "local://supervisor_skill_results/\(normalizedRequestId).json"
+    }
+
+    static func profileDeltaRef(for resultEvidenceRef: String?) -> String? {
+        fragmentRef(base: resultEvidenceRef, fragment: "profile_delta")
+    }
+
+    static func readinessRef(for resultEvidenceRef: String?) -> String? {
+        fragmentRef(base: resultEvidenceRef, fragment: "readiness")
+    }
+
     static func write(
         record: SupervisorSkillCallRecord,
         toolCall: ToolCall?,
@@ -77,8 +98,7 @@ enum SupervisorSkillResultEvidenceStore {
         )
 
         let url = ctx.supervisorSkillResultEvidenceURL(requestId: record.requestId)
-        let fileName = url.lastPathComponent
-        let resultEvidenceRef = "local://supervisor_skill_results/\(fileName)"
+        let resultEvidenceRef = Self.resultEvidenceRef(requestId: record.requestId)
         let trimmedOutput = rawOutput?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let previewLimit = 1_200
         let rawOutputPreview: String = {
@@ -89,6 +109,10 @@ enum SupervisorSkillResultEvidenceStore {
         }()
         let rawOutputRef = trimmedOutput.isEmpty ? nil : "\(resultEvidenceRef)#raw_output"
         let uiReviewAgentEvidenceRef = resolvedUIReviewAgentEvidenceRef(from: trimmedOutput)
+        let profileDeltaRef = normalizedScalar(record.profileDeltaRef)
+            ?? Self.profileDeltaRef(for: resultEvidenceRef)
+        let readinessRef = normalizedScalar(record.readinessRef)
+            ?? Self.readinessRef(for: resultEvidenceRef)
 
         let evidence = SupervisorSkillResultEvidence(
             schemaVersion: SupervisorSkillResultEvidence.currentSchemaVersion,
@@ -108,6 +132,10 @@ enum SupervisorSkillResultEvidenceStore {
             policySource: record.policySource,
             policyReason: record.policyReason,
             resultEvidenceRef: resultEvidenceRef,
+            profileDeltaRef: record.deltaApproval == nil ? nil : profileDeltaRef,
+            deltaApproval: record.deltaApproval,
+            readinessRef: record.readiness == nil ? nil : readinessRef,
+            readiness: record.readiness,
             rawOutputRef: rawOutputRef,
             rawOutputPreview: rawOutputPreview,
             rawOutputChars: trimmedOutput.count,
@@ -180,5 +208,12 @@ enum SupervisorSkillResultEvidenceStore {
     private static func normalizedScalar(_ raw: String?) -> String? {
         let trimmed = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func fragmentRef(base: String?, fragment: String) -> String? {
+        guard let normalizedBase = normalizedScalar(base) else { return nil }
+        let normalizedFragment = fragment.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedFragment.isEmpty else { return nil }
+        return "\(normalizedBase)#\(normalizedFragment)"
     }
 }

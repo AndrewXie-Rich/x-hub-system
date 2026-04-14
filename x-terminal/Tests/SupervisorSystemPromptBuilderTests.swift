@@ -27,6 +27,10 @@ struct SupervisorSystemPromptBuilderTests {
             preferredSupervisorModelId: "openai/gpt-5.3-codex",
             supervisorModelRouteSummary: "openai/gpt-5.3-codex（已加载，名称：GPT 5.3 Codex）",
             memorySource: "memory_v1",
+            lastRemoteSuccessAt: 1_773_196_760,
+            lastRemoteFailureAt: 1_773_196_770,
+            portfolioSnapshotUpdatedAt: 1_773_196_780,
+            canonicalMemorySyncLastFailureAt: 1_773_196_790,
             projectCount: 3,
             userMessage: "把我的世界这个项目的模型换成5.3",
             memoryV1: "project=myworld\nstatus=running",
@@ -49,6 +53,10 @@ struct SupervisorSystemPromptBuilderTests {
         #expect(prompt.contains("Managed project count: 3"))
         #expect(prompt.contains("Preferred supervisor model id: openai/gpt-5.3-codex"))
         #expect(prompt.contains("Supervisor model route summary: openai/gpt-5.3-codex（已加载，名称：GPT 5.3 Codex）"))
+        #expect(prompt.contains("Last remote success at: 2026-03-11 10:39:20 +08:00"))
+        #expect(prompt.contains("Last remote failure at: 2026-03-11 10:39:30 +08:00"))
+        #expect(prompt.contains("Portfolio snapshot updated at: 2026-03-11 10:39:40 +08:00"))
+        #expect(prompt.contains("Canonical memory sync last failure at: 2026-03-11 10:39:50 +08:00"))
         #expect(prompt.contains("## Supervisor Operating Mode"))
         #expect(prompt.contains("Configured work mode: guided_progress"))
         #expect(prompt.contains("## Privacy Mode"))
@@ -87,27 +95,40 @@ struct SupervisorSystemPromptBuilderTests {
         #expect(prompt.contains("## Responsibilities"))
         #expect(prompt.contains("## Action Protocol"))
         #expect(prompt.contains("[CREATE_PROJECT]Project Name[/CREATE_PROJECT]"))
+        #expect(prompt.contains("Exception: if the user is asking whether a governed skill exists"))
         #expect(prompt.contains("[ASSIGN_MODEL]project_ref|role|model_id[/ASSIGN_MODEL]"))
         #expect(prompt.contains(#"[CREATE_JOB]{"project_ref":"project_ref_or_empty","goal":"clear executable goal","priority":"critical|high|normal|low","source":"user|supervisor|heartbeat|incident|external_trigger|skill_callback|grant_resolution","current_owner":"supervisor"}[/CREATE_JOB]"#))
         #expect(prompt.contains(#"[UPSERT_PLAN]{"project_ref":"project_ref_or_empty","job_id":"job-id","plan_id":"plan-id","steps":[{"step_id":"step-001","title":"step title"}]}[/UPSERT_PLAN]"#))
         #expect(prompt.contains(#"[CALL_SKILL]{"project_ref":"project_ref_or_empty","job_id":"job-id","step_id":"step-001","skill_id":"skill.id","payload":{"key":"value"}}[/CALL_SKILL]"#))
+        #expect(prompt.contains(#"[CALL_GLOBAL_SKILL]{"skill_id":"skill.id","payload":{"key":"value"}}[/CALL_GLOBAL_SKILL]"#))
         #expect(prompt.contains(#"[CANCEL_SKILL]{"project_ref":"project_ref_or_empty","request_id":"call-id","reason":"brief reason"}[/CANCEL_SKILL]"#))
         #expect(prompt.contains("If the user asks you to continue, advance, or push a focused project forward"))
         #expect(prompt.contains("If the user asks you to review project memory/context and give an execution plan"))
         #expect(prompt.contains("For review or planning requests that do not clearly ask for immediate execution, do not emit action tags"))
         #expect(prompt.contains("If Memory Context contains skills_registry, only CALL_SKILL skill_ids that appear in that focused-project registry snapshot."))
-        #expect(prompt.contains("Use each skills_registry item's risk, grant, caps, dispatch, variant, dispatch_note, and payload hints to shape CALL_SKILL payloads"))
+        #expect(prompt.contains("If Memory Context contains a Supervisor-global skills_registry with `project=Supervisor Global`, use CALL_GLOBAL_SKILL"))
+        #expect(prompt.contains("Use each skills_registry item's risk, grant, caps, dispatch, variant, dispatch_note, and payload hints to shape CALL_SKILL / CALL_GLOBAL_SKILL payloads"))
+        #expect(prompt.contains("When no focused project is selected and the global skills_registry contains find-skills"))
+        #expect(prompt.contains("Questions like '有没有做 PPT 的 skill'"))
+        #expect(prompt.contains("use the dedicated global enable/request skill with the exact skill_id and package_sha256 returned by find-skills"))
+        #expect(prompt.contains("If the focused project's `skills_registry` lacks `local-ocr`, `local-vision`, `local-transcribe`, `local-tts`, or `local-embeddings`"))
         #expect(prompt.contains("Treat `routing: prefers_builtin=...` and `routing: entrypoints=...` as skill-family metadata."))
         #expect(prompt.contains("If the user explicitly names a registered wrapper or entrypoint skill_id, preserve that exact registered skill_id in CALL_SKILL"))
         #expect(prompt.contains("If the user asks for a capability without naming a specific skill_id, and the relevant skills_registry family advertises `routing: prefers_builtin=...`, choose that preferred builtin"))
         #expect(prompt.contains("Do not emit duplicate CALL_SKILL actions across sibling entrypoints in the same routed family for one intent."))
         #expect(prompt.contains("If a skills_registry item says grant=yes or has high/critical risk, expect an approval or awaiting-authorization transition"))
+        #expect(prompt.contains("If focused-project skills_registry shows source=xt_builtin_skill_registry, that still counts as a valid governed registry"))
         #expect(prompt.contains("If a skills_registry item says scope=xt_builtin, treat it as an XT native governed skill that is already available locally"))
         #expect(prompt.contains("If the user does not name a different installed wrapper/entrypoint and skills_registry contains guarded-automation, prefer it for trusted automation readiness checks and governed browser actions"))
         #expect(prompt.contains("If skills_registry contains supervisor-voice, prefer it for local Supervisor playback status / preview / speak / stop requests"))
+        #expect(prompt.contains("If skills_registry contains local-ocr, prefer it for OCR, screenshot text extraction, and image-to-text requests"))
+        #expect(prompt.contains("If skills_registry contains local-vision, prefer it for screenshot, diagram, and image understanding requests"))
+        #expect(prompt.contains("If skills_registry contains local-transcribe, prefer it for audio transcription and speech-to-text requests"))
+        #expect(prompt.contains("If skills_registry contains local-tts, prefer it for explicit text-to-speech or audio artifact requests"))
+        #expect(prompt.contains("If skills_registry contains local-embeddings, prefer it for embedding, retrieval-indexing, or vectorization requests"))
         #expect(prompt.contains("If you emit UPSERT_PLAN for a focused project, match the effective_work_order_depth shown in Memory Context as a minimum detail floor"))
         #expect(prompt.contains("For strong or capable focused projects, execution_ready can stay concise"))
-        #expect(prompt.contains("Constraint: CREATE_JOB / UPSERT_PLAN / CALL_SKILL / CANCEL_SKILL must use a single JSON object body."))
+        #expect(prompt.contains("Constraint: CREATE_JOB / UPSERT_PLAN / CALL_SKILL / CALL_GLOBAL_SKILL / CANCEL_SKILL must use a single JSON object body."))
         #expect(prompt.contains("## Output Rules"))
         #expect(prompt.contains("Do not ask the user to reply with a trigger phrase like '开始生成'"))
         #expect(prompt.contains("## Extra System Context"))
@@ -159,6 +180,45 @@ struct SupervisorSystemPromptBuilderTests {
         #expect(prompt.contains("First state that the current memory supply is insufficient for strategic correction"))
         #expect(prompt.contains("Until that gap is repaired, you may still help with immediate blocker, grant, and next-step handling"))
         #expect(prompt.contains("Current memory risks: Supervisor memory 供给没有达到 review floor | Focused strategic review 缺少可追溯证据"))
+    }
+
+    @Test
+    func fullModeWarnsAgainstInventingHiddenProjectHistoryWhenScopedRecoveryIsMissing() {
+        let readiness = SupervisorMemoryAssemblyReadiness(
+            ready: false,
+            statusLine: "underfed:memory_scoped_hidden_project_recovery_missing",
+            issues: [
+                SupervisorMemoryAssemblyIssue(
+                    code: "memory_scoped_hidden_project_recovery_missing",
+                    severity: .blocking,
+                    summary: "显式 hidden project 聚焦时没有补回项目范围上下文",
+                    detail: "focus=project-hidden recovery_mode=explicit_hidden_project_focus"
+                )
+            ]
+        )
+        let params = SupervisorSystemPromptParamsBuilder.build(
+            preferredSupervisorModelId: "openai/gpt-5.3-codex",
+            supervisorModelRouteSummary: "route-summary",
+            memorySource: "memory_v1",
+            projectCount: 1,
+            userMessage: "继续推进那个隐藏项目",
+            memoryV1: "memory-line",
+            promptMode: .full,
+            extraSystemPrompt: nil,
+            memoryReadiness: readiness,
+            now: Date(timeIntervalSince1970: 1_773_196_800),
+            timeZone: TimeZone(identifier: "Asia/Shanghai") ?? .current,
+            locale: Locale(identifier: "en_US_POSIX"),
+            hubConnected: true,
+            hubRemoteConnected: true
+        )
+
+        let prompt = SupervisorSystemPromptBuilder().build(params)
+
+        #expect(prompt.contains("Current assembly readiness: underfed:memory_scoped_hidden_project_recovery_missing"))
+        #expect(prompt.contains("missing scoped hidden-project recovery"))
+        #expect(prompt.contains("do not reconstruct that hidden project's history from frontstage, portfolio, or generic board memory"))
+        #expect(prompt.contains("ask for a governed re-open or fresh explicit focus turn"))
     }
 
     @Test
@@ -411,23 +471,22 @@ struct SupervisorSystemPromptBuilderTests {
         #expect(prompt.contains("## Memory Context"))
         #expect(prompt.contains("[FOCUSED_PROJECT_ANCHOR_PACK]"))
         #expect(prompt.contains("[LONGTERM_OUTLINE]"))
-        #expect(prompt.contains("[CONFLICT_SET]"))
-        #expect(prompt.contains("[CONTEXT_REFS]"))
-        #expect(prompt.contains("[EVIDENCE_PACK]"))
         #expect(prompt.contains("## Project Review Discipline"))
         #expect(prompt.contains("Prefer low-churn guidance"))
         #expect(prompt.contains("## User Turn"))
+        #expect(prompt.contains("## Action Protocol"))
+        #expect(prompt.contains("Only emit action tags when the user clearly wants execution"))
         #expect(!prompt.contains("## Runtime"))
+        #expect(!prompt.contains("## Supervisor Operating Mode"))
+        #expect(!prompt.contains("## Privacy Mode"))
         #expect(!prompt.contains("## Responsibilities"))
         #expect(!prompt.contains("[CREATE_PROJECT]Project Name[/CREATE_PROJECT]"))
         #expect(!prompt.contains("[CREATE_JOB]"))
         #expect(!prompt.contains("[UPSERT_PLAN]"))
         #expect(!prompt.contains("[CALL_SKILL]"))
         #expect(!prompt.contains("[CANCEL_SKILL]"))
-        #expect(prompt.contains("## Action Protocol"))
-        #expect(prompt.contains("Only emit action tags when the user clearly wants execution"))
-        #expect(prompt.contains("continue, advance, or push a focused project forward"))
-        #expect(prompt.contains("review project memory/context and give an execution plan"))
+        #expect(!prompt.contains("When no focused project is selected and the global skills_registry contains find-skills"))
+        #expect(!prompt.contains("Treat `routing: prefers_builtin=...`"))
     }
 
     @Test

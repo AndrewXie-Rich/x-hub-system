@@ -2,8 +2,10 @@ import Foundation
 import Testing
 @testable import XTerminal
 
+@Suite(.serialized)
 @MainActor
 struct SupervisorManagerAutomationRuntimeTests {
+    private static let runtimeGate = HubGlobalStateTestGate.shared
     private static let gate = TrustedAutomationPermissionTestGate.shared
 
     actor ToolCallCounter {
@@ -105,6 +107,1146 @@ struct SupervisorManagerAutomationRuntimeTests {
     }
 
     @Test
+    func managerAutomaticRecoveryHoldsWhenRetryBackoffIsStillPending() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+        let baseNow = Date().timeIntervalSince1970
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+        let project = makeProjectEntry(root: root)
+        let appModel = makeTestingAppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: baseNow - 1,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+        _ = manager.applySupervisorJurisdictionRegistry(
+            .ownerAll(for: [project]),
+            persist: false,
+            normalizeWithKnownProjects: true
+        )
+
+        _ = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeRequest(now: Date(timeIntervalSince1970: baseNow - 10))
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .blocked,
+            retryAfterSeconds: 120,
+            auditRef: "audit-xt-auto-manager-backoff-blocked",
+            now: Date(timeIntervalSince1970: baseNow - 9)
+        )
+
+        let recovery = try manager.recoverLatestAutomationRun(
+            for: ctx,
+            checkpointAgeSeconds: 60,
+            recoveryMode: .automatic,
+            auditRef: "audit-xt-auto-manager-backoff-recover"
+        )
+        let recovered = try #require(recovery)
+
+        #expect(recovered.decision == .hold)
+        #expect(recovered.holdReason == "retry_after_not_elapsed")
+        #expect(manager.automationRecoveryDecision?.decision == .hold)
+        #expect(manager.automationLatestRetryPackage == nil)
+        #expect(manager.automationStatusLine.contains("retry_after_not_elapsed"))
+
+        let statusText = try #require(
+            manager.performAutomationRuntimeCommand("/automation status \(project.projectId)")
+        )
+        #expect(statusText.contains("recovery: hold (retry_after_not_elapsed)"))
+        #expect(statusText.contains("recovery_candidate_automatic_decision: hold"))
+        #expect(statusText.contains("recovery_candidate_automatic_hold_reason: retry_after_not_elapsed"))
+        #expect(statusText.contains("recovery_candidate_retry_after_seconds: 120"))
+    }
+
+    @Test
+    func automationRecoverCommandFailsClosedWhenPersistedCheckpointStableIdentityFails() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+        let baseNow = Date().timeIntervalSince1970
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+
+        let olderStableRunID = "run-stable-older"
+        let olderStableLineage = XTAutomationRunLineage.root(runID: olderStableRunID)
+        AXProjectStore.appendRawLog(
+            [
+                "type": "automation_run_launch",
+                "created_at": baseNow - 12,
+                "run_id": olderStableRunID,
+                "delivery_ref": "build/reports/xt_auto_stable_delivery.v1.json",
+                "lineage_id": olderStableLineage.lineageID,
+                "root_run_id": olderStableLineage.rootRunID,
+                "parent_run_id": NSNull(),
+                "retry_depth": olderStableLineage.retryDepth
+            ],
+            for: ctx
+        )
+        AXProjectStore.appendRawLog(
+            [
+                "type": "automation_checkpoint",
+                "created_at": baseNow - 11,
+                "run_id": olderStableRunID,
+                "recipe_id": "recipe-runtime",
+                "state": XTAutomationRunState.blocked.rawValue,
+                "attempt": 2,
+                "last_transition": "running_to_blocked",
+                "retry_after_seconds": 0,
+                "resume_token": "resume-run-stable-older",
+                "checkpoint_ref": "checkpoint-run-stable-older",
+                "stable_identity": true,
+                "current_step_id": "step-verify",
+                "current_step_title": "Verify smoke tests",
+                "current_step_state": XTAutomationRunStepState.blocked.rawValue,
+                "current_step_summary": "Older stable blocked run that should not steal recovery focus.",
+                "audit_ref": "audit-run-stable-older-checkpoint"
+            ],
+            for: ctx
+        )
+
+        let runID = "run-identity-drift"
+        let lineage = XTAutomationRunLineage.root(runID: runID)
+        AXProjectStore.appendRawLog(
+            [
+                "type": "automation_run_launch",
+                "created_at": baseNow - 10,
+                "run_id": runID,
+                "delivery_ref": "build/reports/xt_auto_identity_drift_delivery.v1.json",
+                "lineage_id": lineage.lineageID,
+                "root_run_id": lineage.rootRunID,
+                "parent_run_id": NSNull(),
+                "retry_depth": lineage.retryDepth
+            ],
+            for: ctx
+        )
+        AXProjectStore.appendRawLog(
+            [
+                "type": "automation_checkpoint",
+                "created_at": baseNow - 9,
+                "run_id": runID,
+                "recipe_id": "recipe-runtime",
+                "state": XTAutomationRunState.blocked.rawValue,
+                "attempt": 2,
+                "last_transition": "running_to_blocked",
+                "retry_after_seconds": 0,
+                "resume_token": "resume-run-identity-drift",
+                "checkpoint_ref": "checkpoint-run-identity-drift",
+                "stable_identity": false,
+                "current_step_id": "step-verify",
+                "current_step_title": "Verify smoke tests",
+                "current_step_state": XTAutomationRunStepState.blocked.rawValue,
+                "current_step_summary": "Identity drift detected before restart recovery.",
+                "audit_ref": "audit-run-identity-drift-checkpoint"
+            ],
+            for: ctx
+        )
+
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config.lastAutomationLaunchRef = runID
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let project = makeProjectEntry(root: root)
+        let appModel = makeTestingAppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: baseNow,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+        _ = manager.applySupervisorJurisdictionRegistry(
+            .ownerAll(for: [project]),
+            persist: false,
+            normalizeWithKnownProjects: true
+        )
+
+        let statusText = try #require(
+            manager.performAutomationRuntimeCommand("/automation status \(project.projectId)")
+        )
+        let recoveryText = try #require(
+            manager.performAutomationRuntimeCommand("/automation recover \(project.projectId)")
+        )
+
+        #expect(statusText.contains("recovery_candidate_run: \(runID)"))
+        #expect(statusText.contains("recovery_candidate_selection: latest_visible_checkpoint"))
+        #expect(statusText.contains("recovery_candidate_reason: latest_visible_stable_identity_failed"))
+        #expect(statusText.contains("recovery_candidate_automatic_decision: hold"))
+        #expect(statusText.contains("recovery_candidate_automatic_hold_reason: stable_identity_failed"))
+        #expect(recoveryText.contains("run_id: \(runID)"))
+        #expect(recoveryText.contains("decision: hold"))
+        #expect(recoveryText.contains("hold_reason: stable_identity_failed"))
+        #expect(recoveryText.contains("candidate_selection: latest_visible_checkpoint"))
+        #expect(recoveryText.contains("candidate_reason: latest_visible_stable_identity_failed"))
+        #expect(recoveryText.contains("candidate_automatic_decision: hold"))
+        #expect(recoveryText.contains("candidate_automatic_hold_reason: stable_identity_failed"))
+        #expect(manager.automationRecoveryDecision?.decision == .hold)
+        #expect(manager.automationRecoveryDecision?.holdReason == "stable_identity_failed")
+        #expect(manager.automationRecoveryDecision?.stableIdentityPass == false)
+        #expect(manager.automationLatestRetryPackage == nil)
+        #expect(manager.automationStatusLine.contains("stable_identity_failed"))
+
+        let rows = try rawLogEntries(for: ctx)
+        #expect(rows.contains {
+            ($0["type"] as? String) == "automation_run_recovery"
+                && ($0["run_id"] as? String) == runID
+                && ($0["schema_version"] as? String) == XTAutomationRestartRecoveryDecision.currentSchemaVersion
+        })
+    }
+
+    @Test
+    func automationRecoverCommandSurfacesAutomaticBackoffEvenWhenOperatorOverrideResumes() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+        let baseNow = Date().timeIntervalSince1970
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
+        let project = makeProjectEntry(root: root)
+        let appModel = makeTestingAppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: baseNow,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+
+        let prepared = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: baseNow - 10))
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .blocked,
+            runID: prepared.launchRef,
+            retryAfterSeconds: 120,
+            auditRef: "audit-xt-auto-manager-recover-backoff-override",
+            now: Date(timeIntervalSince1970: baseNow - 9)
+        )
+
+        let recoveryText = try #require(
+            manager.performAutomationRuntimeCommand("/automation recover \(project.projectId)")
+        )
+
+        #expect(recoveryText.contains("run_id: \(prepared.launchRef)"))
+        #expect(recoveryText.contains("decision: resume"))
+        #expect(recoveryText.contains("candidate_reason: latest_visible_retry_wait"))
+        #expect(recoveryText.contains("candidate_automatic_decision: hold"))
+        #expect(recoveryText.contains("candidate_automatic_hold_reason: retry_after_not_elapsed"))
+        #expect(recoveryText.contains("candidate_retry_after_seconds: 120"))
+        #expect(manager.automationRecoveryDecision?.runID == prepared.launchRef)
+        #expect(manager.automationRecoveryDecision?.decision == .resume)
+    }
+
+    @Test
+    func automationRecoverCommandSurfacesRetryBudgetExhaustedCandidateReason() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+        let baseNow = Date().timeIntervalSince1970
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
+        let project = makeProjectEntry(root: root)
+        let appModel = makeTestingAppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: baseNow,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+
+        let prepared = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: baseNow - 12))
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .running,
+            runID: prepared.launchRef,
+            auditRef: "audit-xt-auto-manager-budget-running-1",
+            now: Date(timeIntervalSince1970: baseNow - 11)
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .blocked,
+            runID: prepared.launchRef,
+            auditRef: "audit-xt-auto-manager-budget-blocked-1",
+            now: Date(timeIntervalSince1970: baseNow - 10)
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .running,
+            runID: prepared.launchRef,
+            auditRef: "audit-xt-auto-manager-budget-running-2",
+            now: Date(timeIntervalSince1970: baseNow - 9)
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .blocked,
+            runID: prepared.launchRef,
+            auditRef: "audit-xt-auto-manager-budget-blocked-2",
+            now: Date(timeIntervalSince1970: baseNow - 8)
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .running,
+            runID: prepared.launchRef,
+            auditRef: "audit-xt-auto-manager-budget-running-3",
+            now: Date(timeIntervalSince1970: baseNow - 7)
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .blocked,
+            runID: prepared.launchRef,
+            auditRef: "audit-xt-auto-manager-budget-blocked-3",
+            now: Date(timeIntervalSince1970: baseNow - 6)
+        )
+
+        let recoveryText = try #require(
+            manager.performAutomationRuntimeCommand("/automation recover \(project.projectId)")
+        )
+
+        #expect(recoveryText.contains("run_id: \(prepared.launchRef)"))
+        #expect(recoveryText.contains("decision: hold"))
+        #expect(recoveryText.contains("hold_reason: retry_budget_exhausted"))
+        #expect(recoveryText.contains("candidate_reason: latest_visible_retry_budget_exhausted"))
+        #expect(recoveryText.contains("candidate_automatic_decision: hold"))
+        #expect(recoveryText.contains("candidate_automatic_hold_reason: retry_budget_exhausted"))
+        #expect(manager.automationRecoveryDecision?.runID == prepared.launchRef)
+        #expect(manager.automationRecoveryDecision?.decision == .hold)
+    }
+
+    @Test
+    func prepareAutomationRunClearsStaleExecutionReportFromPreviousRun() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let sourceRoot = try makeRegistryVisibleProjectRoot()
+        let targetRoot = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: sourceRoot)
+            try? FileManager.default.removeItem(at: targetRoot)
+        }
+
+        let sourceCtx = AXProjectContext(root: sourceRoot)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: sourceCtx)
+        try armRepoAutomationGovernance(for: sourceCtx)
+
+        _ = try manager.startAutomationRun(
+            for: sourceCtx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: 1_773_200_200))
+        )
+
+        try await waitUntil("source automation run delivered before preparing target run") {
+            manager.automationLatestExecutionReport?.finalState == .delivered
+        }
+
+        let previousRunID = try #require(manager.automationLatestExecutionReport?.runID)
+        let targetCtx = AXProjectContext(root: targetRoot)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: targetCtx)
+
+        let prepared = try manager.prepareAutomationRun(
+            for: targetCtx,
+            request: makeRequest(now: Date(timeIntervalSince1970: 1_773_200_201))
+        )
+
+        #expect(manager.automationPreparedRun?.launchRef == prepared.launchRef)
+        #expect(manager.automationCurrentCheckpoint?.runID == prepared.launchRef)
+        #expect(manager.automationCurrentCheckpoint?.state == .queued)
+        #expect(manager.automationLatestExecutionReport == nil)
+        #expect(manager.automationStatusLine.contains(prepared.launchRef))
+        #expect(manager.automationStatusLine.contains("排队中"))
+        #expect(!manager.automationStatusLine.contains(previousRunID))
+    }
+
+    @Test
+    func syncAutomationRuntimeSnapshotClearsStaleExecutionReportWhenHydratingQueuedRun() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        let hydrator = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+        hydrator.resetAutomationRuntimeState()
+
+        let sourceRoot = try makeRegistryVisibleProjectRoot()
+        let targetRoot = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            hydrator.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: sourceRoot)
+            try? FileManager.default.removeItem(at: targetRoot)
+        }
+
+        let sourceCtx = AXProjectContext(root: sourceRoot)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: sourceCtx)
+        try armRepoAutomationGovernance(for: sourceCtx)
+
+        _ = try manager.startAutomationRun(
+            for: sourceCtx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: 1_773_200_300))
+        )
+
+        try await waitUntil("source automation run delivered before queued hydration") {
+            manager.automationLatestExecutionReport?.finalState == .delivered
+        }
+
+        let targetCtx = AXProjectContext(root: targetRoot)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: targetCtx)
+        let prepared = try hydrator.prepareAutomationRun(
+            for: targetCtx,
+            request: makeRequest(now: Date(timeIntervalSince1970: 1_773_200_301))
+        )
+
+        let targetProject = makeProjectEntry(root: targetRoot)
+        manager.syncAutomationRuntimeSnapshot(forSelectedProject: targetProject)
+
+        #expect(manager.automationPreparedRun?.launchRef == nil)
+        #expect(manager.automationCurrentCheckpoint?.runID == prepared.launchRef)
+        #expect(manager.automationCurrentCheckpoint?.state == .queued)
+        #expect(manager.automationLatestExecutionReport == nil)
+        #expect(manager.automationLatestRetryPackage == nil)
+        #expect(manager.automationStatusLine.contains(prepared.launchRef))
+        #expect(manager.automationStatusLine.contains("排队中"))
+    }
+
+    @Test
+    func syncAutomationRuntimeSnapshotFallsBackToPersistedCheckpointWhenLaunchRefIsMissing() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        let hydrator = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+        hydrator.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            hydrator.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+        let prepared = try hydrator.prepareAutomationRun(
+            for: ctx,
+            request: makeRequest(now: Date(timeIntervalSince1970: 1_773_200_302))
+        )
+
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config.lastAutomationLaunchRef = ""
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let project = makeProjectEntry(root: root)
+        manager.syncAutomationRuntimeSnapshot(forSelectedProject: project)
+
+        #expect(manager.automationCurrentCheckpoint?.runID == prepared.launchRef)
+        #expect(manager.automationCurrentCheckpoint?.state == .queued)
+        #expect(manager.automationLatestExecutionReport == nil)
+        #expect(manager.automationStatusLine.contains(prepared.launchRef))
+        #expect(manager.automationStatusLine.contains("排队中"))
+    }
+
+    @Test
+    func automationStatusContinuityDoesNotReuseSourceExecutionWhenRetryChildIsQueued() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+
+        let sourceLineage = XTAutomationRunLineage.root(runID: "run-source")
+        let retryLineage = sourceLineage.retryChild(parentRunID: "run-source")
+        AXProjectStore.appendRawLog(
+            [
+                "type": "automation_run_launch",
+                "created_at": 1_773_200_302,
+                "run_id": "run-source",
+                "delivery_ref": "build/reports/xt_auto_manual_delivery.v1.json",
+                "lineage_id": sourceLineage.lineageID,
+                "root_run_id": sourceLineage.rootRunID,
+                "parent_run_id": NSNull(),
+                "retry_depth": sourceLineage.retryDepth
+            ],
+            for: ctx
+        )
+        AXProjectStore.appendRawLog(
+            [
+                "type": "automation_checkpoint",
+                "created_at": 1_773_200_303,
+                "run_id": "run-source",
+                "recipe_id": "recipe-runtime",
+                "state": XTAutomationRunState.blocked.rawValue,
+                "attempt": 2,
+                "last_transition": "running_to_blocked",
+                "retry_after_seconds": 45,
+                "resume_token": "resume-run-source",
+                "checkpoint_ref": "checkpoint-run-source",
+                "stable_identity": true,
+                "current_step_id": "step-verify",
+                "current_step_title": "Verify focused smoke tests",
+                "current_step_state": XTAutomationRunStepState.retryWait.rawValue,
+                "current_step_summary": "Waiting before retry child launch.",
+                "audit_ref": "audit-run-source-checkpoint"
+            ],
+            for: ctx
+        )
+        AXProjectStore.appendRawLog(
+            [
+                "type": "automation_execution",
+                "phase": "completed",
+                "created_at": 1_773_200_304,
+                "run_id": "run-source",
+                "recipe_ref": "recipe-runtime",
+                "final_state": XTAutomationRunState.blocked.rawValue,
+                "hold_reason": "automation_verify_failed",
+                "detail": "source verification failed",
+                "verification": [
+                    "required": true,
+                    "executed": true,
+                    "command_count": 1,
+                    "passed_command_count": 0,
+                    "hold_reason": "automation_verify_failed",
+                    "detail": "source verification failed"
+                ],
+                "audit_ref": "audit-run-source-execution"
+            ],
+            for: ctx
+        )
+        AXProjectStore.appendRawLog(
+            [
+                "type": "automation_retry",
+                "status": "scheduled",
+                "created_at": 1_773_200_305,
+                "source_run_id": "run-source",
+                "retry_run_id": "run-retry-child",
+                "lineage_id": retryLineage.lineageID,
+                "root_run_id": retryLineage.rootRunID,
+                "parent_run_id": retryLineage.parentRunID,
+                "retry_depth": retryLineage.retryDepth,
+                "retry_strategy": "verify_failed_retry",
+                "retry_reason": "automation_verify_failed",
+                "source_hold_reason": "automation_verify_failed",
+                "detail": "source verification failed",
+                "delivery_ref": "build/reports/xt_auto_manual_delivery.v1.json"
+            ],
+            for: ctx
+        )
+        AXProjectStore.appendRawLog(
+            [
+                "type": "automation_run_launch",
+                "created_at": 1_773_200_306,
+                "run_id": "run-retry-child",
+                "delivery_ref": "build/reports/xt_auto_manual_delivery.v1.json",
+                "lineage_id": retryLineage.lineageID,
+                "root_run_id": retryLineage.rootRunID,
+                "parent_run_id": retryLineage.parentRunID,
+                "retry_depth": retryLineage.retryDepth
+            ],
+            for: ctx
+        )
+        AXProjectStore.appendRawLog(
+            [
+                "type": "automation_checkpoint",
+                "created_at": 1_773_200_307,
+                "run_id": "run-retry-child",
+                "recipe_id": "recipe-runtime",
+                "state": XTAutomationRunState.queued.rawValue,
+                "attempt": 1,
+                "last_transition": "prepared_to_queued",
+                "retry_after_seconds": 0,
+                "resume_token": "resume-run-retry-child",
+                "checkpoint_ref": "checkpoint-run-retry-child",
+                "stable_identity": true,
+                "current_step_id": "step-retry-prepare",
+                "current_step_title": "Prepare retry child launch",
+                "current_step_state": XTAutomationRunStepState.pending.rawValue,
+                "current_step_summary": "Retry child queued and waiting to start.",
+                "audit_ref": "audit-run-retry-child-checkpoint"
+            ],
+            for: ctx
+        )
+
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config.lastAutomationLaunchRef = "run-retry-child"
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let project = makeProjectEntry(root: root)
+        let appModel = makeTestingAppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+        _ = manager.applySupervisorJurisdictionRegistry(
+            .ownerAll(for: [project]),
+            persist: false,
+            normalizeWithKnownProjects: true
+        )
+
+        manager.syncAutomationRuntimeSnapshot(forSelectedProject: project)
+
+        #expect(manager.automationCurrentCheckpoint?.runID == "run-retry-child")
+        #expect(manager.automationCurrentCheckpoint?.state == .queued)
+        #expect(manager.automationLatestExecutionReport == nil)
+
+        let statusText = try #require(manager.performAutomationRuntimeCommand("/automation status \(project.projectId)"))
+        #expect(statusText.contains("continuity_context_source: checkpoint+retry_package"))
+        #expect(!statusText.contains("continuity_context_source: checkpoint+execution_report+retry_package"))
+        #expect(statusText.contains("continuity_effective_run_id: run-retry-child"))
+        #expect(statusText.contains("delivery_closure_run_id: run-retry-child"))
+        #expect(statusText.contains("delivery_closure_source: retry_package"))
+        #expect(!statusText.contains("last_execution_state:"))
+    }
+
+    @Test
+    func automationStatusContinuityIgnoresUnrelatedRetryPackageWhenNewerRunIsActive() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+
+        let sourceLineage = XTAutomationRunLineage.root(runID: "run-source")
+        let retryLineage = sourceLineage.retryChild(parentRunID: "run-source")
+        let newerLineage = XTAutomationRunLineage.root(runID: "run-newer")
+        AXProjectStore.appendRawLog(
+            [
+                "type": "automation_run_launch",
+                "created_at": 1_773_200_311,
+                "run_id": "run-source",
+                "delivery_ref": "build/reports/xt_auto_source_delivery.v1.json",
+                "lineage_id": sourceLineage.lineageID,
+                "root_run_id": sourceLineage.rootRunID,
+                "parent_run_id": NSNull(),
+                "retry_depth": sourceLineage.retryDepth
+            ],
+            for: ctx
+        )
+        AXProjectStore.appendRawLog(
+            [
+                "type": "automation_checkpoint",
+                "created_at": 1_773_200_312,
+                "run_id": "run-source",
+                "recipe_id": "recipe-runtime",
+                "state": XTAutomationRunState.blocked.rawValue,
+                "attempt": 2,
+                "last_transition": "running_to_blocked",
+                "retry_after_seconds": 45,
+                "resume_token": "resume-run-source",
+                "checkpoint_ref": "checkpoint-run-source",
+                "stable_identity": true,
+                "current_step_id": "step-verify",
+                "current_step_title": "Verify focused smoke tests",
+                "current_step_state": XTAutomationRunStepState.retryWait.rawValue,
+                "current_step_summary": "Waiting before retry child launch.",
+                "audit_ref": "audit-run-source-checkpoint-unrelated"
+            ],
+            for: ctx
+        )
+        AXProjectStore.appendRawLog(
+            [
+                "type": "automation_execution",
+                "phase": "completed",
+                "created_at": 1_773_200_313,
+                "run_id": "run-source",
+                "recipe_ref": "recipe-runtime",
+                "final_state": XTAutomationRunState.blocked.rawValue,
+                "hold_reason": "automation_verify_failed",
+                "detail": "source verification failed",
+                "audit_ref": "audit-run-source-execution-unrelated"
+            ],
+            for: ctx
+        )
+        AXProjectStore.appendRawLog(
+            [
+                "type": "automation_retry",
+                "status": "scheduled",
+                "created_at": 1_773_200_314,
+                "source_run_id": "run-source",
+                "retry_run_id": "run-retry-child",
+                "lineage_id": retryLineage.lineageID,
+                "root_run_id": retryLineage.rootRunID,
+                "parent_run_id": retryLineage.parentRunID,
+                "retry_depth": retryLineage.retryDepth,
+                "retry_strategy": "verify_failed_retry",
+                "retry_reason": "automation_verify_failed",
+                "delivery_ref": "build/reports/xt_auto_source_delivery.v1.json"
+            ],
+            for: ctx
+        )
+        AXProjectStore.appendRawLog(
+            [
+                "type": "automation_run_launch",
+                "created_at": 1_773_200_315,
+                "run_id": "run-newer",
+                "delivery_ref": "build/reports/xt_auto_newer_delivery.v1.json",
+                "lineage_id": newerLineage.lineageID,
+                "root_run_id": newerLineage.rootRunID,
+                "parent_run_id": NSNull(),
+                "retry_depth": newerLineage.retryDepth
+            ],
+            for: ctx
+        )
+        AXProjectStore.appendRawLog(
+            [
+                "type": "automation_checkpoint",
+                "created_at": 1_773_200_316,
+                "run_id": "run-newer",
+                "recipe_id": "recipe-runtime-2",
+                "state": XTAutomationRunState.queued.rawValue,
+                "attempt": 1,
+                "last_transition": "prepared_to_queued",
+                "retry_after_seconds": 0,
+                "resume_token": "resume-run-newer",
+                "checkpoint_ref": "checkpoint-run-newer",
+                "stable_identity": true,
+                "current_step_id": "step-collect-context",
+                "current_step_title": "Collect context",
+                "current_step_state": XTAutomationRunStepState.pending.rawValue,
+                "current_step_summary": "waiting_to_start_first_action",
+                "audit_ref": "audit-run-newer-checkpoint"
+            ],
+            for: ctx
+        )
+
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config.lastAutomationLaunchRef = "run-newer"
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let project = makeProjectEntry(root: root)
+        let appModel = makeTestingAppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+        _ = manager.applySupervisorJurisdictionRegistry(
+            .ownerAll(for: [project]),
+            persist: false,
+            normalizeWithKnownProjects: true
+        )
+
+        manager.syncAutomationRuntimeSnapshot(forSelectedProject: project)
+
+        #expect(manager.automationCurrentCheckpoint?.runID == "run-newer")
+        #expect(manager.automationCurrentCheckpoint?.state == .queued)
+        #expect(manager.automationLatestExecutionReport == nil)
+        #expect(manager.automationLatestRetryPackage == nil)
+
+        let statusText = try #require(manager.performAutomationRuntimeCommand("/automation status \(project.projectId)"))
+        #expect(statusText.contains("continuity_context_source: checkpoint"))
+        #expect(!statusText.contains("continuity_context_source: checkpoint+retry_package"))
+        #expect(statusText.contains("continuity_effective_run_id: run-newer"))
+        #expect(statusText.contains("delivery_closure_run_id: run-newer"))
+        #expect(statusText.contains("delivery_closure_source: launch"))
+        #expect(!statusText.contains("retry_run_id: run-retry-child"))
+        #expect(!statusText.contains("last_execution_state:"))
+    }
+
+    @Test
+    func automationStatusContinuityIgnoresUnrelatedPersistedRecoveryActionWhenNewerRunIsActive() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+
+        let sourceLineage = XTAutomationRunLineage.root(runID: "run-source")
+        let retryLineage = sourceLineage.retryChild(parentRunID: "run-source")
+        let newerLineage = XTAutomationRunLineage.root(runID: "run-newer")
+        AXProjectStore.appendRawLog(
+            [
+                "type": "automation_run_launch",
+                "created_at": 1_773_200_317,
+                "run_id": "run-source",
+                "delivery_ref": "build/reports/xt_auto_source_delivery.v1.json",
+                "lineage_id": sourceLineage.lineageID,
+                "root_run_id": sourceLineage.rootRunID,
+                "parent_run_id": NSNull(),
+                "retry_depth": sourceLineage.retryDepth
+            ],
+            for: ctx
+        )
+        AXProjectStore.appendRawLog(
+            [
+                "type": "automation_checkpoint",
+                "created_at": 1_773_200_318,
+                "run_id": "run-source",
+                "recipe_id": "recipe-runtime",
+                "state": XTAutomationRunState.blocked.rawValue,
+                "attempt": 2,
+                "last_transition": "running_to_blocked",
+                "retry_after_seconds": 0,
+                "resume_token": "resume-run-source",
+                "checkpoint_ref": "checkpoint-run-source",
+                "stable_identity": true,
+                "current_step_id": "step-verify",
+                "current_step_title": "Verify focused smoke tests",
+                "current_step_state": XTAutomationRunStepState.blocked.rawValue,
+                "current_step_summary": "Verification failed and recovery handoff was recorded.",
+                "audit_ref": "audit-run-source-checkpoint-recovery-unrelated"
+            ],
+            for: ctx
+        )
+        AXProjectStore.appendRawLog(
+            [
+                "type": "automation_run_recovery",
+                "created_at": 1_773_200_319,
+                "run_id": "run-source",
+                "recipe_id": "recipe-runtime",
+                "recovered_state": XTAutomationRunState.blocked.rawValue,
+                "decision": XTAutomationRestartRecoveryAction.resume.rawValue,
+                "hold_reason": NSNull(),
+                "stable_identity_pass": true,
+                "checkpoint_ref": "checkpoint-run-source",
+                "resume_token": "resume-run-source",
+                "recovery_mode": XTAutomationRestartRecoveryMode.operatorOverride.rawValue,
+                "resume_mode": XTAutomationRecoveryResumeMode.retryPackage.rawValue,
+                "retry_run_id": "run-retry-child",
+                "retry_strategy": "verify_failed_retry",
+                "retry_reason": "automation_verify_failed",
+                "delivery_ref": "build/reports/xt_auto_source_delivery.v1.json",
+                "delivery_closure_source": XTAutomationDeliveryClosureProjectionSource.retryPackage.rawValue,
+                "delivery_closure_run_id": "run-retry-child",
+                "lineage_id": retryLineage.lineageID,
+                "root_run_id": retryLineage.rootRunID,
+                "parent_run_id": retryLineage.parentRunID,
+                "retry_depth": retryLineage.retryDepth,
+                "audit_ref": "audit-recovery-row-unrelated"
+            ],
+            for: ctx
+        )
+        AXProjectStore.appendRawLog(
+            [
+                "type": "automation_run_launch",
+                "created_at": 1_773_200_320,
+                "run_id": "run-newer",
+                "delivery_ref": "build/reports/xt_auto_newer_delivery.v1.json",
+                "lineage_id": newerLineage.lineageID,
+                "root_run_id": newerLineage.rootRunID,
+                "parent_run_id": NSNull(),
+                "retry_depth": newerLineage.retryDepth
+            ],
+            for: ctx
+        )
+        AXProjectStore.appendRawLog(
+            [
+                "type": "automation_checkpoint",
+                "created_at": 1_773_200_321,
+                "run_id": "run-newer",
+                "recipe_id": "recipe-runtime-newer",
+                "state": XTAutomationRunState.queued.rawValue,
+                "attempt": 1,
+                "last_transition": "prepared_to_queued",
+                "retry_after_seconds": 0,
+                "resume_token": "resume-run-newer",
+                "checkpoint_ref": "checkpoint-run-newer",
+                "stable_identity": true,
+                "current_step_id": "step-collect-context",
+                "current_step_title": "Collect context",
+                "current_step_state": XTAutomationRunStepState.pending.rawValue,
+                "current_step_summary": "waiting_to_start_first_action",
+                "audit_ref": "audit-run-newer-checkpoint-recovery-unrelated"
+            ],
+            for: ctx
+        )
+
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config.lastAutomationLaunchRef = "run-newer"
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let project = makeProjectEntry(root: root)
+        let appModel = makeTestingAppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+        _ = manager.applySupervisorJurisdictionRegistry(
+            .ownerAll(for: [project]),
+            persist: false,
+            normalizeWithKnownProjects: true
+        )
+
+        manager.syncAutomationRuntimeSnapshot(forSelectedProject: project)
+
+        #expect(manager.automationCurrentCheckpoint?.runID == "run-newer")
+        #expect(manager.automationCurrentCheckpoint?.state == .queued)
+
+        let statusText = try #require(manager.performAutomationRuntimeCommand("/automation status \(project.projectId)"))
+        #expect(statusText.contains("continuity_context_source: checkpoint"))
+        #expect(statusText.contains("continuity_effective_run_id: run-newer"))
+        #expect(statusText.contains("delivery_closure_run_id: run-newer"))
+        #expect(statusText.contains("delivery_closure_source: launch"))
+        #expect(!statusText.contains("last_recovery_run_id: run-source"))
+        #expect(!statusText.contains("last_recovery_retry_run_id: run-retry-child"))
+        #expect(!statusText.contains("last_recovery_delivery_closure_run_id: run-retry-child"))
+    }
+
+    @Test
+    func automationStatusFallsBackToLatestPersistedRunWhenConfigLaunchRefIsOlderButStillValid() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+
+        let delivered = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeRequest(now: Date(timeIntervalSince1970: 1_773_200_302))
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .delivered,
+            runID: delivered.launchRef,
+            auditRef: "audit-xt-auto-status-older-delivered",
+            now: Date(timeIntervalSince1970: 1_773_200_303)
+        )
+
+        let blocked = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeRequest(now: Date(timeIntervalSince1970: 1_773_200_304))
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .blocked,
+            runID: blocked.launchRef,
+            retryAfterSeconds: 0,
+            auditRef: "audit-xt-auto-status-newer-blocked",
+            now: Date(timeIntervalSince1970: 1_773_200_305)
+        )
+
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config.lastAutomationLaunchRef = delivered.launchRef
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let project = makeProjectEntry(root: root)
+        let appModel = makeTestingAppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: 1_773_200_306,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+        _ = manager.applySupervisorJurisdictionRegistry(
+            .ownerAll(for: [project]),
+            persist: false,
+            normalizeWithKnownProjects: true
+        )
+
+        let statusText = try #require(
+            manager.performAutomationRuntimeCommand("/automation status \(project.projectId)")
+        )
+        #expect(statusText.contains("last_launch: \(blocked.launchRef)"))
+        #expect(statusText.contains("last_launch_source: checkpoint_fallback"))
+        #expect(statusText.contains("state: blocked"))
+    }
+
+    @Test
+    func syncAutomationRuntimeSnapshotRehydratesManualCancelledRecoveryState() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let restartedManager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+        restartedManager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            restartedManager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+        let prepared = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeRequest(now: Date(timeIntervalSince1970: 1_773_200_303))
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .blocked,
+            retryAfterSeconds: 0,
+            auditRef: "audit-xt-auto-hydrate-cancel-blocked",
+            now: Date(timeIntervalSince1970: 1_773_200_304)
+        )
+        let cancelled = try manager.cancelAutomationRun(
+            for: ctx,
+            runID: prepared.launchRef,
+            auditRef: "audit-xt-auto-hydrate-cancelled",
+            now: Date(timeIntervalSince1970: 1_773_200_305)
+        )
+        #expect(cancelled.decision == .suppressed)
+        #expect(cancelled.holdReason == "manual_cancelled")
+
+        let project = makeProjectEntry(root: root)
+        restartedManager.syncAutomationRuntimeSnapshot(forSelectedProject: project)
+
+        #expect(restartedManager.automationCurrentCheckpoint?.runID == prepared.launchRef)
+        #expect(restartedManager.automationCurrentCheckpoint?.state == .blocked)
+        #expect(restartedManager.automationRecoveryDecision?.decision == .suppressed)
+        #expect(restartedManager.automationRecoveryDecision?.holdReason == "manual_cancelled")
+        #expect(restartedManager.automationStatusLine.contains("manual_cancelled"))
+
+        let statusText = try #require(
+            restartedManager.performAutomationRuntimeCommand("/automation status \(project.projectId)")
+        )
+        #expect(statusText.contains("last_recovery_run_id: \(prepared.launchRef)"))
+        #expect(statusText.contains("last_recovery_decision: suppressed"))
+        #expect(statusText.contains("last_recovery_mode: automatic"))
+        #expect(statusText.contains("last_recovery_hold_reason: manual_cancelled"))
+        #expect(statusText.contains("recovery: suppressed (manual_cancelled)"))
+    }
+
+    @Test
+    func syncAutomationRuntimeSnapshotRehydratesRetryAfterHoldRecoveryState() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let restartedManager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+        restartedManager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            restartedManager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+        let now = Date()
+        let prepared = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeRequest(now: now.addingTimeInterval(-12))
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .blocked,
+            retryAfterSeconds: 120,
+            auditRef: "audit-xt-auto-hydrate-backoff-blocked",
+            now: now.addingTimeInterval(-11)
+        )
+
+        let project = makeProjectEntry(root: root)
+        restartedManager.syncAutomationRuntimeSnapshot(forSelectedProject: project)
+
+        #expect(restartedManager.automationCurrentCheckpoint?.runID == prepared.launchRef)
+        #expect(restartedManager.automationCurrentCheckpoint?.state == .blocked)
+        #expect(restartedManager.automationRecoveryDecision?.decision == .hold)
+        #expect(restartedManager.automationRecoveryDecision?.holdReason == "retry_after_not_elapsed")
+        #expect(restartedManager.automationStatusLine.contains("retry_after_not_elapsed"))
+
+        let statusText = try #require(
+            restartedManager.performAutomationRuntimeCommand("/automation status \(project.projectId)")
+        )
+        #expect(statusText.contains("recovery: hold (retry_after_not_elapsed)"))
+    }
+
+    @Test
+    func automationStatusUsesSyncedSelectedProjectWhenRegistryFallbackDisabled() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let restartedManager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+        restartedManager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            restartedManager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+        let prepared = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeRequest(now: Date(timeIntervalSince1970: 1_773_200_306))
+        )
+
+        let project = makeProjectEntry(root: root)
+        restartedManager.syncAutomationRuntimeSnapshot(forSelectedProject: project)
+
+        let statusText = try #require(restartedManager.performAutomationRuntimeCommand("/automation status"))
+        #expect(statusText.contains("项目: \(project.displayName)"))
+        #expect(statusText.contains("last_launch: \(prepared.launchRef)"))
+        #expect(statusText.contains("state: queued"))
+    }
+
+    @Test
     func automationCtxRuntimeSystemMessagesUseFriendlyProjectDisplayName() throws {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
@@ -134,7 +1276,7 @@ struct SupervisorManagerAutomationRuntimeTests {
             lastEventAt: nil
         )
 
-        let appModel = AppModel()
+        let appModel = makeTestingAppModel()
         appModel.registry = AXProjectRegistry(
             version: AXProjectRegistry.currentVersion,
             updatedAt: 1_773_200_150,
@@ -201,7 +1343,7 @@ struct SupervisorManagerAutomationRuntimeTests {
             lastEventAt: nil
         )
 
-        let appModel = AppModel()
+        let appModel = makeTestingAppModel()
         appModel.registry = AXProjectRegistry(
             version: AXProjectRegistry.currentVersion,
             updatedAt: 1_773_200_180,
@@ -251,6 +1393,129 @@ struct SupervisorManagerAutomationRuntimeTests {
                 $0.content.contains("项目: \(friendlyName)") &&
                 !$0.content.contains("项目: \(root.lastPathComponent)")
         }))
+    }
+
+    @Test
+    func automationSafePointSystemMessageDoesNotLeakOutsideJurisdictionView() async throws {
+        let manager = SupervisorManager.makeForTesting(enableSupervisorEventLoopAutoFollowUp: true)
+        manager.resetAutomationRuntimeState()
+        actor FollowUpFlag {
+            private var hit = false
+            func mark() { hit = true }
+            func value() -> Bool { hit }
+        }
+        let followUpFlag = FollowUpFlag()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+        let friendlyName = "Hidden Safe Point Leak Guard"
+        let project = AXProjectEntry(
+            projectId: projectId,
+            rootPath: root.path,
+            displayName: friendlyName,
+            lastOpenedAt: 1_773_200_185,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: nil,
+            currentStateSummary: nil,
+            nextStepSummary: nil,
+            blockerSummary: nil,
+            lastSummaryAt: nil,
+            lastEventAt: nil
+        )
+
+        let appModel = makeTestingAppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: 1_773_200_185,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: projectId,
+            projects: [project]
+        )
+        appModel.selectedProjectId = projectId
+        manager.setAppModel(appModel)
+
+        let jurisdictionNow = Date(timeIntervalSince1970: 1_773_200_185).timeIntervalSince1970
+        let jurisdiction = SupervisorJurisdictionRegistry.ownerDefault(now: jurisdictionNow)
+            .upserting(projectId: projectId, displayName: friendlyName, role: .triageOnly, now: jurisdictionNow)
+        _ = manager.applySupervisorJurisdictionRegistry(
+            jurisdiction,
+            persist: false,
+            normalizeWithKnownProjects: false
+        )
+
+        manager.setSupervisorEventLoopResponseOverrideForTesting { userMessage, triggerSource in
+            await followUpFlag.mark()
+            #expect(triggerSource == "automation_safe_point")
+            #expect(userMessage.contains("project_ref=\(friendlyName)"))
+            #expect(userMessage.contains("requested_state=running"))
+            #expect(userMessage.contains("injection_id=guidance-hidden-safe-point-no-leak-1"))
+            #expect(userMessage.contains("guidance_summary=hidden 项目先不要把 safe point 细节暴露到前台。"))
+            #expect(!userMessage.contains("guidance_text="))
+            #expect(!userMessage.contains(root.lastPathComponent))
+            return """
+            1. 先解释 hidden 项目为什么在当前 safe point 暂停。
+            2. 再决定要继续复核还是直接让 coder 改计划。
+            """
+        }
+
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-hidden-safe-point-no-leak-1",
+                reviewId: "review-hidden-safe-point-no-leak-1",
+                projectId: projectId,
+                targetRole: .coder,
+                deliveryMode: .replanRequest,
+                interventionMode: .replanNextSafePoint,
+                safePointPolicy: .checkpointBoundary,
+                guidanceText: "hidden 项目先不要把 safe point 细节暴露到前台。",
+                ackStatus: .pending,
+                ackRequired: true,
+                ackNote: "",
+                injectedAtMs: 1_773_200_185_000,
+                ackUpdatedAtMs: 0,
+                auditRef: "audit-hidden-safe-point-no-leak-1"
+            ),
+            for: ctx
+        )
+
+        let prepared = try manager.startAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: 1_773_200_186)),
+            emitSystemMessage: true
+        )
+
+        try await waitUntil("hidden project safe point hold without visible leak") {
+            manager.automationCurrentCheckpoint?.runID == prepared.launchRef &&
+            manager.automationCurrentCheckpoint?.state == .blocked
+        }
+        await manager.waitForSupervisorEventLoopForTesting()
+
+        #expect(await followUpFlag.value())
+        #expect(manager.messages.contains(where: {
+            $0.role == .assistant &&
+                $0.content.contains("先解释 hidden 项目为什么在当前 safe point 暂停") &&
+                !$0.content.contains(root.lastPathComponent)
+        }))
+        #expect(manager.messages.contains(where: {
+            $0.role == .system && $0.content.contains("automation 在 safe point 暂停")
+        }) == false)
+
+        let rows = try rawLogEntries(for: ctx)
+        #expect(rows.contains {
+            ($0["type"] as? String) == "automation_safe_point_hold" &&
+            ($0["run_id"] as? String) == prepared.launchRef &&
+            ($0["requested_state"] as? String) == XTAutomationRunState.running.rawValue &&
+            ($0["injection_id"] as? String) == "guidance-hidden-safe-point-no-leak-1"
+        })
     }
 
     @Test
@@ -327,7 +1592,6 @@ struct SupervisorManagerAutomationRuntimeTests {
             lastSelectedProjectId: projectId,
             projects: [project]
         )
-        appModel.selectedProjectId = projectId
         manager.setAppModel(appModel)
         manager.clearMessages()
 
@@ -343,12 +1607,137 @@ struct SupervisorManagerAutomationRuntimeTests {
             })
         }
 
+        let retryRunID = try #require(manager.automationLatestRetryPackage?.retryRunID)
+        try await waitUntil("friendly project automatic self iterate retry settles", timeoutMs: 10_000) {
+            manager.automationCurrentCheckpoint?.runID == retryRunID &&
+                manager.automationCurrentCheckpoint?.state == .blocked &&
+                manager.automationLatestExecutionReport?.runID == retryRunID
+        }
+
         #expect(manager.messages.contains(where: {
             $0.role == .system &&
                 $0.content.contains("automation 自动迭代已继续") &&
                 $0.content.contains("项目: \(friendlyName)") &&
                 !$0.content.contains("项目: \(root.lastPathComponent)")
         }))
+    }
+
+    @Test
+    func automationAutomaticSelfIterateSystemMessageDoesNotLeakOutsideJurisdictionView() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+        try markAsSwiftPackage(root)
+
+        let ctx = AXProjectContext(root: root)
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config.verifyCommands = ["swift test --filter SmokeTests"]
+        config.verifyAfterChanges = true
+        config.automationSelfIterateEnabled = true
+        config.automationMaxAutoRetryDepth = 1
+        try AXProjectStore.saveConfig(config, for: ctx)
+        try armRepoAutomationGovernance(for: ctx)
+
+        _ = try AXProjectStore.upsertAutomationRecipe(makeMutationRecipe(), activate: true, for: ctx)
+        manager.installAutomationRunExecutorForTesting(
+            XTAutomationRunExecutor { call, _ in
+                switch call.tool {
+                case .write_file:
+                    return ToolResult(id: call.id, tool: call.tool, ok: true, output: "ok")
+                case .project_snapshot:
+                    return ToolResult(id: call.id, tool: call.tool, ok: true, output: "root=/tmp/project")
+                case .git_diff:
+                    return ToolResult(
+                        id: call.id,
+                        tool: call.tool,
+                        ok: true,
+                        output: """
+                        diff --git a/README.md b/README.md
+                        @@ -0,0 +1 @@
+                        +hello
+                        """
+                    )
+                case .run_command:
+                    return ToolResult(id: call.id, tool: call.tool, ok: false, output: "exit: 1\nSmokeTests failed")
+                default:
+                    return ToolResult(id: call.id, tool: call.tool, ok: false, output: "unexpected_tool")
+                }
+            }
+        )
+
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+        let friendlyName = "Hidden Auto Retry Leak Guard"
+        let project = AXProjectEntry(
+            projectId: projectId,
+            rootPath: root.path,
+            displayName: friendlyName,
+            lastOpenedAt: 1_773_200_195,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: nil,
+            currentStateSummary: nil,
+            nextStepSummary: nil,
+            blockerSummary: nil,
+            lastSummaryAt: nil,
+            lastEventAt: nil
+        )
+
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: 1_773_200_195,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+
+        let jurisdictionNow = Date(timeIntervalSince1970: 1_773_200_195).timeIntervalSince1970
+        let jurisdiction = SupervisorJurisdictionRegistry.ownerDefault(now: jurisdictionNow)
+            .upserting(projectId: projectId, displayName: friendlyName, role: .triageOnly, now: jurisdictionNow)
+        _ = manager.applySupervisorJurisdictionRegistry(
+            jurisdiction,
+            persist: false,
+            normalizeWithKnownProjects: false
+        )
+        manager.clearMessages()
+
+        _ = try manager.startAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: 1_773_200_196)),
+            emitSystemMessage: true
+        )
+
+        try await waitUntil("hidden automatic self-iterate retry launch without visible leak") {
+            let retryRunID = manager.automationLatestRetryPackage?.retryRunID ?? ""
+            return !retryRunID.isEmpty &&
+                manager.automationRetryTriggerForTesting() == "automatic"
+        }
+
+        let sourceRunID = try #require(manager.automationLatestRetryPackage?.sourceRunID)
+        let retryRunID = try #require(manager.automationLatestRetryPackage?.retryRunID)
+        try await waitUntil("hidden automatic self-iterate retry settles", timeoutMs: 10_000) {
+            manager.automationCurrentCheckpoint?.runID == retryRunID &&
+                manager.automationCurrentCheckpoint?.state == .blocked &&
+                manager.automationLatestExecutionReport?.runID == retryRunID
+        }
+        #expect(sourceRunID != retryRunID)
+        #expect(manager.messages.contains(where: {
+            $0.role == .system && $0.content.contains("automation 自动迭代已继续")
+        }) == false)
+
+        let rows = try rawLogEntries(for: ctx)
+        #expect(rows.contains {
+            ($0["type"] as? String) == "automation_retry" &&
+            ($0["status"] as? String) == "pending" &&
+            ($0["source_run_id"] as? String) == sourceRunID
+        })
     }
 
     @Test
@@ -436,6 +1825,247 @@ struct SupervisorManagerAutomationRuntimeTests {
     }
 
     @Test
+    func automationPrepareAndCancelSystemMessagesDoNotLeakOutsideJurisdictionView() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+        let friendlyName = "Hidden Prepare Cancel Leak Guard"
+        let project = AXProjectEntry(
+            projectId: projectId,
+            rootPath: root.path,
+            displayName: friendlyName,
+            lastOpenedAt: 1_773_200_198,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: nil,
+            currentStateSummary: nil,
+            nextStepSummary: nil,
+            blockerSummary: nil,
+            lastSummaryAt: nil,
+            lastEventAt: nil
+        )
+
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: 1_773_200_198,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: projectId,
+            projects: [project]
+        )
+        appModel.selectedProjectId = projectId
+        manager.setAppModel(appModel)
+
+        let jurisdictionNow = Date(timeIntervalSince1970: 1_773_200_198).timeIntervalSince1970
+        let jurisdiction = SupervisorJurisdictionRegistry.ownerDefault(now: jurisdictionNow)
+            .upserting(projectId: projectId, displayName: friendlyName, role: .triageOnly, now: jurisdictionNow)
+        _ = manager.applySupervisorJurisdictionRegistry(
+            jurisdiction,
+            persist: false,
+            normalizeWithKnownProjects: false
+        )
+        manager.clearMessages()
+
+        let prepared = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeRequest(now: Date(timeIntervalSince1970: 1_773_200_199)),
+            emitSystemMessage: true
+        )
+        _ = try manager.cancelAutomationRun(
+            for: ctx,
+            runID: prepared.launchRef,
+            auditRef: "audit-hidden-prepare-cancel-no-leak",
+            now: Date(timeIntervalSince1970: 1_773_200_200),
+            emitSystemMessage: true
+        )
+
+        #expect(manager.messages.contains(where: {
+            $0.role == .system && $0.content.contains("automation 已准备")
+        }) == false)
+        #expect(manager.messages.contains(where: {
+            $0.role == .system && $0.content.contains("automation 已取消")
+        }) == false)
+        #expect(manager.recentEventsForTesting().contains(where: {
+            $0.contains("automation prepared") || $0.contains("automation cancelled")
+        }) == false)
+    }
+
+    @Test
+    func automationRecoverySystemMessageDoesNotLeakOutsideJurisdictionView() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+        let friendlyName = "Hidden Recovery Leak Guard"
+        let project = AXProjectEntry(
+            projectId: projectId,
+            rootPath: root.path,
+            displayName: friendlyName,
+            lastOpenedAt: 1_773_200_201,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: nil,
+            currentStateSummary: nil,
+            nextStepSummary: nil,
+            blockerSummary: nil,
+            lastSummaryAt: nil,
+            lastEventAt: nil
+        )
+
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: 1_773_200_201,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: projectId,
+            projects: [project]
+        )
+        appModel.selectedProjectId = projectId
+        manager.setAppModel(appModel)
+
+        let jurisdictionNow = Date(timeIntervalSince1970: 1_773_200_201).timeIntervalSince1970
+        let jurisdiction = SupervisorJurisdictionRegistry.ownerDefault(now: jurisdictionNow)
+            .upserting(projectId: projectId, displayName: friendlyName, role: .triageOnly, now: jurisdictionNow)
+        _ = manager.applySupervisorJurisdictionRegistry(
+            jurisdiction,
+            persist: false,
+            normalizeWithKnownProjects: false
+        )
+        manager.clearMessages()
+
+        let prepared = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeRequest(now: Date(timeIntervalSince1970: 1_773_200_202))
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .blocked,
+            retryAfterSeconds: 120,
+            auditRef: "audit-hidden-recovery-no-leak-blocked",
+            now: Date(timeIntervalSince1970: 1_773_200_203)
+        )
+
+        let recovery = try manager.recoverLatestAutomationRun(
+            for: ctx,
+            checkpointAgeSeconds: 60,
+            auditRef: "audit-hidden-recovery-no-leak",
+            emitSystemMessage: true
+        )
+        let recovered = try #require(recovery)
+        #expect(recovered.decision == .resume)
+        #expect(manager.automationCurrentCheckpoint?.runID == prepared.launchRef)
+        #expect(manager.messages.contains(where: {
+            $0.role == .system && $0.content.contains("automation 已恢复判定")
+        }) == false)
+        #expect(manager.recentEventsForTesting().contains(where: {
+            $0.contains("automation prepared")
+                || $0.contains("automation advanced")
+                || $0.contains("automation recovered")
+        }) == false)
+    }
+
+    @Test
+    func automationExecutionSummaryDoesNotLeakWhenProjectLeavesJurisdictionMidRun() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+        let friendlyName = "Hidden Midflight Summary Leak Guard"
+        let project = AXProjectEntry(
+            projectId: projectId,
+            rootPath: root.path,
+            displayName: friendlyName,
+            lastOpenedAt: 1_773_200_205,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: nil,
+            currentStateSummary: nil,
+            nextStepSummary: nil,
+            blockerSummary: nil,
+            lastSummaryAt: nil,
+            lastEventAt: nil
+        )
+
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: 1_773_200_205,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+        manager.clearMessages()
+
+        manager.installAutomationRunExecutorForTesting(
+            XTAutomationRunExecutor { call, rootURL in
+                try await Task.sleep(nanoseconds: 250_000_000)
+                return ToolResult(
+                    id: call.id,
+                    tool: call.tool,
+                    ok: true,
+                    output: "root=\(rootURL.path); tool=\(call.tool.rawValue)"
+                )
+            }
+        )
+
+        _ = try manager.startAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: 1_773_200_206)),
+            emitSystemMessage: true
+        )
+
+        try await waitUntil("automation running before hidden summary guard") {
+            manager.automationCurrentCheckpoint?.state == .running
+        }
+
+        let jurisdictionNow = Date(timeIntervalSince1970: 1_773_200_207).timeIntervalSince1970
+        let jurisdiction = SupervisorJurisdictionRegistry.ownerDefault(now: jurisdictionNow)
+            .upserting(projectId: projectId, displayName: friendlyName, role: .triageOnly, now: jurisdictionNow)
+        _ = manager.applySupervisorJurisdictionRegistry(
+            jurisdiction,
+            persist: false,
+            normalizeWithKnownProjects: false
+        )
+
+        try await waitUntil("hidden project execution completes without visible summary", timeoutMs: 30_000) {
+            manager.automationLatestExecutionReport?.finalState == .delivered
+        }
+
+        #expect(manager.messages.contains(where: {
+            $0.role == .system && $0.content.contains("⚙️ automation 自动执行完成")
+        }) == false)
+    }
+
+    @Test
     func managerProjectEntryWrappersResolveContextAndPrepareRun() throws {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
@@ -509,7 +2139,7 @@ struct SupervisorManagerAutomationRuntimeTests {
             _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
             try armTrustedAutomation(for: ctx)
             let project = makeProjectEntry(root: root)
-            let appModel = AppModel()
+            let appModel = makeTestingAppModel()
             appModel.registry = AXProjectRegistry(
                 version: AXProjectRegistry.currentVersion,
                 updatedAt: Date().timeIntervalSince1970,
@@ -571,7 +2201,7 @@ struct SupervisorManagerAutomationRuntimeTests {
             lastSummaryAt: 1_773_201_000,
             lastEventAt: 1_773_201_000
         )
-        let appModel = AppModel()
+        let appModel = makeTestingAppModel()
         appModel.registry = AXProjectRegistry(
             version: AXProjectRegistry.currentVersion,
             updatedAt: Date().timeIntervalSince1970,
@@ -602,6 +2232,577 @@ struct SupervisorManagerAutomationRuntimeTests {
     }
 
     @Test
+    func automationRecoverCommandUsesActualCheckpointAgeAndScavengesStaleRun() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
+        let project = makeProjectEntry(root: root)
+        let appModel = makeTestingAppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+
+        let prepared = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: 1_773_200_000))
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .blocked,
+            retryAfterSeconds: 30,
+            auditRef: "audit-xt-auto-stale-command-recover-blocked",
+            now: Date(timeIntervalSince1970: 1_773_200_001)
+        )
+
+        let recoveryText = try #require(
+            manager.performAutomationRuntimeCommand("/automation recover \(project.projectId)")
+        )
+
+        #expect(recoveryText.contains("run_id: \(prepared.launchRef)"))
+        #expect(recoveryText.contains("decision: scavenged"))
+        #expect(recoveryText.contains("hold_reason: stale_run_scavenged"))
+        #expect(manager.automationRecoveryDecision?.decision == .scavenged)
+        #expect(manager.automationRecoveryDecision?.holdReason == "stale_run_scavenged")
+        #expect(manager.automationLatestRetryPackage == nil)
+    }
+
+    @Test
+    func automationRecoverCommandPrefersOlderUnsupersededBlockedRunOverNewerUnrelatedDeliveredRun() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+        let baseNow = Date().timeIntervalSince1970
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
+        let project = makeProjectEntry(root: root)
+        let appModel = makeTestingAppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+
+        let blockedRun = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: baseNow - 10))
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .blocked,
+            runID: blockedRun.launchRef,
+            retryAfterSeconds: 0,
+            auditRef: "audit-xt-auto-manager-older-blocked-recover-candidate",
+            now: Date(timeIntervalSince1970: baseNow - 9)
+        )
+
+        let deliveredRun = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: baseNow - 8))
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .delivered,
+            runID: deliveredRun.launchRef,
+            auditRef: "audit-xt-auto-manager-newer-delivered-unrelated",
+            now: Date(timeIntervalSince1970: baseNow - 7)
+        )
+
+        let statusText = try #require(
+            manager.performAutomationRuntimeCommand("/automation status \(project.projectId)")
+        )
+        let recoveryText = try #require(
+            manager.performAutomationRuntimeCommand("/automation recover \(project.projectId)")
+        )
+
+        #expect(statusText.contains("last_launch: \(deliveredRun.launchRef)"))
+        #expect(statusText.contains("recovery_candidate_run: \(blockedRun.launchRef)"))
+        #expect(statusText.contains("recovery_candidate_state: blocked"))
+        #expect(statusText.contains("recovery_candidate_selection: latest_recoverable_unsuperseded"))
+        #expect(statusText.contains("recovery_candidate_reason: latest_visible_not_recoverable"))
+        #expect(statusText.contains("recovery_candidate_automatic_decision: resume"))
+        #expect(statusText.contains("recovery_candidate_resume_mode: in_place"))
+        #expect(statusText.contains("recovery_visible_latest_run: \(deliveredRun.launchRef)"))
+        #expect(statusText.contains("recovery_visible_latest_state: delivered"))
+        #expect(recoveryText.contains("run_id: \(blockedRun.launchRef)"))
+        #expect(recoveryText.contains("decision: resume"))
+        #expect(recoveryText.contains("candidate_run_id: \(blockedRun.launchRef)"))
+        #expect(recoveryText.contains("candidate_state: blocked"))
+        #expect(recoveryText.contains("candidate_selection: latest_recoverable_unsuperseded"))
+        #expect(recoveryText.contains("candidate_reason: latest_visible_not_recoverable"))
+        #expect(recoveryText.contains("candidate_automatic_decision: resume"))
+        #expect(recoveryText.contains("candidate_resume_mode: in_place"))
+        #expect(recoveryText.contains("visible_latest_run_id: \(deliveredRun.launchRef)"))
+        #expect(recoveryText.contains("visible_latest_state: delivered"))
+        #expect(manager.automationRecoveryDecision?.runID == blockedRun.launchRef)
+        #expect(manager.automationRecoveryDecision?.decision == .resume)
+        #expect(manager.automationCurrentCheckpoint?.runID == blockedRun.launchRef)
+    }
+
+    @Test
+    func automationRecoverCommandKeepsLatestVisibleQueuedRunAsRecoveryCandidateWhenOlderUnrelatedBlockedRunExists() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+        let baseNow = Date().timeIntervalSince1970
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
+        let project = makeProjectEntry(root: root)
+        let appModel = makeTestingAppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+
+        let blockedRun = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: baseNow - 10))
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .blocked,
+            runID: blockedRun.launchRef,
+            retryAfterSeconds: 0,
+            auditRef: "audit-xt-auto-manager-older-blocked-active-visible",
+            now: Date(timeIntervalSince1970: baseNow - 9)
+        )
+
+        let queuedRun = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: baseNow - 8))
+        )
+
+        let statusText = try #require(
+            manager.performAutomationRuntimeCommand("/automation status \(project.projectId)")
+        )
+        let recoveryText = try #require(
+            manager.performAutomationRuntimeCommand("/automation recover \(project.projectId)")
+        )
+
+        #expect(statusText.contains("last_launch: \(queuedRun.launchRef)"))
+        #expect(statusText.contains("recovery_candidate_run: \(queuedRun.launchRef)"))
+        #expect(statusText.contains("recovery_candidate_state: queued"))
+        #expect(statusText.contains("recovery_candidate_selection: latest_visible_checkpoint"))
+        #expect(statusText.contains("recovery_candidate_reason: latest_visible_active_run"))
+        #expect(statusText.contains("recovery_candidate_automatic_decision: hold"))
+        #expect(statusText.contains("recovery_candidate_automatic_hold_reason: state_not_restartable"))
+        #expect(!statusText.contains("recovery_visible_latest_run:"))
+        #expect(recoveryText.contains("run_id: \(queuedRun.launchRef)"))
+        #expect(recoveryText.contains("decision: hold"))
+        #expect(recoveryText.contains("hold_reason: state_not_restartable"))
+        #expect(recoveryText.contains("candidate_run_id: \(queuedRun.launchRef)"))
+        #expect(recoveryText.contains("candidate_state: queued"))
+        #expect(recoveryText.contains("candidate_selection: latest_visible_checkpoint"))
+        #expect(recoveryText.contains("candidate_reason: latest_visible_active_run"))
+        #expect(recoveryText.contains("candidate_automatic_decision: hold"))
+        #expect(recoveryText.contains("candidate_automatic_hold_reason: state_not_restartable"))
+        #expect(manager.automationRecoveryDecision?.runID == queuedRun.launchRef)
+        #expect(manager.automationRecoveryDecision?.decision == .hold)
+        #expect(manager.automationRecoveryDecision?.holdReason == "state_not_restartable")
+        #expect(manager.automationCurrentCheckpoint?.runID == queuedRun.launchRef)
+    }
+
+    @Test
+    func automationCancelAndAdvanceCommandsDoNotTargetOlderBlockedRunWhenNewerVisibleRunIsDelivered() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+        let baseNow = Date().timeIntervalSince1970
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
+        let project = makeProjectEntry(root: root)
+        let appModel = makeTestingAppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+
+        let blockedRun = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: baseNow - 10))
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .blocked,
+            runID: blockedRun.launchRef,
+            retryAfterSeconds: 0,
+            auditRef: "audit-xt-auto-manager-older-blocked-command-target",
+            now: Date(timeIntervalSince1970: baseNow - 9)
+        )
+
+        let deliveredRun = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: baseNow - 8))
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .delivered,
+            runID: deliveredRun.launchRef,
+            auditRef: "audit-xt-auto-manager-newer-delivered-command-target",
+            now: Date(timeIntervalSince1970: baseNow - 7)
+        )
+
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config.lastAutomationLaunchRef = deliveredRun.launchRef
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let rowsBefore = try rawLogEntries(for: ctx)
+        let cancelText = try #require(
+            manager.performAutomationRuntimeCommand("/automation cancel \(project.projectId)")
+        )
+        let advanceText = try #require(
+            manager.performAutomationRuntimeCommand("/automation advance blocked \(project.projectId)")
+        )
+        let rowsAfter = try rawLogEntries(for: ctx)
+
+        #expect(cancelText.contains("run_id=active"))
+        #expect(advanceText.contains("run_id=active"))
+        #expect(rowsAfter.count == rowsBefore.count)
+        #expect(
+            xtAutomationPersistedCheckpointSummary(
+                for: blockedRun.launchRef,
+                from: rowsAfter
+            )?.checkpoint.state == .blocked
+        )
+        #expect(
+            xtAutomationPersistedCheckpointSummary(
+                for: deliveredRun.launchRef,
+                from: rowsAfter
+            )?.checkpoint.state == .delivered
+        )
+    }
+
+    @Test
+    func automationRecoverCommandReportsSupersededRecoverableRunWhenLatestVisibleDeliveredRunWins() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+        let baseNow = Date().timeIntervalSince1970
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
+        let project = makeProjectEntry(root: root)
+        let appModel = makeTestingAppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+
+        let sourceRun = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: baseNow - 10))
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .blocked,
+            runID: sourceRun.launchRef,
+            retryAfterSeconds: 0,
+            auditRef: "audit-xt-auto-manager-blocked-source-superseded",
+            now: Date(timeIntervalSince1970: baseNow - 9)
+        )
+
+        let retryChildRun = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeManualRequest(
+                now: Date(timeIntervalSince1970: baseNow - 8),
+                lineage: sourceRun.lineage.retryChild(parentRunID: sourceRun.launchRef)
+            )
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .delivered,
+            runID: retryChildRun.launchRef,
+            auditRef: "audit-xt-auto-manager-delivered-retry-child-supersedes",
+            now: Date(timeIntervalSince1970: baseNow - 7)
+        )
+
+        let statusText = try #require(
+            manager.performAutomationRuntimeCommand("/automation status \(project.projectId)")
+        )
+        let recoveryText = try #require(
+            manager.performAutomationRuntimeCommand("/automation recover \(project.projectId)")
+        )
+
+        #expect(statusText.contains("recovery_candidate_run: \(retryChildRun.launchRef)"))
+        #expect(statusText.contains("recovery_candidate_selection: latest_visible_checkpoint"))
+        #expect(statusText.contains("recovery_candidate_reason: no_recoverable_unsuperseded_run"))
+        #expect(statusText.contains("recovery_candidate_automatic_decision: hold"))
+        #expect(statusText.contains("recovery_candidate_automatic_hold_reason: run_already_delivered"))
+        #expect(statusText.contains("recovery_superseded_run: \(sourceRun.launchRef)"))
+        #expect(statusText.contains("recovery_superseded_by_run: \(retryChildRun.launchRef)"))
+        #expect(recoveryText.contains("run_id: \(retryChildRun.launchRef)"))
+        #expect(recoveryText.contains("decision: hold"))
+        #expect(recoveryText.contains("hold_reason: run_already_delivered"))
+        #expect(recoveryText.contains("candidate_selection: latest_visible_checkpoint"))
+        #expect(recoveryText.contains("candidate_reason: no_recoverable_unsuperseded_run"))
+        #expect(recoveryText.contains("candidate_automatic_decision: hold"))
+        #expect(recoveryText.contains("candidate_automatic_hold_reason: run_already_delivered"))
+        #expect(recoveryText.contains("candidate_superseded_run_id: \(sourceRun.launchRef)"))
+        #expect(recoveryText.contains("candidate_superseded_by_run_id: \(retryChildRun.launchRef)"))
+        #expect(manager.automationRecoveryDecision?.runID == retryChildRun.launchRef)
+        #expect(manager.automationRecoveryDecision?.decision == .hold)
+    }
+
+    @Test
+    func automationRecoverCommandDoesNotReportUnrelatedSupersededRunWhenDifferentLatestVisibleRunWinsFallback() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+        let baseNow = Date().timeIntervalSince1970
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
+        let project = makeProjectEntry(root: root)
+        let appModel = makeTestingAppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+
+        let sourceRun = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: baseNow - 12))
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .blocked,
+            runID: sourceRun.launchRef,
+            retryAfterSeconds: 0,
+            auditRef: "audit-xt-auto-manager-blocked-source-unrelated-fallback",
+            now: Date(timeIntervalSince1970: baseNow - 11)
+        )
+
+        let retryChildRun = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeManualRequest(
+                now: Date(timeIntervalSince1970: baseNow - 10),
+                lineage: sourceRun.lineage.retryChild(parentRunID: sourceRun.launchRef)
+            )
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .delivered,
+            runID: retryChildRun.launchRef,
+            auditRef: "audit-xt-auto-manager-delivered-retry-child-unrelated-fallback",
+            now: Date(timeIntervalSince1970: baseNow - 9)
+        )
+
+        let unrelatedRun = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: baseNow - 8))
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .delivered,
+            runID: unrelatedRun.launchRef,
+            auditRef: "audit-xt-auto-manager-delivered-unrelated-latest-visible",
+            now: Date(timeIntervalSince1970: baseNow - 7)
+        )
+
+        let statusText = try #require(
+            manager.performAutomationRuntimeCommand("/automation status \(project.projectId)")
+        )
+        let recoveryText = try #require(
+            manager.performAutomationRuntimeCommand("/automation recover \(project.projectId)")
+        )
+
+        #expect(statusText.contains("recovery_candidate_run: \(unrelatedRun.launchRef)"))
+        #expect(statusText.contains("recovery_candidate_selection: latest_visible_checkpoint"))
+        #expect(statusText.contains("recovery_candidate_reason: no_recoverable_unsuperseded_run"))
+        #expect(!statusText.contains("recovery_superseded_run:"))
+        #expect(!statusText.contains("recovery_superseded_by_run:"))
+        #expect(recoveryText.contains("run_id: \(unrelatedRun.launchRef)"))
+        #expect(recoveryText.contains("decision: hold"))
+        #expect(recoveryText.contains("hold_reason: run_already_delivered"))
+        #expect(recoveryText.contains("candidate_selection: latest_visible_checkpoint"))
+        #expect(recoveryText.contains("candidate_reason: no_recoverable_unsuperseded_run"))
+        #expect(!recoveryText.contains("candidate_superseded_run_id:"))
+        #expect(!recoveryText.contains("candidate_superseded_by_run_id:"))
+        #expect(manager.automationRecoveryDecision?.runID == unrelatedRun.launchRef)
+        #expect(manager.automationRecoveryDecision?.decision == .hold)
+    }
+
+    @Test
+    @MainActor
+    func heartbeatAutoProgressDoesNotKickstartAgainWhenConfigLaunchRefDriftsButPersistedRunExists() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
+        let project = AXProjectEntry(
+            projectId: AXProjectRegistryStore.projectId(forRoot: root),
+            rootPath: root.path,
+            displayName: "Heartbeat Drift Guard",
+            lastOpenedAt: 1_773_201_510,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: "paused",
+            currentStateSummary: "暂停中",
+            nextStepSummary: "等待 heartbeat",
+            blockerSummary: nil,
+            lastSummaryAt: 1_773_201_000,
+            lastEventAt: 1_773_201_000
+        )
+        let appModel = makeTestingAppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+        _ = manager.applySupervisorJurisdictionRegistry(
+            .ownerAll(for: [project]),
+            persist: false,
+            normalizeWithKnownProjects: true
+        )
+
+        let prepared = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: 1_773_201_511))
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .delivered,
+            auditRef: "audit-xt-auto-heartbeat-drift-guard",
+            now: Date(timeIntervalSince1970: 1_773_201_512)
+        )
+
+        var driftedConfig = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        driftedConfig.lastAutomationLaunchRef = ""
+        try AXProjectStore.saveConfig(driftedConfig, for: ctx)
+
+        let actions = manager.runHeartbeatAutoProgressForTesting(
+            now: Date(timeIntervalSince1970: 1_773_201_700)
+        )
+
+        #expect(actions.isEmpty)
+        #expect(manager.automationCurrentCheckpoint?.runID == prepared.launchRef)
+        #expect(manager.automationCurrentCheckpoint?.state == .delivered)
+        let config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        #expect(config.lastAutomationLaunchRef.isEmpty)
+    }
+
+    @Test
+    @MainActor
+    func automationRuntimeExplicitProjectRefStillWorksOutsideJurisdictionView() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
+        try armTrustedAutomation(for: ctx)
+        let project = makeProjectEntry(root: root, displayName: "Hidden Automation Command")
+        let appModel = makeTestingAppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: nil,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+
+        let now = Date(timeIntervalSince1970: 1_773_384_460).timeIntervalSince1970
+        let jurisdiction = SupervisorJurisdictionRegistry.ownerDefault(now: now)
+            .upserting(projectId: project.projectId, displayName: project.displayName, role: .triageOnly, now: now)
+        _ = manager.applySupervisorJurisdictionRegistry(
+            jurisdiction,
+            persist: false,
+            normalizeWithKnownProjects: false
+        )
+
+        let startText = try #require(manager.performAutomationRuntimeCommand("/automation start \(project.projectId)"))
+        #expect(startText.contains("run_id:"))
+        #expect(!startText.contains("project_not_found"))
+
+        let statusText = try #require(manager.performAutomationRuntimeCommand("/automation status \(project.projectId)"))
+        #expect(statusText.contains(project.projectId))
+        #expect(statusText.contains("state: queued"))
+    }
+
+    @Test
     @MainActor
     func heartbeatAutoProgressKickstartsHiddenPausedReadyProject() async throws {
         let manager = SupervisorManager.makeForTesting()
@@ -629,7 +2830,7 @@ struct SupervisorManagerAutomationRuntimeTests {
             lastSummaryAt: 1_773_201_020,
             lastEventAt: 1_773_201_020
         )
-        let appModel = AppModel()
+        let appModel = makeTestingAppModel()
         appModel.registry = AXProjectRegistry(
             version: AXProjectRegistry.currentVersion,
             updatedAt: Date().timeIntervalSince1970,
@@ -664,6 +2865,805 @@ struct SupervisorManagerAutomationRuntimeTests {
     }
 
     @Test
+    @MainActor
+    func heartbeatAutoProgressKickstartsHiddenPausedReadyProjectWithoutVisibleHeartbeatLeak() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+        let baseNow = Date().timeIntervalSince1970
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+        let friendlyName = "Hidden Heartbeat Kickstart Leak Guard"
+        let project = AXProjectEntry(
+            projectId: projectId,
+            rootPath: root.path,
+            displayName: friendlyName,
+            lastOpenedAt: baseNow - 10,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: "paused",
+            currentStateSummary: "暂停中",
+            nextStepSummary: "等待自动项目快照启动",
+            blockerSummary: nil,
+            lastSummaryAt: baseNow - 60,
+            lastEventAt: baseNow - 60
+        )
+        let appModel = makeTestingAppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: baseNow,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+
+        let jurisdictionNow = baseNow - 9
+        let jurisdiction = SupervisorJurisdictionRegistry.ownerDefault(now: jurisdictionNow)
+            .upserting(projectId: projectId, displayName: friendlyName, role: .triageOnly, now: jurisdictionNow)
+        _ = manager.applySupervisorJurisdictionRegistry(
+            jurisdiction,
+            persist: false,
+            normalizeWithKnownProjects: false
+        )
+
+        manager.emitHeartbeatCycleForTesting(force: true, reason: "timer")
+
+        #expect(manager.heartbeatHistory.isEmpty)
+        try await waitUntil("hidden heartbeat kickstart launch ref persisted without visible leak") {
+            let config = try? AXProjectStore.loadOrCreateConfig(for: ctx)
+            let runID = config?.lastAutomationLaunchRef.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return !runID.isEmpty
+        }
+    }
+
+    @Test
+    func heartbeatRecordsProjectCreationStatusWithoutProjects() throws {
+        let manager = SupervisorManager.makeForTesting()
+
+        let intakeReply = try #require(
+            manager.directSupervisorReplyIfApplicableForTesting(
+                "我要做个贪食蛇游戏，你能做个详细工单发给project AI去推进吗"
+            )
+        )
+        #expect(intakeReply.contains("按默认方案建项目"))
+
+        manager.emitHeartbeatCycleForTesting(force: true, reason: "timer")
+
+        let heartbeat = try #require(manager.latestHeartbeat)
+        let actionURL = try #require(manager.heartbeatFocusActionURLForTesting(reason: "timer"))
+        #expect(heartbeat.projectCount == 0)
+        #expect(heartbeat.reason == "timer")
+        #expect(heartbeat.content.contains("重点看板："))
+        #expect(heartbeat.content.contains("• Supervisor：📁 项目创建还差一句触发。"))
+        #expect(heartbeat.content.contains("项目创建："))
+        #expect(heartbeat.content.contains("已锁定《贪食蛇游戏》"))
+        #expect(heartbeat.content.contains("贪食蛇游戏"))
+        #expect(heartbeat.content.contains("可直接说：“立项” / “创建一个project” / “按默认方案建项目”"))
+        #expect(
+            actionURL == XTDeepLinkURLBuilder.supervisorURL(
+                focusTarget: .projectCreationBoard
+            )?.absoluteString
+        )
+        #expect(heartbeat.focusActionURL == actionURL)
+    }
+
+    @Test
+    func heartbeatGovernedReviewRecordsRuntimeGovernanceTruthWhenQueued() async throws {
+        let manager = SupervisorManager.makeForTesting()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config = config.settingProjectGovernance(
+            executionTier: .a2RepoAuto,
+            supervisorInterventionTier: .s2PeriodicReview,
+            reviewPolicyMode: .periodic,
+            progressHeartbeatSeconds: 600,
+            reviewPulseSeconds: 60,
+            brainstormReviewSeconds: 0,
+            eventDrivenReviewEnabled: false,
+            eventReviewTriggers: []
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
+        _ = try SupervisorReviewScheduleStore.touchHeartbeat(
+            for: ctx,
+            config: config,
+            nowMs: 1_773_384_000_000
+        )
+        _ = try SupervisorReviewScheduleStore.markReview(
+            for: ctx,
+            config: config,
+            trigger: .periodicPulse,
+            runKind: .pulse,
+            nowMs: 1_773_384_000_000
+        )
+
+        let project = AXProjectEntry(
+            projectId: AXProjectRegistryStore.projectId(forRoot: root),
+            rootPath: root.path,
+            displayName: "Governed Review Runtime",
+            lastOpenedAt: 1_773_384_120,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: "running",
+            currentStateSummary: "正常推进中",
+            nextStepSummary: "等待 periodic review",
+            blockerSummary: nil,
+            lastSummaryAt: 1_773_384_060,
+            lastEventAt: 1_773_384_060
+        )
+        let appModel = makeTestingAppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        manager.setSupervisorEventLoopResponseOverrideForTesting { userMessage, triggerSource in
+            #expect(triggerSource == "heartbeat")
+            #expect(userMessage.contains("review_trigger=periodic_pulse"))
+            #expect(userMessage.contains("governance_reason=当前项目治理要求按固定脉冲周期补做 review，heartbeat 已自动排队。"))
+            #expect(userMessage.contains("governance_truth=治理真相：当前生效 A2/S2 · 审查 Periodic · 节奏 心跳 10m / 脉冲 1m / 脑暴 1h。"))
+            return ""
+        }
+
+        _ = await manager.emitHeartbeatForTesting(
+            force: true,
+            reason: "timer",
+            now: Date(timeIntervalSince1970: 1_773_384_120)
+        )
+        await manager.waitForSupervisorEventLoopForTesting()
+        try await waitUntil("governed review runtime activity queued", timeoutMs: 5_000) {
+            manager.runtimeActivityEntries.contains(where: {
+                $0.projectId == project.projectId
+                    && $0.text.contains("heartbeat_governed_review status=queued")
+            })
+        }
+
+        let entry = try #require(manager.runtimeActivityEntries.first(where: {
+            $0.projectId == project.projectId
+                && $0.text.contains("heartbeat_governed_review status=queued")
+        }))
+        #expect(entry.projectName == project.displayName)
+        #expect(entry.text.contains("review_trigger=periodic_pulse"))
+        #expect(entry.text.contains("review_run_kind=pulse"))
+        #expect(entry.text.contains("policy_reason=pulse_review_due"))
+        #expect(entry.text.contains("governance_reason=当前项目治理要求按固定脉冲周期补做 review，heartbeat 已自动排队。"))
+        #expect(entry.text.contains("governance_truth=治理真相：当前生效 A2/S2 · 审查 Periodic · 节奏 心跳 10m / 脉冲 1m / 脑暴 1h。"))
+    }
+
+    @Test
+    func heartbeatGovernedReviewPrefersHigherPortfolioPriorityProjectWhenCandidatePriorityMatches() async throws {
+        let manager = SupervisorManager.makeForTesting()
+
+        let routineRoot = try makeRegistryVisibleProjectRoot()
+        let urgentRoot = try makeRegistryVisibleProjectRoot()
+        defer {
+            try? FileManager.default.removeItem(at: routineRoot)
+            try? FileManager.default.removeItem(at: urgentRoot)
+        }
+
+        let reviewDueAtMs: Int64 = 1_773_384_000_000
+        let configs = [
+            AXProjectContext(root: routineRoot),
+            AXProjectContext(root: urgentRoot)
+        ]
+        for ctx in configs {
+            var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+            config = config.settingProjectGovernance(
+                executionTier: .a2RepoAuto,
+                supervisorInterventionTier: .s2PeriodicReview,
+                reviewPolicyMode: .periodic,
+                progressHeartbeatSeconds: 600,
+                reviewPulseSeconds: 60,
+                brainstormReviewSeconds: 0,
+                eventDrivenReviewEnabled: false,
+                eventReviewTriggers: []
+            )
+            try AXProjectStore.saveConfig(config, for: ctx)
+            _ = try SupervisorReviewScheduleStore.touchHeartbeat(
+                for: ctx,
+                config: config,
+                nowMs: reviewDueAtMs
+            )
+            _ = try SupervisorReviewScheduleStore.markReview(
+                for: ctx,
+                config: config,
+                trigger: .periodicPulse,
+                runKind: .pulse,
+                nowMs: reviewDueAtMs
+            )
+        }
+
+        let routineProject = AXProjectEntry(
+            projectId: AXProjectRegistryStore.projectId(forRoot: routineRoot),
+            rootPath: routineRoot.path,
+            displayName: "Routine Review Runtime",
+            lastOpenedAt: 1_773_384_120,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: "running",
+            currentStateSummary: "正常推进中",
+            nextStepSummary: "执行验证补丁",
+            blockerSummary: nil,
+            lastSummaryAt: 1_773_384_060,
+            lastEventAt: 1_773_384_060
+        )
+        let urgentProject = AXProjectEntry(
+            projectId: AXProjectRegistryStore.projectId(forRoot: urgentRoot),
+            rootPath: urgentRoot.path,
+            displayName: "Grant Review Runtime",
+            lastOpenedAt: 1_773_384_120,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: "grant_pending",
+            currentStateSummary: "等待授权",
+            nextStepSummary: "补齐 grant 后恢复执行",
+            blockerSummary: nil,
+            lastSummaryAt: 1_773_382_000,
+            lastEventAt: 1_773_382_000
+        )
+
+        let appModel = makeTestingAppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: urgentProject.projectId,
+            projects: [routineProject, urgentProject]
+        )
+        appModel.selectedProjectId = urgentProject.projectId
+        manager.setAppModel(appModel)
+
+        manager.setSupervisorEventLoopResponseOverrideForTesting { userMessage, triggerSource in
+            #expect(triggerSource == "heartbeat")
+            #expect(userMessage.contains("project_ref=\(urgentProject.displayName)"))
+            #expect(userMessage.contains("project_id=\(urgentProject.projectId)"))
+            #expect(userMessage.contains("review_trigger=periodic_pulse"))
+            #expect(userMessage.contains("portfolio_priority_band=critical"))
+            #expect(userMessage.contains("portfolio_priority_why=待授权会直接卡住推进"))
+            return "selected higher portfolio priority project"
+        }
+
+        _ = await manager.emitHeartbeatForTesting(
+            force: true,
+            reason: "timer",
+            now: Date(timeIntervalSince1970: 1_773_384_120)
+        )
+        await manager.waitForSupervisorEventLoopForTesting()
+
+        try await waitUntil("higher priority governed review runtime activity queued", timeoutMs: 5_000) {
+            manager.runtimeActivityEntries.contains(where: {
+                $0.projectId == urgentProject.projectId
+                    && $0.text.contains("heartbeat_governed_review status=queued")
+            })
+        }
+
+        let selectedEntry = try #require(manager.runtimeActivityEntries.first(where: {
+            $0.projectId == urgentProject.projectId
+                && $0.text.contains("heartbeat_governed_review status=queued")
+        }))
+        #expect(selectedEntry.text.contains("portfolio_priority_band=critical"))
+        #expect(selectedEntry.text.contains("portfolio_priority_score=8"))
+        #expect(selectedEntry.text.contains("portfolio_priority_why=待授权会直接卡住推进"))
+        #expect(!manager.runtimeActivityEntries.contains(where: {
+            $0.projectId == routineProject.projectId
+                && $0.text.contains("heartbeat_governed_review status=queued")
+        }))
+
+        let activity = try #require(manager.recentSupervisorEventLoopActivitiesForTesting().last(where: {
+            $0.dedupeKey.hasPrefix("governed_review:")
+                && $0.status == "completed"
+        }))
+        #expect(activity.projectId == urgentProject.projectId)
+        #expect(activity.projectName == urgentProject.displayName)
+    }
+
+    @Test
+    func heartbeatRecoveryGrantFollowUpQueuesEventLoopWithRuntimeGovernanceTruth() async throws {
+        let manager = SupervisorManager.makeForTesting()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config = config.settingProjectGovernance(
+            executionTier: .a2RepoAuto,
+            supervisorInterventionTier: .s3StrategicCoach,
+            reviewPolicyMode: .periodic,
+            progressHeartbeatSeconds: 600,
+            reviewPulseSeconds: 1_800,
+            brainstormReviewSeconds: 3_600,
+            eventDrivenReviewEnabled: true,
+            eventReviewTriggers: [.blockerDetected]
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let project = AXProjectEntry(
+            projectId: AXProjectRegistryStore.projectId(forRoot: root),
+            rootPath: root.path,
+            displayName: "Grant Recovery Runtime",
+            lastOpenedAt: 1_773_384_220,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: "blocked",
+            currentStateSummary: "等待 grant 跟进",
+            nextStepSummary: "补齐 grant 后恢复执行",
+            blockerSummary: nil,
+            lastSummaryAt: 1_773_384_180,
+            lastEventAt: 1_773_384_180
+        )
+        let appModel = makeTestingAppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+        manager.setLaneHealthSnapshotForTesting(
+            makeHeartbeatRecoveryLaneSnapshot(
+                projectId: project.projectId,
+                status: .blocked,
+                blockedReason: .grantPending,
+                nextActionRecommendation: "request_grant_follow_up"
+            )
+        )
+
+        manager.setSupervisorEventLoopResponseOverrideForTesting { userMessage, triggerSource in
+            #expect(triggerSource == "heartbeat")
+            #expect(userMessage.contains("recovery_action=request_grant_follow_up"))
+            #expect(userMessage.contains("reason_code=grant_follow_up_required"))
+            #expect(userMessage.contains("policy_reason=当前 heartbeat 检测到 grant 相关阻塞，系统已自动排队 grant 跟进。"))
+            #expect(userMessage.contains("governance_truth=治理真相：当前生效 A2/S3"))
+            return "handled grant recovery"
+        }
+
+        _ = await manager.emitHeartbeatForTesting(
+            force: true,
+            reason: "timer",
+            now: Date(timeIntervalSince1970: 1_773_384_220)
+        )
+        await manager.waitForSupervisorEventLoopForTesting()
+        try await waitUntil("grant recovery runtime activity queued", timeoutMs: 5_000) {
+            manager.runtimeActivityEntries.contains(where: {
+                $0.projectId == project.projectId
+                    && $0.text.contains("heartbeat_recovery_follow_up status=queued")
+                    && $0.text.contains("recovery_action=request_grant_follow_up")
+            })
+        }
+
+        let activity = try #require(manager.recentSupervisorEventLoopActivitiesForTesting().last(where: {
+            $0.dedupeKey.hasPrefix("heartbeat_recovery_follow_up:")
+                && $0.status == "completed"
+        }))
+        #expect(activity.projectId == project.projectId)
+        #expect(activity.projectName == project.displayName)
+        #expect(activity.triggerSource == "heartbeat")
+        #expect(activity.triggerSummary.contains("需要 grant / 授权跟进"))
+        #expect(activity.resultSummary == "handled grant recovery")
+        #expect(activity.policySummary.contains("cadence="))
+        #expect(activity.governanceTruth.contains("治理真相：当前生效 A2/S3"))
+
+        let entry = try #require(manager.runtimeActivityEntries.first(where: {
+            $0.projectId == project.projectId
+                && $0.text.contains("heartbeat_recovery_follow_up status=queued")
+        }))
+        #expect(entry.projectName == project.displayName)
+        #expect(entry.text.contains("recovery_action=request_grant_follow_up"))
+        #expect(entry.text.contains("reason_code=grant_follow_up_required"))
+        #expect(entry.text.contains("governance_reason=当前 heartbeat 检测到 grant 相关阻塞，系统已自动排队 grant 跟进。"))
+        #expect(entry.text.contains("governance_truth=治理真相：当前生效 A2/S3"))
+    }
+
+    @Test
+    func heartbeatRecoveryFollowUpPrefersHigherPortfolioPriorityProjectWhenRecoveryPriorityMatches() async throws {
+        let manager = SupervisorManager.makeForTesting()
+
+        let routineRoot = try makeRegistryVisibleProjectRoot()
+        let urgentRoot = try makeRegistryVisibleProjectRoot()
+        defer {
+            try? FileManager.default.removeItem(at: routineRoot)
+            try? FileManager.default.removeItem(at: urgentRoot)
+        }
+
+        for ctx in [AXProjectContext(root: routineRoot), AXProjectContext(root: urgentRoot)] {
+            var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+            config = config.settingProjectGovernance(
+                executionTier: .a2RepoAuto,
+                supervisorInterventionTier: .s3StrategicCoach,
+                reviewPolicyMode: .periodic,
+                progressHeartbeatSeconds: 600,
+                reviewPulseSeconds: 1_800,
+                brainstormReviewSeconds: 3_600,
+                eventDrivenReviewEnabled: true,
+                eventReviewTriggers: [.blockerDetected]
+            )
+            try AXProjectStore.saveConfig(config, for: ctx)
+        }
+
+        let routineProject = AXProjectEntry(
+            projectId: AXProjectRegistryStore.projectId(forRoot: routineRoot),
+            rootPath: routineRoot.path,
+            displayName: "Routine Grant Recovery Runtime",
+            lastOpenedAt: 1_773_384_220,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: "running",
+            currentStateSummary: "等待恢复",
+            nextStepSummary: "补齐 grant 后恢复执行",
+            blockerSummary: nil,
+            lastSummaryAt: 1_773_384_180,
+            lastEventAt: 1_773_384_180
+        )
+        let urgentProject = AXProjectEntry(
+            projectId: AXProjectRegistryStore.projectId(forRoot: urgentRoot),
+            rootPath: urgentRoot.path,
+            displayName: "Priority Grant Recovery Runtime",
+            lastOpenedAt: 1_773_384_220,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: "grant_pending",
+            currentStateSummary: "等待授权",
+            nextStepSummary: "补齐 grant 后恢复执行",
+            blockerSummary: nil,
+            lastSummaryAt: 1_773_384_180,
+            lastEventAt: 1_773_384_180
+        )
+
+        let appModel = makeTestingAppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: urgentProject.projectId,
+            projects: [routineProject, urgentProject]
+        )
+        appModel.selectedProjectId = urgentProject.projectId
+        manager.setAppModel(appModel)
+
+        let routineLane = makeHeartbeatRecoveryLaneSnapshot(
+            projectId: routineProject.projectId,
+            status: .blocked,
+            blockedReason: .grantPending,
+            nextActionRecommendation: "request_grant_follow_up",
+            laneID: "lane-routine-grant"
+        )
+        let urgentLane = makeHeartbeatRecoveryLaneSnapshot(
+            projectId: urgentProject.projectId,
+            status: .blocked,
+            blockedReason: .grantPending,
+            nextActionRecommendation: "request_grant_follow_up",
+            laneID: "lane-urgent-grant"
+        )
+        manager.setLaneHealthSnapshotForTesting(
+            SupervisorLaneHealthSnapshot(
+                generatedAtMs: urgentLane.generatedAtMs,
+                summary: LaneHealthSummary(
+                    total: routineLane.lanes.count + urgentLane.lanes.count,
+                    running: 0,
+                    blocked: routineLane.lanes.count + urgentLane.lanes.count,
+                    stalled: 0,
+                    failed: 0,
+                    waiting: 0,
+                    recovering: 0,
+                    completed: 0
+                ),
+                lanes: routineLane.lanes + urgentLane.lanes
+            )
+        )
+
+        manager.setSupervisorEventLoopResponseOverrideForTesting { userMessage, triggerSource in
+            #expect(triggerSource == "heartbeat")
+            #expect(userMessage.contains("project_ref=\(urgentProject.displayName)"))
+            #expect(userMessage.contains("project_id=\(urgentProject.projectId)"))
+            #expect(userMessage.contains("recovery_action=request_grant_follow_up"))
+            #expect(userMessage.contains("portfolio_priority_band=critical"))
+            #expect(userMessage.contains("portfolio_priority_score=8"))
+            #expect(userMessage.contains("portfolio_priority_why=待授权会直接卡住推进"))
+            return "selected higher portfolio priority recovery"
+        }
+
+        _ = await manager.emitHeartbeatForTesting(
+            force: true,
+            reason: "timer",
+            now: Date(timeIntervalSince1970: 1_773_384_220)
+        )
+        await manager.waitForSupervisorEventLoopForTesting()
+
+        try await waitUntil("higher priority recovery runtime activity queued", timeoutMs: 5_000) {
+            manager.runtimeActivityEntries.contains(where: {
+                $0.projectId == urgentProject.projectId
+                    && $0.text.contains("heartbeat_recovery_follow_up status=queued")
+            })
+        }
+
+        let selectedEntry = try #require(manager.runtimeActivityEntries.first(where: {
+            $0.projectId == urgentProject.projectId
+                && $0.text.contains("heartbeat_recovery_follow_up status=queued")
+        }))
+        #expect(selectedEntry.text.contains("portfolio_priority_band=critical"))
+        #expect(selectedEntry.text.contains("portfolio_priority_score=8"))
+        #expect(selectedEntry.text.contains("portfolio_priority_why=待授权会直接卡住推进"))
+        #expect(!manager.runtimeActivityEntries.contains(where: {
+            $0.projectId == routineProject.projectId
+                && $0.text.contains("heartbeat_recovery_follow_up status=queued")
+        }))
+
+        let activity = try #require(manager.recentSupervisorEventLoopActivitiesForTesting().last(where: {
+            $0.dedupeKey.hasPrefix("heartbeat_recovery_follow_up:")
+                && $0.status == "completed"
+        }))
+        #expect(activity.projectId == urgentProject.projectId)
+        #expect(activity.projectName == urgentProject.displayName)
+    }
+
+    @Test
+    func heartbeatRecoveryReplayFollowUpQueuesEventLoopWithRuntimeGovernanceTruth() async throws {
+        let manager = SupervisorManager.makeForTesting()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config = config.settingProjectGovernance(
+            executionTier: .a3DeliverAuto,
+            supervisorInterventionTier: .s3StrategicCoach,
+            reviewPolicyMode: .hybrid,
+            progressHeartbeatSeconds: 600,
+            reviewPulseSeconds: 1_200,
+            brainstormReviewSeconds: 3_600,
+            eventDrivenReviewEnabled: true,
+            eventReviewTriggers: [.blockerDetected, .failureStreak]
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let project = AXProjectEntry(
+            projectId: AXProjectRegistryStore.projectId(forRoot: root),
+            rootPath: root.path,
+            displayName: "Replay Recovery Runtime",
+            lastOpenedAt: 1_773_384_320,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: "stalled",
+            currentStateSummary: "当前 drain 结束后需要续跑",
+            nextStepSummary: "重放 follow-up / 续跑链",
+            blockerSummary: nil,
+            lastSummaryAt: 1_773_384_280,
+            lastEventAt: 1_773_384_280
+        )
+        let appModel = makeTestingAppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+        manager.setLaneHealthSnapshotForTesting(
+            makeHeartbeatRecoveryLaneSnapshot(
+                projectId: project.projectId,
+                status: .blocked,
+                blockedReason: .restartDrain,
+                nextActionRecommendation: "wait_drain_recover"
+            )
+        )
+
+        manager.setSupervisorEventLoopResponseOverrideForTesting { userMessage, triggerSource in
+            #expect(triggerSource == "heartbeat")
+            #expect(userMessage.contains("recovery_action=replay_follow_up"))
+            #expect(userMessage.contains("reason_code=restart_drain_requires_follow_up_replay"))
+            #expect(userMessage.contains("policy_reason=当前 heartbeat 检测到 drain 收口后仍需续跑，系统已自动排队 replay follow-up。"))
+            #expect(userMessage.contains("governance_truth=治理真相：当前生效 A3/S3"))
+            return "handled replay recovery"
+        }
+
+        _ = await manager.emitHeartbeatForTesting(
+            force: true,
+            reason: "timer",
+            now: Date(timeIntervalSince1970: 1_773_384_320)
+        )
+        await manager.waitForSupervisorEventLoopForTesting()
+        try await waitUntil("replay recovery runtime activity queued", timeoutMs: 5_000) {
+            manager.runtimeActivityEntries.contains(where: {
+                $0.projectId == project.projectId
+                    && $0.text.contains("heartbeat_recovery_follow_up status=queued")
+                    && $0.text.contains("recovery_action=replay_follow_up")
+            })
+        }
+
+        let activity = try #require(manager.recentSupervisorEventLoopActivitiesForTesting().last(where: {
+            $0.dedupeKey.hasPrefix("heartbeat_recovery_follow_up:")
+                && $0.status == "completed"
+        }))
+        #expect(activity.projectId == project.projectId)
+        #expect(activity.projectName == project.displayName)
+        #expect(activity.triggerSource == "heartbeat")
+        #expect(activity.triggerSummary.contains("需要重放 follow-up / 续跑链"))
+        #expect(activity.resultSummary == "handled replay recovery")
+        #expect(activity.policySummary.contains("cadence="))
+        #expect(activity.governanceTruth.contains("治理真相：当前生效 A3/S3"))
+
+        let entry = try #require(manager.runtimeActivityEntries.first(where: {
+            $0.projectId == project.projectId
+                && $0.text.contains("heartbeat_recovery_follow_up status=queued")
+        }))
+        #expect(entry.projectName == project.displayName)
+        #expect(entry.text.contains("recovery_action=replay_follow_up"))
+        #expect(entry.text.contains("reason_code=restart_drain_requires_follow_up_replay"))
+        #expect(entry.text.contains("governance_reason=当前 heartbeat 检测到 drain 收口后仍需续跑，系统已自动排队 replay follow-up。"))
+        #expect(entry.text.contains("governance_truth=治理真相：当前生效 A3/S3"))
+    }
+
+    @Test
+    func heartbeatHistoryHumanizesLaneHealthHotspotsForFrontstageCopy() throws {
+        let manager = SupervisorManager.makeForTesting()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = AXProjectEntry(
+            projectId: AXProjectRegistryStore.projectId(forRoot: root),
+            rootPath: root.path,
+            displayName: "Lane Runtime",
+            lastOpenedAt: 1_773_384_320,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: "blocked",
+            currentStateSummary: "当前泳道待处理",
+            nextStepSummary: "查看泳道健康",
+            blockerSummary: nil,
+            lastSummaryAt: 1_773_384_280,
+            lastEventAt: 1_773_384_280
+        )
+        let appModel = makeTestingAppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+        manager.setLaneHealthSnapshotForTesting(
+            makeHeartbeatRecoveryLaneSnapshot(
+                projectId: project.projectId,
+                status: .blocked,
+                blockedReason: .grantPending,
+                nextActionRecommendation: "notify_user"
+            )
+        )
+
+        manager.emitHeartbeatCycleForTesting(force: true, reason: "project_updated")
+
+        let heartbeat = try #require(manager.latestHeartbeat)
+        #expect(heartbeat.reason == "project_updated")
+        #expect(heartbeat.content.contains("Lane 健康巡检："))
+        #expect(heartbeat.content.contains("Lane Runtime"))
+        #expect(heartbeat.content.contains("原因：等待授权"))
+        #expect(!heartbeat.content.contains("reason="))
+        #expect(!heartbeat.content.contains("action="))
+        #expect(!heartbeat.content.contains("grant_pending"))
+    }
+
+    @Test
+    func heartbeatGovernanceRepairRecordsRuntimeGovernanceTruthOncePerStableSignalSet() throws {
+        let manager = SupervisorManager.makeForTesting()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config = config.settingProjectGovernance(
+            executionTier: .a1Plan,
+            supervisorInterventionTier: .s2PeriodicReview,
+            reviewPolicyMode: .periodic,
+            progressHeartbeatSeconds: 900,
+            reviewPulseSeconds: 1_800,
+            brainstormReviewSeconds: 0,
+            eventDrivenReviewEnabled: false,
+            eventReviewTriggers: []
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let project = makeProjectEntry(root: root, displayName: "Governance Repair Runtime")
+        try SupervisorProjectSkillCallStore.upsert(
+            SupervisorSkillCallRecord(
+                schemaVersion: SupervisorSkillCallRecord.currentSchemaVersion,
+                requestId: "skill-governance-runtime-1",
+                projectId: project.projectId,
+                jobId: "job-governance-runtime-1",
+                planId: "plan-governance-runtime-1",
+                stepId: "step-governance-runtime-1",
+                skillId: "agent-browser",
+                toolName: ToolName.deviceBrowserControl.rawValue,
+                status: .blocked,
+                payload: [
+                    "action": .string("open_url"),
+                    "url": .string("https://example.com")
+                ],
+                currentOwner: "supervisor",
+                resultSummary: "browser automation blocked by governance",
+                denyCode: "governance_capability_denied",
+                policySource: "project_governance",
+                policyReason: "execution_tier_missing_browser_runtime",
+                resultEvidenceRef: nil,
+                requiredCapability: nil,
+                grantRequestId: nil,
+                grantId: nil,
+                createdAtMs: 1_000,
+                updatedAtMs: 2_000,
+                auditRef: "audit-governance-runtime-1"
+            ),
+            for: ctx
+        )
+
+        let appModel = makeTestingAppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        manager.emitHeartbeatCycleForTesting(force: true, reason: "project_created")
+
+        let firstEntry = try #require(manager.runtimeActivityEntries.first(where: {
+            $0.projectId == project.projectId
+                && $0.text.contains("heartbeat_governance_repair status=attention")
+        }))
+        #expect(firstEntry.projectName == project.displayName)
+        #expect(firstEntry.text.contains("trigger=heartbeat"))
+        #expect(firstEntry.text.contains("repair_count=1"))
+        #expect(firstEntry.text.contains("repair_destination=execution_tier"))
+        #expect(firstEntry.text.contains("policy_reason=execution_tier_missing_browser_runtime"))
+        #expect(firstEntry.text.contains("governance_reason=当前项目 A-Tier 不允许浏览器自动化。"))
+        #expect(firstEntry.text.contains("blocked_summary=当前项目 A-Tier 不允许浏览器自动化。"))
+        #expect(firstEntry.text.contains("governance_truth=治理真相：当前生效 A1/S2 · 审查 Periodic · 节奏 心跳 15m / 脉冲 30m / 脑暴 off。"))
+
+        manager.emitHeartbeatCycleForTesting(force: true, reason: "project_created")
+
+        let repairEntries = manager.runtimeActivityEntries.filter {
+            $0.projectId == project.projectId
+                && $0.text.contains("heartbeat_governance_repair status=attention")
+        }
+        #expect(repairEntries.count == 1)
+    }
+
+    @Test
     func heartbeatAutoProgressRecoversBlockedAutomationRun() throws {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
@@ -678,7 +3678,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
         var project = makeProjectEntry(root: root)
         project.displayName = "我的世界还原项目"
-        let appModel = AppModel()
+        let appModel = makeTestingAppModel()
         appModel.registry = AXProjectRegistry(
             version: AXProjectRegistry.currentVersion,
             updatedAt: Date().timeIntervalSince1970,
@@ -710,6 +3710,148 @@ struct SupervisorManagerAutomationRuntimeTests {
         #expect(actions[0].contains(project.displayName))
         #expect(manager.automationRecoveryDecision?.decision == .resume)
         #expect(manager.automationCurrentCheckpoint?.runID == prepared.launchRef)
+    }
+
+    @Test
+    func heartbeatAutoProgressRecoversBlockedAutomationRunOutsideJurisdictionView() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+        let friendlyName = "Hidden Blocked Recovery"
+        let project = AXProjectEntry(
+            projectId: projectId,
+            rootPath: root.path,
+            displayName: friendlyName,
+            lastOpenedAt: 1_773_201_720,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: "active",
+            currentStateSummary: "自动化执行中",
+            nextStepSummary: "等待下一次 heartbeat",
+            blockerSummary: nil,
+            lastSummaryAt: 1_773_201_220,
+            lastEventAt: 1_773_201_220
+        )
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+
+        let jurisdictionNow = Date(timeIntervalSince1970: 1_773_201_721).timeIntervalSince1970
+        let jurisdiction = SupervisorJurisdictionRegistry.ownerDefault(now: jurisdictionNow)
+            .upserting(projectId: projectId, displayName: friendlyName, role: .triageOnly, now: jurisdictionNow)
+        _ = manager.applySupervisorJurisdictionRegistry(
+            jurisdiction,
+            persist: false,
+            normalizeWithKnownProjects: false
+        )
+
+        let prepared = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: 1_773_201_722))
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .blocked,
+            retryAfterSeconds: 30,
+            auditRef: "audit-xt-auto-heartbeat-hidden-blocked",
+            now: Date(timeIntervalSince1970: 1_773_201_723)
+        )
+
+        let actions = manager.runHeartbeatAutoProgressForTesting(
+            now: Date(timeIntervalSince1970: 1_773_201_800)
+        )
+
+        #expect(actions.count == 1)
+        #expect(actions[0].contains("主动恢复"))
+        #expect(actions[0].contains(friendlyName))
+        #expect(manager.automationRecoveryDecision?.decision == .resume)
+        #expect(manager.automationCurrentCheckpoint?.runID == prepared.launchRef)
+    }
+
+    @Test
+    func heartbeatAutoProgressDefersHiddenBlockedRunUntilRetryAfterElapsesWithoutVisibleHeartbeatLeak() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+        let baseNow = Date().timeIntervalSince1970
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+        let friendlyName = "Hidden Heartbeat Recovery Leak Guard"
+        let project = AXProjectEntry(
+            projectId: projectId,
+            rootPath: root.path,
+            displayName: friendlyName,
+            lastOpenedAt: baseNow - 10,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: "active",
+            currentStateSummary: "自动化执行中",
+            nextStepSummary: "等待 heartbeat 恢复",
+            blockerSummary: nil,
+            lastSummaryAt: baseNow - 60,
+            lastEventAt: baseNow - 60
+        )
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: baseNow,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+
+        let jurisdictionNow = baseNow - 9
+        let jurisdiction = SupervisorJurisdictionRegistry.ownerDefault(now: jurisdictionNow)
+            .upserting(projectId: projectId, displayName: friendlyName, role: .triageOnly, now: jurisdictionNow)
+        _ = manager.applySupervisorJurisdictionRegistry(
+            jurisdiction,
+            persist: false,
+            normalizeWithKnownProjects: false
+        )
+
+        let prepared = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: baseNow - 8))
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .blocked,
+            retryAfterSeconds: 30,
+            auditRef: "audit-xt-auto-heartbeat-hidden-blocked-no-leak",
+            now: Date(timeIntervalSince1970: baseNow - 7)
+        )
+
+        manager.emitHeartbeatCycleForTesting(force: true, reason: "timer")
+
+        #expect(manager.automationRecoveryDecision?.decision == .hold)
+        #expect(manager.automationRecoveryDecision?.holdReason == "retry_after_not_elapsed")
+        #expect(manager.automationCurrentCheckpoint?.runID == prepared.launchRef)
+        #expect(manager.heartbeatHistory.isEmpty)
     }
 
     @Test
@@ -818,6 +3960,70 @@ struct SupervisorManagerAutomationRuntimeTests {
     }
 
     @Test
+    func externalTriggerIngressRunsWhenProjectOutsideJurisdictionView() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeLiveIngressRecipe(), activate: true, for: ctx)
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+        let friendlyName = "Hidden External Trigger"
+        let project = AXProjectEntry(
+            projectId: projectId,
+            rootPath: root.path,
+            displayName: friendlyName,
+            lastOpenedAt: 1_773_200_920,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: "active",
+            currentStateSummary: "等待外部触发",
+            nextStepSummary: "接 webhook/github_pr",
+            blockerSummary: nil,
+            lastSummaryAt: 1_773_200_920,
+            lastEventAt: 1_773_200_920
+        )
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: 1_773_200_920,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+
+        let jurisdiction = SupervisorJurisdictionRegistry.ownerDefault(now: 1_773_200_921)
+            .upserting(projectId: projectId, displayName: friendlyName, role: .triageOnly, now: 1_773_200_921)
+        _ = manager.applySupervisorJurisdictionRegistry(jurisdiction, persist: false, normalizeWithKnownProjects: false)
+        manager.clearMessages()
+
+        let result = manager.ingestAutomationExternalTrigger(
+            SupervisorManager.SupervisorAutomationExternalTriggerIngress(
+                projectId: projectId,
+                triggerId: "webhook/github_pr",
+                triggerType: .webhook,
+                source: .github,
+                payloadRef: "local://trigger-payload/hidden-webhook-001",
+                dedupeKey: "sha256:hidden-webhook-001",
+                receivedAt: Date(timeIntervalSince1970: 1_773_200_922),
+                ingressChannel: "test_webhook_bridge"
+            )
+        )
+
+        #expect(result.decision == .run)
+        #expect(result.reasonCode == "trigger_route_allowed")
+        #expect(manager.automationCurrentCheckpoint?.state == .queued)
+        #expect(manager.messages.isEmpty)
+    }
+
+    @Test
     func externalTriggerFailureSystemMessageUsesFriendlyProjectDisplayName() throws {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
@@ -883,6 +4089,70 @@ struct SupervisorManagerAutomationRuntimeTests {
     }
 
     @Test
+    func externalTriggerFailureDoesNotLeakWhenProjectOutsideJurisdictionView() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+        let friendlyName = "Hidden External Trigger Failure"
+        let project = AXProjectEntry(
+            projectId: projectId,
+            rootPath: root.path,
+            displayName: friendlyName,
+            lastOpenedAt: 1_773_200_952,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: "active",
+            currentStateSummary: "等待隐藏失败触发",
+            nextStepSummary: "故意触发 fail-closed",
+            blockerSummary: nil,
+            lastSummaryAt: 1_773_200_952,
+            lastEventAt: 1_773_200_952
+        )
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: 1_773_200_952,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+
+        let jurisdiction = SupervisorJurisdictionRegistry.ownerDefault(now: 1_773_200_953)
+            .upserting(projectId: projectId, displayName: friendlyName, role: .triageOnly, now: 1_773_200_953)
+        _ = manager.applySupervisorJurisdictionRegistry(jurisdiction, persist: false, normalizeWithKnownProjects: false)
+        manager.clearMessages()
+
+        let result = manager.ingestAutomationExternalTrigger(
+            SupervisorManager.SupervisorAutomationExternalTriggerIngress(
+                projectId: projectId,
+                triggerId: "webhook/not_allowed",
+                triggerType: .webhook,
+                source: .github,
+                payloadRef: "local://trigger-payload/hidden-not-allowed",
+                dedupeKey: "sha256:hidden-not-allowed",
+                receivedAt: Date(timeIntervalSince1970: 1_773_200_954),
+                ingressChannel: "test_webhook_bridge"
+            ),
+            emitSystemMessage: true
+        )
+
+        #expect(result.decision == .failClosed)
+        #expect(result.reasonCode == "trigger_ingress_not_allowed")
+        #expect(manager.messages.isEmpty)
+    }
+
+    @Test
     func scheduleServiceStartsRunOncePerWindowAndReopensOnNextWindow() throws {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
@@ -934,6 +4204,172 @@ struct SupervisorManagerAutomationRuntimeTests {
         #expect(nextWindowResults.first?.decision == SupervisorManager.SupervisorAutomationExternalTriggerDecision.run)
         let nextRunId = try #require(nextWindowResults.first?.runId)
         #expect(nextRunId != firstRunId)
+    }
+
+    @Test
+    func scheduleServiceStartsNewRunOnNextWindowAfterManualCancel() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeScheduledLiveIngressRecipe(), activate: true, for: ctx)
+        let project = makeProjectEntry(root: root)
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: 1_773_201_100,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+
+        let firstWindowAt = Date(timeIntervalSince1970: 1_773_201_100)
+        let firstResults = manager.serviceAutomationScheduleTriggers(now: firstWindowAt)
+        #expect(firstResults.count == 1)
+        #expect(firstResults.first?.decision == .run)
+        let firstRunId = try #require(firstResults.first?.runId)
+
+        let cancelled = try manager.cancelAutomationRun(
+            for: ctx,
+            runID: firstRunId,
+            auditRef: "audit-xt-auto-schedule-cancelled",
+            now: Date(timeIntervalSince1970: 1_773_201_101)
+        )
+        #expect(cancelled.decision == .suppressed)
+        #expect(cancelled.holdReason == "manual_cancelled")
+
+        let nextWindowResults = manager.serviceAutomationScheduleTriggers(
+            now: Date(timeIntervalSince1970: 1_773_201_100 + 24 * 60 * 60 + 5)
+        )
+        #expect(nextWindowResults.count == 1)
+        #expect(nextWindowResults.first?.decision == .run)
+        let nextRunId = try #require(nextWindowResults.first?.runId)
+        #expect(nextRunId != firstRunId)
+    }
+
+    @Test
+    func scheduleServiceDoesNotTreatOlderBlockedRunAsCurrentBlockingRunWhenNewerVisibleRunIsDelivered() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeScheduledLiveIngressRecipe(), activate: true, for: ctx)
+        let project = makeProjectEntry(root: root)
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: 1_773_201_150,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+
+        let blockedRun = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: 1_773_201_140))
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .blocked,
+            runID: blockedRun.launchRef,
+            auditRef: "audit-xt-auto-schedule-older-blocked",
+            now: Date(timeIntervalSince1970: 1_773_201_141)
+        )
+
+        let deliveredRun = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: 1_773_201_142))
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .delivered,
+            runID: deliveredRun.launchRef,
+            auditRef: "audit-xt-auto-schedule-newer-delivered",
+            now: Date(timeIntervalSince1970: 1_773_201_143)
+        )
+
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config.lastAutomationLaunchRef = deliveredRun.launchRef
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let results = manager.serviceAutomationScheduleTriggers(
+            now: Date(timeIntervalSince1970: 1_773_201_150)
+        )
+
+        #expect(results.count == 1)
+        #expect(results.first?.decision == .run)
+        let nextRunId = try #require(results.first?.runId)
+        #expect(nextRunId != blockedRun.launchRef)
+        #expect(nextRunId != deliveredRun.launchRef)
+    }
+
+    @Test
+    func scheduleServiceStartsRunWhenProjectOutsideJurisdictionView() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeScheduledLiveIngressRecipe(), activate: true, for: ctx)
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+        let friendlyName = "Hidden Schedule Trigger"
+        let project = AXProjectEntry(
+            projectId: projectId,
+            rootPath: root.path,
+            displayName: friendlyName,
+            lastOpenedAt: 1_773_201_010,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: "paused",
+            currentStateSummary: "等待定时调度",
+            nextStepSummary: "schedule/nightly",
+            blockerSummary: nil,
+            lastSummaryAt: 1_773_201_010,
+            lastEventAt: 1_773_201_010
+        )
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: 1_773_201_010,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+
+        let jurisdiction = SupervisorJurisdictionRegistry.ownerDefault(now: 1_773_201_011)
+            .upserting(projectId: projectId, displayName: friendlyName, role: .triageOnly, now: 1_773_201_011)
+        _ = manager.applySupervisorJurisdictionRegistry(jurisdiction, persist: false, normalizeWithKnownProjects: false)
+        manager.clearMessages()
+
+        let results = manager.serviceAutomationScheduleTriggers(now: Date(timeIntervalSince1970: 1_773_201_000))
+        #expect(results.count == 1)
+        #expect(results.first?.decision == .run)
+        #expect(results.first?.triggerId == "schedule/nightly")
+        #expect(manager.automationCurrentCheckpoint?.state == .queued)
+        #expect(manager.messages.isEmpty)
     }
 
     @Test
@@ -1072,6 +4508,94 @@ struct SupervisorManagerAutomationRuntimeTests {
                 && ($0["decision"] as? String) == "run"
                 && ($0["run_id"] as? String) == runId
         })
+    }
+
+    @Test
+    @MainActor
+    func hubConnectorIngressSnapshotRoutesHiddenProjectWithoutVisibleAnnouncements() throws {
+        var spoken: [String] = []
+        let synthesizer = SupervisorSpeechSynthesizer(
+            deduper: SupervisorVoiceBriefDeduper(cooldown: 0),
+            speakSink: { spoken.append($0) }
+        )
+        let manager = SupervisorManager.makeForTesting(
+            supervisorSpeechSynthesizer: synthesizer
+        )
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeLiveIngressRecipe(), activate: true, for: ctx)
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+        let friendlyName = "Hidden Connector Ingress"
+        let project = AXProjectEntry(
+            projectId: projectId,
+            rootPath: root.path,
+            displayName: friendlyName,
+            lastOpenedAt: 1_773_202_200,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: "active",
+            currentStateSummary: "等待 Hub connector ingress",
+            nextStepSummary: "webhook/github_pr",
+            blockerSummary: nil,
+            lastSummaryAt: 1_773_202_200,
+            lastEventAt: 1_773_202_200
+        )
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: 1_773_202_200,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+
+        let jurisdiction = SupervisorJurisdictionRegistry.ownerDefault(now: 1_773_202_201)
+            .upserting(projectId: projectId, displayName: friendlyName, role: .triageOnly, now: 1_773_202_201)
+        _ = manager.applySupervisorJurisdictionRegistry(jurisdiction, persist: false, normalizeWithKnownProjects: false)
+        manager.clearMessages()
+
+        let snapshot = HubIPCClient.ConnectorIngressSnapshot(
+            source: "hub_runtime_grpc",
+            updatedAtMs: 1_773_202_260_000,
+            items: [
+                HubIPCClient.ConnectorIngressReceipt(
+                    receiptId: "hub-hidden-webhook-001",
+                    requestId: "req-hub-hidden-webhook-001",
+                    projectId: projectId,
+                    connector: "github",
+                    targetId: "repo-hidden-1",
+                    ingressType: "webhook",
+                    channelScope: "repo",
+                    sourceId: "pr-hidden-42",
+                    messageId: "msg-hidden-webhook-001",
+                    dedupeKey: "sha256:hub-hidden-webhook-001",
+                    receivedAtMs: 1_773_202_220_000,
+                    eventSequence: 28,
+                    deliveryState: "accepted",
+                    runtimeState: "queued"
+                )
+            ]
+        )
+
+        let results = manager.serviceHubConnectorIngressReceiptsForTesting(
+            snapshot,
+            now: Date(timeIntervalSince1970: 1_773_202_260)
+        )
+        #expect(results.count == 1)
+        #expect(results.first?.decision == .run)
+        #expect(results.first?.triggerId == "webhook/github_pr")
+        #expect(manager.automationCurrentCheckpoint?.state == .queued)
+        #expect(manager.messages.isEmpty)
+        #expect(spoken.isEmpty)
     }
 
     @Test
@@ -1282,6 +4806,111 @@ struct SupervisorManagerAutomationRuntimeTests {
     }
 
     @Test
+    func operatorChannelXTCommandPrepareDeployPlanRunsForHiddenProjectWithoutVisibleAnnouncements() async throws {
+        try await Self.gate.run {
+            var spoken: [String] = []
+            let synthesizer = SupervisorSpeechSynthesizer(
+                deduper: SupervisorVoiceBriefDeduper(cooldown: 0),
+                speakSink: { spoken.append($0) }
+            )
+            let manager = SupervisorManager.makeForTesting(
+                supervisorSpeechSynthesizer: synthesizer
+            )
+            manager.resetAutomationRuntimeState()
+
+            let originalMode = HubAIClient.transportMode()
+            let hubBase = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xt_operator_channel_hidden_test_\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: hubBase, withIntermediateDirectories: true)
+            HubAIClient.setTransportMode(.fileIPC)
+            HubPaths.setPinnedBaseDirOverride(hubBase)
+
+            let root = try makeRegistryVisibleProjectRoot()
+            defer {
+                HubAIClient.setTransportMode(originalMode)
+                HubPaths.clearPinnedBaseDirOverride()
+                manager.resetAutomationRuntimeState()
+                try? FileManager.default.removeItem(at: root)
+                try? FileManager.default.removeItem(at: hubBase)
+            }
+
+            let ctx = AXProjectContext(root: root)
+            _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+            try armTrustedAutomation(for: ctx)
+            let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+            let friendlyName = "Hidden Operator Command"
+            let project = AXProjectEntry(
+                projectId: projectId,
+                rootPath: root.path,
+                displayName: friendlyName,
+                lastOpenedAt: 1_773_202_500,
+                manualOrderIndex: nil,
+                pinned: false,
+                statusDigest: "active",
+                currentStateSummary: "等待 operator command",
+                nextStepSummary: "deploy.plan",
+                blockerSummary: nil,
+                lastSummaryAt: 1_773_202_500,
+                lastEventAt: 1_773_202_500
+            )
+            let appModel = AppModel()
+            appModel.registry = AXProjectRegistry(
+                version: AXProjectRegistry.currentVersion,
+                updatedAt: 1_773_202_500,
+                sortPolicy: "manual_then_last_opened",
+                globalHomeVisible: false,
+                lastSelectedProjectId: projectId,
+                projects: [project]
+            )
+            manager.setAppModel(appModel)
+
+            let jurisdiction = SupervisorJurisdictionRegistry.ownerDefault(now: 1_773_202_501)
+                .upserting(projectId: projectId, displayName: friendlyName, role: .triageOnly, now: 1_773_202_501)
+            _ = manager.applySupervisorJurisdictionRegistry(jurisdiction, persist: false, normalizeWithKnownProjects: false)
+            manager.clearMessages()
+
+            let snapshot = HubIPCClient.OperatorChannelXTCommandSnapshot(
+                source: "hub_runtime_grpc",
+                updatedAtMs: 1_773_202_501_000,
+                items: [
+                    HubIPCClient.OperatorChannelXTCommandItem(
+                        commandId: "cmd-op-hidden-1",
+                        requestId: "req-op-hidden-1",
+                        actionName: "deploy.plan",
+                        bindingId: "binding-op-hidden-1",
+                        routeId: "route-op-hidden-1",
+                        scopeType: "project",
+                        scopeId: projectId,
+                        projectId: projectId,
+                        provider: "slack",
+                        accountId: "ops-slack",
+                        conversationId: "C999",
+                        threadKey: "1710000000.9999",
+                        actorRef: "xhub.im_identity_binding.v1:slack/U999",
+                        resolvedDeviceId: "device_xt_001",
+                        preferredDeviceId: "device_xt_001",
+                        note: "",
+                        createdAtMs: 1_773_202_500_500,
+                        auditRef: "audit-op-hidden-1"
+                    )
+                ]
+            )
+
+            let results = manager.serviceOperatorChannelXTCommandsForTesting(
+                snapshot,
+                now: Date(timeIntervalSince1970: 1_773_202_502)
+            )
+            #expect(results.count == 1)
+            let first = try #require(results.first)
+            #expect(first.status == "prepared")
+            #expect(first.projectId == projectId)
+            #expect(manager.automationPreparedRun?.launchRef == first.runId)
+            #expect(manager.messages.isEmpty)
+            #expect(spoken.isEmpty)
+        }
+    }
+
+    @Test
     func operatorChannelXTCommandFailsClosedWhenProjectBindingDoesNotMatchRoutedDevice() async throws {
         try await Self.gate.run {
             var spoken: [String] = []
@@ -1294,7 +4923,7 @@ struct SupervisorManagerAutomationRuntimeTests {
             )
             manager.resetAutomationRuntimeState()
 
-            let root = try makeProjectRoot()
+            let root = try makeRegistryVisibleProjectRoot()
             defer {
                 manager.resetAutomationRuntimeState()
                 try? FileManager.default.removeItem(at: root)
@@ -1313,6 +4942,7 @@ struct SupervisorManagerAutomationRuntimeTests {
                 lastSelectedProjectId: project.projectId,
                 projects: [project]
             )
+            appModel.selectedProjectId = project.projectId
             manager.setAppModel(appModel)
             manager.clearMessages()
 
@@ -1361,6 +4991,17 @@ struct SupervisorManagerAutomationRuntimeTests {
                     && ($0["command_id"] as? String) == "cmd-op-mismatch"
                     && ($0["deny_code"] as? String) == "trusted_automation_project_not_bound"
             })
+            try await waitUntil("operator xt fail-closed announcement visible") {
+                manager.messages.contains(where: {
+                    $0.role == .system &&
+                        $0.content.contains("失败闭锁") &&
+                        $0.content.contains("trusted_automation_project_not_bound")
+                }) &&
+                spoken.contains(where: {
+                    $0.contains("Slack") &&
+                        $0.contains("失败闭锁")
+                })
+            }
             #expect(manager.messages.contains(where: {
                 $0.role == .system &&
                     $0.content.contains("失败闭锁") &&
@@ -1389,7 +5030,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         var project = makeProjectEntry(root: root)
         project.displayName = "亮亮"
 
-        let appModel = AppModel()
+        let appModel = makeTestingAppModel()
         appModel.registry = AXProjectRegistry(
             version: AXProjectRegistry.currentVersion,
             updatedAt: Date().timeIntervalSince1970,
@@ -1398,7 +5039,6 @@ struct SupervisorManagerAutomationRuntimeTests {
             lastSelectedProjectId: project.projectId,
             projects: [project]
         )
-        appModel.selectedProjectId = project.projectId
         manager.setAppModel(appModel)
         _ = manager.applySupervisorJurisdictionRegistry(
             .ownerAll(for: [project]),
@@ -1443,7 +5083,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         var project = makeProjectEntry(root: root)
         project.displayName = "亮亮"
 
-        let appModel = AppModel()
+        let appModel = makeTestingAppModel()
         appModel.registry = AXProjectRegistry(
             version: AXProjectRegistry.currentVersion,
             updatedAt: Date().timeIntervalSince1970,
@@ -1452,7 +5092,6 @@ struct SupervisorManagerAutomationRuntimeTests {
             lastSelectedProjectId: project.projectId,
             projects: [project]
         )
-        appModel.selectedProjectId = project.projectId
         manager.setAppModel(appModel)
         manager.setPendingHubGrantsForTesting(
             [
@@ -1492,6 +5131,57 @@ struct SupervisorManagerAutomationRuntimeTests {
         #expect(cancelText.contains("查看：查看授权板"))
         #expect(cancelText.contains("🛑 automation 已取消"))
         #expect(cancelText.contains("run_id: \(prepared.launchRef)"))
+    }
+
+    @Test
+    func naturalLanguageAutomationExplicitHiddenProjectStillResolvesOutsideJurisdictionView() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
+        var project = makeProjectEntry(root: root)
+        project.displayName = "亮亮"
+
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: nil,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+
+        let now = Date(timeIntervalSince1970: 1_773_384_520).timeIntervalSince1970
+        let jurisdiction = SupervisorJurisdictionRegistry.ownerDefault(now: now)
+            .upserting(projectId: project.projectId, displayName: project.displayName, role: .triageOnly, now: now)
+        _ = manager.applySupervisorJurisdictionRegistry(
+            jurisdiction,
+            persist: false,
+            normalizeWithKnownProjects: false
+        )
+
+        let prepared = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: 1_773_203_060))
+        )
+        #expect(manager.automationCurrentCheckpoint?.runID == prepared.launchRef)
+
+        let statusText = try #require(
+            manager.directSupervisorActionIfApplicableForTesting("亮亮的自动流程现在怎么样")
+        )
+        #expect(statusText.contains("🤖 Automation Runtime 状态"))
+        #expect(statusText.contains("项目: \(project.displayName)"))
+        #expect(statusText.contains("last_launch: \(prepared.launchRef)"))
+        #expect(!statusText.contains("project_not_found"))
     }
 
     @Test
@@ -1586,7 +5276,7 @@ struct SupervisorManagerAutomationRuntimeTests {
             lastEventAt: nil
         )
 
-        let appModel = AppModel()
+        let appModel = makeTestingAppModel()
         appModel.registry = AXProjectRegistry(
             version: AXProjectRegistry.currentVersion,
             updatedAt: Date().timeIntervalSince1970,
@@ -1595,7 +5285,6 @@ struct SupervisorManagerAutomationRuntimeTests {
             lastSelectedProjectId: projectA.projectId,
             projects: [projectA, projectB]
         )
-        appModel.selectedProjectId = projectA.projectId
         manager.setAppModel(appModel)
         manager.setPendingHubGrantsForTesting(
             [
@@ -1634,6 +5323,7 @@ struct SupervisorManagerAutomationRuntimeTests {
     func automationRecoverPrependsProjectScopedGovernanceBriefForPendingSkillApproval() throws {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
+        let baseNow = Date().timeIntervalSince1970
 
         let root = try makeRegistryVisibleProjectRoot()
         defer {
@@ -1672,7 +5362,7 @@ struct SupervisorManagerAutomationRuntimeTests {
                     tool: nil,
                     toolSummary: "打开浏览器查看失败后的页面状态",
                     reason: "需要人工确认恢复前的页面操作",
-                    createdAt: 1_000,
+                    createdAt: baseNow - 30,
                     actionURL: nil,
                     routingReasonCode: nil,
                     routingExplanation: nil
@@ -1682,14 +5372,14 @@ struct SupervisorManagerAutomationRuntimeTests {
 
         let prepared = try manager.prepareAutomationRun(
             for: ctx,
-            request: makeRequest(now: Date(timeIntervalSince1970: 1_773_203_060))
+            request: makeRequest(now: Date(timeIntervalSince1970: baseNow - 10))
         )
         _ = try manager.advanceAutomationRun(
             for: ctx,
             to: .blocked,
             retryAfterSeconds: 120,
             auditRef: "audit-xt-auto-recover-governance-brief",
-            now: Date(timeIntervalSince1970: 1_773_203_061)
+            now: Date(timeIntervalSince1970: baseNow - 9)
         )
 
         let recoveryText = try #require(
@@ -1705,9 +5395,76 @@ struct SupervisorManagerAutomationRuntimeTests {
     }
 
     @Test
+    func automationRecoverPrependsProjectScopedGovernanceBriefForPendingSkillGrant() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+        let baseNow = Date().timeIntervalSince1970
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+        var project = makeProjectEntry(root: root)
+        project.displayName = "亮亮"
+
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+        manager.setPendingSupervisorSkillApprovalsForTesting(
+            [
+                makeGovernedAutomationPendingSkillApproval(
+                    requestId: "automation-recover-grant-1",
+                    project: project,
+                    createdAt: baseNow - 30,
+                    executionReadiness: XTSkillExecutionReadinessState.grantRequired.rawValue,
+                    approvalFloor: XTSkillApprovalFloor.hubGrant.rawValue,
+                    requiredGrantCapabilities: ["browser.interact"],
+                    unblockActions: ["request_hub_grant"]
+                )
+            ]
+        )
+
+        let prepared = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeRequest(now: Date(timeIntervalSince1970: baseNow - 10))
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .blocked,
+            retryAfterSeconds: 120,
+            auditRef: "audit-xt-auto-recover-governance-grant-brief",
+            now: Date(timeIntervalSince1970: baseNow - 9)
+        )
+
+        let recoveryText = try #require(
+            manager.performAutomationRuntimeCommand("/automation recover \(project.projectId)")
+        )
+
+        #expect(recoveryText.contains("🧭 Supervisor Brief · 亮亮"))
+        #expect(recoveryText.contains("技能授权待处理"))
+        #expect(recoveryText.contains("查看：查看技能授权"))
+        #expect(recoveryText.contains("♻️ automation 恢复判定"))
+        #expect(recoveryText.contains("run_id: \(prepared.launchRef)"))
+        #expect(recoveryText.contains("decision: resume"))
+    }
+
+    @Test
     func automationRecoverDoesNotLeakGovernanceBriefFromOtherProject() throws {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
+        let baseNow = Date().timeIntervalSince1970
 
         let rootA = try makeRegistryVisibleProjectRoot()
         defer {
@@ -1735,7 +5492,7 @@ struct SupervisorManagerAutomationRuntimeTests {
             lastEventAt: nil
         )
 
-        let appModel = AppModel()
+        let appModel = makeTestingAppModel()
         appModel.registry = AXProjectRegistry(
             version: AXProjectRegistry.currentVersion,
             updatedAt: Date().timeIntervalSince1970,
@@ -1744,7 +5501,6 @@ struct SupervisorManagerAutomationRuntimeTests {
             lastSelectedProjectId: projectA.projectId,
             projects: [projectA, projectB]
         )
-        appModel.selectedProjectId = projectA.projectId
         manager.setAppModel(appModel)
         manager.setPendingSupervisorSkillApprovalsForTesting(
             [
@@ -1761,7 +5517,7 @@ struct SupervisorManagerAutomationRuntimeTests {
                     tool: nil,
                     toolSummary: "打开浏览器查看失败后的页面状态",
                     reason: "需要人工确认恢复前的页面操作",
-                    createdAt: 1_000,
+                    createdAt: baseNow - 30,
                     actionURL: nil,
                     routingReasonCode: nil,
                     routingExplanation: nil
@@ -1771,14 +5527,14 @@ struct SupervisorManagerAutomationRuntimeTests {
 
         let prepared = try manager.prepareAutomationRun(
             for: ctxA,
-            request: makeRequest(now: Date(timeIntervalSince1970: 1_773_203_060))
+            request: makeRequest(now: Date(timeIntervalSince1970: baseNow - 10))
         )
         _ = try manager.advanceAutomationRun(
             for: ctxA,
             to: .blocked,
             retryAfterSeconds: 120,
             auditRef: "audit-xt-auto-recover-governance-no-leak",
-            now: Date(timeIntervalSince1970: 1_773_203_061)
+            now: Date(timeIntervalSince1970: baseNow - 9)
         )
 
         let recoveryText = try #require(
@@ -1988,7 +5744,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         var project = makeProjectEntry(root: root)
         project.displayName = "亮亮"
 
-        let appModel = AppModel()
+        let appModel = makeTestingAppModel()
         appModel.registry = AXProjectRegistry(
             version: AXProjectRegistry.currentVersion,
             updatedAt: Date().timeIntervalSince1970,
@@ -1997,7 +5753,6 @@ struct SupervisorManagerAutomationRuntimeTests {
             lastSelectedProjectId: project.projectId,
             projects: [project]
         )
-        appModel.selectedProjectId = project.projectId
         manager.setAppModel(appModel)
         manager.setPendingSupervisorSkillApprovalsForTesting(
             [
@@ -2034,7 +5789,7 @@ struct SupervisorManagerAutomationRuntimeTests {
     }
 
     @Test
-    func automationSelfIterateCommandsUpdateProjectConfigAndSelectedSnapshot() throws {
+    func automationSelfIterateCommandsUpdateProjectConfigAndSelectedSnapshot() async throws {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
 
@@ -2048,7 +5803,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
         let project = makeProjectEntry(root: root)
 
-        let appModel = AppModel()
+        let appModel = makeTestingAppModel()
         appModel.registry = AXProjectRegistry(
             version: AXProjectRegistry.currentVersion,
             updatedAt: Date().timeIntervalSince1970,
@@ -2058,6 +5813,7 @@ struct SupervisorManagerAutomationRuntimeTests {
             projects: [project]
         )
         appModel.selectedProjectId = project.projectId
+        await appModel.waitForPendingSelectionWorkForTesting()
         appModel.projectContext = ctx
         appModel.projectConfig = try AXProjectStore.loadOrCreateConfig(for: ctx)
         manager.setAppModel(appModel)
@@ -2084,6 +5840,7 @@ struct SupervisorManagerAutomationRuntimeTests {
 
     @Test
     func automationStartRunExecutesRecipeActionGraphInBackground() async throws {
+        try await Self.runtimeGate.runOnMainActor {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
 
@@ -2108,10 +5865,28 @@ struct SupervisorManagerAutomationRuntimeTests {
             manager.automationCurrentCheckpoint?.state == .delivered
         }
 
+        if manager.automationLatestExecutionReport == nil {
+            let checkpointState = manager.automationCurrentCheckpoint?.state.rawValue ?? "nil"
+            let checkpointTransition = manager.automationCurrentCheckpoint?.lastTransition ?? "nil"
+            let rawLogTail: [String] = (try? Array(rawLogEntries(for: ctx).suffix(6)).map { entry in
+                let type = (entry["type"] as? String) ?? "?"
+                let phase = (entry["phase"] as? String) ?? ""
+                let state = (entry["state"] as? String) ?? ""
+                let detail = (entry["detail"] as? String) ?? ""
+                return [type, phase, state, detail]
+                    .filter { !$0.isEmpty }
+                    .joined(separator: "|")
+            }) ?? []
+            Issue.record(
+                "automation execution missing report status=\(manager.automationStatusLine) checkpoint_state=\(checkpointState) checkpoint_transition=\(checkpointTransition) raw_log_tail=\(rawLogTail.joined(separator: " || "))"
+            )
+        }
+
         #expect(manager.automationLatestExecutionReport?.executedActionCount == 1)
         #expect(manager.automationLatestExecutionReport?.finalState == .delivered)
         let handoffPath = try #require(manager.automationLatestExecutionReport?.handoffArtifactPath)
         #expect(handoffPath.contains("build/reports/xt_automation_run_handoff_"))
+        }
     }
 
     @Test
@@ -2243,6 +6018,8 @@ struct SupervisorManagerAutomationRuntimeTests {
             #expect(userMessage.contains("trigger=automation_safe_point"))
             #expect(userMessage.contains("requested_state=running"))
             #expect(userMessage.contains("injection_id=guidance-auto-safe-point-start-1"))
+            #expect(userMessage.contains("guidance_summary=执行 action graph 前先停下，让 supervisor 重审方案。"))
+            #expect(!userMessage.contains("guidance_text="))
             return """
             1. 先确认为什么要在当前 safe point 暂停。
             2. 对照 guidance 判断是否需要重排 action graph。
@@ -2300,6 +6077,137 @@ struct SupervisorManagerAutomationRuntimeTests {
         } == false)
         #expect(manager.messages.contains {
             $0.role == .assistant && $0.content.contains("先确认为什么要在当前 safe point 暂停")
+        })
+    }
+
+    @Test
+    func automationStartSafePointHoldRunsSupervisorFollowUpOutsideJurisdictionView() async throws {
+        let manager = SupervisorManager.makeForTesting(enableSupervisorEventLoopAutoFollowUp: true)
+        manager.resetAutomationRuntimeState()
+        actor FollowUpFlag {
+            private var hit = false
+            func mark() { hit = true }
+            func value() -> Bool { hit }
+        }
+        let followUpFlag = FollowUpFlag()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+        let friendlyName = "我的世界还原项目"
+        let project = AXProjectEntry(
+            projectId: projectId,
+            rootPath: root.path,
+            displayName: friendlyName,
+            lastOpenedAt: 1_773_200_700,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: nil,
+            currentStateSummary: nil,
+            nextStepSummary: nil,
+            blockerSummary: nil,
+            lastSummaryAt: nil,
+            lastEventAt: nil
+        )
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: nil,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+
+        let jurisdictionNow = Date(timeIntervalSince1970: 1_773_200_700).timeIntervalSince1970
+        let jurisdiction = SupervisorJurisdictionRegistry.ownerDefault(now: jurisdictionNow)
+            .upserting(projectId: projectId, displayName: friendlyName, role: .triageOnly, now: jurisdictionNow)
+        _ = manager.applySupervisorJurisdictionRegistry(jurisdiction, persist: false, normalizeWithKnownProjects: false)
+
+        let counter = ToolCallCounter()
+        manager.installAutomationRunExecutorForTesting(
+            XTAutomationRunExecutor { call, rootURL in
+                await counter.increment(call.tool)
+                return ToolResult(id: call.id, tool: call.tool, ok: true, output: "root=\(rootURL.path)")
+            }
+        )
+        manager.setSupervisorEventLoopResponseOverrideForTesting { userMessage, triggerSource in
+            await followUpFlag.mark()
+            #expect(triggerSource == "automation_safe_point")
+            #expect(userMessage.contains("trigger=automation_safe_point"))
+            #expect(userMessage.contains("project_ref=\(friendlyName)"))
+            #expect(userMessage.contains("requested_state=running"))
+            #expect(userMessage.contains("injection_id=guidance-auto-safe-point-hidden-start-1"))
+            #expect(!userMessage.contains(root.lastPathComponent))
+            return """
+            1. 先解释为什么 hidden 项目要在当前 safe point 暂停。
+            2. 对照 guidance 判断 action graph 是否还要重排。
+            3. 给 coder 一个可执行的下一步。
+            """
+        }
+
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-auto-safe-point-hidden-start-1",
+                reviewId: "review-auto-safe-point-hidden-start-1",
+                projectId: projectId,
+                targetRole: .coder,
+                deliveryMode: .replanRequest,
+                interventionMode: .replanNextSafePoint,
+                safePointPolicy: .checkpointBoundary,
+                guidanceText: "hidden 项目在执行 action graph 前也要先停下，让 supervisor 重审方案。",
+                ackStatus: .pending,
+                ackRequired: true,
+                ackNote: "",
+                injectedAtMs: 1_773_200_700_000,
+                ackUpdatedAtMs: 0,
+                auditRef: "audit-guidance-auto-safe-point-hidden-start-1"
+            ),
+            for: ctx
+        )
+
+        let prepared = try manager.startAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: 1_773_200_701)),
+            emitSystemMessage: false
+        )
+
+        try await waitUntil("hidden automation safe point hold before execution") {
+            manager.automationCurrentCheckpoint?.runID == prepared.launchRef &&
+            manager.automationCurrentCheckpoint?.state == .blocked
+        }
+        await manager.waitForSupervisorEventLoopForTesting()
+
+        #expect(await counter.count(for: .project_snapshot) == 0)
+        #expect(await followUpFlag.value())
+        #expect(manager.automationLatestExecutionReport == nil)
+
+        let rows = try rawLogEntries(for: ctx)
+        #expect(rows.contains {
+            ($0["type"] as? String) == "automation_safe_point_hold" &&
+            ($0["run_id"] as? String) == prepared.launchRef &&
+            ($0["requested_state"] as? String) == XTAutomationRunState.running.rawValue &&
+            ($0["injection_id"] as? String) == "guidance-auto-safe-point-hidden-start-1"
+        })
+        #expect(rows.contains {
+            ($0["type"] as? String) == "automation_execution" &&
+            ($0["phase"] as? String) == "started" &&
+            ($0["run_id"] as? String) == prepared.launchRef
+        } == false)
+        try await waitUntil("hidden start safe point follow-up assistant message visible", timeoutMs: 30_000) {
+            manager.messages.contains {
+                $0.role == .assistant && $0.content.contains("先解释为什么 hidden 项目要在当前 safe point 暂停")
+            }
+        }
+        #expect(manager.messages.contains {
+            $0.role == .assistant && $0.content.contains("先解释为什么 hidden 项目要在当前 safe point 暂停")
         })
     }
 
@@ -2453,7 +6361,6 @@ struct SupervisorManagerAutomationRuntimeTests {
             lastSelectedProjectId: nil,
             projects: [project]
         )
-        appModel.selectedProjectId = projectId
         manager.setAppModel(appModel)
 
         manager.setSupervisorEventLoopResponseOverrideForTesting { userMessage, triggerSource in
@@ -2529,6 +6436,11 @@ struct SupervisorManagerAutomationRuntimeTests {
             ($0["requested_state"] as? String) == XTAutomationRunState.delivered.rawValue &&
             ($0["injection_id"] as? String) == "guidance-auto-safe-point-hidden-1"
         })
+        try await waitUntil("hidden post safe point follow-up assistant message visible", timeoutMs: 30_000) {
+            manager.messages.contains {
+                $0.role == .assistant && $0.content.contains("先检查 hidden automation 产物是否满足交付要求")
+            }
+        }
         #expect(manager.messages.contains {
             $0.role == .assistant && $0.content.contains("先检查 hidden automation 产物是否满足交付要求")
         })
@@ -2536,6 +6448,7 @@ struct SupervisorManagerAutomationRuntimeTests {
 
     @Test
     func automationStartCommandPublishesVerifyAndDiffStatusForMutationRun() async throws {
+        try await Self.runtimeGate.runOnMainActor {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
 
@@ -2599,16 +6512,22 @@ struct SupervisorManagerAutomationRuntimeTests {
 
         let report = try #require(manager.automationLatestExecutionReport)
         #expect(report.finalState == .delivered)
+        #expect(report.deliveryRef == "build/reports/xt_auto_manual_delivery.v1.json")
         #expect(report.verificationReport?.passedCommandCount == 1)
         #expect(report.workspaceDiffReport?.fileCount == 1)
         let handoffPath = try #require(report.handoffArtifactPath)
         #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(handoffPath).path))
 
         let statusText = try #require(manager.performAutomationRuntimeCommand("/automation status \(project.projectId)"))
+        #expect(statusText.contains("delivery_closure_run_id: \(report.runID)"))
+        #expect(statusText.contains("delivery_closure_delivery_ref: build/reports/xt_auto_manual_delivery.v1.json"))
+        #expect(statusText.contains("delivery_closure_source: execution_report"))
         #expect(statusText.contains("last_execution_handoff: \(handoffPath)"))
+        #expect(statusText.contains("last_execution_delivery_ref: build/reports/xt_auto_manual_delivery.v1.json"))
         #expect(statusText.contains("last_execution_verify: 1/1"))
         #expect(statusText.contains("last_execution_diff: 1 files"))
         #expect(statusText.contains("last_execution_diff_detail: diff_captured:1_files"))
+        }
     }
 
     @Test
@@ -2683,15 +6602,54 @@ struct SupervisorManagerAutomationRuntimeTests {
         let sourceRunID = initialReport.runID
         let sourceHandoff = try #require(initialReport.handoffArtifactPath)
         let sourceLineage = try #require(initialReport.lineage)
+        let sourceDeliveryRef = try #require(
+            manager.automationPreparedRun?.verticalSlice.eventRunner.runTimeline.deliveryRef
+        )
         #expect(sourceLineage.rootRunID == sourceRunID)
         #expect(sourceLineage.parentRunID.isEmpty)
         #expect(sourceLineage.retryDepth == 0)
 
+        let preRecoveryStatusText = try #require(
+            manager.performAutomationRuntimeCommand("/automation status \(project.projectId)")
+        )
+        #expect(preRecoveryStatusText.contains("delivery_closure_run_id: \(sourceRunID)"))
+        #expect(preRecoveryStatusText.contains("delivery_closure_delivery_ref: \(sourceDeliveryRef)"))
+        #expect(preRecoveryStatusText.contains("delivery_closure_source: execution_report"))
+        #expect(preRecoveryStatusText.contains("delivery_closure_lineage: \(sourceLineage.lineageID)"))
+        #expect(preRecoveryStatusText.contains("delivery_closure_root_run: \(sourceRunID)"))
+        #expect(preRecoveryStatusText.contains("delivery_closure_retry_depth: 0"))
+        #expect(preRecoveryStatusText.contains("recovery_candidate_automatic_decision: hold"))
+        #expect(preRecoveryStatusText.contains("recovery_candidate_delivery_ref: \(sourceDeliveryRef)"))
+        #expect(preRecoveryStatusText.contains("recovery_candidate_resume_mode: retry_package"))
+        #expect(preRecoveryStatusText.contains("recovery_candidate_retry_strategy: verify_failed_retry"))
+        #expect(preRecoveryStatusText.contains("recovery_candidate_retry_reason: automation_verify_failed"))
+        #expect(preRecoveryStatusText.contains("recovery_candidate_retry_planning_mode: verify_only_retry"))
+        #expect(preRecoveryStatusText.contains("recovery_candidate_retry_source_handoff: \(sourceHandoff)"))
+
         let recoveryText = try #require(manager.performAutomationRuntimeCommand("/automation recover \(project.projectId)"))
+        let scheduledRetryPackage = try #require(manager.automationLatestRetryPackage)
+        let scheduledRetryLineage = try #require(scheduledRetryPackage.lineage)
+        let scheduledRetryRunID = try #require(
+            scheduledRetryPackage.retryRunID.isEmpty ? nil : scheduledRetryPackage.retryRunID
+        )
         #expect(recoveryText.contains("decision: resume"))
+        #expect(recoveryText.contains("delivery_closure_run_id: \(scheduledRetryRunID)"))
+        #expect(recoveryText.contains("delivery_closure_delivery_ref: \(sourceDeliveryRef)"))
+        #expect(recoveryText.contains("delivery_closure_source: retry_package"))
+        #expect(recoveryText.contains("delivery_closure_lineage: \(scheduledRetryLineage.lineageID)"))
+        #expect(recoveryText.contains("delivery_closure_root_run: \(sourceRunID)"))
+        #expect(recoveryText.contains("delivery_closure_parent_run: \(sourceRunID)"))
+        #expect(recoveryText.contains("delivery_closure_retry_depth: 1"))
+        #expect(recoveryText.contains("candidate_delivery_ref: \(sourceDeliveryRef)"))
+        #expect(recoveryText.contains("candidate_resume_mode: retry_package"))
+        #expect(recoveryText.contains("candidate_retry_strategy: verify_failed_retry"))
+        #expect(recoveryText.contains("candidate_retry_reason: automation_verify_failed"))
+        #expect(recoveryText.contains("candidate_retry_planning_mode: verify_only_retry"))
+        #expect(recoveryText.contains("candidate_retry_source_handoff: \(sourceHandoff)"))
         #expect(recoveryText.contains("retry_strategy: verify_failed_retry"))
         #expect(recoveryText.contains("retry_attempt_from_run: \(sourceRunID)"))
         #expect(recoveryText.contains("last_retry_source_handoff: \(sourceHandoff)"))
+        #expect(recoveryText.contains("retry_delivery_ref: \(sourceDeliveryRef)"))
 
         try await waitUntil("retry run prepared") {
             let retryRunID = manager.automationPreparedRun?.launchRef ?? ""
@@ -2701,17 +6659,29 @@ struct SupervisorManagerAutomationRuntimeTests {
         let retryPackage = try #require(manager.automationLatestRetryPackage)
         let retryRunID = try #require(manager.automationPreparedRun?.launchRef)
         let retryLineage = try #require(retryPackage.lineage)
+        let retryDeliveryRef = try #require(
+            manager.automationPreparedRun?.verticalSlice.eventRunner.runTimeline.deliveryRef
+        )
+        let launchRows = try rawLogEntries(for: ctx).filter {
+            ($0["type"] as? String) == "automation_run_launch"
+                && ($0["run_id"] as? String) == retryRunID
+        }
         #expect(retryPackage.sourceRunID == sourceRunID)
+        #expect(retryPackage.deliveryRef == sourceDeliveryRef)
         #expect(retryPackage.sourceHandoffArtifactPath == sourceHandoff)
         #expect(retryLineage.lineageID == sourceLineage.lineageID)
         #expect(retryLineage.rootRunID == sourceRunID)
         #expect(retryLineage.parentRunID == sourceRunID)
         #expect(retryLineage.retryDepth == 1)
+        #expect(retryDeliveryRef == sourceDeliveryRef)
+        #expect(launchRows.contains { ($0["delivery_ref"] as? String) == sourceDeliveryRef })
         #expect(retryPackage.retryStrategy == "verify_failed_retry")
         #expect(retryPackage.planningMode == "verify_only_retry")
         #expect(retryPackage.runtimePatchOverlay != nil)
         #expect(retryPackage.revisedActionGraph?.count == 2)
         #expect(retryPackage.revisedVerifyCommands == ["swift test --filter SmokeTests"])
+        #expect(retryPackage.revisedVerificationContract?.verifyMethod == "project_verify_commands")
+        #expect(retryPackage.revisedVerificationContract?.verifyCommands == ["swift test --filter SmokeTests"])
         #expect(retryPackage.planningArtifactPath?.isEmpty == false)
         #expect(retryPackage.recipeProposalArtifactPath?.isEmpty == false)
         #expect(retryPackage.retryRunID == retryRunID)
@@ -2728,20 +6698,30 @@ struct SupervisorManagerAutomationRuntimeTests {
         }
 
         let statusText = try #require(manager.performAutomationRuntimeCommand("/automation status \(project.projectId)"))
+        #expect(statusText.contains("delivery_closure_run_id: \(retryRunID)"))
+        #expect(statusText.contains("delivery_closure_delivery_ref: \(sourceDeliveryRef)"))
+        #expect(statusText.contains("delivery_closure_source: execution_report"))
+        #expect(statusText.contains("delivery_closure_lineage: \(retryLineage.lineageID)"))
+        #expect(statusText.contains("delivery_closure_root_run: \(sourceRunID)"))
+        #expect(statusText.contains("delivery_closure_parent_run: \(sourceRunID)"))
+        #expect(statusText.contains("delivery_closure_retry_depth: 1"))
         #expect(statusText.contains("retry_attempt_from_run: \(sourceRunID)"))
         #expect(statusText.contains("retry_strategy: verify_failed_retry"))
         #expect(statusText.contains("retry_planning_mode: verify_only_retry"))
         #expect(statusText.contains("retry_lineage: \(retryLineage.lineageID)"))
         #expect(statusText.contains("retry_depth: 1"))
         #expect(statusText.contains("retry_revised_verify_commands: swift test --filter SmokeTests"))
-        #expect(statusText.contains("retry_runtime_patch_overlay_keys: action_graph,verify_commands"))
+        #expect(statusText.contains("retry_revised_verification_method: project_verify_commands"))
+        #expect(statusText.contains("retry_runtime_patch_overlay_keys: action_graph,verification_contract,verify_commands"))
         #expect(statusText.contains("retry_recipe_proposal_artifact: \(recipeProposalArtifactPath)"))
         #expect(statusText.contains("retry_planning_artifact: \(planningArtifactPath)"))
         #expect(statusText.contains("last_retry_source_handoff: \(sourceHandoff)"))
         #expect(statusText.contains("retry_run_id: \(retryRunID)"))
+        #expect(statusText.contains("retry_delivery_ref: \(sourceDeliveryRef)"))
+        #expect(statusText.contains("last_execution_delivery_ref: \(sourceDeliveryRef)"))
         #expect(await counter.count(for: .write_file) == 1)
         #expect(await counter.count(for: .project_snapshot) >= 1)
-    }
+        }
 
     @Test
     func automationRecoverBuildsPatchCheckRetryPackage() async throws {
@@ -2805,6 +6785,7 @@ struct SupervisorManagerAutomationRuntimeTests {
 
     @Test
     func automationSelfIterateAutoRetriesBlockedRunWithinBudget() async throws {
+        try await Self.runtimeGate.runOnMainActor {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
 
@@ -2887,6 +6868,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         #expect(manager.automationLatestRetryPackage?.planningArtifactPath?.isEmpty == false)
         #expect(manager.automationLatestRetryPackage?.recipeProposalArtifactPath?.isEmpty == false)
         #expect(manager.automationLatestRetryPackage?.runtimePatchOverlay != nil)
+        #expect(manager.automationLatestRetryPackage?.revisedVerificationContract?.verifyMethod == "project_verify_commands")
         #expect(manager.automationLatestRetryPackage?.additionalEvidenceRefs.contains("retry://trigger/automatic") == true)
         #expect(manager.automationLatestRetryPackage?.additionalEvidenceRefs.contains("retry://depth/1") == true)
 
@@ -2905,16 +6887,19 @@ struct SupervisorManagerAutomationRuntimeTests {
         #expect(statusText.contains("self_iterate_max_auto_retry_depth: 1"))
         #expect(statusText.contains("retry_trigger: automatic"))
         #expect(statusText.contains("retry_planning_mode: verify_only_retry"))
-        #expect(statusText.contains("retry_runtime_patch_overlay_keys: action_graph,verify_commands"))
+        #expect(statusText.contains("retry_revised_verification_method: project_verify_commands"))
+        #expect(statusText.contains("retry_runtime_patch_overlay_keys: action_graph,verification_contract,verify_commands"))
         #expect(statusText.contains("retry_recipe_proposal_artifact:"))
         #expect(statusText.contains("retry_planning_artifact:"))
         #expect(statusText.contains("retry_run_id: \(retryRunID)"))
         #expect(await counter.count(for: .write_file) == 1)
         #expect(await counter.count(for: .project_snapshot) >= 1)
+        }
     }
 
     @Test
     func automationStatusHydratesExecutionAndRetryFromDiskAfterRestart() async throws {
+        try await Self.runtimeGate.runOnMainActor {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
 
@@ -2994,6 +6979,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         let retryRunID = try #require(manager.automationPreparedRun?.launchRef)
         let retryReport = try #require(manager.automationLatestExecutionReport)
         let retryHandoff = try #require(retryReport.handoffArtifactPath)
+        let retryDeliveryRef = try #require(retryReport.deliveryRef)
         let retryLineage = try #require(retryReport.lineage)
 
         let restartedManager = SupervisorManager.makeForTesting()
@@ -3011,16 +6997,45 @@ struct SupervisorManagerAutomationRuntimeTests {
         #expect(restartedManager.automationStatusLine.contains("受阻"))
 
         let statusText = try #require(restartedManager.performAutomationRuntimeCommand("/automation status \(project.projectId)"))
+        #expect(statusText.contains("continuity_context_source: checkpoint+execution_report+retry_package"))
+        #expect(statusText.contains("continuity_effective_run_id: \(retryRunID)"))
+        #expect(statusText.contains("delivery_closure_run_id: \(retryRunID)"))
+        #expect(statusText.contains("delivery_closure_delivery_ref: \(retryDeliveryRef)"))
+        #expect(statusText.contains("delivery_closure_source: execution_report"))
+        #expect(statusText.contains("delivery_closure_lineage: \(retryLineage.lineageID)"))
+        #expect(statusText.contains("delivery_closure_root_run: \(sourceRunID)"))
+        #expect(statusText.contains("delivery_closure_parent_run: \(sourceRunID)"))
+        #expect(statusText.contains("delivery_closure_retry_depth: 1"))
+        #expect(statusText.contains("last_recovery_run_id: \(sourceRunID)"))
+        #expect(statusText.contains("last_recovery_decision: resume"))
+        #expect(statusText.contains("last_recovery_mode: operator_override"))
+        #expect(statusText.contains("last_recovery_checkpoint_ref:"))
+        #expect(statusText.contains("last_recovery_resume_token:"))
+        #expect(statusText.contains("last_recovery_audit_ref:"))
+        #expect(statusText.contains("last_recovery_resume_mode: retry_package"))
+        #expect(statusText.contains("last_recovery_retry_run_id: \(retryRunID)"))
+        #expect(statusText.contains("last_recovery_retry_strategy: verify_failed_retry"))
+        #expect(statusText.contains("last_recovery_retry_reason: automation_verify_failed"))
+        #expect(statusText.contains("last_recovery_delivery_ref: \(retryDeliveryRef)"))
+        #expect(statusText.contains("last_recovery_delivery_closure_source: retry_package"))
+        #expect(statusText.contains("last_recovery_delivery_closure_run_id: \(retryRunID)"))
+        #expect(statusText.contains("last_recovery_lineage: \(retryLineage.lineageID)"))
+        #expect(statusText.contains("last_recovery_root_run: \(sourceRunID)"))
+        #expect(statusText.contains("last_recovery_parent_run: \(sourceRunID)"))
+        #expect(statusText.contains("last_recovery_retry_depth: 1"))
         #expect(statusText.contains("last_execution_state: blocked"))
         #expect(statusText.contains("last_execution_handoff: \(retryHandoff)"))
+        #expect(statusText.contains("last_execution_delivery_ref: \(retryDeliveryRef)"))
         #expect(statusText.contains("last_execution_verify_hold_reason: automation_verify_failed"))
         #expect(statusText.contains("retry_attempt_from_run: \(sourceRunID)"))
         #expect(statusText.contains("retry_strategy: verify_failed_retry"))
         #expect(statusText.contains("retry_planning_mode: verify_only_retry"))
+        #expect(statusText.contains("retry_delivery_ref: \(retryDeliveryRef)"))
         #expect(statusText.contains("last_execution_lineage: \(retryLineage.lineageID)"))
         #expect(statusText.contains("last_execution_parent_run: \(sourceRunID)"))
         #expect(statusText.contains("retry_lineage: \(retryLineage.lineageID)"))
-        #expect(statusText.contains("retry_runtime_patch_overlay_keys: action_graph,verify_commands"))
+        #expect(statusText.contains("retry_revised_verification_method: project_verify_commands"))
+        #expect(statusText.contains("retry_runtime_patch_overlay_keys: action_graph,verification_contract,verify_commands"))
         #expect(statusText.contains("retry_recipe_proposal_artifact:"))
         #expect(statusText.contains("retry_planning_artifact:"))
         #expect(statusText.contains("last_retry_source_handoff: \(sourceHandoff)"))
@@ -3029,17 +7044,21 @@ struct SupervisorManagerAutomationRuntimeTests {
         #expect(restartedManager.automationCurrentCheckpoint?.runID == retryRunID)
         #expect(restartedManager.automationCurrentCheckpoint?.state == .blocked)
         #expect(restartedManager.automationLatestExecutionReport?.runID == retryRunID)
+        #expect(restartedManager.automationLatestExecutionReport?.deliveryRef == retryDeliveryRef)
         #expect(restartedManager.automationLatestExecutionReport?.handoffArtifactPath == retryHandoff)
         #expect(restartedManager.automationLatestExecutionReport?.lineage?.parentRunID == sourceRunID)
         #expect(restartedManager.automationLatestExecutionReport?.lineage?.retryDepth == 1)
         #expect(restartedManager.automationLatestRetryPackage?.retryRunID == retryRunID)
         #expect(restartedManager.automationLatestRetryPackage?.sourceRunID == sourceRunID)
+        #expect(restartedManager.automationLatestRetryPackage?.deliveryRef == retryDeliveryRef)
         #expect(restartedManager.automationLatestRetryPackage?.lineage?.lineageID == retryLineage.lineageID)
         #expect(restartedManager.automationLatestRetryPackage?.lineage?.retryDepth == 1)
         #expect(restartedManager.automationLatestRetryPackage?.planningMode == "verify_only_retry")
         #expect(restartedManager.automationLatestRetryPackage?.planningArtifactPath?.isEmpty == false)
         #expect(restartedManager.automationLatestRetryPackage?.recipeProposalArtifactPath?.isEmpty == false)
         #expect(restartedManager.automationLatestRetryPackage?.runtimePatchOverlay != nil)
+        #expect(restartedManager.automationLatestRetryPackage?.revisedVerificationContract?.verifyMethod == "project_verify_commands")
+        }
     }
 
     @Test
@@ -3089,11 +7108,29 @@ struct SupervisorManagerAutomationRuntimeTests {
                     ]),
                     "verify_commands": .array([
                         .string("swift test --filter RetryOnly")
+                    ]),
+                    "verification_contract": .object([
+                        "expected_state": .string("retry verification passes"),
+                        "verify_method": .string("project_verify_commands_override"),
+                        "retry_policy": .string("retry_failed_verify_commands_within_budget"),
+                        "hold_policy": .string("block_run_and_emit_structured_blocker"),
+                        "evidence_required": .bool(true),
+                        "trigger_action_ids": .array([.string("resume_failed_action")]),
+                        "verify_commands": .array([.string("swift test --filter RetryOnly")])
                     ])
                 ]
             ),
             proposedActionGraph: [],
             proposedVerifyCommands: [],
+            proposedVerificationContract: XTAutomationVerificationContract(
+                expectedState: "retry verification passes",
+                verifyMethod: "project_verify_commands_override",
+                retryPolicy: "retry_failed_verify_commands_within_budget",
+                holdPolicy: "block_run_and_emit_structured_blocker",
+                evidenceRequired: true,
+                triggerActionIDs: ["resume_failed_action"],
+                verifyCommands: ["swift test --filter RetryOnly"]
+            ),
             suggestedNextActions: ["rerun failed command"],
             additionalEvidenceRefs: ["retry://proposal_mode/resume_from_failed_action"]
         )
@@ -3111,6 +7148,7 @@ struct SupervisorManagerAutomationRuntimeTests {
                 "created_at": 1_773_200_851,
                 "source_run_id": sourceRunID,
                 "retry_run_id": retryRunID,
+                "delivery_ref": "build/reports/xt_auto_manual_delivery.v1.json",
                 "lineage_id": lineage.lineageID,
                 "root_run_id": lineage.rootRunID,
                 "parent_run_id": lineage.parentRunID,
@@ -3132,6 +7170,7 @@ struct SupervisorManagerAutomationRuntimeTests {
             )
         )
         #expect(loaded.recipeProposalArtifactPath == proposalPath)
+        #expect(loaded.deliveryRef == "build/reports/xt_auto_manual_delivery.v1.json")
         #expect(loaded.planningArtifactPath == nil)
         #expect(loaded.planningMode == "resume_from_failed_action")
         #expect(loaded.planningSummary == "resume from the first failed action only")
@@ -3139,6 +7178,8 @@ struct SupervisorManagerAutomationRuntimeTests {
         #expect(loaded.revisedActionGraph?.count == 1)
         #expect(loaded.revisedActionGraph?.first?.tool == .run_command)
         #expect(loaded.revisedVerifyCommands == ["swift test --filter RetryOnly"])
+        #expect(loaded.revisedVerificationContract?.verifyMethod == "project_verify_commands_override")
+        #expect(loaded.revisedVerificationContract?.verifyCommands == ["swift test --filter RetryOnly"])
         #expect(loaded.lineage?.lineageID == lineage.lineageID)
         #expect(loaded.lineage?.parentRunID == sourceRunID)
         #expect(loaded.lineage?.retryDepth == 1)
@@ -3146,6 +7187,7 @@ struct SupervisorManagerAutomationRuntimeTests {
 
     @Test
     func automationRecoverResumesFromFailedActionInsteadOfReplayingSuccessfulPrefix() async throws {
+        try await Self.runtimeGate.runOnMainActor {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
 
@@ -3212,6 +7254,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         #expect(retryPackage.recipeProposalArtifactPath?.isEmpty == false)
         #expect(await counter.count(for: .write_file) == 1)
         #expect(await counter.count(for: .run_command) == 2)
+        }
     }
 
     private func armTrustedAutomation(for ctx: AXProjectContext) throws {
@@ -3264,6 +7307,53 @@ struct SupervisorManagerAutomationRuntimeTests {
             lastSummaryAt: nil,
             lastEventAt: nil
         )
+    }
+
+    private func makeHeartbeatRecoveryLaneSnapshot(
+        projectId: String,
+        status: LaneHealthStatus,
+        blockedReason: LaneBlockedReason?,
+        nextActionRecommendation: String,
+        laneID: String? = nil
+    ) -> SupervisorLaneHealthSnapshot {
+        let projectUUID = UUID(uuidString: oneShotDeterministicUUIDString(seed: projectId))
+        var state = LaneRuntimeState(
+            laneID: laneID ?? "lane-\(blockedReason?.rawValue ?? status.rawValue)",
+            taskId: UUID(),
+            projectId: projectUUID,
+            agentProfile: "coder",
+            status: status,
+            blockedReason: blockedReason,
+            nextActionRecommendation: nextActionRecommendation
+        )
+        state.heartbeatSeq = 4
+        state.lastHeartbeatAtMs = 1_773_384_000_000
+        state.oldestWaitMs = 1_773_383_940_000
+
+        return SupervisorLaneHealthSnapshot(
+            generatedAtMs: 1_773_384_000_000,
+            summary: laneHealthSummary(status: status),
+            lanes: [SupervisorLaneHealthLaneState(state: state)]
+        )
+    }
+
+    private func laneHealthSummary(
+        status: LaneHealthStatus
+    ) -> LaneHealthSummary {
+        LaneHealthSummary(
+            total: 1,
+            running: status == .running ? 1 : 0,
+            blocked: status == .blocked ? 1 : 0,
+            stalled: status == .stalled ? 1 : 0,
+            failed: status == .failed ? 1 : 0,
+            waiting: status == .waiting ? 1 : 0,
+            recovering: status == .recovering ? 1 : 0,
+            completed: status == .completed ? 1 : 0
+        )
+    }
+
+    private func makeTestingAppModel() -> AppModel {
+        AppModel.makeForTesting()
     }
 
     private func makeRecipe() -> AXAutomationRecipeRuntimeBinding {
@@ -3538,7 +7628,10 @@ struct SupervisorManagerAutomationRuntimeTests {
         )
     }
 
-    private func makeManualRequest(now: Date) -> XTAutomationRunRequest {
+    private func makeManualRequest(
+        now: Date,
+        lineage: XTAutomationRunLineage? = nil
+    ) -> XTAutomationRunRequest {
         XTAutomationRunRequest(
             triggerSeeds: [
                 XTAutomationTriggerSeed(
@@ -3551,6 +7644,7 @@ struct SupervisorManagerAutomationRuntimeTests {
                     dedupeKey: "manual|project-a|\(Int(now.timeIntervalSince1970))"
                 )
             ],
+            lineage: lineage,
             blockedTaskID: "XT-W3-25-C",
             upstreamDependencyIDs: ["Hub-Wx"],
             now: now
@@ -3559,7 +7653,7 @@ struct SupervisorManagerAutomationRuntimeTests {
 
     private func waitUntil(
         _ label: String,
-        timeoutMs: UInt64 = 2_000,
+        timeoutMs: UInt64 = 20_000,
         intervalMs: UInt64 = 50,
         condition: @escaping @MainActor @Sendable () -> Bool
     ) async throws {
@@ -3587,5 +7681,74 @@ struct SupervisorManagerAutomationRuntimeTests {
         )
         """
         try package.write(to: packageURL, atomically: true, encoding: .utf8)
+    }
+
+    private func makeGovernedAutomationPendingSkillApproval(
+        requestId: String,
+        project: AXProjectEntry,
+        createdAt: TimeInterval,
+        executionReadiness: String,
+        approvalFloor: String,
+        requiredGrantCapabilities: [String],
+        unblockActions: [String]
+    ) -> SupervisorManager.SupervisorPendingSkillApproval {
+        SupervisorManager.SupervisorPendingSkillApproval(
+            id: requestId,
+            requestId: requestId,
+            projectId: project.projectId,
+            projectName: project.displayName,
+            jobId: "job-1",
+            planId: "plan-1",
+            stepId: "step-1",
+            skillId: "agent-browser",
+            requestedSkillId: "browser.open",
+            toolName: ToolName.deviceBrowserControl.rawValue,
+            tool: .deviceBrowserControl,
+            toolSummary: "打开浏览器查看失败后的页面状态",
+            reason: "需要人工确认恢复前的页面操作",
+            createdAt: createdAt,
+            actionURL: "x-terminal://approval/\(requestId)",
+            routingReasonCode: "preferred_builtin_selected",
+            routingExplanation: "requested entrypoint browser.open converged to preferred builtin guarded-automation · resolved action open",
+            readiness: XTSkillExecutionReadiness(
+                schemaVersion: XTSkillExecutionReadiness.currentSchemaVersion,
+                projectId: project.projectId,
+                skillId: "agent-browser",
+                packageSHA256: "pkg-\(requestId)",
+                publisherID: "xhub.official",
+                policyScope: "hub_governed",
+                intentFamilies: ["browser.observe", "browser.interact"],
+                capabilityFamilies: ["browser.observe", "browser.interact"],
+                capabilityProfiles: ["observe_only", "browser_operator"],
+                discoverabilityState: "discoverable",
+                installabilityState: "installable",
+                pinState: "pinned",
+                resolutionState: "resolved",
+                executionReadiness: executionReadiness,
+                runnableNow: false,
+                denyCode: executionReadiness == XTSkillExecutionReadinessState.grantRequired.rawValue
+                    ? "grant_required"
+                    : "local_approval_required",
+                reasonCode: executionReadiness == XTSkillExecutionReadinessState.grantRequired.rawValue
+                    ? "grant floor privileged requires hub grant"
+                    : "approval floor local_approval requires local confirmation",
+                grantFloor: XTSkillGrantFloor.privileged.rawValue,
+                approvalFloor: approvalFloor,
+                requiredGrantCapabilities: requiredGrantCapabilities,
+                requiredRuntimeSurfaces: ["managed_browser_runtime"],
+                stateLabel: executionReadiness == XTSkillExecutionReadinessState.grantRequired.rawValue
+                    ? "awaiting_hub_grant"
+                    : "awaiting_local_approval",
+                installHint: "",
+                unblockActions: unblockActions,
+                auditRef: "audit-\(requestId)",
+                doctorAuditRef: "",
+                vetterAuditRef: "",
+                resolvedSnapshotId: "snapshot-\(requestId)",
+                grantSnapshotRef: executionReadiness == XTSkillExecutionReadinessState.grantRequired.rawValue
+                    ? "grant-\(requestId)"
+                    : ""
+            )
+        )
     }
 }

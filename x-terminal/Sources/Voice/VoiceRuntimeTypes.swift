@@ -467,6 +467,23 @@ struct VoicePlaybackActivity: Equatable, Sendable {
         }
     }
 
+    var recommendedNextStep: String? {
+        switch state {
+        case .fallbackPlayed:
+            if let detail = Self.normalized(detail) {
+                return detail
+            }
+            if configuredResolution?.fallbackFrom == .hubVoicePack {
+                return "如果你想恢复 Hub 语音包，请打开 Supervisor 设置，检查语音包是否仍在 Hub Library，且本机 Hub IPC 已报告 ready。"
+            }
+            return "当前已经安全回退到系统语音；如果你想恢复原始播放链路，请打开 Supervisor 设置检查当前输出配置。"
+        case .failed:
+            return Self.normalized(detail) ?? "打开 Supervisor 设置，确认当前播放输出链路。"
+        case .idle, .played, .suppressed:
+            return nil
+        }
+    }
+
     private static func normalized(_ value: String) -> String? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
@@ -712,6 +729,28 @@ enum VoiceTranscriptKind: String, Codable, Equatable {
     case revisedFinal = "revised_final"
 }
 
+enum VoiceCaptureSource: String, Codable, Equatable {
+    case manualComposer = "manual_composer"
+    case wakeArmed = "wake_armed"
+    case wakeFollowup = "wake_followup"
+    case continuousConversation = "continuous_conversation"
+    case talkLoop = "talk_loop"
+
+    var autoCommitsOnFinalTranscript: Bool {
+        switch self {
+        case .manualComposer, .wakeArmed:
+            return false
+        case .wakeFollowup, .continuousConversation, .talkLoop:
+            return true
+        }
+    }
+}
+
+enum VoiceCommitTrigger: String, Codable, Equatable {
+    case manualStop = "manual_stop"
+    case finalTranscript = "final_transcript"
+}
+
 struct VoiceTranscriptChunk: Codable, Equatable {
     var kind: VoiceTranscriptKind
     var text: String
@@ -749,6 +788,34 @@ struct VoiceWakeEvent: Identifiable, Codable, Equatable {
         self.id = id
         self.phrase = phrase
         self.route = route
+        self.timestamp = timestamp
+    }
+}
+
+struct VoiceCommittedUtterance: Identifiable, Codable, Equatable {
+    var id: String
+    var text: String
+    var route: VoiceRouteMode
+    var captureSource: VoiceCaptureSource
+    var trigger: VoiceCommitTrigger
+    var wakePhrase: String?
+    var timestamp: Double
+
+    init(
+        id: String = UUID().uuidString.lowercased(),
+        text: String,
+        route: VoiceRouteMode,
+        captureSource: VoiceCaptureSource,
+        trigger: VoiceCommitTrigger,
+        wakePhrase: String? = nil,
+        timestamp: Double = Date().timeIntervalSince1970
+    ) {
+        self.id = id
+        self.text = text
+        self.route = route
+        self.captureSource = captureSource
+        self.trigger = trigger
+        self.wakePhrase = wakePhrase
         self.timestamp = timestamp
     }
 }

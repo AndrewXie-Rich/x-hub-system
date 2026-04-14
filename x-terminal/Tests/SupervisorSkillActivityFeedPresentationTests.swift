@@ -108,13 +108,83 @@ struct SupervisorSkillActivityFeedPresentationTests {
         #expect(presentation.actionableCount == 0)
     }
 
+    @Test
+    func mapClassifiesAwaitingAuthorizationUsingGovernedReadinessBeforeCapabilityFallback() {
+        let localApproval = activity(
+            requestId: "local-readiness",
+            skillId: "guarded-automation",
+            status: .awaitingAuthorization,
+            requiredCapability: "web.fetch",
+            readinessState: .localApprovalRequired,
+            updatedAtMs: 4_000
+        )
+        let hubGrant = activity(
+            requestId: "grant-readiness",
+            skillId: "agent-browser",
+            status: .awaitingAuthorization,
+            requiredCapability: nil,
+            readinessState: .grantRequired,
+            updatedAtMs: 3_000
+        )
+
+        let presentation = SupervisorSkillActivityFeedPresentation.map(
+            items: [hubGrant, localApproval]
+        )
+
+        #expect(presentation.summaryLine.contains("可处理 2"))
+        #expect(presentation.summaryLine.contains("本地审批 1"))
+        #expect(presentation.summaryLine.contains("Hub 授权 1"))
+        #expect(presentation.items.map(\.requestId) == [
+            "local-readiness",
+            "grant-readiness"
+        ])
+    }
+
     private func activity(
         requestId: String,
         skillId: String,
         status: SupervisorSkillCallStatus,
         requiredCapability: String? = nil,
+        readinessState: XTSkillExecutionReadinessState? = nil,
         updatedAtMs: Int64
     ) -> SupervisorManager.SupervisorRecentSkillActivity {
+        let readiness = readinessState.map { state in
+            XTSkillExecutionReadiness(
+                schemaVersion: XTSkillExecutionReadiness.currentSchemaVersion,
+                projectId: "project-alpha",
+                skillId: skillId,
+                packageSHA256: String(repeating: "f", count: 64),
+                publisherID: "xt_builtin",
+                policyScope: "xt_builtin",
+                intentFamilies: ["browser.navigate"],
+                capabilityFamilies: ["repo.read", "browser.interact"],
+                capabilityProfiles: ["observe_only", "browser_operator"],
+                discoverabilityState: "discoverable",
+                installabilityState: "installable",
+                pinState: "xt_builtin",
+                resolutionState: "resolved",
+                executionReadiness: state.rawValue,
+                runnableNow: false,
+                denyCode: state == .grantRequired ? "grant_required" : "local_approval_required",
+                reasonCode: state == .grantRequired
+                    ? "grant floor privileged requires hub grant"
+                    : "approval floor local_approval requires local confirmation",
+                grantFloor: XTSkillGrantFloor.privileged.rawValue,
+                approvalFloor: state == .grantRequired
+                    ? XTSkillApprovalFloor.hubGrant.rawValue
+                    : XTSkillApprovalFloor.localApproval.rawValue,
+                requiredGrantCapabilities: state == .grantRequired ? ["browser.interact"] : [],
+                requiredRuntimeSurfaces: ["managed_browser_runtime"],
+                stateLabel: XTSkillCapabilityProfileSupport.readinessLabel(state.rawValue),
+                installHint: "",
+                unblockActions: state == .grantRequired ? ["request_hub_grant"] : ["request_local_approval"],
+                auditRef: "audit-readiness-\(requestId)",
+                doctorAuditRef: "",
+                vetterAuditRef: "",
+                resolvedSnapshotId: "snapshot-\(requestId)",
+                grantSnapshotRef: ""
+            )
+        }
         let record = SupervisorSkillCallRecord(
             schemaVersion: SupervisorSkillCallRecord.currentSchemaVersion,
             requestId: requestId,
@@ -130,6 +200,7 @@ struct SupervisorSkillActivityFeedPresentationTests {
             resultSummary: "",
             denyCode: "",
             resultEvidenceRef: nil,
+            readiness: readiness,
             requiredCapability: requiredCapability,
             grantRequestId: requiredCapability == nil ? nil : "grant-\(requestId)",
             grantId: nil,

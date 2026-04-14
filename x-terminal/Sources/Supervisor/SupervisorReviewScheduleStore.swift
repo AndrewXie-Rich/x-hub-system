@@ -8,7 +8,7 @@ enum SupervisorReviewRunKind: String, Codable, CaseIterable, Sendable {
 }
 
 struct SupervisorReviewScheduleState: Equatable, Codable, Sendable {
-    static let currentSchemaVersion = "xt.supervisor_review_schedule.v1"
+    static let currentSchemaVersion = "xt.supervisor_review_schedule.v3"
 
     var schemaVersion: String
     var projectId: String
@@ -21,6 +21,13 @@ struct SupervisorReviewScheduleState: Equatable, Codable, Sendable {
     var nextHeartbeatDueAtMs: Int64
     var nextPulseReviewDueAtMs: Int64
     var nextBrainstormReviewDueAtMs: Int64
+    var latestQualitySnapshot: HeartbeatQualitySnapshot?
+    var openAnomalies: [HeartbeatAnomalyNote]
+    var lastHeartbeatFingerprint: String
+    var lastHeartbeatRepeatCount: Int
+    var latestProjectPhase: HeartbeatProjectPhase?
+    var latestExecutionStatus: HeartbeatExecutionStatus?
+    var latestRiskTier: HeartbeatRiskTier?
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -34,6 +41,13 @@ struct SupervisorReviewScheduleState: Equatable, Codable, Sendable {
         case nextHeartbeatDueAtMs = "next_heartbeat_due_at_ms"
         case nextPulseReviewDueAtMs = "next_pulse_review_due_at_ms"
         case nextBrainstormReviewDueAtMs = "next_brainstorm_review_due_at_ms"
+        case latestQualitySnapshot = "latest_quality_snapshot"
+        case openAnomalies = "open_anomalies"
+        case lastHeartbeatFingerprint = "last_heartbeat_fingerprint"
+        case lastHeartbeatRepeatCount = "last_heartbeat_repeat_count"
+        case latestProjectPhase = "latest_project_phase"
+        case latestExecutionStatus = "latest_execution_status"
+        case latestRiskTier = "latest_risk_tier"
     }
 
     init(
@@ -47,7 +61,14 @@ struct SupervisorReviewScheduleState: Equatable, Codable, Sendable {
         lastTriggerReviewAtMs: [String: Int64],
         nextHeartbeatDueAtMs: Int64,
         nextPulseReviewDueAtMs: Int64,
-        nextBrainstormReviewDueAtMs: Int64
+        nextBrainstormReviewDueAtMs: Int64,
+        latestQualitySnapshot: HeartbeatQualitySnapshot? = nil,
+        openAnomalies: [HeartbeatAnomalyNote] = [],
+        lastHeartbeatFingerprint: String = "",
+        lastHeartbeatRepeatCount: Int = 0,
+        latestProjectPhase: HeartbeatProjectPhase? = nil,
+        latestExecutionStatus: HeartbeatExecutionStatus? = nil,
+        latestRiskTier: HeartbeatRiskTier? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.projectId = projectId
@@ -60,6 +81,13 @@ struct SupervisorReviewScheduleState: Equatable, Codable, Sendable {
         self.nextHeartbeatDueAtMs = nextHeartbeatDueAtMs
         self.nextPulseReviewDueAtMs = nextPulseReviewDueAtMs
         self.nextBrainstormReviewDueAtMs = nextBrainstormReviewDueAtMs
+        self.latestQualitySnapshot = latestQualitySnapshot
+        self.openAnomalies = openAnomalies
+        self.lastHeartbeatFingerprint = lastHeartbeatFingerprint
+        self.lastHeartbeatRepeatCount = max(0, lastHeartbeatRepeatCount)
+        self.latestProjectPhase = latestProjectPhase
+        self.latestExecutionStatus = latestExecutionStatus
+        self.latestRiskTier = latestRiskTier
     }
 
     init(from decoder: Decoder) throws {
@@ -75,6 +103,13 @@ struct SupervisorReviewScheduleState: Equatable, Codable, Sendable {
         nextHeartbeatDueAtMs = max(0, (try? c.decode(Int64.self, forKey: .nextHeartbeatDueAtMs)) ?? 0)
         nextPulseReviewDueAtMs = max(0, (try? c.decode(Int64.self, forKey: .nextPulseReviewDueAtMs)) ?? 0)
         nextBrainstormReviewDueAtMs = max(0, (try? c.decode(Int64.self, forKey: .nextBrainstormReviewDueAtMs)) ?? 0)
+        latestQualitySnapshot = try? c.decode(HeartbeatQualitySnapshot.self, forKey: .latestQualitySnapshot)
+        openAnomalies = (try? c.decode([HeartbeatAnomalyNote].self, forKey: .openAnomalies)) ?? []
+        lastHeartbeatFingerprint = (try? c.decode(String.self, forKey: .lastHeartbeatFingerprint)) ?? ""
+        lastHeartbeatRepeatCount = max(0, (try? c.decode(Int.self, forKey: .lastHeartbeatRepeatCount)) ?? 0)
+        latestProjectPhase = try? c.decode(HeartbeatProjectPhase.self, forKey: .latestProjectPhase)
+        latestExecutionStatus = try? c.decode(HeartbeatExecutionStatus.self, forKey: .latestExecutionStatus)
+        latestRiskTier = try? c.decode(HeartbeatRiskTier.self, forKey: .latestRiskTier)
     }
 }
 
@@ -95,14 +130,19 @@ enum SupervisorReviewScheduleStore {
         for ctx: AXProjectContext,
         config: AXProjectConfig,
         observedProgressAtMs: Int64? = nil,
+        assessment: HeartbeatAssessmentResult? = nil,
         nowMs: Int64
     ) throws -> SupervisorReviewScheduleState {
         var state = load(for: ctx)
         state.projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+        let previousEscalatedAnomalySignatures = escalatedHeartbeatAnomalySignatures(
+            from: state.openAnomalies
+        )
         state.lastHeartbeatAtMs = max(state.lastHeartbeatAtMs, nowMs)
         state.updatedAtMs = max(state.updatedAtMs, nowMs)
         state.nextHeartbeatDueAtMs = dueAt(baseMs: nowMs, seconds: config.progressHeartbeatSeconds)
-        let sanitizedObservedProgressAtMs = max(0, observedProgressAtMs ?? 0)
+        let assessmentObservedProgressAtMs = max(0, assessment?.meaningfulProgressAtMs ?? 0)
+        let sanitizedObservedProgressAtMs = max(max(0, observedProgressAtMs ?? 0), assessmentObservedProgressAtMs)
         let resolvedObservedProgressAtMs: Int64
         if sanitizedObservedProgressAtMs > 0 {
             resolvedObservedProgressAtMs = sanitizedObservedProgressAtMs
@@ -112,6 +152,15 @@ enum SupervisorReviewScheduleStore {
             resolvedObservedProgressAtMs = nowMs
         }
         state.lastObservedProgressAtMs = max(state.lastObservedProgressAtMs, resolvedObservedProgressAtMs)
+        if let assessment {
+            state.latestQualitySnapshot = assessment.qualitySnapshot
+            state.openAnomalies = assessment.openAnomalies
+            state.lastHeartbeatFingerprint = assessment.heartbeatFingerprint
+            state.lastHeartbeatRepeatCount = max(0, assessment.repeatCount)
+            state.latestProjectPhase = assessment.projectPhase
+            state.latestExecutionStatus = assessment.executionStatus
+            state.latestRiskTier = assessment.riskTier
+        }
         if state.nextPulseReviewDueAtMs <= 0 {
             state.nextPulseReviewDueAtMs = dueAt(baseMs: nowMs, seconds: config.reviewPulseSeconds)
         }
@@ -119,7 +168,21 @@ enum SupervisorReviewScheduleStore {
             baseMs: state.lastObservedProgressAtMs > 0 ? state.lastObservedProgressAtMs : nowMs,
             seconds: config.brainstormReviewSeconds
         )
+        let currentEscalatedAnomalySignatures = escalatedHeartbeatAnomalySignatures(
+            from: state.openAnomalies
+        )
+        let shouldInvalidateRemoteMemoryCache = !currentEscalatedAnomalySignatures.isEmpty
+            && !currentEscalatedAnomalySignatures.isSubset(of: previousEscalatedAnomalySignatures)
         try save(state, for: ctx)
+        if shouldInvalidateRemoteMemoryCache {
+            let projectId = state.projectId
+            Task {
+                await HubIPCClient.noteProjectRemoteMemoryHeartbeatAnomalyEscalated(
+                    projectId: projectId
+                )
+                await HubIPCClient.noteSupervisorRemoteMemoryHeartbeatAnomalyEscalated()
+            }
+        }
         return state
     }
 
@@ -176,12 +239,34 @@ enum SupervisorReviewScheduleStore {
             lastTriggerReviewAtMs: [:],
             nextHeartbeatDueAtMs: 0,
             nextPulseReviewDueAtMs: 0,
-            nextBrainstormReviewDueAtMs: 0
+            nextBrainstormReviewDueAtMs: 0,
+            latestQualitySnapshot: nil,
+            openAnomalies: [],
+            lastHeartbeatFingerprint: "",
+            lastHeartbeatRepeatCount: 0,
+            latestProjectPhase: nil,
+            latestExecutionStatus: nil,
+            latestRiskTier: nil
         )
     }
 
     private static func dueAt(baseMs: Int64, seconds: Int) -> Int64 {
         guard seconds > 0 else { return 0 }
         return max(0, baseMs) + Int64(seconds) * 1000
+    }
+
+    private static func escalatedHeartbeatAnomalySignatures(
+        from anomalies: [HeartbeatAnomalyNote]
+    ) -> Set<String> {
+        Set(
+            anomalies.compactMap { anomaly in
+                switch anomaly.recommendedEscalation {
+                case .strategicReview, .rescueReview, .replan, .stop:
+                    return "\(anomaly.anomalyType.rawValue):\(anomaly.recommendedEscalation.rawValue)"
+                case .observe, .pulseReview:
+                    return nil
+                }
+            }
+        )
     }
 }

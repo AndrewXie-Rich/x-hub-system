@@ -38,6 +38,46 @@ struct SupervisorProjectDrillDownTests {
             eventReviewTriggers: [.blockerDetected, .planDrift, .preDoneSummary]
         )
         try AXProjectStore.saveConfig(config, for: ctx)
+        _ = try SupervisorReviewScheduleStore.touchHeartbeat(
+            for: ctx,
+            config: config,
+            observedProgressAtMs: Int64(now * 1000) - 8 * 60_000,
+            assessment: HeartbeatAssessmentResult(
+                meaningfulProgressAtMs: Int64(now * 1000) - 8 * 60_000,
+                qualitySnapshot: HeartbeatQualitySnapshot(
+                    overallScore: 84,
+                    overallBand: .strong,
+                    freshnessScore: 88,
+                    deltaSignificanceScore: 82,
+                    evidenceStrengthScore: 86,
+                    blockerClarityScore: 80,
+                    nextActionSpecificityScore: 84,
+                    executionVitalityScore: 83,
+                    completionConfidenceScore: 79,
+                    weakReasons: [],
+                    computedAtMs: Int64(now * 1000) - 2 * 60_000
+                ),
+                openAnomalies: [],
+                heartbeatFingerprint: "working|implementing drill-down|check recent turns|",
+                repeatCount: 0
+            ),
+            nowMs: Int64(now * 1000) - 2 * 60_000
+        )
+        let heartbeatProjection = writeHeartbeatProjection(
+            ctx: ctx,
+            projectId: project.projectId,
+            projectName: project.displayName,
+            visibility: .shown,
+            reasonCodes: ["cadence_projection_available"],
+            whatChangedText: "Supervisor heartbeat has a fresh scoped projection.",
+            whyImportantText: "Drill-down should expose the same heartbeat refs without opening raw logs.",
+            systemNextStepText: "Keep the scoped heartbeat projection attached to supervisor drill-down.",
+            statusDigest: project.statusDigest ?? "Heartbeat projection available",
+            currentStateSummary: project.currentStateSummary ?? "Supervisor drill-down is active",
+            nextStepSummary: project.nextStepSummary ?? "Check recent turns",
+            blockerSummary: project.blockerSummary ?? ""
+        )
+        _ = try #require(heartbeatProjection)
         AXRecentContextStore.appendUserMessage(ctx: ctx, text: "Need the latest status", createdAt: now - 3)
         AXRecentContextStore.appendAssistantMessage(ctx: ctx, text: "Working on the local contract", createdAt: now - 2)
         try SupervisorProjectSpecCapsuleStore.upsert(
@@ -232,11 +272,21 @@ struct SupervisorProjectDrillDownTests {
         #expect(snapshot.pendingAckGuidance?.injectionId == "guidance-1")
         #expect(snapshot.followUpRhythmSummary?.contains("blocker cooldown") == true)
         #expect(snapshot.followUpRhythmSummary?.contains("Execution Ready") == true)
+        let cadence = try #require(snapshot.cadenceExplainability)
+        #expect(cadence.progressHeartbeat.effectiveSeconds == 600)
+        #expect(cadence.reviewPulse.effectiveSeconds == 1200)
+        #expect(cadence.brainstormReview.effectiveSeconds == 2400)
+        #expect(cadence.progressHeartbeat.effectiveReasonCodes == ["preserve_current_runtime_cadence"])
+        #expect(cadence.reviewPulse.effectiveReasonCodes == ["preserve_current_runtime_cadence"])
+        #expect(cadence.brainstormReview.effectiveReasonCodes == ["preserve_current_runtime_cadence"])
         #expect(snapshot.workflow?.activeJob?.jobId == "job-1")
         #expect(snapshot.recentMessages.count == 2)
         #expect(snapshot.refs.contains(where: { $0.contains("xterminal.project.capsule.summary_json") }))
         #expect(snapshot.refs.contains(where: { $0.contains("xterminal.project.action.summary_json") }))
         #expect(snapshot.refs.contains(AXRecentContextStore.jsonURL(for: ctx).path))
+        #expect(snapshot.refs.contains(ctx.xterminalDir.appendingPathComponent("supervisor_review_schedule.json").path))
+        #expect(snapshot.refs.contains(ctx.heartbeatMemoryProjectionURL.path))
+        #expect(snapshot.refs.contains("hub://project/\(project.projectId)/canonical/xterminal.project.heartbeat.summary_json"))
         #expect(snapshot.refs.contains(ctx.xterminalDir.appendingPathComponent("supervisor_project_spec_capsule.json").path))
         #expect(snapshot.refs.contains(ctx.supervisorReviewNotesURL.path))
         #expect(snapshot.refs.contains(ctx.supervisorGuidanceInjectionsURL.path))
@@ -388,9 +438,122 @@ struct SupervisorProjectDrillDownTests {
         let rollup = try #require(snapshot.memoryCompactionRollup)
         #expect(rollup.archiveCandidate)
         #expect(rollup.keptDecisionIds == ["dec_archive_ui"])
-        #expect(Set(rollup.archivedNodeIds) == Set(["recent-0", "recent-1"]))
-        #expect(snapshot.refs.contains(AXRecentContextStore.jsonURL(for: ctx).path))
+        #expect(rollup.archivedNodeIds.isEmpty)
+        #expect(rollup.policyReasons.contains("completed_project_is_archive_candidate"))
+        #expect(!snapshot.refs.contains(AXRecentContextStore.jsonURL(for: ctx).path))
         #expect(snapshot.refs.contains("audit_archive_ui"))
         #expect(snapshot.refs.contains("build/reports/xt_w3_33_g_memory_compaction_evidence.v1.json"))
+    }
+
+    private func writeHeartbeatProjection(
+        ctx: AXProjectContext,
+        projectId: String,
+        projectName: String,
+        visibility: XTHeartbeatDigestVisibilityDecision,
+        reasonCodes: [String],
+        whatChangedText: String,
+        whyImportantText: String,
+        systemNextStepText: String,
+        statusDigest: String,
+        currentStateSummary: String,
+        nextStepSummary: String,
+        blockerSummary: String
+    ) -> XTHeartbeatMemoryProjectionArtifact? {
+        let updatedAtMs: Int64 = 1_773_500_001_000
+        let schedule = SupervisorReviewScheduleState(
+            schemaVersion: SupervisorReviewScheduleState.currentSchemaVersion,
+            projectId: projectId,
+            updatedAtMs: updatedAtMs,
+            lastHeartbeatAtMs: updatedAtMs,
+            lastObservedProgressAtMs: updatedAtMs - 8 * 60_000,
+            lastPulseReviewAtMs: 0,
+            lastBrainstormReviewAtMs: 0,
+            lastTriggerReviewAtMs: [:],
+            nextHeartbeatDueAtMs: updatedAtMs + 300_000,
+            nextPulseReviewDueAtMs: updatedAtMs + 1_200_000,
+            nextBrainstormReviewDueAtMs: updatedAtMs + 2_400_000,
+            latestQualitySnapshot: nil,
+            openAnomalies: [],
+            lastHeartbeatFingerprint: "hb-\(projectId)",
+            lastHeartbeatRepeatCount: 1,
+            latestProjectPhase: .build,
+            latestExecutionStatus: .active,
+            latestRiskTier: .low
+        )
+        let snapshot = XTProjectHeartbeatGovernanceDoctorSnapshot(
+            projectId: projectId,
+            projectName: projectName,
+            statusDigest: statusDigest,
+            currentStateSummary: currentStateSummary,
+            nextStepSummary: nextStepSummary,
+            blockerSummary: blockerSummary,
+            lastHeartbeatAtMs: updatedAtMs,
+            latestQualityBand: .strong,
+            latestQualityScore: 84,
+            weakReasons: [],
+            openAnomalyTypes: [],
+            projectPhase: .build,
+            executionStatus: .active,
+            riskTier: .low,
+            cadence: makeHeartbeatCadence(updatedAtMs: updatedAtMs),
+            digestExplainability: XTHeartbeatDigestExplainability(
+                visibility: visibility,
+                reasonCodes: reasonCodes,
+                whatChangedText: whatChangedText,
+                whyImportantText: whyImportantText,
+                systemNextStepText: systemNextStepText
+            ),
+            recoveryDecision: nil,
+            projectMemoryReadiness: nil
+        )
+        let canonical = SupervisorProjectHeartbeatCanonicalSync.record(
+            snapshot: snapshot,
+            generatedAtMs: updatedAtMs
+        )
+        return XTHeartbeatMemoryProjectionStore.record(
+            ctx: ctx,
+            snapshot: snapshot,
+            schedule: schedule,
+            canonicalRecord: canonical,
+            generatedAtMs: updatedAtMs
+        )
+    }
+
+    private func makeHeartbeatCadence(
+        updatedAtMs: Int64
+    ) -> SupervisorCadenceExplainability {
+        SupervisorCadenceExplainability(
+            progressHeartbeat: SupervisorCadenceDimensionExplainability(
+                dimension: .progressHeartbeat,
+                configuredSeconds: 600,
+                recommendedSeconds: 600,
+                effectiveSeconds: 600,
+                effectiveReasonCodes: ["preserve_current_runtime_cadence"],
+                nextDueAtMs: updatedAtMs + 600_000,
+                nextDueReasonCodes: ["heartbeat_active"],
+                isDue: false
+            ),
+            reviewPulse: SupervisorCadenceDimensionExplainability(
+                dimension: .reviewPulse,
+                configuredSeconds: 1200,
+                recommendedSeconds: 1200,
+                effectiveSeconds: 1200,
+                effectiveReasonCodes: ["preserve_current_runtime_cadence"],
+                nextDueAtMs: updatedAtMs + 1_200_000,
+                nextDueReasonCodes: ["pulse_pending"],
+                isDue: false
+            ),
+            brainstormReview: SupervisorCadenceDimensionExplainability(
+                dimension: .brainstormReview,
+                configuredSeconds: 2400,
+                recommendedSeconds: 2400,
+                effectiveSeconds: 2400,
+                effectiveReasonCodes: ["preserve_current_runtime_cadence"],
+                nextDueAtMs: updatedAtMs + 2_400_000,
+                nextDueReasonCodes: ["brainstorm_pending"],
+                isDue: false
+            ),
+            eventFollowUpCooldownSeconds: 120
+        )
     }
 }

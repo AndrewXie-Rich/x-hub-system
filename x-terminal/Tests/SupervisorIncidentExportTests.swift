@@ -289,6 +289,37 @@ struct SupervisorIncidentExportTests {
 
     @MainActor
     @Test
+    func xtReadyIncidentExportSnapshotTreatsMissingScopedHiddenRecoveryAsStrictMemoryIssue() async throws {
+        try await Self.gate.runOnMainActor { @MainActor in
+            let base = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xt_ready_scoped_recovery_risk_\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            HubPaths.setBaseDirOverride(base)
+            defer {
+                HubPaths.setBaseDirOverride(nil)
+                try? FileManager.default.removeItem(at: base)
+            }
+
+            let manager = SupervisorManager.makeForTesting()
+            manager.setSupervisorIncidentLedgerForTesting(makeReadyIncidentLedger())
+            manager.setSupervisorMemoryAssemblySnapshotForTesting(
+                makeMemorySnapshot(
+                    scopedPromptRecoveryMode: "explicit_hidden_project_focus",
+                    scopedPromptRecoverySections: []
+                )
+            )
+
+            let snapshot = manager.xtReadyIncidentExportSnapshot(limit: 20)
+
+            #expect(snapshot.memoryAssemblyReady == false)
+            #expect(snapshot.memoryAssemblyIssues.contains("memory_scoped_hidden_project_recovery_missing"))
+            #expect(snapshot.strictE2EReady == false)
+            #expect(snapshot.strictE2EIssues.contains("memory:memory_scoped_hidden_project_recovery_missing"))
+        }
+    }
+
+    @MainActor
+    @Test
     func exportReportPersistsMemoryAssemblySummary() async throws {
         try await Self.gate.runOnMainActor { @MainActor in
             let base = FileManager.default.temporaryDirectory
@@ -331,6 +362,332 @@ struct SupervisorIncidentExportTests {
             #expect((summary?["durable_candidate_mirror_attempted"] as? Bool) == true)
             #expect((summary?["durable_candidate_mirror_error_code"] as? String) == "remote_route_not_preferred")
             #expect((summary?["durable_candidate_local_store_role"] as? String) == XTSupervisorDurableCandidateMirror.localStoreRole)
+        }
+    }
+
+    @MainActor
+    @Test
+    func exportReportPersistsFreshPairReconnectSmokeSummary() async throws {
+        try await Self.gate.runOnMainActor { @MainActor in
+            let base = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xt_ready_export_fresh_pair_smoke_\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let envKey = "XTERMINAL_WORKSPACE_ROOT"
+            let previous = ProcessInfo.processInfo.environment[envKey]
+            setenv(envKey, base.path, 1)
+            defer {
+                if let previous {
+                    setenv(envKey, previous, 1)
+                } else {
+                    unsetenv(envKey)
+                }
+                try? FileManager.default.removeItem(at: base)
+            }
+
+            let smoke = SupervisorManager.XTFreshPairReconnectSmokeDiagnosisSnapshot(
+                source: XTFreshPairReconnectSmokeSource.manualOneClickSetup.rawValue,
+                status: XTFreshPairReconnectSmokeStatus.failed.rawValue,
+                route: HubRemoteRoute.none.rawValue,
+                triggeredAtMs: 1_741_300_010_000,
+                completedAtMs: 1_741_300_011_000,
+                reasonCode: "grpc_unavailable",
+                summary: "first pair complete, but cached reconnect verification failed."
+            )
+            try writeXTDoctorReport(
+                sampleXTFreshPairReconnectSmokeReport(
+                    outputPath: XHubDoctorOutputStore.defaultXTReportURL(workspaceRoot: base).path,
+                    smoke: smoke
+                ),
+                in: base
+            )
+
+            let manager = SupervisorManager.makeForTesting()
+            manager.setSupervisorIncidentLedgerForTesting(makeReadyIncidentLedger())
+            manager.setSupervisorMemoryAssemblySnapshotForTesting(makeMemorySnapshot())
+
+            let outputURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+                .appendingPathComponent("xt_ready_incident_export_smoke_\(UUID().uuidString).json")
+            let result = manager.exportXTReadyIncidentEventsReport(outputURL: outputURL, limit: 20)
+            #expect(result.ok)
+
+            let data = try Data(contentsOf: outputURL)
+            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let summary = json?["summary"] as? [String: Any]
+            let smokeSummary = summary?["fresh_pair_reconnect_smoke"] as? [String: Any]
+
+            #expect((smokeSummary?["source"] as? String) == XTFreshPairReconnectSmokeSource.manualOneClickSetup.rawValue)
+            #expect((smokeSummary?["status"] as? String) == XTFreshPairReconnectSmokeStatus.failed.rawValue)
+            #expect((smokeSummary?["route"] as? String) == HubRemoteRoute.none.rawValue)
+            #expect((smokeSummary?["triggered_at_ms"] as? Int64) == 1_741_300_010_000)
+            #expect((smokeSummary?["completed_at_ms"] as? Int64) == 1_741_300_011_000)
+            #expect((smokeSummary?["reason_code"] as? String) == "grpc_unavailable")
+            #expect((smokeSummary?["summary"] as? String) == "first pair complete, but cached reconnect verification failed.")
+        }
+    }
+
+    @MainActor
+    @Test
+    func exportReportPersistsConnectivityIncidentSummary() async throws {
+        try await Self.gate.runOnMainActor { @MainActor in
+            let base = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xt_ready_export_connectivity_incident_\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let envKey = "XTERMINAL_WORKSPACE_ROOT"
+            let previous = ProcessInfo.processInfo.environment[envKey]
+            setenv(envKey, base.path, 1)
+            defer {
+                if let previous {
+                    setenv(envKey, previous, 1)
+                } else {
+                    unsetenv(envKey)
+                }
+                try? FileManager.default.removeItem(at: base)
+            }
+
+            let connectivityIncident = XHubDoctorOutputConnectivityIncidentSnapshot(
+                schemaVersion: XTHubConnectivityIncidentSnapshot.currentSchemaVersion,
+                incidentState: "waiting",
+                reasonCode: "local_pairing_ready",
+                summaryLine: "current network is not same-LAN; waiting to return to LAN or add a formal remote route.",
+                trigger: XTHubConnectivityDecisionTrigger.backgroundKeepalive.rawValue,
+                decisionReasonCode: "waiting_for_same_lan_or_formal_remote_route",
+                pairedRouteReadiness: XTPairedRouteReadiness.localReady.rawValue,
+                stableRemoteRouteHost: nil,
+                currentFailureCode: nil,
+                currentPath: XHubDoctorOutputConnectivityIncidentPathSnapshot(
+                    statusKey: "satisfied",
+                    usesWiFi: false,
+                    usesWiredEthernet: false,
+                    usesCellular: true,
+                    isExpensive: true,
+                    isConstrained: false
+                ),
+                lastUpdatedAtMs: 1_741_300_016_000
+            )
+            try writeXTDoctorReport(
+                sampleXTDoctorOutputReport(
+                    outputPath: XHubDoctorOutputStore.defaultXTReportURL(workspaceRoot: base).path,
+                    connectivityIncident: connectivityIncident
+                ),
+                in: base
+            )
+
+            let manager = SupervisorManager.makeForTesting()
+            manager.setSupervisorIncidentLedgerForTesting(makeReadyIncidentLedger())
+            manager.setSupervisorMemoryAssemblySnapshotForTesting(makeMemorySnapshot())
+
+            let outputURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+                .appendingPathComponent("xt_ready_incident_export_connectivity_\(UUID().uuidString).json")
+            defer { try? FileManager.default.removeItem(at: outputURL) }
+
+            let result = manager.exportXTReadyIncidentEventsReport(outputURL: outputURL, limit: 20)
+            #expect(result.ok)
+
+            let data = try Data(contentsOf: outputURL)
+            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let summary = json?["summary"] as? [String: Any]
+            let connectivity = summary?["connectivity_incident"] as? [String: Any]
+            let path = connectivity?["current_path"] as? [String: Any]
+
+            #expect((connectivity?["incident_state"] as? String) == "waiting")
+            #expect((connectivity?["reason_code"] as? String) == "local_pairing_ready")
+            #expect((connectivity?["decision_reason_code"] as? String) == "waiting_for_same_lan_or_formal_remote_route")
+            #expect((connectivity?["paired_route_readiness"] as? String) == "local_ready")
+            #expect((connectivity?["summary_line"] as? String) == "current network is not same-LAN; waiting to return to LAN or add a formal remote route.")
+            #expect((path?["status_key"] as? String) == "satisfied")
+            #expect((path?["uses_cellular"] as? Bool) == true)
+        }
+    }
+
+    @MainActor
+    @Test
+    func exportReportPersistsConnectivityIncidentHistorySummary() async throws {
+        try await Self.gate.runOnMainActor { @MainActor in
+            let base = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xt_ready_export_connectivity_history_\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let envKey = "XTERMINAL_WORKSPACE_ROOT"
+            let previous = ProcessInfo.processInfo.environment[envKey]
+            setenv(envKey, base.path, 1)
+            defer {
+                if let previous {
+                    setenv(envKey, previous, 1)
+                } else {
+                    unsetenv(envKey)
+                }
+                try? FileManager.default.removeItem(at: base)
+            }
+
+            let waitingIncident = XHubDoctorOutputConnectivityIncidentSnapshot(
+                schemaVersion: XTHubConnectivityIncidentSnapshot.currentSchemaVersion,
+                incidentState: "waiting",
+                reasonCode: "local_pairing_ready",
+                summaryLine: "waiting to return to LAN or add a formal remote route.",
+                trigger: XTHubConnectivityDecisionTrigger.backgroundKeepalive.rawValue,
+                decisionReasonCode: "waiting_for_same_lan_or_formal_remote_route",
+                pairedRouteReadiness: XTPairedRouteReadiness.localReady.rawValue,
+                stableRemoteRouteHost: nil,
+                currentFailureCode: nil,
+                currentPath: XHubDoctorOutputConnectivityIncidentPathSnapshot(
+                    statusKey: "satisfied",
+                    usesWiFi: false,
+                    usesWiredEthernet: false,
+                    usesCellular: true,
+                    isExpensive: true,
+                    isConstrained: false
+                ),
+                lastUpdatedAtMs: 1_741_300_020_000
+            )
+            try writeXTDoctorReport(
+                sampleXTDoctorOutputReport(
+                    outputPath: XHubDoctorOutputStore.defaultXTReportURL(workspaceRoot: base).path,
+                    connectivityIncident: waitingIncident
+                ),
+                in: base
+            )
+
+            let recoveredIncident = XHubDoctorOutputConnectivityIncidentSnapshot(
+                schemaVersion: XTHubConnectivityIncidentSnapshot.currentSchemaVersion,
+                incidentState: "none",
+                reasonCode: "remote_route_active",
+                summaryLine: "validated remote route is active; no connectivity repair is needed.",
+                trigger: XTHubConnectivityDecisionTrigger.backgroundKeepalive.rawValue,
+                decisionReasonCode: "remote_route_already_active",
+                pairedRouteReadiness: XTPairedRouteReadiness.remoteReady.rawValue,
+                stableRemoteRouteHost: "hub.tailnet.example",
+                currentFailureCode: nil,
+                currentPath: XHubDoctorOutputConnectivityIncidentPathSnapshot(
+                    statusKey: "satisfied",
+                    usesWiFi: false,
+                    usesWiredEthernet: false,
+                    usesCellular: true,
+                    isExpensive: true,
+                    isConstrained: false
+                ),
+                lastUpdatedAtMs: 1_741_300_021_000
+            )
+            try writeXTDoctorReport(
+                sampleXTDoctorOutputReport(
+                    outputPath: XHubDoctorOutputStore.defaultXTReportURL(workspaceRoot: base).path,
+                    connectivityIncident: recoveredIncident
+                ),
+                in: base
+            )
+
+            let manager = SupervisorManager.makeForTesting()
+            manager.setSupervisorIncidentLedgerForTesting(makeReadyIncidentLedger())
+            manager.setSupervisorMemoryAssemblySnapshotForTesting(makeMemorySnapshot())
+
+            let outputURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+                .appendingPathComponent("xt_ready_incident_export_connectivity_history_\(UUID().uuidString).json")
+            defer { try? FileManager.default.removeItem(at: outputURL) }
+
+            let result = manager.exportXTReadyIncidentEventsReport(outputURL: outputURL, limit: 20)
+            #expect(result.ok)
+
+            let data = try Data(contentsOf: outputURL)
+            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let summary = json?["summary"] as? [String: Any]
+            let history = summary?["connectivity_incident_history"] as? [String: Any]
+            let entries = history?["entries"] as? [[String: Any]]
+
+            #expect((history?["schema_version"] as? String) == XHubDoctorOutputConnectivityIncidentHistoryReport.currentSchemaVersion)
+            #expect(entries?.count == 2)
+            #expect(entries?.first?["incident_state"] as? String == "waiting")
+            #expect(entries?.last?["incident_state"] as? String == "none")
+            #expect(entries?.last?["reason_code"] as? String == "remote_route_active")
+        }
+    }
+
+    @MainActor
+    @Test
+    func exportReportPersistsConnectivityRepairLedgerSummary() async throws {
+        try await Self.gate.runOnMainActor { @MainActor in
+            let base = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xt_ready_export_connectivity_repair_\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let envKey = "XTERMINAL_WORKSPACE_ROOT"
+            let previous = ProcessInfo.processInfo.environment[envKey]
+            setenv(envKey, base.path, 1)
+            defer {
+                if let previous {
+                    setenv(envKey, previous, 1)
+                } else {
+                    unsetenv(envKey)
+                }
+                try? FileManager.default.removeItem(at: base)
+            }
+
+            XTConnectivityRepairLedgerStore.append(
+                XTConnectivityRepairLedgerStore.deferredEntry(
+                    trigger: .backgroundKeepalive,
+                    incidentSnapshot: XTHubConnectivityIncidentSnapshot(
+                        incidentState: .waiting,
+                        reasonCode: "local_pairing_ready",
+                        summaryLine: "waiting to return to LAN or add a formal remote route.",
+                        trigger: .backgroundKeepalive,
+                        decisionReasonCode: "waiting_for_same_lan_or_formal_remote_route",
+                        pairedRouteReadiness: .localReady,
+                        stableRemoteRouteHost: nil,
+                        currentFailureCode: nil,
+                        currentPath: nil,
+                        lastUpdatedAtMs: 1_741_300_024_000
+                    )
+                )!,
+                workspaceRoot: base
+            )
+            XTConnectivityRepairLedgerStore.append(
+                XTConnectivityRepairLedgerStore.outcomeEntry(
+                    trigger: .backgroundKeepalive,
+                    owner: .xtRuntime,
+                    allowBootstrap: false,
+                    decisionReasonCode: "retry_degraded_remote_route",
+                    report: HubRemoteConnectReport(
+                        ok: false,
+                        route: .none,
+                        summary: "remote route retry failed",
+                        logLines: [],
+                        reasonCode: "grpc_unavailable"
+                    ),
+                    incidentSnapshot: XTHubConnectivityIncidentSnapshot(
+                        incidentState: .retrying,
+                        reasonCode: "grpc_unavailable",
+                        summaryLine: "remote route not active; retrying degraded remote route ...",
+                        trigger: .backgroundKeepalive,
+                        decisionReasonCode: "retry_degraded_remote_route",
+                        pairedRouteReadiness: .remoteDegraded,
+                        stableRemoteRouteHost: "hub.tailnet.example",
+                        currentFailureCode: "grpc_unavailable",
+                        currentPath: nil,
+                        lastUpdatedAtMs: 1_741_300_025_000
+                    ),
+                    recordedAtMs: 1_741_300_025_000
+                ),
+                workspaceRoot: base
+            )
+
+            let manager = SupervisorManager.makeForTesting()
+            manager.setSupervisorIncidentLedgerForTesting(makeReadyIncidentLedger())
+            manager.setSupervisorMemoryAssemblySnapshotForTesting(makeMemorySnapshot())
+
+            let outputURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+                .appendingPathComponent("xt_ready_incident_export_connectivity_repair_\(UUID().uuidString).json")
+            defer { try? FileManager.default.removeItem(at: outputURL) }
+
+            let result = manager.exportXTReadyIncidentEventsReport(outputURL: outputURL, limit: 20)
+            #expect(result.ok)
+
+            let data = try Data(contentsOf: outputURL)
+            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let summary = json?["summary"] as? [String: Any]
+            let ledger = summary?["connectivity_repair_ledger"] as? [String: Any]
+            let entries = ledger?["entries"] as? [[String: Any]]
+
+            #expect((ledger?["schema_version"] as? String) == XTConnectivityRepairLedgerSnapshot.currentSchemaVersion)
+            #expect(entries?.count == 2)
+            #expect(entries?.last?["result"] as? String == XTConnectivityRepairResult.failed.rawValue)
+            #expect(entries?.last?["action"] as? String == XTConnectivityRepairAction.remoteReconnect.rawValue)
+            #expect(entries?.last?["verify_result"] as? String == "retrying_remote_route")
         }
     }
 
@@ -401,6 +758,36 @@ struct SupervisorIncidentExportTests {
             #expect(
                 snapshot.memoryAssemblyDetailLines.contains(where: {
                     $0.contains("continuity_source_label=Hub 快照 + 本地 overlay")
+                })
+            )
+        }
+    }
+
+    @MainActor
+    @Test
+    func xtReadyIncidentExportSnapshotIncludesScopedHiddenProjectRecoveryDetailLines() async {
+        await Self.gate.runOnMainActor { @MainActor in
+            let manager = SupervisorManager.makeForTesting()
+            manager.setSupervisorIncidentLedgerForTesting(makeReadyIncidentLedger())
+            manager.setSupervisorMemoryAssemblySnapshotForTesting(
+                makeMemorySnapshot(
+                    scopedPromptRecoveryMode: "explicit_hidden_project_focus",
+                    scopedPromptRecoverySections: [
+                        "l1_canonical.focused_project_anchor_pack",
+                        "l2_observations.project_recent_events",
+                        "l3_working_set.project_activity_memory",
+                        "dialogue_window.project_recent_context"
+                    ]
+                )
+            )
+
+            let snapshot = manager.xtReadyIncidentExportSnapshot(limit: 20)
+
+            #expect(
+                snapshot.memoryAssemblyDetailLines.contains(where: {
+                    $0.contains("scoped_prompt_recovery:") &&
+                    $0.contains("显式 hidden project 恢复") &&
+                    $0.contains("当前项目摘要")
                 })
             )
         }
@@ -659,7 +1046,10 @@ struct SupervisorIncidentExportTests {
                             ok: false,
                             updatedAtMs: 1_773_000_020_000,
                             reasonCode: "project_canonical_memory_write_failed",
-                            detail: "xterminal_project_memory_write_failed=NSError:No space left on device"
+                            detail: "xterminal_project_memory_write_failed=NSError:No space left on device",
+                            auditRefs: ["audit-project-alpha-incident-1"],
+                            evidenceRefs: ["canonical_memory_item:item-project-alpha-incident-1"],
+                            writebackRefs: ["canonical_memory_item:item-project-alpha-incident-1"]
                         )
                     ]
                 ),
@@ -677,7 +1067,10 @@ struct SupervisorIncidentExportTests {
             #expect(
                 snapshot.memoryAssemblyDetailLines.contains(where: {
                     $0.contains("project_canonical_memory_write_failed") &&
-                    $0.contains("No space left on device")
+                    $0.contains("No space left on device") &&
+                    $0.contains("audit_ref=audit-project-alpha-incident-1") &&
+                    $0.contains("evidence_ref=canonical_memory_item:item-project-alpha-incident-1") &&
+                    $0.contains("writeback_ref=canonical_memory_item:item-project-alpha-incident-1")
                 })
             )
             #expect(snapshot.strictE2EIssues.contains("memory:memory_canonical_sync_delivery_failed"))
@@ -718,6 +1111,159 @@ struct SupervisorIncidentExportTests {
                     $0.contains("endpoint=http://127.0.0.1:50171")
                 }) == true
             )
+        }
+    }
+
+    @MainActor
+    @Test
+    func xtReadyIncidentExportSnapshotIncludesStructuredFreshPairReconnectSmoke() async throws {
+        try await Self.gate.runOnMainActor { @MainActor in
+            let base = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xt_ready_fresh_pair_smoke_snapshot_\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let envKey = "XTERMINAL_WORKSPACE_ROOT"
+            let previous = ProcessInfo.processInfo.environment[envKey]
+            setenv(envKey, base.path, 1)
+            defer {
+                if let previous {
+                    setenv(envKey, previous, 1)
+                } else {
+                    unsetenv(envKey)
+                }
+                try? FileManager.default.removeItem(at: base)
+            }
+
+            let smoke = SupervisorManager.XTFreshPairReconnectSmokeDiagnosisSnapshot(
+                source: XTFreshPairReconnectSmokeSource.startupAutomaticFirstPair.rawValue,
+                status: XTFreshPairReconnectSmokeStatus.succeeded.rawValue,
+                route: HubRemoteRoute.internetTunnel.rawValue,
+                triggeredAtMs: 1_741_300_012_000,
+                completedAtMs: 1_741_300_013_000,
+                reasonCode: nil,
+                summary: "first pair complete; cached route verified."
+            )
+            try writeXTDoctorReport(
+                sampleXTFreshPairReconnectSmokeReport(
+                    outputPath: XHubDoctorOutputStore.defaultXTReportURL(workspaceRoot: base).path,
+                    smoke: smoke
+                ),
+                in: base
+            )
+
+            let manager = SupervisorManager.makeForTesting()
+            manager.setSupervisorIncidentLedgerForTesting(makeReadyIncidentLedger())
+            manager.setSupervisorMemoryAssemblySnapshotForTesting(makeMemorySnapshot())
+
+            let snapshot = manager.xtReadyIncidentExportSnapshot(limit: 20)
+
+            #expect(snapshot.freshPairReconnectSmokeSnapshot?.source == XTFreshPairReconnectSmokeSource.startupAutomaticFirstPair.rawValue)
+            #expect(snapshot.freshPairReconnectSmokeSnapshot?.status == XTFreshPairReconnectSmokeStatus.succeeded.rawValue)
+            #expect(snapshot.freshPairReconnectSmokeSnapshot?.route == HubRemoteRoute.internetTunnel.rawValue)
+            #expect(snapshot.freshPairReconnectSmokeSnapshot?.summary == "first pair complete; cached route verified.")
+        }
+    }
+
+    @MainActor
+    @Test
+    func xtReadyIncidentExportSnapshotIncludesFirstPairCompletionProof() async throws {
+        try await Self.gate.runOnMainActor { @MainActor in
+            let base = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xt_ready_first_pair_completion_proof_snapshot_\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let envKey = "XTERMINAL_WORKSPACE_ROOT"
+            let previous = ProcessInfo.processInfo.environment[envKey]
+            setenv(envKey, base.path, 1)
+            defer {
+                if let previous {
+                    setenv(envKey, previous, 1)
+                } else {
+                    unsetenv(envKey)
+                }
+                try? FileManager.default.removeItem(at: base)
+            }
+
+            let proof = SupervisorManager.XTFirstPairCompletionProofDiagnosisSnapshot(
+                readiness: XTPairedRouteReadiness.remoteDegraded.rawValue,
+                sameLanVerified: true,
+                ownerLocalApprovalVerified: true,
+                pairingMaterialIssued: true,
+                cachedReconnectSmokePassed: true,
+                stableRemoteRoutePresent: true,
+                remoteShadowSmokePassed: false,
+                remoteShadowSmokeStatus: XTFirstPairRemoteShadowSmokeStatus.failed.rawValue,
+                remoteShadowSmokeSource: XTRemoteShadowReconnectSmokeSource.dedicatedStableRemoteProbe.rawValue,
+                remoteShadowTriggeredAtMs: 1_741_300_020_000,
+                remoteShadowCompletedAtMs: 1_741_300_021_000,
+                remoteShadowRoute: HubRemoteRoute.internet.rawValue,
+                remoteShadowReasonCode: "grpc_unavailable",
+                remoteShadowSummary: "stable remote route shadow verification failed.",
+                summaryLine: "first pair reached local readiness, but stable remote route verification is degraded.",
+                generatedAtMs: 1_741_300_021_000
+            )
+            try writeXTDoctorReport(
+                sampleXTFirstPairCompletionProofReport(
+                    outputPath: XHubDoctorOutputStore.defaultXTReportURL(workspaceRoot: base).path,
+                    proof: proof
+                ),
+                in: base
+            )
+
+            let manager = SupervisorManager.makeForTesting()
+            manager.setSupervisorIncidentLedgerForTesting(makeReadyIncidentLedger())
+            manager.setSupervisorMemoryAssemblySnapshotForTesting(makeMemorySnapshot())
+
+            let snapshot = manager.xtReadyIncidentExportSnapshot(limit: 20)
+
+            #expect(snapshot.firstPairCompletionProofSnapshot?.readiness == XTPairedRouteReadiness.remoteDegraded.rawValue)
+            #expect(snapshot.firstPairCompletionProofSnapshot?.remoteShadowSmokeStatus == XTFirstPairRemoteShadowSmokeStatus.failed.rawValue)
+            #expect(snapshot.firstPairCompletionProofSnapshot?.remoteShadowSmokeSource == XTRemoteShadowReconnectSmokeSource.dedicatedStableRemoteProbe.rawValue)
+            #expect(snapshot.firstPairCompletionProofSnapshot?.remoteShadowRoute == HubRemoteRoute.internet.rawValue)
+            #expect(snapshot.firstPairCompletionProofSnapshot?.remoteShadowReasonCode == "grpc_unavailable")
+        }
+    }
+
+    @MainActor
+    @Test
+    func xtReadyIncidentExportSnapshotIncludesStructuredPairedRoutePosture() async throws {
+        try await Self.gate.runOnMainActor { @MainActor in
+            let base = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xt_ready_paired_route_snapshot_\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let envKey = "XTERMINAL_WORKSPACE_ROOT"
+            let previous = ProcessInfo.processInfo.environment[envKey]
+            setenv(envKey, base.path, 1)
+            defer {
+                if let previous {
+                    setenv(envKey, previous, 1)
+                } else {
+                    unsetenv(envKey)
+                }
+                try? FileManager.default.removeItem(at: base)
+            }
+
+            try writeXTDoctorReport(
+                sampleXTDoctorOutputReport(
+                    outputPath: XHubDoctorOutputStore.defaultXTReportURL(workspaceRoot: base).path
+                ),
+                in: base
+            )
+
+            let manager = SupervisorManager.makeForTesting()
+            manager.setSupervisorIncidentLedgerForTesting(makeReadyIncidentLedger())
+            manager.setSupervisorMemoryAssemblySnapshotForTesting(makeMemorySnapshot())
+
+            let snapshot = manager.xtReadyIncidentExportSnapshot(limit: 20)
+            let text = manager.renderXTReadyIncidentEventsStatusForTesting()
+
+            #expect(snapshot.pairedRouteSetSnapshot?.readiness == XTPairedRouteReadiness.remoteReady.rawValue)
+            #expect(snapshot.pairedRouteSetSnapshot?.summaryLine == "正式异网入口已验证，切网后可继续重连。")
+            #expect(snapshot.pairedRouteSnapshot?.internetHostKind == "stable_named")
+            #expect(snapshot.pairedRouteSnapshot?.internetHostScope == nil)
+            #expect(snapshot.pairedRouteSnapshot?.remoteEntryPosture == "stable_named_entry")
+            #expect(snapshot.pairedRouteSnapshot?.remoteEntrySummaryLine == "正式异网入口 · host=hub.example.com")
+            #expect(text.contains("paired_route_status：正式异网入口已验证，切网后可继续重连。"))
+            #expect(text.contains("paired_route：paired-remote · grpc · host=hub.example.com"))
+            #expect(text.contains("paired_remote_entry：正式异网入口 · host=hub.example.com"))
         }
     }
 
@@ -927,6 +1473,424 @@ struct SupervisorIncidentExportTests {
 
     @MainActor
     @Test
+    func xtReadyIncidentStatusTextIncludesSupervisorVoiceDiagnosis() async throws {
+        try await Self.gate.runOnMainActor { @MainActor in
+            let base = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xt_ready_supervisor_voice_status_\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let envKey = "XTERMINAL_WORKSPACE_ROOT"
+            let previous = ProcessInfo.processInfo.environment[envKey]
+            setenv(envKey, base.path, 1)
+            defer {
+                if let previous {
+                    setenv(envKey, previous, 1)
+                } else {
+                    unsetenv(envKey)
+                }
+                try? FileManager.default.removeItem(at: base)
+            }
+
+            try writeXTDoctorReport(
+                sampleXTDoctorOutputReport(outputPath: XHubDoctorOutputStore.defaultXTReportURL(workspaceRoot: base).path),
+                in: base
+            )
+
+            let manager = SupervisorManager.makeForTesting()
+            manager.setSupervisorIncidentLedgerForTesting(makeReadyIncidentLedger())
+            manager.setSupervisorMemoryAssemblySnapshotForTesting(makeMemorySnapshot())
+
+            let text = manager.renderXTReadyIncidentEventsStatusForTesting()
+
+            #expect(text.contains("supervisor_voice：fail · Supervisor 语音自检显示：Hub 简报播报阶段未通过"))
+            #expect(text.contains("supervisor_voice_freshness：stale · 最近一次语音自检已过期（"))
+            #expect(text.contains("supervisor_voice_detail：最近一次 Supervisor 语音自检卡在Hub 简报播报阶段：简报播报后没有恢复监听。"))
+            #expect(text.contains("supervisor_voice_next：先在 XT Diagnostics 重跑 Supervisor 语音自检；如果仍卡在 Hub 简报播报阶段，再核对 brief projection、TTS 播报和播报后恢复监听的链路。"))
+        }
+    }
+
+    @MainActor
+    @Test
+    func xtReadyIncidentStatusTextIncludesFreshPairReconnectSmoke() async throws {
+        try await Self.gate.runOnMainActor { @MainActor in
+            let base = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xt_ready_fresh_pair_smoke_status_\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let envKey = "XTERMINAL_WORKSPACE_ROOT"
+            let previous = ProcessInfo.processInfo.environment[envKey]
+            setenv(envKey, base.path, 1)
+            defer {
+                if let previous {
+                    setenv(envKey, previous, 1)
+                } else {
+                    unsetenv(envKey)
+                }
+                try? FileManager.default.removeItem(at: base)
+            }
+
+            let smoke = SupervisorManager.XTFreshPairReconnectSmokeDiagnosisSnapshot(
+                source: XTFreshPairReconnectSmokeSource.manualOneClickSetup.rawValue,
+                status: XTFreshPairReconnectSmokeStatus.failed.rawValue,
+                route: HubRemoteRoute.none.rawValue,
+                triggeredAtMs: 1_741_300_014_000,
+                completedAtMs: 1_741_300_015_000,
+                reasonCode: "grpc_unavailable",
+                summary: "cached reconnect verification failed."
+            )
+            try writeXTDoctorReport(
+                sampleXTFreshPairReconnectSmokeReport(
+                    outputPath: XHubDoctorOutputStore.defaultXTReportURL(workspaceRoot: base).path,
+                    smoke: smoke
+                ),
+                in: base
+            )
+
+            let manager = SupervisorManager.makeForTesting()
+            manager.setSupervisorIncidentLedgerForTesting(makeReadyIncidentLedger())
+            manager.setSupervisorMemoryAssemblySnapshotForTesting(makeMemorySnapshot())
+
+            let text = manager.renderXTReadyIncidentEventsStatusForTesting()
+
+            #expect(text.contains("fresh_pair_reconnect_smoke：failed · manual_one_click_setup · route=none"))
+            #expect(text.contains("fresh_pair_reconnect_smoke_reason：grpc_unavailable"))
+            #expect(text.contains("fresh_pair_reconnect_smoke_summary：cached reconnect verification failed."))
+        }
+    }
+
+    @MainActor
+    @Test
+    func xtReadyIncidentStatusTextIncludesFirstPairCompletionProof() async throws {
+        try await Self.gate.runOnMainActor { @MainActor in
+            let base = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xt_ready_first_pair_completion_proof_status_\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let envKey = "XTERMINAL_WORKSPACE_ROOT"
+            let previous = ProcessInfo.processInfo.environment[envKey]
+            setenv(envKey, base.path, 1)
+            defer {
+                if let previous {
+                    setenv(envKey, previous, 1)
+                } else {
+                    unsetenv(envKey)
+                }
+                try? FileManager.default.removeItem(at: base)
+            }
+
+            let proof = SupervisorManager.XTFirstPairCompletionProofDiagnosisSnapshot(
+                readiness: XTPairedRouteReadiness.localReady.rawValue,
+                sameLanVerified: true,
+                ownerLocalApprovalVerified: true,
+                pairingMaterialIssued: true,
+                cachedReconnectSmokePassed: true,
+                stableRemoteRoutePresent: true,
+                remoteShadowSmokePassed: false,
+                remoteShadowSmokeStatus: XTFirstPairRemoteShadowSmokeStatus.running.rawValue,
+                remoteShadowSmokeSource: XTRemoteShadowReconnectSmokeSource.dedicatedStableRemoteProbe.rawValue,
+                remoteShadowTriggeredAtMs: 1_741_300_030_000,
+                remoteShadowCompletedAtMs: nil,
+                remoteShadowRoute: HubRemoteRoute.internet.rawValue,
+                remoteShadowReasonCode: nil,
+                remoteShadowSummary: "verifying stable remote route shadow path ...",
+                summaryLine: "first pair is local ready; stable remote route verification is still running.",
+                generatedAtMs: 1_741_300_030_000
+            )
+            try writeXTDoctorReport(
+                sampleXTFirstPairCompletionProofReport(
+                    outputPath: XHubDoctorOutputStore.defaultXTReportURL(workspaceRoot: base).path,
+                    proof: proof
+                ),
+                in: base
+            )
+
+            let manager = SupervisorManager.makeForTesting()
+            manager.setSupervisorIncidentLedgerForTesting(makeReadyIncidentLedger())
+            manager.setSupervisorMemoryAssemblySnapshotForTesting(makeMemorySnapshot())
+
+            let text = manager.renderXTReadyIncidentEventsStatusForTesting()
+
+            #expect(text.contains("first_pair_completion_proof：local_ready · remote_shadow=running"))
+            #expect(text.contains("first_pair_completion_proof_source：dedicated_stable_remote_probe"))
+            #expect(text.contains("first_pair_completion_proof_route：internet"))
+            #expect(text.contains("first_pair_completion_proof_summary：verifying stable remote route shadow path ..."))
+        }
+    }
+
+    @MainActor
+    @Test
+    func xtReadyIncidentStatusTextIncludesConnectivityIncident() async throws {
+        try await Self.gate.runOnMainActor { @MainActor in
+            let base = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xt_ready_connectivity_incident_status_\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let envKey = "XTERMINAL_WORKSPACE_ROOT"
+            let previous = ProcessInfo.processInfo.environment[envKey]
+            setenv(envKey, base.path, 1)
+            defer {
+                if let previous {
+                    setenv(envKey, previous, 1)
+                } else {
+                    unsetenv(envKey)
+                }
+                try? FileManager.default.removeItem(at: base)
+            }
+
+            let connectivityIncident = XHubDoctorOutputConnectivityIncidentSnapshot(
+                schemaVersion: XTHubConnectivityIncidentSnapshot.currentSchemaVersion,
+                incidentState: "retrying",
+                reasonCode: "grpc_unavailable",
+                summaryLine: "remote route not active; retrying degraded remote route ...",
+                trigger: XTHubConnectivityDecisionTrigger.backgroundKeepalive.rawValue,
+                decisionReasonCode: "retry_degraded_remote_route",
+                pairedRouteReadiness: XTPairedRouteReadiness.remoteDegraded.rawValue,
+                stableRemoteRouteHost: "hub.tailnet.example",
+                currentFailureCode: "grpc_unavailable",
+                currentPath: XHubDoctorOutputConnectivityIncidentPathSnapshot(
+                    statusKey: "satisfied",
+                    usesWiFi: false,
+                    usesWiredEthernet: false,
+                    usesCellular: true,
+                    isExpensive: true,
+                    isConstrained: false
+                ),
+                lastUpdatedAtMs: 1_741_300_017_000
+            )
+            try writeXTDoctorReport(
+                sampleXTDoctorOutputReport(
+                    outputPath: XHubDoctorOutputStore.defaultXTReportURL(workspaceRoot: base).path,
+                    connectivityIncident: connectivityIncident
+                ),
+                in: base
+            )
+
+            let manager = SupervisorManager.makeForTesting()
+            manager.setSupervisorIncidentLedgerForTesting(makeReadyIncidentLedger())
+            manager.setSupervisorMemoryAssemblySnapshotForTesting(makeMemorySnapshot())
+
+            let text = manager.renderXTReadyIncidentEventsStatusForTesting()
+
+            #expect(text.contains("hub_connectivity_incident：retrying · grpc_unavailable · trigger=background_keepalive"))
+            #expect(text.contains("paired=remote_degraded"))
+            #expect(text.contains("host=hub.tailnet.example"))
+            #expect(text.contains("hub_connectivity_incident_summary：remote route not active; retrying degraded remote route ..."))
+            #expect(text.contains("hub_connectivity_incident_path：status=satisfied wifi=0 wired=0 cellular=1"))
+        }
+    }
+
+    @MainActor
+    @Test
+    func xtReadyIncidentStatusTextIncludesConnectivityIncidentHistory() async throws {
+        try await Self.gate.runOnMainActor { @MainActor in
+            let base = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xt_ready_connectivity_incident_history_status_\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let envKey = "XTERMINAL_WORKSPACE_ROOT"
+            let previous = ProcessInfo.processInfo.environment[envKey]
+            setenv(envKey, base.path, 1)
+            defer {
+                if let previous {
+                    setenv(envKey, previous, 1)
+                } else {
+                    unsetenv(envKey)
+                }
+                try? FileManager.default.removeItem(at: base)
+            }
+
+            try writeXTDoctorReport(
+                sampleXTDoctorOutputReport(
+                    outputPath: XHubDoctorOutputStore.defaultXTReportURL(workspaceRoot: base).path,
+                    connectivityIncident: XHubDoctorOutputConnectivityIncidentSnapshot(
+                        schemaVersion: XTHubConnectivityIncidentSnapshot.currentSchemaVersion,
+                        incidentState: "retrying",
+                        reasonCode: "grpc_unavailable",
+                        summaryLine: "remote route not active; retrying degraded remote route ...",
+                        trigger: XTHubConnectivityDecisionTrigger.backgroundKeepalive.rawValue,
+                        decisionReasonCode: "retry_degraded_remote_route",
+                        pairedRouteReadiness: XTPairedRouteReadiness.remoteDegraded.rawValue,
+                        stableRemoteRouteHost: "hub.tailnet.example",
+                        currentFailureCode: "grpc_unavailable",
+                        currentPath: XHubDoctorOutputConnectivityIncidentPathSnapshot(
+                            statusKey: "satisfied",
+                            usesWiFi: false,
+                            usesWiredEthernet: false,
+                            usesCellular: true,
+                            isExpensive: true,
+                            isConstrained: false
+                        ),
+                        lastUpdatedAtMs: 1_741_300_022_000
+                    )
+                ),
+                in: base
+            )
+
+            try writeXTDoctorReport(
+                sampleXTDoctorOutputReport(
+                    outputPath: XHubDoctorOutputStore.defaultXTReportURL(workspaceRoot: base).path,
+                    connectivityIncident: XHubDoctorOutputConnectivityIncidentSnapshot(
+                        schemaVersion: XTHubConnectivityIncidentSnapshot.currentSchemaVersion,
+                        incidentState: "none",
+                        reasonCode: "remote_route_active",
+                        summaryLine: "validated remote route is active; no connectivity repair is needed.",
+                        trigger: XTHubConnectivityDecisionTrigger.backgroundKeepalive.rawValue,
+                        decisionReasonCode: "remote_route_already_active",
+                        pairedRouteReadiness: XTPairedRouteReadiness.remoteReady.rawValue,
+                        stableRemoteRouteHost: "hub.tailnet.example",
+                        currentFailureCode: nil,
+                        currentPath: XHubDoctorOutputConnectivityIncidentPathSnapshot(
+                            statusKey: "satisfied",
+                            usesWiFi: false,
+                            usesWiredEthernet: false,
+                            usesCellular: true,
+                            isExpensive: true,
+                            isConstrained: false
+                        ),
+                        lastUpdatedAtMs: 1_741_300_023_000
+                    )
+                ),
+                in: base
+            )
+
+            let manager = SupervisorManager.makeForTesting()
+            manager.setSupervisorIncidentLedgerForTesting(makeReadyIncidentLedger())
+            manager.setSupervisorMemoryAssemblySnapshotForTesting(makeMemorySnapshot())
+
+            let text = manager.renderXTReadyIncidentEventsStatusForTesting()
+
+            #expect(text.contains("hub_connectivity_incident_history：recent=2 · retrying(grpc_unavailable) -> none(remote_route_active)"))
+        }
+    }
+
+    @MainActor
+    @Test
+    func xtReadyIncidentStatusTextIncludesConnectivityRepairLedger() async throws {
+        try await Self.gate.runOnMainActor { @MainActor in
+            let base = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xt_ready_connectivity_repair_status_\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let envKey = "XTERMINAL_WORKSPACE_ROOT"
+            let previous = ProcessInfo.processInfo.environment[envKey]
+            setenv(envKey, base.path, 1)
+            defer {
+                if let previous {
+                    setenv(envKey, previous, 1)
+                } else {
+                    unsetenv(envKey)
+                }
+                try? FileManager.default.removeItem(at: base)
+            }
+
+            XTConnectivityRepairLedgerStore.append(
+                XTConnectivityRepairLedgerStore.deferredEntry(
+                    trigger: .backgroundKeepalive,
+                    incidentSnapshot: XTHubConnectivityIncidentSnapshot(
+                        incidentState: .waiting,
+                        reasonCode: "local_pairing_ready",
+                        summaryLine: "waiting to return to LAN or add a formal remote route.",
+                        trigger: .backgroundKeepalive,
+                        decisionReasonCode: "waiting_for_same_lan_or_formal_remote_route",
+                        pairedRouteReadiness: .localReady,
+                        stableRemoteRouteHost: nil,
+                        currentFailureCode: nil,
+                        currentPath: nil,
+                        lastUpdatedAtMs: 1_741_300_026_000
+                    )
+                )!,
+                workspaceRoot: base
+            )
+            XTConnectivityRepairLedgerStore.append(
+                XTConnectivityRepairLedgerStore.outcomeEntry(
+                    trigger: .backgroundKeepalive,
+                    owner: .xtRuntime,
+                    allowBootstrap: false,
+                    decisionReasonCode: "retry_degraded_remote_route",
+                    report: HubRemoteConnectReport(
+                        ok: false,
+                        route: .none,
+                        summary: "remote route retry failed",
+                        logLines: [],
+                        reasonCode: "grpc_unavailable"
+                    ),
+                    incidentSnapshot: XTHubConnectivityIncidentSnapshot(
+                        incidentState: .retrying,
+                        reasonCode: "grpc_unavailable",
+                        summaryLine: "remote route not active; retrying degraded remote route ...",
+                        trigger: .backgroundKeepalive,
+                        decisionReasonCode: "retry_degraded_remote_route",
+                        pairedRouteReadiness: .remoteDegraded,
+                        stableRemoteRouteHost: "hub.tailnet.example",
+                        currentFailureCode: "grpc_unavailable",
+                        currentPath: nil,
+                        lastUpdatedAtMs: 1_741_300_027_000
+                    ),
+                    recordedAtMs: 1_741_300_027_000
+                ),
+                workspaceRoot: base
+            )
+
+            let manager = SupervisorManager.makeForTesting()
+            manager.setSupervisorIncidentLedgerForTesting(makeReadyIncidentLedger())
+            manager.setSupervisorMemoryAssemblySnapshotForTesting(makeMemorySnapshot())
+
+            let text = manager.renderXTReadyIncidentEventsStatusForTesting()
+
+            #expect(text.contains("hub_connectivity_repair：recent=2 · owner=xt_runtime · action=remote_reconnect · result=failed · verify=retrying_remote_route · route=none"))
+            #expect(text.contains("hub_connectivity_repair_detail：trail=wait_for_route_ready:deferred -> remote_reconnect:failed"))
+        }
+    }
+
+    @MainActor
+    @Test
+    func xtReadyIncidentExportJSONIncludesStructuredPairedRouteSnapshot() async throws {
+        try await Self.gate.runOnMainActor { @MainActor in
+            let base = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xt_ready_paired_route_export_\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let envKey = "XTERMINAL_WORKSPACE_ROOT"
+            let previous = ProcessInfo.processInfo.environment[envKey]
+            setenv(envKey, base.path, 1)
+            defer {
+                if let previous {
+                    setenv(envKey, previous, 1)
+                } else {
+                    unsetenv(envKey)
+                }
+                try? FileManager.default.removeItem(at: base)
+            }
+
+            try writeXTDoctorReport(
+                sampleXTDoctorOutputReport(
+                    outputPath: XHubDoctorOutputStore.defaultXTReportURL(workspaceRoot: base).path
+                ),
+                in: base
+            )
+
+            let manager = SupervisorManager.makeForTesting()
+            manager.setSupervisorIncidentLedgerForTesting(makeReadyIncidentLedger())
+            manager.setSupervisorMemoryAssemblySnapshotForTesting(makeMemorySnapshot())
+
+            let outputURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+                .appendingPathComponent("xt_ready_incident_export_route_\(UUID().uuidString).json")
+            defer { try? FileManager.default.removeItem(at: outputURL) }
+
+            let result = manager.exportXTReadyIncidentEventsReport(outputURL: outputURL, limit: 20)
+            #expect(result.ok)
+
+            let data = try Data(contentsOf: outputURL)
+            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let summary = json?["summary"] as? [String: Any]
+            let routeSet = summary?["paired_route_set_snapshot"] as? [String: Any]
+            let route = summary?["paired_route_snapshot"] as? [String: Any]
+
+            #expect((routeSet?["readiness"] as? String) == XTPairedRouteReadiness.remoteReady.rawValue)
+            #expect((routeSet?["summary_line"] as? String) == "正式异网入口已验证，切网后可继续重连。")
+            #expect((route?["route_label"] as? String) == "paired-remote")
+            #expect((route?["transport_mode"] as? String) == "grpc")
+            #expect((route?["internet_host"] as? String) == "hub.example.com")
+            #expect((route?["internet_host_kind"] as? String) == "stable_named")
+            #expect((route?["remote_entry_posture"] as? String) == "stable_named_entry")
+        }
+    }
+
+    @MainActor
+    @Test
     func xtReadyIncidentStatusTextIncludesHubRuntimeRecoveryGuidance() async throws {
         try await Self.gate.runOnMainActor { @MainActor in
             let base = FileManager.default.temporaryDirectory
@@ -1031,6 +1995,173 @@ struct SupervisorIncidentExportTests {
 
     @MainActor
     @Test
+    func xtReadyIncidentExportSummaryIncludesSupervisorVoiceDiagnosis() async throws {
+        try await Self.gate.runOnMainActor { @MainActor in
+            let base = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xt_ready_supervisor_voice_summary_\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let envKey = "XTERMINAL_WORKSPACE_ROOT"
+            let previous = ProcessInfo.processInfo.environment[envKey]
+            setenv(envKey, base.path, 1)
+            defer {
+                if let previous {
+                    setenv(envKey, previous, 1)
+                } else {
+                    unsetenv(envKey)
+                }
+                try? FileManager.default.removeItem(at: base)
+            }
+
+            try writeXTDoctorReport(
+                sampleXTDoctorOutputReport(outputPath: XHubDoctorOutputStore.defaultXTReportURL(workspaceRoot: base).path),
+                in: base
+            )
+
+            let manager = SupervisorManager.makeForTesting()
+            manager.setSupervisorIncidentLedgerForTesting(makeReadyIncidentLedger())
+            manager.setSupervisorMemoryAssemblySnapshotForTesting(makeMemorySnapshot())
+
+            let summary = manager.renderXTReadyIncidentExportSummaryForTesting(
+                .init(
+                    ok: true,
+                    outputPath: "/tmp/xt-ready.json",
+                    exportedEventCount: 3,
+                    missingIncidentCodes: [],
+                    reason: "ok"
+                )
+            )
+
+            #expect(summary.contains("paired_route_status：正式异网入口已验证，切网后可继续重连。"))
+            #expect(summary.contains("paired_remote_entry：正式异网入口 · host=hub.example.com"))
+            #expect(summary.contains("supervisor_voice：fail · Supervisor 语音自检显示：Hub 简报播报阶段未通过"))
+            #expect(summary.contains("supervisor_voice_freshness：stale · 最近一次语音自检已过期（"))
+            #expect(summary.contains("supervisor_voice_detail：最近一次 Supervisor 语音自检卡在Hub 简报播报阶段：简报播报后没有恢复监听。"))
+            #expect(summary.contains("supervisor_voice_next：先在 XT Diagnostics 重跑 Supervisor 语音自检；如果仍卡在 Hub 简报播报阶段，再核对 brief projection、TTS 播报和播报后恢复监听的链路。"))
+        }
+    }
+
+    @MainActor
+    @Test
+    func xtReadyIncidentExportSummaryIncludesFreshPairReconnectSmoke() async throws {
+        try await Self.gate.runOnMainActor { @MainActor in
+            let base = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xt_ready_fresh_pair_smoke_summary_\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let envKey = "XTERMINAL_WORKSPACE_ROOT"
+            let previous = ProcessInfo.processInfo.environment[envKey]
+            setenv(envKey, base.path, 1)
+            defer {
+                if let previous {
+                    setenv(envKey, previous, 1)
+                } else {
+                    unsetenv(envKey)
+                }
+                try? FileManager.default.removeItem(at: base)
+            }
+
+            let smoke = SupervisorManager.XTFreshPairReconnectSmokeDiagnosisSnapshot(
+                source: XTFreshPairReconnectSmokeSource.startupAutomaticFirstPair.rawValue,
+                status: XTFreshPairReconnectSmokeStatus.succeeded.rawValue,
+                route: HubRemoteRoute.internet.rawValue,
+                triggeredAtMs: 1_741_300_016_000,
+                completedAtMs: 1_741_300_017_000,
+                reasonCode: nil,
+                summary: "first pair complete; cached route verified."
+            )
+            try writeXTDoctorReport(
+                sampleXTFreshPairReconnectSmokeReport(
+                    outputPath: XHubDoctorOutputStore.defaultXTReportURL(workspaceRoot: base).path,
+                    smoke: smoke
+                ),
+                in: base
+            )
+
+            let manager = SupervisorManager.makeForTesting()
+            manager.setSupervisorIncidentLedgerForTesting(makeReadyIncidentLedger())
+            manager.setSupervisorMemoryAssemblySnapshotForTesting(makeMemorySnapshot())
+
+            let summary = manager.renderXTReadyIncidentExportSummaryForTesting(
+                .init(
+                    ok: true,
+                    outputPath: "/tmp/xt-ready.json",
+                    exportedEventCount: 3,
+                    missingIncidentCodes: [],
+                    reason: "ok"
+                )
+            )
+
+            #expect(summary.contains("fresh_pair_reconnect_smoke：succeeded · startup_automatic_first_pair · route=internet"))
+            #expect(summary.contains("fresh_pair_reconnect_smoke_summary：first pair complete; cached route verified."))
+        }
+    }
+
+    @MainActor
+    @Test
+    func xtReadyIncidentExportSummaryIncludesFirstPairCompletionProof() async throws {
+        try await Self.gate.runOnMainActor { @MainActor in
+            let base = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xt_ready_first_pair_completion_proof_summary_\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let envKey = "XTERMINAL_WORKSPACE_ROOT"
+            let previous = ProcessInfo.processInfo.environment[envKey]
+            setenv(envKey, base.path, 1)
+            defer {
+                if let previous {
+                    setenv(envKey, previous, 1)
+                } else {
+                    unsetenv(envKey)
+                }
+                try? FileManager.default.removeItem(at: base)
+            }
+
+            let proof = SupervisorManager.XTFirstPairCompletionProofDiagnosisSnapshot(
+                readiness: XTPairedRouteReadiness.remoteReady.rawValue,
+                sameLanVerified: true,
+                ownerLocalApprovalVerified: true,
+                pairingMaterialIssued: true,
+                cachedReconnectSmokePassed: true,
+                stableRemoteRoutePresent: true,
+                remoteShadowSmokePassed: true,
+                remoteShadowSmokeStatus: XTFirstPairRemoteShadowSmokeStatus.passed.rawValue,
+                remoteShadowSmokeSource: XTRemoteShadowReconnectSmokeSource.cachedRemoteReconnectEvidence.rawValue,
+                remoteShadowTriggeredAtMs: 1_741_300_040_000,
+                remoteShadowCompletedAtMs: 1_741_300_040_000,
+                remoteShadowRoute: HubRemoteRoute.internet.rawValue,
+                remoteShadowReasonCode: nil,
+                remoteShadowSummary: "stable remote route was already verified by cached reconnect smoke.",
+                summaryLine: "first pair complete; cached reconnect and stable remote route are verified.",
+                generatedAtMs: 1_741_300_040_000
+            )
+            try writeXTDoctorReport(
+                sampleXTFirstPairCompletionProofReport(
+                    outputPath: XHubDoctorOutputStore.defaultXTReportURL(workspaceRoot: base).path,
+                    proof: proof
+                ),
+                in: base
+            )
+
+            let manager = SupervisorManager.makeForTesting()
+            manager.setSupervisorIncidentLedgerForTesting(makeReadyIncidentLedger())
+            manager.setSupervisorMemoryAssemblySnapshotForTesting(makeMemorySnapshot())
+
+            let summary = manager.renderXTReadyIncidentExportSummaryForTesting(
+                .init(
+                    ok: true,
+                    outputPath: "/tmp/xt-ready.json",
+                    exportedEventCount: 3,
+                    missingIncidentCodes: [],
+                    reason: "ok"
+                )
+            )
+
+            #expect(summary.contains("first_pair_completion_proof：remote_ready · remote_shadow=passed"))
+            #expect(summary.contains("first_pair_completion_proof_source：cached_remote_reconnect_evidence"))
+            #expect(summary.contains("first_pair_completion_proof_summary：stable remote route was already verified by cached reconnect smoke."))
+        }
+    }
+
+    @MainActor
+    @Test
     func xtReadyIncidentExportSummarySurfacesHubRuntimeLoadConfigSummary() async throws {
         try await Self.gate.runOnMainActor { @MainActor in
             let base = FileManager.default.temporaryDirectory
@@ -1110,6 +2241,34 @@ struct SupervisorIncidentExportTests {
     }
 
     @MainActor
+    @Test
+    func xtReadyIncidentStatusPrependsWorkbenchGovernanceBriefWhenPendingSkillGrantExists() async {
+        await Self.gate.runOnMainActor { @MainActor in
+            let manager = SupervisorManager.makeForTesting()
+            manager.setSupervisorIncidentLedgerForTesting(makeReadyIncidentLedger())
+            manager.setSupervisorMemoryAssemblySnapshotForTesting(makeMemorySnapshot())
+            manager.setPendingSupervisorSkillApprovalsForTesting(
+                [
+                    makeGovernedPendingSkillApproval(
+                        requestId: "xt-ready-skill-grant-1",
+                        executionReadiness: XTSkillExecutionReadinessState.grantRequired.rawValue,
+                        approvalFloor: XTSkillApprovalFloor.hubGrant.rawValue,
+                        requiredGrantCapabilities: ["browser.interact"],
+                        unblockActions: ["request_hub_grant"]
+                    )
+                ]
+            )
+
+            let text = manager.renderXTReadyIncidentEventsStatusForTesting()
+
+            #expect(text.contains("🧭 Supervisor Brief · 当前工作台"))
+            #expect(text.contains("技能授权待处理"))
+            #expect(text.contains("查看：查看技能授权"))
+            #expect(text.contains("📌 XT-Ready incident 导出状态"))
+        }
+    }
+
+    @MainActor
     private func makeReadyIncidentLedger() -> [SupervisorLaneIncident] {
         [
             makeIncident(
@@ -1143,6 +2302,8 @@ struct SupervisorIncidentExportTests {
         resolvedProfile: String = XTMemoryServingProfile.m3DeepDive.rawValue,
         truncatedLayers: [String] = [],
         omittedSections: [String] = [],
+        scopedPromptRecoveryMode: String? = nil,
+        scopedPromptRecoverySections: [String]? = nil,
         durableCandidateMirrorStatus: SupervisorDurableCandidateMirrorStatus = .notNeeded,
         durableCandidateMirrorTarget: String? = nil,
         durableCandidateMirrorAttempted: Bool = false,
@@ -1187,7 +2348,9 @@ struct SupervisorIncidentExportTests {
             durableCandidateMirrorTarget: durableCandidateMirrorTarget,
             durableCandidateMirrorAttempted: durableCandidateMirrorAttempted,
             durableCandidateMirrorErrorCode: durableCandidateMirrorErrorCode,
-            durableCandidateLocalStoreRole: durableCandidateLocalStoreRole
+            durableCandidateLocalStoreRole: durableCandidateLocalStoreRole,
+            scopedPromptRecoveryMode: scopedPromptRecoveryMode,
+            scopedPromptRecoverySections: scopedPromptRecoverySections
         )
     }
 
@@ -1211,6 +2374,18 @@ struct SupervisorIncidentExportTests {
             to: XHubDoctorOutputStore.defaultHubReportURL(baseDir: base),
             options: .atomic
         )
+    }
+
+    private func writeXTDoctorReport(
+        _ report: XHubDoctorOutputReport,
+        in base: URL
+    ) throws {
+        let outputURL = XHubDoctorOutputStore.defaultXTReportURL(workspaceRoot: base)
+        try FileManager.default.createDirectory(
+            at: outputURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        XHubDoctorOutputStore.writeReport(report, to: outputURL)
     }
 
     private func writeHubLocalServiceSnapshot(
@@ -1370,6 +2545,220 @@ struct SupervisorIncidentExportTests {
         )
     }
 
+    private func sampleXTDoctorOutputReport(
+        outputPath: String,
+        connectivityIncident: XHubDoctorOutputConnectivityIncidentSnapshot? = nil
+    ) -> XHubDoctorOutputReport {
+        XHubDoctorOutputReport(
+            schemaVersion: XHubDoctorOutputReport.currentSchemaVersion,
+            contractVersion: XHubDoctorOutputReport.currentContractVersion,
+            reportID: "xhub-doctor-xt-xt_ui-1741300123",
+            bundleKind: .pairedSurfaceReadiness,
+            producer: .xTerminal,
+            surface: .xtUI,
+            overallState: .degraded,
+            summary: XHubDoctorOutputSummary(
+                headline: "首个任务已可启动，但语音播放就绪 仍需修复：Supervisor 语音自检显示：Hub 简报播报阶段未通过",
+                passed: 4,
+                failed: 1,
+                warned: 0,
+                skipped: 0
+            ),
+            readyForFirstTask: true,
+            checks: [
+                XHubDoctorOutputCheckResult(
+                    checkID: XTUnifiedDoctorSectionKind.voicePlaybackReadiness.rawValue,
+                    checkKind: XTUnifiedDoctorSectionKind.voicePlaybackReadiness.rawValue,
+                    status: .fail,
+                    severity: .error,
+                    blocking: true,
+                    headline: "Supervisor 语音自检显示：Hub 简报播报阶段未通过",
+                    message: "最近一次 Supervisor 语音自检卡在Hub 简报播报阶段：简报播报后没有恢复监听。",
+                    nextStep: "先在 XT Diagnostics 重跑 Supervisor 语音自检；如果仍卡在 Hub 简报播报阶段，再核对 brief projection、TTS 播报和播报后恢复监听的链路。",
+                    repairDestinationRef: UITroubleshootDestination.xtDiagnostics.rawValue,
+                    detailLines: [
+                        "voice_smoke_phase=brief_playback",
+                        "voice_smoke_phase_status=failed",
+                        "voice_smoke_failed_check=brief_resumed_listening"
+                    ],
+                    projectContextSummary: nil,
+                    observedAtMs: 1_741_300_123
+                )
+            ],
+            nextSteps: [
+                XHubDoctorOutputNextStep(
+                    stepID: XTUnifiedDoctorSectionKind.voicePlaybackReadiness.rawValue,
+                    kind: .inspectDiagnostics,
+                    label: "重跑语音自检",
+                    owner: .user,
+                    blocking: false,
+                    destinationRef: UITroubleshootDestination.xtDiagnostics.rawValue,
+                    instruction: "先在 XT Diagnostics 重跑 Supervisor 语音自检；如果仍卡在 Hub 简报播报阶段，再核对 brief projection、TTS 播报和播报后恢复监听的链路。"
+                )
+            ],
+            routeSnapshot: XHubDoctorOutputRouteSnapshot(
+                transportMode: "grpc",
+                routeLabel: "paired-remote",
+                pairingPort: 50054,
+                grpcPort: 50053,
+                internetHost: "hub.example.com"
+            ),
+            pairedRouteSetSnapshot: XHubDoctorOutputPairedRouteSetSnapshot(
+                schemaVersion: XTPairedRouteSetSnapshot.currentSchemaVersion,
+                readiness: XTPairedRouteReadiness.remoteReady.rawValue,
+                readinessReasonCode: "cached_remote_reconnect_smoke_verified",
+                summaryLine: "正式异网入口已验证，切网后可继续重连。",
+                hubInstanceID: "hub_test_123",
+                pairingProfileEpoch: 7,
+                routePackVersion: "v1",
+                activeRoute: XHubDoctorOutputPairedRouteTargetSnapshot(
+                    routeKind: XTPairedRouteTargetKind.internet.rawValue,
+                    host: "hub.example.com",
+                    pairingPort: 50054,
+                    grpcPort: 50053,
+                    hostKind: "stable_named",
+                    source: XTPairedRouteTargetSource.activeConnection.rawValue
+                ),
+                lanRoute: nil,
+                stableRemoteRoute: XHubDoctorOutputPairedRouteTargetSnapshot(
+                    routeKind: XTPairedRouteTargetKind.internet.rawValue,
+                    host: "hub.example.com",
+                    pairingPort: 50054,
+                    grpcPort: 50053,
+                    hostKind: "stable_named",
+                    source: XTPairedRouteTargetSource.cachedProfileInternetHost.rawValue
+                ),
+                lastKnownGoodRoute: XHubDoctorOutputPairedRouteTargetSnapshot(
+                    routeKind: XTPairedRouteTargetKind.internet.rawValue,
+                    host: "hub.example.com",
+                    pairingPort: 50054,
+                    grpcPort: 50053,
+                    hostKind: "stable_named",
+                    source: XTPairedRouteTargetSource.freshPairReconnectSmoke.rawValue
+                ),
+                cachedReconnectSmokeStatus: "succeeded",
+                cachedReconnectSmokeReasonCode: nil,
+                cachedReconnectSmokeSummary: "remote reconnect succeeded"
+            ),
+            connectivityIncidentSnapshot: connectivityIncident,
+            generatedAtMs: 1_741_300_123,
+            reportPath: outputPath,
+            sourceReportSchemaVersion: XTUnifiedDoctorReport.currentSchemaVersion,
+            sourceReportPath: "/tmp/xt_unified_doctor_report.json",
+            currentFailureCode: "",
+            currentFailureIssue: nil,
+            consumedContracts: [XTUnifiedDoctorReportContract.frozen.schemaVersion]
+        )
+    }
+
+    private func sampleXTFreshPairReconnectSmokeReport(
+        outputPath: String,
+        smoke: SupervisorManager.XTFreshPairReconnectSmokeDiagnosisSnapshot
+    ) -> XHubDoctorOutputReport {
+        XHubDoctorOutputReport(
+            schemaVersion: XHubDoctorOutputReport.currentSchemaVersion,
+            contractVersion: XHubDoctorOutputReport.currentContractVersion,
+            reportID: "xhub-doctor-xt-xt_ui-1741300222",
+            bundleKind: .pairedSurfaceReadiness,
+            producer: .xTerminal,
+            surface: .xtUI,
+            overallState: .ready,
+            summary: XHubDoctorOutputSummary(
+                headline: "首配复连验证已记录",
+                passed: 1,
+                failed: 0,
+                warned: 0,
+                skipped: 0
+            ),
+            readyForFirstTask: true,
+            checks: [
+                XHubDoctorOutputCheckResult(
+                    checkID: XTUnifiedDoctorSectionKind.hubReachability.rawValue,
+                    checkKind: XTUnifiedDoctorSectionKind.hubReachability.rawValue,
+                    status: smoke.status == XTFreshPairReconnectSmokeStatus.failed.rawValue ? .warn : .pass,
+                    severity: smoke.status == XTFreshPairReconnectSmokeStatus.failed.rawValue ? .warning : .info,
+                    blocking: false,
+                    headline: "Hub 可达性已记录首配后复连验证",
+                    message: smoke.summary,
+                    nextStep: "",
+                    repairDestinationRef: UITroubleshootDestination.xtPairHub.rawValue,
+                    detailLines: [],
+                    projectContextSummary: nil,
+                    observedAtMs: smoke.completedAtMs,
+                    freshPairReconnectSmokeSnapshot: XHubDoctorOutputFreshPairReconnectSmokeSnapshot(
+                        source: smoke.source,
+                        status: smoke.status,
+                        route: smoke.route,
+                        triggeredAtMs: smoke.triggeredAtMs,
+                        completedAtMs: smoke.completedAtMs,
+                        reasonCode: smoke.reasonCode,
+                        summary: smoke.summary
+                    )
+                )
+            ],
+            nextSteps: [],
+            routeSnapshot: nil,
+            generatedAtMs: smoke.completedAtMs,
+            reportPath: outputPath,
+            sourceReportSchemaVersion: XTUnifiedDoctorReport.currentSchemaVersion,
+            sourceReportPath: "/tmp/xt_unified_doctor_report.json",
+            currentFailureCode: "",
+            currentFailureIssue: nil,
+            consumedContracts: [XTUnifiedDoctorReportContract.frozen.schemaVersion]
+        )
+    }
+
+    private func sampleXTFirstPairCompletionProofReport(
+        outputPath: String,
+        proof: SupervisorManager.XTFirstPairCompletionProofDiagnosisSnapshot
+    ) -> XHubDoctorOutputReport {
+        XHubDoctorOutputReport(
+            schemaVersion: XHubDoctorOutputReport.currentSchemaVersion,
+            contractVersion: XHubDoctorOutputReport.currentContractVersion,
+            reportID: "xhub-doctor-xt-xt_ui-1741300555",
+            bundleKind: .pairedSurfaceReadiness,
+            producer: .xTerminal,
+            surface: .xtUI,
+            overallState: proof.readiness == XTPairedRouteReadiness.remoteBlocked.rawValue ? .blocked : .ready,
+            summary: XHubDoctorOutputSummary(
+                headline: proof.summaryLine,
+                passed: 1,
+                failed: 0,
+                warned: 0,
+                skipped: 0
+            ),
+            readyForFirstTask: true,
+            checks: [],
+            nextSteps: [],
+            routeSnapshot: nil,
+            firstPairCompletionProofSnapshot: XHubDoctorOutputFirstPairCompletionProofSnapshot(
+                readiness: proof.readiness,
+                sameLanVerified: proof.sameLanVerified,
+                ownerLocalApprovalVerified: proof.ownerLocalApprovalVerified,
+                pairingMaterialIssued: proof.pairingMaterialIssued,
+                cachedReconnectSmokePassed: proof.cachedReconnectSmokePassed,
+                stableRemoteRoutePresent: proof.stableRemoteRoutePresent,
+                remoteShadowSmokePassed: proof.remoteShadowSmokePassed,
+                remoteShadowSmokeStatus: proof.remoteShadowSmokeStatus,
+                remoteShadowSmokeSource: proof.remoteShadowSmokeSource,
+                remoteShadowTriggeredAtMs: proof.remoteShadowTriggeredAtMs,
+                remoteShadowCompletedAtMs: proof.remoteShadowCompletedAtMs,
+                remoteShadowRoute: proof.remoteShadowRoute,
+                remoteShadowReasonCode: proof.remoteShadowReasonCode,
+                remoteShadowSummary: proof.remoteShadowSummary,
+                summaryLine: proof.summaryLine,
+                generatedAtMs: proof.generatedAtMs
+            ),
+            generatedAtMs: proof.generatedAtMs,
+            reportPath: outputPath,
+            sourceReportSchemaVersion: XTUnifiedDoctorReport.currentSchemaVersion,
+            sourceReportPath: "/tmp/xt_unified_doctor_report.json",
+            currentFailureCode: "",
+            currentFailureIssue: nil,
+            consumedContracts: [XTUnifiedDoctorReportContract.frozen.schemaVersion]
+        )
+    }
+
     private func sampleHubLocalServiceSnapshotReport() -> XHubLocalServiceSnapshotReport {
         XHubLocalServiceSnapshotReport(
             schemaVersion: "xhub_local_service_snapshot_export.v1",
@@ -1490,6 +2879,73 @@ struct SupervisorIncidentExportTests {
                         currentTargetSummary: "配对目标"
                     )
                 ]
+            )
+        )
+    }
+
+    private func makeGovernedPendingSkillApproval(
+        requestId: String,
+        executionReadiness: String,
+        approvalFloor: String,
+        requiredGrantCapabilities: [String],
+        unblockActions: [String]
+    ) -> SupervisorManager.SupervisorPendingSkillApproval {
+        SupervisorManager.SupervisorPendingSkillApproval(
+            id: requestId,
+            requestId: requestId,
+            projectId: "project-release",
+            projectName: "Release Runtime",
+            jobId: "job-1",
+            planId: "plan-1",
+            stepId: "step-1",
+            skillId: "agent-browser",
+            requestedSkillId: "browser.open",
+            toolName: ToolName.deviceBrowserControl.rawValue,
+            tool: .deviceBrowserControl,
+            toolSummary: "打开浏览器采集 staging 页状态",
+            reason: "需要人工确认后再继续执行",
+            createdAt: 1_000,
+            actionURL: nil,
+            routingReasonCode: nil,
+            routingExplanation: nil,
+            readiness: XTSkillExecutionReadiness(
+                schemaVersion: XTSkillExecutionReadiness.currentSchemaVersion,
+                projectId: "project-release",
+                skillId: "agent-browser",
+                packageSHA256: "pkg-\(requestId)",
+                publisherID: "xhub.official",
+                policyScope: "hub_governed",
+                intentFamilies: ["browser.observe", "browser.interact"],
+                capabilityFamilies: ["browser.observe", "browser.interact"],
+                capabilityProfiles: ["observe_only", "browser_operator"],
+                discoverabilityState: "discoverable",
+                installabilityState: "installable",
+                pinState: "pinned",
+                resolutionState: "resolved",
+                executionReadiness: executionReadiness,
+                runnableNow: false,
+                denyCode: executionReadiness == XTSkillExecutionReadinessState.grantRequired.rawValue
+                    ? "grant_required"
+                    : "local_approval_required",
+                reasonCode: executionReadiness == XTSkillExecutionReadinessState.grantRequired.rawValue
+                    ? "grant floor privileged requires hub grant"
+                    : "approval floor local_approval requires local confirmation",
+                grantFloor: XTSkillGrantFloor.privileged.rawValue,
+                approvalFloor: approvalFloor,
+                requiredGrantCapabilities: requiredGrantCapabilities,
+                requiredRuntimeSurfaces: ["managed_browser_runtime"],
+                stateLabel: executionReadiness == XTSkillExecutionReadinessState.grantRequired.rawValue
+                    ? "awaiting_hub_grant"
+                    : "awaiting_local_approval",
+                installHint: "",
+                unblockActions: unblockActions,
+                auditRef: "audit-\(requestId)",
+                doctorAuditRef: "",
+                vetterAuditRef: "",
+                resolvedSnapshotId: "snapshot-\(requestId)",
+                grantSnapshotRef: executionReadiness == XTSkillExecutionReadinessState.grantRequired.rawValue
+                    ? "grant-\(requestId)"
+                    : ""
             )
         )
     }

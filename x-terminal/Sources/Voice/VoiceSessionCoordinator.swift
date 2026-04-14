@@ -2,7 +2,20 @@ import Foundation
 
 @MainActor
 final class VoiceSessionCoordinator: ObservableObject {
-    static let shared = VoiceSessionCoordinator()
+    private static var sharedStorage: VoiceSessionCoordinator?
+
+    static var shared: VoiceSessionCoordinator {
+        if let sharedStorage {
+            return sharedStorage
+        }
+        let coordinator = VoiceSessionCoordinator()
+        sharedStorage = coordinator
+        return coordinator
+    }
+
+    static var sharedIfInitialized: VoiceSessionCoordinator? {
+        sharedStorage
+    }
 
     @Published private(set) var isRecording: Bool = false
     @Published private(set) var recognizedText: String = ""
@@ -14,10 +27,15 @@ final class VoiceSessionCoordinator: ObservableObject {
     @Published private(set) var activeHealthReasonCode: String?
     @Published private(set) var funASRSidecarHealth: VoiceSidecarHealthSnapshot?
     @Published private(set) var lastWakeEvent: VoiceWakeEvent?
+    @Published private(set) var lastCommittedUtterance: VoiceCommittedUtterance?
+    @Published private(set) var currentCaptureSource: VoiceCaptureSource?
 
     private var transcribers: [VoiceRouteMode: any VoiceStreamingTranscriber]
     private var preferences: VoiceRuntimePreferences
     private var lastFinalTranscript: String = ""
+    private var activeCaptureSource: VoiceCaptureSource = .manualComposer
+    private var activeWakePhrase: String?
+    private var captureStartInFlight: Bool = false
 
     init(
         transcribers: [any VoiceStreamingTranscriber]? = nil,
@@ -54,11 +72,10 @@ final class VoiceSessionCoordinator: ObservableObject {
         self.permissionSnapshot = VoicePermissionSnapshotInspector.current()
         self.isAuthorized = initialAuthorizationStatus.isAuthorized
         refreshRuntimeDiagnostics()
+    }
 
-        Task { @MainActor [weak self] in
-            await self?.refreshRouteAvailability()
-            await self?.refreshAuthorizationStatus(requestIfNeeded: true)
-        }
+    var isCaptureStartInFlight: Bool {
+        captureStartInFlight
     }
 
     func setPreferences(_ preferences: VoiceRuntimePreferences) {
@@ -102,17 +119,46 @@ final class VoiceSessionCoordinator: ObservableObject {
     }
 
     func startRecording() async {
-        _ = await beginCapture(markReason: nil)
+        _ = await beginCapture(
+            markReason: nil,
+            captureSource: .manualComposer
+        )
+    }
+
+    @discardableResult
+    func startConversationCapture() async -> Bool {
+        await beginCapture(
+            markReason: "voice_call_started",
+            captureSource: .continuousConversation
+        )
+    }
+
+    @discardableResult
+    func startWakeArmedCapture() async -> Bool {
+        await beginCapture(
+            markReason: "wake_armed",
+            captureSource: .wakeArmed
+        )
     }
 
     @discardableResult
     func resumeListeningForTalkLoop() async -> Bool {
-        await beginCapture(markReason: "talk_loop_resumed")
+        await beginCapture(
+            markReason: "talk_loop_resumed",
+            captureSource: .talkLoop
+        )
     }
 
     @discardableResult
-    private func beginCapture(markReason: String?) async -> Bool {
+    private func beginCapture(
+        markReason: String?,
+        captureSource: VoiceCaptureSource
+    ) async -> Bool {
         guard !isRecording else { return true }
+        guard !captureStartInFlight else { return false }
+        captureStartInFlight = true
+        defer { captureStartInFlight = false }
+
         await refreshRouteAvailability()
         if let systemSpeechTranscriber = transcribers[.systemSpeechCompatibility] as? SystemSpeechCompatibilityTranscriber,
            !systemSpeechTranscriber.isRunning {
@@ -157,6 +203,9 @@ final class VoiceSessionCoordinator: ObservableObject {
 
         recognizedText = ""
         lastFinalTranscript = ""
+        activeCaptureSource = captureSource
+        currentCaptureSource = captureSource
+        activeWakePhrase = nil
         runtimeState = SupervisorVoiceRuntimeState(
             state: .listening,
             route: routeDecision.route,
@@ -183,15 +232,29 @@ final class VoiceSessionCoordinator: ObservableObject {
 
     func stopRecording() {
         guard isRecording else { return }
+        finishCapture(
+            commitTrigger: .manualStop,
+            committedText: committedTranscript()
+        )
+    }
+
+    func discardRecording(reasonCode: String? = "capture_cancelled") {
+        guard isRecording else {
+            clearTranscript()
+            return
+        }
         activeTranscriber(for: routeDecision.route)?.stopTranscribing()
         isRecording = false
-
-        let committed = committedTranscript()
+        activeCaptureSource = .manualComposer
+        currentCaptureSource = nil
+        activeWakePhrase = nil
+        recognizedText = ""
+        lastFinalTranscript = ""
         runtimeState = SupervisorVoiceRuntimeState(
-            state: committed.isEmpty ? .idle : .completed,
+            state: .idle,
             route: routeDecision.route,
-            recognizedText: committed,
-            reasonCode: committed.isEmpty ? nil : "capture_completed"
+            recognizedText: "",
+            reasonCode: reasonCode
         )
     }
 
@@ -217,12 +280,18 @@ final class VoiceSessionCoordinator: ObservableObject {
     }
 
     private func handleTranscriptChunk(_ chunk: VoiceTranscriptChunk) {
+        guard isRecording else { return }
         if chunk.isWakeMatch {
             let phrase = chunk.text.trimmingCharacters(in: .whitespacesAndNewlines)
             lastWakeEvent = VoiceWakeEvent(
                 phrase: phrase.isEmpty ? "wake_match" : phrase,
                 route: routeDecision.route
             )
+            if activeCaptureSource == .wakeArmed {
+                activeCaptureSource = .wakeFollowup
+                currentCaptureSource = .wakeFollowup
+                activeWakePhrase = phrase.isEmpty ? nil : phrase
+            }
         }
         recognizedText = chunk.text
         if chunk.kind == .final || chunk.kind == .revisedFinal {
@@ -234,11 +303,21 @@ final class VoiceSessionCoordinator: ObservableObject {
             recognizedText: chunk.text,
             reasonCode: nil
         )
+        if (chunk.kind == .final || chunk.kind == .revisedFinal) &&
+            activeCaptureSource.autoCommitsOnFinalTranscript {
+            finishCapture(
+                commitTrigger: .finalTranscript,
+                committedText: chunk.text
+            )
+        }
     }
 
     private func handleTranscriberFailure(_ reason: String) {
         activeTranscriber(for: routeDecision.route)?.stopTranscribing()
         isRecording = false
+        activeCaptureSource = .manualComposer
+        currentCaptureSource = nil
+        activeWakePhrase = nil
         runtimeState = SupervisorVoiceRuntimeState(
             state: .failClosed,
             route: routeDecision.route,
@@ -328,5 +407,33 @@ final class VoiceSessionCoordinator: ObservableObject {
         guard let reason else { return nil }
         let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func finishCapture(
+        commitTrigger: VoiceCommitTrigger,
+        committedText: String
+    ) {
+        guard isRecording else { return }
+        let captureSource = activeCaptureSource
+        let committed = committedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        isRecording = false
+        activeTranscriber(for: routeDecision.route)?.stopTranscribing()
+        activeCaptureSource = .manualComposer
+        currentCaptureSource = nil
+        runtimeState = SupervisorVoiceRuntimeState(
+            state: committed.isEmpty ? .idle : .completed,
+            route: routeDecision.route,
+            recognizedText: committed,
+            reasonCode: committed.isEmpty ? nil : "capture_completed"
+        )
+        guard !committed.isEmpty else { return }
+        lastCommittedUtterance = VoiceCommittedUtterance(
+            text: committed,
+            route: routeDecision.route,
+            captureSource: captureSource,
+            trigger: commitTrigger,
+            wakePhrase: activeWakePhrase
+        )
+        activeWakePhrase = nil
     }
 }
