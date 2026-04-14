@@ -161,6 +161,23 @@ node ./scripts/m3_check_xt_ready_gate.js \
   --out-json ./build/xt_ready_gate_e2e_contract_report.json
 
 # 3) strict-e2e（release 真实联测导出优先：audit export -> incident events -> 证据校验）
+# 输出路径约定：
+# - 默认 current gate：`build/xt_ready_evidence_source.json` + `build/connector_ingress_gate_snapshot.json` + `build/xt_ready_gate_e2e_report.json`
+# - release require-real：`build/xt_ready_evidence_source.require_real.json` + `build/connector_ingress_gate_snapshot.require_real.json` + `build/xt_ready_gate_e2e_require_real_report.json`
+# - DB-real replay：`build/xt_ready_evidence_source.db_real.json` + `build/connector_ingress_gate_snapshot.db_real.json` + `build/xt_ready_gate_e2e_db_real_report.json`
+# release/report/refresh helper 现统一按 `require_real -> db_real -> current` 优先级选取 XT-ready report/source/connector snapshot。
+XT_READY_EVIDENCE_SOURCE_JSON="./build/xt_ready_evidence_source.json"
+XT_READY_CONNECTOR_GATE_JSON="./build/connector_ingress_gate_snapshot.json"
+XT_READY_GATE_REPORT_JSON="./build/xt_ready_gate_e2e_report.json"
+# 若本次跑的是 release require-real，请改成：
+# XT_READY_EVIDENCE_SOURCE_JSON="./build/xt_ready_evidence_source.require_real.json"
+# XT_READY_CONNECTOR_GATE_JSON="./build/connector_ingress_gate_snapshot.require_real.json"
+# XT_READY_GATE_REPORT_JSON="./build/xt_ready_gate_e2e_require_real_report.json"
+# 若本次跑的是 DB-real replay，请改成：
+# XT_READY_EVIDENCE_SOURCE_JSON="./build/xt_ready_evidence_source.db_real.json"
+# XT_READY_CONNECTOR_GATE_JSON="./build/connector_ingress_gate_snapshot.db_real.json"
+# XT_READY_GATE_REPORT_JSON="./build/xt_ready_gate_e2e_db_real_report.json"
+
 # 3.0 选择审计输入（优先真实联测导出；缺失时回退到 sample fixture）
 # release 硬门禁建议开启：`XT_READY_REQUIRE_REAL_AUDIT=1`，若仍回退 sample 则应直接 fail。
 # 额外约束：require-real 不接受 synthetic runtime 证据（例如 `audit-smoke-*` / `source.kind=synthetic_runtime`）。
@@ -170,27 +187,27 @@ node ./scripts/m3_check_xt_ready_gate.js \
 if [ "${XT_READY_REQUIRE_REAL_AUDIT:-0}" = "1" ]; then
   node ./scripts/m3_resolve_xt_ready_audit_input.js \
     --require-real \
-    --out-json ./build/xt_ready_evidence_source.json
+    --out-json "${XT_READY_EVIDENCE_SOURCE_JSON}"
 else
   node ./scripts/m3_resolve_xt_ready_audit_input.js \
-    --out-json ./build/xt_ready_evidence_source.json
+    --out-json "${XT_READY_EVIDENCE_SOURCE_JSON}"
 fi
-XT_READY_AUDIT_JSON="$(node -e 'const fs=require(\"node:fs\");const x=JSON.parse(fs.readFileSync(\"./build/xt_ready_evidence_source.json\",\"utf8\"));process.stdout.write(String(x.selected_audit_json||\"\"));')"
+XT_READY_AUDIT_JSON="$(node -e 'const fs=require(\"node:fs\");const p=process.argv[1];const x=JSON.parse(fs.readFileSync(p,\"utf8\"));process.stdout.write(String(x.selected_audit_json||\"\"));' "${XT_READY_EVIDENCE_SOURCE_JSON}")"
 
 # 3.0a（可选但推荐）从 Hub Admin 接口抓取 connector ingress gate 快照，
 # 并把 blocked_event_miss_rate 注入 XT-Ready 证据链（audit 优先，scan 兜底）
+# 若未显式传 `HUB_ADMIN_TOKEN`，脚本会优先尝试从本机 Hub 状态目录安全解密读取 admin token。
 # 无 Hub Admin 可用时，可回退 sample：`scripts/fixtures/connector_ingress_gate_snapshot.sample.json`
 node ./scripts/m3_fetch_connector_ingress_gate_snapshot.js \
-  --base-url "${XT_READY_HUB_PAIRING_BASE_URL:-http://127.0.0.1:50052}" \
-  --admin-token "${HUB_ADMIN_TOKEN}" \
+  --base-url "${XT_READY_HUB_PAIRING_BASE_URL:-http://127.0.0.1:50053}" \
   --source auto \
-  --out-json ./build/connector_ingress_gate_snapshot.json
+  --out-json "${XT_READY_CONNECTOR_GATE_JSON}"
 
 # 3.1 从 Hub/Supervisor 审计导出抽取 XT-Ready incident 事件
 node ./scripts/m3_extract_xt_ready_incident_events_from_audit.js \
   --strict \
   --audit-json "${XT_READY_AUDIT_JSON}" \
-  --connector-gate-json ./build/connector_ingress_gate_snapshot.json \
+  --connector-gate-json "${XT_READY_CONNECTOR_GATE_JSON}" \
   --out-json ./build/xt_ready_incident_events.effective.json
 
 # 3.2 由 incident 事件生成 E2E 证据
@@ -203,8 +220,8 @@ node ./scripts/m3_generate_xt_ready_e2e_evidence.js \
 node ./scripts/m3_check_xt_ready_gate.js \
   --strict-e2e \
   --e2e-evidence ./build/xt_ready_e2e_evidence.json \
-  --evidence-source ./build/xt_ready_evidence_source.json \
-  --out-json ./build/xt_ready_gate_e2e_report.json
+  --evidence-source "${XT_READY_EVIDENCE_SOURCE_JSON}" \
+  --out-json "${XT_READY_GATE_REPORT_JSON}"
 
 # 若 release 强制真实审计导出（禁止 sample fallback），追加：
 # --require-real-audit-source

@@ -138,7 +138,7 @@
 7. 高风险动作继续遵守：
    - Hub grant
    - project governance bundle
-   - A-tier / runtime-surface clamp
+   - A-Tier / runtime-surface clamp
    - constitution / injection defense
    - audit / kill-switch
 

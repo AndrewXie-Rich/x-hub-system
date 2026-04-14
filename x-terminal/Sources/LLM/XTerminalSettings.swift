@@ -74,7 +74,8 @@ struct SupervisorCalendarReminderPreferences: Codable, Equatable {
 }
 
 struct XTerminalSettings: Codable, Equatable {
-    static let currentSchemaVersion = 10
+    static let currentSchemaVersion = 12
+    private static let supervisorWorkModeSchemaVersion = 10
 
     var schemaVersion: Int
 
@@ -93,6 +94,8 @@ struct XTerminalSettings: Codable, Equatable {
     var supervisorPrivacyMode: XTPrivacyMode
     var supervisorCalendarReminders: SupervisorCalendarReminderPreferences
     var supervisorRecentRawContextProfile: XTSupervisorRecentRawContextProfile
+    var supervisorReviewMemoryDepthProfile: XTSupervisorReviewMemoryDepthProfile
+    var interfaceLanguage: XTInterfaceLanguage
     var supervisorPersonaRegistry: SupervisorPersonaRegistry
 
     init(
@@ -109,6 +112,8 @@ struct XTerminalSettings: Codable, Equatable {
         supervisorPrivacyMode: XTPrivacyMode = .defaultMode,
         supervisorCalendarReminders: SupervisorCalendarReminderPreferences = .default(),
         supervisorRecentRawContextProfile: XTSupervisorRecentRawContextProfile = .defaultProfile,
+        supervisorReviewMemoryDepthProfile: XTSupervisorReviewMemoryDepthProfile = .defaultProfile,
+        interfaceLanguage: XTInterfaceLanguage = .defaultPreference,
         supervisorPersonaRegistry: SupervisorPersonaRegistry? = nil
     ) {
         self.schemaVersion = schemaVersion
@@ -131,6 +136,8 @@ struct XTerminalSettings: Codable, Equatable {
         self.supervisorPrivacyMode = supervisorPrivacyMode
         self.supervisorCalendarReminders = supervisorCalendarReminders.normalized()
         self.supervisorRecentRawContextProfile = supervisorRecentRawContextProfile
+        self.supervisorReviewMemoryDepthProfile = supervisorReviewMemoryDepthProfile
+        self.interfaceLanguage = interfaceLanguage
         self.supervisorPersonaRegistry = synchronized.supervisorPersonaRegistry
     }
 
@@ -163,6 +170,14 @@ struct XTerminalSettings: Codable, Equatable {
             XTSupervisorRecentRawContextProfile.self,
             forKey: .supervisorRecentRawContextProfile
         )) ?? .defaultProfile
+        supervisorReviewMemoryDepthProfile = (try? c.decode(
+            XTSupervisorReviewMemoryDepthProfile.self,
+            forKey: .supervisorReviewMemoryDepthProfile
+        )) ?? .defaultProfile
+        interfaceLanguage = (try? c.decode(
+            XTInterfaceLanguage.self,
+            forKey: .interfaceLanguage
+        )) ?? .defaultPreference
         let decodedRegistry = try? c.decode(SupervisorPersonaRegistry.self, forKey: .supervisorPersonaRegistry)
         let synchronized = Self.synchronizedSupervisorState(
             voice: decodedVoice,
@@ -192,6 +207,8 @@ struct XTerminalSettings: Codable, Equatable {
         case supervisorPrivacyMode
         case supervisorCalendarReminders
         case supervisorRecentRawContextProfile
+        case supervisorReviewMemoryDepthProfile
+        case interfaceLanguage
         case supervisorPersonaRegistry
     }
 
@@ -217,6 +234,8 @@ struct XTerminalSettings: Codable, Equatable {
             supervisorPrivacyMode: .defaultMode,
             supervisorCalendarReminders: .default(),
             supervisorRecentRawContextProfile: .defaultProfile,
+            supervisorReviewMemoryDepthProfile: .defaultProfile,
+            interfaceLanguage: .defaultPreference,
             supervisorPersonaRegistry: SupervisorPersonaRegistry.default(
                 defaultVoicePersona: VoiceRuntimePreferences.default().persona
             )
@@ -265,6 +284,8 @@ struct XTerminalSettings: Codable, Equatable {
             supervisorPrivacyMode: supervisorPrivacyMode,
             supervisorCalendarReminders: supervisorCalendarReminders,
             supervisorRecentRawContextProfile: supervisorRecentRawContextProfile,
+            supervisorReviewMemoryDepthProfile: supervisorReviewMemoryDepthProfile,
+            interfaceLanguage: interfaceLanguage,
             supervisorPersonaRegistry: updatedRegistry
         )
     }
@@ -296,6 +317,8 @@ struct XTerminalSettings: Codable, Equatable {
             supervisorPrivacyMode: supervisorPrivacyMode,
             supervisorCalendarReminders: supervisorCalendarReminders,
             supervisorRecentRawContextProfile: supervisorRecentRawContextProfile,
+            supervisorReviewMemoryDepthProfile: supervisorReviewMemoryDepthProfile,
+            interfaceLanguage: interfaceLanguage,
             supervisorPersonaRegistry: updatedRegistry
         )
     }
@@ -319,6 +342,8 @@ struct XTerminalSettings: Codable, Equatable {
             supervisorPrivacyMode: supervisorPrivacyMode,
             supervisorCalendarReminders: supervisorCalendarReminders,
             supervisorRecentRawContextProfile: supervisorRecentRawContextProfile,
+            supervisorReviewMemoryDepthProfile: supervisorReviewMemoryDepthProfile,
+            interfaceLanguage: interfaceLanguage,
             supervisorPersonaRegistry: updatedRegistry
         )
     }
@@ -342,6 +367,8 @@ struct XTerminalSettings: Codable, Equatable {
             supervisorPrivacyMode: supervisorPrivacyMode,
             supervisorCalendarReminders: supervisorCalendarReminders,
             supervisorRecentRawContextProfile: supervisorRecentRawContextProfile,
+            supervisorReviewMemoryDepthProfile: supervisorReviewMemoryDepthProfile,
+            interfaceLanguage: interfaceLanguage,
             supervisorPersonaRegistry: updatedRegistry
         )
     }
@@ -361,6 +388,8 @@ struct XTerminalSettings: Codable, Equatable {
             supervisorPrivacyMode: supervisorPrivacyMode,
             supervisorCalendarReminders: supervisorCalendarReminders,
             supervisorRecentRawContextProfile: supervisorRecentRawContextProfile,
+            supervisorReviewMemoryDepthProfile: supervisorReviewMemoryDepthProfile,
+            interfaceLanguage: interfaceLanguage,
             supervisorPersonaRegistry: supervisorPersonaRegistry
         )
     }
@@ -380,6 +409,8 @@ struct XTerminalSettings: Codable, Equatable {
             supervisorPrivacyMode: supervisorPrivacyMode,
             supervisorCalendarReminders: supervisorCalendarReminders,
             supervisorRecentRawContextProfile: supervisorRecentRawContextProfile,
+            supervisorReviewMemoryDepthProfile: supervisorReviewMemoryDepthProfile,
+            interfaceLanguage: interfaceLanguage,
             supervisorPersonaRegistry: supervisorPersonaRegistry
         )
     }
@@ -401,6 +432,8 @@ struct XTerminalSettings: Codable, Equatable {
             supervisorPrivacyMode: supervisorPrivacyMode,
             supervisorCalendarReminders: supervisorCalendarReminders,
             supervisorRecentRawContextProfile: supervisorRecentRawContextProfile,
+            supervisorReviewMemoryDepthProfile: supervisorReviewMemoryDepthProfile,
+            interfaceLanguage: interfaceLanguage,
             supervisorPersonaRegistry: supervisorPersonaRegistry
         )
     }
@@ -422,6 +455,52 @@ struct XTerminalSettings: Codable, Equatable {
             supervisorPrivacyMode: supervisorPrivacyMode,
             supervisorCalendarReminders: supervisorCalendarReminders,
             supervisorRecentRawContextProfile: supervisorRecentRawContextProfile,
+            supervisorReviewMemoryDepthProfile: supervisorReviewMemoryDepthProfile,
+            interfaceLanguage: interfaceLanguage,
+            supervisorPersonaRegistry: supervisorPersonaRegistry
+        )
+    }
+
+    func setting(
+        supervisorReviewMemoryDepthProfile: XTSupervisorReviewMemoryDepthProfile
+    ) -> XTerminalSettings {
+        XTerminalSettings(
+            schemaVersion: Self.currentSchemaVersion,
+            assignments: assignments,
+            openAICompatible: openAICompatible,
+            anthropic: anthropic,
+            gemini: gemini,
+            voice: voice,
+            supervisorPrompt: supervisorPrompt,
+            supervisorPersonalProfile: supervisorPersonalProfile,
+            supervisorPersonalPolicy: supervisorPersonalPolicy,
+            supervisorWorkMode: supervisorWorkMode,
+            supervisorPrivacyMode: supervisorPrivacyMode,
+            supervisorCalendarReminders: supervisorCalendarReminders,
+            supervisorRecentRawContextProfile: supervisorRecentRawContextProfile,
+            supervisorReviewMemoryDepthProfile: supervisorReviewMemoryDepthProfile,
+            interfaceLanguage: interfaceLanguage,
+            supervisorPersonaRegistry: supervisorPersonaRegistry
+        )
+    }
+
+    func setting(interfaceLanguage: XTInterfaceLanguage) -> XTerminalSettings {
+        XTerminalSettings(
+            schemaVersion: Self.currentSchemaVersion,
+            assignments: assignments,
+            openAICompatible: openAICompatible,
+            anthropic: anthropic,
+            gemini: gemini,
+            voice: voice,
+            supervisorPrompt: supervisorPrompt,
+            supervisorPersonalProfile: supervisorPersonalProfile,
+            supervisorPersonalPolicy: supervisorPersonalPolicy,
+            supervisorWorkMode: supervisorWorkMode,
+            supervisorPrivacyMode: supervisorPrivacyMode,
+            supervisorCalendarReminders: supervisorCalendarReminders,
+            supervisorRecentRawContextProfile: supervisorRecentRawContextProfile,
+            supervisorReviewMemoryDepthProfile: supervisorReviewMemoryDepthProfile,
+            interfaceLanguage: interfaceLanguage,
             supervisorPersonaRegistry: supervisorPersonaRegistry
         )
     }
@@ -441,6 +520,8 @@ struct XTerminalSettings: Codable, Equatable {
             supervisorPrivacyMode: supervisorPrivacyMode,
             supervisorCalendarReminders: supervisorCalendarReminders,
             supervisorRecentRawContextProfile: supervisorRecentRawContextProfile,
+            supervisorReviewMemoryDepthProfile: supervisorReviewMemoryDepthProfile,
+            interfaceLanguage: interfaceLanguage,
             supervisorPersonaRegistry: supervisorPersonaRegistry
         )
     }
@@ -460,6 +541,8 @@ struct XTerminalSettings: Codable, Equatable {
             supervisorPrivacyMode: supervisorPrivacyMode,
             supervisorCalendarReminders: supervisorCalendarReminders,
             supervisorRecentRawContextProfile: supervisorRecentRawContextProfile,
+            supervisorReviewMemoryDepthProfile: supervisorReviewMemoryDepthProfile,
+            interfaceLanguage: interfaceLanguage,
             supervisorPersonaRegistry: supervisorPersonaRegistry
         )
     }
@@ -483,7 +566,7 @@ struct XTerminalSettings: Codable, Equatable {
     private static func defaultSupervisorWorkMode(
         forDecodedSchemaVersion schemaVersion: Int
     ) -> XTSupervisorWorkMode {
-        schemaVersion < Self.currentSchemaVersion ? .governedAutomation : .defaultMode
+        schemaVersion < Self.supervisorWorkModeSchemaVersion ? .governedAutomation : .defaultMode
     }
 
     private static func synchronizedSupervisorState(

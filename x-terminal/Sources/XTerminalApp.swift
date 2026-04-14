@@ -29,6 +29,16 @@ struct XTerminalApp: App {
                 .environmentObject(appModel)
         }
 
+        Window("Supervisor Settings", id: "supervisor_settings") {
+            SupervisorToolWindowRootView(preferredTab: .supervisor)
+                .environmentObject(appModel)
+        }
+
+        Window("AI 模型", id: "model_settings") {
+            SupervisorToolWindowRootView(preferredTab: .models)
+                .environmentObject(appModel)
+        }
+
         Window("Hub Setup", id: "hub_setup") {
             HubSetupWizardView()
                 .environmentObject(appModel)
@@ -56,37 +66,27 @@ struct XTerminalApp: App {
                 Divider()
 
                 Button("Open .xterminal Folder") {
-                    if let ctx = appModel.projectContext {
-                        NSWorkspace.shared.open(ctx.xterminalDir)
-                    }
+                    appModel.openCurrentProjectXTerminalFolder()
                 }
                 .disabled(appModel.projectContext == nil)
 
                 Button("Open AX_MEMORY.md") {
-                    if let ctx = appModel.projectContext {
-                        NSWorkspace.shared.open(ctx.memoryMarkdownURL)
-                    }
+                    appModel.openCurrentProjectMemoryMarkdown()
                 }
                 .disabled(appModel.projectContext == nil)
 
                 Button("Open ax_memory.json") {
-                    if let ctx = appModel.projectContext {
-                        NSWorkspace.shared.open(ctx.memoryJSONURL)
-                    }
+                    appModel.openCurrentProjectMemoryJSON()
                 }
                 .disabled(appModel.projectContext == nil)
 
                 Button("Open config.json") {
-                    if let ctx = appModel.projectContext {
-                        NSWorkspace.shared.open(ctx.configURL)
-                    }
+                    appModel.openCurrentProjectConfig()
                 }
                 .disabled(appModel.projectContext == nil)
 
                 Button("Open raw_log.jsonl") {
-                    if let ctx = appModel.projectContext {
-                        NSWorkspace.shared.open(ctx.rawLogURL)
-                    }
+                    appModel.openCurrentProjectRawLog()
                 }
                 .disabled(appModel.projectContext == nil)
             }
@@ -111,6 +111,19 @@ struct XTerminalApp: App {
 
                 Button("Reconnect Remote Link") {
                     appModel.startHubReconnectOnly()
+                }
+            }
+
+            CommandMenu(XTL10n.MenuBarLanguage.menuTitle) {
+                ForEach(XTInterfaceLanguage.allCases) { option in
+                    Button(
+                        XTL10n.MenuBarLanguage.optionTitle(
+                            option,
+                            selectedLanguage: appModel.settingsStore.settings.interfaceLanguage
+                        )
+                    ) {
+                        appModel.setInterfaceLanguage(option)
+                    }
                 }
             }
         }
@@ -162,8 +175,213 @@ final class XTerminalAppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+struct XTSupervisorVoiceSmokeReportSummary: Decodable, Equatable, Sendable {
+    static let currentSchemaVersion = "xt.supervisor_voice_smoke.v1"
+
+    enum Phase: String, Equatable, Sendable {
+        case wake
+        case grant
+        case briefPlayback = "brief_playback"
+
+        var order: Int {
+            switch self {
+            case .wake:
+                return 0
+            case .grant:
+                return 1
+            case .briefPlayback:
+                return 2
+            }
+        }
+
+        var headline: String {
+            switch self {
+            case .wake:
+                return "唤醒阶段"
+            case .grant:
+                return "授权挑战阶段"
+            case .briefPlayback:
+                return "Hub 简报播报阶段"
+            }
+        }
+    }
+
+    enum PhaseStatus: String, Equatable, Sendable {
+        case passed
+        case failed
+        case notReached = "not_reached"
+        case unknown
+    }
+
+    struct Check: Decodable, Equatable, Sendable {
+        var id: String?
+        var passed: Bool?
+        var detail: String?
+    }
+
+    var schemaVersion: String
+    var outputPath: String?
+    var voiceRoute: String?
+    var error: String?
+    var checks: [Check]
+
+    var checkCount: Int { checks.count }
+
+    var passedCheckCount: Int {
+        checks.reduce(into: 0) { partialResult, item in
+            if item.passed == true {
+                partialResult += 1
+            }
+        }
+    }
+
+    var normalizedError: String? {
+        let trimmed = error?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    var isPassing: Bool {
+        normalizedError == nil && checkCount > 0 && passedCheckCount == checkCount
+    }
+
+    var firstFailedCheck: Check? {
+        checks.first { $0.passed != true }
+    }
+
+    var firstFailedPhase: Phase? {
+        Self.phase(forCheckID: firstFailedCheck?.id)
+    }
+
+    func phaseStatus(_ phase: Phase) -> PhaseStatus {
+        if isPassing {
+            return .passed
+        }
+        guard let failedPhase = firstFailedPhase else {
+            return normalizedError == nil ? .unknown : .failed
+        }
+        if failedPhase == phase {
+            return .failed
+        }
+        if failedPhase.order < phase.order {
+            return .notReached
+        }
+        return .passed
+    }
+
+    func detailLines(for phase: Phase) -> [String] {
+        var lines = [
+            "voice_smoke_status=\(isPassing ? "pass" : normalizedError == nil ? "fail" : "error")",
+            "voice_smoke_checks=\(passedCheckCount)/\(checkCount)",
+            "voice_smoke_phase=\(phase.rawValue)",
+            "voice_smoke_phase_status=\(phaseStatus(phase).rawValue)"
+        ]
+        let route = (voiceRoute ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !route.isEmpty {
+            lines.append("voice_smoke_route=\(route)")
+        }
+        if let failedPhase = firstFailedPhase {
+            lines.append("voice_smoke_failed_phase=\(failedPhase.rawValue)")
+            lines.append("voice_smoke_failed_phase_label=\(failedPhase.headline)")
+        }
+        if let failedCheck = firstFailedCheck,
+           let failedID = failedCheck.id?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !failedID.isEmpty {
+            lines.append("voice_smoke_failed_check=\(failedID)")
+            lines.append("voice_smoke_failed_check_label=\(Self.label(forCheckID: failedID))")
+            let trimmedDetail = failedCheck.detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !trimmedDetail.isEmpty {
+                lines.append("voice_smoke_failed_detail=\(trimmedDetail)")
+            }
+        }
+        if let normalizedError {
+            lines.append("voice_smoke_error=\(normalizedError)")
+        }
+        return lines
+    }
+
+    func failureSummaryLine(for phase: Phase) -> String? {
+        let status = phaseStatus(phase)
+        switch status {
+        case .passed:
+            return "最近一次 Supervisor 语音自检已通过\(phase.headline)。"
+        case .failed:
+            let failedLabel = firstFailedCheck.flatMap { check in
+                check.id.map(Self.label(forCheckID:))
+            } ?? phase.headline
+            let detail = firstFailedCheck?.detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !detail.isEmpty {
+                return "最近一次 Supervisor 语音自检卡在\(phase.headline)：\(failedLabel)。\(detail)"
+            }
+            return "最近一次 Supervisor 语音自检卡在\(phase.headline)：\(failedLabel)。"
+        case .notReached:
+            if let failedPhase = firstFailedPhase {
+                return "最近一次 Supervisor 语音自检在\(failedPhase.headline)之前中断，所以还没走到\(phase.headline)。"
+            }
+            return "最近一次 Supervisor 语音自检还没走到\(phase.headline)。"
+        case .unknown:
+            if let normalizedError {
+                return "最近一次 Supervisor 语音自检未能完成：\(normalizedError)"
+            }
+            return "最近一次 Supervisor 语音自检结果不完整。"
+        }
+    }
+
+    static func load(from url: URL) throws -> XTSupervisorVoiceSmokeReportSummary {
+        let data = try Data(contentsOf: url)
+        return try JSONDecoder().decode(XTSupervisorVoiceSmokeReportSummary.self, from: data)
+    }
+
+    static func phase(forCheckID id: String?) -> Phase? {
+        switch id?.trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "wake_armed_ready", "wake_prompt_spoken":
+            return .wake
+        case "wake_prompt_resumed_listening", "voice_grant_challenge_issued", "grant_prompt_resumed_listening", "approve_callback_recorded":
+            return .grant
+        case "grant_approved_and_brief_emitted", "brief_resumed_listening", "brief_projection_callback_recorded":
+            return .briefPlayback
+        default:
+            return nil
+        }
+    }
+
+    static func label(forCheckID id: String) -> String {
+        switch id.trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "wake_armed_ready":
+            return "唤醒待命未就绪"
+        case "wake_prompt_spoken":
+            return "唤醒响应提示未播报"
+        case "wake_prompt_resumed_listening":
+            return "唤醒提示后未恢复监听"
+        case "voice_grant_challenge_issued":
+            return "语音授权挑战未发出"
+        case "grant_prompt_resumed_listening":
+            return "授权提示后未恢复监听"
+        case "approve_callback_recorded":
+            return "授权批准回调未记录"
+        case "grant_approved_and_brief_emitted":
+            return "授权通过后未发出 Hub 简报"
+        case "brief_resumed_listening":
+            return "简报播报后未恢复监听"
+        case "brief_projection_callback_recorded":
+            return "Hub 简报投影回调未记录"
+        default:
+            return id
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case outputPath = "output_path"
+        case voiceRoute = "voice_route"
+        case error
+        case checks
+    }
+}
+
 enum XTerminalGateSmokeRunner {
+    static let routeSmokeFlag = "--xt-route-smoke"
     static let grantSmokeFlag = "--xt-grant-smoke"
+    static let supervisorVoiceSmokeFlag = "--xt-supervisor-voice-smoke"
     static let supervisorDoctorRefreshFlag = "--xt-supervisor-doctor-refresh"
     static let unifiedDoctorExportFlag = "--xt-unified-doctor-export"
     static let releaseEvidenceSmokeFlag = "--xt-release-evidence-smoke"
@@ -172,7 +390,9 @@ enum XTerminalGateSmokeRunner {
     static let outJSONFlag = "--out-json"
 
     static func isSmokeInvocation(arguments: [String]) -> Bool {
-        arguments.contains(grantSmokeFlag)
+        arguments.contains(routeSmokeFlag)
+            || arguments.contains(grantSmokeFlag)
+            || arguments.contains(supervisorVoiceSmokeFlag)
             || arguments.contains(supervisorDoctorRefreshFlag)
             || arguments.contains(unifiedDoctorExportFlag)
             || arguments.contains(releaseEvidenceSmokeFlag)
@@ -180,8 +400,14 @@ enum XTerminalGateSmokeRunner {
     }
 
     static func runIfRequested(arguments: [String]) -> Int? {
+        if arguments.contains(routeSmokeFlag) {
+            return runRouteSmoke(arguments: arguments)
+        }
         if arguments.contains(grantSmokeFlag) {
             return runGrantSmoke(arguments: arguments)
+        }
+        if arguments.contains(supervisorVoiceSmokeFlag) {
+            return runSupervisorVoiceSmoke(arguments: arguments)
         }
         if arguments.contains(supervisorDoctorRefreshFlag) {
             return runSupervisorDoctorRefresh(arguments: arguments)
@@ -196,6 +422,37 @@ enum XTerminalGateSmokeRunner {
             return runSplitFlowFixtureSmoke(arguments: arguments)
         }
         return nil
+    }
+
+    @MainActor
+    static func runSupervisorVoiceSmokeCheck(workspaceRoot: URL, outputURL: URL) async -> Int {
+        await runSupervisorVoiceSmokeScenario(workspaceRoot: workspaceRoot, outputURL: outputURL)
+    }
+
+    private static func runRouteSmoke(arguments: [String]) -> Int {
+        let root = projectRoot(from: arguments)
+            ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+        let checks = HubRouteStateMachine.runSelfChecks()
+        let passedCount = checks.filter(\.ok).count
+
+        print("[xt-route-smoke] workspace=\(root.path)")
+        print("[xt-route-smoke] self_checks=\(passedCount)/\(checks.count)")
+        for item in checks {
+            print("- [\(item.ok ? "PASS" : "FAIL")] \(item.name) :: \(item.detail)")
+        }
+
+        guard !checks.isEmpty else {
+            print("[xt-route-smoke] FAIL")
+            return 1
+        }
+
+        if checks.allSatisfy(\.ok) {
+            print("[xt-route-smoke] PASS")
+            return 0
+        }
+
+        print("[xt-route-smoke] FAIL")
+        return 1
     }
 
     private static func runGrantSmoke(arguments: [String]) -> Int {
@@ -245,6 +502,56 @@ enum XTerminalGateSmokeRunner {
             print("[xt-grant-smoke] FAIL: \(error.localizedDescription)")
             return 2
         }
+    }
+
+    private static func runSupervisorVoiceSmoke(arguments: [String]) -> Int {
+        let customRoot = projectRoot(from: arguments)
+        let root: URL
+        let shouldCleanup: Bool
+        if let customRoot {
+            root = customRoot
+            shouldCleanup = false
+        } else {
+            root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xt_supervisor_voice_smoke_\(UUID().uuidString)", isDirectory: true)
+            shouldCleanup = true
+        }
+        let outputURL = outputJSONURL(
+            from: arguments,
+            defaultURL: root
+                .appendingPathComponent(".axcoder/reports", isDirectory: true)
+                .appendingPathComponent("xt_supervisor_voice_smoke.runtime.json")
+        )
+
+        defer {
+            if shouldCleanup {
+                try? FileManager.default.removeItem(at: root)
+            }
+        }
+
+        var finished = false
+        var exitCode = 2
+        Task { @MainActor in
+            exitCode = await runSupervisorVoiceSmokeScenario(
+                workspaceRoot: root,
+                outputURL: outputURL
+            )
+            finished = true
+        }
+
+        let deadline = Date().addingTimeInterval(30)
+        while !finished && Date() < deadline {
+            _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        }
+
+        guard finished else {
+            print("[xt-supervisor-voice-smoke] FAIL: timed out")
+            print("[xt-supervisor-voice-smoke] workspace=\(root.path)")
+            print("[xt-supervisor-voice-smoke] output=\(outputURL.path)")
+            return 2
+        }
+
+        return exitCode
     }
 
     private static func runSupervisorDoctorRefresh(arguments: [String]) -> Int {
@@ -309,6 +616,9 @@ enum XTerminalGateSmokeRunner {
             return outputReport.summary.failed == 0 ? 0 : 1
         } catch {
             print("[xt-unified-doctor-export] FAIL: \(error.localizedDescription)")
+            if let detail = decodingFailureDetail(error) {
+                print("[xt-unified-doctor-export] detail=\(detail)")
+            }
             print("[xt-unified-doctor-export] workspace=\(root.path)")
             print("[xt-unified-doctor-export] source=\(sourceURL.path)")
             return 2
@@ -463,14 +773,8 @@ enum XTerminalGateSmokeRunner {
     @MainActor
     private static func buildSplitFlowFixturePayload(projectRoot: URL) async -> Result<[String: Any], Error> {
         do {
-            let primarySupervisor = SupervisorModel()
-            guard let primaryOrchestrator = primarySupervisor.orchestrator else {
-                throw NSError(
-                    domain: "xt_split_flow_fixture_smoke",
-                    code: 2,
-                    userInfo: [NSLocalizedDescriptionKey: "primary orchestrator unavailable"]
-                )
-            }
+            let primaryRuntimeHost = SplitFlowFixtureRuntimeHost()
+            let primaryOrchestrator = SupervisorOrchestrator(runtimeHost: primaryRuntimeHost)
 
             let proposalResult = await primaryOrchestrator.proposeSplit(
                 for: "导出 split flow fixture：提案、覆盖、确认"
@@ -521,14 +825,8 @@ enum XTerminalGateSmokeRunner {
             }
             let confirmedSnapshot = primaryOrchestrator.splitFlowSnapshot()
 
-            let blockedSupervisor = SupervisorModel()
-            guard let blockedOrchestrator = blockedSupervisor.orchestrator else {
-                throw NSError(
-                    domain: "xt_split_flow_fixture_smoke",
-                    code: 8,
-                    userInfo: [NSLocalizedDescriptionKey: "blocked orchestrator unavailable"]
-                )
-            }
+            let blockedRuntimeHost = SplitFlowFixtureRuntimeHost()
+            let blockedOrchestrator = SupervisorOrchestrator(runtimeHost: blockedRuntimeHost)
             _ = await blockedOrchestrator.proposeSplit(for: " ")
             guard let blockedCompilation = blockedOrchestrator.confirmActiveSplitProposal(
                 globalContext: "fixture_prompt_blocked"
@@ -585,6 +883,34 @@ enum XTerminalGateSmokeRunner {
         }
     }
 
+    @MainActor
+    private final class SplitFlowFixtureRuntimeHost: SupervisorProjectRuntimeHosting {
+        var activeProjects: [ProjectModel] = []
+        var taskAssignerForRuntime: TaskAssigner?
+
+        func addActiveProjectIfNeeded(_ project: ProjectModel) {
+            if !activeProjects.contains(where: { $0.id == project.id }) {
+                activeProjects.append(project)
+            }
+        }
+
+        func onProjectCreated(_ project: ProjectModel) async {
+            addActiveProjectIfNeeded(project)
+        }
+
+        func onProjectDeleted(_ project: ProjectModel) async {
+            activeProjects.removeAll { $0.id == project.id }
+        }
+
+        func onProjectStarted(_ project: ProjectModel) async {}
+        func onProjectPaused(_ project: ProjectModel) async {}
+        func onProjectResumed(_ project: ProjectModel) async {}
+        func onProjectCompleted(_ project: ProjectModel) async {}
+        func onProjectArchived(_ project: ProjectModel) async {}
+        func onProjectExecutionStarted(_ project: ProjectModel, model: ModelInfo) async {}
+        func suggestModelUpgrade(for project: ProjectModel) async {}
+    }
+
     private static func projectRoot(from arguments: [String]) -> URL? {
         guard let value = argumentValue(after: projectRootFlag, in: arguments) else {
             return nil
@@ -612,6 +938,26 @@ enum XTerminalGateSmokeRunner {
         let value = arguments[next].trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return nil }
         return value
+    }
+
+    private static func decodingFailureDetail(_ error: Error) -> String? {
+        func joinedCodingPath(_ codingPath: [CodingKey]) -> String {
+            let path = codingPath.map(\.stringValue).joined(separator: ".")
+            return path.isEmpty ? "(root)" : path
+        }
+
+        switch error {
+        case let DecodingError.keyNotFound(key, context):
+            return "missing_key=\(key.stringValue) path=\(joinedCodingPath(context.codingPath))"
+        case let DecodingError.valueNotFound(_, context):
+            return "missing_value path=\(joinedCodingPath(context.codingPath))"
+        case let DecodingError.typeMismatch(_, context):
+            return "type_mismatch path=\(joinedCodingPath(context.codingPath)) \(context.debugDescription)"
+        case let DecodingError.dataCorrupted(context):
+            return "data_corrupted path=\(joinedCodingPath(context.codingPath)) \(context.debugDescription)"
+        default:
+            return nil
+        }
     }
 
     private static func runSelfChecks(projectRoot: URL) -> [ToolExecutor.HighRiskGrantSelfCheck] {
@@ -678,6 +1024,337 @@ enum XTerminalGateSmokeRunner {
         try data.write(to: url, options: .atomic)
     }
 
+    @MainActor
+    private static func runSupervisorVoiceSmokeScenario(
+        workspaceRoot: URL,
+        outputURL: URL
+    ) async -> Int {
+        let projectRoot = workspaceRoot
+            .appendingPathComponent("voice_supervisor_smoke_project", isDirectory: true)
+        var spoken: [String] = []
+        var checks: [[String: Any]] = []
+
+        func appendCheck(_ id: String, _ passed: Bool, _ detail: String) {
+            checks.append([
+                "id": id,
+                "passed": passed,
+                "detail": detail
+            ])
+            let status = passed ? "PASS" : "FAIL"
+            print("[xt-supervisor-voice-smoke] \(status) \(id) :: \(detail)")
+        }
+
+        do {
+            try FileManager.default.createDirectory(at: projectRoot, withIntermediateDirectories: true)
+            let ctx = AXProjectContext(root: projectRoot)
+            try ctx.ensureDirs()
+
+            let project = makeSupervisorVoiceSmokeProjectEntry(root: projectRoot, displayName: "Release Runtime")
+            let grant = makeSupervisorVoiceSmokePendingGrant(project: project)
+            let approveProbe = SupervisorVoiceSmokeApproveProbe()
+            let briefProbe = SupervisorVoiceSmokeBriefProbe()
+            let transcriber = SupervisorVoiceSmokeMockTranscriber(routeMode: .funasrStreaming)
+            let synthesizer = SupervisorSpeechSynthesizer(
+                deduper: SupervisorVoiceBriefDeduper(cooldown: 0),
+                speakSink: { spoken.append($0) }
+            )
+            let controller = SupervisorConversationSessionController.makeForTesting(
+                route: .funasrStreaming,
+                wakeMode: .wakePhrase,
+                nowProvider: Date.init
+            )
+            let voiceCoordinator = VoiceSessionCoordinator(
+                transcriber: transcriber,
+                preferences: .default()
+            )
+            let manager = SupervisorManager.makeForTesting(
+                supervisorSpeechSynthesizer: synthesizer,
+                conversationSessionController: controller,
+                voiceSessionCoordinator: voiceCoordinator
+            )
+            manager.resetVoiceAuthorizationState()
+            manager.clearMessages()
+            defer {
+                manager.endConversationSession(reasonCode: "voice_smoke_cleanup")
+                voiceCoordinator.discardRecording(reasonCode: "voice_smoke_cleanup")
+                manager.resetVoiceAuthorizationState()
+            }
+
+            let appModel = AppModel()
+            var settings = appModel.settingsStore.settings
+            settings.voice.wakeMode = .wakePhrase
+            settings.voice.preferredRoute = .funasrStreaming
+            appModel.settingsStore.settings = settings
+
+            var registry = AXProjectRegistry.empty()
+            registry.projects = [project]
+            registry.lastSelectedProjectId = project.projectId
+            appModel.registry = registry
+            appModel.selectedProjectId = project.projectId
+            manager.setAppModel(appModel)
+
+            let now = Date()
+            let nowMs = now.timeIntervalSince1970 * 1000.0
+            manager.setConnectorIngressSnapshotForTesting(
+                HubIPCClient.ConnectorIngressSnapshot(
+                    source: "xt_supervisor_voice_smoke",
+                    updatedAtMs: nowMs,
+                    items: [
+                        HubIPCClient.ConnectorIngressReceipt(
+                            receiptId: "voice-smoke-receipt",
+                            requestId: "voice-smoke-request",
+                            projectId: project.projectId,
+                            connector: "slack",
+                            targetId: "dm-release-runtime",
+                            ingressType: "connector_event",
+                            channelScope: "dm",
+                            sourceId: "user-release-runtime",
+                            messageId: "voice-smoke-message",
+                            dedupeKey: "sha256:xt-supervisor-voice-smoke",
+                            receivedAtMs: nowMs - 5_000,
+                            eventSequence: 1,
+                            deliveryState: "accepted",
+                            runtimeState: "queued"
+                        )
+                    ]
+                ),
+                now: now
+            )
+            manager.setPendingHubGrantsForTesting([grant], now: now)
+            manager.installSchedulerSnapshotRefreshOverrideForTesting { _ in }
+            manager.installPendingHubGrantApproveOverrideForTesting { grantRequestId, projectId, requestedTtlSec, requestedTokenCap, note in
+                await approveProbe.record(
+                    grantRequestId: grantRequestId,
+                    projectId: projectId,
+                    requestedTtlSec: requestedTtlSec,
+                    requestedTokenCap: requestedTokenCap,
+                    note: note
+                )
+                return HubIPCClient.PendingGrantActionResult(
+                    ok: true,
+                    decision: .approved,
+                    source: "xt_supervisor_voice_smoke",
+                    grantRequestId: grantRequestId,
+                    grantId: grantRequestId,
+                    expiresAtMs: (Date().timeIntervalSince1970 + 900) * 1000.0,
+                    reasonCode: nil
+                )
+            }
+            manager.installSupervisorBriefProjectionFetcherForTesting { payload in
+                await briefProbe.record(payload)
+                return HubIPCClient.SupervisorBriefProjectionResult(
+                    ok: true,
+                    source: "xt_supervisor_voice_smoke",
+                    projection: makeSupervisorVoiceSmokeBriefProjection(
+                        projectId: payload.projectId,
+                        trigger: payload.trigger
+                    ),
+                    reasonCode: nil
+                )
+            }
+            manager.installVoiceAuthorizationBridgeForTesting(
+                SupervisorVoiceAuthorizationBridge(
+                    issueHandler: { payload in
+                        HubIPCClient.VoiceGrantChallengeResult(
+                            ok: true,
+                            source: "xt_supervisor_voice_smoke",
+                            challenge: makeSupervisorVoiceSmokeChallenge(payload: payload),
+                            reasonCode: nil
+                        )
+                    },
+                    verifyHandler: { payload in
+                        HubIPCClient.VoiceGrantVerificationResult(
+                            ok: true,
+                            verified: true,
+                            decision: .allow,
+                            source: "xt_supervisor_voice_smoke",
+                            denyCode: nil,
+                            challengeId: payload.challengeId,
+                            transcriptHash: "sha256:xt-supervisor-voice-smoke",
+                            semanticMatchScore: payload.semanticMatchScore ?? 0.99,
+                            challengeMatch: true,
+                            deviceBindingOK: true,
+                            mobileConfirmed: payload.mobileConfirmed,
+                            reasonCode: nil
+                        )
+                    }
+                )
+            )
+
+            let wakeArmedReady = await waitForSupervisorVoiceSmoke(timeoutSec: 8) {
+                manager.conversationSessionSnapshot.windowState == .armed &&
+                    voiceCoordinator.isRecording &&
+                    voiceCoordinator.currentCaptureSource == .wakeArmed
+            }
+            appendCheck(
+                "wake_armed_ready",
+                wakeArmedReady,
+                "window=\(manager.conversationSessionSnapshot.windowState.rawValue) capture=\(voiceCoordinator.currentCaptureSource?.rawValue ?? "none")"
+            )
+
+            if wakeArmedReady {
+                transcriber.emit(.init(kind: .partial, text: "supervisor", isWakeMatch: true))
+                transcriber.emit(.init(kind: .final, text: "supervisor"))
+            }
+
+            let wakePromptSpoken = await waitForSupervisorVoiceSmoke(timeoutSec: 8) {
+                spoken.contains { $0.contains("我在，继续说") }
+            }
+            appendCheck(
+                "wake_prompt_spoken",
+                wakePromptSpoken,
+                wakePromptSpoken ? "wake follow-up prompt delivered" : "spoken_count=\(spoken.count)"
+            )
+
+            let talkLoopAfterWakePrompt = await waitForSupervisorVoiceSmoke(timeoutSec: 8) {
+                voiceCoordinator.isRecording &&
+                    voiceCoordinator.currentCaptureSource == .talkLoop &&
+                    voiceCoordinator.runtimeState.reasonCode == "talk_loop_resumed"
+            }
+            appendCheck(
+                "wake_prompt_resumed_listening",
+                talkLoopAfterWakePrompt,
+                "starts=\(transcriber.startCount) capture=\(voiceCoordinator.currentCaptureSource?.rawValue ?? "none")"
+            )
+
+            if talkLoopAfterWakePrompt {
+                transcriber.emit(.init(kind: .final, text: "批准这个 release grant"))
+            }
+
+            let challengeIssued = await waitForSupervisorVoiceSmoke(timeoutSec: 8) {
+                manager.voiceAuthorizationResolution?.state == .escalatedToMobile &&
+                    manager.activeVoiceChallenge?.challengeId == "voice_chal_xt_supervisor_voice_smoke"
+            }
+            appendCheck(
+                "voice_grant_challenge_issued",
+                challengeIssued,
+                "state=\(manager.voiceAuthorizationResolution?.state.rawValue ?? "none")"
+            )
+
+            let talkLoopAfterGrantPrompt = await waitForSupervisorVoiceSmoke(timeoutSec: 8) {
+                voiceCoordinator.isRecording &&
+                    voiceCoordinator.currentCaptureSource == .talkLoop &&
+                    manager.recentEventsForTesting().contains(where: {
+                        $0.contains("voice talk loop resumed: pending_grant_voice_reply")
+                    })
+            }
+            appendCheck(
+                "grant_prompt_resumed_listening",
+                talkLoopAfterGrantPrompt,
+                "starts=\(transcriber.startCount) challenge_active=\(manager.activeVoiceChallenge != nil)"
+            )
+
+            if talkLoopAfterGrantPrompt {
+                transcriber.emit(.init(kind: .final, text: "手机已确认，现在批准 release grant"))
+            }
+
+            let grantApproved = await waitForSupervisorVoiceSmoke(timeoutSec: 10) {
+                manager.pendingHubGrants.isEmpty &&
+                    manager.activeVoiceChallenge == nil &&
+                    manager.messages.contains(where: {
+                        $0.role == .assistant && $0.content.contains("🧭 Supervisor Brief")
+                    })
+            }
+            appendCheck(
+                "grant_approved_and_brief_emitted",
+                grantApproved,
+                "pending_grants=\(manager.pendingHubGrants.count) challenge_active=\(manager.activeVoiceChallenge != nil)"
+            )
+
+            let talkLoopAfterBrief = await waitForSupervisorVoiceSmoke(timeoutSec: 8) {
+                voiceCoordinator.isRecording &&
+                    voiceCoordinator.currentCaptureSource == .talkLoop &&
+                    manager.recentEventsForTesting().contains(where: {
+                        $0.contains("voice talk loop resumed: pending_grant_follow_up")
+                    })
+            }
+            appendCheck(
+                "brief_resumed_listening",
+                talkLoopAfterBrief,
+                "starts=\(transcriber.startCount) capture=\(voiceCoordinator.currentCaptureSource?.rawValue ?? "none")"
+            )
+
+            let approveCall = await approveProbe.first()
+            let briefCall = await briefProbe.first()
+            appendCheck(
+                "approve_callback_recorded",
+                approveCall?.grantRequestId == grant.grantRequestId,
+                "grant_request_id=\(approveCall?.grantRequestId ?? "none")"
+            )
+            appendCheck(
+                "brief_projection_callback_recorded",
+                briefCall?.projectId == project.projectId,
+                "project_id=\(briefCall?.projectId ?? "none")"
+            )
+
+            let report: [String: Any] = [
+                "schema_version": "xt.supervisor_voice_smoke.v1",
+                "generated_at": ISO8601DateFormatter().string(from: Date()),
+                "workspace_root": workspaceRoot.path,
+                "project_root": projectRoot.path,
+                "output_path": outputURL.path,
+                "checks": checks,
+                "spoken": spoken,
+                "recent_events": manager.recentEventsForTesting(),
+                "transcriber_start_count": transcriber.startCount,
+                "message_count": manager.messages.count,
+                "voice_route": voiceCoordinator.routeDecision.route.rawValue,
+                "final_capture_source": voiceCoordinator.currentCaptureSource?.rawValue ?? "none",
+                "final_window_state": manager.conversationSessionSnapshot.windowState.rawValue,
+                "approve_call": [
+                    "grant_request_id": approveCall?.grantRequestId ?? "",
+                    "project_id": approveCall?.projectId ?? "",
+                    "requested_ttl_sec": approveCall?.requestedTtlSec as Any,
+                    "requested_token_cap": approveCall?.requestedTokenCap as Any,
+                    "note": approveCall?.note ?? ""
+                ],
+                "brief_request": [
+                    "project_id": briefCall?.projectId ?? "",
+                    "trigger": briefCall?.trigger ?? "",
+                    "projection_kind": briefCall?.projectionKind ?? ""
+                ]
+            ]
+
+            try FileManager.default.createDirectory(
+                at: outputURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try writeJSONObject(report, to: outputURL)
+
+            let passedCount = checks.filter { ($0["passed"] as? Bool) == true }.count
+            print("[xt-supervisor-voice-smoke] workspace=\(workspaceRoot.path)")
+            print("[xt-supervisor-voice-smoke] output=\(outputURL.path)")
+            print("[xt-supervisor-voice-smoke] checks=\(passedCount)/\(checks.count)")
+
+            if checks.allSatisfy({ ($0["passed"] as? Bool) == true }) {
+                print("[xt-supervisor-voice-smoke] PASS")
+                return 0
+            }
+
+            print("[xt-supervisor-voice-smoke] FAIL")
+            return 1
+        } catch {
+            let report: [String: Any] = [
+                "schema_version": "xt.supervisor_voice_smoke.v1",
+                "generated_at": ISO8601DateFormatter().string(from: Date()),
+                "workspace_root": workspaceRoot.path,
+                "output_path": outputURL.path,
+                "error": error.localizedDescription,
+                "checks": checks,
+                "spoken": spoken
+            ]
+            try? FileManager.default.createDirectory(
+                at: outputURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try? writeJSONObject(report, to: outputURL)
+            print("[xt-supervisor-voice-smoke] workspace=\(workspaceRoot.path)")
+            print("[xt-supervisor-voice-smoke] output=\(outputURL.path)")
+            print("[xt-supervisor-voice-smoke] FAIL: \(error.localizedDescription)")
+            return 2
+        }
+    }
+
     private static func snapshotJSONObject(_ snapshot: SplitFlowSnapshot) throws -> [String: Any] {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -691,5 +1368,213 @@ enum XTerminalGateSmokeRunner {
             )
         }
         return json
+    }
+
+    @MainActor
+    private static func waitForSupervisorVoiceSmoke(
+        timeoutSec: TimeInterval,
+        pollMs: UInt64 = 50,
+        condition: @escaping @MainActor () -> Bool
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeoutSec)
+        while Date() < deadline {
+            if condition() {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: pollMs * 1_000_000)
+        }
+        return condition()
+    }
+
+    private static func makeSupervisorVoiceSmokeProjectEntry(
+        root: URL,
+        displayName: String
+    ) -> AXProjectEntry {
+        AXProjectEntry(
+            projectId: "project_xt_supervisor_voice_smoke",
+            rootPath: root.path,
+            displayName: displayName,
+            lastOpenedAt: Date().timeIntervalSince1970,
+            manualOrderIndex: 0,
+            pinned: false,
+            statusDigest: "grant_pending",
+            currentStateSummary: "等待高风险 Hub grant 授权。",
+            nextStepSummary: "语音批准 release grant。",
+            blockerSummary: "Pending Hub grant blocks release pipeline.",
+            lastSummaryAt: nil,
+            lastEventAt: nil
+        )
+    }
+
+    private static func makeSupervisorVoiceSmokePendingGrant(
+        project: AXProjectEntry
+    ) -> SupervisorManager.SupervisorPendingGrant {
+        SupervisorManager.SupervisorPendingGrant(
+            id: "pending_grant_xt_supervisor_voice_smoke",
+            dedupeKey: "xt-supervisor-voice-smoke-grant",
+            grantRequestId: "grant_xt_supervisor_voice_smoke",
+            requestId: "request_xt_supervisor_voice_smoke",
+            projectId: project.projectId,
+            projectName: project.displayName,
+            capability: "web.fetch",
+            modelId: "",
+            reason: "release production deploy",
+            requestedTtlSec: 900,
+            requestedTokenCap: 0,
+            createdAt: Date().timeIntervalSince1970,
+            actionURL: "xterminal://pending-grants/grant_xt_supervisor_voice_smoke",
+            priorityRank: 1,
+            priorityReason: "production_release_blocked",
+            nextAction: "Approve the release runtime Hub grant."
+        )
+    }
+
+    private static func makeSupervisorVoiceSmokeChallenge(
+        payload: HubIPCClient.VoiceGrantChallengeRequestPayload
+    ) -> HubIPCClient.VoiceGrantChallengeSnapshot {
+        let nowMs = Date().timeIntervalSince1970 * 1000.0
+        return HubIPCClient.VoiceGrantChallengeSnapshot(
+            challengeId: "voice_chal_xt_supervisor_voice_smoke",
+            templateId: payload.templateId,
+            actionDigest: payload.actionDigest,
+            scopeDigest: payload.scopeDigest,
+            amountDigest: payload.amountDigest ?? "",
+            challengeCode: "773312",
+            riskLevel: payload.riskLevel,
+            requiresMobileConfirm: true,
+            allowVoiceOnly: false,
+            boundDeviceId: payload.boundDeviceId ?? "",
+            mobileTerminalId: payload.mobileTerminalId ?? "",
+            issuedAtMs: nowMs,
+            expiresAtMs: nowMs + 180_000
+        )
+    }
+
+    private static func makeSupervisorVoiceSmokeBriefProjection(
+        projectId: String,
+        trigger: String
+    ) -> HubIPCClient.SupervisorBriefProjectionSnapshot {
+        let nowMs = Date().timeIntervalSince1970 * 1000.0
+        return HubIPCClient.SupervisorBriefProjectionSnapshot(
+            schemaVersion: "hub.supervisor_brief_projection.v1",
+            projectionId: "brief_xt_supervisor_voice_smoke",
+            projectionKind: "progress_brief",
+            projectId: projectId,
+            runId: "run_xt_supervisor_voice_smoke",
+            missionId: "mission_xt_supervisor_voice_smoke",
+            trigger: trigger,
+            status: "ok",
+            criticalBlocker: "",
+            topline: "发布路径已恢复。",
+            nextBestAction: "恢复 release pipeline。",
+            pendingGrantCount: 0,
+            ttsScript: [
+                "Supervisor Hub 简报。发布路径已恢复。",
+                "建议下一步：恢复 release pipeline。"
+            ],
+            cardSummary: "发布路径已恢复。下一步：恢复 release pipeline。",
+            evidenceRefs: ["audit-xt-supervisor-voice-smoke"],
+            generatedAtMs: nowMs,
+            expiresAtMs: nowMs + 60_000,
+            auditRef: "audit-xt-supervisor-voice-smoke"
+        )
+    }
+
+    private actor SupervisorVoiceSmokeApproveProbe {
+        private var payloads: [(grantRequestId: String, projectId: String?, requestedTtlSec: Int?, requestedTokenCap: Int?, note: String)] = []
+
+        func record(
+            grantRequestId: String,
+            projectId: String?,
+            requestedTtlSec: Int?,
+            requestedTokenCap: Int?,
+            note: String
+        ) {
+            payloads.append(
+                (
+                    grantRequestId: grantRequestId,
+                    projectId: projectId,
+                    requestedTtlSec: requestedTtlSec,
+                    requestedTokenCap: requestedTokenCap,
+                    note: note
+                )
+            )
+        }
+
+        func first() -> (grantRequestId: String, projectId: String?, requestedTtlSec: Int?, requestedTokenCap: Int?, note: String)? {
+            payloads.first
+        }
+    }
+
+    private actor SupervisorVoiceSmokeBriefProbe {
+        private var payloads: [HubIPCClient.SupervisorBriefProjectionRequestPayload] = []
+
+        func record(_ payload: HubIPCClient.SupervisorBriefProjectionRequestPayload) {
+            payloads.append(payload)
+        }
+
+        func first() -> HubIPCClient.SupervisorBriefProjectionRequestPayload? {
+            payloads.first
+        }
+    }
+
+    @MainActor
+    private final class SupervisorVoiceSmokeMockTranscriber: VoiceStreamingTranscriber {
+        let routeMode: VoiceRouteMode
+        private(set) var authorizationStatus: VoiceTranscriberAuthorizationStatus
+        private(set) var engineHealth: VoiceEngineHealth
+        private(set) var healthReasonCode: String?
+        private(set) var isRunning: Bool = false
+        private(set) var startCount: Int = 0
+
+        private var onChunk: ((VoiceTranscriptChunk) -> Void)?
+        private var onFailure: ((String) -> Void)?
+
+        init(
+            routeMode: VoiceRouteMode,
+            authorizationStatus: VoiceTranscriberAuthorizationStatus = .authorized,
+            engineHealth: VoiceEngineHealth = .ready,
+            healthReasonCode: String? = nil
+        ) {
+            self.routeMode = routeMode
+            self.authorizationStatus = authorizationStatus
+            self.engineHealth = engineHealth
+            self.healthReasonCode = healthReasonCode
+        }
+
+        func requestAuthorization() async -> VoiceTranscriberAuthorizationStatus {
+            authorizationStatus
+        }
+
+        func refreshEngineHealth() async -> VoiceEngineHealth {
+            engineHealth
+        }
+
+        func startTranscribing(
+            onChunk: @escaping (VoiceTranscriptChunk) -> Void,
+            onFailure: @escaping (String) -> Void
+        ) throws {
+            guard authorizationStatus.isAuthorized else {
+                throw VoiceTranscriberError.notAuthorized
+            }
+            startCount += 1
+            isRunning = true
+            self.onChunk = onChunk
+            self.onFailure = onFailure
+        }
+
+        func stopTranscribing() {
+            isRunning = false
+        }
+
+        func emit(_ chunk: VoiceTranscriptChunk) {
+            guard isRunning else { return }
+            onChunk?(chunk)
+        }
+
+        func fail(_ reason: String) {
+            guard isRunning else { return }
+            onFailure?(reason)
+        }
     }
 }

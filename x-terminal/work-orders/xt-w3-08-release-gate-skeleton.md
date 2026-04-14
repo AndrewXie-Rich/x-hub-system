@@ -21,11 +21,11 @@
   - 新增 strict 回归场景：
     1) 缺 doctor 报告 -> 必须失败。
     2) 缺 secrets dry-run 报告 -> 必须失败。
-    3) `xt-grant-smoke + 新增静态检查` 同时通过 -> 必须 PASS。
+    3) `xt-route-smoke + xt-grant-smoke + xt-supervisor-voice-smoke + 新增静态检查` 同时通过 -> 必须 PASS。
   - 新增 `Split Audit Contract Check` 步骤：
     - 运行 `scripts/ci/xt_split_audit_contract_check.sh`
     - 校验正/负 fixture + `decodeResult` 目标回归用例
-- 回归场景使用 `XT_GATE_SKIP_BUILD=1`，避免与 G1 独立编译检查重复计时；`xt-grant-smoke` 仍会执行。
+- 回归场景使用 `XT_GATE_SKIP_BUILD=1`，避免与 G1 独立编译检查重复计时；`xt-route-smoke`、`xt-grant-smoke` 与 `xt-supervisor-voice-smoke` 仍会执行。
 - Gate 入口脚本：`scripts/ci/xt_release_gate.sh`
   - XT-G2/XT-G4/XT-G5 增补安全项与证据检查。
   - strict 模式缺 doctor/secrets 直接 fail。
@@ -56,9 +56,9 @@
 
 ### XT-G4 / Reliability
 
-- 运行 `swift run XTerminal --xt-grant-smoke`。
+- 运行 `swift run XTerminal --xt-route-smoke`、`swift run XTerminal --xt-grant-smoke` 与 `swift run XTerminal --xt-supervisor-voice-smoke`。
 - 强制组合断言：
-  - 仅当 `xt-grant-smoke` 与新增静态检查同时通过，才记为 PASS。
+  - 仅当 `xt-route-smoke + xt-grant-smoke + xt-supervisor-voice-smoke` 与新增静态检查同时通过，才记为 PASS。
 - 新增 `XT-W2-18` 路由边界断言：
   - origin 不可用仅允许同通道回退；
   - 任意跨通道 fallback 直接 fail 并输出违规样本。
@@ -196,7 +196,7 @@ node scripts/ci/xt_fast_check_trend_append.js \
 
 - `XT-G5` 达到可执行、可阻断、可追溯。
 - strict 模式下 doctor/secrets 报告缺失均可稳定阻断。
-- `xt-grant-smoke + 新增静态检查` 同时通过时 gate 才可 PASS。
+- `xt-route-smoke + xt-grant-smoke + xt-supervisor-voice-smoke + 新增静态检查` 同时通过时 gate 才可 PASS。
 - rollback 从 stub 升级为最小可验证流程，且 gate 可自动验证并留痕。
 - `XT-W2-17/18/19` 的证据报告在 strict 下默认必需，确保 overflow/fallback/cleanup 行为被持续回归。
 
@@ -227,7 +227,7 @@ node scripts/ci/xt_fast_check_trend_append.js \
 - `xt-gate-report.md` 包含：`## Release Decision` 与 `decision: GO`
 - `xt-gate-report.md` 包含：`XT-W3-08: PASS` / `CRK-W1-08: PASS` / `CM-W5-20: PASS`
 - `xt-gate-report.md` 包含：`XT-W2-17: PASS` / `XT-W2-18: PASS` / `XT-W2-19: PASS`
-- `xt-gate-report.md` 包含：`xt-grant-smoke + 新增静态检查同时通过`
+- `xt-gate-report.md` 包含：`xt-route-smoke + xt-grant-smoke + xt-supervisor-voice-smoke + 新增静态检查同时通过`
 - `xt-gate-report.md` 包含：`evidence.split_audit_contract_report`
 - `xt-report-index.json` 包含：`"schema_version": "xt_report_index.v1"`、`"release_decision": "GO"`、覆盖项 `XT-W3-08/CRK-W1-08/CM-W5-20/XT-W2-17/XT-W2-18/XT-W2-19 = PASS`
 - `xt-rollback-last.json` 包含：`"status": "pass"`、`"copied_previous_to_current": 1`
@@ -296,6 +296,6 @@ bash scripts/ci/xt_release_gate.sh
 
 1. `xt-gate-report.md` 中 `Release Decision` 为 `decision: GO`，且 `fail: 0`。  
 2. `新增工单ID覆盖区块` 中 `XT-W3-08 / CRK-W1-08 / CM-W5-20 / XT-W2-17 / XT-W2-18 / XT-W2-19` 均为 `PASS`。  
-3. 报告中存在 `xt-grant-smoke + 新增静态检查同时通过`，确认运行时 smoke 与静态规则同时生效。  
+3. 报告中存在 `xt-route-smoke + xt-grant-smoke + xt-supervisor-voice-smoke + 新增静态检查同时通过`，确认运行时 smoke 与静态规则同时生效。
 4. `xt-report-index.json` 里 `schema_version=xt_report_index.v1`、`release_decision=GO`、六项覆盖均为 `PASS`。  
 5. 回滚证据齐全：`xt-rollback-last.json` 包含 `"status": "pass"` 与 `"copied_previous_to_current": 1`，且 `current.manifest.json` 的 `release_id` 已对齐稳定版本。  

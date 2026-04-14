@@ -43,8 +43,10 @@ enum ToolName: String, Codable, CaseIterable, Sendable {
     case need_network
     case bridge_status
     case skills_search = "skills.search"
+    case skills_pin = "skills.pin"
     case summarize
     case supervisorVoicePlayback = "supervisor.voice.playback"
+    case run_local_task
     case web_fetch
     case web_search
     case browser_read
@@ -104,11 +106,18 @@ struct ToolActionEnvelope: Codable, Equatable, Sendable {
 struct GovernedSkillCall: Codable, Equatable, Sendable {
     var id: String
     var skill_id: String
+    var intent_families: [String]? = nil
     var payload: [String: JSONValue]
 
-    init(id: String = UUID().uuidString, skill_id: String, payload: [String: JSONValue] = [:]) {
+    init(
+        id: String = UUID().uuidString,
+        skill_id: String,
+        intent_families: [String]? = nil,
+        payload: [String: JSONValue] = [:]
+    ) {
         self.id = id
         self.skill_id = skill_id
+        self.intent_families = intent_families
         self.payload = payload
     }
 
@@ -116,12 +125,14 @@ struct GovernedSkillCall: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = (try? container.decode(String.self, forKey: .id)) ?? UUID().uuidString
         skill_id = try container.decode(String.self, forKey: .skill_id)
+        intent_families = try? container.decode([String].self, forKey: .intent_families)
         payload = (try? container.decode([String: JSONValue].self, forKey: .payload)) ?? [:]
     }
 
     enum CodingKeys: String, CodingKey {
         case id
         case skill_id
+        case intent_families
         case payload
     }
 }
@@ -152,7 +163,7 @@ enum ToolRisk: Equatable, Sendable {
 }
 
 enum ToolPolicy {
-    static let defaultProfile: ToolProfile = .full
+    static let defaultProfile: ToolProfile = .minimal
 
     static func parseProfile(_ raw: String?) -> ToolProfile {
         let token = (raw ?? "")
@@ -182,8 +193,10 @@ enum ToolPolicy {
                 .project_snapshot,
                 .bridge_status,
                 .skills_search,
+                .skills_pin,
                 .summarize,
                 .supervisorVoicePlayback,
+                .run_local_task,
             ]
         case .coding:
             return [
@@ -211,8 +224,10 @@ enum ToolPolicy {
                 .project_snapshot,
                 .bridge_status,
                 .skills_search,
+                .skills_pin,
                 .summarize,
                 .supervisorVoicePlayback,
+                .run_local_task,
             ]
         case .full:
             return [
@@ -245,8 +260,10 @@ enum ToolPolicy {
                 .need_network,
                 .bridge_status,
                 .skills_search,
+                .skills_pin,
                 .summarize,
                 .supervisorVoicePlayback,
+                .run_local_task,
                 .web_fetch,
                 .web_search,
                 .browser_read,
@@ -379,10 +396,14 @@ enum ToolPolicy {
             return "- need_network {seconds, reason?}"
         case .skills_search:
             return "- skills.search {query, source_filter?, project_id?, limit?}"
+        case .skills_pin:
+            return "- skills.pin {skill_id, package_sha256, scope?, project_id?, note?}"
         case .summarize:
             return "- summarize {url?|path?|text|content|value, focus?, format?, max_chars?, grant_id?, timeout_sec?, max_bytes?}"
         case .supervisorVoicePlayback:
             return "- supervisor.voice.playback {action?=status|preview|speak|stop, text|content|value?}"
+        case .run_local_task:
+            return "- run_local_task {task_kind, model_id?|model?|preferred_model_id?, prompt?|text?|content?|value?|texts?|audio_path?|image_path?|image_paths?|multimodal_messages?|input?|options?, device_id?, timeout_sec?} // XT auto-binds a runnable local model when model args are omitted and Hub inventory is ready"
         case .web_fetch:
             return "- web_fetch {url, grant_id, timeout_sec?, max_bytes?}"
         case .web_search:
@@ -413,6 +434,7 @@ enum ToolPolicy {
                     .skills_search,
                     .summarize,
                     .supervisorVoicePlayback,
+                    .run_local_task,
                 ])
             case "group:fs":
                 out.formUnion([.read_file, .write_file, .delete_path, .move_path, .list_dir, .search])
@@ -427,6 +449,7 @@ enum ToolPolicy {
                     .session_resume,
                     .session_compact,
                     .project_snapshot,
+                    .run_local_task,
                 ])
             case "group:git":
                 out.formUnion([.git_status, .git_diff, .git_commit, .git_push, .git_apply_check, .git_apply])
@@ -481,7 +504,7 @@ enum ToolPolicy {
             return .safe
         case .need_network:
             return .safe
-        case .skills_search, .summarize, .supervisorVoicePlayback:
+        case .skills_search, .skills_pin, .summarize, .supervisorVoicePlayback, .run_local_task:
             return .safe
         case .web_fetch, .web_search, .browser_read:
             // Network approvals are handled in Hub; avoid local confirmations.

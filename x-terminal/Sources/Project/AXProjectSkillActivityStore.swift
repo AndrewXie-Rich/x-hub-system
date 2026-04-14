@@ -3,17 +3,41 @@ import Foundation
 struct ProjectSkillActivityItem: Identifiable, Equatable, Sendable {
     var requestID: String
     var skillID: String
+    var requestedSkillID: String = ""
+    var intentFamilies: [String] = []
+    var capabilityFamilies: [String] = []
+    var capabilityProfiles: [String] = []
+    var requiredRuntimeSurfaces: [String] = []
+    var unblockActions: [String] = []
     var toolName: String
     var status: String
     var createdAt: Double
     var resolutionSource: String
     var toolArgs: [String: JSONValue]
+    var routingReasonCode: String = ""
+    var routingExplanation: String = ""
+    var hubStateDirPath: String = ""
+    var executionReadiness: String = ""
+    var approvalSummary: String = ""
+    var currentRunnableProfiles: [String] = []
+    var requestedProfiles: [String] = []
+    var deltaProfiles: [String] = []
+    var currentRunnableCapabilityFamilies: [String] = []
+    var requestedCapabilityFamilies: [String] = []
+    var deltaCapabilityFamilies: [String] = []
+    var grantFloor: String = ""
+    var approvalFloor: String = ""
+    var requiredCapability: String = ""
     var resultSummary: String
     var detail: String
     var denyCode: String
     var authorizationDisposition: String
     var policySource: String = ""
     var policyReason: String = ""
+    var governanceTruth: String = ""
+    var governanceReason: String = ""
+    var blockedSummary: String = ""
+    var repairAction: String = ""
 
     var id: String { requestID }
 }
@@ -70,6 +94,13 @@ enum AXProjectSkillActivityStore {
             return nil
         }
         return raw
+    }
+
+    static func loadTailRawLogText(
+        ctx: AXProjectContext,
+        maxBytes: Int = recentTailMaxBytes
+    ) -> String? {
+        loadTailRawLogText(url: ctx.rawLogURL, maxBytes: maxBytes)
     }
 
     static func parseRecentActivities(
@@ -150,16 +181,20 @@ enum AXProjectSkillActivityStore {
         var out: [String: XTProjectMappedSkillDispatch] = [:]
         for call in toolCalls {
             guard let item = latestItems[call.id] else { continue }
-            let skillID = item.skillID.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !skillID.isEmpty else { continue }
-            let toolName = item.toolName.trimmingCharacters(in: .whitespacesAndNewlines)
-            out[call.id] = XTProjectMappedSkillDispatch(
-                skillId: skillID,
-                toolCall: call,
-                toolName: toolName.isEmpty ? call.tool.rawValue : toolName
-            )
+            guard let dispatch = dispatch(for: item, toolCall: call) else { continue }
+            out[call.id] = dispatch
         }
         return out
+    }
+
+    static func dispatch(
+        for item: ProjectSkillActivityItem,
+        requestID: String? = nil
+    ) -> XTProjectMappedSkillDispatch? {
+        guard let call = toolCall(for: item, requestID: requestID) else {
+            return nil
+        }
+        return dispatch(for: item, toolCall: call)
     }
 
     static func toolCall(
@@ -178,6 +213,36 @@ enum AXProjectSkillActivityStore {
             id: resolvedID.isEmpty ? UUID().uuidString : resolvedID,
             tool: tool,
             args: item.toolArgs
+        )
+    }
+
+    private static func dispatch(
+        for item: ProjectSkillActivityItem,
+        toolCall: ToolCall
+    ) -> XTProjectMappedSkillDispatch? {
+        let skillID = item.skillID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !skillID.isEmpty else { return nil }
+
+        let requestedSkillID = item.requestedSkillID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let toolName = item.toolName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let routingReasonCode = item.routingReasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        let routingExplanation = item.routingExplanation.trimmingCharacters(in: .whitespacesAndNewlines)
+        let grantFloor = item.grantFloor.trimmingCharacters(in: .whitespacesAndNewlines)
+        let approvalFloor = item.approvalFloor.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return XTProjectMappedSkillDispatch(
+            requestedSkillId: requestedSkillID.isEmpty ? nil : requestedSkillID,
+            skillId: skillID,
+            intentFamilies: item.intentFamilies,
+            capabilityFamilies: item.capabilityFamilies,
+            capabilityProfiles: item.capabilityProfiles,
+            grantFloor: grantFloor.isEmpty ? XTSkillGrantFloor.none.rawValue : grantFloor,
+            approvalFloor: approvalFloor.isEmpty ? XTSkillApprovalFloor.none.rawValue : approvalFloor,
+            routingReasonCode: routingReasonCode.isEmpty ? nil : routingReasonCode,
+            routingExplanation: routingExplanation.isEmpty ? nil : routingExplanation,
+            hubStateDirPath: normalizedHubStateDirPath(item.hubStateDirPath),
+            toolCall: toolCall,
+            toolName: toolName.isEmpty ? toolCall.tool.rawValue : toolName
         )
     }
 
@@ -343,18 +408,58 @@ enum AXProjectSkillActivityStore {
         return ProjectSkillActivityItem(
             requestID: requestID,
             skillID: stringValue(object["skill_id"]) ?? "",
+            requestedSkillID: stringValue(object["requested_skill_id"]) ?? "",
+            intentFamilies: stringArrayValue(object["intent_families"]),
+            capabilityFamilies: stringArrayValue(object["capability_families"]),
+            capabilityProfiles: stringArrayValue(object["capability_profiles"]),
+            requiredRuntimeSurfaces: stringArrayValue(object["required_runtime_surfaces"]),
+            unblockActions: stringArrayValue(object["unblock_actions"]),
             toolName: stringValue(object["tool_name"]) ?? "",
             status: stringValue(object["status"]) ?? "",
             createdAt: numberValue(object["created_at"]) ?? 0,
             resolutionSource: stringValue(object["resolution_source"]) ?? "",
             toolArgs: jsonObjectValue(object["tool_args"]),
+            routingReasonCode: stringValue(object["routing_reason_code"]) ?? "",
+            routingExplanation: stringValue(object["routing_explanation"]) ?? "",
+            hubStateDirPath: stringValue(object["hub_state_dir_path"]) ?? "",
+            executionReadiness: stringValue(object["execution_readiness"]) ?? "",
+            approvalSummary: stringValue(object["approval_summary"]) ?? "",
+            currentRunnableProfiles: stringArrayValue(object["current_runnable_profiles"]),
+            requestedProfiles: stringArrayValue(object["requested_profiles"]),
+            deltaProfiles: stringArrayValue(object["delta_profiles"]),
+            currentRunnableCapabilityFamilies: stringArrayValue(object["current_runnable_capability_families"]),
+            requestedCapabilityFamilies: stringArrayValue(object["requested_capability_families"]),
+            deltaCapabilityFamilies: stringArrayValue(object["delta_capability_families"]),
+            grantFloor: stringValue(object["grant_floor"]) ?? "",
+            approvalFloor: stringValue(object["approval_floor"]) ?? "",
+            requiredCapability: stringValue(object["required_capability"]) ?? "",
             resultSummary: stringValue(object["result_summary"]) ?? "",
             detail: stringValue(object["detail"]) ?? "",
             denyCode: stringValue(object["deny_code"]) ?? "",
             authorizationDisposition: stringValue(object["authorization_disposition"]) ?? "",
             policySource: stringValue(object["policy_source"]) ?? "",
-            policyReason: stringValue(object["policy_reason"]) ?? ""
+            policyReason: resolvedPolicyReason(object),
+            governanceTruth: stringValue(object["governance_truth"])
+                ?? XTGuardrailMessagePresentation.governanceTruthLine(
+                    from: object,
+                    denyCode: stringValue(object["deny_code"]) ?? "",
+                    policySource: stringValue(object["policy_source"]) ?? ""
+                ) ?? "",
+            governanceReason: stringValue(object["governance_reason"]) ?? "",
+            blockedSummary: stringValue(object["blocked_summary"]) ?? "",
+            repairAction: stringValue(object["repair_action"]) ?? ""
         )
+    }
+
+    private static func resolvedPolicyReason(
+        _ object: [String: JSONValue]
+    ) -> String {
+        let policySource = stringValue(object["policy_source"]) ?? ""
+        if policySource == "project_autonomy_policy",
+           let runtimeSurfacePolicyReason = stringValue(object["runtime_surface_policy_reason"]) {
+            return runtimeSurfacePolicyReason
+        }
+        return stringValue(object["policy_reason"]) ?? ""
     }
 
     private static func stringValue(
@@ -387,5 +492,25 @@ enum AXProjectSkillActivityStore {
             return [:]
         }
         return object
+    }
+
+    private static func stringArrayValue(
+        _ raw: JSONValue?
+    ) -> [String] {
+        guard case .array(let array)? = raw else {
+            return []
+        }
+        return array.compactMap {
+            $0.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        .filter { !$0.isEmpty }
+    }
+
+    private static func normalizedHubStateDirPath(
+        _ raw: String
+    ) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return NSString(string: trimmed).expandingTildeInPath
     }
 }

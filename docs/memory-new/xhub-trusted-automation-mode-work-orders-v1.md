@@ -511,6 +511,7 @@
   - Hub 侧展示 device state + project bindings + permission owner readiness 摘要。
   - XT 侧展示 current project 是否 bound、缺哪个权限、缺哪条 remote posture。
   - `permission_denied`、`grant_required` 必须升级为带上下文的 trusted-automation 解释卡。
+  - XT 侧若通过 `XTUnifiedDoctor` 产出 source report，必须先满足 `docs/memory-new/schema/xt_unified_doctor_report_contract.v1.json`，再由 generic doctor export 映射到 `docs/memory-new/schema/xhub_doctor_output_contract.v1.json`
 - 涉及路径：
   - `x-hub/macos/RELFlowHub/Sources/RELFlowHub/SettingsSheetView.swift`
   - `x-terminal/Sources/UI/XTUnifiedDoctor.swift`

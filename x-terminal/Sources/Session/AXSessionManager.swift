@@ -54,12 +54,16 @@ final class AXSessionManager: ObservableObject {
     }
 
     func session(for sessionId: String) -> AXSessionInfo? {
-        sessions.first(where: { $0.id == sessionId })
+        guard let index = sessions.firstIndex(where: { $0.id == sessionId }) else {
+            return nil
+        }
+        return refreshedSession(at: index)
     }
 
     func primarySession(for projectId: String) -> AXSessionInfo? {
-        sessions
-            .filter { $0.projectId == projectId }
+        let matchingIndices = sessions.indices.filter { sessions[$0].projectId == projectId }
+        return matchingIndices
+            .map { refreshedSession(at: $0) }
             .sorted { lhs, rhs in
                 let lhsRank = lhs.parentId == nil ? 0 : 1
                 let rhsRank = rhs.parentId == nil ? 0 : 1
@@ -286,7 +290,7 @@ final class AXSessionManager: ObservableObject {
             return
         }
 
-        let normalized = decoded.map(backfilledSession)
+        let normalized = decoded.map(backfilledPersistedSession)
         sessions = normalized
         if normalized != decoded {
             saveSessions()
@@ -316,7 +320,31 @@ final class AXSessionManager: ObservableObject {
 
     private func backfilledSession(_ session: AXSessionInfo) -> AXSessionInfo {
         var normalized = session
-        normalized.runtime = (session.runtime ?? .idle(at: session.updatedAt)).normalized(at: session.updatedAt)
+        let runtime = (session.runtime ?? .idle(at: session.updatedAt))
+            .normalized(at: session.updatedAt)
+            .stabilized()
+        normalized.runtime = runtime
+        normalized.updatedAt = max(session.updatedAt, runtime.updatedAt)
+        return normalized
+    }
+
+    private func backfilledPersistedSession(_ session: AXSessionInfo) -> AXSessionInfo {
+        var normalized = session
+        let runtime = (session.runtime ?? .idle(at: session.updatedAt))
+            .restoredFromPersistence()
+        normalized.runtime = runtime
+        normalized.updatedAt = max(session.updatedAt, runtime.updatedAt)
+        return normalized
+    }
+
+    private func refreshedSession(at index: Int) -> AXSessionInfo {
+        let existing = sessions[index]
+        let normalized = backfilledSession(existing)
+        if normalized != existing {
+            sessions[index] = normalized
+            saveSessions()
+            eventBus.publish(.sessionUpdated(normalized))
+        }
         return normalized
     }
 

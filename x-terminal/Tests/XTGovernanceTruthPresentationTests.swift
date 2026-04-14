@@ -3,6 +3,15 @@ import Testing
 
 struct XTGovernanceTruthPresentationTests {
     @Test
+    func displayTextLocalizesReviewModeAndDisabledCadenceForUserFacingCopy() {
+        let text = XTGovernanceTruthPresentation.displayText(
+            "治理真相：当前生效 A2/S2 · 审查 Hybrid · 节奏 心跳 15m / 脉冲 30m / 脑暴 off。"
+        )
+
+        #expect(text == "治理真相：当前生效 A2/S2 · 审查 混合 · 节奏 心跳 15m / 脉冲 30m / 脑暴 关闭。")
+    }
+
+    @Test
     func truthLineShowsConfiguredVsEffectivePairs() throws {
         let line = try #require(
             XTGovernanceTruthPresentation.truthLine(
@@ -73,6 +82,49 @@ struct XTGovernanceTruthPresentationTests {
                         "brainstorm_review_sec": .number(0),
                         "compat_source": .string(AXProjectGovernanceCompatSource.explicitDualDial.rawValue)
                     ])
+                ]
+            )
+        )
+
+        #expect(line == "治理真相：预设 A1/S1 · 当前生效 A2/S2 · 审查 Periodic · 节奏 心跳 15m / 脉冲 30m / 脑暴 off。")
+    }
+
+    @Test
+    func truthLineReadsTopLevelConfiguredAndEffectiveAliases() throws {
+        let line = try #require(
+            XTGovernanceTruthPresentation.truthLine(
+                from: [
+                    "configured_execution_tier": .string(AXProjectExecutionTier.a1Plan.rawValue),
+                    "effective_execution_tier": .string(AXProjectExecutionTier.a2RepoAuto.rawValue),
+                    "configured_supervisor_tier": .string(AXProjectSupervisorInterventionTier.s1MilestoneReview.rawValue),
+                    "effective_supervisor_tier": .string(AXProjectSupervisorInterventionTier.s2PeriodicReview.rawValue),
+                    "review_policy_mode": .string(AXProjectReviewPolicyMode.periodic.rawValue),
+                    "progress_heartbeat_sec": .number(900),
+                    "review_pulse_sec": .number(1800),
+                    "brainstorm_review_sec": .number(0),
+                    "compat_source": .string(AXProjectGovernanceCompatSource.legacyAutonomyLevel.rawValue)
+                ]
+            )
+        )
+
+        #expect(line == "治理真相：预设 A1/S1 · 当前生效 A2/S2 · 审查 Periodic · 节奏 心跳 15m / 脉冲 30m / 脑暴 off · 来源 兼容旧项目卡片档位。")
+    }
+
+    @Test
+    func truthLinePrefersExplicitConfiguredAliasesOverLegacyTopLevelKeys() throws {
+        let line = try #require(
+            XTGovernanceTruthPresentation.truthLine(
+                from: [
+                    "execution_tier": .string(AXProjectExecutionTier.a3DeliverAuto.rawValue),
+                    "configured_execution_tier": .string(AXProjectExecutionTier.a1Plan.rawValue),
+                    "effective_execution_tier": .string(AXProjectExecutionTier.a2RepoAuto.rawValue),
+                    "supervisor_intervention_tier": .string(AXProjectSupervisorInterventionTier.s3StrategicCoach.rawValue),
+                    "configured_supervisor_tier": .string(AXProjectSupervisorInterventionTier.s1MilestoneReview.rawValue),
+                    "effective_supervisor_tier": .string(AXProjectSupervisorInterventionTier.s2PeriodicReview.rawValue),
+                    "review_policy_mode": .string(AXProjectReviewPolicyMode.periodic.rawValue),
+                    "progress_heartbeat_sec": .number(900),
+                    "review_pulse_sec": .number(1800),
+                    "brainstorm_review_sec": .number(0)
                 ]
             )
         )

@@ -11,6 +11,27 @@ struct XTMemoryUsePolicyTests {
     }
 
     @Test
+    func fastPathContractFreezesHotWindowDefaultsAndSharedBypassVocabulary() {
+        let hotWindow = XTMemoryHotWindowContract.default
+
+        #expect(hotWindow.turnLimit == 30)
+        #expect(hotWindow.idleTTLSeconds == 86_400)
+        #expect(hotWindow.storageRole == .hotContinuityCache)
+
+        #expect(
+            XTMemoryFastPathContract.defaultLadder == [
+                .xtHotWindow,
+                .xtRemoteSnapshotCache,
+                .hubProjectionFastPath,
+                .hubFreshBuild,
+            ]
+        )
+        #expect(XTMemoryFastPathBypassReason.freshHubRecheckSet.contains(.grantChanged))
+        #expect(XTMemoryFastPathBypassReason.freshHubRecheckSet.contains(.constitutionHashMismatch))
+        #expect(XTMemoryFastPathBypassReason.freshHubRecheckSet.contains(.remotePromptBundle))
+    }
+
+    @Test
     func laneHandoffFulltextRouteFailsClosed() {
         let payload = HubIPCClient.MemoryContextPayload(
             mode: XTMemoryUseMode.laneHandoff.rawValue,
@@ -95,6 +116,41 @@ struct XTMemoryUsePolicyTests {
         )
 
         #expect(route.denyCode == .memoryRoutePolicyMismatch)
+    }
+
+    @Test
+    func remotePromptBundleRouteForcesFreshHubRecheck() {
+        let payload = HubIPCClient.MemoryContextPayload(
+            mode: XTMemoryUseMode.remotePromptBundle.rawValue,
+            projectId: "proj-remote",
+            projectRoot: "/tmp/proj-remote",
+            displayName: "proj-remote",
+            latestUser: "把当前安全的项目摘要发给远端模型",
+            constitutionHint: "safe",
+            canonicalText: "goal",
+            observationsText: "obs",
+            workingSetText: "working",
+            rawEvidenceText: "raw",
+            budgets: nil
+        )
+
+        let route = XTMemoryRoleScopedRouter.route(
+            role: .remoteExport,
+            mode: .remotePromptBundle,
+            payload: payload,
+            remoteExportRequested: true
+        )
+
+        let fastPathContract = XTMemoryRoleScopedRouter.fastPathContract(for: .remotePromptBundle)
+
+        #expect(route.denyCode == nil)
+        #expect(route.bypassRemoteCache == true)
+        #expect(route.contract.freshnessPolicy == .requireFreshRemoteSnapshot)
+        #expect(fastPathContract.requiresFreshHubRecheck == true)
+        #expect(
+            fastPathContract.staticBypassReasonCodes
+            == Set([XTMemoryFastPathBypassReason.remotePromptBundle])
+        )
     }
 
     @Test

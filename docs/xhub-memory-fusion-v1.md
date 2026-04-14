@@ -1,10 +1,18 @@
 # X-Hub Memory Fusion Spec（skills ecosystem Hybrid Index + progressive-disclosure reference architecture PD/Hooks）v1（可执行规范 / Draft）
 
 - Status: Draft
-- Updated: 2026-02-12
+- Updated: 2026-03-21
 - Objective: 把两套成熟思路融合成 X‑Hub 的优势：
   - skills ecosystem（MIT）：**Markdown 为真相、混合检索（Vector+FTS）、增量索引、compaction 前 flush**
   - progressive-disclosure reference architecture（AGPL）：**Progressive Disclosure（index+token cost 可见）+ hooks 驱动自动生成 observations/summaries**（仅借思想）
+
+补充边界：
+- 本文是“总装配图”，不是新的 memory 控制面定义。
+- 控制面仍固定为：
+  - 用户在 X-Hub 选择 memory AI
+  - `Scheduler -> Worker -> Writer + Gate` 分层执行
+  - `Memory-Core` 作为 governed rule asset 约束提取/晋升/远程外发
+- 因此这里的 `Hybrid Index + PD/Hooks` 融合，服务的是 retrieval / evidence / token economy，不替代上游 route/mode/model 选择。
 
 本 spec 是“总装配图”，对应的分部实现规范：
 - Master（可直接落地实现）：`docs/xhub-memory-system-spec-v1.md`

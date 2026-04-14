@@ -1,7 +1,7 @@
 # X-Hub Multimodal Supervisor Control Plane Work Orders v1
 
 - version: v1.0
-- updatedAt: 2026-03-13
+- updatedAt: 2026-03-19
 - owner: Hub-L5 / XT-L2 / Mobile-L1 / Security / QA
 - status: active-planning
 - scope: one Supervisor across XT, voice, operator channels, mobile companion, trusted runner, shopping / robot pilot
@@ -47,9 +47,50 @@
 
 - 不把 mobile companion 做成新的 trust anchor。
 - 不把 raw audio、外部 IM 附件、第三方链接默认写入 canonical memory。
+- 不把 attachment metadata 的可见性误当成 attachment/blob body 的读取权限。
+- 不把 attachment/blob body 默认塞进 multi-surface brief projection 或 remote prompt bundle。
 - 不把任意自然语言直接升级为 `terminal.exec`、`device.*`、`connector.send`、`grant.approve`。
 - 不把 `WhatsApp personal` 作为首版 require-real 绿色能力；若使用本机会话，必须继续走 `trusted_automation + local runner`。
 - 不在 v1 声称“全自动机器人购物”；首版只做 supervised shopping / bounded mission pilot。
+
+## 2.1) Wave-1 A6 承接范围（Attachment Visibility + Blob ACL）
+
+来自 `docs/memory-new/xhub-memory-open-source-reference-wave1-execution-pack-v1.md` 的 `attachment visibility + blob ACL`，在多模态控制平面下的正式承接范围如下：
+
+- 本工单只承接 `MMS-W2 / MMS-W4` 所需的 cross-surface 语义对齐，不回改 `docs/memory-new/xhub-multimodal-supervisor-control-plane-contract-freeze-v1.md` 已冻结主 contract。
+- 所有 surface 的 attachment/blob 输入先是 `untrusted ingress ref`，不是默认可读 body。
+- 多模态 surface 只能共享同一套 `metadata-first / body-gated / remote-export-fenced / audit-bound` 语义，不能因为 voice / IM / mobile / XT 形态不同而产生不同默认权限。
+
+### 2.1.1 Metadata-first projection
+
+- brief projection、channel summary、mobile digest 默认只允许带：
+  - `attachment_ref`
+  - `mime_type`
+  - `size`
+  - `visibility`
+  - `redaction_state`
+  - `summary / evidence_refs`
+- `metadata visible != body readable` 必须成为所有 surface 的固定解释。
+- metadata route 默认不得自动继承 body read authority。
+
+### 2.1.2 Remote export fence
+
+- voice / XT / channel / mobile companion 的 remote bundle 默认只允许：
+  - metadata
+  - summary
+  - selected refs
+- attachment/blob body 默认不得外发；未显式授权时必须 deny 或 downgrade。
+- 阻断结果必须能在各 surface 上回放成一致的 machine-readable deny / downgrade 语义。
+
+### 2.1.3 Body read grant binding
+
+- attachment/blob body 的读取必须重新绑定：
+  - `scope`
+  - `grant_id`
+  - `audit_ref`
+  - `body_read_reason`
+- cross-surface reuse、grant drift、replay tamper 必须 fail-closed。
+- `MMS` 侧只承接 surface 解释与 projection/fence 一致性；grant 主链仍挂在既有 Hub policy / M3 grant chain。
 
 ## 3) Workstreams
 
@@ -91,6 +132,7 @@
   - 新增 `pending grants digest`
   - 新增 `next best action` projection
   - 新增 `mission / checkpoint ledger` projection
+  - 新增 attachment metadata-first projection 约束
 - Suggested touchpoints:
   - `x-hub/grpc-server/hub_grpc_server/src/services.js`
   - `x-hub/macos/RELFlowHub/Sources/RELFlowHub/HubMemoryContextBuilder.swift`
@@ -107,11 +149,13 @@
   - voice brief、channel summary、mobile digest 都来自同一 projection 层
   - projection 带 `evidence_refs`
   - raw audio / external attachment 默认不写 canonical
+  - attachment 默认只以 metadata / summary / refs 进入 projection，body 不得默认混入
 - Gate:
   - `MMS-G2`
 - KPI:
   - `brief_compile_p95_ms <= 800`
   - `projection_without_evidence_ref = 0`
+  - `attachment_body_projection_leak = 0`
 
 ### 3.3 `MMS-W3` Outdoor Voice + Mobile Companion Authorization Chain
 
@@ -161,12 +205,14 @@
   - channel query、approval card、heartbeat push、delivery summary 共用 Hub facade
   - XT 离线时返回真实 route 状态
   - 附件 / callback / button 全部当作 untrusted ingress
+  - channel attachment 的 metadata/body split 与 XT / voice / mobile 保持一致
 - Gate:
   - `MMS-G4`
 - KPI:
   - `channel_query_to_first_response_p95_ms <= 3000`
   - `unauthorized_channel_action = 0`
   - `cross_project_channel_route_leak = 0`
+  - `cross_surface_attachment_acl_drift = 0`
 
 ### 3.5 `MMS-W5` Trusted Execution Route For `hub_to_runner`
 

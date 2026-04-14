@@ -10,7 +10,9 @@ struct XTDeepLinkGrantPrefillIntent: Equatable {
 enum XTDeepLinkFocusIntent: Equatable {
     case supervisorGrant(projectId: String?, grantRequestId: String?, capability: String?)
     case supervisorApproval(projectId: String?, requestId: String?)
+    case supervisorCandidateReview(projectId: String?, requestId: String?)
     case supervisorSkillRecord(projectId: String?, requestId: String?)
+    case supervisorBoard(projectId: String?, anchorID: String)
     case projectToolApproval(projectId: String?, requestId: String?)
     case projectRouteDiagnose(projectId: String?)
 }
@@ -136,9 +138,17 @@ enum XTDeepLinkActionPlanner {
         case .approval:
             guard let requestId = normalized(requestId) else { return nil }
             return .supervisorApproval(projectId: projectId, requestId: requestId)
+        case .candidateReview:
+            guard let requestId = normalized(requestId) else { return nil }
+            return .supervisorCandidateReview(projectId: projectId, requestId: requestId)
         case .skillRecord:
             guard let requestId = normalized(requestId) else { return nil }
             return .supervisorSkillRecord(projectId: projectId, requestId: requestId)
+        case .projectCreationBoard:
+            return .supervisorBoard(
+                projectId: projectId,
+                anchorID: SupervisorFocusPresentation.projectCreationBoardAnchorID
+            )
         case .toolApproval:
             guard let projectId else { return nil }
             return .projectToolApproval(

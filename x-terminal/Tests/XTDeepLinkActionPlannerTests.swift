@@ -181,4 +181,66 @@ struct XTDeepLinkActionPlannerTests {
             )
         )
     }
+
+    @Test
+    func supervisorCandidateReviewRouteBuildsSupervisorFocusPlan() {
+        let plan = XTDeepLinkActionPlanner.plan(
+            for: XTDeepLinkSupervisorRoute(
+                projectId: "project-review",
+                focusTarget: .candidateReview,
+                requestId: "req-review-1",
+                grantRequestId: nil,
+                grantCapability: nil,
+                grantReason: nil
+            )
+        )
+
+        #expect(plan.selectProjectId == "project-review")
+        #expect(plan.projectPaneIntent == nil)
+        #expect(
+            plan.openSupervisorIntent == XTSupervisorWindowOpenIntent(
+                reason: "deep_link_supervisor",
+                focusConversation: false,
+                startConversation: false
+            )
+        )
+        #expect(plan.prefillGrantContext == nil)
+        #expect(
+            plan.focusIntent == .supervisorCandidateReview(
+                projectId: "project-review",
+                requestId: "req-review-1"
+            )
+        )
+    }
+
+    @Test
+    func supervisorProjectCreationBoardRouteBuildsSupervisorBoardFocusPlan() {
+        let plan = XTDeepLinkActionPlanner.plan(
+            for: XTDeepLinkSupervisorRoute(
+                projectId: nil,
+                focusTarget: .projectCreationBoard,
+                requestId: nil,
+                grantRequestId: nil,
+                grantCapability: nil,
+                grantReason: nil
+            )
+        )
+
+        #expect(plan.selectProjectId == nil)
+        #expect(plan.projectPaneIntent == nil)
+        #expect(
+            plan.openSupervisorIntent == XTSupervisorWindowOpenIntent(
+                reason: "deep_link_supervisor",
+                focusConversation: false,
+                startConversation: false
+            )
+        )
+        #expect(plan.prefillGrantContext == nil)
+        #expect(
+            plan.focusIntent == .supervisorBoard(
+                projectId: nil,
+                anchorID: SupervisorFocusPresentation.projectCreationBoardAnchorID
+            )
+        )
+    }
 }

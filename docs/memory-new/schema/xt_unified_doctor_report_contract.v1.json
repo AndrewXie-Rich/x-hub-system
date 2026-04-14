@@ -1,0 +1,585 @@
+{
+  "schema_version": "xt.unified_doctor_report_contract.v1",
+  "contract_version": "2026-04-01",
+  "contract_id": "IR-W6-02",
+  "owner_lane": "X-Terminal / Diagnostics / QA",
+  "fixed_decisions": [
+    "xt_unified_doctor_report_is_the_primary_xt_source_truth_before_generic_doctor_export",
+    "xt_unified_doctor_report_must_keep_fail_closed_readiness_state_honest",
+    "structured_section_projections_must_be_preferred_over_reparsing_detailLines",
+    "project_context_presentation_is_explainability_only_not_grant_or_route_truth",
+    "heartbeat_governance_projection_is_review_explainability_only_not_chat_or_project_memory_truth",
+    "supervisor_review_trigger_projection_is_review_engine_explainability_not_scheduler_authority",
+    "supervisor_guidance_continuity_projection_is_safe_point_review_explainability_not_runtime_interrupt_authority",
+    "supervisor_safe_point_timeline_projection_is_delivery_timing_explainability_not_scheduler_or_interrupt_authority",
+    "skill_doctor_truth_projection_is_skill_capability_readiness_explainability_not_grant_override_authority",
+    "hub_memory_prompt_projection_reuses_hub_generate_done_metadata_not_xt_local_prompt_inference",
+    "memory_route_truth_projection_must_directly_reuse_frozen_upstream_route_diagnostics",
+    "durable_candidate_mirror_projection_is_explainability_only_not_durable_promotion_or_read_cutover_truth",
+    "local_store_write_projection_is_xt_local_provenance_only_not_durable_writer_truth",
+    "remote_snapshot_cache_projection_is_cache_provenance_only_not_memory_source_of_truth"
+  ],
+  "section_kind_enum": [
+    "hub_reachability",
+    "pairing_validity",
+    "model_route_readiness",
+    "bridge_tool_readiness",
+    "session_runtime_readiness",
+    "wake_profile_readiness",
+    "talk_loop_readiness",
+    "voice_playback_readiness",
+    "calendar_reminder_readiness",
+    "skills_compatibility_readiness"
+  ],
+  "surface_state_enum": [
+    "ready",
+    "in_progress",
+    "grant_required",
+    "permission_denied",
+    "blocked_waiting_upstream",
+    "release_frozen",
+    "diagnostic_required"
+  ],
+  "objects": {
+    "xt.unified_doctor_report.v1": {
+      "required_fields": [
+        "schemaVersion",
+        "generatedAtMs",
+        "overallState",
+        "overallSummary",
+        "readyForFirstTask",
+        "currentFailureCode",
+        "configuredModelRoles",
+        "availableModelCount",
+        "loadedModelCount",
+        "currentRoute",
+        "sections",
+        "consumedContracts",
+        "reportPath"
+      ],
+      "optional_fields": [
+        "currentFailureIssue",
+        "currentSessionID"
+      ],
+      "nested_required_fields": {
+        "currentRoute": [
+          "transportMode",
+          "routeLabel",
+          "pairingPort",
+          "grpcPort",
+          "internetHost"
+        ]
+      },
+      "enum_refs": {
+        "overallState": "surface_state_enum"
+      },
+      "rules": [
+        "This report is the XT-side source truth consumed by the generic xhub doctor export.",
+        "readyForFirstTask may only be true when hubReachability, modelRouteReadiness, bridgeToolReadiness, and sessionRuntimeReadiness are all ready.",
+        "consumedContracts should carry the frozen xt.unified_doctor_report_contract.v1 identifier rather than repeating the report schemaVersion as if it were an upstream dependency."
+      ]
+    },
+    "xt.unified_doctor_section.v1": {
+      "required_fields": [
+        "kind",
+        "state",
+        "headline",
+        "summary",
+        "nextStep",
+        "repairEntry",
+        "detailLines"
+      ],
+      "optional_fields": [
+        "projectContextPresentation",
+        "hubMemoryPromptProjection",
+        "projectGovernanceRuntimeReadinessProjection",
+        "projectMemoryPolicyProjection",
+        "projectMemoryReadinessProjection",
+        "projectMemoryAssemblyResolutionProjection",
+        "heartbeatGovernanceProjection",
+        "supervisorMemoryPolicyProjection",
+        "supervisorMemoryAssemblyResolutionProjection",
+        "supervisorReviewTriggerProjection",
+        "supervisorGuidanceContinuityProjection",
+        "supervisorSafePointTimelineProjection",
+        "projectRemoteSnapshotCacheProjection",
+        "supervisorRemoteSnapshotCacheProjection",
+        "memoryRouteTruthProjection",
+        "durableCandidateMirrorProjection",
+        "localStoreWriteProjection",
+        "skillDoctorTruthProjection"
+      ],
+      "enum_refs": {
+        "kind": "section_kind_enum",
+        "state": "surface_state_enum"
+      },
+      "rules": [
+        "projectContextPresentation is currently expected on sessionRuntimeReadiness when XT can project project context assembly diagnostics.",
+        "hubMemoryPromptProjection is currently expected on sessionRuntimeReadiness when XT can surface the Hub-provided prompt assembly projection for the latest governed coding turn without local prompt re-inference.",
+        "projectGovernanceRuntimeReadinessProjection is currently expected on sessionRuntimeReadiness when XT can expose the structured A-tier configured-vs-runtime-ready split without reparsing detailLines.",
+        "projectMemoryPolicyProjection, projectMemoryReadinessProjection, and projectMemoryAssemblyResolutionProjection are currently expected on sessionRuntimeReadiness when XT can expose role-aware Project AI memory policy, readiness, and effective assembly resolution as first-class machine-readable source truth.",
+        "heartbeatGovernanceProjection is currently expected on sessionRuntimeReadiness when XT can project heartbeat-governed review cadence, quality, anomaly, next-review-due truth, and any attached Project AI memory readiness signal used for review explainability.",
+        "skillDoctorTruthProjection is currently expected on skillsCompatibilityReadiness when XT can expose the project effective skill profile snapshot plus typed per-skill readiness counts/previews as first-class machine-readable doctor truth.",
+        "supervisorMemoryPolicyProjection and supervisorMemoryAssemblyResolutionProjection are currently expected on sessionRuntimeReadiness when XT can expose role-aware Supervisor review-memory policy and effective assembly resolution as first-class machine-readable source truth.",
+        "supervisorReviewTriggerProjection is currently expected on sessionRuntimeReadiness when XT can expose Supervisor review policy mode, effective trigger set, active heartbeat-derived review candidate, queue posture, and latest review-note source as first-class machine-readable doctor truth.",
+        "supervisorGuidanceContinuityProjection is currently expected on sessionRuntimeReadiness when XT can expose Supervisor latest-review/latest-guidance/pending-ack guidance continuity plus safe-point and ack posture as first-class machine-readable doctor truth.",
+        "supervisorSafePointTimelineProjection is currently expected on sessionRuntimeReadiness when XT can expose pending guidance delivery timing, live safe-point posture, and tool-batch pause posture as first-class machine-readable doctor truth.",
+        "projectRemoteSnapshotCacheProjection and supervisorRemoteSnapshotCacheProjection are currently expected on sessionRuntimeReadiness when XT can expose project/supervisor remote snapshot cache provenance without reparsing detailLines.",
+        "memoryRouteTruthProjection is currently expected on modelRouteReadiness when XT can project upstream memory route diagnostics.",
+        "durableCandidateMirrorProjection is currently expected on sessionRuntimeReadiness when XT has supervisor durable-candidate mirror evidence to surface.",
+        "localStoreWriteProjection is currently expected on sessionRuntimeReadiness when XT has local cache/fallback/edit-buffer write provenance to surface.",
+        "Structured section projections should be preferred over reparsing detailLines when both are available.",
+        "detailLines remain migration-friendly context and operator-readable breadcrumbs; they are not a second authority surface."
+      ]
+    },
+    "xt.unified_doctor_supervisor_guidance_continuity_projection.v1": {
+      "required_fields": [
+        "schemaVersion",
+        "reviewGuidanceCarrierPresent",
+        "latestReviewNoteAvailable",
+        "latestReviewNoteActualized",
+        "latestGuidanceAvailable",
+        "latestGuidanceActualized",
+        "pendingAckGuidanceAvailable",
+        "pendingAckGuidanceActualized",
+        "renderedRefs",
+        "summaryLine"
+      ],
+      "optional_fields": [
+        "latestGuidanceAckStatus",
+        "latestGuidanceAckRequired",
+        "latestGuidanceDeliveryMode",
+        "latestGuidanceInterventionMode",
+        "latestGuidanceSafePointPolicy",
+        "pendingAckGuidanceAckStatus",
+        "pendingAckGuidanceAckRequired",
+        "pendingAckGuidanceDeliveryMode",
+        "pendingAckGuidanceInterventionMode",
+        "pendingAckGuidanceSafePointPolicy"
+      ],
+      "rules": [
+        "This object is an XT-side explainability projection of Supervisor review/guidance continuity across latest review note, latest guidance, and any pending-ack guidance.",
+        "It keeps ack posture, delivery mode, intervention mode, safe-point policy, rendered refs, and summaryLine machine-readable without reparsing flat detailLines.",
+        "It is continuity explainability only and must not be treated as Hub review-note truth, guidance-injection authority, interrupt authority, grant truth, or a bypass around scheduler, audit, TTL, kill-switch, or clamp."
+      ]
+    },
+    "xt.unified_doctor_supervisor_review_trigger_projection.v1": {
+      "required_fields": [
+        "schemaVersion",
+        "eventDrivenReviewEnabled",
+        "mandatoryReviewTriggers",
+        "effectiveEventReviewTriggers",
+        "derivedReviewTriggers",
+        "activeCandidateAvailable",
+        "summaryLine"
+      ],
+      "optional_fields": [
+        "reviewPolicyMode",
+        "eventFollowUpCadenceLabel",
+        "activeCandidateTrigger",
+        "activeCandidateRunKind",
+        "activeCandidateReviewLevel",
+        "activeCandidatePriority",
+        "activeCandidatePolicyReason",
+        "activeCandidateQueued",
+        "queuedReviewTrigger",
+        "queuedReviewRunKind",
+        "queuedReviewLevel",
+        "latestReviewSource",
+        "latestReviewTrigger",
+        "latestReviewLevel",
+        "latestReviewAtMs",
+        "lastPulseReviewAtMs",
+        "lastBrainstormReviewAtMs"
+      ],
+      "rules": [
+        "This object is an XT-side explainability projection of Supervisor review policy posture and the current heartbeat-derived review trigger candidate.",
+        "It keeps effective trigger sets, candidate review level/run kind, queue posture, latest review-note provenance, and summaryLine machine-readable without reparsing flat detailLines.",
+        "It is review-engine explainability only and must not be treated as scheduler authority, review-note authority, guidance-injection authority, grant truth, or a bypass around Hub audit, TTL, kill-switch, clamp, or policy gates."
+      ]
+    },
+    "xt.unified_doctor_supervisor_safe_point_timeline_projection.v1": {
+      "required_fields": [
+        "schemaVersion",
+        "pendingGuidanceAvailable",
+        "summaryLine"
+      ],
+      "optional_fields": [
+        "pendingGuidanceInjectionId",
+        "pendingGuidanceDeliveryMode",
+        "pendingGuidanceInterventionMode",
+        "pendingGuidanceSafePointPolicy",
+        "liveStateSource",
+        "flowStep",
+        "toolResultsCount",
+        "verifyRunIndex",
+        "finalizeOnly",
+        "checkpointReached",
+        "promptVisibleNow",
+        "visibleFromPreRunMemory",
+        "pauseRecorded",
+        "deliverableNow",
+        "shouldPauseToolBatchAfterBoundary",
+        "deliveryState",
+        "executionGate"
+      ],
+      "rules": [
+        "This object is an XT-side explainability projection of pending Supervisor guidance delivery timing inside the current Project AI safe-point loop.",
+        "It keeps pending guidance posture, live flow location, prompt visibility, delivery state, and tool-batch pause posture machine-readable without reparsing flat detailLines.",
+        "It is explainability only and must not be treated as scheduler authority, interrupt authority, grant truth, or a bypass around Hub audit, TTL, kill-switch, clamp, or policy gates."
+      ]
+    },
+    "xt.unified_doctor_remote_snapshot_cache_projection.v1": {
+      "required_fields": [],
+      "optional_fields": [
+        "source",
+        "freshness",
+        "cacheHit",
+        "scope",
+        "cachedAtMs",
+        "ageMs",
+        "ttlRemainingMs"
+      ],
+      "rules": [
+        "This object is an XT-side explainability projection of remote snapshot cache provenance for either Project AI or Supervisor memory assembly.",
+        "It exists so source truth and generic export surfaces can reuse cache scope, cache age, and TTL-left facts without reparsing detailLines.",
+        "It is provenance only and must not be treated as durable memory source truth, export approval, grant truth, or permission to bypass fail-closed routing."
+      ]
+    },
+    "xt.unified_doctor_skill_doctor_truth_projection.v1": {
+      "required_fields": [
+        "effectiveProfileSnapshot",
+        "installedSkillCount",
+        "readySkillCount",
+        "grantRequiredSkillCount",
+        "approvalRequiredSkillCount",
+        "blockedSkillCount",
+        "degradedSkillCount",
+        "grantRequiredSkillPreview",
+        "approvalRequiredSkillPreview",
+        "blockedSkillPreview"
+      ],
+      "rules": [
+        "This object is an XT-side projection of project effective skill capability truth and per-skill typed readiness truth for doctor/export surfaces.",
+        "It keeps the effective profile snapshot, runnable/grant-required/approval-required/blocked counts, and representative preview items machine-readable.",
+        "It is explainability and diagnostics only; it must not be treated as a grant override token, runtime bypass, or a replacement for Supervisor preflight and tool runtime policy."
+      ]
+    },
+    "xt.unified_doctor_skill_readiness_preview.v1": {
+      "required_fields": [
+        "skillID",
+        "name",
+        "executionReadiness",
+        "stateLabel",
+        "reasonCode",
+        "grantFloor",
+        "approvalFloor",
+        "capabilityProfiles",
+        "capabilityFamilies",
+        "unblockActions"
+      ],
+      "rules": [
+        "This object is a compact XT-side preview of a governed skill's typed readiness state.",
+        "It exists so doctor/export consumers can see why a representative skill is blocked, waiting on grant, or waiting on local approval without reparsing ad hoc text."
+      ]
+    },
+    "xt.unified_doctor_project_context_presentation.v1": {
+      "required_fields": [
+        "sourceKind",
+        "sourceBadge",
+        "statusLine",
+        "dialogueMetric",
+        "depthMetric",
+        "dialogueLine",
+        "depthLine"
+      ],
+      "optional_fields": [
+        "projectLabel",
+        "coverageMetric",
+        "coverageLine",
+        "boundaryMetric",
+        "boundaryLine",
+        "userSourceBadge",
+        "userStatusLine",
+        "userDialogueMetric",
+        "userDepthMetric",
+        "userCoverageSummary",
+        "userBoundarySummary",
+        "userDialogueLine",
+        "userDepthLine"
+      ],
+      "rules": [
+        "This object is a presentation-friendly projection of XT project context assembly diagnostics.",
+        "It must not be treated as grant truth, policy truth, or a replacement for normalized section state."
+      ]
+    },
+    "xt.unified_doctor_hub_memory_prompt_projection.v1": {
+      "required_fields": [
+        "projectionSource",
+        "canonicalItemCount",
+        "workingSetTurnCount",
+        "runtimeTruthItemCount",
+        "runtimeTruthSourceKinds"
+      ],
+      "rules": [
+        "This object is a first-class XT projection of Hub-provided prompt assembly explainability for the latest governed coding turn.",
+        "It must directly reuse Hub Generate.done metadata rather than locally inferring what prompt content XT thinks was assembled.",
+        "It is explainability only and must not be treated as prompt authority, grant truth, export approval, route truth, or a bypass around X-Constitution, audit, kill-switch, TTL, or remote export gates."
+      ]
+    },
+    "xhub.project_governance_runtime_readiness.v1": {
+      "required_fields": [
+        "schema_version",
+        "configured_execution_tier",
+        "effective_execution_tier",
+        "configured_runtime_surface_mode",
+        "effective_runtime_surface_mode",
+        "runtime_surface_override_mode",
+        "trusted_automation_state",
+        "requires_a4_runtime_ready",
+        "runtime_ready",
+        "state",
+        "summary_line",
+        "missing_reason_codes"
+      ],
+      "optional_fields": [
+        "missing_summary_line"
+      ],
+      "rules": [
+        "This object is a first-class XT projection of the A-tier configured-vs-runtime-ready split for governed execution.",
+        "It keeps configured/effective execution tier, runtime surface posture, trusted automation state, and missing readiness reasons machine-readable.",
+        "It is explainability only and must not be treated as Hub grant truth, tool-policy authority, or a bypass around TTL, kill-switch, clamp, or audit chains."
+      ]
+    },
+    "xhub.project_memory_policy.v1": {
+      "required_fields": [
+        "schema_version",
+        "configured_recent_project_dialogue_profile",
+        "configured_project_context_depth",
+        "recommended_recent_project_dialogue_profile",
+        "recommended_project_context_depth",
+        "effective_recent_project_dialogue_profile",
+        "effective_project_context_depth",
+        "a_tier_memory_ceiling"
+      ],
+      "optional_fields": [
+        "audit_ref"
+      ],
+      "rules": [
+        "This object is a first-class XT projection of Project AI role-aware memory policy truth.",
+        "It keeps configured/recommended/effective project dialogue and context depth plus the A-tier memory ceiling machine-readable.",
+        "It is diagnostic and explainability oriented only; it must not be treated as grant truth, runtime authority, or a replacement for Hub policy/clamp/TTL boundaries."
+      ]
+    },
+    "xhub.project_memory_readiness.v1": {
+      "required_fields": [
+        "ready",
+        "statusLine",
+        "issues"
+      ],
+      "rules": [
+        "This object is a first-class XT projection of Project AI memory assembly readiness as observed from recent runtime usage and explainability drift checks.",
+        "It exists so doctor and heartbeat explainability surfaces can consume Project AI memory continuity and projection-drift signals without reparsing free-form detail lines.",
+        "It is diagnostic and explainability only; it must not be treated as Hub durable truth, grant truth, or permission to bypass fail-closed memory routing."
+      ]
+    },
+    "xhub.memory_assembly_resolution.v1": {
+      "required_fields": [
+        "schema_version",
+        "role",
+        "trigger",
+        "configured_depth",
+        "recommended_depth",
+        "effective_depth",
+        "ceiling_from_tier",
+        "ceiling_hit",
+        "selected_slots",
+        "selected_planes",
+        "selected_serving_objects",
+        "excluded_blocks"
+      ],
+      "optional_fields": [
+        "dominant_mode",
+        "budget_summary",
+        "audit_ref"
+      ],
+      "rules": [
+        "This object is a first-class XT projection of the effective role-aware memory assembly resolution.",
+        "selected_slots, selected_planes, selected_serving_objects, and excluded_blocks exist so doctor/export surfaces do not have to infer effective assembly shape from unstructured text.",
+        "It is explainability only and must not be treated as an execution grant, scheduler command, or policy bypass surface."
+      ]
+    },
+    "xhub.supervisor_memory_policy.v1": {
+      "required_fields": [
+        "schema_version",
+        "configured_supervisor_recent_raw_context_profile",
+        "configured_review_memory_depth",
+        "recommended_supervisor_recent_raw_context_profile",
+        "recommended_review_memory_depth",
+        "effective_supervisor_recent_raw_context_profile",
+        "effective_review_memory_depth",
+        "s_tier_review_memory_ceiling"
+      ],
+      "optional_fields": [
+        "audit_ref"
+      ],
+      "rules": [
+        "This object is a first-class XT projection of Supervisor role-aware review-memory policy truth.",
+        "It keeps configured/recommended/effective Recent Raw Context and Review Memory Depth plus the S-tier review-memory ceiling machine-readable.",
+        "It is diagnostic and explainability oriented only; it must not be treated as extra runtime permission or as a replacement for Hub grant/policy/clamp/TTL boundaries."
+      ]
+    },
+    "xt.unified_doctor_heartbeat_cadence_dimension_projection.v1": {
+      "required_fields": [
+        "dimension"
+      ],
+      "optional_fields": [
+        "configuredSeconds",
+        "recommendedSeconds",
+        "effectiveSeconds",
+        "effectiveReasonCodes",
+        "nextDueAtMs",
+        "nextDueReasonCodes",
+        "isDue"
+      ],
+      "rules": [
+        "This object is a cadence explainability projection for heartbeat-governed review, not a scheduler authority surface.",
+        "configuredSeconds, recommendedSeconds, and effectiveSeconds keep the three-value cadence model visible on XT source truth."
+      ]
+    },
+    "xt.unified_doctor_heartbeat_next_review_due_projection.v1": {
+      "required_fields": [],
+      "optional_fields": [
+        "kind",
+        "due",
+        "atMs",
+        "reasonCodes"
+      ],
+      "rules": [
+        "This object is a read-only explainability projection for the next governance review due state.",
+        "It must not be treated as permission to bypass safe-point injection, kill-switches, or review policy gates."
+      ]
+    },
+    "xt.unified_doctor_heartbeat_governance_projection.v1": {
+      "required_fields": [
+        "projectId",
+        "projectName",
+        "statusDigest",
+        "currentStateSummary",
+        "nextStepSummary",
+        "blockerSummary",
+        "lastHeartbeatAtMs",
+        "weakReasons",
+        "openAnomalyTypes",
+        "progressHeartbeat",
+        "reviewPulse",
+        "brainstormReview",
+        "nextReviewDue"
+      ],
+      "optional_fields": [
+        "latestQualityBand",
+        "latestQualityScore",
+        "projectPhase",
+        "executionStatus",
+        "riskTier",
+        "digestVisibility",
+        "digestReasonCodes",
+        "digestWhatChangedText",
+        "digestWhyImportantText",
+        "digestSystemNextStepText",
+        "recoveryDecision",
+        "projectMemoryReady",
+        "projectMemoryStatusLine",
+        "projectMemoryIssueCodes",
+        "projectMemoryTopIssueSummary"
+      ],
+      "rules": [
+        "This object is a structured XT projection of heartbeat-governed review truth for the active project.",
+        "It exists for review explainability only and must not override normal chat memory, project memory routing, or grant/policy truth.",
+        "Review cadence explainability must remain role-aware and must not be repurposed as the master dial for recent raw context or project context depth.",
+        "Digest visibility / reason codes and digest three-line text should remain available whenever XT surfaces why a heartbeat digest was shown or suppressed.",
+        "Attached project-memory readiness fields remain explainability-only and must not be treated as memory assembly authority."
+      ]
+    },
+    "xt.unified_doctor_heartbeat_recovery_projection.v1": {
+      "required_fields": [],
+      "optional_fields": [
+        "action",
+        "urgency",
+        "reasonCode",
+        "summary",
+        "sourceSignals",
+        "anomalyTypes",
+        "blockedLaneReasons",
+        "blockedLaneCount",
+        "stalledLaneCount",
+        "failedLaneCount",
+        "recoveringLaneCount",
+        "requiresUserAction",
+        "queuedReviewTrigger",
+        "queuedReviewLevel",
+        "queuedReviewRunKind"
+      ],
+      "rules": [
+        "This object is a structured XT projection of recovery-beat explainability for the active session/project slice.",
+        "It must remain diagnostic-only: recoveryDecision is not direct runtime authority and must not bypass Hub grant, runtime readiness, policy, TTL, or kill-switch boundaries.",
+        "queuedReviewTrigger/queuedReviewLevel/queuedReviewRunKind describe follow-up governance intent only and must not be misread as immediate intervention execution."
+      ]
+    },
+    "xt.unified_doctor_memory_route_truth_projection.v1": {
+      "required_fields": [
+        "projectionSource",
+        "completeness",
+        "requestSnapshot",
+        "resolutionChain",
+        "winningProfile",
+        "winningBinding",
+        "routeResult",
+        "constraintSnapshot"
+      ],
+      "rules": [
+        "This object must directly reuse the frozen upstream Diagnostic-First Route Surface rather than recomputing route truth locally.",
+        "projectionSource and completeness must remain visible wherever the projection is exported or summarized."
+      ]
+    },
+    "xt.unified_doctor_durable_candidate_mirror_projection.v1": {
+      "required_fields": [
+        "status",
+        "target",
+        "attempted",
+        "localStoreRole"
+      ],
+      "optional_fields": [
+        "errorCode"
+      ],
+      "rules": [
+        "This object is a read-only XT projection of supervisor durable-candidate mirror evidence.",
+        "It must not be treated as proof of durable promotion, canonical Hub write success, or read-source cutover completion."
+      ]
+    },
+    "xt.unified_doctor_local_store_write_projection.v1": {
+      "required_fields": [],
+      "optional_fields": [
+        "personalMemoryIntent",
+        "crossLinkIntent",
+        "personalReviewIntent"
+      ],
+      "rules": [
+        "This object is an XT-local provenance snapshot showing which local cache/fallback/edit-buffer write path most recently touched each store surface.",
+        "It must not be treated as durable writer authority, canonical Hub save success, or proof that XT local storage is the long-term source of truth."
+      ]
+    },
+    "xt.unified_doctor_route_snapshot.v1": {
+      "required_fields": [
+        "transportMode",
+        "routeLabel",
+        "pairingPort",
+        "grpcPort",
+        "internetHost"
+      ],
+      "rules": [
+        "Route snapshot must reflect the current XT pairing/runtime path honestly and should not fabricate reachability."
+      ]
+    }
+  }
+}

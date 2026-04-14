@@ -5,6 +5,34 @@ struct AXRecentContextMessage: Codable, Equatable {
     var role: String // "user" | "assistant"
     var content: String
     var createdAt: Double
+    var attachments: [AXChatAttachment]
+
+    init(
+        role: String,
+        content: String,
+        createdAt: Double,
+        attachments: [AXChatAttachment] = []
+    ) {
+        self.role = role
+        self.content = content
+        self.createdAt = createdAt
+        self.attachments = attachments
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case role
+        case content
+        case createdAt
+        case attachments
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        role = try container.decode(String.self, forKey: .role)
+        content = try container.decode(String.self, forKey: .content)
+        createdAt = try container.decode(Double.self, forKey: .createdAt)
+        attachments = try container.decodeIfPresent([AXChatAttachment].self, forKey: .attachments) ?? []
+    }
 }
 
 struct AXRecentContext: Codable, Equatable {
@@ -68,8 +96,19 @@ enum AXRecentContextStore {
         }
     }
 
-    static func appendUserMessage(ctx: AXProjectContext, text: String, createdAt: Double) {
-        appendMessage(ctx: ctx, role: "user", text: text, createdAt: createdAt)
+    static func appendUserMessage(
+        ctx: AXProjectContext,
+        text: String,
+        createdAt: Double,
+        attachments: [AXChatAttachment] = []
+    ) {
+        appendMessage(
+            ctx: ctx,
+            role: "user",
+            text: text,
+            createdAt: createdAt,
+            attachments: attachments
+        )
     }
 
     static func appendAssistantMessage(ctx: AXProjectContext, text: String, createdAt: Double) {
@@ -93,7 +132,13 @@ enum AXRecentContextStore {
         }
     }
 
-    private static func appendMessage(ctx: AXProjectContext, role: String, text: String, createdAt: Double) {
+    private static func appendMessage(
+        ctx: AXProjectContext,
+        role: String,
+        text: String,
+        createdAt: Double,
+        attachments: [AXChatAttachment] = []
+    ) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return }
 
@@ -104,13 +149,21 @@ enum AXRecentContextStore {
             // Avoid duplicating exact consecutive messages.
             if let last = cur.messages.last,
                last.role == role,
-               last.content.trimmingCharacters(in: .whitespacesAndNewlines) == cleaned {
+               last.content.trimmingCharacters(in: .whitespacesAndNewlines) == cleaned,
+               last.attachments == attachments {
                 cur.updatedAt = Date().timeIntervalSince1970
                 saveUnlocked(cur, for: ctx)
                 return
             }
 
-            cur.messages.append(AXRecentContextMessage(role: role, content: cleaned, createdAt: createdAt))
+            cur.messages.append(
+                AXRecentContextMessage(
+                    role: role,
+                    content: cleaned,
+                    createdAt: createdAt,
+                    attachments: attachments
+                )
+            )
             if cur.messages.count > maxMessages {
                 cur.messages = Array(cur.messages.suffix(maxMessages))
             }
@@ -184,6 +237,10 @@ enum AXRecentContextStore {
         for m in recent.messages {
             let ts = df.string(from: Date(timeIntervalSince1970: m.createdAt))
             out.append("- \(ts) \(roleLabel(m.role))：\(m.content)")
+            if !m.attachments.isEmpty {
+                let attachments = m.attachments.map(\.displayPath).joined(separator: ", ")
+                out.append("  attachments: \(attachments)")
+            }
         }
         return out.joined(separator: "\n")
     }
@@ -193,14 +250,27 @@ enum AXRecentContextStore {
         guard let turns = tailTurns(url: ctx.rawLogURL, maxTurns: maxTurns), !turns.isEmpty else { return [] }
 
         var out: [AXRecentContextMessage] = []
-        for (ts, u, a) in turns.sorted(by: { $0.0 < $1.0 }) {
+        for (ts, u, a, attachments) in turns.sorted(by: { $0.0 < $1.0 }) {
             let ut = u.trimmingCharacters(in: .whitespacesAndNewlines)
             if !ut.isEmpty {
-                out.append(AXRecentContextMessage(role: "user", content: truncateInline(ut, max: maxCharsPerMessage), createdAt: ts))
+                out.append(
+                    AXRecentContextMessage(
+                        role: "user",
+                        content: truncateInline(ut, max: maxCharsPerMessage),
+                        createdAt: ts,
+                        attachments: attachments
+                    )
+                )
             }
             let at = a.trimmingCharacters(in: .whitespacesAndNewlines)
             if !at.isEmpty {
-                out.append(AXRecentContextMessage(role: "assistant", content: truncateInline(at, max: maxCharsPerMessage), createdAt: ts))
+                out.append(
+                    AXRecentContextMessage(
+                        role: "assistant",
+                        content: truncateInline(at, max: maxCharsPerMessage),
+                        createdAt: ts
+                    )
+                )
             }
         }
         if out.count > maxMessages {
@@ -209,7 +279,7 @@ enum AXRecentContextStore {
         return out
     }
 
-    private static func tailTurns(url: URL, maxTurns: Int) -> [(Double, String, String)]? {
+    private static func tailTurns(url: URL, maxTurns: Int) -> [(Double, String, String, [AXChatAttachment])]? {
         let fm = FileManager.default
         guard let attrs = try? fm.attributesOfItem(atPath: url.path),
               let sizeNum = attrs[.size] as? NSNumber else { return nil }
@@ -217,7 +287,7 @@ enum AXRecentContextStore {
         if fileSize <= 0 { return [] }
 
         var bytesToRead: Int64 = min(fileSize, 256 * 1024)
-        var turns: [(Double, String, String)] = []
+        var turns: [(Double, String, String, [AXChatAttachment])] = []
 
         while true {
             let offset = max(Int64(0), fileSize - bytesToRead)
@@ -251,8 +321,11 @@ enum AXRecentContextStore {
         }
     }
 
-    private static func extractTurns(from jsonl: String, maxTurns: Int) -> [(Double, String, String)] {
-        var found: [(Double, String, String)] = []
+    private static func extractTurns(
+        from jsonl: String,
+        maxTurns: Int
+    ) -> [(Double, String, String, [AXChatAttachment])] {
+        var found: [(Double, String, String, [AXChatAttachment])] = []
         for line in jsonl.split(separator: "\n", omittingEmptySubsequences: true).reversed() {
             if found.count >= maxTurns { break }
             guard let ld = line.data(using: .utf8) else { continue }
@@ -261,10 +334,19 @@ enum AXRecentContextStore {
             let ts = (obj["created_at"] as? Double) ?? 0
             let u = (obj["user"] as? String) ?? ""
             let a = (obj["assistant"] as? String) ?? ""
-            found.append((ts, u, a))
+            found.append((ts, u, a, decodeAttachments(from: obj["attachments"])))
         }
         // We walked backwards; restore chronological order here.
         return found.sorted(by: { $0.0 < $1.0 })
+    }
+
+    private static func decodeAttachments(from raw: Any?) -> [AXChatAttachment] {
+        guard let raw,
+              JSONSerialization.isValidJSONObject(raw),
+              let data = try? JSONSerialization.data(withJSONObject: raw) else {
+            return []
+        }
+        return (try? JSONDecoder().decode([AXChatAttachment].self, from: data)) ?? []
     }
 
     private static func truncateInline(_ s: String, max: Int) -> String {

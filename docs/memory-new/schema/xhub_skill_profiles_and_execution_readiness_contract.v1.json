@@ -1,0 +1,500 @@
+{
+  "schema_version": "xhub.skill_profiles_and_execution_readiness_contract.v1",
+  "contract_version": "2026-03-28",
+  "contract_id": "HUB-XT-SUPERVISOR-SKILL-PROFILES-V1",
+  "owners": [
+    "Hub Runtime",
+    "XT-L2",
+    "Supervisor",
+    "Security",
+    "Product"
+  ],
+  "execution_chain": [
+    "discover",
+    "install_or_pin",
+    "resolve",
+    "derive_profile",
+    "intersect_project_ceiling",
+    "compute_readiness",
+    "grant_or_approval",
+    "execute",
+    "audit",
+    "callback"
+  ],
+  "risk_order": [
+    "low",
+    "medium",
+    "high",
+    "critical"
+  ],
+  "grant_floor_order": [
+    "none",
+    "readonly",
+    "privileged",
+    "critical"
+  ],
+  "approval_floor_order": [
+    "none",
+    "local_approval",
+    "hub_grant",
+    "hub_grant_plus_local_approval",
+    "owner_confirmation"
+  ],
+  "runtime_surface_families": [
+    "xt_builtin",
+    "project_local_fs",
+    "project_local_runtime",
+    "hub_bridge_network",
+    "managed_browser_runtime",
+    "trusted_device_runtime",
+    "connector_runtime",
+    "supervisor_runtime"
+  ],
+  "execution_readiness_order": [
+    "revoked",
+    "quarantined",
+    "unsupported",
+    "not_installed",
+    "policy_clamped",
+    "runtime_unavailable",
+    "hub_disconnected",
+    "grant_required",
+    "local_approval_required",
+    "degraded",
+    "ready"
+  ],
+  "capability_families": [
+    {
+      "family_id": "skills.discover",
+      "risk_floor": "low",
+      "grant_floor": "none",
+      "approval_floor": "none",
+      "runtime_surface_families": [
+        "xt_builtin",
+        "hub_bridge_network"
+      ]
+    },
+    {
+      "family_id": "skills.manage",
+      "risk_floor": "medium",
+      "grant_floor": "none",
+      "approval_floor": "local_approval",
+      "runtime_surface_families": [
+        "xt_builtin",
+        "hub_bridge_network"
+      ]
+    },
+    {
+      "family_id": "repo.read",
+      "risk_floor": "low",
+      "grant_floor": "none",
+      "approval_floor": "none",
+      "runtime_surface_families": [
+        "xt_builtin",
+        "project_local_fs"
+      ]
+    },
+    {
+      "family_id": "repo.mutate",
+      "risk_floor": "high",
+      "grant_floor": "none",
+      "approval_floor": "local_approval",
+      "runtime_surface_families": [
+        "xt_builtin",
+        "project_local_fs"
+      ]
+    },
+    {
+      "family_id": "repo.verify",
+      "risk_floor": "high",
+      "grant_floor": "none",
+      "approval_floor": "local_approval",
+      "runtime_surface_families": [
+        "xt_builtin",
+        "project_local_runtime"
+      ]
+    },
+    {
+      "family_id": "repo.delivery",
+      "risk_floor": "high",
+      "grant_floor": "privileged",
+      "approval_floor": "hub_grant_plus_local_approval",
+      "runtime_surface_families": [
+        "xt_builtin",
+        "project_local_runtime",
+        "hub_bridge_network"
+      ]
+    },
+    {
+      "family_id": "memory.inspect",
+      "risk_floor": "low",
+      "grant_floor": "none",
+      "approval_floor": "none",
+      "runtime_surface_families": [
+        "xt_builtin",
+        "supervisor_runtime"
+      ]
+    },
+    {
+      "family_id": "web.live",
+      "risk_floor": "high",
+      "grant_floor": "privileged",
+      "approval_floor": "none",
+      "runtime_surface_families": [
+        "hub_bridge_network",
+        "managed_browser_runtime"
+      ]
+    },
+    {
+      "family_id": "browser.observe",
+      "risk_floor": "high",
+      "grant_floor": "privileged",
+      "approval_floor": "none",
+      "runtime_surface_families": [
+        "managed_browser_runtime"
+      ]
+    },
+    {
+      "family_id": "browser.interact",
+      "risk_floor": "high",
+      "grant_floor": "privileged",
+      "approval_floor": "local_approval",
+      "runtime_surface_families": [
+        "managed_browser_runtime"
+      ]
+    },
+    {
+      "family_id": "browser.secret_fill",
+      "risk_floor": "critical",
+      "grant_floor": "privileged",
+      "approval_floor": "owner_confirmation",
+      "runtime_surface_families": [
+        "managed_browser_runtime"
+      ]
+    },
+    {
+      "family_id": "device.observe",
+      "risk_floor": "high",
+      "grant_floor": "none",
+      "approval_floor": "local_approval",
+      "runtime_surface_families": [
+        "trusted_device_runtime"
+      ]
+    },
+    {
+      "family_id": "device.act",
+      "risk_floor": "critical",
+      "grant_floor": "none",
+      "approval_floor": "owner_confirmation",
+      "runtime_surface_families": [
+        "trusted_device_runtime"
+      ]
+    },
+    {
+      "family_id": "connector.deliver",
+      "risk_floor": "critical",
+      "grant_floor": "privileged",
+      "approval_floor": "hub_grant_plus_local_approval",
+      "runtime_surface_families": [
+        "connector_runtime"
+      ]
+    },
+    {
+      "family_id": "voice.playback",
+      "risk_floor": "low",
+      "grant_floor": "none",
+      "approval_floor": "none",
+      "runtime_surface_families": [
+        "xt_builtin",
+        "supervisor_runtime"
+      ]
+    },
+    {
+      "family_id": "supervisor.orchestrate",
+      "risk_floor": "medium",
+      "grant_floor": "none",
+      "approval_floor": "none",
+      "runtime_surface_families": [
+        "supervisor_runtime"
+      ]
+    }
+  ],
+  "capability_profiles": [
+    {
+      "profile_id": "observe_only",
+      "families": [
+        "skills.discover",
+        "repo.read",
+        "memory.inspect",
+        "voice.playback"
+      ]
+    },
+    {
+      "profile_id": "skill_management",
+      "families": [
+        "skills.discover",
+        "skills.manage"
+      ]
+    },
+    {
+      "profile_id": "coding_execute",
+      "families": [
+        "skills.discover",
+        "repo.read",
+        "memory.inspect",
+        "voice.playback",
+        "repo.mutate",
+        "repo.verify"
+      ]
+    },
+    {
+      "profile_id": "browser_research",
+      "families": [
+        "skills.discover",
+        "repo.read",
+        "memory.inspect",
+        "voice.playback",
+        "web.live",
+        "browser.observe"
+      ]
+    },
+    {
+      "profile_id": "browser_operator",
+      "families": [
+        "skills.discover",
+        "repo.read",
+        "memory.inspect",
+        "voice.playback",
+        "web.live",
+        "browser.observe",
+        "browser.interact"
+      ]
+    },
+    {
+      "profile_id": "browser_operator_with_secrets",
+      "families": [
+        "skills.discover",
+        "repo.read",
+        "memory.inspect",
+        "voice.playback",
+        "web.live",
+        "browser.observe",
+        "browser.interact",
+        "browser.secret_fill"
+      ]
+    },
+    {
+      "profile_id": "delivery",
+      "families": [
+        "skills.discover",
+        "repo.read",
+        "memory.inspect",
+        "voice.playback",
+        "repo.mutate",
+        "repo.verify",
+        "repo.delivery",
+        "connector.deliver"
+      ]
+    },
+    {
+      "profile_id": "device_governed",
+      "families": [
+        "skills.discover",
+        "repo.read",
+        "memory.inspect",
+        "voice.playback",
+        "web.live",
+        "browser.observe",
+        "browser.interact",
+        "device.observe",
+        "device.act"
+      ]
+    },
+    {
+      "profile_id": "supervisor_full",
+      "families": [
+        "skills.discover",
+        "skills.manage",
+        "repo.read",
+        "repo.mutate",
+        "repo.verify",
+        "repo.delivery",
+        "memory.inspect",
+        "web.live",
+        "browser.observe",
+        "browser.interact",
+        "device.observe",
+        "device.act",
+        "connector.deliver",
+        "voice.playback",
+        "supervisor.orchestrate"
+      ]
+    }
+  ],
+  "legacy_alias_map": {
+    "tool_profile.minimal": [
+      "observe_only"
+    ],
+    "tool_profile.coding": [
+      "coding_execute"
+    ],
+    "tool_profile.full": [
+      "coding_execute",
+      "browser_research",
+      "delivery"
+    ]
+  },
+  "execution_tier_max_profile_ceiling": {
+    "a0Observe": [
+      "observe_only"
+    ],
+    "a1Plan": [
+      "observe_only",
+      "skill_management"
+    ],
+    "a2RepoAuto": [
+      "observe_only",
+      "skill_management",
+      "coding_execute"
+    ],
+    "a3DeliverAuto": [
+      "observe_only",
+      "skill_management",
+      "coding_execute",
+      "browser_research",
+      "delivery"
+    ],
+    "a4OpenClaw": [
+      "observe_only",
+      "skill_management",
+      "coding_execute",
+      "browser_operator",
+      "delivery",
+      "device_governed",
+      "supervisor_full"
+    ]
+  },
+  "intent_families": [
+    "skills.discover",
+    "skills.manage",
+    "repo.read",
+    "repo.modify",
+    "repo.verify",
+    "repo.deliver",
+    "web.search_live",
+    "web.fetch_live",
+    "browser.observe",
+    "browser.interact",
+    "browser.secret_fill",
+    "device.observe",
+    "device.act",
+    "memory.inspect",
+    "voice.playback",
+    "supervisor.orchestrate"
+  ],
+  "unblock_actions": [
+    "open_project_settings",
+    "open_skill_governance_surface",
+    "install_baseline",
+    "pin_package_project",
+    "pin_package_global",
+    "request_hub_grant",
+    "request_local_approval",
+    "open_trusted_automation_doctor",
+    "reconnect_hub",
+    "repair_official_channel",
+    "review_import",
+    "enable_import",
+    "refresh_resolved_cache",
+    "retry_dispatch"
+  ],
+  "objects": {
+    "xt.project_effective_skill_profile.v1": {
+      "required_fields": [
+        "schema_version",
+        "project_id",
+        "source",
+        "execution_tier",
+        "runtime_surface_mode",
+        "hub_override_mode",
+        "legacy_tool_profile",
+        "discoverable_profiles",
+        "installable_profiles",
+        "requestable_profiles",
+        "runnable_now_profiles",
+        "grant_required_profiles",
+        "approval_required_profiles",
+        "blocked_profiles",
+        "ceiling_capability_families",
+        "runnable_capability_families",
+        "local_auto_approve_enabled",
+        "trusted_automation_ready",
+        "profile_epoch",
+        "trust_root_set_hash",
+        "revocation_epoch",
+        "official_channel_snapshot_id",
+        "runtime_surface_hash",
+        "audit_ref"
+      ]
+    },
+    "xhub.skill_execution_readiness.v1": {
+      "required_fields": [
+        "schema_version",
+        "project_id",
+        "skill_id",
+        "package_sha256",
+        "publisher_id",
+        "policy_scope",
+        "intent_families",
+        "capability_families",
+        "capability_profiles",
+        "discoverability_state",
+        "installability_state",
+        "pin_state",
+        "resolution_state",
+        "execution_readiness",
+        "runnable_now",
+        "deny_code",
+        "reason_code",
+        "grant_floor",
+        "approval_floor",
+        "required_grant_capabilities",
+        "required_runtime_surfaces",
+        "state_label",
+        "install_hint",
+        "unblock_actions",
+        "audit_ref"
+      ]
+    },
+    "xt.skill_profile_delta_approval.v1": {
+      "required_fields": [
+        "schema_version",
+        "request_id",
+        "project_id",
+        "requested_skill_id",
+        "effective_skill_id",
+        "tool_name",
+        "current_runnable_profiles",
+        "requested_profiles",
+        "delta_profiles",
+        "current_runnable_capability_families",
+        "requested_capability_families",
+        "delta_capability_families",
+        "grant_floor",
+        "approval_floor",
+        "requested_ttl_sec",
+        "reason",
+        "summary",
+        "disposition",
+        "audit_ref"
+      ],
+      "disposition_order": [
+        "pending",
+        "approved",
+        "denied",
+        "expired",
+        "executed"
+      ]
+    }
+  }
+}

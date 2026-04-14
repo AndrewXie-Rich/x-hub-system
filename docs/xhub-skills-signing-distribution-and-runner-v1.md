@@ -1,7 +1,7 @@
 # X-Hub Skills: Signing, Distribution, Pinning & Runner v1（可执行规范 / Draft）
 
 - Status: Draft（用于直接落地；后续按版本迭代）
-- Updated: 2026-03-12
+- Updated: 2026-03-23
 - Applies to: X-Hub（Skill Store + Policy + Audit）+（未来）X-Terminal（Runner / UI）
 
 边界冻结参考：`docs/xhub-skills-placement-and-execution-boundary-v1.md`
@@ -11,6 +11,11 @@
 > - skills 不成为“攻破 Hub 的入口”（Hub Core 不执行第三方代码）
 > - skills 的高风险能力必须走 Hub grants/connectors（可审计、可冻结）
 > - skills 可版本锁定、可回滚、可撤销（revocation）
+
+补充边界：
+- 本规范面向普通可执行 skill packages。
+- `Memory-Core Skill` 虽可保留产品层命名，但实现边界上属于 Hub 内建 governed rule asset，走独立规则资产版本链，不进入普通 package import / client pin / runner execution 语义。
+- 普通 skill package 即使参与 memory 相关工作流，也不能替代 `memory_model_preferences -> Scheduler -> Worker -> Writer + Gate` 这条 memory 控制面，也不获得直接 durable 写入权限。
 
 ---
 
@@ -26,6 +31,10 @@
    - 签名（publisher 签名，Hub/Client 双重验证）
    - pinning（默认锁定到 hash/版本）
 5) `X-Terminal` 可以缓存 resolved skill snapshot 用于离线连续性，但缓存不是新的 authority，不得替代 Hub 的 trust/pin/revoke 主权。
+6) 官方 publisher 私钥绝不下发到 `X-Terminal`、官网同步客户端或普通用户 Hub；官网同步面只允许公开 `signed dist + trust root + revocation`。
+7) 普通 client-visible pin scope 固定为 `global | project`；`memory_core` 即使在内部兼容快照中存在，也只是保留系统层状态，不接受普通 client pin。
+
+执行细化包：`docs/memory-new/xhub-official-agent-skills-signing-sync-and-hub-signer-work-orders-v1.md`
 
 另见（Discovery/Import/skills ecosystem 兼容讨论）：`docs/xhub-skills-discovery-and-import-v1.md`
 
@@ -180,6 +189,7 @@ Hub 维护一份 `trusted_publishers.json`（可在 UI 管理）：
 默认策略：
 - 未签名 skill：仅允许本地开发模式（developer_mode=true）安装；生产默认拒绝
 - 未在 trusted_publishers 的签名：默认拒绝（可由用户在 Hub UI 手动信任）
+- 官网、公开 catalog、XT 本地缓存都只允许同步公钥与已签名发布物；不得提供任何“拉取私钥”入口
 
 ### 3.4 丢失正式私钥时的开发策略
 - 不要直接重用 `xhub.official` 并替换公钥。现有实现会对同一 `publisher_id` 执行 `publisher_key_mismatch` fail-close。
@@ -232,25 +242,33 @@ baseline smoke 会在一个临时 runtime 目录里跑完整链路：
   revoked.json
 ```
 
+说明：
+
+- 上述 `skills_store` 布局服务于普通可执行 skills。
+- `Memory-Core` 规则资产的版本对象/active state/审计链独立于普通 `<hub_base>/skills_store/` package 分发语义，见 memory control-plane 冻结文档。
+
 ### 4.3 Pinning（默认必须）
 `pins.json`（示例）
 ```json
 {
-  "schema_version": "xhub.skill_pins.v1",
-  "pins": [
+  "schema_version": "skills_pins.v1",
+  "updated_at_ms": 0,
+  "memory_core_pins": [],
+  "global_pins": [
     {
       "skill_id": "email.reply.auto",
-      "pinned_sha256": "<sha256>",
-      "pinned_version": "1.0.0",
+      "package_sha256": "<sha256>",
       "updated_at_ms": 0,
-      "note": "default pin"
+      "note": "default global pin"
     }
-  ]
+  ],
+  "project_pins": []
 }
 ```
 
 规则：
-- 运行时解析 skill 时，必须命中 pin（除非 developer_mode）
+- 运行时解析普通可执行 skill 时，必须命中 `global/project` pin（除非 developer_mode）
+- `memory_core_pins` 只作为保留系统层兼容快照存在，不等于普通 client 可写 scope
 - 更新 skill 版本 = 更新 pin（必须写 audit）
 - 支持回滚：pin 回指到旧 sha256
 
@@ -270,23 +288,37 @@ baseline smoke 会在一个临时 runtime 目录里跑完整链路：
 
 ---
 
-## 5) Hub API（协议建议）
+## 5) Hub API（v1 实际 surface）
 
 > Update 2026-02-15：Hub proto 已新增 `service HubSkills`，并完成 v1 最小闭环实现（Search/Upload/Pin/Resolved/Manifest/Download）。
 
-建议新增 gRPC：`service HubSkills`
-- `ListSkills`（返回 skill_id + pinned_sha256 + version + description）
-- `GetSkillManifest(sha256)`
-- `DownloadSkillPackage(sha256)`（流式 bytes）
-- `SetSkillPin(skill_id, sha256, approver_id, note)`（admin）
-- `SetTrustedPublisher(...)`（admin）
-- `RevokeSkill(...)`（admin）
+当前 v1 主要接口：
+- `SearchSkills(query, source_filter?, limit?)`
+  - 返回可搜索 skill 元数据，不等于已 pin 生效态
+- `UploadSkillPackage(package_bytes, source_id, manifest_json, metadata?)`
+  - 返回 `package_sha256` 与 canonical skill 元数据
+- `SetSkillPin(scope, user_id, project_id?, skill_id, package_sha256, note?)`
+  - client-visible `scope` 固定为 `global|project`
+- `ListResolvedSkills(user_id, project_id?)`
+  - 返回普通可执行 skills 的已解析结果
+- `GetSkillManifest(package_sha256)`
+- `DownloadSkillPackage(package_sha256)`（流式 bytes）
+
+保留或后续治理面：
+- `SetTrustedPublisher(...)`
+- `RevokeSkill(...)`
 
 所有管理操作必须写 audit：
 - `skills.pin.updated`
 - `skills.publisher.trusted`
 - `skills.revoked`
 - `skills.package.uploaded`
+
+补充说明：
+
+- `HubSkills.SetSkillPin` 的 client-visible `scope` 固定为 `global|project`。
+- client 侧若传入 `memory_core`，必须返回 `deny(unsupported_scope)`，避免把保留系统层误当普通 package pin。
+- `ListResolvedSkills` 可附带保留系统层诊断信息，但普通 runner 的执行输入仍只面向可执行 skills resolved set。
 
 ---
 

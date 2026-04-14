@@ -98,4 +98,42 @@ struct XTDeepLinkActionExecutorTests {
         #expect(session.draft.contains("授权类型：付费模型调用"))
         #expect(session.draft.contains("Need remote model access"))
     }
+
+    @Test
+    func supervisorProjectCreationBoardPlanRequestsBoardFocus() throws {
+        let appModel = AppModel()
+        let plan = XTDeepLinkActionPlanner.plan(
+            for: XTDeepLinkSupervisorRoute(
+                projectId: nil,
+                focusTarget: .projectCreationBoard,
+                requestId: nil,
+                grantRequestId: nil,
+                grantCapability: nil,
+                grantReason: nil
+            )
+        )
+        var openedIntent: XTSupervisorWindowOpenIntent?
+
+        XTDeepLinkActionExecutor.execute(
+            plan,
+            appModel: appModel
+        ) { intent in
+            openedIntent = intent
+        }
+
+        #expect(
+            openedIntent == XTSupervisorWindowOpenIntent(
+                reason: "deep_link_supervisor",
+                focusConversation: false,
+                startConversation: false
+            )
+        )
+        let focusRequest = try #require(appModel.supervisorFocusRequest)
+        #expect(focusRequest.projectId == nil)
+        #expect(
+            focusRequest.subject == .board(
+                anchorID: SupervisorFocusPresentation.projectCreationBoardAnchorID
+            )
+        )
+    }
 }

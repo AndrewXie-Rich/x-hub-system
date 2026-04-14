@@ -26,6 +26,8 @@ X-Hub starts from the opposite end:
 - one audit surface for side effects, routing, and safety-critical execution
 - one Supervisor-oriented orchestration path for work that is too large for a single chat loop
 
+That still does not make terminals or skill runtimes the memory authority: the user still chooses which AI executes memory jobs in X-Hub, `Memory-Core` remains the governed rule layer, and durable writes still terminate through `Writer + Gate`.
+
 The goal is not just to answer better. The goal is to make AI execution more governable, inspectable, and recoverable.
 
 ## Current Public Preview Status
@@ -39,6 +41,8 @@ What already exists in the repository and preview builds:
 - truthful configured-model vs actual-model visibility in X-Terminal
 - early Supervisor, project orchestration, and governed runtime surfaces
 - Hub-backed memory and X-Constitution foundations
+
+For memory specifically, keep the public boundary precise: the user still chooses which AI executes memory jobs in X-Hub, `Memory-Core` remains the governed rule layer, and durable writes still terminate through `Writer + Gate`.
 
 What is not finished yet:
 
@@ -127,5 +131,5 @@ Until then:
 - `CONTRIBUTING.md`
 - `docs/REPO_LAYOUT.md`
 - `docs/xhub-scenario-map-v1.md`
-- `docs/xhub-constitution-l0-injection-v1.md`
+- `docs/memory-new/xhub-constitution-l0-injection-v2.md`
 - `docs/xhub-constitution-policy-engine-checklist-v1.md`

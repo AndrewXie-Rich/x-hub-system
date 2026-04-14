@@ -134,5 +134,11 @@
   "publisher": {
     "publisher_id": "xhub.official"
   },
-  "install_hint": "Install through the governed Agent Baseline flow before browser-heavy tasks."
+  "install_hint": "Install through the governed Agent Baseline flow before browser-heavy tasks.",
+  "quality_evidence_status": {
+    "replay": "missing",
+    "fuzz": "missing",
+    "doctor": "passed",
+    "smoke": "passed"
+  }
 }

@@ -117,7 +117,7 @@ Hub 仍然不负责（必须讲清楚边界）
 建议的 capability keys（与 Mode 映射）
 - Mode 1（AI-only）：允许 `models|events|ai.generate.*`（以及可选 `web.fetch`）；**不包含** `connectors.*`；Generic 默认也不包含 `memory`
 - Mode 2（AI+Connectors）：在 Mode 1 基础上增加 `connectors.email`（后续可扩展 `connectors.calendar` / `connectors.travel` …）
-- X-Terminal：在 Mode 2 基础上增加 `memory`（以及未来 `skills` 相关 capability）
+- X-Terminal：在 Mode 2 基础上增加 `memory`（Hub memory consumption surface，而不是 memory authority；以及未来 `skills` 相关 capability）
 
 DB 方案（v2，可选）
 - `client_policies`
@@ -132,6 +132,9 @@ DB 方案（v2，可选）
 - `allowed_connectors`：JSON array（默认：`["email"]` 起步）
 - `audit_level`：`metadata_only|include_bodies_ephemeral|include_bodies_persisted`（默认：metadata_only）
 - `content_retention_ttl_sec`：默认 0 或很小（例如 3600，用于幂等/重放保护）
+
+这里的 `memory` / `memory_enabled` 只表示 client 是否允许消费 Hub memory surface（如 retrieval、context injection、writeback candidate transport），不意味着 client 获得 memory control-plane authority。
+真正执行 memory jobs 的 AI 仍由用户在 X-Hub 中通过 `memory_model_preferences` 选择，`Memory-Core` 仍是 governed rule layer，而 durable writes 仍只经 `Writer + Gate`。
 
 ### 3.2 Policy 设定入口
 需要同时提供：
@@ -155,7 +158,7 @@ Generic Terminal（Mode 1 可选）
 
 X-Terminal（深度客户端）
 - `mode=ai_plus_connectors`
-- `memory_enabled=true`（允许使用 Hub Memory；并允许未来 Hub Skills）
+- `memory_enabled=true`（允许使用 Hub Memory consumption surface；并允许未来 Hub Skills）
 - capabilities（推荐）：在 Generic Full 基础上加 `memory`
 
 ---
@@ -374,6 +377,8 @@ Outbox Job（建议字段）
 - `memory_enabled=false`（不写 thread/turns/canonical）
 - `connectors_enabled=true`（所有外部动作走 Hub）
 - `audit_level=metadata_only`（内容不长期落库）
+
+即使未来某类 Generic client 开启 `memory_enabled=true`，它也仍然只是消费 Hub memory surface，而不是获得 memory authority；memory executor 选择继续留在 X-Hub，durable writes 继续只经 `Writer + Gate`。
 
 ---
 

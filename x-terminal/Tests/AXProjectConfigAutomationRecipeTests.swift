@@ -391,6 +391,31 @@ struct AXProjectConfigAutomationRecipeTests {
     }
 
     @Test
+    func recipeActionDecodeMaterializesStructuredVerificationContract() throws {
+        let json = """
+        {
+          "action_id": "write_readme",
+          "title": "Write README",
+          "tool": "write_file",
+          "requires_verification": false,
+          "verification_contract": {
+            "verify_commands": [" swift test --filter SmokeTests ", "swift test --filter SmokeTests"],
+            "retry_policy": "manual_retry_or_replan"
+          }
+        }
+        """
+
+        let action = try JSONDecoder().decode(XTAutomationRecipeAction.self, from: Data(json.utf8))
+        let contract = try #require(action.verificationContract)
+
+        #expect(action.actionID == "write_readme")
+        #expect(action.requiresVerification == true)
+        #expect(contract.verifyCommands == ["swift test --filter SmokeTests"])
+        #expect(contract.retryPolicy == "manual_retry_or_replan")
+        #expect(contract.holdPolicy == "block_run_and_emit_structured_blocker")
+    }
+
+    @Test
     func trustedAutomationStatusScopesPermissionReadinessToRecipeRequiredDeviceGroups() {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("xterminal-trusted-automation-scope-\(UUID().uuidString)", isDirectory: true)

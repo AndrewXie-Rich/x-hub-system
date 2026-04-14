@@ -1,0 +1,66 @@
+{
+  "schema_version": "xhub.skill_manifest.v1",
+  "skill_id": "local-transcribe",
+  "name": "Local Transcribe",
+  "version": "1.0.0",
+  "description": "Governed local speech-to-text wrapper over Hub local model execution for audio transcription tasks.",
+  "entrypoint": {
+    "runtime": "text",
+    "command": "cat",
+    "args": [
+      "SKILL.md"
+    ]
+  },
+  "capabilities_required": [
+    "ai.audio.local"
+  ],
+  "input_schema_ref": "schema://local-transcribe.input",
+  "output_schema_ref": "schema://local-transcribe.output",
+  "side_effect_class": "read_only",
+  "risk_level": "medium",
+  "requires_grant": false,
+  "timeout_ms": 45000,
+  "max_retries": 0,
+  "governed_dispatch": {
+    "tool": "run_local_task",
+    "fixed_args": {
+      "task_kind": "speech_to_text"
+    },
+    "passthrough_args": [
+      "model_id",
+      "preferred_model_id",
+      "audio_path",
+      "language",
+      "input",
+      "options",
+      "device_id",
+      "timeout_sec"
+    ],
+    "arg_aliases": {
+      "model_id": [
+        "model"
+      ],
+      "audio_path": [
+        "path",
+        "file"
+      ]
+    },
+    "required_any": [
+      [
+        "audio_path"
+      ]
+    ],
+    "exactly_one_of": []
+  },
+  "governed_dispatch_notes": [
+    "Routes through XT run_local_task with task_kind=speech_to_text.",
+    "If model_id/preferred_model_id is omitted, XT binds the best runnable Hub local speech-to-text model for this task kind."
+  ],
+  "network_policy": {
+    "direct_network_forbidden": true
+  },
+  "publisher": {
+    "publisher_id": "xhub.official"
+  },
+  "install_hint": "Publish and sign this wrapper into the official dist before recommending Hub pinning; until then treat it as source-present only."
+}

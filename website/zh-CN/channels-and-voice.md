@@ -23,6 +23,8 @@ Hub 持有的是：
 - 路由
 - 面向 Supervisor 的状态投影
 
+这也意味着通道和语音不会顺手变成 memory authority：它们可以消费受治理的 memory context，但不负责选择 memory executor，也不能直接写 durable memory truth；这条权力仍留在 Hub 控制平面，并通过 `Writer + Gate` 收口。
+
 ## 远程通道
 
 当前方向覆盖的是常见操作者通道，例如：

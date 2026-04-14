@@ -2,7 +2,7 @@
 
 - owner: XT-L2（Primary）/ Hub-L5 / XT-L1 / QA
 - status: planned
-- last_updated: 2026-03-10
+- last_updated: 2026-03-30
 - purpose: 针对 `external automation products` 公开能力暴露出的产品短板，补齐 X-Terminal 在“自动化产品面、事件驱动、主动解阻、操作台可见、一键启用、竞争性验证”上的最后一公里，使 X-Hub-System 不是只具备架构优势，而是具备可直接使用的自动化交付能力。
 - depends_on:
   - `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`
@@ -207,14 +207,20 @@
   3. 落地 run state machine：`queued/running/blocked/takeover/delivered/failed/downgraded`。
   4. 增加 trigger dedupe、replay guard、cooldown、manual cancel、retry-after。
   5. 与 Hub grants/connectors/audit 绑定，未授权则 fail-closed 或 downgrade。
+  6. 区分 automatic recovery 与 operator recover：
+     - heartbeat/restart 自动恢复必须遵守 checkpoint `retry_after`
+     - `retry_after` 未到期时只能 `hold(reason=retry_after_not_elapsed)`
+     - 人工 recover 才允许 override cooldown，并继续复用同一稳定 run identity
 - DoD:
   - 新 trigger 不需要用户再次解释工单结构即可开跑
   - run 状态可持续机读导出
   - re-entry/restart 不丢 run identity
+  - blocked run 在 pending backoff 时不会被 heartbeat 提前唤醒
 - 回归样例：
   - 同一 webhook 重放两次造成双执行 -> 失败
   - grant pending 时仍触发 side effect -> 失败
   - crash 重启后 run 丢失 `run_id` -> 失败
+  - heartbeat automatic recovery 越过 `retry_after` 直接恢复执行 -> 失败
 
 ### 5.4 `XT-W3-25-C` Directed Takeover Unblock Engine
 

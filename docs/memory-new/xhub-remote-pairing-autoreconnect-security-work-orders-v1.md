@@ -320,6 +320,7 @@
     - security checks
     - reason code
   - XT / Hub UI 都能触发 smoke，并显示最近一次结果。
+  - XT 侧若通过 `XTUnifiedDoctor` 暴露 reconnect state / reason code，source report 受 `docs/memory-new/schema/xt_unified_doctor_report_contract.v1.json` 约束，generic export 继续受 `docs/memory-new/schema/xhub_doctor_output_contract.v1.json` 约束。
 - 涉及路径：
   - `x-terminal/Sources/Hub/HubPairingCoordinator.swift`
   - `x-terminal/Sources/UI/HubSetupWizardView.swift`

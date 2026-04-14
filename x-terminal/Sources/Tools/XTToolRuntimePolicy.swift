@@ -46,6 +46,39 @@ private func xtRuntimeSurfacePolicyReason(_ reason: String) -> String {
     }
 }
 
+func xtPersistedGovernanceEvidenceFields(
+    from summary: [String: JSONValue],
+    tool: ToolName? = nil
+) -> [String: JSONValue] {
+    var fields = XTGovernanceTruthPresentation.snapshotFields(from: summary)
+    for key in [
+        "policy_source",
+        "policy_reason",
+        "runtime_surface_policy_reason",
+        "required_capability",
+        "governance_reason",
+        "blocked_summary",
+        "governance_truth",
+        "repair_action"
+    ] {
+        if let value = summary[key] {
+            fields[key] = value
+        }
+    }
+    for (key, value) in summary where key.hasPrefix("project_governance_runtime_")
+        || key == "project_governance_requires_a4_runtime_ready"
+        || key == "project_governance_missing_readiness" {
+        fields[key] = value
+    }
+    for (key, value) in XTGuardrailMessagePresentation.governanceEvidenceFields(
+        from: summary,
+        tool: tool
+    ) where fields[key] == nil {
+        fields[key] = value
+    }
+    return fields
+}
+
 func xtToolRuntimePolicyDecision(
     call: ToolCall,
     projectRoot: URL? = nil,
@@ -173,7 +206,7 @@ func xtToolRuntimePolicyDeniedSummary(
         "effective_surfaces": .array(runtimeSurface.allowedSurfaceLabels.map(JSONValue.string)),
         "updated_at_ms": .number(Double(config.runtimeSurfaceUpdatedAtMs)),
     ])
-    return [
+    var summary: [String: JSONValue] = [
         "tool": .string(call.tool.rawValue),
         "ok": .bool(false),
         "project_id": .string(AXProjectRegistryStore.projectId(forRoot: projectRoot)),
@@ -230,6 +263,16 @@ func xtToolRuntimePolicyDeniedSummary(
         "governance_compat_source": .string(governance.compatSource.rawValue),
         "governance_allowed_capabilities": .array(governance.capabilityBundle.allowedCapabilityLabels.map(JSONValue.string)),
     ]
+    for (key, value) in governance.debugSnapshot() {
+        summary[key] = value
+    }
+    for (key, value) in xtPersistedGovernanceEvidenceFields(
+        from: summary,
+        tool: call.tool
+    ) {
+        summary[key] = value
+    }
+    return summary
 }
 
 @available(*, deprecated, message: "Use xtToolRuntimePolicyDeniedSummary(call:projectRoot:config:decision:effectiveRuntimeSurface:)")
@@ -421,7 +464,7 @@ private func xtGovernanceCapabilityDenyDecision(
 
     return .deny(
         code: "governance_capability_denied",
-        detail: "project governance blocks \(call.tool.rawValue) under execution tier \(governance.effectiveBundle.executionTier.rawValue)",
+        detail: "project governance blocks \(call.tool.rawValue) under A-Tier \(governance.effectiveBundle.executionTier.rawValue)",
         policySource: "project_governance",
         policyReason: reason
     )

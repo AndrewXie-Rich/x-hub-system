@@ -53,15 +53,15 @@ Boundary reminder:
 - X-Terminal does not become the final grant authority
 - trust, grant, and policy decisions still terminate in `x-hub/`
 
-## Project Governance And Supervisor Review
+## A-Tier, S-Tier, And Heartbeat / Review
 
 Active implementation context:
-X-Terminal is also where per-project `Execution Tier`, `Supervisor Tier`, and `Heartbeat & Review` start to become visible as governed runtime behavior rather than one vague legacy single-governance slider.
+X-Terminal is also where per-project `A-Tier`, `S-Tier`, and `Heartbeat / Review` start to become visible as governed runtime behavior rather than one vague legacy single-governance slider.
 
 In the current design direction, that means:
 
-- project execution authority is being formalized as explicit tiers instead of collapsing everything into one terminal-local mode switch
-- the highest execution tier is still governed execution, not "remove Supervisor and hope for the best"
+- project execution authority is being formalized as explicit `A-Tier` controls instead of collapsing everything into one terminal-local mode switch
+- the highest `A-Tier` is still governed execution, not "remove Supervisor and hope for the best"
 - Supervisor review can operate at different depths such as pulse, strategic, and rescue review instead of one generic check-in
 - review output can be persisted as structured review notes and guidance injections rather than disappearing into chat-only commentary
 - corrective guidance can wait for a safe point, require acknowledgement, or escalate into replan / stop behavior depending on risk and confidence
@@ -122,9 +122,23 @@ bash scripts/run_xhub_doctor_from_source.command all --workspace-root /path/to/w
 
 When XT has recent coder usage for the active project, the exported generic doctor bundle includes a structured `project_context_summary` under `session_runtime_readiness`, alongside the original raw `detail_lines`. This makes the exported bundle explain which recent project dialogue window, context depth, and coverage/boundary signals were actually assembled for the project AI.
 
-The repo-level `scripts/ci/xhub_doctor_source_gate.sh` summary keeps `source_badge / status_line` for that project-context summary as well, and now also emits `durable_candidate_mirror_support` with `status / target / attempted / local_store_role`, so release evidence can reuse the XT explainability snapshot without dropping back to raw `detail_lines`.
+When XT is carrying Hub-provided prompt-assembly metadata for the latest governed coding turn, the XT-native `session_runtime_readiness` section now also carries a structured `hubMemoryPromptProjection`, and the normalized generic bundle mirrors it as `hub_memory_prompt_projection`. Treat this as Hub-first explainability only: it keeps `projection_source / canonical_item_count / working_set_turn_count / runtime_truth_item_count / runtime_truth_source_kinds` machine-readable, but it does not let XT infer prompt contents locally or bypass constitution / export / policy gates.
+
+When XT has remote Hub snapshot provenance to surface, the XT-native `session_runtime_readiness` section now also carries structured `projectRemoteSnapshotCacheProjection` and `supervisorRemoteSnapshotCacheProjection`, and the normalized generic bundle mirrors them as `project_remote_snapshot_cache_snapshot` and `supervisor_remote_snapshot_cache_snapshot`. Treat them as cache provenance only: they keep `source / freshness / cache_hit / scope / cached_at / age / ttl_remaining` machine-readable, but they do not claim XT cache became durable truth or that Hub-first routing was bypassed.
+
+When XT has role-aware Project AI memory policy truth to project, the XT-native `session_runtime_readiness` section now also carries first-class `projectMemoryPolicyProjection` and `projectMemoryAssemblyResolutionProjection`, and the normalized generic bundle mirrors them as `project_memory_policy` and `project_memory_assembly_resolution`. Treat them as explainability surfaces only: they keep configured/recommended/effective project dialogue/context depth, A-tier memory ceiling, and the final selected/excluded assembly objects machine-readable, but they do not override Hub grant, runtime readiness, policy, TTL, or kill-switch boundaries.
+
+When XT has heartbeat-governed review truth to project, the exported generic doctor bundle also includes a structured `heartbeat_governance_snapshot` under `session_runtime_readiness`. Read it as review explainability only: it keeps `latest_quality_band`, `open_anomaly_types`, the cadence triple, and `next_review_due` machine-readable, but it does not override normal chat memory, project memory routing, or policy truth.
+
+When XT can compute the current project's effective skill capability truth, the XT-native `skills_compatibility_readiness` section now also carries a structured `skillDoctorTruthProjection`, and the normalized generic bundle mirrors it as `skill_doctor_truth_snapshot`. Treat this as doctor/readiness explainability only: it keeps the `effectiveProfileSnapshot`, `ready / grant_required / local_approval_required / blocked` skill counts, and representative blocked-or-pending skills machine-readable, but it does not itself grant execution authority or bypass Supervisor preflight.
+
+The repo-level `scripts/ci/xhub_doctor_source_gate.sh` summary keeps `source_badge / status_line` for that project-context summary as well, and now also emits `heartbeat_governance_support` with `latest_quality_band / open_anomaly_types / review_pulse_effective_seconds / next_review_kind / next_review_due` plus `durable_candidate_mirror_support` with `status / target / attempted / local_store_role`, so release evidence can reuse the XT explainability snapshot without dropping back to raw `detail_lines`.
+
+When XT has role-aware Supervisor review-memory truth to project, the XT-native `session_runtime_readiness` section now also carries first-class `supervisorMemoryPolicyProjection` and `supervisorMemoryAssemblyResolutionProjection`, and the normalized generic bundle mirrors them as `supervisor_memory_policy` and `supervisor_memory_assembly_resolution`. Treat them as review explainability only: they keep configured/recommended/effective Recent Raw Context and Review Memory Depth, the S-tier review-memory ceiling, and the final selected/excluded assembly objects machine-readable, but they do not grant extra repo/browser/device authority and do not replace Hub policy or clamp surfaces.
 
 When XT has supervisor durable-candidate mirror evidence, the XT-native `session_runtime_readiness` section now also carries a structured `durableCandidateMirrorProjection`, and the normalized generic bundle mirrors it as `durable_candidate_mirror_snapshot`. Treat this as handoff evidence only: it tells you whether XT stayed `local_only`, actually `mirrored_to_hub`, or hit `hub_mirror_failed`, but it does not claim durable promotion or read-source cutover.
+
+When XT has local cache/fallback/edit-buffer provenance to surface, the XT-native `session_runtime_readiness` section now also carries a structured `localStoreWriteProjection`, and the normalized generic bundle mirrors it as `local_store_write_snapshot`. Treat this as XT-local provenance only: it tells you whether the current local state most recently came from `manual_edit_buffer_commit`, `after_turn_cache_refresh`, `derived_refresh`, and similar local write paths, but it does not claim XT local storage became the durable source of truth.
 
 When XT has model-route diagnostics to project, the exported generic doctor bundle also includes a structured `memory_route_truth_snapshot` under `model_route_readiness`. Read `projection_source` and `completeness` first: they tell you whether you are looking at full upstream route truth or an explicit XT partial projection with `unknown` placeholders. The structured snapshot is the primary machine-readable surface; raw `detail_lines` remain only as migration-friendly context.
 
@@ -136,11 +150,20 @@ Run the release gate:
 bash x-terminal/scripts/ci/xt_release_gate.sh
 ```
 
+`XT-G4 / Reliability` now requires three runtime smokes together: `--xt-route-smoke`, `--xt-grant-smoke`, and `--xt-supervisor-voice-smoke`. The voice smoke emits a machine-readable report at `.axcoder/reports/xt_supervisor_voice_smoke.runtime.json`, so release evidence can confirm the phone-like Supervisor path still covers wake, grant challenge, Hub brief playback, and talk-loop resume.
+
 Run the stricter gate mode:
 
 ```bash
 cd x-terminal
 XT_GATE_MODE=strict bash scripts/ci/xt_release_gate.sh
+```
+
+Run only the phone-like Supervisor voice smoke:
+
+```bash
+cd x-terminal
+swift run XTerminal --xt-supervisor-voice-smoke --project-root "$(pwd)" --out-json .axcoder/reports/xt_supervisor_voice_smoke.runtime.json
 ```
 
 ## Operational Boundaries

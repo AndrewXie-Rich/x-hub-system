@@ -1,7 +1,7 @@
 # X-Hub Memory v3 M3 执行工单（场景闭环 + 并行自动化）
 
 - version: v1.1
-- updatedAt: 2026-02-28
+- updatedAt: 2026-03-22
 - owner: Hub Memory / Agent Runtime / Security / Supervisor 联合推进
 - status: active
 - parent:
@@ -22,6 +22,18 @@
 - 所有接口先在 `Gate-M3-0` 冻结，再进入实现；未冻结前不允许并行改协议（`M3-W1-03` 冻结记录见 `docs/memory-new/xhub-memory-v3-m3-lineage-contract-freeze-v1.md`）。
 - 所有高风险链路默认 `fail-closed`；任何门禁异常一律 `deny` 或 `downgrade_to_local`。
 - 协作 AI 并行执行前，先读 `docs/memory-new/xhub-memory-v3-m3-lineage-collab-handoff-v1.md`（执行手册）、`docs/memory-new/xhub-memory-v3-m3-acceleration-split-plan-v1.md`（泳道拆分）以及 `docs/memory-new/xhub-lane-command-board-v2.md`（单文件分区协作与实时重规划规则）。
+
+## 0.1) Control-Plane Boundary
+
+M3 当前只是场景闭环 / grant chain / reliability / XT-Ready 的执行工单池，不是新的 memory chooser，也不是 `Memory-Core` 的替代 runtime。
+
+固定边界：
+
+- 用户继续在 X-Hub 里决定哪个 AI 执行 memory jobs；M3 不新增第二套 memory model selector。
+- `Memory-Core` 继续只作为 governed rule asset 约束提取、晋升、远程外发与 deep-read discipline，不直接替 M3 agent / capsule / gateway 选择模型。
+- M3 若消费 `assistant_personal / project_code / route diagnostics / deep-read grant`，都必须把它们当成上游 control-plane truth，而不是在 agent runtime 里本地重解。
+- agent capsule、grant chain、dispatch context、XT-Ready evidence 可以携带 memory route / mode / grant truth，但不能把 local fallback、agent provider、tool runtime provider 误写成 memory AI chooser。
+- 如果问题是多 agent 场景下的权限链、dispatch、XT-Ready 联测或恢复性，优先看 M3；如果问题是 memory executor 选型或 durable 写入错误，优先看 `memory_model_preferences`、Scheduler/Worker 或 `Writer + Gate`。
 
 ## 1) M3 质量门禁（Gate-M3）
 
@@ -52,6 +64,107 @@
 5. `M3-W2-03` Heartbeat-aware 预热调度（并发项目效率优化）
 6. `M3-W3-05` 风险排序闭环调参（效率/安全持续收敛）
 7. `M3-W3-06` Supervisor 语音授权语法（双通道高风险授权）
+
+## 2.1) 开源参考借鉴 Wave-1 在 M3 下的承接范围
+
+来自 `docs/memory-new/xhub-memory-open-source-reference-wave1-execution-pack-v1.md` 的 `MRA-A3 bounded expansion grant`，以及 `MRA-A6` 中与 `attachment/blob body read` 统一 grant 绑定直接相关的部分，在 M3 下的正式承接范围如下：
+
+- 主要挂在 `M3-W1-02` 统一 grant chain，并与 `XT-HM-11` 的 PD consumption 路径、`SMS-W6` 的 serving governor 对齐。
+- 目标是把 deep evidence read 的 grant envelope、deny discipline、revoke / telemetry，以及 attachment/blob body read binding 一并收成 child backlog 与 acceptance hardening。
+- 固定边界：
+  - 不新增新的 recall API 或平行 permission system
+  - 不回改 `search_index -> timeline -> get_details` 已冻结外部 contract
+  - 不把 `selected chunks / raw evidence / blob body` 升级成默认 prompt auto-injection
+
+### 2.1.1 `W1-A3-S1` 当前已冻结的 expansion grant envelope
+
+当前 M3 承认并沿用以下 bounded expansion grant 最小字段：
+
+- `scope`
+- `granted_layers`
+- `max_tokens`
+- `expires_at`
+- `request_id`
+
+建议附带但不强制的扩展字段：
+
+- `grant_ref`
+- `caller_surface`
+- `delegation_depth`
+
+M3 下的固定要求：
+
+- 所有 deep expand request 都必须落到同一 envelope 语义。
+- 非法 `layer / scope / TTL` 组合默认 fail-closed。
+- delegated expansion 在本轮不允许递归申请新的 expansion grant。
+
+### 2.1.2 `W1-A3-S2` 当前已冻结的 deep-read enforcement
+
+当前 M3 还应承认并复用以下最小 deep-read 边界：
+
+- `search_index / timeline` 继续承担 `summary / refs / outline` 发现职责。
+- `get_details` 或等价 body / selected-chunk 读取路径，必须显式区分：
+  - `metadata / refs / sanitized summary`
+  - `body / selected chunks / deep evidence`
+- 后者必须带有效 bounded expansion grant；无 grant、grant 过期、scope 不匹配时一律 fail-closed。
+
+当前最小 deny_code 词典：
+
+- `memory_deep_read_grant_required`
+- `memory_deep_read_grant_expired`
+- `memory_deep_read_scope_mismatch`
+
+M3 下的固定要求：
+
+- metadata / refs 列举与 body / selected-chunk 读取必须保持分离。
+- 不允许出现“先读到了 raw evidence，再回头补 grant”的逆序行为。
+- deep-read deny_code 在 Hub / XT / explain / audit 四个面必须保持 machine-readable 一致。
+
+### 2.1.3 `W1-A3-S3` 当前已冻结的 revoke / telemetry 承接
+
+当前 M3 需要把 bounded expansion grant 从“能发”推进到“能回放、能撤销、能统计”。
+
+最小 telemetry 字段：
+
+- `expanded_ref_count`
+- `source_tokens`
+- `truncated`
+- `revoke_reason`
+
+M3 下的固定要求：
+
+- `timeout / cancel / explicit revoke` 都必须有 machine-readable 审计记录。
+- grant revoke 后的 replay 请求必须继续 fail-closed。
+- usage 统计必须能够进入 `metrics / weekly report / require-real evidence`。
+
+### 2.1.4 `W1-A6-S3` 当前已冻结的 blob body grant binding
+
+当前 M3 还应承认并复用以下 attachment/blob body read 最小绑定字段：
+
+- `grant_id`
+- `scope`
+- `audit_ref`
+- `body_read_reason`
+
+建议附带但不强制的扩展字段：
+
+- `attachment_ref`
+- `caller_surface`
+- `grant_ref`
+
+M3 下的固定要求：
+
+- attachment/blob body read 被视为 `body / deep-read` 路径，而不是 metadata path 的自然延伸。
+- metadata route 默认不得自动继承 body read authority。
+- missing grant / expired grant / scope mismatch 继续走既有 `memory_deep_read_*` deny 语义。
+- replay / cross-surface reuse / grant drift 继续默认 fail-closed，并返回既有 `request_tampered` 语义。
+
+子切片映射：
+
+- `W1-A3-S1 / W1-A3-S2 / W1-A3-S3 -> M3-W1-02` child hardening
+- `W1-A6-S3 -> M3-W1-02` child hardening
+- `XT-HM-11` 负责消费侧 PD / deep-read gate
+- `SMS-W6` 负责 supervisor serving governor 对齐
 
 ## 3) 详细工单（可直接执行）
 
@@ -141,6 +254,8 @@
   - ACP gateway adapter（Codex/Claude/Gemini 统一入口）
   - tool call gate hook（禁止绕过 grant 直执行业务动作）
   - 拒绝/降级错误码字典（稳定 machine-readable）
+  - bounded expansion grant envelope validator + deep-read deny-code dictionary + revoke telemetry hook（供 `W1-A3-S1..S3` 复用）
+  - attachment/blob body read grant binder + metadata/body privilege clamp（供 `W1-A6-S3` 复用）
 - 验收指标：
   - tool call 带 `grant_id` 覆盖率 `= 100%`
   - 绕过 grant 执行次数 `= 0`
@@ -150,6 +265,11 @@
   - 无 `grant_id` 的 tool execute -> `deny(grant_missing)`
   - 过期 grant -> `deny(grant_expired)`
   - 篡改 `tool_args_hash` -> `deny(request_tampered)`
+  - deep read 无 grant -> `deny(memory_deep_read_grant_required)`
+  - deep read 使用过期 grant -> `deny(memory_deep_read_grant_expired)`
+  - deep read grant scope 不匹配 -> `deny(memory_deep_read_scope_mismatch)`
+  - attachment/blob body 走 metadata route 试图提权 -> `deny(memory_deep_read_grant_required)`
+  - attachment/blob body grant replay / cross-surface drift -> `deny(request_tampered)`
   - 并发双击 approve -> 幂等执行一次
   - gateway 异常 -> `downgrade_to_local` 或 `deny`（不得放行）
 - 对应 Gate：`Gate-M3-0/2/3/4`

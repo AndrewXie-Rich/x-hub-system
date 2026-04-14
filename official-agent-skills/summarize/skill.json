@@ -55,5 +55,11 @@
   "publisher": {
     "publisher_id": "xhub.official"
   },
-  "install_hint": "Install from the default Agent Baseline for governed document and webpage summarization."
+  "install_hint": "Install from the default Agent Baseline for governed document and webpage summarization.",
+  "quality_evidence_status": {
+    "replay": "missing",
+    "fuzz": "missing",
+    "doctor": "passed",
+    "smoke": "passed"
+  }
 }

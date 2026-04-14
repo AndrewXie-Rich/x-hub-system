@@ -27,13 +27,13 @@ enum AXProjectExecutionTier: String, Codable, CaseIterable, Sendable {
         case .a0Observe:
             return "只读项目记忆和状态，给建议，但不自动落任务。"
         case .a1Plan:
-            return "可以把目标整理成工单 / 计划，并回写项目记忆，但不直接执行仓库或设备动作。"
+            return "可以把目标整理成工单 / 计划，并回写项目记忆，但不直接执行代码仓或设备动作。"
         case .a2RepoAuto:
-            return "可在项目根目录内自主改文件、跑 build / test 并更新计划，仍不碰高风险执行面。"
+            return "可在项目根目录内自主改文件、跑构建 / 测试并更新计划，仍不碰高风险执行面。"
         case .a3DeliverAuto:
             return "围绕单个项目连续推进到交付完成，可自动收口并回写总结。"
         case .a4OpenClaw:
-            return "在受治理前提下使用完整 Agent 执行面，包含 browser / device / connector / extension。"
+            return "在受治理前提下使用完整代理执行面，包含浏览器 / 设备 / 连接器 / 扩展。"
         }
     }
 
@@ -444,5 +444,56 @@ extension AXProjectExecutionTier: Comparable {
         case .a4OpenClaw:
             return 4
         }
+    }
+}
+
+extension AXProjectExecutionTier {
+    var shortToken: String {
+        switch self {
+        case .a0Observe:
+            return "A0"
+        case .a1Plan:
+            return "A1"
+        case .a2RepoAuto:
+            return "A2"
+        case .a3DeliverAuto:
+            return "A3"
+        case .a4OpenClaw:
+            return "A4"
+        }
+    }
+
+    var shortLabel: String {
+        switch self {
+        case .a0Observe:
+            return "Observe"
+        case .a1Plan:
+            return "Plan"
+        case .a2RepoAuto:
+            return "Repo Auto"
+        case .a3DeliverAuto:
+            return "Deliver Auto"
+        case .a4OpenClaw:
+            return "Agent"
+        }
+    }
+
+    var localizedShortLabel: String {
+        switch self {
+        case .a0Observe:
+            return "观察"
+        case .a1Plan:
+            return "规划"
+        case .a2RepoAuto:
+            return "仓库自动推进"
+        case .a3DeliverAuto:
+            return "交付自动推进"
+        case .a4OpenClaw:
+            return "代理"
+        }
+    }
+
+    var localizedDisplayLabel: String {
+        "\(shortToken) \(localizedShortLabel)"
     }
 }

@@ -28,7 +28,20 @@ struct XTAgentSkillImportNormalizerTests {
                 "risk_level": "high",
                 "policy_scope": "device",
                 "requires_grant": true,
-                "normalized_capabilities": ["web.fetch", "device.browser.control"]
+                "normalized_capabilities": ["web.fetch", "device.browser.control"],
+                "intent_families": ["browser.observe", "browser.interact", "web.fetch_live"],
+                "capability_profile_hints": ["observe_only", "browser_research", "browser_operator"],
+                "approval_floor_hint": "local_approval"
+              },
+              "canonical_capability_derivation": {
+                "intent_families": ["browser.observe", "browser.interact", "web.fetch_live"],
+                "capability_profiles": ["observe_only", "browser_research", "browser_operator"],
+                "approval_floor": "local_approval"
+              },
+              "capability_hint_validation": {
+                "checked": true,
+                "fail_closed": false,
+                "mismatches": []
               },
               "findings": [
                 { "code": "network_access", "detail": "uses outbound browser navigation" }
@@ -48,6 +61,17 @@ struct XTAgentSkillImportNormalizerTests {
         #expect(review.contains("vetter_report_ref: vet-report-2"))
         #expect(review.contains("enabled_package: 0123456789ab"))
         #expect(review.contains("enabled_scope: device"))
+        #expect(review.contains("governance:"))
+        #expect(review.contains("- trust_root: governed package promoted @0123456789ab"))
+        #expect(review.contains("- pinned_version: @0123456789ab scope=device"))
+        #expect(review.contains("- runner_requirement: Hub-governed import runner"))
+        #expect(review.contains("- compatibility_status: pending verify | preflight=passed vetter=blocked"))
+        #expect(review.contains("- preflight_result: grant required before enable | vetter_blocked"))
+        #expect(review.contains("- intent_families: browser.observe, browser.interact, web.fetch_live"))
+        #expect(review.contains("- capability_profile_hints: observe_only, browser_research, browser_operator"))
+        #expect(review.contains("- approval_floor_hint: local_approval"))
+        #expect(review.contains("- canonical_capability_profiles: observe_only, browser_research, browser_operator"))
+        #expect(review.contains("- hint_validation: checked=true fail_closed=false mismatches=0"))
         #expect(review.contains("capabilities: web.fetch, device.browser.control"))
         #expect(review.contains("- network_access: uses outbound browser navigation"))
     }
@@ -91,9 +115,52 @@ struct XTAgentSkillImportNormalizerTests {
         #expect(report.manifest.skillId == "coder.run.command")
         #expect(report.manifest.displayName == "coding-agent")
         #expect(report.manifest.normalizedCapabilities == ["repo.exec.agent"])
+        #expect(report.manifest.intentFamilies == ["repo.verify"])
+        #expect(report.manifest.capabilityProfileHints == [
+            XTSkillCapabilityProfileID.observeOnly.rawValue,
+            XTSkillCapabilityProfileID.codingExecute.rawValue,
+        ])
+        #expect(report.manifest.approvalFloorHint == XTSkillApprovalFloor.localApproval.rawValue)
         #expect(report.manifest.riskLevel == "medium")
         #expect(report.manifest.requiresGrant == false)
         #expect(report.manifest.preflightStatus == XTAgentImportPreflightStatus.passed.rawValue)
+    }
+
+    @Test
+    func normalizeCompanionManifestPreservesLocalVisionCapabilitySemantics() throws {
+        let fixture = ToolExecutorProjectFixture(name: "agent-import-local-vision")
+        defer { fixture.cleanup() }
+
+        let repoRoot = fixture.root.appendingPathComponent("agent-main", isDirectory: true)
+        let skillDir = repoRoot.appendingPathComponent("skills/local-vision", isDirectory: true)
+        try FileManager.default.createDirectory(at: skillDir, withIntermediateDirectories: true)
+        try sampleLocalVisionSkill().write(
+            to: skillDir.appendingPathComponent("SKILL.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try sampleLocalVisionSkillManifest().write(
+            to: skillDir.appendingPathComponent("skill.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let report = XTAgentSkillImportNormalizer.normalize(
+            skillMarkdownURL: skillDir.appendingPathComponent("SKILL.md"),
+            repoRoot: repoRoot
+        )
+
+        #expect(report.findings.isEmpty)
+        #expect(report.manifest.skillId == "vision.local.preview")
+        #expect(report.manifest.displayName == "Local Vision Preview")
+        #expect(report.manifest.normalizedCapabilities == ["ai.vision.local"])
+        #expect(report.manifest.intentFamilies == ["ai.vision.local"])
+        #expect(report.manifest.capabilityProfileHints == [
+            XTSkillCapabilityProfileID.observeOnly.rawValue,
+        ])
+        #expect(report.manifest.approvalFloorHint == XTSkillApprovalFloor.none.rawValue)
+        #expect(report.manifest.riskLevel == "low")
+        #expect(report.manifest.requiresGrant == false)
     }
 
     @Test
@@ -224,6 +291,12 @@ struct XTAgentSkillImportNormalizerTests {
 
         #expect(report.manifest.riskLevel == "high")
         #expect(report.manifest.requiresGrant)
+        #expect(report.manifest.intentFamilies == ["web.fetch_live", "browser.observe"])
+        #expect(report.manifest.capabilityProfileHints == [
+            XTSkillCapabilityProfileID.observeOnly.rawValue,
+            XTSkillCapabilityProfileID.browserResearch.rawValue,
+        ])
+        #expect(report.manifest.approvalFloorHint == XTSkillApprovalFloor.none.rawValue)
 
         let verdict = XTAgentSkillImportNormalizer.directLocalExecutionVerdict(
             report: report,
@@ -347,6 +420,38 @@ struct XTAgentSkillImportNormalizerTests {
         # Browser Operator
 
         Open tabs and navigate pages.
+        """
+    }
+
+    private func sampleLocalVisionSkill() -> String {
+        """
+        ---
+        name: local-vision
+        description: 'Use local multimodal understanding with Hub-governed routing.'
+        ---
+
+        # Local Vision
+
+        Inspect screenshots with the local vision runtime.
+        """
+    }
+
+    private func sampleLocalVisionSkillManifest() -> String {
+        """
+        {
+          "schema_version": "xhub.skill_manifest.v1",
+          "skill_id": "vision.local.preview",
+          "name": "Local Vision Preview",
+          "version": "0.2.0",
+          "description": "Use Hub-governed local vision understanding.",
+          "entrypoint": {
+            "runtime": "python",
+            "command": "python3",
+            "args": ["main.py"]
+          },
+          "capabilities_required": ["ai.vision.local"],
+          "input_schema_ref": "schema://vision.local.preview.input"
+        }
         """
     }
 

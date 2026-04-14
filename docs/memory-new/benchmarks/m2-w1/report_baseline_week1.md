@@ -1,6 +1,6 @@
 # M2 W1 Baseline Benchmark Report
 
-- generatedAt: 2026-02-26T06:36:36.910Z
+- generatedAt: 2026-03-14T13:23:50.697Z
 - dataset: `docs/memory-new/benchmarks/m2-w1/bench_baseline.json`
 - golden: `docs/memory-new/benchmarks/m2-w1/golden_queries.json`
 - adversarial: `docs/memory-new/benchmarks/m2-w1/adversarial_queries.json`
@@ -13,7 +13,7 @@
 - precision@k(avg): 0.2
 - recall@k(avg): 1
 - mrr@k(avg): 1
-- latency p50/p95(ms): 0.037 / 0.234
+- latency p50/p95(ms): 0.041 / 0.245
 
 ## Security Regression
 - expected match rate: 0.5417

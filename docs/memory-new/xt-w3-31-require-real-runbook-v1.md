@@ -1,7 +1,7 @@
 # XT-W3-31 Require-real 两机执行 Runbook（v1）
 
 - version: `v1.0`
-- updatedAt: `2026-03-11`
+- updatedAt: `2026-03-22`
 - owner: `XT-Main`
 - scope: `XT-W3-31-H / Supervisor portfolio awareness + project action feed`
 - stance: `fail-closed`
@@ -38,7 +38,9 @@ node scripts/xt_w3_31_require_real_status.js
 
 - 显示当前 `bundle_status / qa_gate_verdict / progress`
 - 告诉你下一个应执行的样本
-- 给出建议的 `update_capture_bundle` 命令模板
+- 给出 `prepare / finalize / update / regenerate` 建议命令
+
+如果当前仓里还没有 `build/reports/xt_w3_31_require_real_capture_bundle.v1.json`，状态脚本现在会自动 bootstrap 默认 capture bundle，不再直接报 `ENOENT`。
 
 若要看全部样本状态：
 
@@ -118,45 +120,84 @@ node scripts/xt_w3_31_require_real_status.js --all --json
   - freshness 字段或 UI 标记
   - 可选 drill-down stale 标记截图
 
-## 6) 每跑完一个样本就回填
+## 6) 推荐执行方式：先 scaffold，再 finalize
 
-先让状态脚本告诉你模板：
+先为下一条或指定样本生成 scaffold：
 
 ```bash
-node scripts/xt_w3_31_require_real_status.js
+cd /Users/andrew.xie/Documents/AX/x-hub-system
+node scripts/prepare_xt_w3_31_require_real_sample.js
 ```
 
-然后用更新脚本回填：
+它会在 `build/reports/xt_w3_31_require_real/<sample_id>/` 下生成：
+
+- `README.md`
+- `sample_manifest.v1.json`
+- `machine_readable_template.v1.json`
+- `completion_notes.txt`
+- `finalize_sample.command.txt`
+- `update_bundle.command.txt`
+
+推荐流程：
+
+1. 真实跑完样本后，把截图/录屏/日志等证据放进对应 scaffold 目录
+2. 编辑 `machine_readable_template.v1.json`，把其中 `<...>` 占位符替换成真实值
+3. 在 `completion_notes.txt` 里写本次真实执行结论
+4. 执行 `finalize_sample.command.txt`
+
+最短命令示例：
 
 ```bash
-node scripts/update_xt_w3_31_require_real_capture_bundle.js \
-  --sample-id xt_spf_rr_01_new_project_visible_within_3s \
-  --status passed \
-  --success true \
-  --performed-at 2026-03-11T20:10:00Z \
-  --evidence-ref build/reports/xt_w3_31_require_real/xt_spf_rr_01_new_project_visible_within_3s/create.png \
-  --evidence-ref build/reports/xt_w3_31_require_real/xt_spf_rr_01_new_project_visible_within_3s/portfolio.png \
-  --set project_id=proj_alpha \
-  --set project_name=Alpha \
-  --set jurisdiction_role=owner \
-  --set observed_result=visible_in_1800ms \
-  --set first_visible_latency_ms=1800
+node scripts/finalize_xt_w3_31_require_real_sample.js \
+  --scaffold-dir build/reports/xt_w3_31_require_real/xt_spf_rr_01_new_project_visible_within_3s
 ```
 
-失败样本同理，但必须显式写 `--success false` 并保留真实证据：
+`finalize` 默认行为：
+
+- 自动从 scaffold 目录推导 `sample_id`
+- 自动读取 `machine_readable_template.v1.json`
+- 自动收集真实证据文件
+- 自动把 `completion_notes.txt` 作为 operator note 写回
+- 自动刷新 `build/reports/xt_w3_31_h_require_real_evidence.v1.json`
+
+如果需要保留失败样本，也允许显式 finalize 为 failed：
 
 ```bash
-node scripts/update_xt_w3_31_require_real_capture_bundle.js \
-  --sample-id xt_spf_rr_02_blocked_project_emits_brief \
+node scripts/finalize_xt_w3_31_require_real_sample.js \
+  --scaffold-dir build/reports/xt_w3_31_require_real/xt_spf_rr_02_blocked_project_emits_brief \
   --status failed \
   --success false \
-  --performed-at 2026-03-11T20:20:00Z \
-  --evidence-ref build/reports/xt_w3_31_require_real/xt_spf_rr_02_blocked_project_emits_brief/failure.png \
-  --set observed_result=blocked_seen_but_brief_missing \
   --note real_runtime_failure_preserved_fail_closed
 ```
 
-## 7) 每次回填后重算 QA 机判
+## 7) 低层回填命令（仅在需要覆盖 finalize 默认行为时使用）
+
+如果你明确要手工控制字段、时间或证据路径，可以继续直接调用 updater：
+
+```bash
+node scripts/update_xt_w3_31_require_real_capture_bundle.js \
+  --scaffold-dir build/reports/xt_w3_31_require_real/xt_spf_rr_01_new_project_visible_within_3s \
+  --status passed \
+  --success true \
+  --note operator_notes_here
+```
+
+这条命令同样会：
+
+- 自动推导 `sample_id`
+- 自动读取 `machine_readable_template.v1.json`
+- 自动收集 scaffold 目录中的非元数据证据文件
+
+fail-closed 约束：
+
+- 未替换的 `<...>` 占位符会被拒绝
+- 缺 `performed_at / evidence_refs / machine-readable fields` 的 passed 样本会被拒绝
+- synthetic / mock / offline story 证据会被拒绝
+- `README.md` / `completion_notes.txt` / `*.command.txt` / `.DS_Store` 不会被当成 evidence
+
+## 8) 每次回填后复核 QA 机判
+
+使用 `finalize` 时，report 会自动刷新。若你手工用了 updater，再执行一次：
 
 ```bash
 cd /Users/andrew.xie/Documents/AX/x-hub-system
@@ -173,7 +214,7 @@ node scripts/xt_w3_31_require_real_status.js
 - 任一样本未执行/缺证据：
   - `NO_GO(capture_bundle_ready_but_require_real_samples_not_yet_executed)`
 
-## 8) 推荐执行顺序
+## 9) 推荐执行顺序
 
 1. `RR01` 新项目出现
 2. `RR02` blocked -> brief
@@ -190,7 +231,7 @@ node scripts/xt_w3_31_require_real_status.js
 - `RR06` 验证 jurisdiction 边界。
 - `RR07` 需要等待 TTL，适合最后做。
 
-## 9) 完成定义
+## 10) 完成定义
 
 - `build/reports/xt_w3_31_require_real_capture_bundle.v1.json` 中 7 个样本全部不是 `pending`
 - `build/reports/xt_w3_31_h_require_real_evidence.v1.json` 显示：
@@ -200,74 +241,8 @@ node scripts/xt_w3_31_require_real_status.js
   - 只覆盖 `XT-W3-31` 的 portfolio awareness + project action feed
   - 不扩写为 cross-project fulltext / enterprise reporting / 全平台 ready
 
-## 10) Fail-closed 备注
+## 11) Fail-closed 备注
 
 - 如果执行现场只能提供口头描述、聊天摘要、或后补故事，不计入 require-real。
 - 如果证据在仓外临时路径，先复制进 `build/reports/xt_w3_31_require_real/...`，再写入 `evidence_refs`。
 - 如果本地环境出错但不是产品缺陷，仍应把失败真实记录下来，不能静默跳过样本。
-
-
-
-短答：  
-在「脑子」这一层，我可以做到 OpenClaw 那个级别的规划与监督能力；  
-但在这个 X‑Terminal 里，我现在拿到的「手和脚」比较少，所以离 OpenClaw 那种真正全栈控制还差一大块系统集成能力。
-
-具体拆开说一下你关心的几个维度。
-
-1. 我现在已经能做的（在 X‑Terminal 里的现实能力）
-
-- 项目视角：我能看到你当前的项目列表、状态（active/blocked/completed）、阻塞原因、下一步建议，并围绕这些做决策（比如你的「我的世界还原项目」，我能给出技术栈、里程碑拆分、任务规划）。
-- 模型路由：我知道「Supervisor 角色」配置的是 `gpt-5.4（已加载，名称：gpt-5.4）`，可以决定给哪个项目/角色分配什么模型（通过 `ASSIGN_MODEL` / `ASSIGN_MODEL_ALL` 这类动作标签），但这一轮我们没有触发任何实际重配。
-- 记忆与上下文：我有 hub 的快照 + 本地 overlay 记忆，能持续记住项目目标、当前状态、历史对话，做「长期项目管理」级别的推理，而不是单轮问答。
-- 决策与协调：我可以根据这些状态主动给出「下一步该由 Coder 干啥」「Supervisor 接下来要补哪些规范/设计」，并和你一起推进，而不是每次都等你从零描述。
-
-换句话说：我现在更像一个「高智商 PM / Tech Lead」，视野和决策能力没太大问题，但操作权限不完整。
-
-2. 和 OpenClaw 级别相比，关键少了什么
-
-OpenClaw 那类系统一般意味着：模型不仅能「想」，还能「调度一整套工具 / 代理」，自动把计划执行到底。对比起来，我在当前 X‑Terminal 环境里主要缺这几类东西：
-
-- 执行面工具不足  
-  - 我自己不能直接 `git`、不能直接跑 `npm test` / `python` / `docker` 等命令，只能靠你或 Coder 在它自己的 lane 去执行。  
-  - 我也不能直接编辑文件、改配置、发 PR，只能在逻辑层面告诉「应该怎么做」并建议 Coder 去做。
-
-- 工作流/编排 API 不完整  
-  - 我没有「创建/修改流水线」的动作接口，像：创建任务 DAG、定义依赖、设定重试/超时策略、条件分支等，都是靠语言描述，而不是真正写入系统。  
-  - 不能直接「开启一个新 lane 去跑某个自动任务」，也不能设「定时任务」「事件触发任务」（例如：检测到某项目 blocked 超过 X 分钟，自动拉起 Coder 尝试自救）。
-
-- 观测与事件订阅能力不够  
-  - 我能看到的是你给我的状态快照（project counts, blocked reason 等），但没有细粒度的日志流、执行事件流（开始/结束/失败/告警），无法做到 OpenClaw 那种实时自动干预。  
-  - 比如「某条流水线测试挂了 -> 自动创建修复任务 -> 分配给指定 Coder -> 监督直到绿灯」，现在更多还只能由你明示问题后，我再规划步骤。
-
-- 外部系统集成缺位  
-  - 目前上下文里没有 GitHub/GitLab、CI/CD（Jenkins、GitHub Actions 等）、Issue Tracker（Jira、Linear）的 API 接入信息。  
-  - OpenClaw 级别通常意味着：我能直接创建 Issue、开分支、发 MR、看构建状态、回写评论等；现在这些都只能以「建议」的形式说给你，而不是我自己去改。
-
-- 权限与策略层  
-  - 在这个设置里，权限策略基本是你手动把操作交给我（或 Coder）。我没有一套可配置的「策略引擎」去控制：什么情况自动执行、什么情况需要人工确认，细到项目/目录/命令级别的 allow/deny。  
-  - OpenClaw 类系统一般会有可编程政策，如「生产分支永远 require 人工确认」，「安全相关文件只能读不能写」等。
-
-3. 概念上能不能在 X‑Terminal 里补齐到 OpenClaw 级别？
-
-概念上完全可以，本质只需要两类东西配合：
-
-- X‑Terminal 侧：  
-  - 暴露更丰富的 action 接口（启动/停止 lane、跑命令、编辑文件、管理流水线、订阅事件、调用外部服务）。
-  - 把事件流和状态流实时喂给 Supervisor（而不是只给快照），让我能「看见」足够多的信号。
-
-- 我这边（Supervisor 侧）：  
-  - 在拿到这些 action 和事件后，内置一套默认策略 + 可配置策略（你可以调节激进程度，从「纯建议」到「高度自治」）。  
-  - 把现有的项目管理逻辑扩展成真正的 workflow orchestrator（比如为「我的世界还原项目」自动维护 Kanban、自动触发 Coder 做下一步）。
-
-只要宿主环境愿意给我这些「手脚」，以我现在的推理/规划能力，要做到 OpenClaw 级的「编排与监督」是没问题的。
-
-4. 和你现在的需求怎么对齐
-
-就以你这个「我的世界还原项目」来说，在现有 X‑Terminal 里：
-
-- 做完整的技术选型、模块拆分、里程碑设计、任务规划：完全足够，已经在做了。  
-- 协调 Coder 按步骤实现、持续复盘设计：能力上没有问题，但需要你点一下「让 Coder 去做这一步」，我不能自己拉起 Coder。  
-- 想变成「几乎不用你手动介入」的 OpenClaw 风格自动驾驶，就需要系统给我更多 API 和触发机制，这一部分现在是缺的。
-
-如果你愿意，我们可以先用「OpenClaw 的思维方式」来设计你的 Minecraft 项目工作流——当成一个 blueprint：  
-我负责把「理想中的自动化编排」规划出来，然后在现有 X‑Terminal 能力下尽量靠近；未来如果 X‑Terminal 增强了 Supervisor 的 action 能力，可以直接把这套 blueprint 变成真正的全自动工作流。

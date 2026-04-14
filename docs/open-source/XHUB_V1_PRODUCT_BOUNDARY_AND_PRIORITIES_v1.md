@@ -95,9 +95,9 @@ v1 的重心不是 feature breadth，而是系统边界。
 
 ### P0.4 Project Governance As A First-Class Product Surface
 
-- `A0..A4` execution tiers
-- `S0..S4` supervision tiers
-- heartbeat / review / intervention 分离
+- `A0..A4` A-Tiers
+- `S0..S4` S-Tiers
+- `Heartbeat / Review` / intervention 分离
 - runtime capability clamps 明确落到写文件、build/test、commit/push、PR/CI、browser/device actions
 
 为什么必须做：
@@ -107,11 +107,11 @@ v1 的重心不是 feature breadth，而是系统边界。
 
 ### P0.5 Memory Truth, Audit, And Export Guardrails
 
-- Hub-backed memory truth
-- user-selected memory executor under the Hub control plane
+- Hub 支持的记忆真相
+- Hub 控制面下由用户选择的 memory executor
 - audit trail / evidence ref
 - remote export gate / DLP / privacy posture
-- durable writes remain bound to `Writer + Gate`
+- durable 写入继续绑定到 `Writer + Gate`
 - memory 不从 Hub 漂移回 terminal-local 私有真相
 
 为什么必须做：

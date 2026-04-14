@@ -86,7 +86,7 @@ The system breaks the dilemma of "mutual exclusion between security and experien
 
 5. Auditable and Controllable Principle: Full-process operation logs are traceable, and abnormal behaviors can trigger real-time alarms and emergency shutdowns to achieve security and controllability;
 
-6. Memory Core Solidification Principle: The core rules of memory processing (Memory-Core Skill) cannot be dynamically modified, and can only be changed through the X-Hub cold storage Token.
+6. Memory Core Solidification Principle: the core rules of memory processing (`Memory-Core Skill`, product-facing) are Hub-governed rule assets rather than a single execution AI; they cannot be dynamically modified, can only be changed through the X-Hub cold storage Token, and do not replace user choice over which AI executes memory jobs.
 
 # II. Core Architecture: X-Hub Five-Layer Memory Architecture
 
@@ -136,7 +136,7 @@ The circulation of memory is fully lifecycle-managed by X-Hub's built-in dedicat
 
 ## 2.3 Memory-Core Skill: The "Core Rule Engine" of the Memory System
 
-The Memory-Core Skill is the only guiding rule set for X-Hub memory processing. The product-facing `Skill` label can stay, but at the implementation boundary it should be understood as a Hub-built-in governed rule asset rather than a single execution AI with direct cross-layer write authority. Which AI maintains memory is selected explicitly by the user in X-Hub; X-Hub performs routing and audit; durable writes still terminate in Writer/Gate. The core design is as follows:
+The Memory-Core Skill is the only guiding rule set for X-Hub memory processing. The product-facing `Skill` label can stay, but at the implementation boundary it should be understood as a Hub-built-in governed rule asset rather than a single execution AI with direct cross-layer write authority. Which AI maintains memory is selected explicitly by the user in X-Hub; runtime execution still follows `Scheduler -> Worker -> Writer + Gate`; durable writes still terminate through `Writer + Gate`. The core design is as follows:
 
 - Tamper-Proof: Cannot be dynamically modified during operation, and neither terminals nor ordinary Skills have modification permissions;
 
@@ -173,7 +173,7 @@ On the X-Hub side, Skills are divided into three categories according to the sco
 
 |Skill Type|Positioning|Management Method|Calling Rules|
 |---|---|---|---|
-|Memory-Core Skill|System-Level Core Rule Asset|Exclusive to X-Hub, can only be modified through cold storage Token, and is globally applicable across the entire X-Hub; it does not run under the ordinary skill permission model|Highest-priority governed rule asset; constrains Scheduler/Worker/Writer and does not mean a single execution AI|
+|Memory-Core Skill|System-Level Core Rule Asset|Exclusive to X-Hub, can only be modified through cold storage Token, and is globally applicable across the entire X-Hub; it does not run under the ordinary skill permission model|Highest-priority governed rule asset; constrains Scheduler/Worker/Writer, does not mean a single execution AI, and does not replace user choice over the memory executor|
 |General Skill|Cross-Project Reuse|Can be imported from external sources through the "Import Button" on X-Terminal and uniformly managed by X-Hub|Can be called after project authorization|
 |Single-Project Exclusive Skill|Only Available for the Corresponding Project|Generated from the interaction memory of the project, edited on the X-Terminal side, and stored on the X-Hub|Automatically called only within the affiliated project|
 ## 3.4 Skill "Seamless Calling" Guarantee Mechanism

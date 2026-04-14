@@ -71,6 +71,8 @@ These are useful locally, but they currently encode one-machine assumptions such
 
 These are not secret by default, but they read more like internal execution logs, milestone bookkeeping, and operating memory than public product docs.
 
+If any of these memory-facing docs are later promoted into public product-facing material, rewrite their memory posture using the same public boundary: the user chooses which AI executes memory jobs in X-Hub, `Memory-Core` stays a governed Hub-side rule asset, and durable writes still terminate through `Writer + Gate`.
+
 ## Naming / Cleanup Debt To Be Aware Of
 
 Not a hard blocker for publishing the preview, but still visible:

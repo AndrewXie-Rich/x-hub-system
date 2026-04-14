@@ -1,0 +1,98 @@
+{
+  "schema_version": "xhub.default_agent_baseline.v1",
+  "baseline_id": "default-agent-baseline-v1",
+  "title": "Default Agent Baseline",
+  "description": "The minimum governed starter pack that X-Terminal can recommend and install through Hub-governed skill pinning.",
+  "updated_at": "2026-03-24",
+  "bundles": [
+    {
+      "bundle_id": "coding-core",
+      "display_name": "Coding Core",
+      "summary": "Discovery plus governed reading/summarization for baseline code and document inspection.",
+      "skill_ids": [
+        "find-skills",
+        "summarize"
+      ],
+      "capability_families": [
+        "skills.discover",
+        "repo.read"
+      ],
+      "capability_profiles": [
+        "observe_only"
+      ]
+    },
+    {
+      "bundle_id": "browser-research",
+      "display_name": "Browser Research",
+      "summary": "Governed browser observation and interaction pack for live web work under Hub control.",
+      "skill_ids": [
+        "agent-browser"
+      ],
+      "capability_families": [
+        "web.live",
+        "browser.observe",
+        "browser.interact",
+        "browser.secret_fill"
+      ],
+      "capability_profiles": [
+        "observe_only",
+        "browser_research",
+        "browser_operator",
+        "browser_operator_with_secrets"
+      ]
+    },
+    {
+      "bundle_id": "supervisor-retrospective",
+      "display_name": "Supervisor Retrospective",
+      "summary": "Supervisor-oriented retrospective and workflow inspection bundle.",
+      "skill_ids": [
+        "self-improving-agent"
+      ],
+      "capability_families": [
+        "memory.inspect",
+        "supervisor.orchestrate"
+      ],
+      "capability_profiles": [
+        "observe_only"
+      ]
+    }
+  ],
+  "skills": [
+    {
+      "skill_id": "find-skills",
+      "display_name": "Find Skills",
+      "summary": "Official discovery wrapper over Hub skills.search.",
+      "required_quality_evidence_status": {
+        "doctor": "passed",
+        "smoke": "passed"
+      }
+    },
+    {
+      "skill_id": "agent-browser",
+      "display_name": "Agent Browser",
+      "summary": "Governed browser automation for navigation, screenshots, extraction, and Secret Vault-aware credential handling.",
+      "required_quality_evidence_status": {
+        "doctor": "passed",
+        "smoke": "passed"
+      }
+    },
+    {
+      "skill_id": "self-improving-agent",
+      "display_name": "Self Improving Agent",
+      "summary": "Supervisor retrospective pack for learning from failures under governance.",
+      "required_quality_evidence_status": {
+        "doctor": "passed",
+        "smoke": "passed"
+      }
+    },
+    {
+      "skill_id": "summarize",
+      "display_name": "Summarize",
+      "summary": "Governed summarize wrapper for webpages, PDFs, and long documents.",
+      "required_quality_evidence_status": {
+        "doctor": "passed",
+        "smoke": "passed"
+      }
+    }
+  ]
+}

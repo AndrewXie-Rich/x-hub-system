@@ -3,6 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# shellcheck source=../../scripts/lib/build_snapshot_retention.sh
+source "$ROOT_DIR/scripts/lib/build_snapshot_retention.sh"
 XT_DIR="$ROOT_DIR/x-terminal"
 OUT_DIR="$ROOT_DIR/build"
 APP_DIR="$OUT_DIR/X-Terminal.app"
@@ -10,24 +12,59 @@ BUILD_CONFIG="${XTERMINAL_SWIFT_BUILD_CONFIG:-release}"
 INSTALL_TARGET="${XTERMINAL_INSTALL_TARGET:-}"
 INSTALL_TARGET_EXPANDED="${INSTALL_TARGET/#\~/$HOME}"
 USE_BUILD_SNAPSHOT="${XTERMINAL_USE_BUILD_SNAPSHOT:-1}"
+BUILD_SNAPSHOT_RETENTION_COUNT="${XTERMINAL_BUILD_SNAPSHOT_RETENTION_COUNT:-2}"
+RELEASE_DISABLE_WMO="${XTERMINAL_RELEASE_DISABLE_WMO:-0}"
+RESET_BUILD_SNAPSHOT="${XTERMINAL_RESET_BUILD_SNAPSHOT:-0}"
+BUILD_HEARTBEAT_SECONDS="${XTERMINAL_BUILD_HEARTBEAT_SECONDS:-15}"
 BUILD_SRC_DIR="$XT_DIR"
+
+run_with_heartbeat() {
+  local label="${1:-[build]}"
+  shift
+
+  if ! [[ "$BUILD_HEARTBEAT_SECONDS" =~ ^[0-9]+$ ]] || [ "$BUILD_HEARTBEAT_SECONDS" -le 0 ]; then
+    "$@"
+    return
+  fi
+
+  local started_at=$SECONDS
+  "$@" &
+  local command_pid=$!
+
+  while kill -0 "$command_pid" 2>/dev/null; do
+    sleep "$BUILD_HEARTBEAT_SECONDS"
+    kill -0 "$command_pid" 2>/dev/null || break
+    echo "$label still running... $((SECONDS - started_at))s elapsed"
+  done
+
+  wait "$command_pid"
+}
 
 if [ "$USE_BUILD_SNAPSHOT" = "1" ]; then
   SNAPSHOT_DIR="${XTERMINAL_BUILD_SNAPSHOT_DIR:-$OUT_DIR/.xterminal-build-src}"
-  echo "[prep] Creating frozen source snapshot at: $SNAPSHOT_DIR"
-  rm -rf "$SNAPSHOT_DIR"
+  xhub_prune_old_snapshot_dirs "$SNAPSHOT_DIR" "$BUILD_SNAPSHOT_RETENTION_COUNT"
+  echo "[prep] Syncing frozen source snapshot at: $SNAPSHOT_DIR"
+  if [ "$RESET_BUILD_SNAPSHOT" = "1" ] && [ -d "$SNAPSHOT_DIR" ]; then
+    echo "[prep] Resetting cached build snapshot"
+    rm -rf "$SNAPSHOT_DIR"
+  fi
   mkdir -p "$SNAPSHOT_DIR"
   rsync -a --delete \
     --exclude '.build' \
+    --exclude '.swiftpm' \
     --exclude '.scratch' \
     --exclude '.scratch-*' \
     --exclude '.scratch-memory*' \
     --exclude '.scratch-registry' \
+    --exclude '.axcoder' \
+    --exclude '.tmp-home' \
     --exclude '.sandbox_home' \
     --exclude '.sandbox_tmp' \
     --exclude '.clang-module-cache' \
     --exclude '.swift-module-cache' \
     --exclude '.ax-test-cache' \
+    --exclude '(A Document Being Saved By swift-build*' \
+    --exclude '(A Document Being Saved By swift-test*' \
     --exclude '.DS_Store' \
     "$XT_DIR/" "$SNAPSHOT_DIR/"
   BUILD_SRC_DIR="$SNAPSHOT_DIR"
@@ -49,7 +86,13 @@ COMMON_ARGS=(
   --package-path "$BUILD_SRC_DIR"
 )
 
-env HOME="$BUILD_SRC_DIR/.sandbox_home" TMPDIR="$BUILD_SRC_DIR/.sandbox_tmp" swift build "${COMMON_ARGS[@]}"
+if [ "$BUILD_CONFIG" = "release" ] && [ "$RELEASE_DISABLE_WMO" = "1" ]; then
+  echo "[1a/4] Release WMO disabled via XTERMINAL_RELEASE_DISABLE_WMO=1"
+  COMMON_ARGS+=(-Xswiftc -no-whole-module-optimization)
+fi
+
+run_with_heartbeat "[1/4] swift build" \
+  env HOME="$BUILD_SRC_DIR/.sandbox_home" TMPDIR="$BUILD_SRC_DIR/.sandbox_tmp" swift build "${COMMON_ARGS[@]}"
 BIN_DIR="$(env HOME="$BUILD_SRC_DIR/.sandbox_home" TMPDIR="$BUILD_SRC_DIR/.sandbox_tmp" swift build "${COMMON_ARGS[@]}" --show-bin-path)"
 BIN_PATH="$BIN_DIR/XTerminal"
 if [ -z "$BIN_PATH" ] || [ ! -f "$BIN_PATH" ]; then

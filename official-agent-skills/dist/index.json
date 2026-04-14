@@ -27,7 +27,65 @@
       "package_path": "packages/b4000be1fd67a6f98b717f2c405ffc8354412b274b60961af8ac908ef3f7fd9f.tgz",
       "manifest_path": "manifests/b4000be1fd67a6f98b717f2c405ffc8354412b274b60961af8ac908ef3f7fd9f.json",
       "source_dir": "agent-browser",
-      "updated_at_ms": 1773327543255
+      "updated_at_ms": 1773327543255,
+      "side_effect_class": "external_side_effect",
+      "risk_level": "high",
+      "requires_grant": true,
+      "package_kind": "official_skill",
+      "trust_tier": "governed_package",
+      "contract_version": "2026-03-18",
+      "package_state": "discovered",
+      "catalog_tier": "embedded_official",
+      "source_type": "embedded_catalog",
+      "downloadability": "offline_only",
+      "buildability": "prebuilt_only",
+      "support_tier": "official",
+      "revoke_state": "active",
+      "artifact_resolution_mode": "embedded_only",
+      "doctor_bundles": [
+        "official_skills"
+      ],
+      "abi_compat_version": "skills_abi_compat.v1",
+      "compatibility_state": "supported",
+      "compatibility_envelope": {
+        "manifest_contract_version": "xhub.skill_manifest.v1",
+        "protocol_versions": [
+          "skills_abi_compat.v1"
+        ],
+        "min_hub_version": "",
+        "min_xt_version": "",
+        "runtime_hosts": [
+          "hub_runtime",
+          "xt_runtime"
+        ],
+        "compatibility_state": "verified",
+        "last_verified_at_ms": 1773327543255
+      },
+      "quality_evidence_status": {
+        "replay": "missing",
+        "fuzz": "missing",
+        "doctor": "passed",
+        "smoke": "passed"
+      },
+      "artifact_integrity": {
+        "package_sha256": "b4000be1fd67a6f98b717f2c405ffc8354412b274b60961af8ac908ef3f7fd9f",
+        "manifest_sha256": "ae713942f5e7ccc9bfa35acec07a34fe5e9b5f0a28f2edfc4638cc81179bee6a",
+        "package_format": "tar.gz",
+        "package_size_bytes": 1064,
+        "file_hash_count": 2,
+        "signature": {
+          "algorithm": "ed25519",
+          "present": true,
+          "trusted_publisher": true
+        }
+      },
+      "signature_alg": "ed25519",
+      "signature_verified": true,
+      "signature_bypassed": false,
+      "security_profile": "high_risk",
+      "package_format": "tar.gz",
+      "file_hash_count": 2,
+      "package_size_bytes": 1064
     },
     {
       "skill_id": "find-skills",
@@ -50,7 +108,65 @@
       "package_path": "packages/aa577e99a77b303792aa264d31af22d246a65b3c6abab6127797130302fae8d5.tgz",
       "manifest_path": "manifests/aa577e99a77b303792aa264d31af22d246a65b3c6abab6127797130302fae8d5.json",
       "source_dir": "find-skills",
-      "updated_at_ms": 1773327543255
+      "updated_at_ms": 1773327543255,
+      "side_effect_class": "read_only",
+      "risk_level": "low",
+      "requires_grant": false,
+      "package_kind": "official_skill",
+      "trust_tier": "governed_package",
+      "contract_version": "2026-03-18",
+      "package_state": "discovered",
+      "catalog_tier": "embedded_official",
+      "source_type": "embedded_catalog",
+      "downloadability": "offline_only",
+      "buildability": "prebuilt_only",
+      "support_tier": "official",
+      "revoke_state": "active",
+      "artifact_resolution_mode": "embedded_only",
+      "doctor_bundles": [
+        "official_skills"
+      ],
+      "abi_compat_version": "skills_abi_compat.v1",
+      "compatibility_state": "supported",
+      "compatibility_envelope": {
+        "manifest_contract_version": "xhub.skill_manifest.v1",
+        "protocol_versions": [
+          "skills_abi_compat.v1"
+        ],
+        "min_hub_version": "",
+        "min_xt_version": "",
+        "runtime_hosts": [
+          "hub_runtime",
+          "xt_runtime"
+        ],
+        "compatibility_state": "verified",
+        "last_verified_at_ms": 1773327543255
+      },
+      "quality_evidence_status": {
+        "replay": "missing",
+        "fuzz": "missing",
+        "doctor": "passed",
+        "smoke": "passed"
+      },
+      "artifact_integrity": {
+        "package_sha256": "aa577e99a77b303792aa264d31af22d246a65b3c6abab6127797130302fae8d5",
+        "manifest_sha256": "cc1606d7e26c2d701c84603c13800cdd10214fd373b4299ddbafa094bb5ec318",
+        "package_format": "tar.gz",
+        "package_size_bytes": 1012,
+        "file_hash_count": 2,
+        "signature": {
+          "algorithm": "ed25519",
+          "present": true,
+          "trusted_publisher": true
+        }
+      },
+      "signature_alg": "ed25519",
+      "signature_verified": true,
+      "signature_bypassed": false,
+      "security_profile": "low_risk",
+      "package_format": "tar.gz",
+      "file_hash_count": 2,
+      "package_size_bytes": 1012
     },
     {
       "skill_id": "self-improving-agent",
@@ -75,7 +191,65 @@
       "package_path": "packages/6edbe8d16ae8be26dcb1a534e9c058ceb9b2e07af759063e700762aeac559546.tgz",
       "manifest_path": "manifests/6edbe8d16ae8be26dcb1a534e9c058ceb9b2e07af759063e700762aeac559546.json",
       "source_dir": "self-improving-agent",
-      "updated_at_ms": 1773327543255
+      "updated_at_ms": 1773327543255,
+      "side_effect_class": "read_only",
+      "risk_level": "medium",
+      "requires_grant": false,
+      "package_kind": "official_skill",
+      "trust_tier": "governed_package",
+      "contract_version": "2026-03-18",
+      "package_state": "discovered",
+      "catalog_tier": "embedded_official",
+      "source_type": "embedded_catalog",
+      "downloadability": "offline_only",
+      "buildability": "prebuilt_only",
+      "support_tier": "official",
+      "revoke_state": "active",
+      "artifact_resolution_mode": "embedded_only",
+      "doctor_bundles": [
+        "official_skills"
+      ],
+      "abi_compat_version": "skills_abi_compat.v1",
+      "compatibility_state": "supported",
+      "compatibility_envelope": {
+        "manifest_contract_version": "xhub.skill_manifest.v1",
+        "protocol_versions": [
+          "skills_abi_compat.v1"
+        ],
+        "min_hub_version": "",
+        "min_xt_version": "",
+        "runtime_hosts": [
+          "hub_runtime",
+          "xt_runtime"
+        ],
+        "compatibility_state": "verified",
+        "last_verified_at_ms": 1773327543255
+      },
+      "quality_evidence_status": {
+        "replay": "missing",
+        "fuzz": "missing",
+        "doctor": "passed",
+        "smoke": "passed"
+      },
+      "artifact_integrity": {
+        "package_sha256": "6edbe8d16ae8be26dcb1a534e9c058ceb9b2e07af759063e700762aeac559546",
+        "manifest_sha256": "94f0c1f03b24cd921bfb6a35a01de3ca670a4757ee46e8e02a7bc2d50bb43334",
+        "package_format": "tar.gz",
+        "package_size_bytes": 1020,
+        "file_hash_count": 2,
+        "signature": {
+          "algorithm": "ed25519",
+          "present": true,
+          "trusted_publisher": true
+        }
+      },
+      "signature_alg": "ed25519",
+      "signature_verified": true,
+      "signature_bypassed": false,
+      "security_profile": "low_risk",
+      "package_format": "tar.gz",
+      "file_hash_count": 2,
+      "package_size_bytes": 1020
     },
     {
       "skill_id": "summarize",
@@ -100,7 +274,65 @@
       "package_path": "packages/78e77a203fcee7f751c25b9cad0fa72bc7a4954e222f53535ef52945d9549227.tgz",
       "manifest_path": "manifests/78e77a203fcee7f751c25b9cad0fa72bc7a4954e222f53535ef52945d9549227.json",
       "source_dir": "summarize",
-      "updated_at_ms": 1773327543255
+      "updated_at_ms": 1773327543255,
+      "side_effect_class": "external_side_effect",
+      "risk_level": "high",
+      "requires_grant": true,
+      "package_kind": "official_skill",
+      "trust_tier": "governed_package",
+      "contract_version": "2026-03-18",
+      "package_state": "discovered",
+      "catalog_tier": "embedded_official",
+      "source_type": "embedded_catalog",
+      "downloadability": "offline_only",
+      "buildability": "prebuilt_only",
+      "support_tier": "official",
+      "revoke_state": "active",
+      "artifact_resolution_mode": "embedded_only",
+      "doctor_bundles": [
+        "official_skills"
+      ],
+      "abi_compat_version": "skills_abi_compat.v1",
+      "compatibility_state": "supported",
+      "compatibility_envelope": {
+        "manifest_contract_version": "xhub.skill_manifest.v1",
+        "protocol_versions": [
+          "skills_abi_compat.v1"
+        ],
+        "min_hub_version": "",
+        "min_xt_version": "",
+        "runtime_hosts": [
+          "hub_runtime",
+          "xt_runtime"
+        ],
+        "compatibility_state": "verified",
+        "last_verified_at_ms": 1773327543255
+      },
+      "quality_evidence_status": {
+        "replay": "missing",
+        "fuzz": "missing",
+        "doctor": "passed",
+        "smoke": "passed"
+      },
+      "artifact_integrity": {
+        "package_sha256": "78e77a203fcee7f751c25b9cad0fa72bc7a4954e222f53535ef52945d9549227",
+        "manifest_sha256": "831a6518bc730299d7e6dae7d0ba00d9966e714eacf6ee07e7421527430a1873",
+        "package_format": "tar.gz",
+        "package_size_bytes": 992,
+        "file_hash_count": 2,
+        "signature": {
+          "algorithm": "ed25519",
+          "present": true,
+          "trusted_publisher": true
+        }
+      },
+      "signature_alg": "ed25519",
+      "signature_verified": true,
+      "signature_bypassed": false,
+      "security_profile": "high_risk",
+      "package_format": "tar.gz",
+      "file_hash_count": 2,
+      "package_size_bytes": 992
     }
   ]
 }

@@ -6,10 +6,10 @@ final class SettingsStore: ObservableObject {
 
     @Published var settings: XTerminalSettings {
         didSet {
-            VoiceSessionCoordinator.shared.setPreferences(settings.voice)
+            VoiceSessionCoordinator.sharedIfInitialized?.setPreferences(settings.voice)
             voiceWakeProfileStore.applyPreferences(settings.voice)
             Task { @MainActor in
-                await VoiceSessionCoordinator.shared.refreshRouteAvailability()
+                await VoiceSessionCoordinator.sharedIfInitialized?.refreshRouteAvailability()
             }
         }
     }
@@ -43,9 +43,8 @@ final class SettingsStore: ObservableObject {
         }
 
         voiceWakeProfileStore.applyPreferences(settings.voice)
-        VoiceSessionCoordinator.shared.setPreferences(settings.voice)
         Task { @MainActor in
-            await VoiceSessionCoordinator.shared.refreshRouteAvailability()
+            await VoiceSessionCoordinator.sharedIfInitialized?.refreshRouteAvailability()
         }
 
     }

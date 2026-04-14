@@ -4,6 +4,112 @@ import Testing
 
 struct XTerminalGateSmokeRunnerTests {
     @Test
+    func routeSmokeReturnsPassExitCode() throws {
+        let workspace = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("xt_route_smoke_test_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: workspace)
+        }
+
+        let args = [
+            "XTerminal",
+            XTerminalGateSmokeRunner.routeSmokeFlag,
+            XTerminalGateSmokeRunner.projectRootFlag,
+            workspace.path,
+        ]
+
+        let code = XTerminalGateSmokeRunner.runIfRequested(arguments: args)
+        #expect(code == 0)
+    }
+
+    @Test
+    func supervisorVoiceSmokeReturnsPassExitCodeAndWritesReport() throws {
+        let workspace = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("xt_supervisor_voice_smoke_test_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: workspace)
+        }
+
+        let outputURL = workspace
+            .appendingPathComponent(".axcoder/reports", isDirectory: true)
+            .appendingPathComponent("xt_supervisor_voice_smoke.runtime.json")
+        let args = [
+            "XTerminal",
+            XTerminalGateSmokeRunner.supervisorVoiceSmokeFlag,
+            XTerminalGateSmokeRunner.projectRootFlag,
+            workspace.path,
+            XTerminalGateSmokeRunner.outJSONFlag,
+            outputURL.path,
+        ]
+
+        let code = XTerminalGateSmokeRunner.runIfRequested(arguments: args)
+        #expect(code == 0)
+        #expect(FileManager.default.fileExists(atPath: outputURL.path))
+
+        let data = try Data(contentsOf: outputURL)
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect((json["schema_version"] as? String) == "xt.supervisor_voice_smoke.v1")
+        #expect((json["voice_route"] as? String) == VoiceRouteMode.funasrStreaming.rawValue)
+
+        let checks = try #require(json["checks"] as? [[String: Any]])
+        #expect(!checks.isEmpty)
+        #expect(checks.allSatisfy { ($0["passed"] as? Bool) == true })
+        #expect(
+            checks.map { $0["id"] as? String ?? "" }.contains("grant_approved_and_brief_emitted")
+        )
+
+        let spoken = try #require(json["spoken"] as? [String])
+        #expect(spoken.contains(where: { $0.contains("我在，继续说") }))
+        #expect(spoken.contains(where: { $0.contains("Supervisor Hub 简报") }))
+
+        let approveCall = try #require(json["approve_call"] as? [String: Any])
+        #expect((approveCall["grant_request_id"] as? String) == "grant_xt_supervisor_voice_smoke")
+
+        let briefRequest = try #require(json["brief_request"] as? [String: Any])
+        #expect((briefRequest["project_id"] as? String) == "project_xt_supervisor_voice_smoke")
+    }
+
+    @Test
+    func supervisorVoiceSmokeReportSummaryDecodesAndCountsChecks() throws {
+        let workspace = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("xt_supervisor_voice_smoke_summary_test_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: workspace)
+        }
+
+        let outputURL = workspace
+            .appendingPathComponent(".axcoder/reports", isDirectory: true)
+            .appendingPathComponent("xt_supervisor_voice_smoke.runtime.json")
+        try FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+        let payload = """
+        {
+          "schema_version": "xt.supervisor_voice_smoke.v1",
+          "output_path": "\(outputURL.path)",
+          "voice_route": "\(VoiceRouteMode.funasrStreaming.rawValue)",
+          "checks": [
+            { "id": "wake_armed_ready", "passed": true, "detail": "ok" },
+            { "id": "grant_approved_and_brief_emitted", "passed": false, "detail": "missing" }
+          ]
+        }
+        """
+        try payload.write(to: outputURL, atomically: true, encoding: .utf8)
+
+        let report = try XTSupervisorVoiceSmokeReportSummary.load(from: outputURL)
+        #expect(report.schemaVersion == XTSupervisorVoiceSmokeReportSummary.currentSchemaVersion)
+        #expect(report.voiceRoute == VoiceRouteMode.funasrStreaming.rawValue)
+        #expect(report.outputPath == outputURL.path)
+        #expect(report.checkCount == 2)
+        #expect(report.passedCheckCount == 1)
+        #expect(report.firstFailedPhase == .briefPlayback)
+        #expect(report.phaseStatus(.wake) == .passed)
+        #expect(report.phaseStatus(.briefPlayback) == .failed)
+    }
+
+    @Test
     func unifiedDoctorExportWritesGenericBundleAndReturnsReadyExitCode() throws {
         let workspace = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("xt_unified_doctor_export_test_\(UUID().uuidString)", isDirectory: true)

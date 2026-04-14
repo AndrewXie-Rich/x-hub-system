@@ -1,10 +1,18 @@
 # X-Hub Memory Hybrid Index（skills ecosystem Port）v1（可执行规范 / Draft）
 
 - Status: Draft
-- Updated: 2026-02-12
+- Updated: 2026-03-21
 - Goal: 把 skills ecosystem（MIT）里已经验证过的 **“Markdown 为真相 + 混合检索（Vector+FTS）+ 增量索引 + 原子重建 + compaction 前 flush”** 这套能力，以 **可直接落地的工程切片** 方式移植到 X-Hub（Node + SQLite）上，并与我们现有的 5-layer memory / Progressive Disclosure / Memory-Core Policy 对齐。
 
 > 许可提醒：skills ecosystem 为 MIT，可直接复用代码；必须保留原版权声明与 LICENSE（见“1.2 代码复用清单”）。
+
+补充边界：
+- 本文只定义 retrieval/index plane，不重新定义 memory 控制面。
+- 上游控制面仍固定为：
+  - 用户在 X-Hub 选择 memory AI
+  - `Scheduler -> Worker -> Writer + Gate` 分层执行
+  - `Memory-Core` 作为 governed rule asset 约束提取/晋升/外发
+- 因此 Hybrid Index 负责“如何更快搜到东西”，不负责“谁选模型、谁能写 durable truth、谁决定晋升”。
 
 ---
 

@@ -50,6 +50,12 @@ enum XTMemorySourceTruthPresentation {
         }
     }
 
+    static func explainableLabel(_ raw: String?) -> String {
+        let base = label(raw)
+        guard let truthHint = truthHint(raw) else { return base }
+        return "\(base)（\(truthHint)）"
+    }
+
     static func sourceClass(_ raw: String?) -> String {
         switch normalized(raw) {
         case XTProjectMemoryGovernance.hubMemoryContextSource, "hub_thread":
@@ -68,6 +74,23 @@ enum XTMemorySourceTruthPresentation {
             return "unavailable"
         default:
             return "unknown"
+        }
+    }
+
+    static func truthHint(_ raw: String?) -> String? {
+        switch sourceClass(raw) {
+        case "hub_truth":
+            return "Hub durable truth"
+        case "hub_snapshot_plus_local_overlay":
+            return "快照拼接，非 durable 真相"
+        case "local_truth":
+            return "仅终端本地真相"
+        case "local_fallback":
+            return "Hub 不可用时兜底"
+        case "local_cache":
+            return "仅缓存视图"
+        default:
+            return nil
         }
     }
 

@@ -1,15 +1,20 @@
 import Foundation
 
 enum AXProjectGovernanceTemplate: String, CaseIterable, Sendable, Identifiable {
-    case conservative
-    case safe
-    case agent = "full_autonomy"
+    case prototype
+    case feature
+    case largeProject = "large_project"
+    case highGovernance = "full_autonomy"
+    case inception
+    case legacyObserve = "legacy_observe"
     case custom
 
     static let selectableTemplates: [Self] = [
-        .conservative,
-        .safe,
-        .agent,
+        .prototype,
+        .feature,
+        .largeProject,
+        .highGovernance,
+        .inception,
     ]
 
     static let selectableProfiles: [Self] = selectableTemplates
@@ -18,12 +23,18 @@ enum AXProjectGovernanceTemplate: String, CaseIterable, Sendable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .conservative:
-            return "保守"
-        case .safe:
-            return "安全"
-        case .agent:
-            return "Agent"
+        case .prototype:
+            return "原型"
+        case .feature:
+            return "功能开发"
+        case .largeProject:
+            return "大型项目"
+        case .highGovernance:
+            return "高治理"
+        case .inception:
+            return "产品开局"
+        case .legacyObserve:
+            return "Observe 基线"
         case .custom:
             return "自定义"
         }
@@ -31,16 +42,50 @@ enum AXProjectGovernanceTemplate: String, CaseIterable, Sendable, Identifiable {
 
     var shortDescription: String {
         switch self {
-        case .conservative:
-            return "默认映射 A1 + S2，以理解、规划和审阅为主。"
-        case .safe:
-            return "默认映射 A3 + S3，推荐默认档，在项目内持续推进。"
-        case .agent:
-            return "默认映射 A4 Agent + S3，允许更大执行面，但仍受治理约束。"
+        case .prototype:
+            return "A2 Repo Auto + S1 · Floor 8 / Lean，适合 demo、spike 和低摩擦探索。"
+        case .feature:
+            return "A2 Repo Auto + S2 · Standard 12 / Balanced，默认主力功能开发档。"
+        case .largeProject:
+            return "A3 Deliver Auto + S3 · Deep 20 / Deep，强调 continuity、checkpoint 和 delivery 收口。"
+        case .highGovernance:
+            return "A4 Agent + S3 · Extended 40 / Full，高风险自动执行前仍需 runtime ready。"
+        case .inception:
+            return "A1 Plan + S2 · Deep 20 / Deep，先收敛 scope、architecture 和 work orders。"
+        case .legacyObserve:
+            return "旧默认基线：A0 Observe + S0，保留原系统的观测式项目配置。"
         case .custom:
-            return "当前高级治理项已偏离默认映射。"
+            return "当前高级治理项已偏离任一执行场景模板。"
         }
     }
+
+    var selectableDescription: String {
+        switch self {
+        case .prototype:
+            return "Prototype lane · Vibe + 轻 Ralph"
+        case .feature:
+            return "Default feature lane · Agentic + Ralph + 轻 SDD"
+        case .largeProject:
+            return "Large-project lane · Harness + Agentic + Ralph + SDD"
+        case .highGovernance:
+            return "High-governance lane · Harness + Agentic + 强 SDD"
+        case .inception:
+            return "Inception lane · 轻 BMAD + Agentic"
+        case .legacyObserve:
+            return "Legacy baseline"
+        case .custom:
+            return "Custom"
+        }
+    }
+
+    @available(*, deprecated, message: "Use .prototype")
+    static var conservative: Self { .prototype }
+
+    @available(*, deprecated, message: "Use .feature")
+    static var safe: Self { .feature }
+
+    @available(*, deprecated, message: "Use .highGovernance")
+    static var agent: Self { .highGovernance }
 }
 
 typealias AXProjectAutonomyProfile = AXProjectGovernanceTemplate
@@ -140,76 +185,201 @@ private struct AXProjectGovernanceTemplateSpec {
     var runtimeSurfaceMode: AXProjectRuntimeSurfaceMode
     var localAutoApproveConfigured: Bool
     var requiresHubMemory: Bool
+    var projectRecentDialogueProfile: AXProjectRecentDialogueProfile
+    var projectContextDepthProfile: AXProjectContextDepthProfile
     var deviceAuthorityPosture: AXProjectDeviceAuthorityPosture
     var supervisorScope: AXProjectSupervisorScope
     var grantPosture: AXProjectGrantPosture
 
     init?(template: AXProjectGovernanceTemplate) {
+        let bundle: AXProjectGovernanceBundle
+
         switch template {
-        case .conservative:
-            let bundle = AXProjectGovernanceBundle.recommended(
-                for: .a1Plan,
+        case .prototype:
+            bundle = AXProjectGovernanceBundle.recommended(
+                for: .a2RepoAuto,
+                supervisorInterventionTier: .s1MilestoneReview
+            )
+            self.template = template
+            executionTier = .a2RepoAuto
+            supervisorTier = .s1MilestoneReview
+            runtimeSurfaceMode = .guided
+            localAutoApproveConfigured = false
+            requiresHubMemory = true
+            projectRecentDialogueProfile = .floor8Pairs
+            projectContextDepthProfile = .lean
+            deviceAuthorityPosture = .off
+            supervisorScope = .focusedProject
+            grantPosture = .guidedAuto
+        case .feature:
+            bundle = AXProjectGovernanceBundle.recommended(
+                for: .a2RepoAuto,
                 supervisorInterventionTier: .s2PeriodicReview
             )
             self.template = template
-            executionTier = .a1Plan
+            executionTier = .a2RepoAuto
             supervisorTier = .s2PeriodicReview
-            reviewPolicyMode = bundle.reviewPolicyMode
-            progressHeartbeatSeconds = bundle.schedule.progressHeartbeatSeconds
-            reviewPulseSeconds = bundle.schedule.reviewPulseSeconds
-            brainstormReviewSeconds = bundle.schedule.brainstormReviewSeconds
-            eventDrivenReviewEnabled = bundle.schedule.eventDrivenReviewEnabled
-            eventReviewTriggers = bundle.schedule.eventReviewTriggers
-            runtimeSurfaceMode = .manual
+            runtimeSurfaceMode = .guided
             localAutoApproveConfigured = false
-            requiresHubMemory = false
+            requiresHubMemory = true
+            projectRecentDialogueProfile = .standard12Pairs
+            projectContextDepthProfile = .balanced
             deviceAuthorityPosture = .off
-            supervisorScope = .focusedProject
-            grantPosture = .manualReview
-        case .safe:
-            let bundle = AXProjectGovernanceBundle.recommended(
+            supervisorScope = .portfolio
+            grantPosture = .guidedAuto
+        case .largeProject:
+            bundle = AXProjectGovernanceBundle.recommended(
                 for: .a3DeliverAuto,
                 supervisorInterventionTier: .s3StrategicCoach
             )
             self.template = template
             executionTier = .a3DeliverAuto
             supervisorTier = .s3StrategicCoach
-            reviewPolicyMode = bundle.reviewPolicyMode
-            progressHeartbeatSeconds = bundle.schedule.progressHeartbeatSeconds
-            reviewPulseSeconds = bundle.schedule.reviewPulseSeconds
-            brainstormReviewSeconds = bundle.schedule.brainstormReviewSeconds
-            eventDrivenReviewEnabled = bundle.schedule.eventDrivenReviewEnabled
-            eventReviewTriggers = bundle.schedule.eventReviewTriggers
             runtimeSurfaceMode = .guided
             localAutoApproveConfigured = false
-            requiresHubMemory = false
-            deviceAuthorityPosture = .projectBound
+            requiresHubMemory = true
+            projectRecentDialogueProfile = .deep20Pairs
+            projectContextDepthProfile = .deep
+            deviceAuthorityPosture = .off
             supervisorScope = .portfolio
             grantPosture = .guidedAuto
-        case .agent:
-            let bundle = AXProjectGovernanceBundle.recommended(
+        case .highGovernance:
+            bundle = AXProjectGovernanceBundle.recommended(
                 for: .a4OpenClaw,
                 supervisorInterventionTier: .s3StrategicCoach
             )
             self.template = template
             executionTier = .a4OpenClaw
             supervisorTier = .s3StrategicCoach
-            reviewPolicyMode = bundle.reviewPolicyMode
-            progressHeartbeatSeconds = bundle.schedule.progressHeartbeatSeconds
-            reviewPulseSeconds = bundle.schedule.reviewPulseSeconds
-            brainstormReviewSeconds = bundle.schedule.brainstormReviewSeconds
-            eventDrivenReviewEnabled = bundle.schedule.eventDrivenReviewEnabled
-            eventReviewTriggers = bundle.schedule.eventReviewTriggers
             runtimeSurfaceMode = .trustedOpenClawMode
             localAutoApproveConfigured = true
             requiresHubMemory = true
+            projectRecentDialogueProfile = .extended40Pairs
+            projectContextDepthProfile = .full
             deviceAuthorityPosture = .deviceGoverned
             supervisorScope = .deviceGoverned
             grantPosture = .envelopeAuto
+        case .inception:
+            bundle = AXProjectGovernanceBundle.recommended(
+                for: .a1Plan,
+                supervisorInterventionTier: .s2PeriodicReview
+            )
+            self.template = template
+            executionTier = .a1Plan
+            supervisorTier = .s2PeriodicReview
+            runtimeSurfaceMode = .guided
+            localAutoApproveConfigured = false
+            requiresHubMemory = true
+            projectRecentDialogueProfile = .deep20Pairs
+            projectContextDepthProfile = .deep
+            deviceAuthorityPosture = .off
+            supervisorScope = .focusedProject
+            grantPosture = .manualReview
+        case .legacyObserve:
+            bundle = AXProjectGovernanceBundle.recommended(
+                for: .a0Observe,
+                supervisorInterventionTier: .s0SilentAudit
+            )
+            self.template = template
+            executionTier = .a0Observe
+            supervisorTier = .s0SilentAudit
+            runtimeSurfaceMode = .manual
+            localAutoApproveConfigured = false
+            requiresHubMemory = false
+            projectRecentDialogueProfile = .standard12Pairs
+            projectContextDepthProfile = .balanced
+            deviceAuthorityPosture = .off
+            supervisorScope = .focusedProject
+            grantPosture = .manualReview
         case .custom:
             return nil
         }
+
+        reviewPolicyMode = bundle.reviewPolicyMode
+        progressHeartbeatSeconds = bundle.schedule.progressHeartbeatSeconds
+        reviewPulseSeconds = bundle.schedule.reviewPulseSeconds
+        brainstormReviewSeconds = bundle.schedule.brainstormReviewSeconds
+        eventDrivenReviewEnabled = bundle.schedule.eventDrivenReviewEnabled
+        eventReviewTriggers = bundle.schedule.eventReviewTriggers
     }
+}
+
+struct AXProjectGovernanceTemplateDefaults: Equatable, Sendable {
+    var template: AXProjectGovernanceTemplate
+    var executionTier: AXProjectExecutionTier
+    var supervisorTier: AXProjectSupervisorInterventionTier
+    var reviewPolicyMode: AXProjectReviewPolicyMode
+    var progressHeartbeatSeconds: Int
+    var reviewPulseSeconds: Int
+    var brainstormReviewSeconds: Int
+    var eventDrivenReviewEnabled: Bool
+    var eventReviewTriggers: [AXProjectReviewTrigger]
+    var runtimeSurfaceMode: AXProjectRuntimeSurfaceMode
+    var localAutoApproveConfigured: Bool
+    var requiresHubMemory: Bool
+    var projectRecentDialogueProfile: AXProjectRecentDialogueProfile
+    var projectContextDepthProfile: AXProjectContextDepthProfile
+    var deviceAuthorityPosture: AXProjectDeviceAuthorityPosture
+    var supervisorScope: AXProjectSupervisorScope
+    var grantPosture: AXProjectGrantPosture
+}
+
+func xtGovernanceTemplateDefaults(
+    for template: AXProjectGovernanceTemplate
+) -> AXProjectGovernanceTemplateDefaults? {
+    guard let spec = AXProjectGovernanceTemplateSpec(template: template) else {
+        return nil
+    }
+
+    return AXProjectGovernanceTemplateDefaults(
+        template: spec.template,
+        executionTier: spec.executionTier,
+        supervisorTier: spec.supervisorTier,
+        reviewPolicyMode: spec.reviewPolicyMode,
+        progressHeartbeatSeconds: spec.progressHeartbeatSeconds,
+        reviewPulseSeconds: spec.reviewPulseSeconds,
+        brainstormReviewSeconds: spec.brainstormReviewSeconds,
+        eventDrivenReviewEnabled: spec.eventDrivenReviewEnabled,
+        eventReviewTriggers: spec.eventReviewTriggers,
+        runtimeSurfaceMode: spec.runtimeSurfaceMode,
+        localAutoApproveConfigured: spec.localAutoApproveConfigured,
+        requiresHubMemory: spec.requiresHubMemory,
+        projectRecentDialogueProfile: spec.projectRecentDialogueProfile,
+        projectContextDepthProfile: spec.projectContextDepthProfile,
+        deviceAuthorityPosture: spec.deviceAuthorityPosture,
+        supervisorScope: spec.supervisorScope,
+        grantPosture: spec.grantPosture
+    )
+}
+
+func xtRecommendedGovernanceTemplateDefaults(
+    executionTier: AXProjectExecutionTier,
+    supervisorInterventionTier: AXProjectSupervisorInterventionTier? = nil
+) -> AXProjectGovernanceTemplateDefaults {
+    let template = xtGovernanceTemplateBaseline(
+        for: executionTier,
+        supervisorInterventionTier: supervisorInterventionTier
+    )
+    return xtGovernanceTemplateDefaults(for: template)
+        ?? AXProjectGovernanceTemplateDefaults(
+            template: template,
+            executionTier: executionTier,
+            supervisorTier: supervisorInterventionTier ?? executionTier.defaultSupervisorInterventionTier,
+            reviewPolicyMode: executionTier.defaultReviewPolicyMode,
+            progressHeartbeatSeconds: executionTier.defaultProgressHeartbeatSeconds,
+            reviewPulseSeconds: executionTier.defaultReviewPulseSeconds,
+            brainstormReviewSeconds: executionTier.defaultBrainstormReviewSeconds,
+            eventDrivenReviewEnabled: executionTier.defaultEventDrivenReviewEnabled,
+            eventReviewTriggers: executionTier.defaultEventReviewTriggers,
+            runtimeSurfaceMode: executionTier.defaultRuntimeSurfacePreset,
+            localAutoApproveConfigured: executionTier == .a4OpenClaw,
+            requiresHubMemory: executionTier != .a0Observe,
+            projectRecentDialogueProfile: .defaultProfile,
+            projectContextDepthProfile: .defaultProfile,
+            deviceAuthorityPosture: executionTier == .a4OpenClaw ? .deviceGoverned : .off,
+            supervisorScope: executionTier >= .a2RepoAuto ? .portfolio : .focusedProject,
+            grantPosture: executionTier == .a4OpenClaw ? .envelopeAuto : .manualReview
+        )
 }
 
 private struct AXProjectGovernanceTemplateSnapshot {
@@ -224,6 +394,8 @@ private struct AXProjectGovernanceTemplateSnapshot {
     var runtimeSurfaceMode: AXProjectRuntimeSurfaceMode
     var localAutoApproveConfigured: Bool
     var hubMemoryEnabled: Bool
+    var projectRecentDialogueProfile: AXProjectRecentDialogueProfile
+    var projectContextDepthProfile: AXProjectContextDepthProfile
     var runtimeSurfaceClamp: AXProjectRuntimeSurfaceHubOverrideMode
 }
 
@@ -246,6 +418,10 @@ extension AXProjectConfig {
             eventDrivenReviewEnabled: spec.eventDrivenReviewEnabled,
             eventReviewTriggers: spec.eventReviewTriggers,
             governanceCompatSource: .explicitDualDial
+        )
+        out = out.settingProjectContextAssembly(
+            projectRecentDialogueProfile: spec.projectRecentDialogueProfile,
+            projectContextDepthProfile: spec.projectContextDepthProfile
         )
         out = out.settingRuntimeSurfacePolicy(
             mode: spec.runtimeSurfaceMode,
@@ -274,18 +450,31 @@ extension AXProjectConfig {
     }
 }
 
-func xtGovernanceTemplateBaseline(for executionTier: AXProjectExecutionTier) -> AXProjectGovernanceTemplate {
+func xtGovernanceTemplateBaseline(
+    for executionTier: AXProjectExecutionTier,
+    supervisorInterventionTier: AXProjectSupervisorInterventionTier? = nil
+) -> AXProjectGovernanceTemplate {
     switch executionTier {
-    case .a0Observe, .a1Plan:
-        return .conservative
-    case .a2RepoAuto, .a3DeliverAuto:
-        return .safe
+    case .a0Observe:
+        return .legacyObserve
+    case .a1Plan:
+        return .inception
+    case .a2RepoAuto:
+        if let supervisorInterventionTier, supervisorInterventionTier <= .s1MilestoneReview {
+            return .prototype
+        }
+        return .feature
+    case .a3DeliverAuto:
+        if let supervisorInterventionTier, supervisorInterventionTier <= .s2PeriodicReview {
+            return .feature
+        }
+        return .largeProject
     case .a4OpenClaw:
-            return .agent
+        return .highGovernance
     }
 }
 
-@available(*, deprecated, message: "Use xtGovernanceTemplateBaseline(for:)")
+@available(*, deprecated, message: "Use xtGovernanceTemplateBaseline(for:supervisorInterventionTier:)")
 func xtAutonomyBaselineProfile(for executionTier: AXProjectExecutionTier) -> AXProjectAutonomyProfile {
     xtGovernanceTemplateBaseline(for: executionTier)
 }
@@ -304,7 +493,10 @@ func xtGovernanceTemplateDraftConfig(
 ) -> AXProjectConfig {
     let normalizedTemplate = AXProjectGovernanceTemplate.selectableTemplates.contains(template)
         ? template
-        : xtGovernanceTemplateBaseline(for: executionTier)
+        : xtGovernanceTemplateBaseline(
+            for: executionTier,
+            supervisorInterventionTier: supervisorInterventionTier
+        )
 
     return AXProjectConfig
         .default(forProjectRoot: projectRoot)
@@ -465,14 +657,16 @@ func xtProjectAutonomySwitchboardPresentation(
 }
 
 private func xtConfiguredGovernanceTemplate(for config: AXProjectConfig) -> AXProjectGovernanceTemplate {
-    if xtMatchesLegacyConservativeTemplate(config) || xtMatchesTemplate(config, template: .conservative) {
-        return .conservative
-    }
-    if xtMatchesTemplate(config, template: .safe) {
-        return .safe
-    }
-    if xtMatchesTemplate(config, template: .agent) {
-        return .agent
+    let orderedTemplates: [AXProjectGovernanceTemplate] = [
+        .legacyObserve,
+        .inception,
+        .prototype,
+        .feature,
+        .largeProject,
+        .highGovernance,
+    ]
+    for template in orderedTemplates where xtMatchesTemplate(config, template: template) {
+        return template
     }
     return .custom
 }
@@ -494,17 +688,21 @@ private func xtEffectiveGovernanceTemplate(
         runtimeSurfaceMode: resolved.effectiveRuntimeSurface.effectiveMode,
         localAutoApproveConfigured: effectiveCapability.allowAutoLocalApproval,
         hubMemoryEnabled: config.preferHubMemory,
+        projectRecentDialogueProfile: config.projectRecentDialogueProfile,
+        projectContextDepthProfile: config.projectContextDepthProfile,
         runtimeSurfaceClamp: resolved.effectiveRuntimeSurface.hubOverrideMode
     )
 
-    if xtMatchesLegacyConservativeTemplate(snapshot) || xtMatchesTemplate(snapshot, template: .conservative) {
-        return .conservative
-    }
-    if xtMatchesTemplate(snapshot, template: .safe) {
-        return .safe
-    }
-    if xtMatchesTemplate(snapshot, template: .agent) {
-        return .agent
+    let orderedTemplates: [AXProjectGovernanceTemplate] = [
+        .legacyObserve,
+        .inception,
+        .prototype,
+        .feature,
+        .largeProject,
+        .highGovernance,
+    ]
+    for template in orderedTemplates where xtMatchesTemplate(snapshot, template: template) {
+        return template
     }
     return .custom
 }
@@ -525,6 +723,8 @@ private func xtMatchesTemplate(
         runtimeSurfaceMode: config.runtimeSurfaceMode,
         localAutoApproveConfigured: config.governedAutoApproveLocalToolCalls,
         hubMemoryEnabled: config.preferHubMemory,
+        projectRecentDialogueProfile: config.projectRecentDialogueProfile,
+        projectContextDepthProfile: config.projectContextDepthProfile,
         runtimeSurfaceClamp: config.runtimeSurfaceHubOverrideMode
     )
     return xtMatchesTemplate(snapshot, template: template)
@@ -545,41 +745,11 @@ private func xtMatchesTemplate(
     if snapshot.eventReviewTriggers != spec.eventReviewTriggers { return false }
     if snapshot.runtimeSurfaceMode != spec.runtimeSurfaceMode { return false }
     if snapshot.localAutoApproveConfigured != spec.localAutoApproveConfigured { return false }
+    if snapshot.projectRecentDialogueProfile != spec.projectRecentDialogueProfile { return false }
+    if snapshot.projectContextDepthProfile != spec.projectContextDepthProfile { return false }
     if snapshot.runtimeSurfaceClamp != .none { return false }
     if spec.requiresHubMemory && !snapshot.hubMemoryEnabled { return false }
     return true
-}
-
-private func xtMatchesLegacyConservativeTemplate(_ config: AXProjectConfig) -> Bool {
-    let snapshot = AXProjectGovernanceTemplateSnapshot(
-        executionTier: config.executionTier,
-        supervisorTier: config.supervisorInterventionTier,
-        reviewPolicyMode: config.reviewPolicyMode,
-        progressHeartbeatSeconds: config.progressHeartbeatSeconds,
-        reviewPulseSeconds: config.reviewPulseSeconds,
-        brainstormReviewSeconds: config.brainstormReviewSeconds,
-        eventDrivenReviewEnabled: config.eventDrivenReviewEnabled,
-        eventReviewTriggers: config.eventReviewTriggers,
-        runtimeSurfaceMode: config.runtimeSurfaceMode,
-        localAutoApproveConfigured: config.governedAutoApproveLocalToolCalls,
-        hubMemoryEnabled: config.preferHubMemory,
-        runtimeSurfaceClamp: config.runtimeSurfaceHubOverrideMode
-    )
-    return xtMatchesLegacyConservativeTemplate(snapshot)
-}
-
-private func xtMatchesLegacyConservativeTemplate(_ snapshot: AXProjectGovernanceTemplateSnapshot) -> Bool {
-    snapshot.executionTier == .a0Observe
-        && snapshot.supervisorTier == .s0SilentAudit
-        && snapshot.reviewPolicyMode == .milestoneOnly
-        && snapshot.progressHeartbeatSeconds == AXProjectGovernanceBundle.recommended(for: .a0Observe).schedule.progressHeartbeatSeconds
-        && snapshot.reviewPulseSeconds == 0
-        && snapshot.brainstormReviewSeconds == 0
-        && snapshot.eventDrivenReviewEnabled == false
-        && snapshot.eventReviewTriggers == [.manualRequest]
-        && snapshot.runtimeSurfaceMode == .manual
-        && snapshot.localAutoApproveConfigured == false
-        && snapshot.runtimeSurfaceClamp == .none
 }
 
 private func xtConfiguredDeviceAuthorityPosture(
@@ -688,8 +858,8 @@ private func xtConfiguredDeviceAuthorityDetail(
     case .projectBound:
         if authority.deviceAuthorityConfigured {
             let device = trustedAutomationStatus.boundDeviceID.isEmpty ? authority.pairedDeviceId : trustedAutomationStatus.boundDeviceID
-        return "默认把设备能力收束在当前项目边界内。\(device.isEmpty ? "" : "当前已绑定 \(device)。")"
-    }
+            return "默认把设备能力收束在当前项目边界内。\(device.isEmpty ? "" : "当前已绑定 \(device)。")"
+        }
         return "默认只允许当前项目在受治理前提下使用设备能力；仍需在治理详情里完成受治理自动化绑定。"
     case .deviceGoverned:
         if authority.deviceAuthorityConfigured {
@@ -737,17 +907,17 @@ private func xtSupervisorScopeDetail(
     effective: Bool
 ) -> String {
     switch scope {
-        case .focusedProject:
-            return effective && !hubMemoryEnabled
-                ? "当前更偏向本地连续上下文和当前项目摘要，不主动放大全局检索范围。"
-                : "默认只围绕当前项目和记忆摘要做判断。"
-        case .portfolio:
-            return "默认可看全部项目的概要状态，并对当前项目做深钻。"
-        case .deviceGoverned:
-            return hubMemoryEnabled
-                ? "默认可在受治理前提下读取全局项目、授权、事故和已批准根目录。"
-                : "当前目标是设备治理视角，但 Hub 记忆关闭会收窄上下文来源。"
-        }
+    case .focusedProject:
+        return effective && !hubMemoryEnabled
+            ? "当前更偏向本地连续上下文和当前项目摘要，不主动放大全局检索范围。"
+            : "默认只围绕当前项目和记忆摘要做判断。"
+    case .portfolio:
+        return "默认可看全部项目的概要状态，并对当前项目做深钻。"
+    case .deviceGoverned:
+        return hubMemoryEnabled
+            ? "默认可在受治理前提下读取全局项目、授权、事故和已批准根目录。"
+            : "当前目标是设备治理视角，但 Hub 记忆关闭会收窄上下文来源。"
+    }
 }
 
 private func xtGrantDetail(
@@ -773,15 +943,18 @@ private func xtGrantDetail(
 private func xtConfiguredTemplateDeviationReasons(_ config: AXProjectConfig) -> [String] {
     let template = xtConfiguredGovernanceTemplate(for: config)
     guard template == .custom else { return [] }
-    let baseline = xtGovernanceTemplateBaseline(for: config.executionTier)
+    let baseline = xtGovernanceTemplateBaseline(
+        for: config.executionTier,
+        supervisorInterventionTier: config.supervisorInterventionTier
+    )
     guard let spec = AXProjectGovernanceTemplateSpec(template: baseline) else { return [] }
 
     var reasons: [String] = []
     if config.executionTier != spec.executionTier {
-        reasons.append("执行档位已偏离 \(baseline.displayName) 默认档。")
+        reasons.append("A-Tier 已偏离 \(baseline.displayName) 默认档。")
     }
     if config.supervisorInterventionTier != spec.supervisorTier {
-        reasons.append("监督档位已被单独调节。")
+        reasons.append("S-Tier 已被单独调节。")
     }
     if config.reviewPolicyMode != spec.reviewPolicyMode
         || config.progressHeartbeatSeconds != spec.progressHeartbeatSeconds
@@ -789,7 +962,11 @@ private func xtConfiguredTemplateDeviationReasons(_ config: AXProjectConfig) -> 
         || config.brainstormReviewSeconds != spec.brainstormReviewSeconds
         || config.eventDrivenReviewEnabled != spec.eventDrivenReviewEnabled
         || config.eventReviewTriggers != spec.eventReviewTriggers {
-        reasons.append("审查节奏 / 触发器已偏离默认映射。")
+        reasons.append("Heartbeat / Review 节奏 / 触发器已偏离默认映射。")
+    }
+    if config.projectRecentDialogueProfile != spec.projectRecentDialogueProfile
+        || config.projectContextDepthProfile != spec.projectContextDepthProfile {
+        reasons.append("Project Context 连续性或背景深度已偏离场景模板默认值。")
     }
     if config.runtimeSurfaceMode != spec.runtimeSurfaceMode {
         reasons.append("执行面预设已被单独改动。")
@@ -801,7 +978,7 @@ private func xtConfiguredTemplateDeviationReasons(_ config: AXProjectConfig) -> 
         reasons.append("终端本地收束当前不为无。")
     }
     if spec.requiresHubMemory && !config.preferHubMemory {
-        reasons.append("当前档位要求 Hub 记忆，但项目已切到仅本地提示记忆。")
+        reasons.append("当前场景模板要求 Hub 记忆优先，但项目已切到仅本地提示记忆。")
     }
     return Array(reasons.prefix(4))
 }
@@ -813,7 +990,7 @@ private func xtEffectiveTemplateDeviationReasons(
 ) -> [String] {
     var reasons: [String] = []
     if resolved.validation.shouldFailClosed {
-        reasons.append("当前治理组合无效，运行时已 fail-closed 到保守基线。")
+        reasons.append("当前治理组合无效，运行时已 fail-closed 回到 Observe 基线。")
     }
     if resolved.effectiveRuntimeSurface.killSwitchEngaged {
         reasons.append("Hub 紧急回收已回收高风险执行面。")
@@ -823,7 +1000,7 @@ private func xtEffectiveTemplateDeviationReasons(
         reasons.append("当前存在收束：\(resolved.effectiveRuntimeSurface.hubOverrideMode.displayName)。")
     }
     if config.executionTier == .a4OpenClaw && !resolved.trustedAutomationStatus.trustedAutomationReady {
-        reasons.append("受治理自动化未就绪，完整设备面尚未真正放行。")
+        reasons.append("trusted automation 尚未就绪，完整设备面尚未真正放行。")
     }
     if config.governedAutoApproveLocalToolCalls && !effectiveCapability.allowAutoLocalApproval {
         reasons.append("本地自动审批已配置，但当前生效能力还未放行。")
@@ -847,7 +1024,8 @@ private func xtRuntimeSummary(
     }
     let clamp = resolved.effectiveRuntimeSurface.hubOverrideMode.displayName
     let hubMemory = config.preferHubMemory ? "Hub" : "Local"
-    return "记忆来源：\(hubMemory) · 执行面 TTL 剩余：\(ttl) · 本地收束：\(config.runtimeSurfaceHubOverrideMode.displayName) · 生效收束：\(clamp)"
+    let contextSummary = "\(config.projectRecentDialogueProfile.shortLabel) / \(config.projectContextDepthProfile.displayName)"
+    return "记忆来源：\(hubMemory) · Project Context：\(contextSummary) · 执行面 TTL 剩余：\(ttl) · 本地收束：\(config.runtimeSurfaceHubOverrideMode.displayName) · 生效收束：\(clamp)"
 }
 
 private func xtEffectiveTemplateSummary(
@@ -857,7 +1035,7 @@ private func xtEffectiveTemplateSummary(
 ) -> String {
     if template == .custom {
         if resolved.validation.shouldFailClosed {
-            return "当前生效状态已因无效组合进入保守 fail-closed。"
+            return "当前生效状态已因治理冲突 fail-closed 回到 Observe 基线。"
         }
         if resolved.effectiveRuntimeSurface.killSwitchEngaged {
             return "当前生效状态已被紧急回收。"

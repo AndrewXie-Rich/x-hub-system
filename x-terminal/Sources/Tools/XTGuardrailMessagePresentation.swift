@@ -136,6 +136,44 @@ enum XTGuardrailMessagePresentation {
         )
     }
 
+    static func displayDenyCode(
+        _ rawDenyCode: String,
+        requiredCapability: String = ""
+    ) -> String {
+        let cleanedDenyCode = normalized(rawDenyCode)
+        guard !cleanedDenyCode.isEmpty else { return "" }
+
+        if let summary = explanation(
+            tool: nil,
+            toolLabel: "",
+            denyCode: cleanedDenyCode,
+            policySource: "",
+            policyReason: "",
+            requiredCapability: requiredCapability
+        )?.summary.trimmingCharacters(in: .whitespacesAndNewlines),
+           !summary.isEmpty,
+           normalized(summary) != cleanedDenyCode {
+            return "\(summary)（\(cleanedDenyCode)）"
+        }
+
+        return cleanedDenyCode
+    }
+
+    static func displayCapability(
+        _ rawCapability: String
+    ) -> String {
+        let cleanedCapability = normalized(rawCapability)
+        guard !cleanedCapability.isEmpty else { return "" }
+        let humanCapability = XTHubGrantPresentation.capabilityLabel(
+            capability: cleanedCapability,
+            modelId: ""
+        )
+        guard normalized(humanCapability) != cleanedCapability else {
+            return cleanedCapability
+        }
+        return "\(humanCapability)（\(cleanedCapability)）"
+    }
+
     static func toolResultBody(
         tool: ToolName,
         summary: [String: JSONValue],
@@ -143,13 +181,7 @@ enum XTGuardrailMessagePresentation {
     ) -> String? {
         let denyCode = string(summary["deny_code"]) ?? ""
         let policySource = string(summary["policy_source"]) ?? ""
-        let runtimeSurfacePolicyReason = string(summary["runtime_surface_policy_reason"]) ?? ""
-        let policyReason: String
-        if policySource == "project_autonomy_policy", !runtimeSurfacePolicyReason.isEmpty {
-            policyReason = runtimeSurfacePolicyReason
-        } else {
-            policyReason = string(summary["policy_reason"]) ?? ""
-        }
+        let policyReason = resolvedPolicyReason(from: summary)
         let requiredCapability = string(summary["required_capability"]) ?? ""
 
         guard !denyCode.isEmpty || !policySource.isEmpty else { return nil }
@@ -166,14 +198,130 @@ enum XTGuardrailMessagePresentation {
             fallbackDetail: detail
         )
 
-        if normalized(denyCode) == "governance_capability_denied"
-            || normalized(policySource) == "project_governance" {
-            if let truthLine = XTGovernanceTruthPresentation.truthLine(from: summary) {
-                return "\(truthLine) \(body)"
-            }
+        if let truthLine = displayGovernanceTruthLine(
+            from: summary,
+            denyCode: denyCode,
+            policySource: policySource
+        ) {
+            return "\(truthLine) \(body)"
         }
 
         return body
+    }
+
+    static func governanceEvidenceFields(
+        from rawObject: [String: JSONValue],
+        tool: ToolName? = nil,
+        toolLabelOverride: String? = nil
+    ) -> [String: JSONValue] {
+        let denyCode = string(rawObject["deny_code"]) ?? ""
+        let policySource = string(rawObject["policy_source"]) ?? ""
+        let policyReason = resolvedPolicyReason(from: rawObject)
+        let requiredCapability = string(rawObject["required_capability"]) ?? ""
+        let resolvedTool = tool
+            ?? string(rawObject["tool"]).flatMap(ToolName.init(rawValue:))
+            ?? string(rawObject["tool_name"]).flatMap(ToolName.init(rawValue:))
+        let resolvedToolRaw = string(rawObject["tool"])
+            ?? string(rawObject["tool_name"])
+            ?? resolvedTool?.rawValue
+            ?? ""
+        let providedToolLabel = toolLabelOverride?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let toolLabel = providedToolLabel.isEmpty
+            ? XTPendingApprovalPresentation.displayToolName(raw: resolvedToolRaw, tool: resolvedTool)
+            : providedToolLabel
+
+        var fields: [String: JSONValue] = [:]
+        if let governanceReason = string(rawObject["governance_reason"])
+            ?? governanceReasonSummary(
+                tool: resolvedTool,
+                toolLabel: toolLabel,
+                denyCode: denyCode,
+                policySource: policySource,
+                policyReason: policyReason,
+                requiredCapability: requiredCapability
+            ) {
+            fields["governance_reason"] = .string(governanceReason)
+        }
+        if let blockedSummary = string(rawObject["blocked_summary"])
+            ?? blockedSummary(
+                tool: resolvedTool,
+                toolLabel: toolLabel,
+                denyCode: denyCode,
+                policySource: policySource,
+                policyReason: policyReason,
+                requiredCapability: requiredCapability,
+                fallbackSummary: string(rawObject["result_summary"]) ?? "",
+                fallbackDetail: string(rawObject["detail"]) ?? ""
+            ) {
+            fields["blocked_summary"] = .string(blockedSummary)
+        }
+        if let governanceTruth = string(rawObject["governance_truth"])
+            ?? governanceTruthLine(
+                from: rawObject,
+                denyCode: denyCode,
+                policySource: policySource
+            ) {
+            fields["governance_truth"] = .string(governanceTruth)
+        }
+        if let repairAction = string(rawObject["repair_action"])
+            ?? repairActionSummary(
+                denyCode: denyCode,
+                policySource: policySource,
+                policyReason: policyReason
+            ) {
+            fields["repair_action"] = .string(repairAction)
+        }
+        return fields
+    }
+
+    static func governanceReasonSummary(
+        tool: ToolName? = nil,
+        toolLabel: String,
+        denyCode: String,
+        policySource: String = "",
+        policyReason: String = "",
+        requiredCapability: String = ""
+    ) -> String? {
+        guard shouldShowGovernanceTruth(
+            denyCode: denyCode,
+            policySource: policySource
+        ) else {
+            return nil
+        }
+        return explanation(
+            tool: tool,
+            toolLabel: toolLabel,
+            denyCode: denyCode,
+            policySource: policySource,
+            policyReason: policyReason,
+            requiredCapability: requiredCapability
+        )?.summary
+    }
+
+    static func governanceTruthLine(
+        from rawObject: [String: JSONValue],
+        denyCode: String,
+        policySource: String = ""
+    ) -> String? {
+        guard shouldShowGovernanceTruth(
+            denyCode: denyCode,
+            policySource: policySource
+        ) else {
+            return nil
+        }
+        return XTGovernanceTruthPresentation.truthLine(from: rawObject)
+    }
+
+    static func displayGovernanceTruthLine(
+        from rawObject: [String: JSONValue],
+        denyCode: String,
+        policySource: String = ""
+    ) -> String? {
+        governanceTruthLine(
+            from: rawObject,
+            denyCode: denyCode,
+            policySource: policySource
+        ).map(XTGovernanceTruthPresentation.displayText)
     }
 
     static func repairHint(
@@ -188,7 +336,7 @@ enum XTGuardrailMessagePresentation {
         if cleanedDenyCode == "governance_capability_denied" || cleanedPolicySource == "project_governance" {
             return XTGuardrailRepairHint(
                 destination: .executionTier,
-                buttonTitle: "打开执行档位",
+                buttonTitle: "打开 A-Tier",
                 helpText: executionTierHelpText(minimumTier: recommendedExecutionTier(for: cleanedPolicyReason))
             )
         }
@@ -203,7 +351,27 @@ enum XTGuardrailMessagePresentation {
             )
         }
 
+        if cleanedDenyCode == "preflight_failed" || cleanedDenyCode == "preflight_quarantined" {
+            return XTGuardrailRepairHint(
+                destination: .overview,
+                buttonTitle: "查看技能治理",
+                helpText: "打开项目设置，检查技能治理卡片里的 trust root、pinned version、runner、compatibility 和 preflight。"
+            )
+        }
+
         return nil
+    }
+
+    static func shouldShowGovernanceTruth(
+        denyCode: String,
+        policySource: String = ""
+    ) -> Bool {
+        let cleanedDenyCode = normalized(denyCode)
+        let cleanedPolicySource = normalized(policySource)
+        return cleanedDenyCode == "governance_capability_denied"
+            || cleanedDenyCode == "autonomy_policy_denied"
+            || cleanedPolicySource == "project_governance"
+            || cleanedPolicySource == "project_autonomy_policy"
     }
 
     private static func explanation(
@@ -225,6 +393,16 @@ enum XTGuardrailMessagePresentation {
         )
 
         switch cleanedDenyCode {
+        case "preflight_quarantined":
+            return XTGuardrailMessage(
+                summary: "这个技能当前处于 quarantine，不能执行。",
+                nextStep: "先修复技能包或解除隔离，再按技能治理卡片里的 preflight 结果重试。"
+            )
+        case "preflight_failed":
+            return XTGuardrailMessage(
+                summary: "这个技能的执行前检查还没通过，所以现在不能跑。",
+                nextStep: "先修技能治理里的 trust root、pinned version、runner、compatibility 和 preflight，再重试。"
+            )
         case "grant_required":
             let summary: String
             if cleanedCapability.isEmpty {
@@ -393,7 +571,7 @@ enum XTGuardrailMessagePresentation {
         switch true {
         case policyReason.contains("repo_write"):
             return XTGuardrailMessage(
-                summary: "当前项目执行档位不允许写文件。",
+                summary: "当前项目 A-Tier 不允许写文件。",
                 nextStep: executionTierNextStep(
                     minimumTier: .a2RepoAuto,
                     action: "写文件"
@@ -401,7 +579,7 @@ enum XTGuardrailMessagePresentation {
             )
         case policyReason.contains("repo_delete_move"):
             return XTGuardrailMessage(
-                summary: "当前项目执行档位不允许删除、移动或重命名路径。",
+                summary: "当前项目 A-Tier 不允许删除、移动或重命名路径。",
                 nextStep: executionTierNextStep(
                     minimumTier: .a2RepoAuto,
                     action: "删除、移动或重命名路径"
@@ -409,7 +587,7 @@ enum XTGuardrailMessagePresentation {
             )
         case policyReason.contains("repo_build_test"):
             return XTGuardrailMessage(
-                summary: "当前项目执行档位不允许运行构建或测试命令。",
+                summary: "当前项目 A-Tier 不允许运行构建或测试命令。",
                 nextStep: executionTierNextStep(
                     minimumTier: .a2RepoAuto,
                     action: "运行构建或测试命令"
@@ -417,7 +595,7 @@ enum XTGuardrailMessagePresentation {
             )
         case policyReason.contains("repo_build"):
             return XTGuardrailMessage(
-                summary: "当前项目执行档位不允许运行构建命令。",
+                summary: "当前项目 A-Tier 不允许运行构建命令。",
                 nextStep: executionTierNextStep(
                     minimumTier: .a2RepoAuto,
                     action: "运行受治理的构建命令"
@@ -425,7 +603,7 @@ enum XTGuardrailMessagePresentation {
             )
         case policyReason.contains("repo_test"):
             return XTGuardrailMessage(
-                summary: "当前项目执行档位不允许运行测试命令。",
+                summary: "当前项目 A-Tier 不允许运行测试命令。",
                 nextStep: executionTierNextStep(
                     minimumTier: .a2RepoAuto,
                     action: "运行受治理的测试命令"
@@ -433,7 +611,7 @@ enum XTGuardrailMessagePresentation {
             )
         case policyReason.contains("git_apply"):
             return XTGuardrailMessage(
-                summary: "当前项目执行档位不允许应用补丁。",
+                summary: "当前项目 A-Tier 不允许应用补丁。",
                 nextStep: executionTierNextStep(
                     minimumTier: .a2RepoAuto,
                     action: "应用补丁"
@@ -441,7 +619,7 @@ enum XTGuardrailMessagePresentation {
             )
         case policyReason.contains("git_commit"):
             return XTGuardrailMessage(
-                summary: "当前项目执行档位不允许创建 Git 提交。",
+                summary: "当前项目 A-Tier 不允许创建 Git 提交。",
                 nextStep: executionTierNextStep(
                     minimumTier: .a3DeliverAuto,
                     action: "创建提交"
@@ -449,7 +627,7 @@ enum XTGuardrailMessagePresentation {
             )
         case policyReason.contains("git_push"):
             return XTGuardrailMessage(
-                summary: "当前项目执行档位不允许 Git 推送。",
+                summary: "当前项目 A-Tier 不允许 Git 推送。",
                 nextStep: executionTierNextStep(
                     minimumTier: .a4OpenClaw,
                     action: "向远端推送"
@@ -457,7 +635,7 @@ enum XTGuardrailMessagePresentation {
             )
         case policyReason.contains("pr_create"):
             return XTGuardrailMessage(
-                summary: "当前项目执行档位不允许创建 Pull Request。",
+                summary: "当前项目 A-Tier 不允许创建 Pull Request。",
                 nextStep: executionTierNextStep(
                     minimumTier: .a3DeliverAuto,
                     action: "创建 Pull Request"
@@ -465,7 +643,7 @@ enum XTGuardrailMessagePresentation {
             )
         case policyReason.contains("ci_read"):
             return XTGuardrailMessage(
-                summary: "当前项目执行档位不允许读取远端 CI 状态。",
+                summary: "当前项目 A-Tier 不允许读取远端 CI 状态。",
                 nextStep: executionTierNextStep(
                     minimumTier: .a3DeliverAuto,
                     action: "读取远端 CI 状态"
@@ -473,7 +651,7 @@ enum XTGuardrailMessagePresentation {
             )
         case policyReason.contains("ci_trigger"):
             return XTGuardrailMessage(
-                summary: "当前项目执行档位不允许触发 CI。",
+                summary: "当前项目 A-Tier 不允许触发 CI。",
                 nextStep: executionTierNextStep(
                     minimumTier: .a4OpenClaw,
                     action: "触发 CI 工作流"
@@ -481,7 +659,7 @@ enum XTGuardrailMessagePresentation {
             )
         case policyReason.contains("managed_processes"):
             return XTGuardrailMessage(
-                summary: "当前项目执行档位不允许受治理的后台进程。",
+                summary: "当前项目 A-Tier 不允许受治理的后台进程。",
                 nextStep: executionTierNextStep(
                     minimumTier: .a2RepoAuto,
                     action: "启动、查看或停止受治理进程"
@@ -489,7 +667,7 @@ enum XTGuardrailMessagePresentation {
             )
         case policyReason.contains("process_autorestart"):
             return XTGuardrailMessage(
-                summary: "当前项目执行档位不允许进程自动重启。",
+                summary: "当前项目 A-Tier 不允许进程自动重启。",
                 nextStep: executionTierNextStep(
                     minimumTier: .a3DeliverAuto,
                     action: "启用 restart_on_exit"
@@ -497,7 +675,7 @@ enum XTGuardrailMessagePresentation {
             )
         case policyReason.contains("browser_runtime"):
             return XTGuardrailMessage(
-                summary: "当前项目执行档位不允许浏览器自动化。",
+                summary: "当前项目 A-Tier 不允许浏览器自动化。",
                 nextStep: executionTierNextStep(
                     minimumTier: .a4OpenClaw,
                     action: "使用浏览器自动化"
@@ -505,7 +683,7 @@ enum XTGuardrailMessagePresentation {
             )
         case policyReason.contains("device_tools"):
             return XTGuardrailMessage(
-                summary: "当前项目执行档位不允许设备级工具。",
+                summary: "当前项目 A-Tier 不允许设备级工具。",
                 nextStep: executionTierNextStep(
                     minimumTier: .a4OpenClaw,
                     action: "使用设备权限"
@@ -513,7 +691,7 @@ enum XTGuardrailMessagePresentation {
             )
         default:
             return XTGuardrailMessage(
-                summary: "当前执行档位拦下了这个动作。",
+                summary: "当前 A-Tier 拦下了这个动作。",
                 nextStep: executionTierNextStep(
                     minimumTier: recommendedExecutionTier(for: policyReason),
                     action: "重试这个动作"
@@ -563,13 +741,13 @@ enum XTGuardrailMessagePresentation {
     ) -> String {
         let cleanedAction = action.trimmingCharacters(in: .whitespacesAndNewlines)
         let suffix = cleanedAction.isEmpty ? "继续这个动作" : cleanedAction
-        return "打开项目设置 -> 执行档位，把档位提升到 \(minimumTier.displayName) 或更高后，再\(suffix)。"
+        return "打开项目设置 -> A-Tier，把档位提升到 \(minimumTier.displayName) 或更高后，再\(suffix)。"
     }
 
     private static func executionTierHelpText(
         minimumTier: AXProjectExecutionTier
     ) -> String {
-        "打开项目设置 -> 执行档位，查看当前最低要求。这个动作至少需要 \(minimumTier.displayName)。"
+        "打开项目设置 -> A-Tier，查看当前最低要求。这个动作至少需要 \(minimumTier.displayName)。"
     }
 
     private static func recommendedExecutionTier(
@@ -622,6 +800,7 @@ enum XTGuardrailMessagePresentation {
             "runtime surface policy blocks",
             "autonomy policy blocks",
             "project tool policy blocks",
+            "under a-tier",
             "under execution tier",
             "configured=",
             "effective=",
@@ -640,6 +819,32 @@ enum XTGuardrailMessagePresentation {
     private static func normalizedToolLabel(_ raw: String) -> String {
         let cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         return cleaned.isEmpty ? "这个动作" : cleaned
+    }
+
+    private static func resolvedPolicyReason(
+        from rawObject: [String: JSONValue]
+    ) -> String {
+        let policySource = string(rawObject["policy_source"]) ?? ""
+        if policySource == "project_autonomy_policy",
+           let runtimeSurfacePolicyReason = string(rawObject["runtime_surface_policy_reason"]) {
+            return runtimeSurfacePolicyReason
+        }
+        return string(rawObject["policy_reason"]) ?? ""
+    }
+
+    private static func repairActionSummary(
+        denyCode: String,
+        policySource: String,
+        policyReason: String
+    ) -> String? {
+        guard let repairHint = repairHint(
+            denyCode: denyCode,
+            policySource: policySource,
+            policyReason: policyReason
+        ) else {
+            return nil
+        }
+        return "\(repairHint.buttonTitle)：\(repairHint.helpText)"
     }
 
     private static func targetClause(_ rawTarget: String?) -> String {
@@ -730,10 +935,14 @@ enum XTGuardrailMessagePresentation {
             return "检查桥接状态"
         case .skills_search:
             return "搜索技能"
+        case .skills_pin:
+            return "更新技能可用性"
         case .summarize:
             return "总结内容"
         case .supervisorVoicePlayback:
             return "Supervisor 语音播放"
+        case .run_local_task:
+            return "本地模型任务"
         case .web_fetch:
             return "抓取网页"
         case .web_search:

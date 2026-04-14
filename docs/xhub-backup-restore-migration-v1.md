@@ -1,7 +1,7 @@
 # X-Hub Backup / Restore / Migration v1（可执行规范 / Draft）
 
 - Status: Draft（用于直接落地实现；后续按版本迭代）
-- Updated: 2026-02-12
+- Updated: 2026-03-21
 - Applies to: X-Hub（Core + hub_grpc_server + Bridge/Connectors）
 - Primary goal: “备份被偷也不泄密；Hub 丢失也能恢复可用状态（含 secrets）”
 
@@ -30,7 +30,9 @@
 - Policy 配置：
   - `hub_grpc_clients.json`（clients allowlist + capabilities）
   - kill-switch state（若不在 DB）
-  - connector policies / memory policy（`memory_core_policy.json` 等）
+  - `memory_model_preferences`（若已落地在 DB / config 中，必须一并备份，避免恢复后静默切换 memory executor）
+  - connector policies / memory policy materialization（例如 `memory_core_policy.json`）
+  - 若已落地 `Memory-Core` recipe asset version metadata / active state / 审计链，也应与上面这份 materialized policy view 一并备份，避免恢复后只有派生视图、缺少版本真相源
 - TLS/Pairing 相关：
   - Hub CA 证书（public）+ 已签发客户端证书（public）
   - 私钥（若存在）必须在 Vault 内加密存储后再纳入备份
@@ -160,6 +162,11 @@ v1 建议采用 A（可跨设备恢复）。
 7) 启动 x-hub/grpc-server/hub_grpc_server/Bridge
 8) 写入审计：`backup.restore.completed`
 
+恢复边界（必须）
+- 恢复流程不得静默改写用户原先选定的 memory executor；`memory_model_preferences` 应原样恢复或显式提示不兼容。
+- 恢复流程不得把 `Memory-Core` 降格成普通 installable skill/runtime；其 active rule asset state 应按备份真相恢复。
+- 恢复后的 durable memory writes 仍只允许经 `Writer + Gate`，恢复工具本身不应顺手把 terminal/client 侧状态升格成新的 durable truth。
+
 ---
 
 ## 6) Migration（数据库迁移）
@@ -173,6 +180,7 @@ Hub DB 需要有 `schema_versions`（或 meta 表）记录：
 - forward-only（默认只向前迁移）
 - 每个 migration 必须可重复运行（幂等）
 - 迁移失败必须回滚到备份快照（或中止并保持旧 DB 不变）
+- migration 可以调整 schema / storage layout，但不得静默更改 `memory_model_preferences` 的语义，也不得改写 `Memory-Core -> Scheduler/Worker -> Writer + Gate` 的控制面边界
 
 ### 6.3 恢复时的迁移
 当备份 DB schema_version < 当前 Hub 支持：
@@ -206,4 +214,3 @@ v1 最小保证：
 ## 9) 与其它规范的关系
 - Vault 与密钥轮换：`docs/xhub-storage-encryption-and-keymgmt-v1.md`
 - Update/Release 与迁移触发：`docs/xhub-update-and-release-v1.md`
-

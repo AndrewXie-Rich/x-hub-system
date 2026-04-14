@@ -12,13 +12,13 @@
 
 > A system architecture for running Agents safely.
 >
-> X-Hub keeps model routing, memory truth, constitutional constraints, grants, policy, audit, and execution safety inside one governed Hub, while terminals stay lightweight and untrusted by default.
+> X-Hub keeps model routing, memory truth, constitutional constraints, grants, policy, audit, and execution safety inside one governed Hub, while terminals stay lightweight and untrusted by default. For memory, that means the user still chooses which AI executes memory jobs in X-Hub, while durable memory truth still terminates through `Writer + Gate`.
 
 **X-Hub-System is not another terminal-first Agent wrapper. It is a Hub-first, user-owned architecture for governed Agent execution.**
 
 If most Agent tools are optimized to make models act, X-Hub is optimized to make them act under control.
 The terminal should not be the trust root.
-X-Hub centralizes memory truth, policy, grants, audit, and runtime truth inside a user-owned Hub, while clients remain replaceable execution surfaces.
+X-Hub centralizes memory truth, policy, grants, audit, and runtime truth inside a user-owned Hub, while clients remain replaceable execution surfaces. The memory executor is still a user choice in X-Hub rather than a terminal-local default, and durable writes remain bounded to `Writer + Gate`.
 
 If you only want an Agent that can act, many tools already exist.
 If you want one that can act without letting one prompt injection, one exposed runtime, one risky plugin, or one unsafe default turn into full compromise, that is the problem X-Hub-System is built to tackle.
@@ -34,7 +34,7 @@ Trademark rights are not granted by the software license; see `TRADEMARKS.md`.
 
 X-Hub-System is currently a **public tech preview** of a system architecture for safe, governable Agent execution.
 
-Core Hub and X-Terminal paths already run: Hub-governed local and paid model routing, paired terminal execution, project-governance tiers with runtime clamps, Supervisor review and voice-authorization surfaces, governed channel ingress and onboarding flows, governed skill trust surfaces, Hub-backed memory governance, and honest runtime route visibility in X-Terminal.
+Core Hub and X-Terminal paths already run: Hub-governed local and paid model routing, paired terminal execution, project-governance tiers with runtime clamps, Supervisor review and voice-authorization surfaces, governed channel ingress and onboarding flows, governed skill trust surfaces, Hub-backed memory governance with a user-selected memory executor and `Writer + Gate` durable-write boundary, and honest runtime route visibility in X-Terminal.
 
 But this is still a **test version**, not a polished production release:
 
@@ -69,7 +69,7 @@ X-Hub-System is built for the harder problem: making AI execution governable.
 - One Hub governs local models and paid models through the same control plane.
 - Terminals do not own trust, keys, grants, or final policy decisions.
 - High-risk paths fail closed when pairing, grants, bridge heartbeat, or runtime readiness is incomplete.
-- Memory, automation, and audit stay anchored to the Hub instead of being scattered across clients and plugins.
+- Memory, automation, and audit stay anchored to the Hub instead of being scattered across clients and plugins; the user still chooses which AI executes memory jobs, and durable truth still lands through `Writer + Gate`.
 
 ## Why Not Just Use An Agent Framework?
 
@@ -174,7 +174,7 @@ In practice, that means:
 | "Auto mode" tends to become black-box autopilot | Safe-point guidance, acknowledgement, and audit preserve an intervention loop |
 | Highest autonomy often implies trust sprawl | Even high-autonomy execution still remains Hub-governed |
 
-The repository now uses protocol-backed project execution tiers, plus explicit supervision depth and review controls, rather than one terminal-local autonomy slider.
+The repository now uses protocol-backed project `A-Tier`, plus explicit `S-Tier` depth and `Heartbeat / Review` controls, rather than one terminal-local autonomy slider.
 That still does **not** mean "unlimited agent freedom."
 Even the highest-autonomy path is intended to mean high-autonomy execution with continuing supervision, Hub clamp authority, TTL, grants, kill-switches, and audit.
 
@@ -229,7 +229,7 @@ You can think of the innovation signature in four layers:
 
 ### 4. Memory, Evidence, And Surface Innovation
 
-- **Memory truth is a control-plane primitive**: the system is designed around Hub-anchored memory truth rather than letting each client accumulate its own private version of reality.
+- **Memory truth is a control-plane primitive**: the system is designed around Hub-anchored memory truth rather than letting each client accumulate its own private version of reality. The executor remains user-selected in X-Hub, `Memory-Core` remains the governed rule layer, and `Writer + Gate` remains the durable sink.
 - **X-Constitution is reinforced by memory and policy**: behavioral guardrails are meant to live above any single prompt and be reinforced by policy, grants, audit, and kill-switches.
 - **Five-layer memory plus adaptive serving**: raw evidence, observations, longterm, canonical memory, and working-set usage are treated as separate layers instead of one undifferentiated context dump.
 - **Serving plane separated from storage plane**: what the system stores as durable truth and what a given task is allowed to consume as context are intentionally different control problems, so bigger context windows do not collapse memory governance back into full-dump prompting.
@@ -301,8 +301,8 @@ The current repository and preview builds already demonstrate working foundation
 - X-Terminal source build and packaged app flow
 - paired Hub <-> Terminal routing across local and remote paths
 - Hub-governed local and paid model execution, with truthful configured-model vs actual-model visibility in X-Terminal
-- project-governance runtime contract with `A0..A4` execution tiers (up to `A4 Agent`), `S0..S4` Supervisor tiers, separate heartbeat/review scheduling, and runtime capability clamps over write/build/test/commit/push/PR/CI/browser/device actions
-- X-Terminal governance surfaces with dedicated `Execution Tier`, `Supervisor Tier`, and `Heartbeat & Review` controls, keeping execution authority, supervision depth, and review cadence visible as separate controls instead of collapsing them into one ambiguous autonomy form
+- project-governance runtime contract with `A0..A4` A-Tiers (up to `A4 Agent`), `S0..S4` S-Tiers, separate `Heartbeat / Review` scheduling, and runtime capability clamps over write/build/test/commit/push/PR/CI/browser/device actions
+- X-Terminal governance surfaces with dedicated `A-Tier`, `S-Tier`, and `Heartbeat / Review` controls, keeping execution authority, supervision depth, and review cadence visible as separate controls instead of collapsing them into one ambiguous autonomy form
 - Supervisor review and guidance surfaces with heartbeat, review pulse, brainstorm cadence, event-driven review triggers, and safe-point acknowledgement direction
 - voice authorization preview surfaces with Hub-issued challenge state, proactive pending-grant briefing, source-aware repeat/cancel behavior, remote-channel-aware grant targeting, and mobile-confirmation latch handling for higher-risk actions
 - Hub-governed operator channel workers and onboarding automation paths for Slack, Telegram, and Feishu, with the same Hub-first boundary extending toward WhatsApp Cloud and other remote surfaces; higher-risk channel paths remain explicitly gated until require-real evidence is complete
@@ -310,7 +310,7 @@ The current repository and preview builds already demonstrate working foundation
 - preview local-provider runtime surfaces for embeddings, speech-to-text, vision, and OCR under the same Hub routing, capability, and kill-switch posture, plus provider-pack truth, compatibility policy, import guidance, quick bench, and recovery-oriented operator feedback
 - governed browser UI observation and visual-review surfaces that keep captured evidence, review summaries, and browser-side action context attached to the project record instead of dissolving into terminal prose
 - early Supervisor and project-coder orchestration surfaces
-- Hub-backed memory, policy, and audit integration as the system-of-record direction
+- Hub-backed memory, policy, and audit integration as the system-of-record direction, with memory executor selection staying in X-Hub and durable writes staying on `Writer + Gate`
 
 Treat these as active preview surfaces, not as a promise that every edge case or surrounding UX is already finished.
 
@@ -320,7 +320,7 @@ Even in preview form, the system direction is already broader than a thin chat w
 
 - **Supervisor as an execution layer**: the architecture is built toward multi-project supervision, module-aware decomposition, pool and lane scheduling, directed unblocks, and governed delivery progression.
 - **Project autonomy with continuing supervision**: the system direction separates per-project execution autonomy from review depth and cadence, so higher-autonomy runs can still be reviewed, clamped, corrected, or stopped instead of turning into unsupervised agent sprawl.
-- **Governed project autonomy**: the runtime governance model now separates `A0..A4` execution authority, `S0..S4` supervision depth, and independent heartbeat/review cadence, so this split stays visible in product surfaces instead of collapsing back into one ambiguous autonomy slider.
+- **Governed project autonomy**: the runtime governance model now separates `A0..A4` A-Tier execution authority, `S0..S4` S-Tier supervision depth, and independent `Heartbeat / Review` cadence, so this split stays visible in product surfaces instead of collapsing back into one ambiguous autonomy slider.
 - **Concrete runtime ceilings, not abstract policy text**: governance tiers now clamp concrete capabilities such as repo writes, build/test, commit/push, PR/CI, browser runtime, device tools, connector actions, and auto-local approval before the action fires.
 - **X-Constitution as a behavioral genome**: the goal is to write durable value constraints into the system's behavioral DNA, anchored to Hub memory and reinforced by policy, grants, audit, and kill-switches instead of disappearing into ad hoc prompts.
 - **High-risk workflows with explicit evidence**: the same control-plane model can support evidence-first approvals, governed payment-style flows, and future multi-party approval patterns for irreversible actions.
@@ -341,7 +341,7 @@ These points describe the architecture-backed direction of the system. The valid
 - **Governed skills**: reusable capability units can be approved, audited, retried, and pinned instead of behaving like full-trust plugins.
 - **Paired operational control**: voice, mobile confirmation, and remote-channel ingress can stay attached to Hub grants instead of becoming shadow authority paths.
 - **Execution safety**: high-risk actions do not proceed on incomplete evidence.
-- **Long-horizon stability**: Hub-backed memory reduces drift across multi-step work.
+- **Long-horizon stability**: Hub-backed memory reduces drift across multi-step work, without turning the active client into the memory authority.
 - **Multi-terminal design**: terminals can stay fast and replaceable without becoming the trust anchor.
 
 ## What Makes This Attractive To Security-Conscious Teams
@@ -349,7 +349,7 @@ These points describe the architecture-backed direction of the system. The valid
 - **Reduced blast radius by design**: UI, tools, model routing, memory, grants, and side effects do not all collapse into one terminal-local trust zone.
 - **Better than prompt-only safety**: X-Constitution, policy, grants, manifests, audit, and kill-switches are meant to reinforce each other.
 - **User-owned control plane**: deployment, keys, secrets policy, audit, and memory truth can stay on infrastructure the user controls instead of being SaaS-default black boxes.
-- **Project-level capability gating**: execution tiers can deny repo writes, commits, CI triggers, browser runtime, or device tools before the runtime takes action.
+- **Project-level capability gating**: A-Tiers can deny repo writes, commits, CI triggers, browser runtime, or device tools before the runtime takes action.
 - **User-selectable local-only posture**: when remote providers and connector paths are disabled, the core control plane and inference path can stay off third-party cloud infrastructure.
 - **Local multimodal path under the same guardrails**: embeddings, speech, vision, and OCR can sit under Hub routing, capability checks, and kill-switch posture instead of spawning separate ungoverned sidecars.
 - **Safer connector model**: operator-channel paths can exist without letting every chat surface become an ungoverned control plane.
@@ -404,7 +404,7 @@ For public positioning, the clean wording is:
 Within the validated mainline above, this repository already demonstrates:
 
 1. **Hub-backed memory UX**
-   X-Terminal can present memory-aware UX while the Hub remains the truth-source.
+   X-Terminal can present memory-aware UX while the Hub remains the truth-source. The user still chooses which AI executes memory jobs in X-Hub, and durable memory truth still lands through `Writer + Gate`.
 2. **Governed multi-channel gateway**
    Channel routing stays inside Hub policy instead of leaking across clients. Preview operator surfaces already exist for Slack, Telegram, and Feishu, while higher-risk or insufficiently evidenced paths remain explicitly gated.
 3. **Hub-first automations**
@@ -480,6 +480,7 @@ In practice, that means:
 - a pinned constitutional layer can live with Hub memory rather than only inside terminal-local prompts
 - compact L0 constitutional constraints can be injected when relevant
 - longer L1 guidance can support review, explanation, and audit
+- memory control does not collapse into the constitutional layer: `Memory-Core` governs rules, the user still chooses the memory executor in X-Hub, and `Writer + Gate` remains the only durable write authority
 - hard enforcement still belongs to the Hub policy engine, grants, manifests, audit, and kill-switches
 
 What this is designed to resist:
@@ -494,7 +495,7 @@ This matters because it reduces behavioral drift and makes safety posture less d
 Key references:
 
 - `X_MEMORY.md`
-- `docs/xhub-constitution-l0-injection-v1.md`
+- `docs/memory-new/xhub-constitution-l0-injection-v2.md`
 - `docs/xhub-constitution-l1-guidance-v1.md`
 - `docs/xhub-constitution-policy-engine-checklist-v1.md`
 
@@ -536,7 +537,7 @@ If pairing is incomplete, model inventory is stale, bridge heartbeat is missing,
 
 The memory story is not "the client remembers more."
 
-The memory story is that the Hub remains the durable truth-source and terminals consume that truth through governed surfaces.
+The memory story is that the Hub remains the durable truth-source and terminals consume that truth through governed surfaces. The user still chooses which AI executes memory jobs in X-Hub, and durable memory truth still terminates through `Writer + Gate`.
 
 ### 5. Safety Is Backed By Memory And Policy, Not Prompt Tricks Alone
 
@@ -596,9 +597,19 @@ bash scripts/run_xhub_doctor_from_source.command all --workspace-root /path/to/w
 
 The XT export now carries both raw `detail_lines` and a structured `project_context_summary` for session runtime readiness whenever a recent coder run exists. That means the generic doctor bundle can surface which project dialogue window, context depth, coverage, and memory boundary the project AI actually received, instead of burying that truth in raw key-value diagnostics only.
 
+The XT source report now also carries a structured `hubMemoryPromptProjection` on `session_runtime_readiness` whenever the latest Hub-backed turn exposed prompt-assembly metadata. The generic doctor bundle mirrors that as `hub_memory_prompt_projection`, keeping `projection_source / canonical_item_count / working_set_turn_count / runtime_truth_item_count / runtime_truth_source_kinds` machine-readable. Treat it as Hub-first explainability only: XT is replaying Hub-provided prompt-assembly truth, not locally inferring prompt contents or overriding export / constitution / policy gates.
+
+When XT has remote Hub snapshot provenance for either Project AI or Supervisor memory assembly, the XT source report now also carries structured `projectRemoteSnapshotCacheProjection` / `supervisorRemoteSnapshotCacheProjection` on `session_runtime_readiness`, and the generic bundle mirrors them as `project_remote_snapshot_cache_snapshot` / `supervisor_remote_snapshot_cache_snapshot`. Treat them as cache provenance only: they keep `source / freshness / cache_hit / scope / cached_at / age / ttl_remaining` machine-readable, but they do not upgrade XT cache into durable truth or bypass Hub-first routing.
+
+The XT export also carries a structured `heartbeat_governance_snapshot` for session runtime readiness whenever XT can project heartbeat-governed review truth. That snapshot keeps `latest_quality_band`, `open_anomaly_types`, the configured/recommended/effective cadence triples, and `next_review_due` machine-readable, so release/operator evidence can see review pressure without re-parsing `heartbeat_*` detail lines.
+
+The XT source report now also carries a structured `skillDoctorTruthProjection` on `skills_compatibility_readiness` whenever XT can compute the project `effectiveProfileSnapshot` plus typed governed-skill readiness buckets. The generic bundle mirrors that as `skill_doctor_truth_snapshot`, keeping `runnable_now / grant_required / approval_required / blocked` counts and representative skill previews machine-readable without reparsing the skills section text.
+
 The XT export also carries a structured `memory_route_truth_snapshot` for model-route readiness whenever XT has route diagnostics to project. `projection_source` and `completeness` make it explicit whether the bundle is replaying full upstream route truth or an honest XT partial projection with `unknown` placeholders.
 
 When XT has supervisor durable-candidate mirror evidence, the XT source report now carries a structured `durableCandidateMirrorProjection` on `session_runtime_readiness`, and the generic bundle mirrors that as `durable_candidate_mirror_snapshot`. Read it as XT-side handoff evidence only: it distinguishes `mirrored_to_hub`, `local_only`, and `hub_mirror_failed`, but it does not claim durable promotion or read-source cutover.
+
+When XT has local cache/fallback/edit-buffer provenance to surface, the XT source report now also carries a structured `localStoreWriteProjection` on `session_runtime_readiness`, and the generic bundle mirrors that as `local_store_write_snapshot`. Read it as XT-local provenance only: it tells you whether the current local state most recently came from `manual_edit_buffer_commit`, `after_turn_cache_refresh`, `derived_refresh`, and similar write paths, but it does not upgrade XT local storage into durable writer truth.
 
 The XT source report envelope itself is now frozen separately in `docs/memory-new/schema/xt_unified_doctor_report_contract.v1.json`. That keeps the XT-native `xt_unified_doctor_report.json` contract distinct from the normalized `xhub_doctor_output_xt.json` contract, and `consumed_contracts` now carries `xt.unified_doctor_report_contract.v1` instead of pretending the report's own schema version is an upstream dependency.
 
@@ -610,7 +621,7 @@ For a focused XT-only source smoke of the current doctor shell, run:
 bash scripts/smoke_xhub_doctor_xt_source_export.sh
 ```
 
-That focused smoke now asserts that XT export includes the structured `project_context_summary` and `durable_candidate_mirror_snapshot` under `session_runtime_readiness`, plus the structured `memory_route_truth_snapshot` under `model_route_readiness`, not just raw `detail_lines`.
+That focused smoke now asserts that XT export includes the structured `project_context_summary`, `hub_memory_prompt_projection`, `project_remote_snapshot_cache_snapshot`, `supervisor_remote_snapshot_cache_snapshot`, `heartbeat_governance_snapshot`, `durable_candidate_mirror_snapshot`, and `local_store_write_snapshot` under `session_runtime_readiness`, the structured `skill_doctor_truth_snapshot` under `skills_compatibility_readiness`, plus the structured `memory_route_truth_snapshot` under `model_route_readiness`, not just raw `detail_lines`.
 
 For an isolated aggregate snapshot-based smoke of the current repo-level doctor shell, run:
 
@@ -624,7 +635,7 @@ For a CI-facing wrapper test + aggregate source-run gate, run:
 bash scripts/ci/xhub_doctor_source_gate.sh
 ```
 
-That gate now writes `build/reports/xhub_doctor_source_gate_summary.v1.json` plus focused/aggregate smoke evidence files, and the summary includes `project_context_summary_support`, `durable_candidate_mirror_support`, and `memory_route_truth_support` so downstream release evidence can prove the structured XT project-context, supervisor-handoff, and route-truth exports stayed intact. The project-context support block keeps `source_badge / status_line` together with the dialogue/depth metrics instead of collapsing back to raw XT `detail_lines`, while the durable-candidate mirror block keeps `status / target / attempted / local_store_role` in a machine-readable form.
+That gate now writes `build/reports/xhub_doctor_source_gate_summary.v1.json` plus focused/aggregate smoke evidence files, and the summary includes `project_context_summary_support`, `durable_candidate_mirror_support`, `memory_route_truth_support`, and `hub_channel_onboarding_support` so downstream release/operator evidence can prove the structured XT project-context, supervisor-handoff, route-truth, and channel-onboarding exports stayed intact. The project-context support block keeps `source_badge / status_line` together with the dialogue/depth metrics instead of collapsing back to raw XT `detail_lines`, while the durable-candidate mirror block keeps `status / target / attempted / local_store_role` in a machine-readable form.
 
 ### Run The XT Release Gate
 

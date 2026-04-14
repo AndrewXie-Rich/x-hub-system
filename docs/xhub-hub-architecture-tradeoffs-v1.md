@@ -167,21 +167,31 @@
 
 参考：`docs/xhub-memory-core-policy-v1.md`
 
+补充边界：
+
+- 产品层可以继续沿用 `Memory-Core Skill` 命名。
+- 实现边界上，`Memory-Core` 应理解为 Hub 内建 governed rule asset，而不是一个拥有跨层直写权限的单体执行 AI。
+- memory 维护模型由用户在 X-Hub 上显式选择；Hub 通过 `memory_model_preferences -> Memory Scheduler -> Memory Worker -> Writer + Gate` 执行这条控制面。
+
 ### 7.1 设计点
 - Raw Vault / Observations / Longterm / Canonical / Working Set
 - Progressive Disclosure（Search -> Timeline -> Get）
 - 多 AI 分工，但单写入者 + 强校验 + 全审计 + 可回滚
+- `Memory-Core` 只管规则、门禁与晋升纪律；用户选模型，Scheduler 派单，Worker 执行，Writer + Gate 落库
 
 ### 7.2 优势
 - 可扩展、可控、可解释；不会因为“记忆越多越强”而污染上下文
 
 ### 7.3 缺点 / 风险
 - 实现成本高；晋升器可能误判导致污染；远程模型参与会引入外发风险
+- 如果 `memory_model_preferences` 不是唯一真相源，Hub/worker/UI 可能各自保留一套模型选择逻辑，最后出现静默切模与不可复现实验
 
 ### 7.4 怎么改（可执行）
 - promotion 先 shadow mode + 人工确认，再逐步全自动
 - `secret` 默认禁止远程外发（fail-closed）
 - 所有 canonical/skill 晋升必须带 provenance（证据指针）并可回滚
+- 把 `memory_model_preferences` 冻结成唯一模型选择真相源，route explain 固定进 audit / doctor / diagnostics
+- 所有模型结果都先进入 candidate / structured output，再由 `Writer + Gate` 决定是否落 durable truth
 
 ---
 
@@ -196,7 +206,7 @@
 
 ### 7.5.2 优势
 - 同一时间推进多个项目，且用户交互成本最低（单入口）
-- worker 输出结构化可被监督与复用（可进一步写入记忆/晋升 skill）
+- worker 输出结构化可被监督与复用（可进一步进入 Hub 的 candidate / review / promotion 流水线）
 
 ### 7.5.3 缺点 / 风险
 - 成本与资源放大（并发 4 路）

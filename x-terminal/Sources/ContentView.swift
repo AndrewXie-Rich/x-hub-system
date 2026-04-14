@@ -9,18 +9,17 @@ struct ContentView: View {
     @State private var showProjectSettings: Bool = false
     @State private var showHistoryPanel: Bool = false
     @State private var showCreateProject: Bool = false
+    @State private var showSkillLibrary: Bool = false
     @State private var showBuiltinGovernedSkillsPopover: Bool = false
     @State private var projectSettingsProjectId: String? = nil
     @State private var projectSettingsDestination: XTProjectGovernanceDestination = .overview
 
     var body: some View {
         VStack(spacing: 0) {
-            // Supervisor 状态栏
-            if appModel.hubInteractive {
-                SupervisorStatusBar(supervisor: appModel.supervisor)
-                    .environmentObject(appModel)
-                Divider()
-            }
+            // Supervisor 状态栏在断连时也保留显示，避免把“Hub 不可交互”误读成“Supervisor 消失了”。
+            SupervisorStatusBar()
+                .environmentObject(appModel)
+            Divider()
 
             // 主内容区域
             HSplitView {
@@ -106,39 +105,39 @@ struct ContentView: View {
                 .disabled(appModel.projectContext == nil)
 
                 Button("Edit Skill…") {
-                    appModel.openSkillEditor()
+                    showSkillLibrary = true
                 }
-                .help("Open a skill folder or SKILL.md for editing")
+                .help("Browse local skills, inspect governed skills, and open a local SKILL.md for editing")
 
-                Button("Import Skills…") {
+                Button(toolbarImportSkillsTitle) {
                     appModel.importSkills()
                 }
-                .help("Import skill folders into the skills library")
+                .help(toolbarImportSkillsHelp)
 
-                Button("Review Import") {
+                Button(toolbarReviewImportTitle) {
                     appModel.reviewLastImportedSkill()
                 }
-                .help("Review the last staged agent skill import from Hub")
+                .help(toolbarReviewImportHelp)
                 .disabled(!appModel.canReviewLastImportedAgentSkill)
 
-                Button("Enable Import") {
+                Button(toolbarEnableImportTitle) {
                     appModel.enableLastImportedSkill()
                 }
-                .help("Package, upload, and enable the last imported agent skill through Hub governance")
+                .help(toolbarEnableImportHelp)
                 .disabled(!appModel.canEnableLastImportedAgentSkill)
 
                 Menu("Baseline") {
-                    Button("Install in Current Project") {
+                    Button(toolbarCurrentProjectBaselineTitle) {
                         appModel.installDefaultAgentBaselineForCurrentProject()
                     }
                     .disabled(!appModel.canInstallDefaultAgentBaselineForCurrentProject)
 
-                    Button("Install Globally") {
+                    Button(toolbarGlobalBaselineTitle) {
                         appModel.installDefaultAgentBaselineGlobally()
                     }
                     .disabled(!appModel.canInstallDefaultAgentBaselineGlobally)
                 }
-                .help("Install the default Agent baseline through Hub-governed skill pinning")
+                .help(toolbarBaselineHelp)
 
                 Button {
                     appModel.openCurrentSkillsIndex()
@@ -252,6 +251,10 @@ struct ContentView: View {
                 }
             }
         }
+        .sheet(isPresented: $showSkillLibrary) {
+            XTSkillLibrarySheet()
+                .environmentObject(appModel)
+        }
     }
 
     private var hubConnectButtonTitle: String {
@@ -321,11 +324,80 @@ struct ContentView: View {
         ] + detailLines).joined(separator: "\n")
     }
 
+    private var toolbarHasMissingBaselinePackages: Bool {
+        !appModel.skillsCompatibilitySnapshot.missingBaselineSkillIDs.isEmpty
+    }
+
+    private var toolbarHasPartialCompatibility: Bool {
+        appModel.skillsCompatibilitySnapshot.partialCompatibilityCount > 0
+    }
+
+    private var toolbarHasConflictWarnings: Bool {
+        !appModel.skillsCompatibilitySnapshot.conflictWarnings.isEmpty
+    }
+
+    private var toolbarImportSkillsTitle: String {
+        "Import Skills…"
+    }
+
+    private var toolbarImportSkillsHelp: String {
+        if toolbarHasMissingBaselinePackages {
+            return "Import skill folders, SKILL.md, or supported archives (.zip/.skill/.tgz/.tar.gz/.tar) into the local skills library so currently discoverable profiles can become installable."
+        }
+        return "Import skill folders, SKILL.md, or supported archives (.zip/.skill/.tgz/.tar.gz/.tar) into the local skills library."
+    }
+
+    private var toolbarReviewImportTitle: String {
+        appModel.canReviewLastImportedAgentSkill ? "Review Installability" : "Review Import"
+    }
+
+    private var toolbarReviewImportHelp: String {
+        "Review the last staged agent skill import from Hub and verify whether it is installable / requestable yet."
+    }
+
+    private var toolbarEnableImportTitle: String {
+        toolbarHasPartialCompatibility ? "Enable Installable Skill" : "Enable Import"
+    }
+
+    private var toolbarEnableImportHelp: String {
+        "Package, upload, and enable the last imported agent skill through Hub governance so installable skills can enter the requestable set."
+    }
+
+    private var toolbarCurrentProjectBaselineTitle: String {
+        if toolbarHasMissingBaselinePackages {
+            return "Install Missing Packages in Current Project"
+        }
+        if toolbarHasPartialCompatibility {
+            return "Pin Baseline into Current Project"
+        }
+        return "Install in Current Project"
+    }
+
+    private var toolbarGlobalBaselineTitle: String {
+        appModel.skillsCompatibilitySnapshot.missingBaselineSkillIDs.isEmpty
+            ? "Install Globally"
+            : "Install Missing Packages Globally"
+    }
+
+    private var toolbarBaselineHelp: String {
+        var parts = ["Install the default Agent baseline through Hub-governed skill pinning."]
+        if toolbarHasMissingBaselinePackages {
+            parts.append("Some recommended baseline packages are still missing from the current environment.")
+        }
+        if toolbarHasPartialCompatibility {
+            parts.append("Some skills are only partially compatible and may still need project pinning or governance approval.")
+        }
+        if toolbarHasConflictWarnings {
+            parts.append("Compatibility doctor has conflict warnings that can block runnable readiness.")
+        }
+        return parts.joined(separator: " ")
+    }
+
     private var mainPane: some View {
         VStack(spacing: 0) {
             // 多项目视图
             if appModel.isMultiProjectViewEnabled && appModel.hubInteractive {
-                ProjectsGridView(projectsManager: appModel.multiProjectManager)
+                ProjectsGridView(projectsManager: appModel.legacyMultiProjectManager)
                     .environmentObject(appModel)
             }
             // 单项目视图
@@ -382,6 +454,9 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .xterminalOpenSupervisorWindow)) { notification in
             handleSupervisorWindowOpen(notification)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .xterminalOpenSupervisorToolWindow)) { notification in
+            handleSupervisorToolWindowOpen(notification)
+        }
         .onChange(of: showProjectSettings) { presented in
             if !presented {
                 projectSettingsProjectId = nil
@@ -415,6 +490,14 @@ struct ContentView: View {
         openWindow(id: "supervisor")
     }
 
+    private func handleSupervisorToolWindowOpen(_ notification: Notification) {
+        guard let rawValue = notification.userInfo?["sheet_id"] as? String,
+              let sheet = SupervisorManager.SupervisorWindowSheet(rawValue: rawValue) else {
+            return
+        }
+        openWindow(id: sheet.windowID)
+    }
+
     private func handleDeepLink(_ url: URL) {
         guard let route = XTDeepLinkParser.parse(url) else { return }
 
@@ -432,6 +515,17 @@ struct ContentView: View {
                 focusConversation: false
             )
         }
+        let openSupervisorModelSettings: (_ route: XTSupervisorModelSettingsRoute) -> Void = { route in
+            appModel.requestModelSettingsFocus(
+                title: route.title,
+                detail: route.detail
+            )
+            SupervisorManager.shared.requestSupervisorWindow(
+                sheet: .modelSettings,
+                reason: "deep_link_supervisor_model_settings",
+                focusConversation: false
+            )
+        }
         let openSettingsWindow: () -> Void = {
             NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
         }
@@ -443,11 +537,24 @@ struct ContentView: View {
                 openSupervisor: openSupervisor
             )
         case let .hubSetup(hubSetupRoute):
+            if let pairingPrefill = hubSetupRoute.pairingPrefill {
+                appModel.applyHubPairingInvitePrefill(pairingPrefill)
+            }
+            let hubSetupSectionId = hubSetupRoute.sectionId
+                ?? (hubSetupRoute.pairingPrefill == nil ? nil : "pair_hub")
             if let sectionId = hubSetupRoute.sectionId {
                 appModel.requestHubSetupFocus(
                     sectionId: sectionId,
-                    title: hubSetupRoute.title,
-                    detail: hubSetupRoute.detail,
+                    title: resolvedHubSetupTitle(hubSetupRoute),
+                    detail: resolvedHubSetupDetail(hubSetupRoute),
+                    refreshAction: hubSetupRoute.refreshAction,
+                    refreshReason: hubSetupRoute.refreshReason
+                )
+            } else if let sectionId = hubSetupSectionId {
+                appModel.requestHubSetupFocus(
+                    sectionId: sectionId,
+                    title: resolvedHubSetupTitle(hubSetupRoute),
+                    detail: resolvedHubSetupDetail(hubSetupRoute),
                     refreshAction: hubSetupRoute.refreshAction,
                     refreshReason: hubSetupRoute.refreshReason
                 )
@@ -466,6 +573,8 @@ struct ContentView: View {
             openSettingsWindow()
         case .supervisorSettings:
             openSupervisorSettings()
+        case let .supervisorModelSettings(route):
+            openSupervisorModelSettings(route)
         case let .resume(projectId):
             if let projectId {
                 appModel.presentResumeBrief(projectId: projectId)
@@ -513,5 +622,33 @@ struct ContentView: View {
     private func normalizedToolbarToken(_ value: String, fallback: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? fallback : trimmed
+    }
+
+    private func resolvedHubSetupTitle(_ route: XTHubSetupRoute) -> String? {
+        if let title = route.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+            return title
+        }
+        guard route.pairingPrefill != nil else { return nil }
+        return "已载入 Hub 邀请"
+    }
+
+    private func resolvedHubSetupDetail(_ route: XTHubSetupRoute) -> String? {
+        if let detail = route.detail?.trimmingCharacters(in: .whitespacesAndNewlines), !detail.isEmpty {
+            return detail
+        }
+        guard let prefill = route.pairingPrefill else { return nil }
+        let alias = prefill.hubAlias?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let host = prefill.internetHost?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let hasInviteToken = prefill.inviteToken?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        if !alias.isEmpty && !host.isEmpty {
+            return "Hub alias: \(alias) · host: \(host)" + (hasInviteToken ? " · invite token ready" : "")
+        }
+        if !alias.isEmpty {
+            return "Hub alias: \(alias)"
+        }
+        if !host.isEmpty {
+            return "host: \(host)" + (hasInviteToken ? " · invite token ready" : "")
+        }
+        return "Pair Hub 参数已从邀请链接自动填入。"
     }
 }

@@ -1,6 +1,6 @@
 {
   "schema_version": "xhub.memory.bench_dataset.v1",
-  "generated_at_ms": 1772087796852,
+  "generated_at_ms": 1773494630623,
   "seed": "m2_w1_seed",
   "source_mode": "synthetic_seeded",
   "source_db": "data/hub.sqlite3",

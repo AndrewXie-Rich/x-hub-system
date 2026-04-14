@@ -1,0 +1,261 @@
+{
+  "schema_version": "xhub.package_doctor_output_contract.v1",
+  "contract_version": "2026-03-27",
+  "contract_id": "HUB-L3-GPK-W2-06",
+  "owner_lane": "Hub Runtime / X-Terminal / Diagnostics / Security",
+  "fixed_decisions": [
+    "doctor_is_diagnostic_not_authoritative_permission_grant",
+    "doctor_must_be_surface_neutral_and_auditable",
+    "integrity_auth_grant_or_runtime_failures_must_fail_closed_for_readiness",
+    "next_step_must_map_to_a_concrete_recovery_action",
+    "doctor_output_must_not_upgrade_package_state_or_trust_tier",
+    "checksum_signature_or_source_fallback_verification_failures_are_blocking",
+    "doctor_failure_source_and_next_step_mapping_must_stay_stable_for_catalog_and_fallback_repair"
+  ],
+  "package_kind_enum": [
+    "official_skill",
+    "operator_channel",
+    "connector",
+    "local_provider_pack",
+    "external_adapter"
+  ],
+  "trust_tier_enum": [
+    "hub_native",
+    "governed_package",
+    "local_runner_bound",
+    "external_process_low_trust"
+  ],
+  "package_state_enum": [
+    "discovered",
+    "staged",
+    "verified",
+    "auth_required",
+    "approval_required",
+    "ready",
+    "active",
+    "degraded",
+    "revoked",
+    "removed"
+  ],
+  "doctor_bundle_enum": [
+    "official_skills",
+    "operator_channels",
+    "local_provider_runtime",
+    "trusted_automation_readiness"
+  ],
+  "doctor_overall_state_enum": [
+    "ready",
+    "degraded",
+    "blocked",
+    "not_installed",
+    "not_supported"
+  ],
+  "check_status_enum": [
+    "pass",
+    "fail",
+    "warn",
+    "skip"
+  ],
+  "severity_enum": [
+    "info",
+    "warning",
+    "error",
+    "critical"
+  ],
+  "failure_source_enum": [
+    "manifest",
+    "artifact",
+    "catalog",
+    "source_fallback",
+    "auth",
+    "endpoint",
+    "grant",
+    "runtime",
+    "recent_events"
+  ],
+  "next_step_kind_enum": [
+    "run_setup",
+    "repair_auth",
+    "repair_artifact",
+    "request_approval",
+    "rebind_surface",
+    "retry_runtime",
+    "refresh_catalog",
+    "open_docs",
+    "contact_operator"
+  ],
+  "integrity_failure_code_enum": [
+    "artifact_checksum_mismatch",
+    "artifact_signature_invalid",
+    "artifact_signature_missing",
+    "fallback_unavailable",
+    "fallback_checksum_mismatch",
+    "fallback_signature_invalid",
+    "fallback_verification_chain_mismatch",
+    "catalog_unreachable"
+  ],
+  "step_owner_enum": [
+    "user",
+    "operator",
+    "hub_runtime",
+    "xt_runtime",
+    "security_review"
+  ],
+  "package_surface_enum": [
+    "hub_cli",
+    "xt_ui",
+    "hub_ui",
+    "operator_channel",
+    "api"
+  ],
+  "objects": {
+    "xhub.package_doctor_report.v1": {
+      "required_fields": [
+        "schema_version",
+        "doctor_run_id",
+        "package_id",
+        "package_version",
+        "kind",
+        "trust_tier",
+        "doctor_bundle",
+        "surface",
+        "package_state",
+        "overall_state",
+        "summary",
+        "checks",
+        "next_steps",
+        "recent_failures",
+        "generated_at_ms",
+        "audit_ref"
+      ],
+      "nested_required_fields": {
+        "summary": [
+          "passed",
+          "failed",
+          "warned",
+          "skipped"
+        ],
+        "runtime_snapshot": [
+          "host_version",
+          "xt_version",
+          "runtime_host",
+          "catalog_source",
+          "last_success_at_ms",
+          "last_failure_at_ms"
+        ]
+      },
+      "enum_refs": {
+        "kind": "package_kind_enum",
+        "trust_tier": "trust_tier_enum",
+        "doctor_bundle": "doctor_bundle_enum",
+        "surface": "package_surface_enum",
+        "package_state": "package_state_enum",
+        "overall_state": "doctor_overall_state_enum"
+      },
+      "rules": [
+        "Doctor report does not grant execution permission or mutate package truth directly.",
+        "If blocking checks fail for integrity, auth, grant, or runtime readiness, overall state cannot be ready.",
+        "Catalog or source_fallback integrity failures are readiness blockers and may not be downgraded into warn-only readiness."
+      ]
+    },
+    "xhub.package_doctor_check_result.v1": {
+      "required_fields": [
+        "check_id",
+        "check_kind",
+        "status",
+        "severity",
+        "blocking",
+        "message",
+        "failure_source",
+        "observed_at_ms"
+      ],
+      "optional_fields": [
+        "failure_code"
+      ],
+      "enum_refs": {
+        "status": "check_status_enum",
+        "severity": "severity_enum",
+        "failure_source": "failure_source_enum",
+        "failure_code": "integrity_failure_code_enum"
+      },
+      "rules": [
+        "Blocking check failures should include an actionable message or corresponding next step.",
+        "Recent event summaries may warn, but integrity or grant failures should fail.",
+        "Checks with failure_source artifact, catalog, or source_fallback should use stable integrity failure_code values when available."
+      ]
+    },
+    "xhub.package_doctor_next_step.v1": {
+      "required_fields": [
+        "step_id",
+        "kind",
+        "label",
+        "owner",
+        "blocking",
+        "suggested_command_or_path"
+      ],
+      "enum_refs": {
+        "kind": "next_step_kind_enum",
+        "owner": "step_owner_enum"
+      },
+      "rules": [
+        "Every blocking report should provide at least one next step unless the package is explicitly revoked.",
+        "Next steps must be concrete enough to guide repair or escalation.",
+        "Catalog and fallback integrity failures should map to repair_artifact or refresh_catalog with concrete operator/user ownership."
+      ]
+    },
+    "xhub.package_doctor_failure_record.v1": {
+      "required_fields": [
+        "failure_id",
+        "source",
+        "event_code",
+        "first_seen_at_ms",
+        "last_seen_at_ms",
+        "count",
+        "latest_deny_code"
+      ],
+      "optional_fields": [
+        "failure_code"
+      ],
+      "enum_refs": {
+        "source": "failure_source_enum",
+        "failure_code": "integrity_failure_code_enum"
+      },
+      "rules": [
+        "Recent failure records should help explain degraded state and recovery priority.",
+        "Failure history is diagnostic context and does not override runtime policy decisions.",
+        "When checksum/signature/fallback failures are known, failure_code should preserve the same machine-readable integrity code used by checks."
+      ]
+    },
+    "xhub.package_doctor_runtime_snapshot.v1": {
+      "required_fields": [
+        "host_version",
+        "xt_version",
+        "runtime_host",
+        "catalog_source",
+        "last_success_at_ms",
+        "last_failure_at_ms"
+      ],
+      "rules": [
+        "Runtime snapshot should let operators correlate compatibility and recovery issues.",
+        "Catalog source should distinguish embedded, signed remote, local staging, and source_fallback paths."
+      ]
+    },
+    "xhub.package_doctor_bundle_request.v1": {
+      "required_fields": [
+        "package_id",
+        "doctor_bundle",
+        "surface",
+        "include_recent_failures",
+        "include_runtime_snapshot"
+      ],
+      "enum_refs": {
+        "doctor_bundle": "doctor_bundle_enum",
+        "surface": "package_surface_enum"
+      },
+      "rules": [
+        "Bundle requests should be surface-neutral and produce the same semantic report shape.",
+        "Trusted automation readiness bundles should report paired surface and permission owner blockers explicitly."
+      ]
+    }
+  }
+}

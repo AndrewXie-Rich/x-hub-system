@@ -34,7 +34,7 @@ Validated release slice:
 
 Validated public statements for this release:
 
-- XT memory UX adapter backed by Hub truth-source
+- XT memory UX adapter backed by Hub truth-source, with user-selected memory executor and Writer + Gate durable-write boundary
 - Hub-governed multi-channel gateway
 - Hub-first governed automations
 
@@ -144,3 +144,5 @@ Before publishing, confirm:
    - `Mac mini` as the default recommendation
    - `Mac Studio` as the higher-capacity recommendation
 5. do not turn internal work-order names, internal slice progress, or operator navigation material into public release claims
+6. if you need extra runtime/support wording, refresh `build/reports/oss_release_support_snippet.v1.md` first, but keep any operator-channel wording from that snippet in the preview/support lane rather than the validated public-statements lane
+7. if you need safe-onboarding preview/support evidence, rerun `bash scripts/ci/xt_w3_24_s_safe_onboarding_gate.sh` first and treat `build/reports/xt_w3_24_s_safe_onboarding_gate_summary.v1.json` plus `docs/open-source/evidence/xt_w3_24_s_safe_onboarding_release_evidence.v1.json` as support material only, not as validated release claims

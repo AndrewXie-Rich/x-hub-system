@@ -39,7 +39,7 @@ enum XTSupervisorWindowOpenPolicy {
 
     static func requiresSupervisorWindow(for focusTarget: XTDeepLinkFocusTarget?) -> Bool {
         switch focusTarget {
-        case .grant, .approval, .skillRecord:
+        case .grant, .approval, .candidateReview, .skillRecord, .projectCreationBoard:
             return true
         case .toolApproval, .routeDiagnose, nil:
             return false

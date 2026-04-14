@@ -53,6 +53,14 @@ struct AXModelRouteDiagnosticEvent: Codable, Equatable, Identifiable, Sendable {
         isFailureIncident || remoteRetryAttempted
     }
 
+    var effectiveFailureReasonCode: String {
+        let fallback = fallbackReasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !fallback.isEmpty {
+            return fallback
+        }
+        return denyCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
     func diagnosticLine(includeProject: Bool) -> String {
         var parts: [String] = []
         if includeProject {
@@ -84,8 +92,8 @@ struct AXModelRouteDiagnosticEvent: Codable, Equatable, Identifiable, Sendable {
         if !actualModelId.isEmpty {
             parts.append("actual=\(actualModelId)")
         }
-        if !fallbackReasonCode.isEmpty {
-            parts.append("reason=\(fallbackReasonCode)")
+        if !effectiveFailureReasonCode.isEmpty {
+            parts.append("reason=\(effectiveFailureReasonCode)")
         }
         if let denyCode = denyCode?.trimmingCharacters(in: .whitespacesAndNewlines),
            !denyCode.isEmpty {
@@ -218,7 +226,7 @@ extension AXModelRouteTruthProjection {
                 requestedModelID: event.requestedModelId,
                 actualModelID: event.actualModelId,
                 provider: event.runtimeProvider,
-                fallbackReasonCode: event.fallbackReasonCode,
+                fallbackReasonCode: event.effectiveFailureReasonCode,
                 denyCode: event.denyCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
                 remoteRetryTargetModelID: event.remoteRetryToModelId,
                 remoteRetryReasonCode: event.remoteRetryReasonCode
@@ -626,7 +634,11 @@ private func axModelRouteFallbackReason(
     guard fallbackApplied == "true" else {
         return fallbackApplied == "false" ? "none" : "unknown"
     }
-    return axModelRouteFirstNonEmpty(event?.fallbackReasonCode, event?.remoteRetryReasonCode) ?? "unknown"
+    return axModelRouteFirstNonEmpty(
+        event?.fallbackReasonCode,
+        event?.denyCode,
+        event?.remoteRetryReasonCode
+    ) ?? "unknown"
 }
 
 private func axModelRouteProjectPresenceState(for event: AXModelRouteObservedDiagnosticLine?) -> String {

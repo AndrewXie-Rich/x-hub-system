@@ -2,6 +2,7 @@ import Foundation
 
 enum XTSectionRefreshAction: String, Equatable {
     case recheckOfficialSkills = "recheck_official_skills"
+    case repairHistoricalProjectBoundaries = "repair_historical_project_boundaries"
 }
 
 struct XTSectionFocusContext: Equatable {

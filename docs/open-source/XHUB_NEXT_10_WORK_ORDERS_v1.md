@@ -1,7 +1,7 @@
 # X-Hub v1 下一批 10 个核心工单
 
 - status: active
-- updated_at: 2026-03-19
+- updated_at: 2026-03-25
 - owner: Product / Hub Runtime / X-Terminal / Supervisor
 - purpose: 给人类维护者和其他 AI 协作者一份可直接开工、可并行拆分的 next-10 backlog，避免继续在边缘方向分散主线资源
 - related:
@@ -112,10 +112,11 @@
 - definition of done:
   - UI 明确区分 configured route、actual route、fallback reason、deny code、budget / export posture
   - `downgrade_to_local`、`blocked_waiting_upstream`、`remote export blocked`、`provider not ready` 等原因能稳定落到统一文案和证据链
+  - Doctor、project `/route diagnose`、Supervisor `/route diagnose`、grpc fail-closed mismatch 提示都复用同一套 route truth 呈现，不再各说各话
   - XT 刷新模型列表时看到的是 Hub 的真实可用视图，而不是空缓存或陈旧状态
   - 高风险 grant 和 trust profile 不会被“看起来能跑”掩盖
 
-## 4) 工单 3 / P0-3 Hub memory truth / audit / export guardrails 收口
+## 4) 工单 3 / P0-3 Hub 记忆真相 / 审计 / 外发护栏收口
 
 - priority: `P0`
 - lane: `Cross`
@@ -128,7 +129,7 @@
   - `docs/memory-new/xhub-supervisor-memory-routing-and-assembly-protocol-v1.md`
   - `docs/xhub-memory-system-spec-v2.md`
 - why now:
-  - 是的，Hub 的 memory system 在 v1 里属于前排地基，但前排的是“Hub-backed memory truth / audit / export guardrails”，不是无边界继续扩张 memory feature 面
+  - 是的，Hub 的 memory system 在 v1 里属于前排地基，但前排的是“Hub 支持的记忆真相 / 审计 / 外发护栏”，不是无边界继续扩张 memory feature 面
 - blocked_by:
   - 无前置阻塞
 - parallel_with:
@@ -255,6 +256,16 @@
   - onboarding 覆盖预授权、重放保护、审计、撤销，不允许“通道一接入就天然可信”
   - 远程请求可进入 XT voice / mobile confirmation 的受控授权链，而不是绕过 Hub 直接拿最终 grant authority
   - 对通道失效、token 失效、签名不匹配、重放嫌疑有明确 repair 提示
+- 2026-03-26 progress:
+  - Hub live-test evidence 已明确把 `invalid token / signature mismatch / replay suspicion` 投影成 `required_next_step`
+  - 本地 Hub Swift parity tests 也已跑绿，不再是 JS-only repair phrasing
+  - 当前已有一份可跟踪的 release evidence packet：`docs/open-source/evidence/xt_w3_24_s_safe_onboarding_release_evidence.v1.json`
+  - 也已有一键生成脚本：`scripts/generate_xt_w3_24_s_safe_onboarding_release_evidence.js`
+  - 现已新增 focused gate：`scripts/ci/xt_w3_24_s_safe_onboarding_gate.sh`
+  - 现已新增 GitHub Actions workflow：`.github/workflows/xt-w3-24-safe-onboarding-gate.yml`
+  - Hub 本地 onboarding 主视图现在已补“首次接入总览”壳，会按 provider 汇总 runtime / readiness / pending ticket / next step，不再只剩工单列表。
+  - 该总览现在也会按 provider 状态给出更短路径 CTA：待审核直达 `审阅工单`，ready 且有历史工单时可直接 `查看`，runtime / readiness 未就绪时给 `复制配置包` + `重新加载状态`。
+  - 当前剩余工作更偏 first-run polish、把该包接进更宽 public release checklist、以及更强的产品壳，而不是 repair path 缺失
 
 ## 9) 工单 8 / P1-2 Governed skills doctor / preflight / pinning / starter pack
 
@@ -266,6 +277,7 @@
   - `x-terminal/work-orders/xt-l1-skills-ux-preflight-runner-contract-v1.md`
   - `x-terminal/work-orders/xt-assistant-runtime-alignment-implementation-pack-v1.md`
   - `docs/memory-new/xhub-governed-package-productization-work-orders-v1.md`
+  - `docs/memory-new/xhub-work-order-8-9-closure-checklist-v1.md`
   - `docs/xhub-skills-discovery-and-import-v1.md`
   - `docs/xhub-skills-signing-distribution-and-runner-v1.md`
 - why now:
@@ -283,6 +295,9 @@
   - skill 可见 trust root、pinned version、runner requirement、compatibility status、preflight result
   - `CALL_SKILL` 类错误会即时进入 Supervisor / 用户可见面，不再只埋进 memory 摘要
   - retry 走 governed dispatch 恢复链，而不是让模型“重新想一遍”
+- current state:
+  - `2026-03-25`：`W8-C1..C4` 对应证据已在同分支落齐，工单 8 可按 closure checklist 视为完成。
+  - 后续若继续做 skills 方向，默认不要重开 W8 基础链；优先转去更大的 package-shell、dynamic official skill request、或 `SKC-W4-11` 热更新稳态化。
 
 ## 10) 工单 9 / P1-3 Local provider runtime 产品壳与 provider truth
 
@@ -294,6 +309,7 @@
   - `docs/memory-new/README-local-provider-runtime-productization-v1.md`
   - `docs/memory-new/xhub-local-provider-runtime-require-real-runbook-v1.md`
   - `docs/memory-new/xhub-local-bench-fixture-pack-v1.md`
+  - `docs/memory-new/xhub-work-order-8-9-closure-checklist-v1.md`
 - why now:
   - 本地模型 / 本地语音 / 本地多模态是 user-owned 的重要卖点，但必须把 readiness、provider truth、bench truth 做成产品面
 - blocked_by:
@@ -308,6 +324,9 @@
   - XT 刷新模型列表能真实拿到本地 provider 结果，不再出现“明明本地有模型但列表空白”
   - local-only posture 能单独成立，且不依赖外部云 provider 才能显得“正常”
   - runtime stale、provider crash、no provider ready 等状态都有清晰修复入口
+- current state:
+  - `2026-03-25`：provider truth、XT local provider truth、local-only posture、repair entry、require-real closure 证据都已具备。
+  - 后续仍继续推进 packaged shell / provider 扩展 / public wording，但不要再把核心 provider truth 主链回退成“尚未有工作产品面”。
 
 ## 11) 工单 10 / P1-4 Quickstart / demos / troubleshooting 公开层收口
 

@@ -172,7 +172,7 @@ struct AXProjectModelRouteMemoryTests {
         #expect(notice.contains("openai/gpt-5.4"))
         #expect(notice.contains("/route diagnose"))
         #expect(notice.contains("点这条心跳提醒"))
-        #expect(notice.contains("Hub -> Models"))
+        #expect(notice.contains("Supervisor Control Center · AI 模型"))
     }
 
     @Test
@@ -575,9 +575,230 @@ struct AXProjectModelRouteMemoryTests {
         let notice = try #require(AXProjectModelRouteMemoryStore.heartbeatNotice(for: entry))
         #expect(notice.contains("/route diagnose"))
         #expect(notice.contains("点这条心跳提醒"))
-        #expect(notice.contains("XT Settings -> Diagnostics"))
+        #expect(notice.contains("XT Diagnostics"))
         #expect(notice.contains("Hub 审计"))
         #expect(notice.contains("downgrade_to_local"))
+    }
+
+    @Test
+    func heartbeatNoticeUsesDenyCodeWhenFallbackReasonMissing() throws {
+        let root = try makeProjectRoot(named: "route-memory-heartbeat-deny-only")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        appendUsage(
+            createdAt: 100,
+            requestedModelId: "openai/gpt-5.4",
+            actualModelId: "qwen3-14b-mlx",
+            executionPath: "hub_downgraded_to_local",
+            fallbackReasonCode: "",
+            denyCode: "remote_export_blocked",
+            for: ctx
+        )
+        appendUsage(
+            createdAt: 200,
+            requestedModelId: "openai/gpt-5.4",
+            actualModelId: "qwen3-14b-mlx",
+            executionPath: "hub_downgraded_to_local",
+            fallbackReasonCode: "",
+            denyCode: "remote_export_blocked",
+            for: ctx
+        )
+
+        let entry = AXProjectEntry(
+            projectId: AXProjectRegistryStore.projectId(forRoot: root),
+            rootPath: root.path,
+            displayName: "Deny Only Project",
+            lastOpenedAt: 200,
+            manualOrderIndex: 0,
+            pinned: false,
+            statusDigest: "runtime=stable",
+            currentStateSummary: "运行中",
+            nextStepSummary: "继续当前任务",
+            blockerSummary: nil,
+            lastSummaryAt: 200,
+            lastEventAt: 200
+        )
+
+        let notice = try #require(AXProjectModelRouteMemoryStore.heartbeatNotice(for: entry))
+        #expect(notice.contains("/route diagnose"))
+        #expect(notice.contains("remote_export_blocked"))
+        #expect(notice.contains("XT Diagnostics"))
+        #expect(notice.contains("Hub 审计"))
+    }
+
+    @Test
+    func heartbeatNoticeHumanizesCompositeConnectorScopeReason() throws {
+        let root = try makeProjectRoot(named: "route-memory-heartbeat-composite-export-gate")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        appendUsage(
+            createdAt: 100,
+            requestedModelId: "openai/gpt-5.4",
+            actualModelId: "qwen3-14b-mlx",
+            executionPath: "hub_downgraded_to_local",
+            fallbackReasonCode: "grant_required;deny_code=remote_export_blocked",
+            for: ctx
+        )
+        appendUsage(
+            createdAt: 200,
+            requestedModelId: "openai/gpt-5.4",
+            actualModelId: "qwen3-14b-mlx",
+            executionPath: "hub_downgraded_to_local",
+            fallbackReasonCode: "grant_required;deny_code=remote_export_blocked",
+            for: ctx
+        )
+
+        let entry = AXProjectEntry(
+            projectId: AXProjectRegistryStore.projectId(forRoot: root),
+            rootPath: root.path,
+            displayName: "Composite Export Gate Project",
+            lastOpenedAt: 200,
+            manualOrderIndex: 0,
+            pinned: false,
+            statusDigest: "runtime=stable",
+            currentStateSummary: "运行中",
+            nextStepSummary: "继续当前任务",
+            blockerSummary: nil,
+            lastSummaryAt: 200,
+            lastEventAt: 200
+        )
+
+        let notice = try #require(AXProjectModelRouteMemoryStore.heartbeatNotice(for: entry))
+        #expect(notice.contains("Hub remote export gate 阻断了远端请求（remote_export_blocked）"))
+        #expect(!notice.contains("grant_required;deny_code=remote_export_blocked"))
+        #expect(notice.contains("Hub export gate"))
+        #expect(notice.contains("不要先急着改 XT 模型"))
+    }
+
+    @Test
+    func heartbeatNoticeAddsPaidModelBoundaryHint() throws {
+        let root = try makeProjectRoot(named: "route-memory-heartbeat-paid-model")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        appendUsage(
+            createdAt: 100,
+            requestedModelId: "openai/gpt-5.4",
+            actualModelId: "qwen3-14b-mlx",
+            executionPath: "local_fallback_after_remote_error",
+            fallbackReasonCode: "grant_required;deny_code=device_paid_model_not_allowed",
+            for: ctx
+        )
+        appendUsage(
+            createdAt: 200,
+            requestedModelId: "openai/gpt-5.4",
+            actualModelId: "qwen3-14b-mlx",
+            executionPath: "local_fallback_after_remote_error",
+            fallbackReasonCode: "grant_required;deny_code=device_paid_model_not_allowed",
+            for: ctx
+        )
+
+        let entry = AXProjectEntry(
+            projectId: AXProjectRegistryStore.projectId(forRoot: root),
+            rootPath: root.path,
+            displayName: "Paid Model Project",
+            lastOpenedAt: 200,
+            manualOrderIndex: 0,
+            pinned: false,
+            statusDigest: "runtime=stable",
+            currentStateSummary: "运行中",
+            nextStepSummary: "继续当前任务",
+            blockerSummary: nil,
+            lastSummaryAt: 200,
+            lastEventAt: 200
+        )
+
+        let notice = try #require(
+            AXProjectModelRouteMemoryStore.heartbeatNotice(
+                for: entry,
+                paidAccessSnapshot: HubRemotePaidAccessSnapshot(
+                    trustProfilePresent: true,
+                    paidModelPolicyMode: "all_paid_models",
+                    dailyTokenLimit: 640,
+                    singleRequestTokenLimit: 256
+                )
+            )
+        )
+        #expect(notice.contains("当前模型不在这台设备的付费模型允许范围内（device_paid_model_not_allowed）"))
+        #expect(!notice.contains("grant_required;deny_code=device_paid_model_not_allowed"))
+        #expect(notice.contains("设备信任"))
+        #expect(notice.contains("模型访问策略"))
+        #expect(notice.contains("预算边界"))
+        #expect(notice.contains("当前设备真值：单次 256 tok · 当日 640 tok · 策略 全部付费模型。"))
+    }
+
+    @Test
+    func selectionGuidanceHumanizesCompositePaidModelReason() throws {
+        let root = try makeProjectRoot(named: "route-memory-selection-guidance-paid-model")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        let now = Date().timeIntervalSince1970
+        appendUsage(
+            createdAt: now - 50,
+            requestedModelId: "openai/gpt-5.4",
+            actualModelId: "qwen3-14b-mlx",
+            executionPath: "local_fallback_after_remote_error",
+            fallbackReasonCode: "grant_required;deny_code=device_paid_model_not_allowed",
+            for: ctx
+        )
+        appendUsage(
+            createdAt: now - 30,
+            requestedModelId: "openai/gpt-5.4",
+            actualModelId: "qwen3-14b-mlx",
+            executionPath: "local_fallback_after_remote_error",
+            fallbackReasonCode: "grant_required;deny_code=device_paid_model_not_allowed",
+            for: ctx
+        )
+        appendUsage(
+            createdAt: now - 10,
+            requestedModelId: "openai/gpt-5.4",
+            actualModelId: "qwen3-14b-mlx",
+            executionPath: "local_fallback_after_remote_error",
+            fallbackReasonCode: "grant_required;deny_code=device_paid_model_not_allowed",
+            for: ctx
+        )
+
+        let guidance = try #require(
+            AXProjectModelRouteMemoryStore.selectionGuidance(
+                configuredModelId: "openai/gpt-5.4",
+                role: .coder,
+                ctx: ctx,
+                snapshot: ModelStateSnapshot(
+                    models: [
+                        makeModel(id: "openai/gpt-5.4", state: .sleeping)
+                    ],
+                    updatedAt: now
+                ),
+                localSnapshot: ModelStateSnapshot(
+                    models: [
+                        makeModel(id: "qwen3-14b-mlx", state: .loaded, backend: "mlx", modelPath: "/models/qwen3")
+                    ],
+                    updatedAt: now
+                ),
+                paidAccessSnapshot: HubRemotePaidAccessSnapshot(
+                    trustProfilePresent: true,
+                    paidModelPolicyMode: "all_paid_models",
+                    dailyTokenLimit: 640,
+                    singleRequestTokenLimit: 256
+                )
+            )
+        )
+
+        #expect(guidance.warningText.contains("当前模型不在这台设备的付费模型允许范围内（device_paid_model_not_allowed）"))
+        #expect(!guidance.warningText.contains("grant_required;deny_code=device_paid_model_not_allowed"))
+        #expect(guidance.warningText.contains("Supervisor Control Center · AI 模型"))
+        #expect(guidance.warningText.contains("当前设备真值：单次 256 tok · 当日 640 tok · 策略 全部付费模型。"))
     }
 
     @Test
@@ -683,6 +904,7 @@ struct AXProjectModelRouteMemoryTests {
         actualModelId: String,
         executionPath: String,
         fallbackReasonCode: String,
+        denyCode: String = "",
         for ctx: AXProjectContext
     ) {
         var entry: [String: Any] = [
@@ -696,6 +918,9 @@ struct AXProjectModelRouteMemoryTests {
         ]
         if !fallbackReasonCode.isEmpty {
             entry["fallback_reason_code"] = fallbackReasonCode
+        }
+        if !denyCode.isEmpty {
+            entry["deny_code"] = denyCode
         }
         AXProjectStore.appendUsage(entry, for: ctx)
     }

@@ -42,8 +42,9 @@ struct XHubDoctorRouteTruthDocsSyncTests {
 
         #expect(workingIndex.contains("memoryRouteTruthProjection"))
         #expect(workingIndex.contains("memory_route_truth_snapshot"))
-        #expect(workingIndex.contains("memory_route_truth_support"))
-        #expect(workingIndex.contains("source_badge / status_line"))
+        #expect(workingIndex.contains("model_route_readiness"))
+        #expect(workingIndex.contains("projection_source"))
+        #expect(workingIndex.contains("completeness"))
 
         #expect(readme.contains("memory_route_truth_snapshot"))
         #expect(readme.contains("projection_source"))
@@ -69,10 +70,7 @@ struct XHubDoctorRouteTruthDocsSyncTests {
     }
 
     private func repoRoot() -> URL {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
+        monorepoTestRepoRoot(filePath: #filePath)
     }
 
     private func read(_ url: URL) throws -> String {

@@ -1,5 +1,5 @@
 - version: v2.0
-- updatedAt: 2026-03-12
+- updatedAt: 2026-03-25
 - owner: Hub Runtime / X-Terminal Supervisor / Security / QA / Product
 - status: active
 - dispatchPolicy: active
@@ -554,7 +554,7 @@
 - `SLICE-20260319-001`
   - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
   - owner_lane: `XT-L2(pool_takeover)`
-  - scope: `让 Global Home 的 project governance 摘要支持直接 drill-down 到 Execution Tier / Supervisor Tier / Heartbeat & Review / Governance Overview`
+  - scope: `让 Global Home 的 project governance 摘要支持直接 drill-down 到 A-Tier / S-Tier / Heartbeat / Review / Governance Overview`
   - status: `delivered`
   - claim_reason: `这是一个主线可见、改动边界清晰的小切口，能直接提升治理 UI 的可编辑性与 discoverability`
   - done_when:
@@ -600,11 +600,11 @@
 - `SLICE-20260319-004`
   - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
   - owner_lane: `XT-L2(pool_takeover)`
-  - scope: `让 Project Detail 的治理卡片与关键摘要行支持直接 drill-down 到 Execution Tier / Supervisor Tier / Heartbeat & Review / Governance Overview`
+  - scope: `让 Project Detail 的治理卡片与关键摘要行支持直接 drill-down 到 A-Tier / S-Tier / Heartbeat / Review / Governance Overview`
   - status: `delivered`
   - claim_reason: `继续沿用治理可编辑性主线，把“看得见但点不进去”的摩擦从 Project Detail 这层一起收掉`
   - done_when:
-    - `Project Detail` 中的执行档位 / Supervisor 档位 / Review 策略卡片可直接打开对应治理设置
+    - `Project Detail` 中的 A-Tier / S-Tier / Heartbeat / Review 策略卡片可直接打开对应治理设置
     - `Project Detail` 中的生效档位、Review 节奏、Clamp / 收束、治理状态等关键摘要行支持直接 drill-down
     - 详情页仍保持 summary / truth surface，不扩成第二套治理编辑页
   - delivered_at: `2026-03-19`
@@ -619,7 +619,7 @@
   - status: `delivered`
   - claim_reason: `用户看到 governance_denied 后不能只得到一段文字；需要把“为什么被挡”与“去哪里修”收成同一条修复链`
   - done_when:
-    - governance_capability_denied 会明确提示 `Project Settings -> Execution Tier`
+    - governance_capability_denied 会明确提示 `Project Settings -> A-Tier`
     - runtime clamp / autonomy policy denied 会在卡片层提供直达治理入口
     - `Recent Skill Activity` 与普通 tool result 两条错误面都能给出一致修复入口
   - delivered_at: `2026-03-19`
@@ -635,7 +635,7 @@
 - `SLICE-20260319-006`
   - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
   - owner_lane: `XT-L2(pool_takeover)`
-  - scope: `把同一条治理修复链接到 Supervisor 的 Recent Skill Activity / 审计详情动作条，让被治理拦截的技能活动能直接跳到 Execution Tier / Governance`
+  - scope: `把同一条治理修复链接到 Supervisor 的 Recent Skill Activity / 审计详情动作条，让被治理拦截的技能活动能直接跳到 A-Tier / Governance`
   - status: `delivered`
   - claim_reason: `用户在 Supervisor 里看到 blocked skill 后，不能还要自己切回 project 聊天找入口；治理修复动作要在同一张卡上闭环`
   - done_when:
@@ -815,7 +815,7 @@
 - `SLICE-20260320-007`
   - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
   - owner_lane: `XT-L2(pool_takeover)`
-  - scope: `给 governance-blocked skill activity 与 heartbeat focus 补 project governance deep link，让“被治理挡住”直接落到 Execution Tier / Governance，而不是只回 project chat`
+  - scope: `给 governance-blocked skill activity 与 heartbeat focus 补 project governance deep link，让“被治理挡住”直接落到 A-Tier / Governance，而不是只回 project chat`
   - status: `delivered`
   - claim_reason: `Supervisor Recent Skill Activity 已经能显示治理修复按钮，但 actionURL 和 heartbeat focus 仍只会回 project/resume；这让通知链和 activity 列表的修复路径不一致。`
   - done_when:
@@ -845,7 +845,7 @@
   - done_when:
     - `heartbeat next-step summary` 把治理修复放在常规推进前
     - `heartbeat notification` 在治理修复场景下给出单独标题、计数和治理设置跳转提示
-    - `heartbeat voice` 在无更高优先级信号时主动说出治理设置修复与 `Execution Tier`
+    - `heartbeat voice` 在无更高优先级信号时主动说出治理设置修复与 `A-Tier`
   - delivered_at: `2026-03-20`
   - evidence_refs:
     - `x-terminal/Sources/Supervisor/SupervisorManager.swift`
@@ -1501,7 +1501,45 @@
     - `scripts/finalize_xt_w3_24_n_whatsapp_cloud_require_real_sample.js`
     - `scripts/finalize_xt_w3_24_n_whatsapp_cloud_require_real_sample.test.js`
     - `docs/memory-new/xt-w3-24-n-whatsapp-cloud-require-real-runbook-v1.md`
+
+- `SLICE-20260322-011`
+  - mapped_work_order: `LPR-W3-03 / Require-Real / Release Gate`
+  - owner_lane: `Hub-L5(pool_takeover)`
+  - scope: `把 `LPR-W3-03` 从“只能看长命令手工回填”推进到和 XT require-real 链一致的可执行闭环：`lpr_w3_03_require_real_bundle_lib.js` 新增 reports-dir/bundle-path/report-path 解析；`generate/update/status` 三个脚本升级为可导入、fail-closed、支持 scaffold-dir / from-json / metadata 排除；新增 `prepare_lpr_w3_03_require_real_sample.js` 与 `finalize_lpr_w3_03_require_real_sample.js`，把真实样本回填收成 scaffold + 一键 finalize；同时更新 runbook，并实际生成 next sample scaffold。`
+  - status: `delivered`
+  - claim_reason: `LPR-W3-03 虽然已有 capture bundle / QA / status，但执行者仍只能手工拼长串 `--set` 参数，且 updater 允许把占位符或缺字段样本先写成 `passed`。既然这条主线已经明确是 require-real release gate，下一步就该把执行摩擦和滞后错误窗口一起收掉。`
+  - done_when:
+    - `scripts/lpr_w3_03_require_real_bundle_lib.js` 支持 reports-dir override，并导出 bundle/report/probe 路径解析
+    - `scripts/generate_lpr_w3_03_a_require_real_evidence.js` / `scripts/update_lpr_w3_03_require_real_capture_bundle.js` / `scripts/lpr_w3_03_require_real_status.js` 支持可导入的 prepare/finalize 辅助链
+    - `LPR-W3-03` require-real 支持 `prepare/finalize` scaffold 流程，减少手工拼命令
+    - passed 样本缺字段、保留 `<...>` 占位符、命中 synthetic、或误把元数据当 evidence 时必须 fail-closed
+    - focused regression 覆盖 bundle bootstrap、report 路径 override、updater scaffold-dir/from-json、prepare/finalize 成功路径
+    - 实际生成 `build/reports/lpr_w3_03_require_real/lpr_rr_01_embedding_real_model_dir_executes/` scaffold，并保持 QA `NO_GO(require_real_samples_pending)` 诚实口径
+  - delivered_at: `2026-03-22`
+  - evidence_refs:
+    - `scripts/lpr_w3_03_require_real_bundle_lib.js`
+    - `scripts/lpr_w3_03_require_real_bundle_lib.test.js`
+    - `scripts/generate_lpr_w3_03_a_require_real_evidence.js`
+    - `scripts/generate_lpr_w3_03_a_require_real_evidence.test.js`
+    - `scripts/update_lpr_w3_03_require_real_capture_bundle.js`
+    - `scripts/update_lpr_w3_03_require_real_capture_bundle.test.js`
+    - `scripts/lpr_w3_03_require_real_status.js`
+    - `scripts/prepare_lpr_w3_03_require_real_sample.js`
+    - `scripts/prepare_lpr_w3_03_require_real_sample.test.js`
+    - `scripts/finalize_lpr_w3_03_require_real_sample.js`
+    - `scripts/finalize_lpr_w3_03_require_real_sample.test.js`
+    - `docs/memory-new/xhub-local-provider-runtime-require-real-runbook-v1.md`
     - `docs/memory-new/xt-w3-31-require-real-runbook-v1.md`
+  - follow_up_2026_03_23: `在不伪造 require-real closure 的前提下，把 `lpr_w3_03_b/c/d` probe 的 blocker 事实抬进 `generate_lpr_w3_03_a_require_real_evidence.js`：报告现在会直接导出 `sample1_current_blockers / sample1_execution_ready / sample1_overall_recommended_action_id / sample1_preferred_route / sample1_secondary_route`，并把这些 blocker/next-step 追加进 `verdict_reason + next_required_artifacts`；`generate_lpr_w4_09_c_product_exit_packet.js` 的 compact require-real 也同步透传，release/operator 出口不再只有 `pending` 空状态。`
+  - follow_up_2026_03_23_b: `继续把 sample1 逼近真实 blocker：新增 `generate_lpr_w3_03_sample1_candidate_shortlist.js`，把默认 scan roots（含 `~/.cache/huggingface/hub`）+ 可选 `--model-path/--scan-root` 候选统一做 PASS/NO_GO shortlist，并为每条候选落独立 `candidate_validation.v1.json`；同时 exact-path validator 现在会补吃 catalog `taskKinds`，避免 operator 只靠目录名猜 task_kind。`
+  - follow_up_2026_03_23_c: `继续压缩 operator 歧义：新增 `generate_lpr_w3_03_sample1_candidate_acceptance.js`，把 sample1 的硬通过条件、硬拒绝信号、当前 NO_GO 坏例子、以及 `acceptance -> shortlist -> validation -> prepare -> finalize` 最短链收成一份机读 acceptance packet；handoff/runbook/README 同步引用它作为导入前的第一份 contract。`
+  - follow_up_2026_03_23_d: `继续把“新目录拿到手之后怎么安全接进来”做实：新增 `generate_lpr_w3_03_sample1_candidate_registration_packet.js`，把 exact path 归一化成 fail-closed import/register packet，直接输出 proposed catalog entry payload、target catalog paths、现有 exact-dir 注册冲突、以及 `registration_packet -> shortlist -> validation` 命令链；同时把这份 packet 接到 status/handoff、acceptance workflow、runbook、README，明确保持“不自动写外部 catalog，必须 validator PASS 后才允许手工注册”的口径。`
+  - follow_up_2026_03_23_e: `继续把“PASS 之后到底怎么安全落 catalog/state”做实：新增 `generate_lpr_w3_03_sample1_candidate_catalog_patch_plan.js`，按 runtime base 分组实际检查 `models_catalog.json + models_state.json` 的真实 shape，输出 fail-closed 的 pair-safe manual patch plan（root updatedAt、append/update 动作、shape-preserving/runtime-safe payload preview、manual review fields）；同时把 compact `catalog_patch_plan_summary` 回接到 registration packet、status/handoff、require-real、operator recovery、runbook、README，明确“选一个 runtime base，并把 catalog/state 成对保持一致，禁止跨 base 混改”的规则。`
+  - follow_up_2026_03_23_f: `已把 `--wide-common-user-roots` 收口成正式 shortlist/acceptance/registration/handoff/operator workflow 口径，并补 `refresh_lpr_w3_03_sample1_candidate_bundle.js` 作为一键编排 helper：现在可按 fail-closed 顺序统一刷新 `shortlist -> validation -> registration -> handoff -> acceptance -> require-real`，同时实际重建 `sample1 shortlist / wide shortlist / validation / registration / handoff / require-real / operator recovery / boundary / oss readiness` artifacts；真实机器结论仍诚实保持不变：当前唯一 in-scope embedding 候选仍是 `Qwen3-Embedding-0.6B-4bit-DWQ`，blocker 继续是 `unsupported_quantization_config`。`
+  - follow_up_2026_03_23_g: `继续补 discovery 默认真相：sample1 probe/shortlist 的 default scan roots 新增 `~/models`，因为当前机器真实存在 `/Users/andrew.xie/models/qwen3-7b-4bit` 这类 home-local 模型目录；刷新后 shortlist 已把它纳入 machine-readable searched record，并正确标成 `operator_asserted_only + not_native_loadable`，避免“目录完全没被搜到”和“目录被搜到但不符合 sample1 contract”混在一起。`
+  - follow_up_2026_03_23_h: `继续把“已经搜过哪里、还差什么”压成单出口真相：`generate_lpr_w4_09_c_product_exit_packet.js` 现在会把 sample1 acceptance 的 `current_machine_state + filtered_out_examples` 直接镜像到 `operator_handoff.require_real_focus` 顶层，`lpr_w3_03_require_real_status.js` / `generate_lpr_w3_03_a_require_real_evidence.js` 也改为优先吃 shortlist 的 `scan_roots`，所以这台机器实际跑过 `--wide-common-user-roots` 之后，`Documents / Downloads / Desktop` 已搜索但仍无新 native embedding candidate 的事实，已经能从 handoff / require-real / product-exit 一路直接读到。`
+  - follow_up_2026_03_23_i: `继续把 helper 路线也收成正式 recovery truth：新增 `generate_lpr_w3_03_sample1_helper_local_service_recovery.js`，把 `lpr_w3_03_d_helper_bridge_probe.v1.json` 收成 fail-closed secondary-route recovery packet，直接导出 `enableLocalService=false`、ready verdict、required ready signals、以及“LM Studio -> Settings -> Developer -> Local Service”这类下一步动作；同时把它接入 `refresh_lpr_w3_03_sample1_candidate_bundle.js`、sample1 handoff、require-real、`xhub_local_service_operator_recovery_report`、以及 `lpr_w4_09_c_product_exit_packet`，所以当前机器上“helper 已安装但 local service 关闭，下一步应先启用 local service 再重跑 probe”的事实，也已经能从单出口机读到。`
+  - follow_up_2026_03_23_j: `继续把 helper blocker 真相压到 release 面：`generate_hub_r1_release_oss_boundary_report.js` 和 `generate_oss_release_readiness_report.py` 现在也会透传 `machine_decision.require_real_focus_helper_local_service_recovery_present`、`require_real_focus.helper_local_service_recovery`、`checked_sources.scan_roots`、以及 `search_recovery.wide_shortlist_search_command`；fixture/test 已补齐并刷新真实 `boundary / oss readiness / product exit` artifacts，所以 release surface 现在也能直接读到“helper route 仍是 NO_GO、Documents/Downloads/Desktop 已搜过、下一步先启用 local service 再重跑”的 machine-readable 真相。`
 
 - `SLICE-20260321-030`
   - mapped_work_order: `XT-W3-33-C / 单心脏 Signal Center Cleanup`
@@ -1972,14 +2010,14 @@
 | `LPR-W3-06-C` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G5:PASS,LPR-G6:pending` | `false` | `LPR-W3-06-B` | `claim_lpr_w3_06_c_hub_l5_20260314_0811` | `2026-03-14T08:11:21+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w3_06_c_quick_bench_ui_evidence.v1.json`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/MainPanelView.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/ModelStore.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/LocalModelQuickBench.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/SettingsSheetView.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubCoreTests/LocalProviderRuntimeSchemaTests.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/LocalModelRuntimeActionPlannerTests.swift` |
 | `LPR-W3-06-D` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G5:PASS,LPR-G6:pending` | `false` | `LPR-W3-06-C,LPR-W3-03-A` | `claim_lpr_w3_06_d_hub_l5_20260314_0811` | `2026-03-14T08:11:22+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `docs/memory-new/xhub-local-bench-fixture-pack-v1.md`, `scripts/generate_lpr_w3_06_d_bench_fixture_pack_evidence.js`, `build/reports/lpr_w3_06_d_bench_fixture_pack_evidence.v1.json`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/Resources/BenchFixtures/bench_fixture_pack.v1.json`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/LocalModelQuickBench.swift`, `x-hub/python-runtime/python_service/providers/transformers_provider.py` |
 | `LPR-W4-01` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G7:candidate_pass` | `false` | `LPR-W3-08,LPR-W3-07,CR-20260315-001` | `none` | `none` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/README-local-provider-runtime-productization-v1.md`, `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md`, `docs/memory-new/xhub-local-service-runtime-contract-v1.md` |
-| `LPR-W4-02` | `Hub-L5(pool_takeover)` | `P1` | `planned` | `LPR-G7:pending` | `false` | `LPR-W4-01` | `none` | `none` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/README-local-provider-runtime-productization-v1.md` |
-| `LPR-W4-03` | `Hub-L5(pool_takeover)` | `P1` | `planned` | `LPR-G8:pending` | `false` | `LPR-W4-01,LPR-W3-04` | `none` | `none` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/README-local-provider-runtime-productization-v1.md`, `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md` |
-| `LPR-W4-04` | `Hub-L5(pool_takeover)` | `P1` | `planned` | `LPR-G8:pending,LPR-G10:pending` | `false` | `LPR-W4-03` | `none` | `none` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/README-local-provider-runtime-productization-v1.md` |
-| `LPR-W4-05` | `Hub-L5(pool_takeover)` | `P1` | `planned` | `LPR-G8:pending` | `false` | `LPR-W4-03,LPR-W3-05` | `none` | `none` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/README-local-provider-runtime-productization-v1.md` |
-| `LPR-W4-06` | `Hub-L5(pool_takeover)` | `P1` | `planned` | `LPR-G8:pending,LPR-G10:pending` | `false` | `LPR-W4-05,LPR-W3-06,LPR-W3-07` | `none` | `none` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/README-local-provider-runtime-productization-v1.md`, `docs/memory-new/xhub-local-bench-fixture-pack-v1.md` |
-| `LPR-W4-07` | `Hub-L5(pool_takeover)` | `P1` | `planned` | `LPR-G9:pending,LPR-G10:pending` | `false` | `LPR-W4-01,LPR-W4-02,LPR-W3-01` | `none` | `none` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/README-local-provider-runtime-productization-v1.md`, `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md` |
-| `LPR-W4-08` | `Hub-L5(pool_takeover)` | `P1` | `planned` | `LPR-G9:pending,LPR-G10:pending` | `false` | `LPR-W4-01,LPR-W4-03` | `none` | `none` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/README-local-provider-runtime-productization-v1.md`, `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md` |
-| `LPR-W4-09` | `Hub-L5(pool_takeover)` | `P1` | `planned` | `LPR-G10:pending` | `false` | `LPR-W3-03,LPR-W4-06,LPR-W4-07,LPR-W4-08` | `none` | `none` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/README-local-provider-runtime-productization-v1.md`, `docs/WORKING_INDEX.md` |
+| `LPR-W4-02` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G7:candidate_pass` | `false` | `LPR-W4-01` | `none` | `none` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/README-local-provider-runtime-productization-v1.md`, `build/reports/lpr_w4_02_b_provider_runtime_inventory_evidence.v1.json`, `x-hub/grpc-server/hub_grpc_server/src/local_runtime_ipc.js`, `x-hub/grpc-server/hub_grpc_server/src/local_runtime_ipc.test.js`, `scripts/generate_lpr_w4_02_b_provider_runtime_inventory_evidence.js`, `scripts/generate_lpr_w4_02_b_provider_runtime_inventory_evidence.test.js` |
+| `LPR-W4-03` | `Hub-L5(pool_takeover)` | `P1` | `in_progress` | `LPR-G8:candidate_pass(w4_03_a_plus_w4_03_b_ttl_truth_green)` | `false` | `LPR-W4-01,LPR-W3-04` | `none` | `none` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/README-local-provider-runtime-productization-v1.md`, `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md`, `build/reports/lpr_w4_03_a_typed_load_config_evidence.v1.json`, `x-hub/python-runtime/python_service/local_provider_scheduler.py`, `x-hub/python-runtime/python_service/providers/base.py`, `x-hub/python-runtime/python_service/relflowhub_local_runtime.py`, `x-hub/python-runtime/python_service/test_local_provider_runtime_compat.py`, `x-hub/grpc-server/hub_grpc_server/src/local_runtime_ipc.js`, `x-hub/grpc-server/hub_grpc_server/src/local_runtime_ipc.test.js`, `scripts/generate_lpr_w4_03_a_typed_load_config_evidence.js`, `scripts/generate_lpr_w4_03_a_typed_load_config_evidence.test.js`, `x-hub/macos/RELFlowHub/Sources/RELFlowHubCore/AIRuntimeStatus.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHubCore/ModelBench.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/LocalModelRuntimeRequestContext.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/LocalRuntimeOperationsSummary.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/HubDiagnosticsBundleExporter.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/SettingsSheetView.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubCoreTests/LocalProviderRuntimeSchemaTests.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/HubDiagnosticsBundleExporterTests.swift`, `x-terminal/Sources/Hub/HubModels.swift`, `x-terminal/Tests/XTModelCatalogTests.swift` |
+| `LPR-W4-04` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G8:candidate_pass,LPR-G10:pending` | `false` | `LPR-W4-03` | `none` | `none` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/README-local-provider-runtime-productization-v1.md`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/AddModelSheet.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/MainPanelView.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/LocalModelImportDetectorTests.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/ModelLibrarySectionPlannerTests.swift` |
+| `LPR-W4-05` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G8:candidate_pass` | `false` | `LPR-W4-03,LPR-W3-05` | `none` | `none` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/README-local-provider-runtime-productization-v1.md`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/MainPanelView.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/HubDiagnosticsBundleExporter.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/HubUIStrings.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/HubDiagnosticsBundleExporterTests.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/HubUIStringsTests.swift` |
+| `LPR-W4-06` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G8:candidate_pass,LPR-G10:pending` | `false` | `LPR-W4-05,LPR-W3-06,LPR-W3-07` | `none` | `none` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/README-local-provider-runtime-productization-v1.md`, `docs/memory-new/xhub-local-bench-fixture-pack-v1.md`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/MainPanelView.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/LocalModelBenchMonitorExplanation.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/LocalModelBenchCapabilityCard.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/HubDiagnosticsBundleExporter.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/LocalModelBenchMonitorExplanationTests.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/LocalModelBenchCapabilityCardTests.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/HubDiagnosticsBundleExporterTests.swift` |
+| `LPR-W4-07` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G9:candidate_pass(w4_07_a_plus_w4_07_b_helper_bridge_contract_green),LPR-G6:PASS(mlx_vlm_require_real_closure_ready),LPR-G10:pending` | `false` | `LPR-W4-01,LPR-W4-02,LPR-W3-01` | `claim_lpr_w4_07_hub_l5_20260325_1626` | `2026-03-25T16:26:09+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/README-local-provider-runtime-productization-v1.md`, `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md`, `x-hub/python-runtime/python_service/helper_binary_bridge.py`, `x-hub/python-runtime/python_service/provider_pack_registry.py`, `x-hub/python-runtime/python_service/providers/mlx_vlm_provider.py`, `x-hub/python-runtime/python_service/providers/transformers_provider.py`, `x-hub/python-runtime/python_service/relflowhub_local_runtime.py`, `x-hub/python-runtime/python_service/test_local_provider_runtime_compat.py`, `x-hub/grpc-server/hub_grpc_server/src/local_runtime_ipc.test.js`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/LocalModelExecutionProviderResolver.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/LocalProviderPackRegistry.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/LocalModelRuntimeSupportProbe.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/LocalRuntimeProviderGuidance.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/HubStore.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/LocalModelExecutionProviderResolverTests.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/LocalProviderPackRegistryTests.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/LocalRuntimeProviderGuidanceTests.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/LocalModelRuntimeCompatibilityPolicyTests.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/LocalModelBenchCapabilityPolicyTests.swift`, `scripts/generate_lpr_w4_07_b_mlx_vlm_require_real_evidence.js`, `scripts/generate_lpr_w4_07_b_mlx_vlm_require_real_evidence.test.js`, `build/reports/lpr_w4_07_c_real_run/capture_bundle.json`, `build/reports/lpr_w4_07_b_mlx_vlm_require_real_evidence.v1.json` |
+| `LPR-W4-08` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G9:PASS(llama_cpp_gguf_require_real_closure_ready),LPR-G10:pending` | `false` | `LPR-W4-01,LPR-W4-03` | `claim_lpr_w4_08_hub_l5_20260325_1733` | `2026-03-26T15:29:32+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w4_08_a_llama_cpp_provider_pack_evidence.v1.json`, `build/reports/lpr_w4_08_a2_llama_cpp_helper_runtime_truth_evidence.v1.json`, `build/reports/lpr_w4_08_b_gguf_require_real_evidence.v1.json`, `scripts/generate_lpr_w4_08_b_gguf_require_real_evidence.js`, `scripts/generate_lpr_w4_08_b_gguf_require_real_evidence.test.js`, `x-hub/python-runtime/python_service/helper_binary_bridge.py`, `x-hub/python-runtime/python_service/providers/llama_cpp_provider.py`, `x-hub/python-runtime/python_service/provider_pack_registry.py`, `x-hub/python-runtime/python_service/relflowhub_local_runtime.py`, `x-hub/python-runtime/python_service/test_local_provider_runtime_compat.py`, `x-hub/grpc-server/hub_grpc_server/src/local_runtime_ipc.test.js`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/AddModelSheet.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/LocalModelExecutionProviderResolver.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/LocalModelImportDetection.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/LocalModelRuntimeCompatibilityPolicy.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/LocalModelBenchCapabilityPolicy.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/LocalProviderPackRegistry.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/LocalRuntimeProviderGuidance.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/HubUIStrings.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/LMStudioMarketBridge.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHubCore/ModelModels.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/LocalModelExecutionProviderResolverTests.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/LocalModelImportDetectorTests.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/LocalModelRuntimeCompatibilityPolicyTests.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/LocalModelBenchCapabilityPolicyTests.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/LocalProviderPackRegistryTests.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/LocalRuntimeProviderGuidanceTests.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/HubUIStringsTests.swift` |
+| `LPR-W4-09` | `Hub-L5(pool_takeover)` | `P1` | `in_progress` | `LPR-G10:in_progress(product_exit_matrix_green_for_mlx_text_mlx_vlm_gguf_transformers_artifact_remaining)` | `false` | `LPR-W3-03,LPR-W4-06,LPR-W4-07,LPR-W4-08` | `claim_lpr_w4_09_hub_l5_20260326_1535` | `2026-03-27T22:57:31+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/README-local-provider-runtime-productization-v1.md`, `docs/WORKING_INDEX.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `x-hub/python-runtime/python_service/relflowhub_local_runtime.py`, `x-hub/python-runtime/python_service/test_local_provider_runtime_compat.py`, `scripts/generate_lpr_w4_07_c_real_run_capture.js`, `scripts/generate_lpr_w4_07_c_real_run_capture.test.js`, `scripts/generate_lpr_w4_07_b_mlx_vlm_require_real_evidence.js`, `scripts/generate_lpr_w4_07_b_mlx_vlm_require_real_evidence.test.js`, `scripts/generate_lpr_w4_09_a_mlx_text_require_real_evidence.js`, `scripts/generate_lpr_w4_09_a_mlx_text_require_real_evidence.test.js`, `scripts/generate_lpr_w4_09_a_product_exit_matrix.js`, `scripts/generate_lpr_w4_09_a_product_exit_matrix.test.js`, `build/reports/lpr_w4_07_c_real_run/capture_bundle.json`, `build/reports/lpr_w4_07_b_mlx_vlm_require_real_evidence.v1.json`, `build/reports/lpr_w4_09_a_mlx_text_require_real_evidence.v1.json`, `build/reports/lpr_w4_09_a_product_exit_evidence.v1.json` |
 ## D. Lane Zones（运行态）
 
 ### Hub-L1
@@ -9961,22 +9999,41 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 - evidence_ref: `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_delta_3line.v6.json`（no_new_machine_delta_this_round）
 
 ### Hub-L5
-- active_task: `LPR-W3-04`（delivered；claim_closed）
+- active_task: `LPR-W4-03`（in_progress；`LPR-W4-03-A` pass + `W4-03-B` ttl/lease truth green，主线转入 `W4-03-C` XT surface 统一）
 - runtime_executor: `Hub-L5`
 - standby_lanes: `Hub-L1,Hub-L2,Hub-L3,Hub-L4`
 - standby_policy: `NO_DELTA_STANDBY + directed_evidence_only`（idempotent；不改其他 task facts）
-- status: `delivered(lpr_g5_green_and_lpr_g6_pending_only;load_profile_residual_closure_revalidated;require_real_prereqs_restored;sample1_model_probe_revalidated;helper_local_service_disabled_root_cause_revalidated)`（W3-04-A/B/C 已补齐 machine-readable evidence；legacy MLX runtime 已按 load-profile-aware instance identity 收口，当前只剩 require-real 样本未执行）
-- claim_state: `closed_delivered`
-- claim_id: `claim_lpr_w3_04_hub_l5_20260313_1455`
-- claim_ttl_until: `2026-03-20T20:13:00+08:00`
-- backlog_next: `LPR-W4-02(operator_recovery_runbook+install_hint_surface),LPR-W4-09(release_gate_operator_runbook_support_faq),LPR-W3-03(require_real_execution)`
-- blocked_reason: `sample1_real_embedding_still_blocked_by_current_model_format(unsupported_quantization_config);combo_runtime_ready_but_current_local_embedding_dirs_not_torch_transformers_native_loadable;helper_local_service_disabled_in_settings(enableLocalService=false;cliInstalled=false;appFirstLoad=true);llmster_process_exists_but_helper_cli_readiness_and_server_ready_state_remain_false`
+- status: `in_progress(lpr_w4_03_a_typed_load_config_contract_captured;w4_03_b_loaded_instance_ttl_and_active_task_lease_ttl_now_surface_end_to_end;xt_doctor_export_status_board_picker_settings_slash_models_route_diagnose_and_supervisor_prompt_now_consume_typed_load_config;w4_04_add_model_library_truth_sync_done;focused_tests_green;legacy_wording_grep_clean_in_primary_xt_and_hub_runtime_tail_surfaces;progress_require_real)`（`build/reports/lpr_w4_03_a_typed_load_config_evidence.v1.json` 已生成并在当前机器判定 `PASS(typed_load_config_contract_captured)`；Python scheduler / provider status / Node normalization / Hub Swift diagnostics export / X-Terminal schema decode 现已贯通 `ttl + lease_ttl_sec + lease_remaining_ttl_sec + expires_at`，XT 已读取 `local_runtime_monitor_snapshot.redacted.json` 并把 `ctx / ttl / par / id` 摘要带到 XT-ready incident export / status / Supervisor XT-ready board、Hub runtime diagnosis、模型设置与 picker；本轮又完成 `LPR-W4-04` 真相同步：`AddModelSheet` 普通导入流保持 capability-first、无 backend/role 手工选择，模型库继续以 capability section/filter 呈现，并将 lane board 收口为 `delivered`；并通过 `local_runtime_ipc.test.js`、`test_local_provider_runtime_compat.py`、`LocalProviderRuntimeSchemaTests`、`HubDiagnosticsBundleExporterTests`、`XHubDoctorOutputTests`、`SupervisorIncidentExportTests`、`SupervisorXTReadyIncidentPresentationTests`、`XTModelCatalogTests`、`ChatSessionModelDirectReplyTests`、`SupervisorPromptModelEvidenceTests`）
+- claim_state: `claimed`
+- claim_id: `none`
+- claim_ttl_until: `none`
+- backlog_next: `LPR-W3-03(require_real_execution),LPR-W4-09(product_exit_migration_release_closure)`
+- blocked_reason: `none(mainline_unblocked);release_require_real_execution_remains_parallel_gate;progress_field_still_fail_closed_until_provider_runtime_reports_real_values;transformers_pack_owned_runtime_still_missing_python_module_torch_on_current_machine_for_provider_runtime_path`
 - unblock_owner: `Hub-L5`
 - report_mode: `delta_3line`
 - retry_after_utc: `none`
-- next_step: `keep_require_real_blockers_documented_but_move_mainline_to_xhub_local_service(/health_truth+resolver+schema+guidance+service_inference_proxy+service_internal_runtime_resolution+local_image_chat_route+multi_image_route_trace+bench_monitor_operator_export+multi_image_ocr_page_aware_spans+operator_doctor_route_trace_wording+managed_service_lifecycle_management);next_push_source_gate_snapshot_support_to_operator_recovery_runbook+support_faq+release_wording;lm_studio_helper_remains_reference_only`
+- next_step: `keep_residual_non_primary_xt_consumer_audit_and_progress_fail_closed_visible_after_primary_xt_surface_unification;after_w4_04_truth_sync_shift_feature_backlog_to_provider_pack_followthrough;do_not_claim_progress_until_upstream_runtime_reports_real_values`
 - next_owner_lane: `Hub-L5`
 - evidence_refs:
+  - `build/reports/lpr_w4_03_a_typed_load_config_evidence.v1.json`
+  - `scripts/generate_lpr_w4_03_a_typed_load_config_evidence.js`
+  - `x-hub/macos/RELFlowHub/Sources/RELFlowHubCore/AIRuntimeStatus.swift`
+  - `x-hub/macos/RELFlowHub/Sources/RELFlowHubCore/ModelBench.swift`
+  - `x-hub/macos/RELFlowHub/Sources/RELFlowHub/LocalModelRuntimeRequestContext.swift`
+  - `x-hub/macos/RELFlowHub/Sources/RELFlowHub/LocalRuntimeOperationsSummary.swift`
+  - `x-hub/macos/RELFlowHub/Sources/RELFlowHub/HubDiagnosticsBundleExporter.swift`
+  - `x-hub/macos/RELFlowHub/Sources/RELFlowHub/SettingsSheetView.swift`
+  - `x-hub/macos/RELFlowHub/Sources/RELFlowHub/MainPanelView.swift`
+  - `x-hub/macos/RELFlowHub/Sources/RELFlowHub/HubUIStrings.swift`
+  - `x-hub/macos/RELFlowHub/Tests/RELFlowHubCoreTests/LocalProviderRuntimeSchemaTests.swift`
+  - `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/LocalRuntimeOperationsSummaryBuilderTests.swift`
+  - `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/LocalModelRuntimeRequestContextTests.swift`
+  - `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/HubUIStringsTests.swift`
+  - `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/HubDiagnosticsBundleExporterTests.swift`
+  - `build/reports/lpr_w4_02_b_provider_runtime_inventory_evidence.v1.json`
+  - `scripts/generate_lpr_w4_02_b_provider_runtime_inventory_evidence.js`
+  - `x-hub/grpc-server/hub_grpc_server/src/local_runtime_ipc.js`
+  - `x-hub/grpc-server/hub_grpc_server/src/local_runtime_ipc.test.js`
   - `build/reports/lpr_w3_04_hub_l5_revalidation_evidence.v1.json`
   - `build/reports/lpr_w3_04_hub_l5_delta_3line.v1.json`
   - `build/reports/lpr_w3_04_a_load_profile_schema_evidence.v1.json`
@@ -10002,6 +10059,20 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 - directed_overlay_2026_03_22_k: `operator_recovery_report_delivered(generate_xhub_local_service_operator_recovery_report+machine_readable_action_category_install_hint_recommended_actions_support_faq_release_wording);focused_regression_green(generate_xhub_local_service_operator_recovery_report.test)`
 - directed_overlay_2026_03_22_l: `formal_release_surface_consumption_delivered(refresh_oss_release_evidence+xhub_local_service_operator_recovery_report->hub_l5_r1_release_oss_boundary_readiness+oss_release_readiness_machine_readable_support);focused_validation_green(node_check+py_compile+bash_n)`
 - directed_overlay_2026_03_22_m: `product_exit_packet_delivered(generate_lpr_w4_09_c_product_exit_packet+operator_handoff_release_handoff_single_exit_surface+missing_release_artifacts_fail_closed);focused_regression_green(generate_lpr_w4_09_c_product_exit_packet.test)`
+- directed_overlay_2026_03_23_a: `hub_app_install_hint_surface_delivered(swift_xhub_local_service_recovery_guidance_builder+settings_doctor_recovery_panel+clipboard_recovery_block+doctor_output_companion_recovery_guidance_sidecar+diagnostics_bundle_recovery_guidance_export);focused_regression_green(XHubLocalServiceRecoveryGuidanceTests+HubDiagnosticsBundleExporterTests/testHubRuntimeReadinessBundleSurfacesXHubLocalServiceFailureReason+HubDiagnosticsBundleExporterTests/testWriteCurrentHubRuntimeReadinessReportPersistsLocalServiceSnapshotSidecar+HubDiagnosticsBundleExporterTests/testWriteCurrentHubRuntimeReadinessReportPersistsLocalServiceRecoveryGuidanceSidecar+HubDiagnosticsBundleExporterTests/testXHubLocalServiceRecoveryGuidanceExportDataCapturesActionCategoryAndFAQ+XHubCLIRunnerTests/testDoctorWritesHubCLIBundleAndReturnsSuccessWithoutFailedChecks);full_HubDiagnosticsBundleExporterTests_currently_hits_preexisting_bench_wording_assertions`
+- directed_overlay_2026_03_23_b: `xt_recovery_guidance_consumption_delivered(xhub_local_service_recovery_guidance_loader+xt_ready_hub_runtime_guidance_merge+incident_status/export_action_category_install_hint_recommended_action_support_faq+supervisor_card_install_hint_and_recommended_action_lines+guidance_only_fallback);focused_regression_green(swift_test_filter_XHubDoctorOutputTests|SupervisorIncidentExportTests|SupervisorXTReadyIncidentPresentationTests)`
+- directed_overlay_2026_03_23_c: `release_operator_guidance_first_chain_delivered(hub_local_service_snapshot_smoke_recovery_guidance_evidence+source_gate_summary_recovery_guidance_support+operator_recovery_report_prefers_guidance_sidecar_over_legacy_reclassification+snapshot_evidence_fallback_if_summary_not_yet_refreshed);focused_regression_green(node_generate_xhub_local_service_operator_recovery_report.test+node_generate_lpr_w4_09_c_product_exit_packet.test+node_refresh_oss_release_evidence.test+bash_smoke_xhub_doctor_hub_local_service_snapshot.sh+bash_scripts_ci_xhub_doctor_source_gate.sh)`
+- directed_overlay_2026_03_23_d: `lpr_w4_02_runtime_inventory_delivered(generate_lpr_w4_02_b_provider_runtime_inventory_evidence+provider_pack_truth_backfill_from_provider_status+legacy_top_level_provider_packs_gap_fail_closed);focused_regression_green(node_local_runtime_ipc.test+node_generate_lpr_w4_02_b_provider_runtime_inventory_evidence.test)`
+- directed_overlay_2026_03_23_e: `lpr_w4_03_a_typed_load_config_contract_delivered(node_model_record_and_loaded_instance_normalization_add_default_load_config+load_config_hash+current_context_length+max_context_length+typed_evidence_generator);focused_regression_green(node_local_runtime_ipc.test+node_generate_lpr_w4_03_a_typed_load_config_evidence.test)`
+- directed_overlay_2026_03_23_f: `lpr_w4_03_bc_hub_consumer_slice_delivered(swift_decoder_accepts_load_config_hash_current_context_length_max_context_length_load_config+runtime_summary_diagnostics_settings_main_panel_and_strings_switch_to_typed_load_config_copy);focused_regression_green(swift_test_filter_LocalProviderRuntimeSchemaTests+LocalRuntimeOperationsSummaryBuilderTests+HubUIStringsTests+HubDiagnosticsBundleExporterTests)`
+- directed_overlay_2026_03_23_g: `lpr_w4_03_bc_typed_alias_writeback_slice_delivered(structured_monitor_export_now_writes_load_config_hash_current_context_length_load_config+active_task_keeps_max_context_length+runtime_request_payload_emits_load_config_hash_current_context_length);focused_regression_green(swift_test_filter_LocalProviderRuntimeSchemaTests+LocalModelRuntimeRequestContextTests+HubDiagnosticsBundleExporterTests)`
+- directed_overlay_2026_03_23_h: `xt_load_config_chat_and_prompt_surface_unification_delivered(chat_/models_lines+route_diagnose_recovered_lock_and_remembered_remote_copy+supervisor_prompt_model_evidence_switches_to_default_load_config_and_local_limit_wording);focused_regression_green(swift_test_filter_ChatSessionModelDirectReplyTests+SupervisorPromptModelEvidenceTests)`
+- directed_overlay_2026_03_23_i: `lpr_w3_03_status_helper_blocker_aware_surface_delivered(require_real_status_json_now_exports_qa_verdict_reason+qa_next_required_artifacts+qa_machine_decision+human_output_lists_sample1_blockers_and_next_required_artifacts_before_sample_scaffold_steps);focused_regression_green(node_scripts_lpr_w3_03_require_real_status.test.js+node_scripts_lpr_w3_03_require_real_status.js)`
+- directed_overlay_2026_03_23_j: `lpr_w4_09_c_require_real_single_exit_handoff_enriched(compact_require_real_truth_now_keeps_next_required_artifacts+operator_handoff.require_real_focus_carries_verdict_reason_and_next_required_artifacts_so_release_operator_packet_no_longer_needs_second_hop_to_raw_require_real_report);focused_regression_green(node_scripts_generate_lpr_w4_09_c_product_exit_packet.test.js+node_scripts_generate_lpr_w4_09_c_product_exit_packet.js)`
+- directed_overlay_2026_03_23_k: `lpr_w3_03_sample1_search_recovery_surface_delivered(candidate_validation+candidate_shortlist+candidate_registration_packet+sample1_operator_handoff_now_export_structured_exact_path_refresh_wide_common_user_root_search_and_custom_scan_root_retry_commands;real_reports_refreshed_and_still_fail_closed_on_unsupported_quantization_config);focused_regression_green(node_scripts_generate_lpr_w3_03_sample1_candidate_validation.test.js+node_scripts_generate_lpr_w3_03_sample1_candidate_shortlist.test.js+node_scripts_generate_lpr_w3_03_sample1_candidate_registration_packet.test.js+node_scripts_generate_lpr_w3_03_sample1_operator_handoff.test.js+node_scripts_lpr_w3_03_require_real_status.test.js)`
+- directed_overlay_2026_03_23_l: `helper_local_service_recovery_release_surface_delivered(hub_l5_boundary+oss_readiness_now_keep_helper_recovery_present_bit_helper_route_gate_scan_roots_and_wide_shortlist_retry_command;real_boundary_oss_readiness_product_exit_artifacts_refreshed_and_continue_to_fail_closed_on_enableLocalService=false);focused_regression_green(node_scripts_generate_hub_r1_release_oss_boundary_report.test.js+node_scripts_generate_oss_release_readiness_report.test.js)`
+- directed_overlay_2026_03_23_m: `lpr_w4_03_c_default_load_config_consumer_alignment_delivered(node_model_record_reader+python_runtime_normalizer+hub_swift_schema+xt_swift_schema+manifest_decode_now_accept_default_load_config_while_preserving_default_load_profile_alias;focused_regression_green(node_local_runtime_ipc.test+python_test_local_provider_runtime_compat.py+swift_test_filter_LocalProviderRuntimeSchemaTests+swift_test_filter_XTModelCatalogTests))`
+- directed_overlay_2026_03_24_a: `hub_pairing_smoke_support_surface_delivered(xhub_doctor_source_gate_now_reads_launch_only+verify_only_hub_pairing_smoke_reports_as_non_blocking_support+xt_ready_release_diagnostics_now_surfaces_hub_pairing_roundtrip_support_and_evidence_refs+hub_l5_boundary_release_surface_now_carries_hub_pairing_roundtrip_support);focused_regression_green(node_scripts_xt_ready_release_diagnostics.test.js+node_scripts_generate_hub_r1_release_oss_boundary_report.test.js+bash_n_scripts_ci_xhub_doctor_source_gate.sh)`
 
 #### Hub-L5 / SKC-W3-08(+SKC-W3-09/SKC-W3-10) / 7件套（首轮提交）
 

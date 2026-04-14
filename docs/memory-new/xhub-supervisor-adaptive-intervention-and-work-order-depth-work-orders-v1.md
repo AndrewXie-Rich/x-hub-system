@@ -44,9 +44,9 @@
 
 因此本工单冻结一条新原则：
 
-- `configured supervisor tier` 是用户或产品配置值。
-- `effective supervisor tier` 是运行时真相值。
-- `effective supervisor tier` 必须可被以下因素自动抬高：
+- `configured S-Tier` 是用户或产品配置值。
+- `effective S-Tier` 是运行时真相值。
+- `effective S-Tier` 必须可被以下因素自动抬高：
   - `Project AI` 过弱
   - 近期不稳定
   - 任务复杂度升高
@@ -77,10 +77,10 @@
 1. 用户或默认 profile 先给出一个 `configured S-tier`
 2. 系统持续评估当前 `Project AI` 强弱
 3. resolver 计算：
-   - `recommended supervisor tier`
-   - `effective supervisor tier`
+   - `recommended S-Tier`
+   - `effective S-Tier`
    - `recommended work order depth`
-4. `Supervisor` 在事件触发时按 `effective supervisor tier` 决定：
+4. `Supervisor` 在事件触发时按 `effective S-Tier` 决定：
    - 看多深
    - review 多细
    - 是否产出工单
@@ -153,7 +153,7 @@
 - `manual_only`
   - 只给建议，不自动抬档
 - `raise_only`
-  - 可以自动抬高 `effective supervisor tier`
+  - 可以自动抬高 `effective S-Tier`
   - 不自动放松
 - `bidirectional`
   - 可自动抬高，也可在稳定窗口后自动建议放松
@@ -384,7 +384,7 @@ effective_supervisor_tier =
 
 ### 7.2 强化介入的条件
 
-命中任一条件都可抬高 `effective supervisor tier` 或提高工单深度：
+命中任一条件都可抬高 `effective S-Tier` 或提高工单深度：
 
 - `strength_band = unknown`
 - `strength_band = weak`
@@ -421,7 +421,7 @@ effective_supervisor_tier =
 - 当前 `Project AI` 强弱
 - 最近一次抬档原因
 - 最近一次 `Supervisor` 工单
-- 当前 `effective supervisor tier`
+- 当前 `effective S-Tier`
 
 ### 8.3 Supervisor View
 

@@ -1,7 +1,7 @@
 # X-Hub Memory Serving Profiles + Adaptive Context Contract v1
 
-- version: v1
-- updatedAt: 2026-03-13
+- version: v1.4
+- updatedAt: 2026-03-21
 - owner: Hub Memory / X-Terminal / Supervisor
 - status: draft
 - scope: 在既有 5-layer memory 之上增加 `Memory Serving Plane`，为百万级上下文模型和常规窗口模型统一提供按任务、按风险、按预算的上下文供给档位。
@@ -9,6 +9,7 @@
   - `X_MEMORY.md`
   - `docs/xhub-memory-system-spec-v2.md`
   - `docs/memory-new/xhub-memory-v3-execution-plan.md`
+  - `docs/memory-new/xhub-memory-model-preferences-and-routing-contract-v1.md`
   - `docs/memory-new/xhub-terminal-hub-memory-layer-usage-work-orders-v1.md`
   - `x-terminal/work-orders/xt-w2-24-token-optimal-context-capsule-implementation-pack-v1.md`
 
@@ -41,17 +42,43 @@
    - `Use Mode` 决定“允许读哪些层、freshness 红线、remote export 边界”。
    - `Serving Profile` 决定“读多少、读多深、用什么包装方式供给模型”。
 
-4. 未来的长上下文默认策略不是 `full dump`，而是 `staged expansion`。
+4. `Memory Serving Plane` 不是 memory maintenance model chooser。
+   - 用户选哪个 AI 维护 memory，仍属于上游 `memory_model_preferences -> Scheduler -> Worker -> Writer + Gate`。
+   - Serving plane 只能消费上游已解析的 mode/profile/route truth，再决定 pack/expand/compress。
+
+5. 未来的长上下文默认策略不是 `full dump`，而是 `staged expansion`。
    - 先给 focused brief。
    - 再给 selected observations / canonical / working set。
    - 只有在触发升级条件时才追加 longterm expansion / selected raw evidence refs。
 
-5. 摘要必须可逆。
+6. 摘要必须可逆。
    - 任一关键结论都必须能回挂到 `canonical ref / observation ref / raw evidence ref`。
    - 不允许“只有 prose 摘要、没有 provenance”。
 
-6. 高风险 act 仍然优先精度与新鲜度，而不是优先大窗口。
+7. 高风险 act 仍然优先精度与新鲜度，而不是优先大窗口。
    - 即使模型支持 1M context，也不能因此绕过 `fresh recheck / grant / remote export gate / fail-closed`。
+
+## 1.1) Upstream Control-Plane Dependency
+
+Serving Plane 在进入 `Profile Selector` 前，固定只消费上游已解析好的字段：
+
+- `memory_model_preferences`
+- upstream mode profile（例如 `assistant_personal / project_code`）
+- `route_source`
+- `route_reason_code`
+- `fallback_applied`
+- `fallback_reason`
+- `model_id`
+- `session_participation_class`
+- `write_permission_scope`
+
+固定要求：
+
+- `Profile Selector` 在本合同里只表示 serving-profile selector，不表示 memory model selector。
+- `Profile Selector` 可以参考上游 mode/profile/route truth，但不得反向覆盖用户的 memory maintenance model 选择。
+- `Use Mode`、`Serving Profile`、`Expansion Planner` 都不能变成第二套 `memory_model_router`。
+- 若 serving explain 需要展示 route 原因，必须直接消费上游 machine-readable 字段，而不是派生第二套词典。
+- 若命中 local cache / remote snapshot / transport fallback，serving plane 必须原样保留上游 `route_source / route_reason_code / fallback_applied / fallback_reason / model_id`，不得在 fallback 时本地重解 memory route。
 
 ## 2) 问题定义
 
@@ -89,6 +116,8 @@ Serving Plane 最少包含以下组件：
 
 1. `Profile Selector`
    - 根据 `use_mode / task intent / risk / model window / latency budget / user request` 选择默认档位。
+   - 可消费 upstream mode/profile/route truth，但不重跑 memory model resolution。
+   - 即使命中 serving fallback，也只允许调整 profile/budget/packaging，不允许变更上游 memory model truth。
 
 2. `Focused Brief Builder`
    - 产出当前任务最关键的 compact brief。
@@ -169,6 +198,159 @@ request
   - 至少支持 `ignore_conflicts_for_speed | surface_conflicts`
 - `expansion_policy`
   - `none | staged_one_hop | staged_multi_hop`
+
+### 4.1 Wave-0 Freeze：Expansion Routing Inputs（`W0-A2-S1`）
+
+为了避免 staged expansion 继续停留在 prompt 经验，本合同冻结一组最小 routing inputs。
+
+这些 inputs 的作用不是直接决定“读哪条 memory”，而是决定：
+
+- 本轮应不应继续展开
+- 如果展开，应维持浅展开还是进入更深的 traversal 候选路径
+- 在给定 profile / budget / freshness 约束下，是否应保持保守
+
+最小输入集：
+
+1. `candidate_count`
+   - 定义：
+     - 当前 query 在经过 `scope -> sensitivity/trust` 过滤后，可进入 expansion planner 的候选对象数量。
+   - 固定要求：
+     - 只统计当前 scope 下合规候选。
+     - 不把已被 gate 拒绝的候选计入。
+
+2. `requested_depth`
+   - 定义：
+     - 当前调用方或 planner 请求的 recall 深度等级。
+   - 固定语义建议：
+     - `0` = 不展开
+     - `1` = brief / refs
+     - `2` = one-hop shallow expansion
+     - `3+` = multi-hop candidate
+
+3. `token_risk_ratio`
+   - 定义：
+     - 预计展开 token 成本与当前安全预算的比值。
+   - 固定要求：
+     - 由 budget governor 统一估算，不允许不同调用方各算各的。
+     - 高于阈值时应推动更保守 route，而不是默认继续深挖。
+
+4. `broad_time_range_indicator`
+   - 定义：
+     - 当前 query 是否明显要求跨较大时间跨度进行回顾、比较、追溯。
+   - 典型例子：
+     - “从去年到现在发生了什么”
+     - “比较 2025Q4 和 2026Q1 的变化”
+
+5. `multi_hop_indicator`
+   - 定义：
+     - 当前 query 是否要求跨多个对象、多个因果环节或多个证据节点做链式推理。
+   - 典型例子：
+     - 根因链追踪
+     - 决策与结果的跨节点解释
+
+6. `needs_raw_chunk`
+   - 定义：
+     - 当前任务是否明确要求 exact chunk，而不是 refs / summaries 即可满足。
+   - 典型例子：
+     - exact error message
+     - exact config diff
+     - selected log chunk
+     - verbatim snippet under policy-allowed path
+
+固定规则：
+
+- 这 6 个字段的语义在不同 profile 间保持一致，只允许阈值变化，不允许语义漂移。
+- expansion routing 可以参考 profile、budget、freshness 和 risk tier，但不得再发明第二套输入词典。
+- 当输入不完整或无法可靠估算时，route 必须默认保守。
+- 本轮冻结的是 input semantics，不等于引入新的 PD API。
+
+说明：
+
+- `W0-A2-S1` 只冻结输入词典。
+- `W0-A2-S2` 再冻结 routing outcome explain 词典。
+- `W0-A2-S3` 再把上述行为纳入 bench / golden / adversarial。
+
+### 4.2 Wave-0 Freeze：Expansion Routing Outcomes（`W0-A2-S2`）
+
+在 input semantics 固定后，当前再冻结一组最小 routing outcomes。
+
+最小 outcome 词典：
+
+1. `answer_directly`
+   - 语义：
+     - 当前 query 不需要进一步展开，直接基于当前 brief / refs / already selected evidence 回答。
+
+2. `expand_shallow`
+   - 语义：
+     - 当前 query 允许做一跳浅展开，但不进入更深 traversal。
+
+3. `delegate_traversal`
+   - 语义：
+     - 当前 query 需要更深的 traversal candidate；此处只冻结 outcome 词典，不等于本轮已引入新的 grant contract。
+
+最小 explain 字段：
+
+- `trigger_flags`
+  - 哪些输入因子触发了当前 decision
+- `budget_pressure`
+  - 当前预算压力等级或估计结果
+- `policy_floor`
+  - 当前 profile / freshness / risk constraints 是否将 route 压在更保守档位
+- `raw_evidence_allowed`
+  - 当前 decision 下是否允许进入 raw chunk 候选路径
+
+固定规则：
+
+- Hub retrieval explain 与 Supervisor serving explain 必须复用同一组 outcome 词典。
+- 当 input 不完整、policy 不确定、budget 压力过高时，默认向更保守 outcome 收敛。
+- `delegate_traversal` 在本轮只表示“需要更深 traversal 候选”，不自动等价为“现在就放开更深 evidence grant”。
+
+### 4.3 Wave-0 Freeze：Expansion Routing Bench / Golden / Adversarial Acceptance（`W0-A2-S3`）
+
+如果 `W0-A2-S1/S2` 只有 explain，没有回归样本，那 routing 词典仍然会在后续实现中漂移。
+
+因此，本合同进一步冻结 route-sensitive bench 承接要求。
+
+golden 最小扩展字段：
+
+- `expected_expansion_outcome`
+  - 允许值只能来自：
+    - `answer_directly`
+    - `expand_shallow`
+    - `delegate_traversal`
+- `route_bucket`
+  - 例如：
+    - `direct_answer_expected`
+    - `shallow_expand_expected`
+    - `deep_traversal_candidate`
+- `expected_raw_evidence_allowed`
+- 可选 `expected_trigger_flags`
+
+adversarial 最小扩展字段：
+
+- `route_attack_type`
+  - 例如：
+    - `induce_over_expand`
+    - `induce_broad_range_recall`
+    - `induce_multi_hop_chain`
+    - `induce_raw_chunk_leak`
+- `expected_policy_floor`
+- `expected_max_outcome`
+  - 用于表达“即使被诱导，最多也只能到哪一档”
+
+bench / regression report 最少新增以下口径：
+
+- `route_outcome_match_rate`
+- `over_expand_rate`
+- `under_expand_rate`
+- `raw_evidence_overgrant_rate`
+
+固定规则：
+
+- final answer 看起来“还能答”并不等于 route 正确；route drift 必须被单独统计。
+- `delegate_traversal` 不得在报告里被静默并入 `expand_shallow`。
+- 没有 route-sensitive 标注的旧样本，只能继续算 legacy quality sample，不能被拿来宣称 expansion route 已覆盖。
+- Hub Retrieval、Supervisor Serving、后续 weekly report 必须复用同一组 outcome 词典与 drift 口径。
 
 ## 5) 推荐档位（M0..M4）
 

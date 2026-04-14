@@ -67,4 +67,6 @@ X-Hub 往上提了一层：
 - 它更容易审计和恢复
 - 它更容易挂接到记忆、review 和项目连续性上
 
+但这不意味着 skill runtime 会变成 memory authority：执行 memory jobs 的 AI 仍由用户在 X-Hub 中选择，`Memory-Core` 仍是受治理规则层，而 durable memory writes 仍只经 `Writer + Gate` 落库。
+
 结果不是“能力更多”这么简单，而是你得到了一层更可治理的执行基底。

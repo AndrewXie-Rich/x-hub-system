@@ -20,8 +20,41 @@ struct MemoryControlPlaneDocsSyncTests {
                 "docs/memory-new/xhub-memory-core-recipe-asset-versioning-freeze-v1.md"
             )
         )
+        let skillsAbiCompat = try read(
+            root.appendingPathComponent("docs/skills_abi_compat.v1.md")
+        )
+        let skillsImportBridge = try read(
+            root.appendingPathComponent("docs/skills_import_bridge_contract.v1.md")
+        )
         let executionPlan = try read(
             root.appendingPathComponent("docs/memory-new/xhub-memory-v3-execution-plan.md")
+        )
+        let memorySystemSpecV1 = try read(
+            root.appendingPathComponent("docs/xhub-memory-system-spec-v1.md")
+        )
+        let memorySystemSpecV2 = try read(
+            root.appendingPathComponent("docs/xhub-memory-system-spec-v2.md")
+        )
+        let memoryCorePolicy = try read(
+            root.appendingPathComponent("docs/xhub-memory-core-policy-v1.md")
+        )
+        let memoryFusion = try read(
+            root.appendingPathComponent("docs/xhub-memory-fusion-v1.md")
+        )
+        let memoryHybridIndex = try read(
+            root.appendingPathComponent("docs/xhub-memory-hybrid-index-v1.md")
+        )
+        let memoryBenchmarks = try read(
+            root.appendingPathComponent("docs/xhub-memory-metrics-benchmarks-v1.md")
+        )
+        let memorySystemsComparison = try read(
+            root.appendingPathComponent("docs/xhub-memory-systems-comparison-v1.md")
+        )
+        let multiModelOrchestration = try read(
+            root.appendingPathComponent("docs/xhub-multi-model-orchestration-and-supervisor-v1.md")
+        )
+        let hubArchitectureTradeoffs = try read(
+            root.appendingPathComponent("docs/xhub-hub-architecture-tradeoffs-v1.md")
         )
         let workingIndex = try read(
             root.appendingPathComponent("docs/WORKING_INDEX.md")
@@ -100,6 +133,9 @@ struct MemoryControlPlaneDocsSyncTests {
         let skillsDiscovery = try read(
             root.appendingPathComponent("docs/xhub-skills-discovery-and-import-v1.md")
         )
+        let skillsFailClosed = try read(
+            root.appendingPathComponent("docs/xhub-skills-fail-closed-chain-v1.md")
+        )
         let clientModes = try read(
             root.appendingPathComponent("docs/xhub-client-modes-and-connectors-v1.md")
         )
@@ -117,6 +153,9 @@ struct MemoryControlPlaneDocsSyncTests {
         )
         let remoteExportGate = try read(
             root.appendingPathComponent("docs/xhub-memory-remote-export-and-prompt-gate-v1.md")
+        )
+        let storageEncryption = try read(
+            root.appendingPathComponent("docs/xhub-storage-encryption-and-keymgmt-v1.md")
         )
         let protocolDoc = try read(
             root.appendingPathComponent("protocol/hub_protocol_v1.md")
@@ -186,16 +225,75 @@ struct MemoryControlPlaneDocsSyncTests {
             "`memory_model_preferences -> Scheduler -> Worker`",
             "Writer + Gate",
         ])
+        expectContains(skillsAbiCompat, [
+            "`memory_core` 作为保留系统层",
+            "`Memory-Core` 规则资产状态",
+            "`memory_model_preferences`",
+            "`Writer + Gate`",
+        ])
+        expectContains(skillsImportBridge, [
+            "`memory_core` 属于保留系统层/规则资产版本链",
+            "用户继续在 X-Hub 中选择哪个 AI 执行 memory jobs",
+            "`Writer + Gate`",
+        ])
         expectContains(executionPlan, [
             "用户继续在 X-Hub 中通过 `memory_model_preferences` 选择哪个 AI 执行 memory jobs",
             "`Memory-Core` 继续只作为 governed rule asset / recipe asset",
             "`Scheduler -> Worker -> Writer + Gate`",
+        ])
+        expectContains(memorySystemSpecV1, [
+            "用户在 X-Hub 选择 memory AI",
+            "`Scheduler -> Worker -> Writer + Gate`",
+            "`Memory-Core` 作为 governed rule asset 约束运行时，而不是单体执行 AI",
+        ])
+        expectContains(memorySystemSpecV2, [
+            "用户在 X-Hub 选择 memory AI",
+            "`Scheduler -> Worker -> Writer + Gate`",
+            "`Memory-Core` 作为 governed rule asset 约束运行时",
+        ])
+        expectContains(memoryCorePolicy, [
+            "不再把 `Memory-Core` 理解成单体执行 AI",
+            "用户在 X-Hub 选择 memory AI",
+            "`Scheduler -> Worker -> Writer + Gate`",
+            "不负责代替 Writer + Gate 直接落库",
+        ])
+        expectContains(memoryFusion, [
+            "用户在 X-Hub 选择 memory AI",
+            "`Scheduler -> Worker -> Writer + Gate`",
+            "`Memory-Core` 作为 governed rule asset 约束提取/晋升/远程外发",
+        ])
+        expectContains(memoryHybridIndex, [
+            "用户在 X-Hub 选择 memory AI",
+            "`Scheduler -> Worker -> Writer + Gate`",
+            "不负责“谁选模型、谁能写 durable truth、谁决定晋升”",
+        ])
+        expectContains(memoryBenchmarks, [
+            "用户在 X-Hub 选择 memory AI",
+            "`Scheduler -> Worker -> Writer + Gate`",
+            "`Memory-Core` 只提供规则与门禁，不作为单体执行者计量",
+        ])
+        expectContains(memorySystemsComparison, [
+            "当前冻结控制面不是“Memory-Core 自己执行一切”",
+            "用户在 X-Hub 选择 memory AI",
+            "`Scheduler -> Worker -> Writer + Gate`",
+            "`Memory-Core` 作为 governed rule asset 约束运行时",
+        ])
+        expectContains(multiModelOrchestration, [
+            "memory 维护模型仍必须由用户在 X-Hub 通过 `memory_model_preferences` 显式选择",
+            "`Scheduler -> Worker -> Writer + Gate`",
+            "它不能绕过用户在 X-Hub 里已经选定的 `memory_model_preferences`",
+        ])
+        expectContains(hubArchitectureTradeoffs, [
+            "`Memory-Core` 应理解为 Hub 内建 governed rule asset",
+            "`memory_model_preferences -> Memory Scheduler -> Memory Worker -> Writer + Gate`",
+            "`Memory-Core` 只管规则、门禁与晋升纪律；用户选模型，Scheduler 派单，Worker 执行，Writer + Gate 落库",
         ])
         expectContains(workingIndex, [
             "user chooses which AI executes memory jobs",
             "`Memory-Core` remains a governed rule asset",
             "`Writer + Gate`",
             "MemoryControlPlaneDocsSyncTests.swift",
+            "xhub-memory-hub-first-windowed-continuity-and-fast-path-work-orders-v1.md",
         ])
         expectContains(repoLayout, [
             "the user chooses which AI executes memory jobs in X-Hub",
@@ -326,7 +424,12 @@ struct MemoryControlPlaneDocsSyncTests {
             "durable writes still terminate through `Writer + Gate`",
         ])
         expectContains(skillsDiscovery, [
-            "普通 skill 体系不替代 `memory_model_preferences -> Scheduler -> Worker -> Writer/Gate`",
+            "普通 skill 体系不替代 `memory_model_preferences -> Scheduler -> Worker -> Writer + Gate`",
+        ])
+        expectContains(skillsFailClosed, [
+            "`memory_core` 为保留系统层",
+            "memory executor 仍由用户在 X-Hub 中选择",
+            "`memory_model_preferences -> Scheduler -> Worker -> Writer + Gate`",
         ])
         expectContains(clientModes, [
             "client 是否允许消费 Hub memory surface",
@@ -356,6 +459,12 @@ struct MemoryControlPlaneDocsSyncTests {
         expectContains(remoteExportGate, [
             "不重新定义 memory model chooser",
             "仍只允许经 `Writer + Gate` 落库",
+        ])
+        expectContains(storageEncryption, [
+            "不重新定义 memory control plane",
+            "用户继续在 X-Hub 中选择哪个 AI 执行 memory jobs",
+            "`Memory-Core` 继续作为 governed rule layer",
+            "`Writer + Gate`",
         ])
         expectContains(protocolDoc, [
             "does not choose the memory executor",
@@ -426,6 +535,7 @@ struct MemoryControlPlaneDocsSyncTests {
         expectContains(xMemory, [
             "用户在 X-Hub 中选择 AI 去执行 memory jobs",
             "`Memory-Core` 本身是 governed recipe asset / 规则层",
+            "xhub-memory-hub-first-windowed-continuity-and-fast-path-work-orders-v1.md",
         ])
     }
 
@@ -478,10 +588,7 @@ struct MemoryControlPlaneDocsSyncTests {
     }
 
     private func repoRoot() -> URL {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
+        monorepoTestRepoRoot(filePath: #filePath)
     }
 
     private func read(_ url: URL) throws -> String {

@@ -137,14 +137,32 @@ private func xtResolvedRuntimeSurfaceOverrideMode(
 
 func xtResolveProjectRuntimeSurfacePolicy(
     projectRoot: URL,
-    config: AXProjectConfig
+    config: AXProjectConfig,
+    now: Date
 ) async -> AXProjectResolvedRuntimeSurfacePolicyState {
     let projectId = AXProjectRegistryStore.projectId(forRoot: projectRoot)
-    let remoteOverride = await HubIPCClient.requestProjectRuntimeSurfaceOverride(projectId: projectId)
+    let remoteOverride = await HubIPCClient.requestProjectRuntimeSurfaceOverride(
+        projectId: projectId,
+        timeoutSec: 0.6
+    )
     return AXProjectResolvedRuntimeSurfacePolicyState(
         projectId: projectId,
         remoteOverride: remoteOverride,
-        effectivePolicy: config.effectiveRuntimeSurfacePolicy(remoteOverride: remoteOverride)
+        effectivePolicy: config.effectiveRuntimeSurfacePolicy(
+            now: now,
+            remoteOverride: remoteOverride
+        )
+    )
+}
+
+func xtResolveProjectRuntimeSurfacePolicy(
+    projectRoot: URL,
+    config: AXProjectConfig
+) async -> AXProjectResolvedRuntimeSurfacePolicyState {
+    await xtResolveProjectRuntimeSurfacePolicy(
+        projectRoot: projectRoot,
+        config: config,
+        now: Date()
     )
 }
 

@@ -1,15 +1,25 @@
 # X-Hub Memory System Spec v2（Local Embeddings + sqlite-vec Hybrid Search / 可执行规范）
 
 - Status: Draft
-- Updated: 2026-02-12
+- Updated: 2026-03-21
 - Applies to: X‑Hub（hub_grpc_server + Memory Worker + Index DB + local embeddings runtime）+ X‑Terminal（hooks 上报 + PD UI）
 
 > v2 目标：在保持 v1 的 **Progressive Disclosure（Index→Timeline→Get）** 与 **安全治理（DLP/远程外发 gate/审计/回滚）** 不变的前提下，
 > 把检索能力补齐到“语义 recall 不弱于 skills ecosystem/progressive-disclosure reference architecture”，同时仍然保持 **可丢弃可重建的派生索引层**。
 
+补充边界：
+- v2 继续只扩展检索与索引能力，不重写 memory 控制面。
+- memory 控制面仍固定为：
+  - 用户在 X-Hub 选择 memory AI
+  - `Scheduler -> Worker -> Writer + Gate` 分层执行
+  - `Memory-Core` 作为 governed rule asset 约束运行时
+- 因此 v2 的 local embeddings / sqlite-vec / hybrid merge 都是 retrieval plane 增强，不替代上游 `memory_model_preferences`、Scheduler 或 Writer + Gate。
+
 依赖（v2 基于 v1 增量实现）：
 - v1 总装配：`docs/xhub-memory-system-spec-v1.md`
 - 记忆治理/晋升/远程门禁：`docs/xhub-memory-core-policy-v1.md`
+- 控制面 runtime 架构：`docs/memory-new/xhub-memory-scheduler-and-memory-core-runtime-architecture-v1.md`
+- 规则资产版本冻结：`docs/memory-new/xhub-memory-core-recipe-asset-versioning-freeze-v1.md`
 - PD + Hooks：`docs/xhub-memory-progressive-disclosure-hooks-v1.md`
 - skills ecosystem 可复用实现（MIT）：`docs/xhub-memory-hybrid-index-v1.md`
 - 指标与 benchmark：`docs/xhub-memory-metrics-benchmarks-v1.md`

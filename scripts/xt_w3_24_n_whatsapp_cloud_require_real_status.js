@@ -1,13 +1,25 @@
 #!/usr/bin/env node
 const fs = require("node:fs");
 const path = require("node:path");
+const {
+  readCaptureBundle,
+  resolveBundlePath,
+  resolveRequireRealEvidencePath,
+} = require("./xt_w3_24_n_whatsapp_cloud_require_real_bundle_lib.js");
 
 const repoRoot = path.resolve(__dirname, "..");
-const bundlePath = path.join(repoRoot, "build/reports/xt_w3_24_n_whatsapp_cloud_require_real_capture_bundle.v1.json");
-const qaPath = path.join(repoRoot, "build/reports/xt_w3_24_n_action_grant_whatsapp_evidence.v1.json");
 
 function readJSON(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+
+function readJSONIfExists(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    return readJSON(filePath);
+  } catch {
+    return null;
+  }
 }
 
 function parseArgs(argv) {
@@ -79,6 +91,14 @@ function recommendedEvidenceDir(sample) {
   return `build/reports/xt_w3_24_n_whatsapp_cloud_require_real/${sample.sample_id}`;
 }
 
+function recommendedTemplatePath(sample) {
+  return `${recommendedEvidenceDir(sample)}/machine_readable_template.v1.json`;
+}
+
+function recommendedCompletionNotePath(sample) {
+  return `${recommendedEvidenceDir(sample)}/completion_notes.txt`;
+}
+
 function exampleValueForField(sample, fieldName) {
   const checks = Array.isArray(sample.required_checks) ? sample.required_checks : [];
   const directCheck = checks.find((check) => String(check.field || "").trim() === fieldName) || null;
@@ -97,6 +117,14 @@ function exampleValueForField(sample, fieldName) {
     if (typeof directCheck.min === "number") {
       return String(directCheck.min);
     }
+    if (typeof directCheck.max === "number") {
+      return String(directCheck.max);
+    }
+    if (Object.prototype.hasOwnProperty.call(directCheck, "not_equals")) {
+      return typeof directCheck.not_equals === "string" && directCheck.not_equals === ""
+        ? `<${fieldName}>`
+        : JSON.stringify(directCheck.not_equals);
+    }
   }
 
   const currentValue = sample[fieldName];
@@ -107,83 +135,66 @@ function exampleValueForField(sample, fieldName) {
   return `<${fieldName}>`;
 }
 
-function shellSingleQuote(value) {
-  return `'${String(value).replace(/'/g, `'\\''`)}'`;
-}
-
-function requiredSetFieldHints(sample) {
-  const skip = new Set([
-    "sample_id",
-    "status",
-    "precondition",
-    "expected_result",
-    "machine_readable_fields_to_record",
-    "required_checks",
-    "performed_at",
-    "success_boolean",
-    "evidence_refs",
-    "operator_notes",
-  ]);
-
-  const fields = Array.isArray(sample.machine_readable_fields_to_record)
-    ? sample.machine_readable_fields_to_record
-    : [];
-
-  const hints = [];
-  for (const field of fields) {
-    const key = String(field || "").trim();
-    if (!key || skip.has(key)) continue;
-    hints.push(`  --set ${shellSingleQuote(`${key}=${exampleValueForField(sample, key)}`)}`);
-  }
-  return hints;
-}
-
 function renderUpdateCommand(sample) {
-  const evidenceDir = recommendedEvidenceDir(sample);
   return [
     "node scripts/update_xt_w3_24_n_whatsapp_cloud_require_real_capture_bundle.js",
-    `  --sample-id ${sample.sample_id}`,
+    `  --scaffold-dir ${recommendedEvidenceDir(sample)}`,
     "  --status passed",
     "  --success true",
-    "  --performed-at <ISO8601>",
-    `  --evidence-ref ${evidenceDir}/capture-1.png`,
-    `  --evidence-ref ${evidenceDir}/capture-2.log`,
     "  --note <operator_notes>",
-    ...requiredSetFieldHints(sample),
   ].join(" \\\n");
+}
+
+function renderFinalizeCommand(sample) {
+  return [
+    "node scripts/finalize_xt_w3_24_n_whatsapp_cloud_require_real_sample.js",
+    `  --scaffold-dir ${recommendedEvidenceDir(sample)}`,
+  ].join(" \\\n");
+}
+
+function renderPrepareCommand(sample) {
+  return `node scripts/prepare_xt_w3_24_n_whatsapp_cloud_require_real_sample.js --sample-id ${sample.sample_id}`;
 }
 
 function buildSummary(bundle, qa, focusSample, allSamples) {
   const samples = Array.isArray(bundle.samples) ? bundle.samples : [];
+  const resolvedBundlePath = resolveBundlePath();
+  const resolvedQAPath = resolveRequireRealEvidencePath();
   const executedSamples = samples.filter(isExecuted);
   const passedSamples = samples.filter(isPassed);
   const failedSamples = samples.filter((sample) => isExecuted(sample) && sample.success_boolean === false);
   const pendingSamples = samples.filter((sample) => !isPassed(sample));
 
   return {
-    bundle_path: path.relative(repoRoot, bundlePath),
-    qa_path: path.relative(repoRoot, qaPath),
+    bundle_path: path.relative(repoRoot, resolvedBundlePath),
+    qa_path: path.relative(repoRoot, resolvedQAPath),
     bundle_status: String(bundle.status || "").trim() || "unknown",
-    qa_gate_verdict: String(qa.gate_verdict || "").trim() || "unknown",
-    qa_release_stance: String(qa.release_stance || "").trim() || "unknown",
+    qa_gate_verdict: qa ? (String(qa.gate_verdict || "").trim() || "unknown") : "missing(run_generate_first)",
+    qa_release_stance: qa ? (String(qa.release_stance || "").trim() || "unknown") : "missing(run_generate_first)",
     total_samples: samples.length,
     executed_count: executedSamples.length,
     passed_count: passedSamples.length,
     failed_count: failedSamples.length,
     pending_count: pendingSamples.length,
-    channel_release_freeze: Array.isArray(qa.channel_release_freeze) ? qa.channel_release_freeze : [],
+    channel_release_freeze: qa && Array.isArray(qa.channel_release_freeze) ? qa.channel_release_freeze : [],
     next_pending_sample_id: focusSample ? focusSample.sample_id : "",
     next_pending_sample: focusSample
       ? {
           sample_id: focusSample.sample_id,
           status: focusSample.status,
+          expected_result_summary: focusSample.expected_result_summary || "",
           precondition: focusSample.precondition || "",
           expected_result: focusSample.expected_result || "",
+          what_to_capture: Array.isArray(focusSample.what_to_capture) ? focusSample.what_to_capture : [],
           required_checks: Array.isArray(focusSample.required_checks) ? focusSample.required_checks : [],
           machine_readable_fields_to_record: Array.isArray(focusSample.machine_readable_fields_to_record)
             ? focusSample.machine_readable_fields_to_record
             : [],
           recommended_evidence_dir: recommendedEvidenceDir(focusSample),
+          recommended_template_path: recommendedTemplatePath(focusSample),
+          recommended_completion_note_path: recommendedCompletionNotePath(focusSample),
+          prepare_command: renderPrepareCommand(focusSample),
+          suggested_finalize_command: renderFinalizeCommand(focusSample),
           suggested_update_command: renderUpdateCommand(focusSample),
           regenerate_command: "node scripts/generate_xt_w3_24_n_whatsapp_cloud_require_real_report.js",
         }
@@ -192,13 +203,19 @@ function buildSummary(bundle, qa, focusSample, allSamples) {
       ? samples.map((sample) => ({
           sample_id: sample.sample_id,
           status: sample.status,
+          expected_result_summary: sample.expected_result_summary || "",
           precondition: sample.precondition || "",
           expected_result: sample.expected_result || "",
+          what_to_capture: Array.isArray(sample.what_to_capture) ? sample.what_to_capture : [],
           required_checks: Array.isArray(sample.required_checks) ? sample.required_checks : [],
           machine_readable_fields_to_record: Array.isArray(sample.machine_readable_fields_to_record)
             ? sample.machine_readable_fields_to_record
             : [],
           recommended_evidence_dir: recommendedEvidenceDir(sample),
+          recommended_template_path: recommendedTemplatePath(sample),
+          recommended_completion_note_path: recommendedCompletionNotePath(sample),
+          prepare_command: renderPrepareCommand(sample),
+          suggested_finalize_command: renderFinalizeCommand(sample),
           suggested_update_command: renderUpdateCommand(sample),
           regenerate_command: "node scripts/generate_xt_w3_24_n_whatsapp_cloud_require_real_report.js",
           performed_at: sample.performed_at || "",
@@ -239,9 +256,16 @@ function printHuman(summary) {
       lines.push(`performed_at: ${sample.performed_at}`);
       lines.push(`success_boolean: ${sample.success_boolean}`);
       lines.push(`evidence_ref_count: ${sample.evidence_ref_count}`);
+      lines.push(`expected_result_summary: ${sample.expected_result_summary}`);
       lines.push(`precondition: ${sample.precondition}`);
       lines.push(`expected_result: ${sample.expected_result}`);
       lines.push(`recommended_evidence_dir: ${sample.recommended_evidence_dir}`);
+      lines.push(`recommended_template_path: ${sample.recommended_template_path}`);
+      lines.push(`recommended_completion_note_path: ${sample.recommended_completion_note_path}`);
+      lines.push("what_to_capture:");
+      for (const item of sample.what_to_capture) {
+        lines.push(`  - ${item}`);
+      }
       lines.push("required_checks:");
       for (const check of sample.required_checks) {
         lines.push(`  - ${JSON.stringify(check)}`);
@@ -250,6 +274,9 @@ function printHuman(summary) {
       for (const field of sample.machine_readable_fields_to_record) {
         lines.push(`  - ${field}`);
       }
+      lines.push(`prepare_command: ${sample.prepare_command}`);
+      lines.push("suggested_finalize_command:");
+      lines.push(sample.suggested_finalize_command);
       lines.push("suggested_update_command:");
       lines.push(sample.suggested_update_command);
       lines.push(`regenerate_command: ${sample.regenerate_command}`);
@@ -267,9 +294,16 @@ function printHuman(summary) {
 
   const sample = summary.next_pending_sample;
   lines.push(`next_sample: ${sample.sample_id}`);
+  lines.push(`expected_result_summary: ${sample.expected_result_summary}`);
   lines.push(`precondition: ${sample.precondition}`);
   lines.push(`expected_result: ${sample.expected_result}`);
   lines.push(`recommended_evidence_dir: ${sample.recommended_evidence_dir}`);
+  lines.push(`recommended_template_path: ${sample.recommended_template_path}`);
+  lines.push(`recommended_completion_note_path: ${sample.recommended_completion_note_path}`);
+  lines.push("what_to_capture:");
+  for (const item of sample.what_to_capture) {
+    lines.push(`  - ${item}`);
+  }
   lines.push("required_checks:");
   for (const check of sample.required_checks) {
     lines.push(`  - ${JSON.stringify(check)}`);
@@ -278,6 +312,9 @@ function printHuman(summary) {
   for (const field of sample.machine_readable_fields_to_record) {
     lines.push(`  - ${field}`);
   }
+  lines.push(`prepare_command: ${sample.prepare_command}`);
+  lines.push("suggested_finalize_command:");
+  lines.push(sample.suggested_finalize_command);
   lines.push("suggested_update_command:");
   lines.push(sample.suggested_update_command);
   lines.push(`regenerate_command: ${sample.regenerate_command}`);
@@ -287,8 +324,8 @@ function printHuman(summary) {
 function main() {
   try {
     const args = parseArgs(process.argv);
-    const bundle = readJSON(bundlePath);
-    const qa = readJSON(qaPath);
+    const bundle = readCaptureBundle();
+    const qa = readJSONIfExists(resolveRequireRealEvidencePath());
     const samples = Array.isArray(bundle.samples) ? bundle.samples : [];
     const focusSample = findFocusSample(samples, args.sampleId);
 
@@ -308,4 +345,21 @@ function main() {
   }
 }
 
-main();
+module.exports = {
+  buildSummary,
+  exampleValueForField,
+  findFocusSample,
+  parseArgs,
+  printHuman,
+  readJSON,
+  recommendedCompletionNotePath,
+  recommendedEvidenceDir,
+  recommendedTemplatePath,
+  renderFinalizeCommand,
+  renderPrepareCommand,
+  renderUpdateCommand,
+};
+
+if (require.main === module) {
+  main();
+}

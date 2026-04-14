@@ -18,6 +18,41 @@ const DEFAULT_PATHS = {
   metrics_json: "build/internal_pass_metrics.json",
   sample_summary_json: "build/internal_pass_samples.json",
 };
+const PREFERRED_XT_READY_ARTIFACT_CANDIDATES = [
+  {
+    reportRef: "build/xt_ready_gate_e2e_require_real_report.json",
+    sourceRefs: [
+      "build/xt_ready_evidence_source.require_real.json",
+      "build/xt_ready_evidence_source.json",
+    ],
+    connectorRefs: [
+      "build/connector_ingress_gate_snapshot.require_real.json",
+      "build/connector_ingress_gate_snapshot.json",
+    ],
+  },
+  {
+    reportRef: "build/xt_ready_gate_e2e_db_real_report.json",
+    sourceRefs: [
+      "build/xt_ready_evidence_source.db_real.json",
+      "build/xt_ready_evidence_source.require_real.json",
+      "build/xt_ready_evidence_source.json",
+    ],
+    connectorRefs: [
+      "build/connector_ingress_gate_snapshot.db_real.json",
+      "build/connector_ingress_gate_snapshot.require_real.json",
+      "build/connector_ingress_gate_snapshot.json",
+    ],
+  },
+  {
+    reportRef: "build/xt_ready_gate_e2e_report.json",
+    sourceRefs: [
+      "build/xt_ready_evidence_source.json",
+    ],
+    connectorRefs: [
+      "build/connector_ingress_gate_snapshot.json",
+    ],
+  },
+];
 
 const REQUIRED_COVERAGE_IDS = [
   "XT-W3-08",
@@ -140,6 +175,22 @@ function parseArgs(argv) {
 }
 
 function resolvePaths(args = {}) {
+  const explicitXtReadyGate = args["xt-ready-gate-report"];
+  const explicitXtReadySource = args["xt-ready-evidence-source"];
+  const explicitConnectorGate = args["connector-gate-snapshot"];
+  const preferredXtReadyPaths =
+    explicitXtReadyGate || explicitXtReadySource || explicitConnectorGate
+      ? {
+          reportPath: path.resolve(explicitXtReadyGate || DEFAULT_PATHS.xt_ready_gate_report),
+          sourcePath: path.resolve(explicitXtReadySource || DEFAULT_PATHS.xt_ready_evidence_source),
+          connectorPath: explicitConnectorGate
+            ? path.resolve(explicitConnectorGate)
+            : resolveConnectorPathForXtReadyOverride({
+                explicitXtReadyGate,
+                explicitXtReadySource,
+              }),
+        }
+      : resolvePreferredXtReadyPaths();
   return {
     xt_report_index: path.resolve(args["xt-report-index"] || DEFAULT_PATHS.xt_report_index),
     xt_gate_report: path.resolve(args["xt-gate-report"] || DEFAULT_PATHS.xt_gate_report),
@@ -149,11 +200,80 @@ function resolvePaths(args = {}) {
     doctor_report: path.resolve(args["doctor-report"] || DEFAULT_PATHS.doctor_report),
     secrets_dry_run_report: path.resolve(args["secrets-dry-run-report"] || DEFAULT_PATHS.secrets_dry_run_report),
     xt_rollback_last_report: path.resolve(args["xt-rollback-last-report"] || DEFAULT_PATHS.xt_rollback_last_report),
-    xt_ready_gate_report: path.resolve(args["xt-ready-gate-report"] || DEFAULT_PATHS.xt_ready_gate_report),
-    xt_ready_evidence_source: path.resolve(args["xt-ready-evidence-source"] || DEFAULT_PATHS.xt_ready_evidence_source),
-    connector_gate_snapshot: path.resolve(args["connector-gate-snapshot"] || DEFAULT_PATHS.connector_gate_snapshot),
+    xt_ready_gate_report: preferredXtReadyPaths.reportPath,
+    xt_ready_evidence_source: preferredXtReadyPaths.sourcePath,
+    connector_gate_snapshot:
+      explicitXtReadyGate || explicitXtReadySource
+        ? preferredXtReadyPaths.connectorPath
+        : explicitConnectorGate
+          ? path.resolve(explicitConnectorGate)
+          : preferredXtReadyPaths.connectorPath,
     metrics_json: path.resolve(args["metrics-json"] || DEFAULT_PATHS.metrics_json),
     sample_summary_json: path.resolve(args["sample-summary-json"] || DEFAULT_PATHS.sample_summary_json),
+  };
+}
+
+function toComparablePath(filePath = "") {
+  const resolved = path.resolve(String(filePath || ""));
+  try {
+    return fs.realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+function resolveConnectorPathForXtReadyOverride({
+  explicitXtReadyGate = "",
+  explicitXtReadySource = "",
+  baseDir = process.cwd(),
+} = {}) {
+  const resolvedGate = explicitXtReadyGate ? toComparablePath(explicitXtReadyGate) : "";
+  const resolvedSource = explicitXtReadySource ? toComparablePath(explicitXtReadySource) : "";
+  for (const candidate of PREFERRED_XT_READY_ARTIFACT_CANDIDATES) {
+    const reportPath = toComparablePath(path.resolve(baseDir, candidate.reportRef));
+    const sourcePaths = candidate.sourceRefs.map((ref) =>
+      toComparablePath(path.resolve(baseDir, ref))
+    );
+    if (
+      (resolvedGate && resolvedGate === reportPath) ||
+      (resolvedSource && sourcePaths.includes(resolvedSource))
+    ) {
+      return (
+        candidate.connectorRefs
+          .map((ref) => path.resolve(baseDir, ref))
+          .find((ref) => fs.existsSync(ref)) ||
+        path.resolve(baseDir, candidate.connectorRefs[0])
+      );
+    }
+  }
+  return path.resolve(baseDir, DEFAULT_PATHS.connector_gate_snapshot);
+}
+
+function resolvePreferredXtReadyPaths(baseDir = process.cwd()) {
+  for (const candidate of PREFERRED_XT_READY_ARTIFACT_CANDIDATES) {
+    const reportPath = path.resolve(baseDir, candidate.reportRef);
+    if (!fs.existsSync(reportPath)) continue;
+    const sourcePath =
+      candidate.sourceRefs
+        .map((ref) => path.resolve(baseDir, ref))
+        .find((ref) => fs.existsSync(ref)) ||
+      path.resolve(baseDir, candidate.sourceRefs[0]);
+    const connectorPath =
+      candidate.connectorRefs
+        .map((ref) => path.resolve(baseDir, ref))
+        .find((ref) => fs.existsSync(ref)) ||
+      path.resolve(baseDir, candidate.connectorRefs[0]);
+    return {
+      reportPath,
+      sourcePath,
+      connectorPath,
+    };
+  }
+
+  return {
+    reportPath: path.resolve(baseDir, DEFAULT_PATHS.xt_ready_gate_report),
+    sourcePath: path.resolve(baseDir, DEFAULT_PATHS.xt_ready_evidence_source),
+    connectorPath: path.resolve(baseDir, DEFAULT_PATHS.connector_gate_snapshot),
   };
 }
 
@@ -477,6 +597,7 @@ if (require.main === module) {
 module.exports = {
   DEFAULT_PATHS,
   HARD_LINE_RULES,
+  PREFERRED_XT_READY_ARTIFACT_CANDIDATES,
   REQUIRED_COVERAGE_IDS,
   REQUIRED_EVIDENCE_KEYS,
   SAMPLE_THRESHOLDS,
@@ -487,6 +608,7 @@ module.exports = {
   evaluateSampleSufficiency,
   extractDecisionFromXtGateReport,
   parseArgs,
+  resolvePreferredXtReadyPaths,
   resolvePaths,
   runCli,
 };

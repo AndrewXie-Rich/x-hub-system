@@ -116,4 +116,51 @@ struct XTSupervisorWindowOpenPolicyTests {
 
         #expect(intent == nil)
     }
+
+    @Test
+    func projectRouteWithCandidateReviewFocusOpensSupervisorWindow() {
+        let intent = XTSupervisorWindowOpenPolicy.intent(
+            for: XTDeepLinkProjectRoute(
+                projectId: "project-review",
+                pane: .chat,
+                openTarget: nil,
+                focusTarget: .candidateReview,
+                requestId: "req-review-1",
+                grantRequestId: nil,
+                grantCapability: nil,
+                grantReason: nil,
+                resumeRequested: false
+            )
+        )
+
+        #expect(
+            intent == XTSupervisorWindowOpenIntent(
+                reason: "deep_link_project_supervisor_focus",
+                focusConversation: false,
+                startConversation: false
+            )
+        )
+    }
+
+    @Test
+    func supervisorRouteWithProjectCreationBoardFocusOpensWithoutStartingConversation() {
+        let intent = XTSupervisorWindowOpenPolicy.intent(
+            for: XTDeepLinkSupervisorRoute(
+                projectId: nil,
+                focusTarget: .projectCreationBoard,
+                requestId: nil,
+                grantRequestId: nil,
+                grantCapability: nil,
+                grantReason: nil
+            )
+        )
+
+        #expect(
+            intent == XTSupervisorWindowOpenIntent(
+                reason: "deep_link_supervisor",
+                focusConversation: false,
+                startConversation: false
+            )
+        )
+    }
 }

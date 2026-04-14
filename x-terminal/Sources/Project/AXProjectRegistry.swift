@@ -130,7 +130,7 @@ enum AXProjectRegistryStore {
         guard !trimmedRoot.isEmpty else { return "" }
         let rootURL = URL(fileURLWithPath: trimmedRoot, isDirectory: true)
         let basename = rootURL.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
-        return basename.isEmpty ? trimmedRoot : basename
+        return normalizeDisplayNameText(basename.isEmpty ? trimmedRoot : basename)
     }
 
     private static func resolvedDisplayName(
@@ -140,7 +140,7 @@ enum AXProjectRegistryStore {
         normalizedRootPath: String
     ) -> String {
         let candidate = defaultDisplayName(forNormalizedRoot: normalizedRootPath)
-        let existing = (existingDisplayName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let existing = normalizeDisplayNameText(existingDisplayName ?? "")
         guard !existing.isEmpty else { return candidate }
         guard existing != projectId else { return candidate }
 
@@ -165,13 +165,13 @@ enum AXProjectRegistryStore {
         let normalizedRegistry = sanitizeLoadedRegistry(availableRegistry).registry
 
         if let displayName = normalizedRegistry.projects.first(where: { $0.projectId == projectId })?.displayName {
-            let cleaned = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let cleaned = normalizeDisplayNameText(displayName)
             if !cleaned.isEmpty, cleaned != projectId {
                 return cleaned
             }
         }
 
-        let preferred = (preferredDisplayName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let preferred = normalizeDisplayNameText(preferredDisplayName ?? "")
         if !preferred.isEmpty, preferred != projectId {
             return preferred
         }
@@ -179,7 +179,11 @@ enum AXProjectRegistryStore {
         return defaultDisplayName(forNormalizedRoot: normalizedRoot)
     }
 
-    static func upsertProject(_ reg: AXProjectRegistry, root: URL) -> (AXProjectRegistry, AXProjectEntry) {
+    static func upsertProject(
+        _ reg: AXProjectRegistry,
+        root: URL,
+        touchOpenedAt: Bool = true
+    ) -> (AXProjectRegistry, AXProjectEntry) {
         let normalized = normalizeRoot(root)
         let pid = projectId(for: normalized)
         let name = defaultDisplayName(forNormalizedRoot: normalized)
@@ -195,7 +199,9 @@ enum AXProjectRegistryStore {
                 projectId: pid,
                 normalizedRootPath: normalized
             )
-            cur.lastOpenedAt = now
+            if touchOpenedAt {
+                cur.lastOpenedAt = now
+            }
             out.projects[idx] = cur
             return (out, cur)
         }
@@ -255,7 +261,7 @@ enum AXProjectRegistryStore {
         let normalized = normalizeRoot(root)
         let projectId = self.projectId(for: normalized)
         let existedBefore = reg.projects.contains(where: { $0.projectId == projectId })
-        let res = upsertProject(reg, root: root)
+        let res = upsertProject(reg, root: root, touchOpenedAt: false)
         reg = res.0
         guard let idx = reg.projects.firstIndex(where: { $0.projectId == res.1.projectId }) else {
             return AXProjectStatusDigestUpdateResult(
@@ -441,6 +447,20 @@ enum AXProjectRegistryStore {
         var out = pruned.registry
         var changed = normalized.changed || pruned.changed
 
+        for idx in out.projects.indices {
+            let current = out.projects[idx]
+            let resolvedName = resolvedDisplayName(
+                existing: current.displayName,
+                existingRootPath: current.rootPath,
+                projectId: current.projectId,
+                normalizedRootPath: current.rootPath
+            )
+            if current.displayName != resolvedName {
+                out.projects[idx].displayName = resolvedName
+                changed = true
+            }
+        }
+
         if let selected = out.lastSelectedProjectId,
            !out.projects.contains(where: { $0.projectId == selected }) {
             out.lastSelectedProjectId = out.projects.first?.projectId
@@ -488,8 +508,7 @@ enum AXProjectRegistryStore {
     }
 
     private static func isRunningUnderUnitTests() -> Bool {
-        let env = ProcessInfo.processInfo.environment
-        return env["XCTestConfigurationFilePath"] != nil || env["XCTestBundlePath"] != nil
+        ProcessInfo.processInfo.isRunningUnderAutomatedTests
     }
 
     private static func isEphemeralTestProjectPath(_ path: String) -> Bool {
@@ -515,6 +534,37 @@ enum AXProjectRegistryStore {
     private static func nextManualOrderIndex(in projects: [AXProjectEntry]) -> Int {
         let maxIndex = projects.compactMap { $0.manualOrderIndex }.max() ?? -1
         return maxIndex + 1
+    }
+
+    private static func normalizeDisplayNameText(_ raw: String) -> String {
+        var out = raw
+            .replacingOccurrences(of: "**", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !out.isEmpty else { return out }
+
+        let wrappers: [(String, String)] = [
+            ("《", "》"),
+            ("[", "]"), ("【", "】"),
+            ("(", ")"), ("（", "）"),
+            ("“", "”"), ("\"", "\""),
+            ("'", "'"), ("`", "`")
+        ]
+        var changed = true
+        while changed {
+            changed = false
+            for (head, tail) in wrappers {
+                if out.hasPrefix(head), out.hasSuffix(tail), out.count > (head.count + tail.count) {
+                    out.removeFirst(head.count)
+                    out.removeLast(tail.count)
+                    out = out.trimmingCharacters(in: .whitespacesAndNewlines)
+                    changed = true
+                }
+            }
+        }
+
+        return out
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
     }
 
     private static func writeAtomic(data: Data, to url: URL) throws {

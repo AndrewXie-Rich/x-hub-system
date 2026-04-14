@@ -1,7 +1,7 @@
 # XT-W3-38-I7-D2 Hub-First Supervisor Durable Memory Handoff Implementation Pack v1
 
 - version: v1.0
-- updatedAt: 2026-03-22
+- updatedAt: 2026-03-27
 - owner: XT-L2 / Hub Memory / QA / Product
 - status: active
 - scope: 在不改变 `XT-W3-38-I7` / `XT-W3-38-I6` 当前推进节奏的前提下，把 XT after-turn `user_scope / project_scope / cross_link_scope` candidate 平滑镜像到 Hub，形成后续 Hub-first durable personal memory 的最小承接面；本包不新开父工单，不改 memory control-plane 主权，不提前切读源。
@@ -272,6 +272,21 @@
 ## 8) Current Incremental Status
 
 - `D2-A / D2-B / D2-D` 的 XT 侧 contract、shadow mirror、doctor/memory board explainability 已经接通。
+- XT 侧 durable candidate mirror 现已补上本地 fail-closed preflight clamp，并与 Hub carrier deny 语义对齐：
+  - `session_participation_class` 非 `ignore / read_only / scoped_write` 时，XT 本地直接返回 `local_only + supervisor_candidate_session_participation_invalid`
+  - `read_only / ignore` candidate 不再发 remote append，XT 本地直接返回 `local_only + supervisor_candidate_session_participation_denied`
+  - `write_permission_scope != scope` 时，XT 本地直接返回 `local_only + supervisor_candidate_scope_mismatch`
+  - 上述 deny/mismatch 路径现已补回归，明确验证不会触发 transport override / Hub append；explainability 也会显示 fail-closed reason
+- `Lane 3` 的 XT local-store clamp 已开始落地到 shared wording / prompt boundary：
+  - 新增共享 `SupervisorLocalMemoryStoreRole`，统一本地 personal memory / cross-link / personal review note 的角色词典为 `cache|fallback|edit_buffer`
+  - `SupervisorPersonalMemorySummary` / `SupervisorCrossLinkSummary` / `SupervisorPersonalReviewPreview` 现已带 `localStoreRole`
+  - 三类 summary/status 现在会显式写成 `XT local ... cache`，不再把 cross-link 文案说成 durable record
+  - 三类 promptContext 现在会统一前置 boundary lines，明确 `XT local store role` 与 `not the durable source of truth`
+  - 已补对应 XT 回归断言，锁住 role 透传与 boundary 文案，避免后续 feature 再把本地 store 默认为 durable truth
+  - 本轮继续把 local write provenance 收进 XT runtime：
+    - personal memory / cross-link / personal review store 现在都会记录最近一次本地写入 intent（如 `after_turn_cache_refresh`、`manual_edit_buffer_commit`、`derived_refresh`）
+    - 这层 provenance 会透传进对应 summary / prompt boundary，避免后续 prompt 或 UI 把“本地有一份数据”误读成“本地一直是 durable writer”
+    - `SupervisorMemoryAssemblySnapshot` 现已追加 `xt_local_store_writes ...` drill-down line，把三类 local store 最近一次写入意图挂进 doctor / incident 侧的运行时明细，便于排查“这份本地数据是 after-turn 刷出来的，还是手工 edit buffer 提交的”
 - `D2-C` 的 Hub candidate carrier 最小承接面现已落地在现有 `HubMemory.AppendTurns` 上，不另开新 RPC：
   - dedicated shadow thread `xterminal_supervisor_durable_candidate_device` 现在会被 Hub fail-closed 识别成 supervisor durable-candidate carrier，而不是只当普通 supervisor conversation turn
   - Hub 新增 `supervisor_memory_candidate_carrier` 持久表，按 candidate 行落盘 `scope / record_type / why_promoted / source_ref / audit_ref / session_participation_class / write_permission_scope / idempotency_key / payload_summary`，并保留 envelope 元数据 `schema_version / carrier_kind / mirror_target / local_store_role / summary_line / emitted_at_ms`
@@ -299,6 +314,13 @@
     - `HubPairingCoordinator` / `HubIPCClient` 现已补 `SupervisorCandidateReviewItem / Snapshot / StageResult`、远程 queue fetch、远程 `StageSupervisorCandidateReview` 调用，以及本地 `supervisor_candidate_review_status.json` fallback 解析
     - `GlobalHomeView` 项目卡片现在会显示 project-scoped `Supervisor candidate review` 队列；`pending_review` 项可直接点“转入审查”，触发 stage 到 longterm markdown draft boundary
     - XT 当前仍只做 `stage` 入口，不在 XT 侧宣称已完成 canonical write；后续 review / approve / writeback 仍以 Hub 现有 markdown boundary 为准
+  - `XT-W3-38-I7-D2` 的 Supervisor 主界面集成这轮也已补上，不再只有 Global Home 能看到 queue：
+    - `SupervisorManager` 现已把 candidate review queue 纳入 scheduler refresh、frontstage 过滤和 in-flight stage action 管理
+    - Supervisor signal center / dashboard 现已新增 `Supervisor 候选记忆审查` board，可直接刷新和执行 “转入审查”
+    - signal center overview 现已把 candidate review 当作正式治理信号：优先级低于 Hub grant / 本地技能审批，高于 generic runtime activity
+    - `SupervisorStatusBar` 现在也会把 candidate review 计入顶部 `待处理` 计数，避免主界面和 Home 卡片看到的 pending 总量不一致
+    - `SupervisorInfrastructureFeedPresentation` / `SupervisorAuditDrillDownResolver` / `SupervisorAuditDrillDownPresentation` 现已把 candidate review 接入基础设施 feed 与 audit drill-down：用户可在基础设施列表看到 `候选记忆审查` 汇总项，点入后查看请求/范围/载体/草稿边界，并在 `pending_review` 时直接执行 “转入审查”
+    - candidate review 的 XT deep-link / focus chain 现已闭环：`xterminal://supervisor?focus=candidate_review&request_id=...` 会直接落到 `Supervisor 候选记忆审查` board，并高亮对应 row；基础设施 feed 和 audit drill-down 的 “打开 Supervisor” 也改为直达对应候选项，而不是只做泛打开
   - 已新增 Hub 回归：
     - `x-hub/grpc-server/hub_grpc_server/src/supervisor_memory_candidate_carrier.test.js`
     - `x-hub/grpc-server/hub_grpc_server/src/supervisor_memory_candidate_scope_gate.test.js`
@@ -310,14 +332,35 @@
   - 已新增 XT 回归：
     - `x-terminal/Tests/HubIPCClientSupervisorCandidateReviewSnapshotTests.swift`
     - `x-terminal/Tests/HubPairingCoordinatorTests.swift` 已补 remote queue / stage parse coverage
+    - new `x-terminal/Tests/SupervisorCandidateReviewPresentationTests.swift`
+    - `x-terminal/Tests/SupervisorInfrastructureFeedPresentationTests.swift` 已补 candidate review infrastructure item coverage
+    - `x-terminal/Tests/SupervisorAuditDrillDownResolverTests.swift` 已补 infrastructure -> candidate review selection coverage
+    - `x-terminal/Tests/SupervisorCardActionResolverTests.swift` 已补 candidate review stage action 断言
+    - `x-terminal/Tests/SupervisorOperationsOverviewPresentationTests.swift` 已补 candidate review signal-center priority 断言
+    - `x-terminal/Tests/XTDeepLinkParserTests.swift` / `XTDeepLinkURLBuilderTests.swift` / `XTDeepLinkActionPlannerTests.swift` / `XTSupervisorWindowOpenPolicyTests.swift` 已补 candidate review deep-link round-trip 与 open-policy coverage
+    - `x-terminal/Tests/SupervisorFocusPresentationTests.swift` / `SupervisorFocusRequestEffectsTests.swift` / `AppModelSessionSummaryLifecycleTests.swift` 已补 candidate review focus request / row highlight / refresh fallback coverage
 - `D2-E` 当前新增了一层 machine-readable doctor evidence：
   - XT source report 的 `session_runtime_readiness` 现在带结构化 `durableCandidateMirrorProjection`
   - 通用 doctor bundle `xhub_doctor_output_xt.json` 现在把它投影成 `durable_candidate_mirror_snapshot`
   - 字段固定为 `status / target / attempted / error_code / local_store_role`
+- `D2-E` 这轮继续把 XT local-store provenance 提升为一等 doctor/export projection：
+  - XT source report 的 `session_runtime_readiness` 现在新增结构化 `localStoreWriteProjection`
+  - 通用 doctor bundle `xhub_doctor_output_xt.json` 现在会把它投影成 `local_store_write_snapshot`
+  - 字段固定为 `personal_memory_intent / cross_link_intent / personal_review_intent`
+  - 语义边界固定为“XT local cache/fallback/edit-buffer provenance”，只表达最近一次本地写入来自哪条路径，不表达 durable writer 主权
+  - focused XT/all-source smoke fixture 现已补上 `local_store_write_snapshot` 断言，避免后续回退成只靠 raw `xt_local_store_writes ...` detail line 做兼容解析
+  - repo-level `xhub_doctor_source_gate_summary.v1.json` 现在也会产出 `local_store_write_support`，把 XT/all-source smoke 的 `local_store_write_snapshot` 压缩成 release-facing 结构化 support block
 - `D2-E` 的 release-facing 消费面也已经接通：
   - `build/reports/hub_l5_r1_release_oss_boundary_readiness.v1.json` 现在直接消费 `durable_candidate_mirror_support`
-  - `build/reports/oss_release_readiness_v1.json` 与 `build/reports/oss_secret_scrub_report.v1.json` 也复用同一份 machine-readable mirror truth
-  - 已补 temp-root fixture smoke，允许在缺少真实 `build/` 产物时仍然回归验证这条正式 release 证据链；其中 boundary / scrub / readiness 三个生成器都各自有独立 smoke，`lpr_w4_09_c_product_exit_packet` 也已补对象级断言覆盖 mirror support 透传
+  - `build/reports/hub_l5_r1_release_oss_boundary_readiness.v1.json` / `build/reports/oss_release_readiness_v1.json` / `build/reports/oss_secret_scrub_report.v1.json` / `build/reports/lpr_w4_09_c_product_exit_packet.v1.json` 现在都会继续透传 `local_store_write_support`
+  - `build/reports/oss_release_readiness_v1.json` 与 `build/reports/oss_secret_scrub_report.v1.json` 也复用同一份 machine-readable XT local-store provenance truth
+  - 已补 temp-root fixture smoke，允许在缺少真实 `build/` 产物时仍然回归验证这条正式 release 证据链；其中 boundary / scrub / readiness 三个生成器都各自有独立 smoke，`lpr_w4_09_c_product_exit_packet` 现已同时覆盖 `durable_candidate_mirror_support` 与 `local_store_write_support` 透传
+  - 三条 repo-level smoke 现在都带最小磁盘空间预检：`all_source=2 GiB`、`xt_source=1.5 GiB`、`hub_local_service=1 GiB`，低于阈值会在 build 前直接给出可解释失败，而不是等 Swift scratch 写到一半才报 `No space left on device`
+  - `xhub_doctor_source_gate_summary.v1.json` 也已修正为“只有步骤 pass 才读取对应 evidence”，避免 `all_source_smoke` 失败时把上一次成功运行遗留的 `project_context / durable_candidate / local_store_write / memory_route_truth` 继续塞进 support block，污染 release/operator 总览
+  - `x-hub/tools/build_hub_app.command` 与 `x-terminal/tools/build_xterminal_app.command` 现在都会在创建当前 frozen source snapshot 前自动裁掉历史 `build/.xhub-build-src-*` / `build/.xterminal-build-src-*`，默认各保留最近 `2` 份，避免 build 目录被旧 snapshot 长期堆到多 GB
+  - 上述 snapshot retention 已抽成共享 helper `scripts/lib/build_snapshot_retention.sh`，并补了 focused shell smoke `scripts/smoke_build_snapshot_retention.sh`；这条回归显式覆盖 macOS `/bin/bash 3.2` 兼容性、`keep=2` 裁剪顺序、`keep=0` 全裁历史但保留当前根目录，以及非法 `keep_count` fail-open 不误删
+  - 另补只读 inventory 生成器 `scripts/generate_build_snapshot_inventory_report.js`，导出 `build/reports/build_snapshot_inventory.v1.json`，把当前 frozen snapshot、时间戳历史 sibling、按 retention 规则下次会删哪些目录以及预计回收多少字节固化成 machine-readable evidence，避免再靠肉眼 `du`/`find` 手工判断
+  - 这份 inventory 现已挂进 `scripts/ci/xhub_doctor_source_gate.sh` 的正式 step 与 `build_snapshot_inventory_support`，并透传到 boundary/readiness/scrub/product-exit 等 release-facing 消费面
   - `refresh_oss_release_evidence.sh`、`product_exit_packet` 以及 `generate_release_legacy_compat_artifacts.js` 的 XT-ready 输入选择也已统一对齐：`require_real -> db_real -> current`，避免真实 release 证据已存在却因旧路径写死而被误报 blocker，或在 refresh 第一步 compat backfill 就退回旧链路；这条优先级现在覆盖 `report + evidence_source + connector_snapshot` 三件套，`refresh_oss_release_evidence.test.js` 现已补 shell-level smoke 覆盖 `require_real` 优先与 `db_real` 回退
   - internal-pass 底层入口 `m3_check_internal_pass_lines.js` 与 `m3_prepare_internal_pass_inputs.js` 也已对齐同一优先级，补上默认路径的 `require_real` 选择与 CLI / preparer 回归，避免 release 外围绿了但底层 pass-line helper 还停在 current-gate
 - 这层 evidence 只表达 XT handoff 状态：

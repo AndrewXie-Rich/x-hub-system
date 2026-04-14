@@ -10,6 +10,21 @@ const OFFICIAL_SOURCE_ID = "builtin:catalog";
 const OFFICIAL_PUBLISHER_ID = "xhub.official";
 const DEFAULT_SCHEMA_VERSION = "xhub.skill_manifest.v1";
 const DEFAULT_PUBLISHER_TRUST_FILE = path.join(DEFAULT_SOURCE_ROOT, "publisher", "trusted_publishers.json");
+const GOVERNED_PACKAGE_CONTRACT_VERSION = "2026-03-18";
+const SKILL_ABI_COMPAT_VERSION = "skills_abi_compat.v1";
+const OFFICIAL_PACKAGE_KIND = "official_skill";
+const OFFICIAL_TRUST_TIER = "governed_package";
+const OFFICIAL_PACKAGE_STATE = "discovered";
+const OFFICIAL_CATALOG_TIER = "embedded_official";
+const OFFICIAL_SOURCE_TYPE = "embedded_catalog";
+const OFFICIAL_DOWNLOADABILITY = "offline_only";
+const OFFICIAL_BUILDABILITY = "prebuilt_only";
+const OFFICIAL_SUPPORT_TIER = "official";
+const OFFICIAL_REVOKE_STATE = "active";
+const OFFICIAL_ARTIFACT_RESOLUTION_MODE = "embedded_only";
+const OFFICIAL_DOCTOR_BUNDLES = Object.freeze(["official_skills"]);
+const OFFICIAL_RUNTIME_HOSTS = Object.freeze(["hub_runtime", "xt_runtime"]);
+const QUALITY_EVIDENCE_STATES = new Set(["passed", "partial", "missing", "blocked"]);
 const PACKAGE_INCLUDE_EXTENSIONS = new Set([
   ".bash",
   ".cjs",
@@ -28,6 +43,17 @@ const PACKAGE_INCLUDE_EXTENSIONS = new Set([
   ".yml",
   ".zsh",
 ]);
+const HIGH_RISK_CAPABILITY_RE = [
+  /^connectors?\./i,
+  /^web\./i,
+  /^network\./i,
+  /^ai\.generate\.paid$/i,
+  /^ai\.generate\.remote$/i,
+  /^payments?\./i,
+  /^shell\./i,
+  /^filesystem\./i,
+  /^fs\./i,
+];
 
 function safeString(value) {
   return String(value == null ? "" : value).trim();
@@ -37,9 +63,104 @@ function safeArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function parseBoolLike(value) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? value !== 0 : null;
+  const normalized = safeString(value).toLowerCase();
+  if (!normalized) return null;
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "n", "off"].includes(normalized)) return false;
+  return null;
+}
+
 function cloneJSONValue(value) {
   if (value == null) return undefined;
   return JSON.parse(JSON.stringify(value));
+}
+
+function normalizeQualityEvidenceState(value) {
+  const normalized = safeString(value).toLowerCase();
+  if (QUALITY_EVIDENCE_STATES.has(normalized)) return normalized;
+  return "missing";
+}
+
+function normalizeQualityEvidenceStatus(value) {
+  const input = value && typeof value === "object" ? value : {};
+  return {
+    replay: normalizeQualityEvidenceState(input.replay),
+    fuzz: normalizeQualityEvidenceState(input.fuzz),
+    doctor: normalizeQualityEvidenceState(input.doctor),
+    smoke: normalizeQualityEvidenceState(input.smoke),
+  };
+}
+
+function normalizedRiskLevel(value) {
+  const normalized = safeString(value).toLowerCase();
+  if (normalized === "moderate") return "medium";
+  if (["low", "medium", "high", "critical"].includes(normalized)) return normalized;
+  return "";
+}
+
+function isHighRiskCapability(capability) {
+  const normalized = safeString(capability).toLowerCase();
+  return !!normalized && HIGH_RISK_CAPABILITY_RE.some((re) => re.test(normalized));
+}
+
+function inferRiskLevel(explicit, capabilities) {
+  const normalizedExplicit = normalizedRiskLevel(explicit);
+  if (normalizedExplicit) return normalizedExplicit;
+  const normalizedCapabilities = safeArray(capabilities).map((value) => safeString(value).toLowerCase()).filter(Boolean);
+  if (normalizedCapabilities.some((capability) => isHighRiskCapability(capability))) return "high";
+  if (normalizedCapabilities.some((capability) => (
+    capability.startsWith("browser.")
+    || capability.startsWith("email.")
+    || capability.startsWith("repo.")
+  ))) {
+    return "medium";
+  }
+  return "low";
+}
+
+function inferRequiresGrant(rawValue, capabilities, riskLevel) {
+  const explicit = parseBoolLike(rawValue);
+  if (explicit != null) return explicit;
+  const normalizedRisk = normalizedRiskLevel(riskLevel) || inferRiskLevel("", capabilities);
+  if (normalizedRisk === "high" || normalizedRisk === "critical") return true;
+  return safeArray(capabilities).some((capability) => isHighRiskCapability(capability));
+}
+
+function inferSideEffectClass(explicit, capabilities, riskLevel) {
+  const explicitValue = safeString(explicit);
+  if (explicitValue) return explicitValue;
+  const normalizedCapabilities = safeArray(capabilities).map((value) => safeString(value).toLowerCase()).filter(Boolean);
+  const normalizedRisk = normalizedRiskLevel(riskLevel) || inferRiskLevel("", capabilities);
+  if (normalizedCapabilities.length === 0) return normalizedRisk === "low" ? "read_only" : "external_side_effect";
+  if (normalizedCapabilities.every((capability) => (
+    capability.includes("status")
+    || capability.includes("read")
+    || capability.includes("list")
+    || capability.includes("search")
+    || capability.includes("snapshot")
+    || capability.includes("inspect")
+  ))) {
+    return "read_only";
+  }
+  if (normalizedCapabilities.some((capability) => isHighRiskCapability(capability))) {
+    return "external_side_effect";
+  }
+  if (normalizedCapabilities.some((capability) => (
+    capability.startsWith("repo.")
+    || capability.startsWith("filesystem.")
+    || capability.startsWith("fs.")
+  ))) {
+    return "project_write";
+  }
+  return normalizedRisk === "low" ? "read_only" : "project_write";
+}
+
+function inferSecurityProfile(riskLevel) {
+  const normalizedRisk = normalizedRiskLevel(riskLevel);
+  return normalizedRisk === "high" || normalizedRisk === "critical" ? "high_risk" : "low_risk";
 }
 
 function sha256Hex(data) {
@@ -260,6 +381,72 @@ function writeJson(filePath, value) {
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
+function buildGovernedPackageMetadata({
+  sourceManifest,
+  files,
+  packageBytes,
+  packageSHA256,
+  manifestSHA256,
+  generatedAtMs,
+  publisherTrust,
+  manifest,
+}) {
+  const capabilities = safeArray(sourceManifest?.capabilities_required).map((value) => safeString(value)).filter(Boolean);
+  const risk_level = inferRiskLevel(sourceManifest?.risk_level, capabilities);
+  const requires_grant = inferRequiresGrant(sourceManifest?.requires_grant, capabilities, risk_level);
+  const side_effect_class = inferSideEffectClass(sourceManifest?.side_effect_class, capabilities, risk_level);
+  const signature_alg = safeString(manifest?.signature?.alg);
+  const signature_present = !!safeString(manifest?.signature?.sig);
+  return {
+    side_effect_class,
+    risk_level,
+    requires_grant,
+    package_kind: OFFICIAL_PACKAGE_KIND,
+    trust_tier: OFFICIAL_TRUST_TIER,
+    contract_version: GOVERNED_PACKAGE_CONTRACT_VERSION,
+    package_state: OFFICIAL_PACKAGE_STATE,
+    catalog_tier: OFFICIAL_CATALOG_TIER,
+    source_type: OFFICIAL_SOURCE_TYPE,
+    downloadability: OFFICIAL_DOWNLOADABILITY,
+    buildability: OFFICIAL_BUILDABILITY,
+    support_tier: OFFICIAL_SUPPORT_TIER,
+    revoke_state: OFFICIAL_REVOKE_STATE,
+    artifact_resolution_mode: OFFICIAL_ARTIFACT_RESOLUTION_MODE,
+    doctor_bundles: [...OFFICIAL_DOCTOR_BUNDLES],
+    abi_compat_version: SKILL_ABI_COMPAT_VERSION,
+    compatibility_state: "supported",
+    compatibility_envelope: {
+      manifest_contract_version: safeString(sourceManifest?.schema_version || DEFAULT_SCHEMA_VERSION) || DEFAULT_SCHEMA_VERSION,
+      protocol_versions: [SKILL_ABI_COMPAT_VERSION],
+      min_hub_version: "",
+      min_xt_version: "",
+      runtime_hosts: [...OFFICIAL_RUNTIME_HOSTS],
+      compatibility_state: "verified",
+      last_verified_at_ms: Number(generatedAtMs || 0),
+    },
+    quality_evidence_status: normalizeQualityEvidenceStatus(sourceManifest?.quality_evidence_status),
+    artifact_integrity: {
+      package_sha256: packageSHA256,
+      manifest_sha256: manifestSHA256,
+      package_format: "tar.gz",
+      package_size_bytes: Buffer.isBuffer(packageBytes) ? packageBytes.length : 0,
+      file_hash_count: Array.isArray(files) ? files.length : 0,
+      signature: {
+        algorithm: signature_alg,
+        present: signature_present,
+        trusted_publisher: !!safeString(publisherTrust?.public_key_ed25519),
+      },
+    },
+    signature_alg,
+    signature_verified: signature_present && !!safeString(publisherTrust?.public_key_ed25519),
+    signature_bypassed: false,
+    security_profile: inferSecurityProfile(risk_level),
+    package_format: "tar.gz",
+    file_hash_count: Array.isArray(files) ? files.length : 0,
+    package_size_bytes: Buffer.isBuffer(packageBytes) ? packageBytes.length : 0,
+  };
+}
+
 function normalizeSourceManifest(skillDir, manifestObj, frontmatter) {
   const skillID = safeString(manifestObj.skill_id || manifestObj.id || path.basename(skillDir));
   const version = safeString(manifestObj.version);
@@ -321,6 +508,7 @@ function normalizeSourceManifest(skillDir, manifestObj, frontmatter) {
       public_key_ed25519: safeString(manifestObj?.publisher?.public_key_ed25519 || manifestObj.public_key_ed25519),
     },
     install_hint: safeString(manifestObj.install_hint || "Install from the Agent Baseline menu in X-Terminal or pin the official package from X-Hub."),
+    quality_evidence_status: normalizeQualityEvidenceStatus(manifestObj.quality_evidence_status),
   };
 }
 
@@ -414,6 +602,16 @@ function buildOfficialAgentSkills({
     const manifestFileName = `${packageSHA256}.json`;
     fs.writeFileSync(path.join(packagesDir, packageFileName), packageBytes);
     fs.writeFileSync(path.join(manifestsDir, manifestFileName), manifestBytes);
+    const governedMeta = buildGovernedPackageMetadata({
+      sourceManifest,
+      files,
+      packageBytes,
+      packageSHA256,
+      manifestSHA256: manifestSHA256,
+      generatedAtMs,
+      publisherTrust,
+      manifest,
+    });
 
     skills.push({
       skill_id: sourceManifest.skill_id,
@@ -433,6 +631,7 @@ function buildOfficialAgentSkills({
       manifest_path: `manifests/${manifestFileName}`,
       source_dir: path.relative(sourceRoot, skillDir).split(path.sep).join("/"),
       updated_at_ms: generatedAtMs,
+      ...governedMeta,
     });
   }
 

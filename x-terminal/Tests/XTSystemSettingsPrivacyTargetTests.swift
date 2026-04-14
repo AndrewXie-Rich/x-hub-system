@@ -34,4 +34,15 @@ struct XTSystemSettingsPrivacyTargetTests {
         #expect(candidates[1] == "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Microphone")
         #expect(candidates[2] == "x-apple.systempreferences:com.apple.PrivacySecurity.extension?Privacy_Microphone")
     }
+
+    @Test
+    func localNetworkCandidatesIncludeLegacyAndExtensionForms() {
+        let candidates = XTSystemSettingsPrivacyTarget.localNetwork.urlCandidates
+
+        #expect(candidates.count == 3)
+        #expect(candidates[0] == "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")
+        #expect(candidates[1] == "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_LocalNetwork")
+        #expect(candidates[2] == "x-apple.systempreferences:com.apple.PrivacySecurity.extension?Privacy_LocalNetwork")
+        #expect(XTSystemSettingsLinks.buttonLabel(for: .localNetwork) == "打开本地网络权限")
+    }
 }

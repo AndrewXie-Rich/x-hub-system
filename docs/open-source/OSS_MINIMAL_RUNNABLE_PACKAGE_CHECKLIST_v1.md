@@ -29,9 +29,11 @@
 
 当前可对外表述仅限：
 
-- `XT memory UX adapter backed by Hub truth-source`
+- `XT memory UX adapter backed by Hub truth-source, with user-selected memory executor and Writer + Gate durable-write boundary`
 - `Hub-governed multi-channel gateway`
 - `Hub-first governed automations`
+
+如果公开文案提到 memory posture，仍要保持同一边界：用户在 X-Hub 中选择哪个 AI 执行 memory jobs，`Memory-Core` 是 Hub 侧受治理规则资产，而 durable 写入仍只经 `Writer + Gate`。
 
 仓内工单、看板、evidence、operator 导航文档可以覆盖更宽的内部执行面，但都不能直接外推成公开发布能力声明。
 

@@ -1,0 +1,291 @@
+{
+  "schema_version": "xhub.memory_model_preferences_contract.v1",
+  "contract_version": "2026-03-19-wave0-diagnostics-freeze",
+  "owner_lane": "Hub-Memory/Runtime/Hub-UI/Security",
+  "fixed_decisions": [
+    "memory_ai_selection_is_user_controlled_in_hub",
+    "hub_must_not_silently_switch_memory_model_outside_user_policy",
+    "worker_may_execute_but_may_not_directly_write_truth_layers",
+    "writer_gate_remains_the_only_truth_layer_writer",
+    "route_resolution_must_be_deterministic_auditable_and_replayable",
+    "secret_jobs_default_to_local_only_even_if_user_prefers_remote",
+    "single_model_is_supported_but_does_not_grant_direct_cross_layer_write_authority"
+  ],
+  "selection_strategy_enum": [
+    "single_model",
+    "job_map",
+    "mode_profile"
+  ],
+  "scope_kind_enum": [
+    "user_default",
+    "project",
+    "mode",
+    "project_mode"
+  ],
+  "mode_enum": [
+    "assistant_personal",
+    "project_code"
+  ],
+  "job_type_enum": [
+    "ingest_redact",
+    "extract_observations",
+    "summarize_run",
+    "aggregate_longterm",
+    "canonicalize_candidates",
+    "verify_gate",
+    "mine_skill_candidates"
+  ],
+  "job_type_catalog": {
+    "ingest_redact": "Pre-ingest or pre-export redaction / normalization over raw turns, events, or external content.",
+    "extract_observations": "Extract structured observations from raw or working inputs.",
+    "summarize_run": "Compress a run, task, or session into a compact summary artifact.",
+    "aggregate_longterm": "Merge observations and summaries into longterm outlines or topic documents.",
+    "canonicalize_candidates": "Produce canonical memory candidates without directly bypassing writer gate truth-layer controls.",
+    "verify_gate": "Verify promotion, export, or writeback decisions against policy and risk gates.",
+    "mine_skill_candidates": "Mine reusable skill or workflow candidates from memory and execution traces."
+  },
+  "route_source_enum": [
+    "user_single_model",
+    "user_job_map",
+    "user_mode_profile",
+    "system_default_fallback",
+    "local_downgrade_fallback"
+  ],
+  "route_binding_kind_enum": [
+    "primary_model",
+    "job_model",
+    "mode_model",
+    "system_fallback"
+  ],
+  "route_reason_code_catalog": {
+    "single_model_primary": "single_model successfully resolved to primary_model_id.",
+    "single_model_missing_primary": "single_model profile exists but has no primary_model_id.",
+    "job_map_hit": "job_map resolved directly from the explicit job mapping.",
+    "job_map_primary_fallback": "job_map missed the explicit job mapping and fell back to primary_model_id.",
+    "job_map_miss": "job_map had neither a direct job mapping nor a valid primary fallback.",
+    "mode_profile_hit": "mode_profile resolved directly from the explicit mode mapping.",
+    "mode_profile_primary_fallback": "mode_profile missed the explicit mode mapping and fell back to primary_model_id.",
+    "mode_profile_miss": "mode_profile had neither a direct mode mapping nor a valid primary fallback.",
+    "selection_strategy_invalid": "selection_strategy is invalid.",
+    "profile_resolution_failed": "No winning active profile could be resolved.",
+    "profile_contract_invalid": "The winning profile failed contract validation.",
+    "selected_model_invalid": "The selected model id is missing, disabled, or not registered.",
+    "budget_blocked": "The selected route exceeded budget constraints and no valid fallback was available.",
+    "local_downgrade_budget_blocked": "The selected route exceeded budget constraints and downgraded to a local model.",
+    "remote_blocked": "The selected route was blocked by remote-execution policy and no valid fallback was available.",
+    "local_downgrade_remote_blocked": "The selected route was blocked by remote-execution policy and downgraded to a local model."
+  },
+  "deny_code_dictionary": [
+    {
+      "deny_code": "memory_model_profile_missing",
+      "stage": "route_resolution",
+      "action": "deny",
+      "retryable": true,
+      "meaning": "No active memory model profile could be resolved for the current user and scope."
+    },
+    {
+      "deny_code": "memory_model_profile_disabled",
+      "stage": "route_resolution",
+      "action": "deny",
+      "retryable": true,
+      "meaning": "Resolved memory model profile exists but is disabled."
+    },
+    {
+      "deny_code": "memory_model_invalid",
+      "stage": "validation",
+      "action": "deny",
+      "retryable": true,
+      "meaning": "Configured model id is unknown, malformed, or no longer available."
+    },
+    {
+      "deny_code": "memory_model_not_allowed_for_job",
+      "stage": "policy",
+      "action": "deny",
+      "retryable": true,
+      "meaning": "Configured model is not allowed for the requested job type."
+    },
+    {
+      "deny_code": "memory_model_remote_blocked",
+      "stage": "policy",
+      "action": "deny_or_downgrade_to_local",
+      "retryable": true,
+      "meaning": "Configured or fallback route requires remote execution but policy, sensitivity, or user settings block remote."
+    },
+    {
+      "deny_code": "memory_model_budget_blocked",
+      "stage": "budget",
+      "action": "deny_or_downgrade_to_local",
+      "retryable": true,
+      "meaning": "Configured route exceeds the allowed token or cost budget."
+    },
+    {
+      "deny_code": "memory_model_fallback_missing",
+      "stage": "fallback",
+      "action": "deny",
+      "retryable": true,
+      "meaning": "Primary model is unavailable and no valid fallback policy exists."
+    },
+    {
+      "deny_code": "memory_model_route_audit_failed",
+      "stage": "audit",
+      "action": "deny",
+      "retryable": true,
+      "meaning": "Route was resolved but audit persistence failed, so execution must fail closed."
+    }
+  ],
+  "objects": {
+    "xhub.memory_model_preferences.v1": {
+      "required_fields": [
+        "schema_version",
+        "profile_id",
+        "user_id",
+        "scope_kind",
+        "selection_strategy",
+        "remote_allowed",
+        "policy_version",
+        "updated_at_ms"
+      ],
+      "optional_fields": [
+        "scope_ref",
+        "mode",
+        "primary_model_id",
+        "job_model_map",
+        "mode_model_map",
+        "fallback_policy",
+        "disabled_at_ms",
+        "note"
+      ],
+      "enum_refs": {
+        "scope_kind": "scope_kind_enum",
+        "selection_strategy": "selection_strategy_enum",
+        "mode": "mode_enum"
+      },
+      "rules": [
+        "single_model requires primary_model_id.",
+        "job_map requires at least one job_model_map entry.",
+        "mode_profile requires at least one mode_model_map entry.",
+        "project_mode scope must include both project id and mode.",
+        "Disabled profiles must never resolve as active winners.",
+        "job_model_map keys must all belong to job_type_enum.",
+        "Unknown external job types must fail closed and must never be silently remapped."
+      ]
+    },
+    "xhub.memory_model_route_request.v1": {
+      "required_fields": [
+        "schema_version",
+        "user_id",
+        "job_type",
+        "mode",
+        "sensitivity",
+        "trust_level",
+        "budget_class",
+        "remote_allowed_by_policy"
+      ],
+      "optional_fields": [
+        "project_id",
+        "thread_id",
+        "preferred_profile_id",
+        "kill_switch_state",
+        "request_id"
+      ],
+      "enum_refs": {
+        "job_type": "job_type_enum",
+        "mode": "mode_enum"
+      },
+      "rules": [
+        "Route resolution must use the highest-precedence active profile unless preferred_profile_id is explicitly allowed and matches the current scope.",
+        "If remote_allowed_by_policy is false, remote-only routes must deny or downgrade; they must never silently execute remotely.",
+        "Secret jobs default to local-only unless a later approved policy version explicitly changes the rule.",
+        "job_type must be a member of job_type_enum; unknown values must fail closed."
+      ]
+    },
+    "xhub.memory_model_route_result.v1": {
+      "required_fields": [
+        "schema_version",
+        "resolved_profile_id",
+        "selection_strategy",
+        "selected_by_user",
+        "provider",
+        "model_id",
+        "route_source",
+        "route_reason_code",
+        "fallback_applied",
+        "remote_allowed",
+        "writer_policy_version",
+        "audit_ref"
+      ],
+      "optional_fields": [
+        "fallback_reason",
+        "export_class",
+        "deny_code"
+      ],
+      "enum_refs": {
+        "selection_strategy": "selection_strategy_enum",
+        "route_source": "route_source_enum"
+      },
+      "rules": [
+        "If deny_code is present, execution must fail closed and no worker run may start.",
+        "route_source and selected_by_user must agree with the winning profile and applied fallback logic.",
+        "Replay of the same job input must remain deterministic unless a newer profile version is explicitly requested.",
+        "route_reason_code must come from the documented route_reason_code_catalog or a later explicitly versioned extension."
+      ]
+    },
+    "xhub.memory_model_route_resolution_chain_entry.v1": {
+      "required_fields": [
+        "scope_kind",
+        "scope_ref_redacted",
+        "matched",
+        "profile_id",
+        "selection_strategy",
+        "skip_reason"
+      ],
+      "enum_refs": {
+        "scope_kind": "scope_kind_enum",
+        "selection_strategy": "selection_strategy_enum"
+      },
+      "rules": [
+        "Resolution chain entries must follow the documented precedence order.",
+        "scope_ref_redacted must stay redacted and must never expose raw secret identifiers.",
+        "Unmatched chain entries must still explain why they lost via skip_reason or equivalent explicit state."
+      ]
+    },
+    "xhub.memory_model_route_diagnostics.v1": {
+      "required_fields": [
+        "schema_version",
+        "request_snapshot",
+        "resolution_chain",
+        "winning_profile",
+        "winning_binding",
+        "route_result",
+        "constraint_snapshot"
+      ],
+      "optional_fields": [
+        "fallback_snapshot"
+      ],
+      "enum_refs": {
+        "winning_binding.binding_kind": "route_binding_kind_enum"
+      },
+      "rules": [
+        "Diagnostics payload is read-only and must never override or re-resolve the winning route.",
+        "winning_profile and route_result must match the authoritative route result contract.",
+        "fallback_snapshot.derived_fallback_action, if present, is display-only and must be derived from route_result fields rather than becoming a new source-of-truth contract.",
+        "Diagnostics payload must not include raw preference JSON, model filesystem paths, provider secrets, or raw budget internals."
+      ]
+    }
+  },
+  "performance_targets": {
+    "memory_route_resolution_p50_ms": 2,
+    "memory_route_resolution_p95_ms": 8,
+    "memory_route_resolution_p99_ms": 20
+  },
+  "quality_targets": {
+    "route_determinism_violation": 0,
+    "ui_route_audit_mismatch": 0,
+    "unexpected_model_switch_incidents": 0
+  },
+  "security_targets": {
+    "unexpected_remote_memory_calls": 0,
+    "secret_remote_route_incidents": 0,
+    "fallback_without_audit": 0
+  }
+}

@@ -25,15 +25,15 @@ enum AXProjectSupervisorInterventionTier: String, Codable, CaseIterable, Sendabl
     var oneLineSummary: String {
         switch self {
         case .s0SilentAudit:
-            return "只看 heartbeat 和硬性审计，不主动插建议。"
+            return "只看心跳和硬性审计，不主动插建议。"
         case .s1MilestoneReview:
-            return "只在 blocker、pre-done、关键里程碑时 review，平时不打扰。"
+            return "只在阻塞点、完成前、关键里程碑时审查，平时不打扰。"
         case .s2PeriodicReview:
-            return "按固定节奏做 pulse review，必要时在 safe point 给建议。"
+            return "按固定节奏做脉冲审查，必要时在安全点给建议。"
         case .s3StrategicCoach:
-            return "定时加事件驱动 review，发现更好路径时默认可以要求 replan。"
+            return "定时加事件驱动审查，发现更好路径时默认可以要求重规划。"
         case .s4TightSupervision:
-            return "高频 review、强确认和更细粒度救援，接近旁路带教。"
+            return "高频审查、强确认和更细粒度救援，接近旁路带教。"
         }
     }
 
@@ -159,5 +159,56 @@ extension AXProjectSupervisorInterventionTier: Comparable {
         case .s4TightSupervision:
             return 4
         }
+    }
+}
+
+extension AXProjectSupervisorInterventionTier {
+    var shortToken: String {
+        switch self {
+        case .s0SilentAudit:
+            return "S0"
+        case .s1MilestoneReview:
+            return "S1"
+        case .s2PeriodicReview:
+            return "S2"
+        case .s3StrategicCoach:
+            return "S3"
+        case .s4TightSupervision:
+            return "S4"
+        }
+    }
+
+    var shortLabel: String {
+        switch self {
+        case .s0SilentAudit:
+            return "Silent Audit"
+        case .s1MilestoneReview:
+            return "Milestone Review"
+        case .s2PeriodicReview:
+            return "Periodic Review"
+        case .s3StrategicCoach:
+            return "Strategic Coach"
+        case .s4TightSupervision:
+            return "Tight Supervision"
+        }
+    }
+
+    var localizedShortLabel: String {
+        switch self {
+        case .s0SilentAudit:
+            return "静默审计"
+        case .s1MilestoneReview:
+            return "里程碑审查"
+        case .s2PeriodicReview:
+            return "周期审查"
+        case .s3StrategicCoach:
+            return "战略教练"
+        case .s4TightSupervision:
+            return "紧密监督"
+        }
+    }
+
+    var localizedDisplayLabel: String {
+        "\(shortToken) \(localizedShortLabel)"
     }
 }

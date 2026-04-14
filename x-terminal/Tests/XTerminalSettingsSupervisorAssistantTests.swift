@@ -59,6 +59,8 @@ struct XTerminalSettingsSupervisorAssistantTests {
         #expect(decoded.supervisorWorkMode == .governedAutomation)
         #expect(decoded.supervisorPrivacyMode == .balanced)
         #expect(decoded.supervisorRecentRawContextProfile == .standard12Pairs)
+        #expect(decoded.supervisorReviewMemoryDepthProfile == .auto)
+        #expect(decoded.interfaceLanguage == .simplifiedChinese)
         #expect(decoded.supervisorPersonaRegistry.slots.count == SupervisorPersonaRegistry.slotCount)
         #expect(decoded.legacyPrimarySupervisorPersona.promptPreferences == decoded.supervisorPrompt)
         #expect(decoded.legacyPrimarySupervisorPersona.personalProfile == decoded.supervisorPersonalProfile)
@@ -103,6 +105,7 @@ struct XTerminalSettingsSupervisorAssistantTests {
         #expect(settings.supervisorPersonalPolicy.preferredMorningBriefTime == "08:00")
         #expect(settings.supervisorPersonalPolicy.weeklyReviewDay == "Monday")
         #expect(settings.supervisorRecentRawContextProfile == .standard12Pairs)
+        #expect(settings.supervisorReviewMemoryDepthProfile == .auto)
         #expect(settings.legacyPrimarySupervisorPersona.personalProfile == settings.supervisorPersonalProfile)
         #expect(settings.legacyPrimarySupervisorPersona.personalPolicy == settings.supervisorPersonalPolicy)
     }
@@ -119,6 +122,84 @@ struct XTerminalSettingsSupervisorAssistantTests {
         let decoded = try JSONDecoder().decode(XTerminalSettings.self, from: data)
 
         #expect(decoded.supervisorRecentRawContextProfile == .extended40Pairs)
+    }
+
+    @Test
+    func settingSupervisorReviewMemoryDepthProfilePersistsOnSettings() throws {
+        let settings = XTerminalSettings.default()
+            .setting(supervisorReviewMemoryDepthProfile: .deepDive)
+
+        #expect(settings.schemaVersion == XTerminalSettings.currentSchemaVersion)
+        #expect(settings.supervisorReviewMemoryDepthProfile == .deepDive)
+
+        let data = try JSONEncoder().encode(settings)
+        let decoded = try JSONDecoder().decode(XTerminalSettings.self, from: data)
+
+        #expect(decoded.supervisorReviewMemoryDepthProfile == .deepDive)
+    }
+
+    @Test
+    func interfaceLanguageDefaultsToSimplifiedChineseForNewAndLegacySettings() throws {
+        let settings = XTerminalSettings.default()
+        #expect(settings.interfaceLanguage == .simplifiedChinese)
+
+        let legacyJSON = #"""
+        {
+          "schemaVersion": 10,
+          "assignments": [],
+          "openAICompatible": {
+            "baseURL": "https://api.openai.com/",
+            "model": "gpt-4o-mini"
+          },
+          "anthropic": {
+            "baseURL": "https://api.anthropic.com/",
+            "model": "claude-3-5-sonnet-latest"
+          },
+          "gemini": {
+            "baseURL": "https://generativelanguage.googleapis.com/",
+            "model": "gemini-1.5-pro"
+          },
+          "voice": {
+            "preferredRoute": "automatic",
+            "wakeMode": "push_to_talk",
+            "autoReportMode": "summary",
+            "persona": "briefing",
+            "interruptOnSpeech": true,
+            "quietHours": {
+              "enabled": false,
+              "fromLocal": "22:00",
+              "toLocal": "08:00"
+            },
+            "localeIdentifier": "zh-CN",
+            "funASR": {
+              "enabled": false,
+              "transport": "websocket",
+              "webSocketURL": "ws://127.0.0.1:10096",
+              "wakeEnabled": true,
+              "partialsEnabled": true
+            }
+          }
+        }
+        """#
+
+        let data = try #require(legacyJSON.data(using: .utf8))
+        let decoded = try JSONDecoder().decode(XTerminalSettings.self, from: data)
+        #expect(decoded.interfaceLanguage == .simplifiedChinese)
+        #expect(decoded.supervisorWorkMode == .guidedProgress)
+    }
+
+    @Test
+    func settingInterfaceLanguagePersistsOnSettings() throws {
+        let settings = XTerminalSettings.default()
+            .setting(interfaceLanguage: .english)
+
+        #expect(settings.schemaVersion == XTerminalSettings.currentSchemaVersion)
+        #expect(settings.interfaceLanguage == .english)
+
+        let data = try JSONEncoder().encode(settings)
+        let decoded = try JSONDecoder().decode(XTerminalSettings.self, from: data)
+
+        #expect(decoded.interfaceLanguage == .english)
     }
 
     @Test

@@ -222,6 +222,7 @@
 - 实施步骤：
   1. runner 提供权限探针输出 `xt.device_permission_owner_status.v1`。
   2. doctor 消费同一份快照，不自行拼接第二套状态机。
+  2.1 若该快照被 XT doctor 挂入 `XTUnifiedDoctor`，source report contract 走 `docs/memory-new/schema/xt_unified_doctor_report_contract.v1.json`，后续 normalized export 再走 `docs/memory-new/schema/xhub_doctor_output_contract.v1.json`。
   3. 所有 `unknown` 权限状态按 fail-closed 处理。
   4. 补“去哪里开权限、为何需要、开完如何刷新”的修复卡片。
 - DoD：

@@ -9,6 +9,7 @@ const REPO_ROOT = path.resolve(__dirname, "..");
 const DEFAULT_SCOPE = "project";
 const DEFAULT_USER_ID = "xt-smoke-user";
 const DEFAULT_PROJECT_ID = "xt-smoke-project";
+const DEFAULT_BASELINE_FILE_NAME = "default_agent_baseline.v1.json";
 const DEFAULT_BASELINE_SKILLS = [
   "find-skills",
   "agent-browser",
@@ -22,6 +23,22 @@ function safeString(value) {
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+
+function resolveDefaultBaselineSkillIDs(sourceRoot) {
+  const candidates = [
+    safeString(sourceRoot) ? path.join(path.resolve(String(sourceRoot)), DEFAULT_BASELINE_FILE_NAME) : "",
+    path.join(REPO_ROOT, "official-agent-skills", DEFAULT_BASELINE_FILE_NAME),
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    if (!fs.existsSync(candidate)) continue;
+    const payload = readJson(candidate);
+    const skillIDs = Array.isArray(payload?.skills)
+      ? payload.skills.map((row) => safeString(row?.skill_id)).filter(Boolean)
+      : [];
+    if (skillIDs.length > 0) return skillIDs;
+  }
+  return [...DEFAULT_BASELINE_SKILLS];
 }
 
 function writeJson(filePath, value) {
@@ -74,7 +91,7 @@ function normalizeSkillList(text) {
     .split(",")
     .map((item) => safeString(item))
     .filter(Boolean);
-  return rows.length > 0 ? rows : [...DEFAULT_BASELINE_SKILLS];
+  return rows;
 }
 
 function selectCandidate({ skillId, publisherId, expectedPackageSHA256, results }) {
@@ -161,6 +178,9 @@ async function main() {
     : fs.mkdtempSync(path.join(os.tmpdir(), "xhub-local-dev-baseline-smoke-"));
   const temporaryRuntime = !args["runtime-base-dir"];
   const keepRuntime = safeString(args["keep-runtime"]) === "1";
+  const effectiveBaselineSkillIds = baselineSkillIds.length > 0
+    ? baselineSkillIds
+    : resolveDefaultBaselineSkillIDs(sourceRoot);
 
   const summary = {
     ok: false,
@@ -172,7 +192,7 @@ async function main() {
     scope,
     user_id: userId,
     project_id: projectId,
-    baseline_skill_ids: baselineSkillIds,
+    baseline_skill_ids: effectiveBaselineSkillIds,
     search: [],
     pins: [],
     gates: [],
@@ -197,7 +217,7 @@ async function main() {
       indexSkills.set(skillId, row);
     }
 
-    for (const skillId of baselineSkillIds) {
+    for (const skillId of effectiveBaselineSkillIds) {
       const indexEntry = indexSkills.get(skillId);
       if (!indexEntry) {
         summary.missing.push({
@@ -288,7 +308,7 @@ async function main() {
     summary.blocked = Array.isArray(resolvedWithTrace.blocked) ? resolvedWithTrace.blocked : [];
 
     const resolvedSkillIds = new Set(summary.resolved.map((row) => safeString(row.skill_id)));
-    for (const skillId of baselineSkillIds) {
+    for (const skillId of effectiveBaselineSkillIds) {
       if (resolvedSkillIds.has(skillId)) continue;
       const alreadyMissing = summary.missing.some((row) => safeString(row.skill_id) === skillId);
       if (!alreadyMissing) {

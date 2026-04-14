@@ -14,6 +14,11 @@
 - Hub 执行入库规范化与审计（upload）。
 - Hub 执行分层生效（pin）。
 
+补充边界：
+- 本契约只覆盖普通可执行 skills 的导入与 pin。
+- `memory_core` 属于保留系统层/规则资产版本链，不走本导入桥接契约；client 若尝试 pin `memory_core`，必须 fail-closed。
+- 这也不改变 memory control plane：用户继续在 X-Hub 中选择哪个 AI 执行 memory jobs，durable writes 继续只经 `Writer + Gate`。
+
 协议必须满足：
 - fail-closed（不满足契约直接 deny）。
 - 幂等可复放（重复请求不产生语义漂移）。
@@ -66,6 +71,7 @@ Hub 行为（冻结）：
 
 Hub 行为（冻结）：
 1. scope/identity 校验
+   - `memory_core` 不属于 client-visible scope；命中时返回 `deny(unsupported_scope)`
 2. `package_sha256` -> skill 元数据匹配校验
 3. 按 `(scope,user_id,project_id,skill_id)` upsert pin
 4. 落审计（成功/失败都写）

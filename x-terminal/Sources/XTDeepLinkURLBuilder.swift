@@ -210,6 +210,28 @@ enum XTDeepLinkURLBuilder {
         return components.url
     }
 
+    static func supervisorModelSettingsURL(
+        title: String? = nil,
+        detail: String? = nil
+    ) -> URL? {
+        let normalizedTitle = normalized(title)
+        let normalizedDetail = normalized(detail)
+
+        var components = URLComponents()
+        components.scheme = "xterminal"
+        components.host = "supervisor-model-settings"
+
+        var queryItems: [URLQueryItem] = []
+        if let title = normalizedTitle {
+            queryItems.append(URLQueryItem(name: "title", value: title))
+        }
+        if let detail = normalizedDetail {
+            queryItems.append(URLQueryItem(name: "detail", value: detail))
+        }
+        components.queryItems = queryItems.isEmpty ? nil : queryItems
+        return components.url
+    }
+
     private static func openTargetQueryValue(_ target: XTDeepLinkOpenTarget) -> String {
         switch target {
         case .supervisor:
@@ -225,8 +247,12 @@ enum XTDeepLinkURLBuilder {
             return "grant"
         case .approval:
             return "approval"
+        case .candidateReview:
+            return "candidate_review"
         case .skillRecord:
             return "skill_record"
+        case .projectCreationBoard:
+            return "project_creation_board"
         case .toolApproval:
             return "tool_approval"
         case .routeDiagnose:

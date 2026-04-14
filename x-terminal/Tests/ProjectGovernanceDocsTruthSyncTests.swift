@@ -14,18 +14,19 @@ struct ProjectGovernanceDocsTruthSyncTests {
         )
 
         #expect(readme.contains("A4 Agent"))
-        #expect(readme.contains("Execution Tier"))
-        #expect(readme.contains("Supervisor Tier"))
-        #expect(readme.contains("Heartbeat & Review"))
+        #expect(readme.contains("A-Tier"))
+        #expect(readme.contains("S-Tier"))
+        #expect(readme.contains("Heartbeat / Review"))
         #expect(!readme.contains("A4 Full Surface"))
         #expect(!readme.contains("A4 OpenClaw"))
         #expect(!readme.contains("the current governance surface already exposes"))
         #expect(!readme.contains("The active `XT-W3-36-B` child pack is finishing"))
 
-        #expect(terminalReadme.contains("Project Governance And Supervisor Review"))
-        #expect(terminalReadme.contains("Execution Tier"))
-        #expect(terminalReadme.contains("Supervisor Tier"))
-        #expect(terminalReadme.contains("Heartbeat & Review"))
+        #expect(terminalReadme.contains("A-Tier, S-Tier, And Heartbeat / Review"))
+        #expect(terminalReadme.contains("A-Tier"))
+        #expect(terminalReadme.contains("S-Tier"))
+        #expect(terminalReadme.contains("Heartbeat / Review"))
+        #expect(!terminalReadme.contains("Project Governance And Supervisor Review"))
         #expect(!terminalReadme.contains("Project Autonomy And Supervisor Review"))
     }
 
@@ -49,9 +50,9 @@ struct ProjectGovernanceDocsTruthSyncTests {
 
         #expect(workingIndex.contains("xt-w3-36-b-project-governance-surface-split-implementation-pack-v1.md"))
         #expect(workingIndex.contains("xt-w3-36-project-autonomy-tier-and-supervisor-intervention-implementation-pack-v1.md"))
-        #expect(workingIndex.contains("Execution Tier"))
-        #expect(workingIndex.contains("Supervisor Tier"))
-        #expect(workingIndex.contains("Heartbeat & Review"))
+        #expect(workingIndex.contains("A-Tier"))
+        #expect(workingIndex.contains("S-Tier"))
+        #expect(workingIndex.contains("Heartbeat / Review"))
         #expect(workingIndex.contains("A4 Agent"))
         #expect(workingIndex.contains("XT-W3-36-B` is now completed"))
         #expect(workingIndex.contains("Use the parent `XT-W3-36` pack as the live governance roadmap"))
@@ -84,18 +85,15 @@ struct ProjectGovernanceDocsTruthSyncTests {
         #expect(xMemory.contains("A0..A4"))
         #expect(xMemory.contains("S0..S4"))
         #expect(xMemory.contains("A4 Agent"))
-        #expect(xMemory.contains("Execution Tier"))
-        #expect(xMemory.contains("Supervisor Tier"))
-        #expect(xMemory.contains("Heartbeat & Review"))
+        #expect(xMemory.contains("A-Tier"))
+        #expect(xMemory.contains("S-Tier"))
+        #expect(xMemory.contains("Heartbeat / Review"))
         #expect(xMemory.contains("xt-w3-36-b-project-governance-surface-split-implementation-pack-v1.md"))
         #expect(xMemory.contains("xt_w3_36_project_governance_evidence.sh"))
         #expect(xMemory.contains("xt_release_gate.sh"))
     }
 
     private func repoRoot() -> URL {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
+        monorepoTestRepoRoot(filePath: #filePath)
     }
 }

@@ -4,6 +4,7 @@ struct AXConversationTurn: Codable, Equatable {
     var createdAt: Double
     var user: String
     var assistant: String
+    var attachments: [AXChatAttachment] = []
 }
 
 enum AXMemoryPipeline {
@@ -285,8 +286,9 @@ Merge rules:
         if let path = coarseUsage?.executionPath, !path.isEmpty {
             coarseUsageEntry["execution_path"] = path
         }
-        if let reason = coarseUsage?.fallbackReasonCode, !reason.isEmpty {
-            coarseUsageEntry["fallback_reason_code"] = reason
+        let coarseEffectiveFailureReason = effectiveFailureReasonCode(for: coarseUsage)
+        if !coarseEffectiveFailureReason.isEmpty {
+            coarseUsageEntry["fallback_reason_code"] = coarseEffectiveFailureReason
         }
         if let auditRef = coarseUsage?.auditRef, !auditRef.isEmpty {
             coarseUsageEntry["audit_ref"] = auditRef
@@ -507,8 +509,9 @@ Merge rules:
         if let path = refineUsage?.executionPath, !path.isEmpty {
             refineUsageEntry["execution_path"] = path
         }
-        if let reason = refineUsage?.fallbackReasonCode, !reason.isEmpty {
-            refineUsageEntry["fallback_reason_code"] = reason
+        let refineEffectiveFailureReason = effectiveFailureReasonCode(for: refineUsage)
+        if !refineEffectiveFailureReason.isEmpty {
+            refineUsageEntry["fallback_reason_code"] = refineEffectiveFailureReason
         }
         if let auditRef = refineUsage?.auditRef, !auditRef.isEmpty {
             refineUsageEntry["audit_ref"] = auditRef
@@ -797,5 +800,21 @@ Merge rules:
         }
 
         return nil
+    }
+
+    static func effectiveFailureReasonCode(for usage: LLMUsage?) -> String {
+        let fallback = normalizedFailureReasonCode(usage?.fallbackReasonCode)
+        if !fallback.isEmpty {
+            return fallback
+        }
+        return normalizedFailureReasonCode(usage?.denyCode)
+    }
+
+    private static func normalizedFailureReasonCode(_ raw: String?) -> String {
+        (raw ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
     }
 }

@@ -8,7 +8,9 @@ enum XTDeepLinkOpenTarget: Equatable {
 enum XTDeepLinkFocusTarget: Equatable {
     case grant
     case approval
+    case candidateReview
     case skillRecord
+    case projectCreationBoard
     case toolApproval
     case routeDiagnose
 }
@@ -28,6 +30,7 @@ struct XTHubSetupRoute: Equatable {
     var detail: String?
     var refreshAction: XTSectionRefreshAction? = nil
     var refreshReason: String? = nil
+    var pairingPrefill: XTHubPairingInvitePrefill? = nil
 }
 
 struct XTSettingsRoute: Equatable {
@@ -36,6 +39,11 @@ struct XTSettingsRoute: Equatable {
     var detail: String?
     var refreshAction: XTSectionRefreshAction? = nil
     var refreshReason: String? = nil
+}
+
+struct XTSupervisorModelSettingsRoute: Equatable {
+    var title: String?
+    var detail: String?
 }
 
 struct XTDeepLinkProjectRoute: Equatable {
@@ -56,6 +64,7 @@ enum XTDeepLinkRoute: Equatable {
     case hubSetup(XTHubSetupRoute)
     case settings(XTSettingsRoute)
     case supervisorSettings
+    case supervisorModelSettings(XTSupervisorModelSettingsRoute)
     case resume(projectId: String?)
     case project(XTDeepLinkProjectRoute)
 }
@@ -96,14 +105,17 @@ enum XTDeepLinkParser {
                 )
             )
         }
-        if host == "hub-setup" || lowercasedSegments == ["hub-setup"] {
+        if host == "hub-setup" || host == "pair-hub" || lowercasedSegments == ["hub-setup"] || lowercasedSegments == ["pair-hub"] {
+            let pairingPrefill = pairingPrefillValue(query)
             return .hubSetup(
                 XTHubSetupRoute(
-                    sectionId: normalized(query["section_id"] ?? query["section"]),
+                    sectionId: normalized(query["section_id"] ?? query["section"])
+                        ?? (host == "pair-hub" || lowercasedSegments == ["pair-hub"] ? "pair_hub" : nil),
                     title: normalized(query["title"]),
                     detail: normalized(query["detail"]),
                     refreshAction: refreshActionValue(query["refresh_action"]),
-                    refreshReason: normalized(query["refresh_reason"])
+                    refreshReason: normalized(query["refresh_reason"]),
+                    pairingPrefill: pairingPrefill
                 )
             )
         }
@@ -120,6 +132,14 @@ enum XTDeepLinkParser {
         }
         if host == "supervisor-settings" || lowercasedSegments == ["supervisor-settings"] {
             return .supervisorSettings
+        }
+        if host == "supervisor-model-settings" || lowercasedSegments == ["supervisor-model-settings"] {
+            return .supervisorModelSettings(
+                XTSupervisorModelSettingsRoute(
+                    title: normalized(query["title"]),
+                    detail: normalized(query["detail"])
+                )
+            )
         }
         if host == "resume" || lowercasedSegments.first == "resume" {
             return .resume(projectId: projectID(host: host, pathSegments: pathSegments, query: query, token: "resume"))
@@ -194,6 +214,42 @@ enum XTDeepLinkParser {
         }
     }
 
+    private static func pairingPrefillValue(_ query: [String: String]) -> XTHubPairingInvitePrefill? {
+        let internetHost = normalized(query["hub_host"] ?? query["internet_host"] ?? query["host"])
+        let pairingPort = portValue(query["pairing_port"])
+        let grpcPort = portValue(query["grpc_port"])
+        let hubAlias = normalized(query["hub_alias"] ?? query["alias"])
+        let inviteToken = normalized(query["invite_token"] ?? query["token"])
+        let hubInstanceID = normalized(query["hub_instance_id"])
+
+        if internetHost == nil,
+           pairingPort == nil,
+           grpcPort == nil,
+           hubAlias == nil,
+           inviteToken == nil,
+           hubInstanceID == nil {
+            return nil
+        }
+
+        return XTHubPairingInvitePrefill(
+            hubAlias: hubAlias,
+            internetHost: internetHost,
+            pairingPort: pairingPort,
+            grpcPort: grpcPort,
+            inviteToken: inviteToken,
+            hubInstanceID: hubInstanceID
+        )
+    }
+
+    private static func portValue(_ raw: String?) -> Int? {
+        guard let value = normalized(raw),
+              let port = Int(value),
+              (1...65_535).contains(port) else {
+            return nil
+        }
+        return port
+    }
+
     private static func openTargetValue(_ raw: String) -> XTDeepLinkOpenTarget? {
         switch raw {
         case "supervisor":
@@ -217,8 +273,12 @@ enum XTDeepLinkParser {
             return .grant
         case "approval", "local_approval", "supervisor_skill_approval":
             return .approval
+        case "candidate_review", "candidatereview", "supervisor_candidate_review":
+            return .candidateReview
         case "skill_record", "skillrecord", "record":
             return .skillRecord
+        case "project_creation_board", "projectcreationboard", "project_creation":
+            return .projectCreationBoard
         case "tool_approval", "toolapproval", "pending_tool_approval":
             return .toolApproval
         case "route_diagnose", "routediagnose", "model_route_diagnose":
@@ -252,12 +312,10 @@ enum XTDeepLinkParser {
     }
 
     private static func refreshActionValue(_ raw: String?) -> XTSectionRefreshAction? {
-        switch normalized(raw)?.lowercased() {
-        case XTSectionRefreshAction.recheckOfficialSkills.rawValue:
-            return .recheckOfficialSkills
-        default:
+        guard let normalized = normalized(raw)?.lowercased() else {
             return nil
         }
+        return XTSectionRefreshAction(rawValue: normalized)
     }
 
     private static func normalized(_ raw: String?) -> String? {

@@ -106,7 +106,7 @@ Audit：
 
 MUST：
 - Kill-switch 作为全局拦截点：阻断 grants / connector actions / remote export / ai.generate.paid。
-- 宪章与 Memory-Core skill 更新必须走冷存储 Token（版本化 + 回滚）。
+- 宪章与 `Memory-Core` 规则资产版本更新必须走冷存储 Token（版本化 + 回滚）。
 - 关键存储 at-rest 加密与密钥轮换（见 `docs/xhub-storage-encryption-and-keymgmt-v1.md`）。
 - route posture、漏洞状态、授权完整性、时钟/签名一致性任一不明确时，必须 fail closed，不得继续高风险执行。
 - revoke / kill-switch / downgrade 到本地更安全路径，必须对终端侧即时生效并保留审计链。

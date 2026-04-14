@@ -4,6 +4,13 @@
   "name": "Self Improving Agent",
   "version": "1.0.0",
   "description": "Supervisor retrospective and self-improvement workflow pack for learning from failed runs without bypassing governance.",
+  "input_schema_ref": "schema://self-improving-agent.input",
+  "output_schema_ref": "schema://self-improving-agent.output",
+  "side_effect_class": "read_only",
+  "risk_level": "medium",
+  "requires_grant": false,
+  "timeout_ms": 15000,
+  "max_retries": 1,
   "entrypoint": {
     "runtime": "text",
     "command": "cat",
@@ -38,5 +45,11 @@
   "publisher": {
     "publisher_id": "xhub.official"
   },
-  "install_hint": "Install for Supervisor retrospectives and governed workflow tuning."
+  "install_hint": "Install for Supervisor retrospectives and governed workflow tuning.",
+  "quality_evidence_status": {
+    "replay": "missing",
+    "fuzz": "missing",
+    "doctor": "passed",
+    "smoke": "passed"
+  }
 }

@@ -1,0 +1,164 @@
+#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+
+const REPO_ROOT = path.resolve(__dirname, "..");
+const DEFAULT_OUTPUT_PATH = path.join(
+  REPO_ROOT,
+  "docs",
+  "open-source",
+  "evidence",
+  "xt_w3_24_s_safe_onboarding_release_evidence.v1.json"
+);
+
+function safeString(value) {
+  return String(value == null ? "" : value).trim();
+}
+
+function writeJSON(filePath, value) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function parseArgs(argv) {
+  const out = {};
+  for (let index = 2; index < argv.length; index += 1) {
+    const current = safeString(argv[index]);
+    if (!current.startsWith("--")) continue;
+    const key = current.slice(2);
+    const next = argv[index + 1];
+    if (next && !safeString(next).startsWith("--")) {
+      out[key] = String(next);
+      index += 1;
+    } else {
+      out[key] = "1";
+    }
+  }
+  return out;
+}
+
+function buildSafeOnboardingReleaseEvidenceReport(options = {}) {
+  return {
+    schema_version: "xt_w3_24_s_safe_onboarding_release_evidence.v1",
+    generated_at: safeString(options.generatedAt) || new Date().toISOString(),
+    status: "preview-working",
+    claim: "Safe operator-channel onboarding now has explicit repair-next-step evidence for invalid token, signature mismatch, replay suspicion, and missing heartbeat governance visibility across Hub admin live-test evidence, doctor recovery summaries, and local Hub Swift parity builders, while preserving Hub-first quarantine, approval, revoke, and replay fail-closed boundaries.",
+    claim_scope: [
+      "XT-W3-24-S",
+      "P1-1",
+      "safe_onboarding_release_boundary",
+    ],
+    source_refs: [
+      "x-hub-system/docs/open-source/OSS_RELEASE_CHECKLIST_v1.md:1",
+      "x-hub-system/docs/open-source/GITHUB_RELEASE_NOTES_TEMPLATE_v1.md:1",
+      "x-hub-system/.github/workflows/xt-w3-24-safe-onboarding-gate.yml:1",
+      "x-hub-system/scripts/ci/xt_w3_24_s_safe_onboarding_gate.sh:1",
+      "x-hub-system/x-hub/grpc-server/hub_grpc_server/src/operator_channel_live_test_evidence.js:240",
+      "x-hub-system/x-hub/grpc-server/hub_grpc_server/src/operator_channel_live_test_evidence.test.js:203",
+      "x-hub-system/x-hub/grpc-server/hub_grpc_server/src/operator_channel_live_test_evidence.test.js:385",
+      "x-hub-system/x-hub/grpc-server/hub_grpc_server/src/operator_channel_live_test_evidence.test.js:447",
+      "x-hub-system/x-hub/grpc-server/hub_grpc_server/src/operator_channel_live_test_evidence.test.js:519",
+      "x-hub-system/scripts/generate_xhub_operator_channel_recovery_report.js:1",
+      "x-hub-system/scripts/generate_xhub_operator_channel_recovery_report.test.js:211",
+      "x-hub-system/x-hub/grpc-server/hub_grpc_server/src/channel_onboarding_admin_http.test.js:293",
+      "x-hub-system/x-hub/grpc-server/hub_grpc_server/src/channel_onboarding_admin_http.test.js:389",
+      "x-hub-system/x-hub/macos/RELFlowHub/Sources/RELFlowHub/OperatorChannelLiveTestEvidenceSupport.swift:78",
+      "x-hub-system/x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/OperatorChannelsOnboardingSupportTests.swift:765",
+      "x-hub-system/x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/OperatorChannelsOnboardingSupportTests.swift:807",
+      "x-hub-system/x-hub/macos/RELFlowHub/Sources/RELFlowHub/ModelLibrarySectionPlanner.swift:13",
+    ],
+    verification_results: [
+      {
+        name: "hub_live_test_evidence_promotes_invalid_token_signature_and_replay_repairs",
+        status: "pass",
+        detail: "operator_channel_live_test_evidence.test now proves invalid-token, signature mismatch, and replay suspicion all surface as explicit required_next_step guidance instead of stopping at lower-level repair-hint generation.",
+      },
+      {
+        name: "admin_http_live_test_endpoint_preserves_repair_guidance_end_to_end",
+        status: "pass",
+        detail: "channel_onboarding_admin_http.test verifies the local admin evidence endpoint returns Hub-built reports whose repair_hints and required_next_step include Slack signature remediation, while preserving onboarding snapshot and release-boundary checks.",
+      },
+      {
+        name: "operator_channel_recovery_report_highlights_missing_heartbeat_governance_visibility",
+        status: "pass",
+        detail: "generate_xhub_operator_channel_recovery_report.test now proves missing first-smoke heartbeat governance visibility is elevated into dedicated recovery guidance and blocked release wording instead of hiding under generic live-test failure phrasing.",
+      },
+      {
+        name: "relflowhub_swift_parity_builder_matches_hub_evidence_contract",
+        status: "pass",
+        detail: "OperatorChannelsOnboardingSupportTests now pass with explicit Swift-side coverage for signature mismatch and replay suspicion, so Hub local UI no longer depends on JS-only correctness for live-test evidence phrasing.",
+      },
+      {
+        name: "replay_and_onboarding_regressions_rechecked_after_swift_side_fixes",
+        status: "pass",
+        detail: "Focused reruns of channel_onboarding_admin_http.test and pairing_http_preauth_replay.test passed after the Hub app-side compile/test fixes, confirming no regression in revoke, replay TTL, or fail-closed onboarding flows.",
+      },
+      {
+        name: "dedicated_safe_onboarding_gate_packages_regressions_and_packet_refresh",
+        status: "pass",
+        detail: "scripts/ci/xt_w3_24_s_safe_onboarding_gate.sh now reruns the focused Node regressions, Swift parity tests, generator regression, and tracked evidence refresh as one repeatable release-facing gate.",
+      },
+      {
+        name: "github_actions_workflow_replays_safe_onboarding_gate",
+        status: "pass",
+        detail: ".github/workflows/xt-w3-24-safe-onboarding-gate.yml now gives XT-W3-24-S a macOS GitHub Actions entrypoint that uploads the gate summary, logs, and tracked evidence packet.",
+      },
+      {
+        name: "release_operator_docs_bind_safe_onboarding_packet_to_preview_support_lane",
+        status: "pass",
+        detail: "OSS release checklist and release-notes templates now explicitly point operators at the XT-W3-24-S gate outputs while keeping that packet in the preview/support lane instead of silently broadening validated public claims.",
+      },
+    ],
+    bounded_gaps: [
+      {
+        name: "first_run_shell_not_fully_polished",
+        status: "open",
+        detail: "Safe onboarding is working and test-covered, but the first-run product shell is still not polished enough to upgrade from preview-working to validated.",
+      },
+      {
+        name: "whatsapp_cloud_release_wording_still_require_real_bound",
+        status: "intentional",
+        detail: "WhatsApp Cloud API remains under require-real release gating and must not be described as fully ready just because the onboarding and repair path is structurally covered.",
+      },
+      {
+        name: "preview_support_scope_must_remain_narrow",
+        status: "intentional",
+        detail: "Even with the focused gate, GitHub Actions workflow, and release-operator docs wired up, XT-W3-24-S remains preview/support evidence and must not be promoted into validated public release claims yet.",
+      },
+    ],
+    test_commands: [
+      "bash x-hub-system/scripts/ci/xt_w3_24_s_safe_onboarding_gate.sh",
+      "node x-hub-system/x-hub/grpc-server/hub_grpc_server/src/operator_channel_live_test_evidence.test.js",
+      "node x-hub-system/x-hub/grpc-server/hub_grpc_server/src/channel_onboarding_admin_http.test.js",
+      "node x-hub-system/scripts/generate_xhub_operator_channel_recovery_report.test.js",
+      "node x-hub-system/x-hub/grpc-server/hub_grpc_server/src/pairing_http_preauth_replay.test.js",
+      "cd x-hub-system/x-hub/macos/RELFlowHub && swift test --filter OperatorChannelsOnboardingSupportTests",
+      "cd x-hub-system/x-hub/macos/RELFlowHub && swift test --filter ModelLibrarySectionPlannerTests",
+      "cd x-hub-system/x-hub/macos/RELFlowHub && swift test --filter ModelLibraryUsageDescriptionBuilderTests",
+    ],
+  };
+}
+
+function main(argv = process.argv, io = {}) {
+  const args = parseArgs(argv);
+  const outputPath = path.resolve(args.out || DEFAULT_OUTPUT_PATH);
+  const report = buildSafeOnboardingReleaseEvidenceReport({
+    generatedAt: args["generated-at"],
+  });
+  writeJSON(outputPath, report);
+  const stdout = io.stdout || process.stdout;
+  stdout.write(
+    `generated xt_w3_24_s_safe_onboarding_release_evidence.v1 -> ${path.relative(REPO_ROOT, outputPath)}\n`
+  );
+  return { outputPath, report };
+}
+
+if (require.main === module) {
+  main(process.argv);
+}
+
+module.exports = {
+  DEFAULT_OUTPUT_PATH,
+  buildSafeOnboardingReleaseEvidenceReport,
+  main,
+};

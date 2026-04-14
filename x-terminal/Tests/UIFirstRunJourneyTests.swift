@@ -19,13 +19,13 @@ struct UIFirstRunJourneyTests {
 
         #expect(plan.badge == .validatedMainlineOnly)
         #expect(plan.steps.map(\.kind) == [.pairHub, .chooseModel, .resolveGrant, .runSmoke, .verifyReadiness, .startFirstTask])
-        #expect(plan.steps[0].state == .blockedWaitingUpstream)
+        #expect(plan.steps[0].state == .diagnosticRequired)
         #expect(plan.steps[2].state == .ready)
         #expect(plan.steps[3].state == .blockedWaitingUpstream)
         #expect(plan.steps[4].state == .blockedWaitingUpstream)
         #expect(plan.primaryStatus.state == .diagnosticRequired)
         #expect(plan.currentFailureIssue == .hubUnreachable)
-        #expect(plan.actions.map(\.id) == ["pair_hub", "run_smoke", "open_repair_entry"])
+        #expect(plan.actions.map(\.id) == ["connect_hub", "run_smoke", "open_repair_entry"])
         #expect(plan.consumedFrozenFields.contains("xt.ui_surface_state_contract.v1"))
         #expect(plan.consumedFrozenFields.contains("xt.ui_release_scope_badge.v1"))
     }
@@ -53,6 +53,8 @@ struct UIFirstRunJourneyTests {
         #expect(plan.steps[3].state == .ready)
         #expect(plan.steps[4].state == .ready)
         #expect(plan.steps[5].state == .ready)
+        #expect(plan.steps[5].summary.contains("Home 看项目汇总"))
+        #expect(plan.steps[5].summary.contains("Supervisor 发起首个任务"))
         #expect(plan.smokeReady)
     }
 
@@ -75,8 +77,8 @@ struct UIFirstRunJourneyTests {
         #expect(plan.primaryStatus.machineStatusRef.contains("scope_decision=no_go"))
         #expect(plan.releaseStatus.state == .blockedWaitingUpstream)
         #expect(plan.releaseStatus.highlights.contains(where: { $0.contains("allowed_statement=") }))
-        #expect(plan.actions.first(where: { $0.id == "run_smoke" })?.subtitle == "replay fail-closed；先看 denyCode / diagnostics")
-        #expect(plan.actions.first(where: { $0.id == "open_repair_entry" })?.subtitle?.contains("resume baton") == true)
+        #expect(plan.actions.first(where: { $0.id == "run_smoke" })?.subtitle == "自检没通过；先看回放结果和诊断")
+        #expect(plan.actions.first(where: { $0.id == "open_repair_entry" })?.subtitle == "系统建议先做：continue_current_task_only")
         #expect(plan.steps[2].state == .grantRequired)
         #expect(plan.steps[3].state == .diagnosticRequired)
         #expect(plan.steps[4].state == .diagnosticRequired)
@@ -102,10 +104,55 @@ struct UIFirstRunJourneyTests {
         #expect(plan.currentFailureIssue == .multipleHubsAmbiguous)
         #expect(plan.primaryStatus.state == .diagnosticRequired)
         #expect(plan.primaryStatus.headline.contains("多台 Hub"))
-        #expect(plan.actions.first?.id == "resolve_hub_ambiguity")
-        #expect(plan.actions.first?.title == "固定目标 Hub 后继续连接")
-        #expect(plan.actions.last?.title == "打开 Hub 选择入口")
+        #expect(plan.actions.first?.id == "connect_hub")
+        #expect(plan.actions.first?.title == "连接 Hub")
+        #expect(plan.actions.first?.subtitle == "先固定目标 Hub，再继续连接")
+        #expect(plan.actions.last?.title == "查看授权与排障")
+        #expect(plan.actions.last?.subtitle == UITroubleshootKnowledgeBase.repairEntryDetail(for: .multipleHubsAmbiguous, runtime: .empty))
         #expect(plan.steps.first?.state == .diagnosticRequired)
+    }
+
+    @Test
+    func linkingTransportFailureDoesNotPretendPairHubIsStillInProgress() {
+        let plan = UIFirstRunJourneyPlanner.plan(
+            for: HubSetupWizardState(
+                localConnected: false,
+                remoteConnected: false,
+                linking: true,
+                configuredModelRoles: 1,
+                totalModelRoles: AXRole.allCases.count,
+                failureCode: "grpc_unavailable",
+                runtime: .empty
+            )
+        )
+
+        #expect(plan.currentFailureIssue == .hubUnreachable)
+        #expect(plan.primaryStatus.state == .diagnosticRequired)
+        #expect(plan.steps[0].state == .diagnosticRequired)
+        #expect(plan.steps[0].summary.contains("不代表连接 Hub 已完成"))
+        #expect(plan.steps[1].state == .ready)
+        #expect(plan.steps[2].state == .ready)
+    }
+
+    @Test
+    func missingModelsRouteFirstRunToSupervisorControlCenterModelEntry() {
+        let plan = UIFirstRunJourneyPlanner.plan(
+            for: HubSetupWizardState(
+                localConnected: true,
+                remoteConnected: false,
+                linking: false,
+                configuredModelRoles: 0,
+                totalModelRoles: AXRole.allCases.count,
+                failureCode: "",
+                runtime: .empty
+            )
+        )
+
+        #expect(plan.primaryStatus.state == .inProgress)
+        #expect(plan.primaryStatus.headline.contains("AI 模型设置"))
+        #expect(plan.primaryStatus.userAction.contains("Supervisor Control Center · AI 模型"))
+        #expect(plan.steps[1].title == "Supervisor Control Center · AI 模型")
+        #expect(plan.steps[1].summary.contains("首个任务要用的角色配好"))
     }
 }
 

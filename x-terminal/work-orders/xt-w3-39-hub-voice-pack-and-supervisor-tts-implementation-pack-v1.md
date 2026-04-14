@@ -516,6 +516,7 @@ XT 不持有：
   - fallback visibility 测试
 - DoD：
   - 新增 contract 被测试覆盖
+  - `XT-G4 / Reliability` 会实际执行 `--xt-supervisor-voice-smoke`，并把 `.axcoder/reports/xt_supervisor_voice_smoke.runtime.json` 纳入 release evidence
 
 ## 7) 本轮推进顺序
 

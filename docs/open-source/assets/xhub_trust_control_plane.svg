@@ -131,6 +131,7 @@
 
   <text class="note" x="1068" y="626">Execution surfaces stay outside the trusted Hub core.</text>
   <text class="note" x="1068" y="648">Hub policy, grants, audit, and memory truth remain central.</text>
+  <text class="note" x="1068" y="670">Memory executor stays user-selected; Writer + Gate remains the durable sink.</text>
 
   <path class="flow-green" d="M 318 236 C 410 236, 470 166, 600 166" />
   <path class="flow-red" d="M 318 488 C 454 488, 512 190, 600 166" />

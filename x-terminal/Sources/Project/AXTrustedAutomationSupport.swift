@@ -218,6 +218,27 @@ struct AXTrustedAutomationPermissionOwnerReadiness: Codable, Equatable {
             return provider()
         }
 
+        if ProcessInfo.processInfo.isRunningUnderAutomatedTests {
+            return AXTrustedAutomationPermissionOwnerReadiness(
+                schemaVersion: currentSchemaVersion,
+                ownerID: "local_owner",
+                ownerType: "xterminal_app",
+                bundleID: bundleID,
+                installState: xtTrustedAutomationInstallState(),
+                mode: "managed_or_prompted",
+                accessibility: .missing,
+                automation: .missing,
+                screenRecording: .missing,
+                fullDiskAccess: .missing,
+                inputMonitoring: .missing,
+                canPromptUser: true,
+                managedByMDM: false,
+                overallState: "missing",
+                openSettingsActions: AXTrustedAutomationPermissionKey.allCases.map { $0.openSettingsAction },
+                auditRef: "audit-local-permission-owner-test"
+            )
+        }
+
         let accessibilityStatus: AXTrustedAutomationPermissionStatus = AXIsProcessTrusted() ? .granted : .missing
         let screenRecordingStatus: AXTrustedAutomationPermissionStatus = xtTrustedAutomationScreenRecordingAccessGranted() ? .granted : .missing
         let installState = xtTrustedAutomationInstallState()

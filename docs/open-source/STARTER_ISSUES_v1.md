@@ -224,6 +224,7 @@ Use some combination of:
 - Acceptance criteria:
   - add a small regression around routing, explainability, or audit output
   - keep the assertion scoped to existing runtime behavior
+  - do not redefine who chooses the memory executor or imply a new durable memory authority outside `Writer + Gate`
   - document any assumptions in the test name or comments
 
 ## How To Use This Pool

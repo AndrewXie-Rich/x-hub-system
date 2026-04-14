@@ -20,9 +20,11 @@ The validated public release slice for the current GitHub package remains limite
 
 Validated public claims remain limited to:
 
-- `XT memory UX adapter backed by Hub truth-source`
+- `XT memory UX adapter backed by Hub truth-source, with user-selected memory executor and Writer + Gate durable-write boundary`
 - `Hub-governed multi-channel gateway`
 - `Hub-first governed automations`
+
+If memory posture is mentioned anywhere in this scenario map, keep it inside the same boundary: the user chooses which AI executes memory jobs in X-Hub, `Memory-Core` remains the governed Hub-side rule asset, and durable writes still terminate through `Writer + Gate`.
 
 Everything else in this document must be presented either as:
 
@@ -57,7 +59,7 @@ These are the only scenarios that should currently be described as validated pub
 
 | Scenario | External wording |
 |---|---|
-| Hub-backed memory UX | X-Terminal can expose memory-aware UX while Hub remains the truth-source |
+| Hub-backed memory UX | X-Terminal can expose memory-aware UX while Hub remains the truth-source; the user still chooses which AI executes memory jobs in X-Hub and durable writes still terminate through `Writer + Gate` |
 | Hub-governed multi-channel gateway | channel routing stays inside Hub policy instead of leaking across clients |
 | Hub-first governed automations | automation flows are routed through Hub readiness, policy, and audit constraints |
 

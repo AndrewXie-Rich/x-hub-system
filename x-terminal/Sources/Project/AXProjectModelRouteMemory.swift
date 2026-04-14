@@ -223,6 +223,7 @@ enum AXProjectModelRouteMemoryStore {
         role: AXRole = .coder,
         snapshot: ModelStateSnapshot? = nil,
         localSnapshot: ModelStateSnapshot? = nil,
+        paidAccessSnapshot: HubRemotePaidAccessSnapshot? = nil,
         now: Double = Date().timeIntervalSince1970
     ) -> String? {
         let rawRoot = project.rootPath.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -263,14 +264,18 @@ enum AXProjectModelRouteMemoryStore {
             ? routeMemory.lastRequestedModelId.trimmingCharacters(in: .whitespacesAndNewlines)
             : configuredModelId
         let remembered = rememberedRemoteModelId.trimmingCharacters(in: .whitespacesAndNewlines)
-        let reason = routeMemory.lastFailureReasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
         let requestText = requested.isEmpty ? "远端模型" : requested
-        let reasonText = reason.isEmpty ? "" : "（原因：\(reason)）"
+        let reasonText = parenthesizedRouteReason(
+            routeMemory.lastFailureReasonCode,
+            language: .defaultPreference,
+            recent: false
+        )
         let actionHint = heartbeatActionHint(
             project: project,
             ctx: ctx,
             routeMemory: routeMemory,
-            requestText: requestText
+            requestText: requestText,
+            paidAccessSnapshot: paidAccessSnapshot
         )
 
         if isDirectlyRunnable(assessment: rememberedAssessment),
@@ -296,7 +301,9 @@ enum AXProjectModelRouteMemoryStore {
         role: AXRole,
         ctx: AXProjectContext?,
         snapshot: ModelStateSnapshot,
-        localSnapshot: ModelStateSnapshot? = nil
+        localSnapshot: ModelStateSnapshot? = nil,
+        paidAccessSnapshot: HubRemotePaidAccessSnapshot? = nil,
+        language: XTInterfaceLanguage = .defaultPreference
     ) -> AXProjectModelSelectionGuidance? {
         guard let ctx else { return nil }
 
@@ -336,9 +343,18 @@ enum AXProjectModelRouteMemoryStore {
                 snapshot: snapshot,
                 localSnapshot: localSnapshot
             )
-            let reason = routeMemory.lastFailureReasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
-            let reasonText = reason.isEmpty ? "" : "（最近原因：\(reason)）"
-            let requestedText = requestedModel.isEmpty ? "当前远端模型" : requestedModel
+            let reasonText = parenthesizedRouteReason(
+                routeMemory.lastFailureReasonCode,
+                language: language,
+                recent: true
+            )
+            let requestedText = requestedModel.isEmpty
+                ? XTL10n.text(
+                    language,
+                    zhHans: "当前远端模型",
+                    en: "the current remote model"
+                )
+                : requestedModel
             let suggestedRemote: String? = {
                 guard let raw = configuredAssessment?.loadedCandidates.first?.id else { return nil }
                 let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -350,12 +366,26 @@ enum AXProjectModelRouteMemoryStore {
                       modelIDsDiffer(suggestedRemote, requestedText) else {
                     return nil
                 }
-                return "如果你现在就要继续，可改用当前已加载的可执行模型 `\(suggestedRemote)`，避免先锁本地；等 `\(requestedText)` 在 Hub 恢复后再切回来。"
+                return XTL10n.text(
+                    language,
+                    zhHans: "如果你现在就要继续，可改用当前已加载的可执行模型 `\(suggestedRemote)`，避免先锁本地；等 `\(requestedText)` 在 Hub 恢复后再切回来。",
+                    en: "If you want to continue right now, switch to the currently loaded runnable model `\(suggestedRemote)` so XT does not lock to local first. You can switch back after `\(requestedText)` is restored in Hub."
+                )
             }()
-            return AXProjectModelSelectionGuidance(
-                warningText: "这个项目最近连续 \(routeMemory.consecutiveRemoteFallbackCount) 次没有稳定命中 `\(requestedText)`\(reasonText)，XT 现在会先锁到本地 `\(localModel)`。如果你要恢复远端，先去 Hub -> Models 确认 `\(requestedText)` 已加载，再重试。",
+            let guidance = AXProjectModelSelectionGuidance(
+                warningText: XTL10n.text(
+                    language,
+                    zhHans: "这个项目最近连续 \(routeMemory.consecutiveRemoteFallbackCount) 次没有稳定命中 `\(requestedText)`\(reasonText)，XT 现在会先锁到本地 `\(localModel)`。如果你要恢复远端，先去 Supervisor Control Center · AI 模型确认 `\(requestedText)` 在真实可执行列表里，再重试。",
+                    en: "This project has missed `\(requestedText)` \(routeMemory.consecutiveRemoteFallbackCount) times in a row\(reasonText), so XT will lock to the local model `\(localModel)` first. If you want to recover the remote route, confirm in Supervisor Control Center · AI Models that `\(requestedText)` is in the true runnable list, then retry."
+                ),
                 recommendedModelId: suggestedRemote,
                 recommendationText: recommendationText
+            )
+            return guidanceWithPaidAccessRuntimeTruth(
+                guidance,
+                reasonCode: routeMemory.lastFailureReasonCode,
+                paidAccessSnapshot: paidAccessSnapshot,
+                language: language
             )
         }
 
@@ -365,11 +395,25 @@ enum AXProjectModelRouteMemoryStore {
            !configured.isEmpty,
            let remembered = rememberedRemoteModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
            !remembered.isEmpty {
-            return AXProjectModelSelectionGuidance(
-                warningText: "当前配置的 `\(configured)` 还不能直接执行；XT 下次会先试这个项目上次稳定的远端 `\(remembered)`，避免直接掉到本地。",
+            let guidance = AXProjectModelSelectionGuidance(
+                warningText: XTL10n.text(
+                    language,
+                    zhHans: "当前配置的 `\(configured)` 还不能直接执行；XT 下次会先试这个项目上次稳定的远端 `\(remembered)`，避免直接掉到本地。",
+                    en: "The current model `\(configured)` is not directly runnable yet. On the next attempt, XT will try this project's last stable remote model `\(remembered)` first to avoid dropping straight to local."
+                ),
                 recommendedModelId: remembered,
-                recommendationText: "这个项目上次稳定跑通的是 `\(remembered)`。如果你现在只是继续工作，不用手动切模型；XT 下次会先试它。只有你想把它固定成当前配置时，再手动切。",
+                recommendationText: XTL10n.text(
+                    language,
+                    zhHans: "这个项目上次稳定跑通的是 `\(remembered)`。如果你现在只是继续工作，不用手动切模型；XT 下次会先试它。只有你想把它固定成当前配置时，再手动切。",
+                    en: "The last stable remote model for this project was `\(remembered)`. If you are just continuing work, you do not need to switch manually. XT will try it first on the next attempt. Only switch manually if you want to pin it as the current configuration."
+                ),
                 recommendationKind: .continueWithoutSwitch
+            )
+            return guidanceWithPaidAccessRuntimeTruth(
+                guidance,
+                reasonCode: routeMemory?.lastFailureReasonCode,
+                paidAccessSnapshot: paidAccessSnapshot,
+                language: language
             )
         }
 
@@ -382,13 +426,25 @@ enum AXProjectModelRouteMemoryStore {
                 return trimmed.isEmpty ? nil : trimmed
             }()
             let reason = blocked.interactiveRoutingDisabledReason
-                ?? "这个模型属于非对话能力，会由 Supervisor 按需调用，不作为当前角色的对话模型。"
+                ?? XTL10n.text(
+                    language,
+                    zhHans: "这个模型属于非对话能力，会由 Supervisor 按需调用，不作为当前角色的对话模型。",
+                    en: "This model is reserved for non-chat capabilities. Supervisor may still call it when needed, but it should not be used as the active chat model for this role."
+                )
             let recommendationText: String? = {
                 guard let suggestedRemote, !suggestedRemote.isEmpty else { return nil }
-                return "把当前角色切到 `\(suggestedRemote)` 最稳；`\(blocked.id)` 仍会继续留给对应的 Supervisor 能力链路按需使用。"
+                return XTL10n.text(
+                    language,
+                    zhHans: "把当前角色切到 `\(suggestedRemote)` 最稳；`\(blocked.id)` 仍会继续留给对应的 Supervisor 能力链路按需使用。",
+                    en: "The safest path is to switch the current role to `\(suggestedRemote)`. `\(blocked.id)` can still stay available for the corresponding Supervisor capability path when needed."
+                )
             }()
             return AXProjectModelSelectionGuidance(
-                warningText: "当前配置的 `\(configured)` 是非对话模型。\(reason)",
+                warningText: XTL10n.text(
+                    language,
+                    zhHans: "当前配置的 `\(configured)` 是非对话模型。\(reason)",
+                    en: "The current model `\(configured)` is not an interactive chat model. \(reason)"
+                ),
                 recommendedModelId: suggestedRemote,
                 recommendationText: recommendationText
             )
@@ -402,14 +458,18 @@ enum AXProjectModelRouteMemoryStore {
         role: AXRole,
         ctx: AXProjectContext?,
         snapshot: ModelStateSnapshot,
-        localSnapshot: ModelStateSnapshot? = nil
+        localSnapshot: ModelStateSnapshot? = nil,
+        paidAccessSnapshot: HubRemotePaidAccessSnapshot? = nil,
+        language: XTInterfaceLanguage = .defaultPreference
     ) -> String? {
         selectionGuidance(
             configuredModelId: rawConfiguredModelId,
             role: role,
             ctx: ctx,
             snapshot: snapshot,
-            localSnapshot: localSnapshot
+            localSnapshot: localSnapshot,
+            paidAccessSnapshot: paidAccessSnapshot,
+            language: language
         )?.warningText
     }
 
@@ -454,7 +514,8 @@ enum AXProjectModelRouteMemoryStore {
             executionPath: text(obj["execution_path"]),
             fallbackReasonCode: firstNonEmptyString(
                 text(obj["fallback_reason_code"]),
-                text(obj["failure_reason_code"])
+                text(obj["failure_reason_code"]),
+                text(obj["deny_code"])
             )
         )
     }
@@ -692,11 +753,12 @@ enum AXProjectModelRouteMemoryStore {
         project: AXProjectEntry,
         ctx: AXProjectContext,
         routeMemory: AXProjectModelRouteMemory,
-        requestText: String
+        requestText: String,
+        paidAccessSnapshot: HubRemotePaidAccessSnapshot? = nil
     ) -> String {
         let latestEvent = AXModelRouteDiagnosticsStore.recentEvents(for: ctx, limit: 1).first
         let normalizedReason = normalizedFailureReasonCode(
-            latestEvent?.fallbackReasonCode ?? routeMemory.lastFailureReasonCode
+            latestEvent?.effectiveFailureReasonCode ?? routeMemory.lastFailureReasonCode
         )
         let executionPath = (latestEvent?.executionPath ?? routeMemory.lastExecutionPath)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -705,22 +767,72 @@ enum AXProjectModelRouteMemoryStore {
         let routeDiagnoseStep = heartbeatRouteDiagnoseStep(project: project)
 
         switch normalizedReason {
-        case "downgrade_to_local", "remote_export_blocked":
-            return "\(routeDiagnoseStep) 如果仍看到 `\(normalizedReason)`，再去 `XT Settings -> Diagnostics` 看最近 route event，并到 `Hub -> Models` / Hub 审计确认 `\(requestedModel)`。"
+        case "downgrade_to_local":
+            return "\(routeDiagnoseStep) 如果仍看到 `downgrade_to_local`，再看 `XT Diagnostics` 的最近 route event，并优先去 Hub 审计确认是不是执行阶段把远端降到了本地。"
+        case "remote_export_blocked",
+             "device_remote_export_denied",
+             "policy_remote_denied",
+             "budget_remote_denied",
+             "remote_disabled_by_user_pref":
+            return "\(routeDiagnoseStep) 再看 `XT Diagnostics` 的最近 route event，并优先查 Hub export gate、设备 / 策略 / 预算边界与 Hub 审计；不要先急着改 XT 模型。"
         case "model_not_found", "remote_model_not_found":
-            return "\(routeDiagnoseStep) 再到 `Hub -> Models` 确认 `\(requestedModel)` 已加载；如果只是想先继续，先看这轮是否已提示会自动改试上次稳定远端。只有要强制验证指定模型时，再手动切。"
-        case "response_timeout", "grpc_route_unavailable", "runtime_not_running", "request_write_failed":
-            return "\(routeDiagnoseStep) 再去 `XT Settings -> Diagnostics` 看最近 route event，并检查 Hub 连接与 runtime 状态。"
+            return "\(routeDiagnoseStep) 再到 `Supervisor Control Center · AI 模型` 确认 `\(requestedModel)` 已进入真实可执行列表；如果只是想先继续，先看这轮是否已提示会自动改试上次稳定远端。只有要强制验证指定模型时，再手动切。"
+        case "device_paid_model_disabled",
+             "device_paid_model_not_allowed",
+             "device_daily_token_budget_exceeded",
+             "device_single_request_token_exceeded",
+             "legacy_grant_flow_required":
+            let base = "\(routeDiagnoseStep) 再看设备信任、模型访问策略和预算边界；如果仍卡住，再结合 `XT Diagnostics` 和 Hub 审计确认 paid 远端是否真的放行。"
+            guard let paidTruth = XTRouteTruthPresentation.pairedDeviceTruthText(
+                routeReasonCode: normalizedReason,
+                paidAccessSnapshot: paidAccessSnapshot,
+                language: .defaultPreference
+            ) else {
+                return base
+            }
+            return "\(base) 当前设备真值：\(paidTruth)。"
+        case "blocked_waiting_upstream",
+             "provider_not_ready",
+             "response_timeout",
+             "grpc_route_unavailable",
+             "runtime_not_running",
+             "request_write_failed",
+             "remote_timeout",
+             "remote_unreachable":
+            return "\(routeDiagnoseStep) 再看 `XT Diagnostics` 的最近 route event，并检查 Hub 连接与 runtime 状态。"
         default:
             switch executionPath {
             case "hub_downgraded_to_local":
-                return "\(routeDiagnoseStep) 这更像是 Hub 侧把远端请求降到了本地；继续查 `XT Settings -> Diagnostics` 和 Hub 审计。"
+                return "\(routeDiagnoseStep) 这更像是 Hub 侧把远端请求降到了本地；继续查 `XT Diagnostics` 和 Hub 审计。"
             case "local_fallback_after_remote_error", "remote_error":
-                return "\(routeDiagnoseStep) 再去 `XT Settings -> Diagnostics` 看最近 route event，并检查 `Hub -> Models` 里 `\(requestedModel)` 的可执行状态。"
+                return "\(routeDiagnoseStep) 再看 `XT Diagnostics` 的最近 route event，并检查 `Supervisor Control Center · AI 模型` 里 `\(requestedModel)` 的真实可执行状态。"
             default:
-                return "\(routeDiagnoseStep) 如果仍复现，再去 `XT Settings -> Diagnostics` 看最近 route event。"
+                return "\(routeDiagnoseStep) 如果仍复现，再看 `XT Diagnostics` 的最近 route event。"
             }
         }
+    }
+
+    private static func guidanceWithPaidAccessRuntimeTruth(
+        _ guidance: AXProjectModelSelectionGuidance,
+        reasonCode: String?,
+        paidAccessSnapshot: HubRemotePaidAccessSnapshot?,
+        language: XTInterfaceLanguage
+    ) -> AXProjectModelSelectionGuidance {
+        guard let paidTruth = XTRouteTruthPresentation.pairedDeviceTruthText(
+            routeReasonCode: reasonCode,
+            paidAccessSnapshot: paidAccessSnapshot,
+            language: language
+        ) else {
+            return guidance
+        }
+
+        var enriched = guidance
+        enriched.warningText += XTL10n.text(
+            language,
+            zhHans: " 当前设备真值：\(paidTruth)。",
+            en: " Current device truth: \(paidTruth)."
+        )
+        return enriched
     }
 
     private static func heartbeatRememberedRemoteActionHint(
@@ -738,11 +850,89 @@ enum AXProjectModelRouteMemoryStore {
     }
 
     private static func normalizedFailureReasonCode(_ raw: String?) -> String {
-        (raw ?? "")
+        let normalized = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return "" }
+
+        let segments = normalized
+            .split(separator: ";", omittingEmptySubsequences: true)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+
+        let candidates = [
+            reasonFieldValue("fallback_reason_code", in: segments),
+            reasonFieldValue("reason_code", in: segments),
+            reasonFieldValue("reason", in: segments),
+            reasonFieldValue("resolution_state", in: segments).flatMap { isGenericReasonToken($0) ? nil : $0 },
+            reasonFieldValue("deny_code", in: segments).flatMap { isGenericReasonToken($0) ? nil : $0 },
+            segments.first(where: { !$0.contains("=") && !isGenericReasonToken($0) }),
+            reasonFieldValue("resolution_state", in: segments),
+            reasonFieldValue("deny_code", in: segments),
+            segments.first(where: { !$0.contains("=") }),
+            normalized
+        ]
+
+        for candidate in candidates {
+            let token = normalizedReasonSegment(candidate ?? "")
+            if !token.isEmpty {
+                return token
+            }
+        }
+        return ""
+    }
+
+    private static func parenthesizedRouteReason(
+        _ raw: String?,
+        language: XTInterfaceLanguage,
+        recent: Bool
+    ) -> String {
+        guard let reason = humanizedFailureReason(raw, language: language),
+              !reason.isEmpty else {
+            return ""
+        }
+        return XTL10n.text(
+            language,
+            zhHans: recent ? "（最近原因：\(reason)）" : "（原因：\(reason)）",
+            en: recent ? " (recent reason: \(reason))" : " (reason: \(reason))"
+        )
+    }
+
+    private static func humanizedFailureReason(
+        _ raw: String?,
+        language: XTInterfaceLanguage
+    ) -> String? {
+        let normalized = normalizedFailureReasonCode(raw)
+        guard !normalized.isEmpty else { return nil }
+        return XTRouteTruthPresentation.routeReasonDisplayText(raw, language: language)
+            ?? XTRouteTruthPresentation.denyCodeText(raw, language: language)
+            ?? normalized
+    }
+
+    private static func reasonFieldValue(_ key: String, in segments: [String]) -> String? {
+        let prefix = "\(key)="
+        guard let segment = segments.first(where: {
+            $0.lowercased().hasPrefix(prefix.lowercased())
+        }) else {
+            return nil
+        }
+        let value = String(segment.dropFirst(prefix.count))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
+    private static func normalizedReasonSegment(_ raw: String) -> String {
+        raw
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
             .replacingOccurrences(of: "-", with: "_")
             .replacingOccurrences(of: " ", with: "_")
+    }
+
+    private static func isGenericReasonToken(_ raw: String) -> Bool {
+        switch normalizedReasonSegment(raw) {
+        case "grant_required", "grant_pending", "permission_denied", "forbidden":
+            return true
+        default:
+            return false
+        }
     }
 
     private static func modelIDsDiffer(_ lhs: String?, _ rhs: String?) -> Bool {

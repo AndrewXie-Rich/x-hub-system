@@ -1,12 +1,21 @@
 # X-Hub Memory Progressive Disclosure + Hooks v1（可执行规范 / Draft）
 
 - Status: Draft
-- Updated: 2026-02-12
+- Updated: 2026-03-23
 - Scope: X-Terminal ↔ X-Hub 的“会话生命周期事件（hooks）”+ Hub 端自动生成 Observations/Summaries + 渐进披露（Index→Timeline→Get）
 - Inspiration (concept only): progressive-disclosure reference architecture（AGPL，仅借思想/方法；**不能拷贝代码**）
 - Must align with: `docs/xhub-memory-core-policy-v1.md`（敏感分级、单写入者、远程外发 gate、晋升策略）
 
 > 目标：不牺牲终端体验（无强制人工队列），但把“上下文注入”变成可控、可审计、可回滚的流水线：**先给 index 与成本，让模型按需取回**。
+
+补充边界：
+- 本文定义的是 hooks / ingest / PD retrieval 主链，不负责 memory model 选择。
+- 上游控制面仍固定为：
+  - 用户在 X-Hub 选择 memory AI
+  - `Scheduler -> Worker -> Writer + Gate` 分层执行
+  - `Memory-Core` 作为 governed rule asset 约束提取/晋升/远程外发
+- 因此这里的 hooks worker 应理解为 Scheduler/Worker 主链中的事件输入与 retrieval 支撑面，而不是单独的一套 memory chooser。
+- hook 触发的 observation / summary / PD projection 也只能沿 `Worker -> Writer + Gate` 进入 durable truth，不能因为“是 hooks 自动生成”就绕过单写入者边界。
 
 ---
 

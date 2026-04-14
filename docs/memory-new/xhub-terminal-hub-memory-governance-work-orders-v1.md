@@ -1,6 +1,7 @@
 # X-Terminal Hub Memory Governance + Constitution Hardening Work Orders v1
 
 - Status: Draft
+- updatedAt: 2026-03-21
 - Scope: `x-terminal` project memory routing, `x-hub` constitution hardening, and prompt-side governance alignment
 - Goal: 让 `X-Terminal` 用户可以显式选择是否使用 `Hub memory`，默认开启；同时把 Hub/X-宪章对四类高风险问题的治理写清楚并接入当前实现链路。
 
@@ -19,6 +20,100 @@
 3. 当前版本不宣称“Hub 已是唯一 memory 真源”。
    - 本地 memory 文件仍保留，用于 fallback、崩溃恢复、近期上下文拼接
    - 需要后续工单继续清理 single-source-of-truth 问题
+
+4. `preferHubMemory` 不是 memory AI chooser。
+   - `preferHubMemory` 只决定当前项目是否优先消费 Hub memory 治理与 serving 路径。
+   - 真正的 memory maintenance model 仍由用户在 X-Hub 中通过 `memory_model_preferences` 选择。
+   - XT 不得把项目级 `Hub memory on/off` 开关扩写成 memory model 选择面。
+
+5. 若当前项目选择使用 Hub memory，XT 只能消费上游已解析好的 route truth。
+   - 至少包括：
+     - `route_source`
+     - `route_reason_code`
+     - `fallback_applied`
+     - `fallback_reason`
+     - `model_id`
+   - XT 可在 UX / doctor / audit 中回显这些字段，但不得本地重跑 chooser 或派生第二套 route reason 词典。
+
+## 1.2) Control-Plane Boundary
+
+本父文档负责的是：
+
+- XT 是否走 Hub memory 治理路径
+- XT 本地 fallback 何时允许、何时必须 fresh recheck
+- constitution / grant / export / ACL / attachment body 这些治理边界如何收紧
+
+本父文档不负责：
+
+- 替用户决定 memory maintenance model
+- 在 XT 本地重跑 `memory_model_router`
+- 把 project-level memory 开关变成第二个 memory control-plane
+
+固定关系：
+
+- 用户在 X-Hub 选 memory AI
+- Hub control-plane 解析 `memory_model_preferences -> route diagnostics`
+- XT 只决定“当前项目要不要优先消费 Hub memory”以及“本地 fallback 如何 fail-closed”
+
+## 1.1) Wave-1 承接范围（`A4` + `A6`）
+
+来自 `docs/memory-new/xhub-memory-open-source-reference-wave1-execution-pack-v1.md` 的 `large-file / large-blob sidecar` 与 `attachment visibility + blob ACL`，在本治理父文档下的正式承接范围如下：
+
+- `A4` 负责把超阈值 `code / log / diff / transcript / blob` 从默认 prompt 路径移出，收成受控 sidecar 投影。
+- `A6` 负责把 attachment / blob 的 `metadata visibility` 与 `body read authority` 分成两层治理语义。
+- 两者都只作为 `XT-HM-11`、`XT-HM-13` 与 `MMS-W2 / MMS-W4` 的 child backlog 与 acceptance hardening 落地；不新增第二套 storage plane，不回改 `search_index -> timeline -> get_details` 与现有 remote export gate 的冻结外部语义。
+
+### 1.1.1 Large-blob sidecar 最低冻结集
+
+- sidecar 只是受控投影，不是新的 durable truth source。
+- 超阈值对象默认不得以 full body 形式进入：
+  - 常规 `memory_context`
+  - `lane_handoff`
+  - `remote_prompt_bundle`
+- sidecar 最低 metadata 至少应稳定包含：
+  - `blob_ref`
+  - `blob_kind`
+  - `byte_size`
+  - `token_size_hint`
+  - `sensitivity`
+  - `trust_level`
+  - `redaction_state`
+  - `provenance_ref`
+- 默认消费形态固定为：
+  - `compact refs`
+  - `metadata`
+  - `sanitized summary`
+  - `selected chunks`
+
+### 1.1.2 Attachment metadata / body ACL 最低冻结集
+
+- `metadata visible != body readable` 是固定治理边界。
+- attachment 默认只允许 metadata-first 暴露，最低字段至少应包含：
+  - `attachment_ref`
+  - `mime_type`
+  - `size`
+  - `visibility`
+  - `redaction_state`
+- attachment/blob body 的读取必须重新绑定：
+  - `scope`
+  - `grant`
+  - `audit_ref`
+  - `body_read_reason`
+- remote export 默认只允许：
+  - metadata
+  - summary
+  - selected refs
+- 未显式授权的 attachment/blob body 一律不得进入 remote prompt bundle。
+
+### 1.1.3 Integrity / Retention / Child Mapping
+
+- sidecar 必须并入现有 cleanup / orphan detection / provenance 校验 / retention delete / restore 联动。
+- retention delete / restore 后，sidecar 与主记录状态必须一致；不允许形成不可追溯 orphan blob。
+- 当前 child mapping 固定为：
+  - `W1-A4-S1 -> XT-HM-11 / XT-HM-13`
+  - `W1-A4-S3 -> XT-HM-13 + retention / restore drills`
+  - `W1-A6-S1 / W1-A6-S2 -> XT-HM-13 + MMS-W2 / MMS-W4`
+  - `W1-A6-S3 -> M3 grant chain + XT-HM-13`（本父文档只承接治理边界，不重写 grant 主链）
 
 ---
 
@@ -75,7 +170,7 @@
 
 - 文件：
   - `x-hub/python-runtime/python_service/relflowhub_mlx_runtime.py`
-  - `docs/xhub-constitution-l0-injection-v1.md`
+  - `docs/memory-new/xhub-constitution-l0-injection-v2.md`
   - `docs/xhub-constitution-policy-engine-checklist-v1.md`
 - 风险范围：
   - prompt injection / 网页隐藏指令
@@ -170,12 +265,14 @@
     - 每轮仍由 Hub 参与治理路由
     - 但不要求每轮都全量重新拉取 remote continuity snapshot
     - 后续高风险动作可以继续加 fresh recheck，而不是依赖 TTL cache
+  - cache 命中时仍必须保留最近一次上游 `route_source / route_reason_code / fallback_applied / fallback_reason / model_id`，不得把 cache 命中解释成新的 route resolution
 
 - XT-HM-08 验收：
   - 同一 `mode + project_id` 在 TTL 窗口内重复请求时可命中 cache
   - TTL 过期后会重新触发 remote snapshot fetch
   - canonical memory 成功写回后，同项目 cache 被清空，下一轮会重新抓取 fresh snapshot
   - cache 不缓存失败结果，避免把 remote 故障状态长时间粘住
+  - cache 命中与 miss 两种路径都能在 doctor / audit 中回放同一组上游 route truth，而不是生成第二套本地 route reason
 
 - 新增子工单包：
   - `docs/memory-new/xhub-terminal-hub-memory-layer-usage-work-orders-v1.md`
@@ -189,8 +286,9 @@
 - 继续工作：
   - 按 `xhub-terminal-hub-memory-layer-usage-work-orders-v1.md` 推进：
     - `XT-HM-09` mode/layer contract freeze
+    - `XT-HM-11` longterm PD + selected chunk consumption
     - `XT-HM-12` high-risk act fresh recheck
-    - `XT-HM-13` raw evidence quarantine + remote export fence
+    - `XT-HM-13` raw evidence quarantine + sidecar / attachment body fence
     - `XT-HM-14` role-scoped memory router
   - 为 project thread mirror 增加执行/失败审计与可观测性
   - 评估是否要把 tool-result 摘要或 verified action ledger 一并镜像进 Hub thread
@@ -203,10 +301,15 @@
 - 默认行为是 `Hub preferred`
 - 关闭后当前项目 prompt 不请求 Hub memory context
 - 开启后当前项目 prompt 继续受 Hub 宪章与治理链路约束
+- `preferHubMemory` 只表示是否走 Hub memory 治理路径，不表示 XT 本地选择了哪个 memory AI
 - remote Hub route 下，真实 chat turn 会进入对应的 Hub project thread
 - paired Hub route 下，项目 canonical memory 会同步进入 Hub project-scope canonical store
 - local Hub IPC route 下，项目 canonical memory 会同步进入 Hub 本地 canonical memory store，并被 `memory_context` 读取
 - remote Hub route 下，memory snapshot 会使用短 TTL cache，但在项目 canonical memory 更新后立即失效
+- Hub preferred / cache hit / cache miss / local fallback 路径都能回放上游 `route_source / route_reason_code / fallback_applied / fallback_reason / model_id`
+- 超阈值 `code / log / diff / transcript / blob / attachment body` 默认不再 full-body 进入 prompt，而是走 sidecar + compact refs + selected chunks
+- attachment metadata 与 attachment/blob body 的权限语义正式拆开，metadata 可见不等于 body 可读
+- remote export 默认不外发 attachment/blob body；阻断与降级可以被 machine-readable 审计回放
 - 文档明确把四类风险映射到可执行门禁，而不是只停留在提示词描述
 
 ---
@@ -216,4 +319,5 @@
 - 当前实现仍保留本地 memory 文件，因此不是单一 Hub 真源
 - `Hub preferred` 现在已覆盖 paired remote 与本地 Hub IPC 两条 canonical writeback 路径，但 remote 与 local 仍是两套物理存储，不是单一全局真源
 - 当前 cache 只覆盖 remote continuity snapshot，不替代高风险动作前的 fresh Hub 复核
+- 当前 sidecar / attachment ACL 仍是父文档冻结与 child backlog 收口阶段，不代表所有 surface runtime 已完成一致 enforcement
 - 这轮目标是先把“默认 Hub 治理 + 用户可关闭 + 宪章风险覆盖”收紧，而不是一次性完成整个 memory 架构重构

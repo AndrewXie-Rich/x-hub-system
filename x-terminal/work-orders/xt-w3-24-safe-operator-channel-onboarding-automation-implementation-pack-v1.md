@@ -1,9 +1,9 @@
 # XT-W3-24 Safe Operator Channel Onboarding Automation Implementation Pack v1
 
 - version: v1.0
-- updatedAt: 2026-03-13
+- updatedAt: 2026-03-26
 - owner: Hub-L5（Primary）/ XT-L2 / Security / QA / Product
-- status: planned
+- status: preview-working
 - scope: `XT-W3-24-O/P/Q/R/S`；把 `Slack / Telegram / Feishu / WhatsApp Cloud API` 的首次接入收敛成 `unknown ingress quarantine -> admin approve once -> auto-bind -> first smoke`
 - parent:
   - `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`
@@ -485,7 +485,28 @@
   - 批准一次后所有群都变可用。
   - WhatsApp Cloud 在无真实样本时被标成 ready。
 - 证据：
-  - `build/reports/xt_w3_24_s_safe_onboarding_release_evidence.v1.json`
+  - `docs/open-source/evidence/xt_w3_24_s_safe_onboarding_release_evidence.v1.json`
+- 2026-03-25 进展补记：
+  - `invalid token / signature mismatch / replay suspicion` 现在都已在 live-test evidence 层有显式回归，不再只停留在底层 repair-hint 规则。
+  - `operator_channel_live_test_evidence.test.js` 已覆盖：
+    - `verification_token_invalid -> required_next_step`
+    - `signature_invalid -> required_next_step`
+    - `replay_detected -> required_next_step`
+  - `channel_onboarding_admin_http.test.js` 已补 `Slack signature_invalid` 的 admin endpoint 端到端断言，确保不是只有纯函数层通过。
+  - Hub 本地 Swift `LiveTestEvidenceBuilder` 也已加 parity tests；当前包验证被 `MainPanelView.swift` 一带的现有编译错误阻塞，需等该处收口后再把 Swift 侧验证补绿。
+- 2026-03-26 进展补记：
+  - `MainPanelView.swift` 的重复 `HubTaskType`、缺失通知 digest 依赖、bench 可选值阻塞已收掉，`OperatorChannelsOnboardingSupportTests` / `ModelLibrarySectionPlannerTests` / `ModelLibraryUsageDescriptionBuilderTests` 都已跑绿。
+  - 已新增 tracked evidence packet：`docs/open-source/evidence/xt_w3_24_s_safe_onboarding_release_evidence.v1.json`
+  - 已新增一键生成脚本：`scripts/generate_xt_w3_24_s_safe_onboarding_release_evidence.js`
+  - 已新增 focused gate：`scripts/ci/xt_w3_24_s_safe_onboarding_gate.sh`
+  - 已新增 GitHub Actions workflow：`.github/workflows/xt-w3-24-safe-onboarding-gate.yml`
+  - Hub 本地 `OperatorChannelsOnboardingView` 现在已补 provider-first 首次接入总览，会按 provider 显示 runtime / readiness / pending review / next step，不再只靠工单列表承载 first-run 壳。
+  - 首次接入总览卡片现在也已按状态输出 CTA：
+    - 待审核 provider 直接给 `审阅工单`
+    - 已有历史工单且当前 ready 的 provider 直接给 `查看`
+    - runtime / readiness 未就绪的 provider 直接给 `复制配置包` + `重新加载状态`
+  - 这意味着 first-run 壳已不只是“展示当前状态”，而是开始提供 provider-first 的最短修复 / 审阅入口。
+  - 当前剩余缺口主要是把该包接进更宽 public release checklist，以及 first-run product shell，而不是 repair path 或 parity coverage 缺失。
 
 ## 9) Critical Path
 

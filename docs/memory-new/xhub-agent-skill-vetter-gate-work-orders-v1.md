@@ -1,7 +1,7 @@
 # X-Hub Agent Skill Vetter Gate Work Orders v1
 
 - Status: Active
-- Updated: 2026-03-12
+- Updated: 2026-03-13
 - Owner: Hub-L2（Primary）/ Hub-L5 / XT-L1 / Security / QA
 - Purpose: 把“安装前先扫描 skill 风险”的能力正式纳入 `X-Hub` 导入治理主链，在不执行第三方代码的前提下，对第三方 Agent skill 做静态 vetting、分级隔离、审计留痕与 promote gate。
 - Depends on:
@@ -94,7 +94,6 @@
 
 仍待推进：
 
-- `GetAgentImportRecord` / UI 结果面还没把 vetter 字段单独结构化展示
 - 更丰富的恶意样本与误报率报表仍待补齐
 
 以下第二段能力也已落到代码并通过定向验证：
@@ -117,6 +116,19 @@
   - XT `Import Skills` 流程在本地复制成功后，会自动生成 `scan_input_json`
   - XT 会把 `manifest + findings + scan_input` 一并提交到 Hub `StageAgentImport`
   - 导入完成弹窗已回显 `status / preflight / vetter / counts / staging_id`
+  - `GetAgentImportRecord` / review 结果面已结构化展示：
+    - `audit_ref`
+    - `requested_by`
+    - `note`
+    - `vetter_audit_ref`
+    - `vetter_report_ref`
+    - `critical/warn count`
+    - `enabled_scope`
+    - findings 摘要
+  - 实现落点：
+    - `x-terminal/Sources/Project/XTAgentSkillImportNormalizer.swift`
+    - `x-terminal/Sources/AppModel.swift`
+    - `x-terminal/Tests/XTAgentSkillImportNormalizerTests.swift`
 
 ## 2) 正式流程
 
@@ -284,6 +296,9 @@
 - Recommended code:
   - `x-terminal/Sources/AppModel.swift`
   - `x-terminal/Sources/Hub/HubIPCClient.swift`
+- Implementation snapshot:
+  - 2026-03-13 已补 `XTAgentSkillImportReviewFormatter`，`GetAgentImportRecord` 的 review 文案改为统一结构化输出。
+  - 当前已显示 `staging_id / status / audit_ref / requested_by / note / preflight / vetter / vetter_counts / vetter_audit_ref / vetter_report_ref / blocked_reason / enabled_package / enabled_scope / capabilities / findings`。
 - Steps:
   1. `importSkills()` 流程接入 stage RPC。
   2. UI 展示：
@@ -297,6 +312,7 @@
 - DoD:
   - 用户能区分“导入成功”和“已被 Hub 隔离”
   - 结果不是只落日志，必须有 UI 或导出结果面
+  - review 字段与 Hub additive record 对齐，新增 vetter 字段时不再需要在 UI 里重复拼装解析逻辑
 
 ### 4.6 `HUB-VET-06` 审计与证据链
 

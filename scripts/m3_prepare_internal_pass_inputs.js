@@ -11,11 +11,14 @@ const DEFAULTS = {
   xt_origin_report: "x-terminal/.axcoder/reports/xt-origin-fallback-report.json",
   xt_cleanup_report: "x-terminal/.axcoder/reports/xt-dispatch-cleanup-report.json",
   doctor_report: "x-terminal/.axcoder/reports/doctor-report.json",
-  connector_gate_primary: "build/connector_ingress_gate_snapshot.db_real.json",
+  connector_gate_primary: "build/connector_ingress_gate_snapshot.require_real.json",
+  connector_gate_secondary: "build/connector_ingress_gate_snapshot.db_real.json",
   connector_gate_fallback: "build/connector_ingress_gate_snapshot.json",
   xt_ready_incidents_primary: "build/hub_l5_release_xt_ready_incident_events.require_real.json",
   xt_ready_incidents_fallback: "build/xt_ready_incident_events.effective.json",
   xt_ready_gate_primary: "build/hub_l5_release_xt_ready_gate_e2e_require_real_report.json",
+  xt_ready_gate_secondary: "build/xt_ready_gate_e2e_require_real_report.json",
+  xt_ready_gate_tertiary: "build/xt_ready_gate_e2e_db_real_report.json",
   xt_ready_gate_fallback: "build/xt_ready_gate_e2e_report.json",
   sample_db_path: "x-hub/grpc-server/hub_grpc_server/data/hub.sqlite3",
   out_metrics_json: "build/internal_pass_metrics.json",
@@ -63,12 +66,12 @@ function readTextSafe(filePath) {
   }
 }
 
-function pickExistingPath(primary, fallback) {
-  const p = path.resolve(primary);
-  if (fs.existsSync(p)) return p;
-  const f = path.resolve(fallback);
-  if (fs.existsSync(f)) return f;
-  return p;
+function pickExistingPath(...candidates) {
+  const resolvedCandidates = candidates.map((candidate) => path.resolve(candidate));
+  for (const candidate of resolvedCandidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return resolvedCandidates[0];
 }
 
 function toFiniteNumber(value) {
@@ -183,6 +186,7 @@ function run(argv = process.argv) {
   const doctorPath = path.resolve(args["doctor-report"] || DEFAULTS.doctor_report);
   const connectorPath = pickExistingPath(
     args["connector-gate-json"] || DEFAULTS.connector_gate_primary,
+    DEFAULTS.connector_gate_secondary,
     DEFAULTS.connector_gate_fallback
   );
   const xtReadyIncidentsPath = pickExistingPath(
@@ -191,6 +195,8 @@ function run(argv = process.argv) {
   );
   const xtReadyGatePath = pickExistingPath(
     args["xt-ready-gate-report"] || DEFAULTS.xt_ready_gate_primary,
+    DEFAULTS.xt_ready_gate_secondary,
+    DEFAULTS.xt_ready_gate_tertiary,
     DEFAULTS.xt_ready_gate_fallback
   );
   const sampleDbPath = path.resolve(args["sample-db-path"] || DEFAULTS.sample_db_path);

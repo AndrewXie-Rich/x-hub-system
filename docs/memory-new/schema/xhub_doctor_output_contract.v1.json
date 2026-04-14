@@ -1,0 +1,640 @@
+{
+  "schema_version": "xhub.doctor_output_contract.v1",
+  "contract_version": "2026-04-01",
+  "contract_id": "IR-W6-01",
+  "owner_lane": "Hub Runtime / X-Terminal / Diagnostics / QA",
+  "fixed_decisions": [
+    "doctor_output_is_diagnostic_not_authoritative_grant_or_policy_truth",
+    "doctor_output_must_normalize_checks_to_pass_fail_warn_skip",
+    "doctor_output_must_be_surface_neutral_even_when_producer_specific_destinations_are_present",
+    "blocking_failures_must_emit_concrete_next_steps",
+    "heartbeat_governance_snapshot_is_review_explainability_not_memory_or_policy_truth",
+    "supervisor_review_trigger_snapshot_is_review_engine_explainability_not_scheduler_authority",
+    "supervisor_guidance_continuity_snapshot_is_safe_point_review_explainability_not_interrupt_or_grant_authority",
+    "supervisor_safe_point_timeline_snapshot_is_delivery_timing_explainability_not_scheduler_or_interrupt_authority",
+    "skill_doctor_truth_snapshot_is_read_only_capability_and_readiness_projection",
+    "hub_memory_prompt_projection_is_hub_prompt_assembly_explainability_not_local_prompt_authority",
+    "doctor_output_must_not_upgrade_release_scope_or_validated_status_by_itself",
+    "remote_snapshot_cache_snapshots_are_cache_provenance_not_memory_source_truth"
+  ],
+  "doctor_bundle_enum": [
+    "paired_surface_readiness",
+    "provider_runtime_readiness",
+    "channel_onboarding_readiness",
+    "package_lifecycle_readiness",
+    "automation_readiness"
+  ],
+  "doctor_surface_enum": [
+    "xt_ui",
+    "xt_export",
+    "hub_ui",
+    "hub_cli",
+    "api"
+  ],
+  "doctor_producer_enum": [
+    "x_terminal",
+    "x_hub",
+    "xhub_cli"
+  ],
+  "doctor_overall_state_enum": [
+    "ready",
+    "degraded",
+    "blocked",
+    "in_progress",
+    "not_supported"
+  ],
+  "check_status_enum": [
+    "pass",
+    "fail",
+    "warn",
+    "skip"
+  ],
+  "severity_enum": [
+    "info",
+    "warning",
+    "error",
+    "critical"
+  ],
+  "next_step_kind_enum": [
+    "open_repair_surface",
+    "review_pairing",
+    "choose_model",
+    "review_permissions",
+    "repair_runtime",
+    "inspect_diagnostics",
+    "repair_skills",
+    "start_first_task",
+    "wait_for_recovery"
+  ],
+  "step_owner_enum": [
+    "user",
+    "operator",
+    "xt_runtime",
+    "hub_runtime"
+  ],
+  "objects": {
+    "xhub.doctor_output_report.v1": {
+      "required_fields": [
+        "schema_version",
+        "contract_version",
+        "report_id",
+        "bundle_kind",
+        "producer",
+        "surface",
+        "overall_state",
+        "summary",
+        "ready_for_first_task",
+        "checks",
+        "next_steps",
+        "generated_at_ms",
+        "report_path",
+        "source_report_schema_version",
+        "source_report_path"
+      ],
+      "nested_required_fields": {
+        "summary": [
+          "headline",
+          "passed",
+          "failed",
+          "warned",
+          "skipped"
+        ],
+        "route_snapshot": [
+          "transport_mode",
+          "route_label",
+          "pairing_port",
+          "grpc_port",
+          "internet_host"
+        ]
+      },
+      "enum_refs": {
+        "bundle_kind": "doctor_bundle_enum",
+        "producer": "doctor_producer_enum",
+        "surface": "doctor_surface_enum",
+        "overall_state": "doctor_overall_state_enum"
+      },
+      "rules": [
+        "The report may include producer-specific route or destination references, but the semantic envelope stays stable across surfaces.",
+        "A report with blocking failed checks cannot claim overall_state=ready.",
+        "route_snapshot is expected for paired surface readiness bundles."
+      ]
+    },
+    "xhub.doctor_check_result.v1": {
+      "required_fields": [
+        "check_id",
+        "check_kind",
+        "status",
+        "severity",
+        "blocking",
+        "headline",
+        "message",
+        "next_step",
+        "observed_at_ms"
+      ],
+      "optional_fields": [
+        "repair_destination_ref",
+        "detail_lines",
+        "project_context_summary",
+        "hub_memory_prompt_projection",
+        "project_governance_runtime_readiness",
+        "project_memory_policy",
+        "project_memory_readiness",
+        "project_memory_assembly_resolution",
+        "supervisor_memory_policy",
+        "supervisor_memory_assembly_resolution",
+        "supervisor_review_trigger_snapshot",
+        "supervisor_guidance_continuity_snapshot",
+        "supervisor_safe_point_timeline_snapshot",
+        "project_remote_snapshot_cache_snapshot",
+        "supervisor_remote_snapshot_cache_snapshot",
+        "heartbeat_governance_snapshot",
+        "memory_route_truth_snapshot",
+        "durable_candidate_mirror_snapshot",
+        "local_store_write_snapshot",
+        "skill_doctor_truth_snapshot"
+      ],
+      "enum_refs": {
+        "status": "check_status_enum",
+        "severity": "severity_enum"
+      },
+      "rules": [
+        "Blocking failed checks should include either a concrete next_step or a corresponding top-level next_steps entry.",
+        "detail_lines, repair_destination_ref, project_context_summary, hub_memory_prompt_projection, project_governance_runtime_readiness, project_memory_policy, project_memory_readiness, project_memory_assembly_resolution, supervisor_memory_policy, supervisor_memory_assembly_resolution, supervisor_review_trigger_snapshot, project_remote_snapshot_cache_snapshot, supervisor_remote_snapshot_cache_snapshot, heartbeat_governance_snapshot, memory_route_truth_snapshot, durable_candidate_mirror_snapshot, local_store_write_snapshot, and skill_doctor_truth_snapshot are optional producer context and do not change the normalized check semantics.",
+        "project_context_summary is currently used by XT session runtime readiness to expose a human-readable projection of project context assembly truth alongside the raw detail lines.",
+        "hub_memory_prompt_projection is currently used by XT session runtime readiness to expose Hub-provided prompt assembly counts/source kinds as first-class machine-readable explainability without reparsing detail_lines or locally inferring prompt content.",
+        "project_governance_runtime_readiness is currently used by XT session runtime readiness to expose the A-tier configured-vs-runtime-ready split as first-class machine-readable diagnostics.",
+        "project_memory_policy, project_memory_readiness, and project_memory_assembly_resolution are currently used by XT session runtime readiness to expose Project AI role-aware memory policy, readiness, and effective assembly truth as first-class machine-readable diagnostics.",
+        "supervisor_memory_policy and supervisor_memory_assembly_resolution are currently used by XT session runtime readiness to expose Supervisor role-aware review-memory policy and effective assembly truth as first-class machine-readable diagnostics.",
+        "supervisor_review_trigger_snapshot is currently used by XT session runtime readiness to expose Supervisor review policy mode, effective trigger set, active heartbeat-derived review candidate, queue posture, and latest review-note provenance as first-class machine-readable diagnostics.",
+        "supervisor_guidance_continuity_snapshot is currently used by XT session runtime readiness to expose Supervisor latest-review/latest-guidance continuity, ack posture, and safe-point posture as first-class machine-readable diagnostics.",
+        "supervisor_safe_point_timeline_snapshot is currently used by XT session runtime readiness to expose pending guidance delivery timing, live safe-point posture, and tool-batch pause posture as first-class machine-readable diagnostics.",
+        "project_remote_snapshot_cache_snapshot and supervisor_remote_snapshot_cache_snapshot are read-only XT projections of remote snapshot cache provenance; they must not be treated as durable truth or as permission to bypass Hub-first routing.",
+        "heartbeat_governance_snapshot is currently used by XT session runtime readiness to expose project heartbeat quality, anomalies, effective cadence, next-review-due truth, and attached project-memory-readiness explainability alongside the raw detail lines.",
+        "skill_doctor_truth_snapshot is currently used by XT skills compatibility readiness to expose the project effective skill profile plus typed per-skill readiness counts/previews as first-class machine-readable doctor truth.",
+        "hub_memory_prompt_projection is a read-only XT carrier of Hub prompt-assembly explainability and must not be treated as prompt authority, export approval, route truth, or a second memory resolver.",
+        "memory_route_truth_snapshot is a read-only projection of upstream memory route diagnostics and must not be treated as a second route resolver.",
+        "durable_candidate_mirror_snapshot is a read-only XT projection of supervisor durable-candidate mirror state and must not be treated as durable promotion, canonical save success, or read cutover truth.",
+        "local_store_write_snapshot is a read-only XT projection of local cache/fallback/edit-buffer write provenance and must not be treated as durable writer authority.",
+        "Structured producer fields should be preferred over reparsing detail_lines when both are available."
+      ]
+    },
+    "xhub.doctor_skill_doctor_truth_snapshot.v1": {
+      "required_fields": [
+        "effective_profile_snapshot",
+        "installed_skill_count",
+        "ready_skill_count",
+        "grant_required_skill_count",
+        "approval_required_skill_count",
+        "blocked_skill_count",
+        "degraded_skill_count",
+        "grant_required_skill_preview",
+        "approval_required_skill_preview",
+        "blocked_skill_preview"
+      ],
+      "rules": [
+        "This object is an optional XT-originated projection of project effective skill capability truth and per-skill typed readiness truth.",
+        "It exists so generic doctor consumers can see runnable/grant-required/approval-required/blocked counts and representative governed skills without reparsing free-form detail_lines.",
+        "It is read-only explainability and must not be treated as a grant token, runtime bypass, or a replacement for Supervisor preflight / tool runtime deny."
+      ]
+    },
+    "xhub.doctor_supervisor_guidance_continuity_snapshot.v1": {
+      "required_fields": [
+        "schemaVersion",
+        "reviewGuidanceCarrierPresent",
+        "latestReviewNoteAvailable",
+        "latestReviewNoteActualized",
+        "latestGuidanceAvailable",
+        "latestGuidanceActualized",
+        "pendingAckGuidanceAvailable",
+        "pendingAckGuidanceActualized",
+        "renderedRefs",
+        "summaryLine"
+      ],
+      "optional_fields": [
+        "latestGuidanceAckStatus",
+        "latestGuidanceAckRequired",
+        "latestGuidanceDeliveryMode",
+        "latestGuidanceInterventionMode",
+        "latestGuidanceSafePointPolicy",
+        "pendingAckGuidanceAckStatus",
+        "pendingAckGuidanceAckRequired",
+        "pendingAckGuidanceDeliveryMode",
+        "pendingAckGuidanceInterventionMode",
+        "pendingAckGuidanceSafePointPolicy"
+      ],
+      "rules": [
+        "This object is an optional XT-originated projection of Supervisor review/guidance continuity across latest review note, latest guidance, and any pending-ack guidance.",
+        "It keeps ack posture, delivery mode, intervention mode, safe-point policy, rendered refs, and summaryLine machine-readable for generic doctor consumers.",
+        "It is read-only explainability only and must not be treated as review-note authority, guidance-injection authority, interrupt authority, grant truth, or a bypass around Hub scheduler, audit, TTL, kill-switch, or clamp."
+      ]
+    },
+    "xhub.doctor_supervisor_review_trigger_snapshot.v1": {
+      "required_fields": [
+        "schemaVersion",
+        "eventDrivenReviewEnabled",
+        "mandatoryReviewTriggers",
+        "effectiveEventReviewTriggers",
+        "derivedReviewTriggers",
+        "activeCandidateAvailable",
+        "summaryLine"
+      ],
+      "optional_fields": [
+        "reviewPolicyMode",
+        "eventFollowUpCadenceLabel",
+        "activeCandidateTrigger",
+        "activeCandidateRunKind",
+        "activeCandidateReviewLevel",
+        "activeCandidatePriority",
+        "activeCandidatePolicyReason",
+        "activeCandidateQueued",
+        "queuedReviewTrigger",
+        "queuedReviewRunKind",
+        "queuedReviewLevel",
+        "latestReviewSource",
+        "latestReviewTrigger",
+        "latestReviewLevel",
+        "latestReviewAtMs",
+        "lastPulseReviewAtMs",
+        "lastBrainstormReviewAtMs"
+      ],
+      "rules": [
+        "This object is an optional XT-originated projection of Supervisor review policy posture and the current heartbeat-derived review trigger candidate.",
+        "It keeps effective trigger sets, candidate review level/run kind, queue posture, latest review-note provenance, and summaryLine machine-readable for generic doctor consumers.",
+        "It is read-only review-engine explainability only and must not be treated as scheduler authority, review-note authority, guidance-injection authority, grant truth, or a bypass around Hub audit, TTL, kill-switch, clamp, or policy gates."
+      ]
+    },
+    "xhub.doctor_supervisor_safe_point_timeline_snapshot.v1": {
+      "required_fields": [
+        "schemaVersion",
+        "pendingGuidanceAvailable",
+        "summaryLine"
+      ],
+      "optional_fields": [
+        "pendingGuidanceInjectionId",
+        "pendingGuidanceDeliveryMode",
+        "pendingGuidanceInterventionMode",
+        "pendingGuidanceSafePointPolicy",
+        "liveStateSource",
+        "flowStep",
+        "toolResultsCount",
+        "verifyRunIndex",
+        "finalizeOnly",
+        "checkpointReached",
+        "promptVisibleNow",
+        "visibleFromPreRunMemory",
+        "pauseRecorded",
+        "deliverableNow",
+        "shouldPauseToolBatchAfterBoundary",
+        "deliveryState",
+        "executionGate"
+      ],
+      "rules": [
+        "This object is an optional XT-originated projection of pending Supervisor guidance delivery timing inside the current Project AI safe-point loop.",
+        "It keeps pending guidance posture, live flow location, prompt visibility, delivery state, and tool-batch pause posture machine-readable for generic doctor consumers.",
+        "It is read-only explainability only and must not be treated as scheduler authority, interrupt authority, grant truth, or a bypass around Hub audit, TTL, kill-switch, clamp, or policy gates."
+      ]
+    },
+    "xhub.doctor_remote_snapshot_cache_snapshot.v1": {
+      "required_fields": [],
+      "optional_fields": [
+        "source",
+        "freshness",
+        "cache_hit",
+        "scope",
+        "cached_at_ms",
+        "age_ms",
+        "ttl_remaining_ms"
+      ],
+      "rules": [
+        "This object is optional and producer-specific; it exposes remote snapshot cache provenance for either Project AI or Supervisor memory assembly.",
+        "It keeps cache scope, cache age, and TTL-left machine-readable so doctor/export consumers do not have to infer cache freshness from free-form detail_lines.",
+        "It is explainability only and must not be treated as durable memory source truth, grant truth, export approval, or a way to bypass fail-closed boundaries."
+      ]
+    },
+    "xhub.doctor_project_context_summary.v1": {
+      "required_fields": [
+        "source_kind",
+        "source_badge",
+        "status_line",
+        "dialogue_metric",
+        "depth_metric",
+        "dialogue_line",
+        "depth_line"
+      ],
+      "rules": [
+        "This object is optional and producer-specific; it is a presentation-friendly projection of raw project context diagnostics.",
+        "It must not be treated as grant truth, policy truth, or a replacement for the normalized check state."
+      ]
+    },
+    "xhub.doctor_hub_memory_prompt_projection.v1": {
+      "required_fields": [
+        "projection_source",
+        "canonical_item_count",
+        "working_set_turn_count",
+        "runtime_truth_item_count",
+        "runtime_truth_source_kinds"
+      ],
+      "rules": [
+        "This object is optional and producer-specific; it carries Hub-provided prompt assembly explainability for the latest governed coding turn.",
+        "It must directly reuse the upstream Hub Generate.done metadata rather than locally inferring prompt contents from XT detail_lines.",
+        "It is read-only explainability only and must not be treated as prompt authority, grant truth, export approval, route truth, or a bypass around constitution, audit, TTL, kill-switch, or remote export gates."
+      ]
+    },
+    "xhub.project_governance_runtime_readiness.v1": {
+      "required_fields": [
+        "schema_version",
+        "configured_execution_tier",
+        "effective_execution_tier",
+        "configured_runtime_surface_mode",
+        "effective_runtime_surface_mode",
+        "runtime_surface_override_mode",
+        "trusted_automation_state",
+        "requires_a4_runtime_ready",
+        "runtime_ready",
+        "state",
+        "summary_line",
+        "missing_reason_codes"
+      ],
+      "optional_fields": [
+        "missing_summary_line"
+      ],
+      "rules": [
+        "This object is optional and producer-specific; it exposes the A-tier configured-vs-runtime-ready split as machine-readable diagnostics.",
+        "It keeps configured/effective execution tier, runtime surface posture, trusted automation state, and missing readiness reasons visible without reparsing detail_lines.",
+        "It must not be treated as Hub grant truth, tool-policy authority, or a bypass around TTL, kill-switch, clamp, or audit chains."
+      ]
+    },
+    "xhub.project_memory_policy.v1": {
+      "required_fields": [
+        "schema_version",
+        "configured_recent_project_dialogue_profile",
+        "configured_project_context_depth",
+        "recommended_recent_project_dialogue_profile",
+        "recommended_project_context_depth",
+        "effective_recent_project_dialogue_profile",
+        "effective_project_context_depth",
+        "a_tier_memory_ceiling"
+      ],
+      "optional_fields": [
+        "audit_ref"
+      ],
+      "rules": [
+        "This object is optional and producer-specific; it exposes Project AI role-aware memory policy truth as machine-readable diagnostics.",
+        "It keeps configured/recommended/effective project dialogue and context depth plus the A-tier memory ceiling visible without reparsing detail_lines.",
+        "It must not be treated as grant truth, runtime authority, or a replacement for hard allow/deny boundaries such as Hub grant, runtime readiness, tool policy, TTL, or kill-switch."
+      ]
+    },
+    "xhub.project_memory_readiness.v1": {
+      "required_fields": [
+        "ready",
+        "statusLine",
+        "issues"
+      ],
+      "rules": [
+        "This object is optional and producer-specific; it exposes XT-observed Project AI memory assembly readiness as machine-readable diagnostics.",
+        "It exists so API / export / operator surfaces can consume continuity-floor and projection-drift signals without reparsing detail_lines.",
+        "It must not be treated as durable memory truth, scheduler control, grant approval, or a bypass around Hub-first memory governance."
+      ]
+    },
+    "xhub.memory_assembly_resolution.v1": {
+      "required_fields": [
+        "schema_version",
+        "role",
+        "trigger",
+        "configured_depth",
+        "recommended_depth",
+        "effective_depth",
+        "ceiling_from_tier",
+        "ceiling_hit",
+        "selected_slots",
+        "selected_planes",
+        "selected_serving_objects",
+        "excluded_blocks"
+      ],
+      "optional_fields": [
+        "dominant_mode",
+        "budget_summary",
+        "audit_ref"
+      ],
+      "rules": [
+        "This object is optional and producer-specific; it exposes the effective role-aware memory assembly resolution as machine-readable diagnostics.",
+        "selected_slots, selected_planes, selected_serving_objects, and excluded_blocks exist so consumers do not have to infer effective memory assembly from free-form detail_lines.",
+        "It must not be treated as execution authority, grant approval, or scheduler control."
+      ]
+    },
+    "xhub.supervisor_memory_policy.v1": {
+      "required_fields": [
+        "schema_version",
+        "configured_supervisor_recent_raw_context_profile",
+        "configured_review_memory_depth",
+        "recommended_supervisor_recent_raw_context_profile",
+        "recommended_review_memory_depth",
+        "effective_supervisor_recent_raw_context_profile",
+        "effective_review_memory_depth",
+        "s_tier_review_memory_ceiling"
+      ],
+      "optional_fields": [
+        "audit_ref"
+      ],
+      "rules": [
+        "This object is optional and producer-specific; it exposes Supervisor role-aware review-memory policy truth as machine-readable diagnostics.",
+        "It keeps configured/recommended/effective Recent Raw Context and Review Memory Depth plus the S-tier review-memory ceiling visible without reparsing detail_lines.",
+        "It must not be treated as extra execution permission or as a replacement for Hub grant/policy/clamp/TTL boundaries."
+      ]
+    },
+    "xhub.doctor_heartbeat_cadence_dimension_snapshot.v1": {
+      "required_fields": [
+        "dimension"
+      ],
+      "optional_fields": [
+        "configured_seconds",
+        "recommended_seconds",
+        "effective_seconds",
+        "effective_reason_codes",
+        "next_due_at_ms",
+        "next_due_reason_codes",
+        "is_due"
+      ],
+      "rules": [
+        "This object is optional and producer-specific; it exposes the cadence triple plus due explainability for a single heartbeat/review dimension.",
+        "It must not be treated as a scheduler authority surface or as permission to bypass governance review safe points."
+      ]
+    },
+    "xhub.doctor_heartbeat_next_review_due_snapshot.v1": {
+      "required_fields": [],
+      "optional_fields": [
+        "kind",
+        "due",
+        "at_ms",
+        "reason_codes"
+      ],
+      "rules": [
+        "This object is optional and producer-specific; it exposes the next governance review due state as explainability only.",
+        "It must not be upgraded into autonomous intervention authority or release-readiness proof."
+      ]
+    },
+    "xhub.doctor_heartbeat_governance_snapshot.v1": {
+      "required_fields": [
+        "project_id",
+        "project_name",
+        "status_digest",
+        "current_state_summary",
+        "next_step_summary",
+        "blocker_summary",
+        "last_heartbeat_at_ms",
+        "weak_reasons",
+        "open_anomaly_types",
+        "progress_heartbeat",
+        "review_pulse",
+        "brainstorm_review",
+        "next_review_due"
+      ],
+      "optional_fields": [
+        "latest_quality_band",
+        "latest_quality_score",
+        "project_phase",
+        "execution_status",
+        "risk_tier",
+        "digest_visibility",
+        "digest_visibility_display_text",
+        "digest_reason_codes",
+        "digest_reason_display_texts",
+        "digest_what_changed_text",
+        "digest_why_important_text",
+        "digest_system_next_step_text",
+        "recovery_decision",
+        "project_memory_ready",
+        "project_memory_status_line",
+        "project_memory_issue_codes",
+        "project_memory_top_issue_summary"
+      ],
+      "rules": [
+        "This object is optional and producer-specific; it mirrors XT heartbeat-governed review explainability on session runtime readiness.",
+        "Its semantics are diagnostic only and must not be treated as memory assembly authority, project execution truth authority, or policy/grant truth.",
+        "The snapshot should preserve the configured/recommended/effective cadence triple and next-review-due semantics when present.",
+        "Digest visibility / reason codes and digest three-line text should remain visible when producer projections explain why a user digest was shown or suppressed.",
+        "Attached project-memory readiness fields remain explainability-only and must not be misread as memory assembly authority."
+      ]
+    },
+    "xhub.doctor_heartbeat_recovery_snapshot.v1": {
+      "required_fields": [],
+      "optional_fields": [
+        "action",
+        "urgency",
+        "reason_code",
+        "summary",
+        "source_signals",
+        "anomaly_types",
+        "blocked_lane_reasons",
+        "blocked_lane_count",
+        "stalled_lane_count",
+        "failed_lane_count",
+        "recovering_lane_count",
+        "requires_user_action",
+        "queued_review_trigger",
+        "queued_review_level",
+        "queued_review_run_kind"
+      ],
+      "rules": [
+        "This object is optional and producer-specific; it mirrors XT recovery-beat explainability on session runtime readiness.",
+        "It remains diagnostic-only and must not be upgraded into runtime restart authority, route mutation authority, or grant/policy override authority.",
+        "queued_review_* fields describe follow-up governance intent only and do not themselves authorize intervention."
+      ]
+    },
+    "xhub.doctor_memory_route_truth_snapshot.v1": {
+      "required_fields": [
+        "projection_source",
+        "completeness",
+        "request_snapshot",
+        "resolution_chain",
+        "winning_profile",
+        "winning_binding",
+        "route_result",
+        "constraint_snapshot"
+      ],
+      "rules": [
+        "This object is optional and producer-specific; it should directly reuse the Diagnostic-First Route Surface frozen by the memory model routing contract.",
+        "Doctor, diagnostics, and export surfaces should display the same route truth semantics when this object is present.",
+        "Producer-local clamp or serving facts must be expressed separately and must not overwrite route_result semantics.",
+        "projection_source identifies which frozen diagnostics source produced the snapshot, while completeness declares whether the payload is full upstream truth or an explicit partial XT projection.",
+        "If the producer only has partial XT route facts, missing fields must be emitted as explicit unknown values rather than omitted or silently fabricated."
+      ]
+    },
+    "xhub.doctor_durable_candidate_mirror_snapshot.v1": {
+      "required_fields": [
+        "status",
+        "target",
+        "attempted",
+        "local_store_role"
+      ],
+      "optional_fields": [
+        "error_code"
+      ],
+      "rules": [
+        "This object is optional and producer-specific; it mirrors XT session-runtime evidence about supervisor durable-candidate handoff.",
+        "Its semantics are diagnostic only and must not be upgraded into canonical Hub memory truth, durable promotion success, or read-source authority."
+      ]
+    },
+    "xhub.doctor_local_store_write_snapshot.v1": {
+      "required_fields": [],
+      "optional_fields": [
+        "personal_memory_intent",
+        "cross_link_intent",
+        "personal_review_intent"
+      ],
+      "rules": [
+        "This object is optional and producer-specific; it mirrors XT session-runtime evidence about which local cache/fallback/edit-buffer write path most recently touched each store surface.",
+        "Its semantics are diagnostic only and must not be upgraded into durable writer truth, canonical Hub save success, or read-source authority."
+      ]
+    },
+    "xhub.doctor_next_step.v1": {
+      "required_fields": [
+        "step_id",
+        "kind",
+        "label",
+        "owner",
+        "blocking",
+        "destination_ref",
+        "instruction"
+      ],
+      "enum_refs": {
+        "kind": "next_step_kind_enum",
+        "owner": "step_owner_enum"
+      },
+      "rules": [
+        "Each next step must be concrete enough to guide repair, retry, or escalation.",
+        "destination_ref may point to a producer-specific UI surface, CLI subcommand, or recovery entrypoint."
+      ]
+    },
+    "xhub.doctor_route_snapshot.v1": {
+      "required_fields": [
+        "transport_mode",
+        "route_label",
+        "pairing_port",
+        "grpc_port",
+        "internet_host"
+      ],
+      "rules": [
+        "Route snapshot captures current transport truth for paired surfaces and should not be silently omitted when the bundle depends on route health."
+      ]
+    },
+    "xhub.doctor_bundle_request.v1": {
+      "required_fields": [
+        "bundle_kind",
+        "producer",
+        "surface",
+        "include_detail_lines",
+        "include_route_snapshot"
+      ],
+      "enum_refs": {
+        "bundle_kind": "doctor_bundle_enum",
+        "producer": "doctor_producer_enum",
+        "surface": "doctor_surface_enum"
+      },
+      "rules": [
+        "A request should not change readiness truth; it only selects the diagnostic bundle and verbosity.",
+        "Different surfaces should be able to request the same bundle and receive the same semantic shape."
+      ]
+    }
+  }
+}

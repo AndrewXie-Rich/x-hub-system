@@ -115,6 +115,156 @@ struct SessionRuntimeFoundationTests {
         #expect(fork?.runtime?.resumeToken == nil)
         #expect(fork?.runtime?.recoverable == false)
     }
+
+    @Test
+    func stabilizedScavengesStaleBusyRuntimeWithoutRecoveryPath() {
+        let runtime = AXSessionRuntimeSnapshot(
+            schemaVersion: AXSessionRuntimeSnapshot.currentSchemaVersion,
+            state: .planning,
+            runID: "run-stale-1",
+            updatedAt: 100,
+            startedAt: 90,
+            completedAt: nil,
+            lastRuntimeSummary: "planning first reply",
+            lastToolBatchIDs: ["tool-a"],
+            pendingToolCallCount: 1,
+            lastFailureCode: nil,
+            resumeToken: "run-stale-1",
+            recoverable: false
+        )
+
+        let stabilized = runtime.stabilized(
+            now: 100 + AXSessionRuntimeSnapshot.staleBusyScavengeAfterSeconds + 1
+        )
+
+        #expect(stabilized.state == .failed_recoverable)
+        #expect(stabilized.lastFailureCode == "stale_session_runtime_scavenged")
+        #expect(stabilized.lastRuntimeSummary?.contains("stale_session_runtime_scavenged") == true)
+        #expect(stabilized.pendingToolCallCount == 0)
+        #expect(stabilized.lastToolBatchIDs.isEmpty)
+        #expect(stabilized.resumeToken == nil)
+        #expect(stabilized.recoverable == false)
+        #expect(stabilized.completedAt == 100 + AXSessionRuntimeSnapshot.staleBusyScavengeAfterSeconds + 1)
+    }
+
+    @Test
+    func stabilizedKeepsAwaitingApprovalRecoverableRuntimeIntact() {
+        let runtime = AXSessionRuntimeSnapshot(
+            schemaVersion: AXSessionRuntimeSnapshot.currentSchemaVersion,
+            state: .awaiting_tool_approval,
+            runID: "run-approval-1",
+            updatedAt: 100,
+            startedAt: 90,
+            completedAt: nil,
+            lastRuntimeSummary: "awaiting approval",
+            lastToolBatchIDs: ["tool-a"],
+            pendingToolCallCount: 1,
+            lastFailureCode: nil,
+            resumeToken: "tool_approval:run-approval-1",
+            recoverable: true
+        )
+
+        let stabilized = runtime.stabilized(
+            now: 100 + AXSessionRuntimeSnapshot.staleBusyScavengeAfterSeconds + 1
+        )
+
+        #expect(stabilized.state == .awaiting_tool_approval)
+        #expect(stabilized.pendingToolCallCount == 1)
+        #expect(stabilized.resumeToken == "tool_approval:run-approval-1")
+        #expect(stabilized.recoverable == true)
+    }
+
+    @MainActor
+    @Test
+    func loadSessionsRecoversInterruptedBusyRuntimeToIdle() throws {
+        let suiteName = "xterminal.session.runtime.restore.tests.\(UUID().uuidString)"
+        let userDefaults = UserDefaults(suiteName: suiteName)!
+        defer { userDefaults.removePersistentDomain(forName: suiteName) }
+        userDefaults.removePersistentDomain(forName: suiteName)
+
+        let persisted = AXSessionInfo(
+            id: "session-restore-1",
+            projectId: "project-restore",
+            title: "Restore",
+            directory: "/tmp/restore",
+            parentId: nil,
+            createdAt: 100,
+            updatedAt: 100,
+            version: "1.0",
+            summary: nil,
+            runtime: AXSessionRuntimeSnapshot(
+                schemaVersion: AXSessionRuntimeSnapshot.currentSchemaVersion,
+                state: .awaiting_model,
+                runID: "run-restore-1",
+                updatedAt: 100,
+                startedAt: 90,
+                completedAt: nil,
+                lastRuntimeSummary: "waiting for remote model",
+                lastToolBatchIDs: ["tool-restore"],
+                pendingToolCallCount: 1,
+                lastFailureCode: nil,
+                resumeToken: "run-restore-1",
+                recoverable: false
+            )
+        )
+        let encoded = try JSONEncoder().encode([persisted])
+        userDefaults.set(encoded, forKey: "xterminal_sessions")
+
+        let manager = AXSessionManager(userDefaults: userDefaults, observeEvents: false)
+        let runtime = try #require(manager.session(for: persisted.id)?.runtime)
+
+        #expect(runtime.state == .idle)
+        #expect(runtime.pendingToolCallCount == 0)
+        #expect(runtime.lastToolBatchIDs.isEmpty)
+        #expect(runtime.resumeToken == nil)
+        #expect(runtime.lastFailureCode == AXSessionRuntimeSnapshot.restoredInterruptedFailureCode)
+        #expect(runtime.lastRuntimeSummary?.contains("waiting for remote model") == true)
+    }
+
+    @MainActor
+    @Test
+    func loadSessionsPreservesAwaitingApprovalAcrossRestart() throws {
+        let suiteName = "xterminal.session.runtime.restore.approval.tests.\(UUID().uuidString)"
+        let userDefaults = UserDefaults(suiteName: suiteName)!
+        defer { userDefaults.removePersistentDomain(forName: suiteName) }
+        userDefaults.removePersistentDomain(forName: suiteName)
+
+        let persisted = AXSessionInfo(
+            id: "session-approval-1",
+            projectId: "project-approval",
+            title: "Approval",
+            directory: "/tmp/approval",
+            parentId: nil,
+            createdAt: 100,
+            updatedAt: 100,
+            version: "1.0",
+            summary: nil,
+            runtime: AXSessionRuntimeSnapshot(
+                schemaVersion: AXSessionRuntimeSnapshot.currentSchemaVersion,
+                state: .awaiting_tool_approval,
+                runID: "run-approval-restore-1",
+                updatedAt: 100,
+                startedAt: 90,
+                completedAt: nil,
+                lastRuntimeSummary: "awaiting approval",
+                lastToolBatchIDs: ["tool-approval"],
+                pendingToolCallCount: 1,
+                lastFailureCode: nil,
+                resumeToken: "tool_approval:run-approval-restore-1",
+                recoverable: true
+            )
+        )
+        let encoded = try JSONEncoder().encode([persisted])
+        userDefaults.set(encoded, forKey: "xterminal_sessions")
+
+        let manager = AXSessionManager(userDefaults: userDefaults, observeEvents: false)
+        let runtime = try #require(manager.session(for: persisted.id)?.runtime)
+
+        #expect(runtime.state == .awaiting_tool_approval)
+        #expect(runtime.pendingToolCallCount == 1)
+        #expect(runtime.resumeToken == "tool_approval:run-approval-restore-1")
+        #expect(runtime.lastFailureCode == nil)
+    }
 }
 
 @MainActor

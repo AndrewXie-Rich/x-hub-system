@@ -1,12 +1,14 @@
 # X-Hub Supervisor Memory Serving Contract v1
 
-- version: v1.0
-- updatedAt: 2026-03-13
+- version: v1.1
+- updatedAt: 2026-03-21
 - owner: Hub Memory / X-Terminal Supervisor / Hub Policy / QA
 - status: proposed-active
 - scope: 冻结 `Supervisor` 的记忆供给拓扑、压缩规则、预算档位与治理边界；用于支撑 `project AI` 自主推进、`Supervisor` 战略纠偏、portfolio awareness 与多 surface brief 投影。
 - related:
   - `docs/memory-new/xhub-memory-serving-profiles-and-adaptive-context-v1.md`
+  - `docs/memory-new/xhub-memory-model-preferences-and-routing-contract-v1.md`
+  - `docs/memory-new/xhub-supervisor-memory-routing-and-assembly-protocol-v1.md`
   - `docs/memory-new/xhub-project-autonomy-tier-and-supervisor-review-protocol-v1.md`
   - `docs/xhub-memory-system-spec-v2.md`
   - `docs/xhub-memory-fusion-v1.md`
@@ -64,6 +66,29 @@
    - 不允许只有 prose 摘要，没有证据引用。
 7. 不允许 `full dump` 成为默认策略。
    - 即使模型支持长窗口，默认仍然是 staged expansion。
+8. 本合同是 Supervisor serving topology 合同，不是 memory model chooser。
+   - serving object 的生成、压缩与扩容可以消费上游 mode/profile/route truth。
+   - 但它不能重跑 `memory_model_router`，也不能覆盖用户在 X-Hub 里已选的 memory maintenance model。
+
+## 2.1) Upstream Control-Plane Dependency
+
+本合同固定消费上游 Hub control-plane 的 machine-readable truth：
+
+- `memory_model_preferences`
+- upstream mode profile（例如 `assistant_personal / project_code`）
+- `route_source`
+- `route_reason_code`
+- `fallback_applied`
+- `fallback_reason`
+- `model_id`
+- `session_participation_class`
+- `write_permission_scope`
+
+固定边界：
+
+- `portfolio_brief / focused_project_anchor_pack / delta_feed / conflict_set / context_refs / evidence_pack` 都属于 serving objects。
+- 它们可以携带上游 route explain，但不应本地生成第二套 route reason 语义。
+- `portfolio-first`、`delta-first`、`focused project anchor` 都是供给拓扑选择，不是模型主权选择。
 
 ## 3) Planes And Topology
 
@@ -416,6 +441,42 @@ scope: focused_project
 4. voice / channel / mobile surface 默认只消费 projection，不直接消费 raw layers
 5. `Longterm` 可见不等于 `Longterm fulltext` 默认可注入
 6. 任何关键结论如无 refs，应视为降级模式，而不是正常模式
+
+### 9.1 Diagnostic / Doctor Alignment
+
+凡是对 `Supervisor` serving plane 做 explainability、doctor、diagnostics、export 的 surface，必须满足：
+
+1. 上游 route truth 只读透传。
+   - 至少稳定回显：
+     - `route_source`
+     - `route_reason_code`
+     - `fallback_applied`
+     - `fallback_reason`
+     - `model_id`
+     - `audit_ref`
+   - 不得在 Supervisor 侧派生第二套 route reason 词典。
+
+2. 若 full route diagnostics surface 可得，优先直接复用：
+   - `request_snapshot`
+   - `resolution_chain`
+   - `winning_profile`
+   - `winning_binding`
+   - `route_result`
+   - `constraint_snapshot`
+
+3. Supervisor 本地 serving 事实必须单列表达，不得混入 route truth。
+   - 例如：
+     - `review_level_hint`
+     - `profile_floor`
+     - `minimum_pack`
+     - `compression_policy`
+     - `selected serving objects`
+     - `local snapshot fallback`
+     - `selected refs / dropped fields`
+
+4. local / remote snapshot fallback 仍只属于 serving fallback。
+   - 可以改变 pack、compression、ceiling、selected evidence。
+   - 不得在 fallback 时本地重解 memory model route。
 
 ## 10) Review Input Ladder Alignment
 

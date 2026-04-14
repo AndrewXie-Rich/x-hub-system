@@ -212,7 +212,7 @@ struct XTToolAuthorizationTests {
             disposition: .deny,
             risk: .safe,
             denyCode: "governance_capability_denied",
-            detail: "project governance blocks process_start under execution tier a0_observe",
+            detail: "project governance blocks process_start under A-Tier a0_observe",
             policySource: "project_governance",
             policyReason: "execution_tier_missing_managed_processes",
             runtimePolicyDecision: nil,
@@ -230,7 +230,7 @@ struct XTToolAuthorizationTests {
         )
 
         #expect(summary.contains("不允许受治理的后台进程"))
-        #expect(summary.contains("打开项目设置 -> 执行档位"))
+        #expect(summary.contains("打开项目设置 -> A-Tier"))
         #expect(summary.contains("A2 Repo Auto"))
     }
 

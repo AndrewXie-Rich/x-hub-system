@@ -100,6 +100,7 @@ struct XTW330PolicyRecoveryEvidenceTests {
                 executionTier: .a4OpenClaw,
                 supervisorInterventionTier: .s2PeriodicReview
             )
+            clampGuidedConfig = clampGuidedConfig.settingHubMemoryPreference(enabled: false)
             clampGuidedConfig = clampGuidedConfig.settingRuntimeSurfacePolicy(
                 mode: .trustedOpenClawMode,
                 hubOverrideMode: .clampGuided,
@@ -125,6 +126,7 @@ struct XTW330PolicyRecoveryEvidenceTests {
                 executionTier: .a4OpenClaw,
                 supervisorInterventionTier: .s2PeriodicReview
             )
+            clampManualConfig = clampManualConfig.settingHubMemoryPreference(enabled: false)
             clampManualConfig = clampManualConfig.settingRuntimeSurfacePolicy(
                 mode: .trustedOpenClawMode,
                 hubOverrideMode: .clampManual,
@@ -280,6 +282,14 @@ struct XTW330PolicyRecoveryEvidenceTests {
                 && jsonString(clampManualSummary["runtime_surface_policy_reason"]) == "hub_override=clamp_manual"
                 && jsonString(jsonObject(clampManualSummary["runtime_surface"])?["effective_surface"]) == AXProjectRuntimeSurfaceMode.manual.rawValue
                 && jsonString(clampManualSummary["autonomy_effective_mode"]) == AXProjectRuntimeSurfaceMode.manual.rawValue
+            let clampManualFailureDetail = [
+                "deny_code=\(jsonString(clampManualSummary["deny_code"]) ?? "nil")",
+                "policy_source=\(jsonString(clampManualSummary["policy_source"]) ?? "nil")",
+                "policy_reason=\(jsonString(clampManualSummary["policy_reason"]) ?? "nil")",
+                "runtime_surface_policy_reason=\(jsonString(clampManualSummary["runtime_surface_policy_reason"]) ?? "nil")",
+                "effective_surface=\(jsonString(jsonObject(clampManualSummary["runtime_surface"])?["effective_surface"]) ?? "nil")",
+                "autonomy_effective_mode=\(jsonString(clampManualSummary["autonomy_effective_mode"]) ?? "nil")",
+            ].joined(separator: ", ")
 
             let recoverySchedulePass =
                 recoveryDecision.decision == .resume
@@ -374,7 +384,9 @@ struct XTW330PolicyRecoveryEvidenceTests {
                     PolicyRecoveryVerificationResult(
                         name: "hub_clamp_manual_fail_closed",
                         status: clampManualPass ? "pass" : "fail",
-                        detail: clampManualPass ? "browser surface deny exports autonomy_policy_denied with hub_override=clamp_manual" : "clamp_manual browser deny export drifted"
+                        detail: clampManualPass
+                            ? "browser surface deny exports autonomy_policy_denied with hub_override=clamp_manual"
+                            : "clamp_manual browser deny export drifted (\(clampManualFailureDetail))"
                     ),
                     PolicyRecoveryVerificationResult(
                         name: "restart_recovery_resume_schedules_retry",
@@ -400,7 +412,13 @@ struct XTW330PolicyRecoveryEvidenceTests {
                 ]
             )
 
-            #expect(evidence.verificationResults.allSatisfy { $0.status == "pass" })
+            let failedVerificationDetails = evidence.verificationResults
+                .filter { $0.status != "pass" }
+                .map { "\($0.name): \($0.detail)" }
+            #expect(
+                failedVerificationDetails.isEmpty,
+                "policy recovery evidence failures: \(failedVerificationDetails.joined(separator: " | "))"
+            )
             #expect(evidence.boundedGaps.isEmpty)
 
             guard let captureDir = ProcessInfo.processInfo.environment["XT_W3_30_CAPTURE_DIR"],

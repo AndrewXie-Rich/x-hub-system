@@ -1,6 +1,22 @@
 import Foundation
 
 enum XTGovernanceTruthPresentation {
+    static func displayText(_ rawValue: String) -> String {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return rawValue }
+
+        return trimmed
+            .replacingOccurrences(of: "审查 Milestone Only", with: "审查 里程碑")
+            .replacingOccurrences(of: "审查 Milestone", with: "审查 里程碑")
+            .replacingOccurrences(of: "审查 Periodic", with: "审查 周期")
+            .replacingOccurrences(of: "审查 Hybrid", with: "审查 混合")
+            .replacingOccurrences(of: "审查 Aggressive", with: "审查 高压")
+            .replacingOccurrences(of: "审查 Off", with: "审查 关闭")
+            .replacingOccurrences(of: "心跳 off", with: "心跳 关闭")
+            .replacingOccurrences(of: "脉冲 off", with: "脉冲 关闭")
+            .replacingOccurrences(of: "脑暴 off", with: "脑暴 关闭")
+    }
+
     static func snapshotFields(
         from rawObject: [String: JSONValue]
     ) -> [String: JSONValue] {
@@ -11,8 +27,10 @@ enum XTGovernanceTruthPresentation {
             &snapshot,
             key: "execution_tier",
             value: preferredJSONValue(
+                rawObject["configured_execution_tier"],
                 rawObject["execution_tier"],
-                governanceObject["configured_execution_tier"]
+                governanceObject["configured_execution_tier"],
+                governanceObject["execution_tier"]
             )
         )
         setSnapshotField(
@@ -20,15 +38,18 @@ enum XTGovernanceTruthPresentation {
             key: "effective_execution_tier",
             value: preferredJSONValue(
                 rawObject["effective_execution_tier"],
-                governanceObject["effective_execution_tier"]
+                governanceObject["effective_execution_tier"],
+                governanceObject["execution_tier"]
             )
         )
         setSnapshotField(
             &snapshot,
             key: "supervisor_intervention_tier",
             value: preferredJSONValue(
+                rawObject["configured_supervisor_tier"],
                 rawObject["supervisor_intervention_tier"],
-                governanceObject["configured_supervisor_tier"]
+                governanceObject["configured_supervisor_tier"],
+                governanceObject["supervisor_intervention_tier"]
             )
         )
         setSnapshotField(
@@ -36,7 +57,9 @@ enum XTGovernanceTruthPresentation {
             key: "effective_supervisor_intervention_tier",
             value: preferredJSONValue(
                 rawObject["effective_supervisor_intervention_tier"],
-                governanceObject["effective_supervisor_tier"]
+                rawObject["effective_supervisor_tier"],
+                governanceObject["effective_supervisor_tier"],
+                governanceObject["effective_supervisor_intervention_tier"]
             )
         )
         setSnapshotField(
@@ -77,7 +100,8 @@ enum XTGovernanceTruthPresentation {
             value: preferredJSONValue(
                 rawObject["governance_compat_source"],
                 rawObject["compat_source"],
-                governanceObject["compat_source"]
+                governanceObject["compat_source"],
+                governanceObject["governance_compat_source"]
             )
         )
 
@@ -253,7 +277,7 @@ enum XTGovernanceTruthPresentation {
         case .legacyAutonomyMode:
             return "兼容旧执行面预设"
         case .defaultConservative:
-            return "默认保守基线"
+            return "默认 Observe 起步"
         case nil:
             switch normalized {
             case "ui_draft", "multi_project_detail":

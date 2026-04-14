@@ -17,6 +17,11 @@
 - skill manifest -> X-Hub canonical manifest 的字段映射、默认值、拒绝码。
 - 导入桥接协议（`client pull + upload + pin`）与数据模型。
 - 与导入相关的审计字段定义（成功与失败）。
+- `memory_core` 作为保留系统层的 fail-closed 边界：不进入普通 client pin scope。
+
+补充边界：
+- `memory_core` 作为保留系统层，只表达 `Memory-Core` 规则资产状态，不决定哪个 AI 执行 memory jobs。
+- memory executor 仍由用户在 X-Hub 中通过 `memory_model_preferences` 选择，durable memory writes 仍只允许经 `Writer + Gate` 落库。
 
 不在本次冻结范围：
 - grant 判定逻辑。
@@ -68,7 +73,7 @@
 | `skills_store_unavailable` | `upload.store_access` | store 不可写 | 修运行目录权限 |
 | `package_too_large` | `upload.validate_package` | 包体超限 | 缩包或调阈值 |
 | `invalid_pin_request` | `pin.validate_request` | pin 参数缺失 | 补参数 |
-| `unsupported_scope` | `pin.validate_scope` | scope 非 global/project | 调整 scope |
+| `unsupported_scope` | `pin.validate_scope` | scope 非 global/project（含 `memory_core`） | 调整 scope |
 | `missing_user_id` | `pin.identity` | 缺 user_id | 补 identity |
 | `missing_project_id` | `pin.identity` | project scope 缺 project_id | 补 project_id |
 | `package_not_found` | `pin.lookup` | sha 未上传 | 先 upload |
@@ -86,7 +91,7 @@
 | `OCM-004` | blocked | `source_id` 不在 allowlist | `deny(source_not_allowlisted)` |
 | `OCM-005` | supported | 同包重复导入 | `already_present=true` + 去重 |
 | `OCM-006` | supported | 同 skill 重复 pin | 幂等 upsert + `previous_package_sha256` 稳定 |
-| `OCM-007` | blocked | client 侧 pin `memory_core` | `deny(unsupported_scope)` |
+| `OCM-007` | blocked | client 侧 pin `memory_core`（保留系统层） | `deny(unsupported_scope)` |
 
 ## 5) 导入桥接（client pull + upload + pin）
 

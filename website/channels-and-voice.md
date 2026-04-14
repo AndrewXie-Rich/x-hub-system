@@ -18,6 +18,8 @@ The Hub owns:
 - routing
 - Supervisor-facing state projection
 
+That also means channels and voice do not become the memory authority by accident: they can surface governed memory context, but they do not choose the memory executor and they do not write durable memory truth directly. That still stays on the Hub control plane through `Writer + Gate`.
+
 ## Remote Channels
 
 The active channel direction centers on:

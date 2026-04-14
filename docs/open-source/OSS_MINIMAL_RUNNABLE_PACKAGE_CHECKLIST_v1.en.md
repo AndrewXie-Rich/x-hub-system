@@ -14,6 +14,17 @@
 This checklist is for the first public release using a **small-first** strategy.  
 Goal: **runnable, secure, evidence-backed**, not full historical exposure.
 
+## 0.1) Current Public Wording Freeze
+
+Validated external wording for the current public GitHub package is still limited to:
+
+- `XT-W3-23 -> XT-W3-24 -> XT-W3-25`
+- `XT memory UX adapter backed by Hub truth-source, with user-selected memory executor and Writer + Gate durable-write boundary`
+- `Hub-governed multi-channel gateway`
+- `Hub-first governed automations`
+
+If public wording mentions memory posture, keep it inside the same boundary: the user chooses which AI executes memory jobs in X-Hub, `Memory-Core` is a governed Hub-side rule asset rather than a normal plugin tier, and durable writes still terminate through `Writer + Gate`.
+
 ---
 
 ## 1) Scope Freeze (check first)

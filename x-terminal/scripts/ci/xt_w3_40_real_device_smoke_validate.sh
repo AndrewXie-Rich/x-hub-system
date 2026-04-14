@@ -109,8 +109,15 @@ if (requirePass) {
   expect(placeholderViolations.length === 0, `require-pass validation found placeholder values: ${placeholderViolations.join(", ")}`);
 }
 
+const validationModeNote = requirePass
+  ? "strict pass validation"
+  : "structure-only validation";
+const followUpHint = requirePass
+  ? ""
+  : " Set XT_W3_40_REQUIRE_PASS=1 after filling the report to enforce pass-only and placeholder checks.";
+
 console.log(
-  `${passedRequired}/${requiredStepIDs.length} required real-device calendar smoke steps recorded` +
-  ` on ${ctx.device_label} (${ctx.run_finished_at})`
+  `${validationModeNote}: ${passedRequired}/${requiredStepIDs.length} required real-device calendar smoke steps recorded` +
+  ` on ${ctx.device_label} (${ctx.run_finished_at}).${followUpHint}`
 );
 NODE

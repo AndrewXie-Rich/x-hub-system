@@ -6,8 +6,8 @@ import Testing
 struct ProjectSettingsGovernanceUITests {
 
     @Test
-    func resolvedInvalidComboShowsFailClosedGovernanceState() {
-        let root = makeProjectRoot(named: "governance-ui-invalid")
+    func resolvedHighRiskComboKeepsConfiguredGovernanceAndShowsWarning() {
+        let root = makeProjectRoot(named: "governance-ui-high-risk")
         var config = AXProjectConfig.default(forProjectRoot: root)
         config = config.settingProjectGovernance(
             executionTier: .a4OpenClaw,
@@ -25,10 +25,12 @@ struct ProjectSettingsGovernanceUITests {
         )
         let presentation = ProjectGovernancePresentation(resolved: resolved)
 
-        #expect(!presentation.invalidMessages.isEmpty)
-        #expect(presentation.effectiveExecutionTier == .a0Observe)
-        #expect(presentation.effectiveSupervisorInterventionTier == .s0SilentAudit)
-        #expect(presentation.statusSummary.contains("治理组合无效"))
+        #expect(presentation.invalidMessages.isEmpty)
+        #expect(!presentation.warningMessages.isEmpty)
+        #expect(presentation.effectiveExecutionTier == nil)
+        #expect(presentation.effectiveSupervisorInterventionTier == nil)
+        #expect(presentation.warningMessages.first?.contains("高风险") == true)
+        #expect(presentation.statusSummary.contains("runtime ready"))
     }
 
     @Test
@@ -68,7 +70,7 @@ struct ProjectSettingsGovernanceUITests {
     }
 
     @Test
-    func draftPresentationWarnsAboutUnsafeTierCombinationBeforeCreate() {
+    func draftPresentationAllowsHighRiskTierCombinationBeforeCreate() {
         let presentation = ProjectGovernancePresentation(
             executionTier: .a4OpenClaw,
             supervisorInterventionTier: .s1MilestoneReview,
@@ -79,8 +81,10 @@ struct ProjectSettingsGovernanceUITests {
             eventDrivenReviewEnabled: true
         )
 
-        #expect(!presentation.invalidMessages.isEmpty)
-        #expect(presentation.statusSummary.contains("当前组合无效"))
+        #expect(presentation.invalidMessages.isEmpty)
+        #expect(!presentation.warningMessages.isEmpty)
+        #expect(presentation.warningMessages.first?.contains("高风险") == true)
+        #expect(presentation.statusSummary.contains("允许保存"))
         #expect(presentation.clampSummary.contains("未连接运行时收束"))
     }
 
@@ -114,7 +118,7 @@ struct ProjectSettingsGovernanceUITests {
         ])
         #expect(AXProjectSupervisorInterventionTier.s0SilentAudit.behaviorHighlights.contains("默认 observe only"))
         #expect(AXProjectSupervisorInterventionTier.s2PeriodicReview.typicalUseCases.contains("A2 Repo Auto"))
-        #expect(AXProjectSupervisorInterventionTier.s3StrategicCoach.oneLineSummary.contains("replan"))
+        #expect(AXProjectSupervisorInterventionTier.s3StrategicCoach.oneLineSummary.contains("重规划"))
         #expect(AXProjectSupervisorInterventionTier.s4TightSupervision.defaultAckSummary == "Required")
     }
 
@@ -172,7 +176,7 @@ struct ProjectSettingsGovernanceUITests {
             eventReviewTriggers: [.planDrift, .preDoneSummary]
         )
 
-        #expect(presentation.eventReviewTriggerLabels == ["plan drift", "pre-done"])
+        #expect(presentation.eventReviewTriggerLabels == ["计划漂移", "完成前审查"])
     }
 
     private func makeProjectRoot(named name: String) -> URL {

@@ -296,7 +296,12 @@ enum ToolExecutor {
         }
     }
 
-    static func execute(call: ToolCall, projectRoot: URL, stream: (@MainActor @Sendable (String) -> Void)? = nil) async throws -> ToolResult {
+    static func execute(
+        call: ToolCall,
+        projectRoot: URL,
+        extraReadableRoots: [URL] = [],
+        stream: (@MainActor @Sendable (String) -> Void)? = nil
+    ) async throws -> ToolResult {
         let ctx = AXProjectContext(root: projectRoot)
         let config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: projectRoot)
         let runtimeSurfaceState = await xtResolveProjectRuntimeSurfacePolicy(
@@ -331,7 +336,7 @@ enum ToolExecutor {
         switch call.tool {
         case .read_file:
             let path = strArg(call, "path")
-            let useSandbox = shouldUseSandbox(call)
+            let useSandbox = shouldUseSandbox(call) && extraReadableRoots.isEmpty
             if useSandbox {
                 let sandboxManager = await MainActor.run { SandboxManager.shared }
                 let sandbox = try await sandboxManager.createSandbox(forProjectRoot: projectRoot)
@@ -341,7 +346,8 @@ enum ToolExecutor {
             let allowedRoots = governedReadableRoots(
                 projectRoot: projectRoot,
                 config: config,
-                effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
+                effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy,
+                extraReadableRoots: extraReadableRoots
             )
             do {
                 let s = try FileTool.readText(
@@ -497,7 +503,7 @@ enum ToolExecutor {
 
         case .list_dir:
             let path = strArg(call, "path")
-            let useSandbox = shouldUseSandbox(call)
+            let useSandbox = shouldUseSandbox(call) && extraReadableRoots.isEmpty
             if useSandbox {
                 let sandboxManager = await MainActor.run { SandboxManager.shared }
                 let sandbox = try await sandboxManager.createSandbox(forProjectRoot: projectRoot)
@@ -513,7 +519,8 @@ enum ToolExecutor {
             let allowedRoots = governedReadableRoots(
                 projectRoot: projectRoot,
                 config: config,
-                effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
+                effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy,
+                extraReadableRoots: extraReadableRoots
             )
             do {
                 let items = try FileTool.listDir(
@@ -521,7 +528,8 @@ enum ToolExecutor {
                     projectRoot: projectRoot,
                     allowedRoots: allowedRoots
                 )
-                return ToolResult(id: call.id, tool: call.tool, ok: true, output: items.joined(separator: "\n"))
+                let output = items.isEmpty ? "(empty)" : items.joined(separator: "\n")
+                return ToolResult(id: call.id, tool: call.tool, ok: true, output: output)
             } catch let violation as XTPathScopeViolation {
                 return deniedPathScopeResult(
                     call: call,
@@ -534,7 +542,7 @@ enum ToolExecutor {
             let pattern = strArg(call, "pattern")
             let path = optStrArg(call, "path") ?? "."
             let glob = optStrArg(call, "glob")
-            let useSandbox = shouldUseSandbox(call)
+            let useSandbox = shouldUseSandbox(call) && extraReadableRoots.isEmpty
             if useSandbox {
                 let sandboxManager = await MainActor.run { SandboxManager.shared }
                 let sandbox = try await sandboxManager.createSandbox(forProjectRoot: projectRoot)
@@ -555,7 +563,8 @@ enum ToolExecutor {
             let allowedRoots = governedReadableRoots(
                 projectRoot: projectRoot,
                 config: config,
-                effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
+                effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy,
+                extraReadableRoots: extraReadableRoots
             )
             do {
                 let lines = try FileTool.search(
@@ -1012,11 +1021,17 @@ Please switch to Terminal mode (Chat/Terminal toggle) and run it there:
         case .skills_search:
             return await executeSkillsSearch(call: call, projectRoot: projectRoot)
 
+        case .skills_pin:
+            return await executeSkillsPin(call: call, projectRoot: projectRoot)
+
         case .summarize:
             return try await executeSummarize(call: call, projectRoot: projectRoot)
 
         case .supervisorVoicePlayback:
             return await executeSupervisorVoicePlayback(call: call)
+
+        case .run_local_task:
+            return await executeRunLocalTask(call: call)
 
         case .need_network:
             let seconds = max(60, Int(optDoubleArg(call, "seconds") ?? 900))
@@ -1034,6 +1049,7 @@ Please switch to Terminal mode (Chat/Terminal toggle) and run it there:
                     projectRoot: projectRoot,
                     capability: .webFetch,
                     grantRequestId: access.grantRequestId,
+                    approvedGrantId: nil,
                     fallbackSeconds: access.remainingSeconds ?? seconds
                 )
             case .queued, .denied, .failed:
@@ -1191,6 +1207,14 @@ content_type=\(res.contentType)
 
         case .browser_read:
             return try await executeBrowserRead(call: call, projectRoot: projectRoot)
+
+        @unknown default:
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: false,
+                output: "unsupported_tool (\(call.tool.rawValue))"
+            )
         }
     }
 
@@ -4632,6 +4656,195 @@ return jsResult
         return ToolResult(id: call.id, tool: call.tool, ok: true, output: structuredOutput(summary: summary, body: body))
     }
 
+    private static func executeSkillsPin(call: ToolCall, projectRoot: URL) async -> ToolResult {
+        let skillId = firstNonEmptyString(
+            optStrArg(call, "skill_id"),
+            optStrArg(call, "id")
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        let packageSHA256 = firstNonEmptyString(
+            optStrArg(call, "package_sha256"),
+            optStrArg(call, "sha256")
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+        let explicitProjectId = (optStrArg(call, "project_id") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let registryProjectId = AXProjectRegistryStore.projectId(forRoot: projectRoot)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let explicitScope = (optStrArg(call, "scope") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let scope: String = {
+            if explicitScope == "global" || explicitScope == "project" {
+                return explicitScope
+            }
+            return explicitProjectId.isEmpty ? "global" : "project"
+        }()
+        let derivedProjectId = firstNonEmptyString(
+            explicitProjectId,
+            scope == "project" ? registryProjectId : ""
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        let note = (optStrArg(call, "note") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !skillId.isEmpty else {
+            let summary: [String: JSONValue] = [
+                "tool": .string(call.tool.rawValue),
+                "ok": .bool(false),
+                "reason": .string("missing_skill_id"),
+            ]
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: false,
+                output: structuredOutput(summary: summary, body: skillsPinFailureBody(reasonCode: "missing_skill_id"))
+            )
+        }
+
+        guard !packageSHA256.isEmpty else {
+            let summary: [String: JSONValue] = [
+                "tool": .string(call.tool.rawValue),
+                "ok": .bool(false),
+                "skill_id": .string(skillId),
+                "reason": .string("missing_package_sha256"),
+            ]
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: false,
+                output: structuredOutput(summary: summary, body: skillsPinFailureBody(reasonCode: "missing_package_sha256"))
+            )
+        }
+
+        guard scope == "global" || scope == "project" else {
+            let summary: [String: JSONValue] = [
+                "tool": .string(call.tool.rawValue),
+                "ok": .bool(false),
+                "skill_id": .string(skillId),
+                "package_sha256": .string(packageSHA256),
+                "scope": .string(scope),
+                "reason": .string("unsupported_skill_pin_scope"),
+            ]
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: false,
+                output: structuredOutput(summary: summary, body: skillsPinFailureBody(reasonCode: "unsupported_skill_pin_scope"))
+            )
+        }
+
+        guard scope == "global" || !derivedProjectId.isEmpty else {
+            let summary: [String: JSONValue] = [
+                "tool": .string(call.tool.rawValue),
+                "ok": .bool(false),
+                "skill_id": .string(skillId),
+                "package_sha256": .string(packageSHA256),
+                "scope": .string(scope),
+                "reason": .string("missing_project_id"),
+            ]
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: false,
+                output: structuredOutput(summary: summary, body: skillsPinFailureBody(reasonCode: "missing_project_id"))
+            )
+        }
+
+        let result = await HubIPCClient.setSkillPin(
+            scope: scope,
+            skillId: skillId,
+            packageSHA256: packageSHA256,
+            projectId: derivedProjectId.isEmpty ? nil : derivedProjectId,
+            note: note.isEmpty ? nil : note,
+            requestId: call.id
+        )
+        let summary: [String: JSONValue] = [
+            "tool": .string(call.tool.rawValue),
+            "ok": .bool(result.ok),
+            "source": .string(result.source),
+            "scope": .string(result.scope),
+            "project_id": result.projectId.isEmpty ? .null : .string(result.projectId),
+            "skill_id": .string(result.skillId),
+            "package_sha256": .string(result.packageSHA256),
+            "previous_package_sha256": result.previousPackageSHA256.isEmpty ? .null : .string(result.previousPackageSHA256),
+            "updated_at_ms": .number(Double(result.updatedAtMs)),
+            "reason": result.reasonCode.map(JSONValue.string) ?? .null,
+        ]
+        let shortSHA = String(result.packageSHA256.prefix(12))
+        if result.ok {
+            let refreshProjectId = firstNonEmptyString(
+                scope == "project" ? result.projectId : "",
+                registryProjectId
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !refreshProjectId.isEmpty {
+                _ = await XTResolvedSkillsCacheStore.refreshFromHubIfPossible(
+                    projectId: refreshProjectId,
+                    projectName: nil,
+                    context: AXProjectContext(root: projectRoot),
+                    hubBaseDir: HubPaths.baseDir(),
+                    force: true
+                )
+            }
+            let body = skillsPinSuccessBody(
+                skillId: result.skillId,
+                shortSHA: shortSHA,
+                scope: result.scope,
+                projectId: result.projectId
+            )
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: true,
+                output: structuredOutput(summary: summary, body: body)
+            )
+        }
+
+        return ToolResult(
+            id: call.id,
+            tool: call.tool,
+            ok: false,
+            output: structuredOutput(
+                summary: summary,
+                body: skillsPinFailureBody(reasonCode: (result.reasonCode ?? "skills_pin_failed"))
+            )
+        )
+    }
+
+    private static func skillsPinSuccessBody(
+        skillId: String,
+        shortSHA: String,
+        scope: String,
+        projectId: String
+    ) -> String {
+        if scope == "project", !projectId.isEmpty {
+            return "Hub 已通过审查并启用技能：\(skillId)@\(shortSHA)（project: \(projectId)）"
+        }
+        return "Hub 已通过审查并启用技能：\(skillId)@\(shortSHA)（global）"
+    }
+
+    private static func skillsPinFailureBody(reasonCode rawReasonCode: String) -> String {
+        let reasonCode = rawReasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch reasonCode {
+        case "missing_skill_id":
+            return "技能启用请求必须带上 skill_id。"
+        case "missing_package_sha256":
+            return "技能启用请求必须带上 package_sha256。"
+        case "unsupported_skill_pin_scope":
+            return "技能启用请求的 scope 只支持 global 或 project。"
+        case "missing_project_id":
+            return "project scope 的技能启用请求必须带上 project_id。"
+        case "package_not_found":
+            return "Hub 还没有这个技能包，不能直接启用；需要先让包进入受治理技能仓库。"
+        case "skill_package_mismatch":
+            return "这次技能启用请求里的 skill_id 和 package_sha256 对不上。"
+        case "trusted_automation_project_not_bound", "trusted_automation_workspace_mismatch":
+            return "当前 Hub 侧 trusted automation 绑定不满足这次技能启用请求。"
+        case "official_skill_review_blocked":
+            return "Hub 已自动审查该官方技能包，但当前 official_skills doctor 结果还不是 ready，暂不能启用。"
+        default:
+            return reasonCode.isEmpty ? "skills_pin_failed" : reasonCode
+        }
+    }
+
     private static func executeAgentImportRecord(call: ToolCall, projectRoot: URL) async -> ToolResult {
         let stagingId = firstNonEmptyString(
             optStrArg(call, "staging_id"),
@@ -4804,6 +5017,40 @@ return jsResult
         return ToolResult(id: call.id, tool: call.tool, ok: true, output: structuredOutput(summary: summary, body: summaryBody))
     }
 
+    private static let supportedLocalTaskKinds: Set<String> = [
+        "text_generate",
+        "embedding",
+        "speech_to_text",
+        "text_to_speech",
+        "vision_understand",
+        "ocr",
+    ]
+
+    private static let localTaskReservedArgTokens: Set<String> = [
+        "task_kind",
+        "taskkind",
+        "model_id",
+        "model",
+        "preferred_model_id",
+        "preferredmodelid",
+        "device_id",
+        "deviceid",
+        "timeout_sec",
+        "timeoutsec",
+        "parameters",
+    ]
+
+    private enum LocalTaskParameterParsingError: String, Error {
+        case invalidParametersObject = "invalid_parameters_object"
+    }
+
+    private struct LocalTaskModelInvocationResolution {
+        var requestedModelID: String?
+        var preferredModelID: String?
+        var resolvedModelID: String?
+        var reasonCode: String
+    }
+
     private static func executeSupervisorVoicePlayback(call: ToolCall) async -> ToolResult {
         let rawAction = firstNonEmptyString(
             optStrArg(call, "action"),
@@ -4917,6 +5164,437 @@ return jsResult
             ok: result.ok,
             output: structuredOutput(summary: summary, body: body)
         )
+    }
+
+    private static func executeRunLocalTask(call: ToolCall) async -> ToolResult {
+        let taskKind = normalized(
+            firstNonEmptyString(
+                optStrArg(call, "task_kind"),
+                optStrArg(call, "taskKind")
+            )
+        )?
+        .lowercased() ?? ""
+        guard supportedLocalTaskKinds.contains(taskKind) else {
+            let summary: [String: JSONValue] = [
+                "tool": .string(call.tool.rawValue),
+                "ok": .bool(false),
+                "reason": .string("unsupported_task_kind"),
+                "task_kind": taskKind.isEmpty ? .null : .string(taskKind),
+            ]
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: false,
+                output: structuredOutput(summary: summary, body: "unsupported_task_kind")
+            )
+        }
+
+        let explicitModelID = normalized(
+            firstNonEmptyString(
+                optStrArg(call, "model_id"),
+                optStrArg(call, "model")
+            )
+        )
+        let preferredModelID = normalized(optStrArg(call, "preferred_model_id"))
+        let modelResolution = resolveLocalTaskInvocationModel(
+            taskKind: taskKind,
+            explicitModelID: explicitModelID,
+            preferredModelID: preferredModelID
+        )
+        guard let resolvedModelID = modelResolution.resolvedModelID else {
+            let summary: [String: JSONValue] = [
+                "tool": .string(call.tool.rawValue),
+                "ok": .bool(false),
+                "reason": .string(modelResolution.reasonCode),
+                "task_kind": .string(taskKind),
+                "requested_model_id": modelResolution.requestedModelID.map(JSONValue.string) ?? .null,
+                "preferred_model_id": modelResolution.preferredModelID.map(JSONValue.string) ?? .null,
+            ]
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: false,
+                output: structuredOutput(summary: summary, body: modelResolution.reasonCode)
+            )
+        }
+
+        let parametersResult = localTaskParameters(from: call)
+        guard case .success(let parameters) = parametersResult else {
+            let reason: String
+            switch parametersResult {
+            case .failure(let failure):
+                reason = failure.rawValue
+            case .success:
+                reason = "invalid_parameters_object"
+            }
+            let summary: [String: JSONValue] = [
+                "tool": .string(call.tool.rawValue),
+                "ok": .bool(false),
+                "reason": .string(reason),
+                "task_kind": .string(taskKind),
+                "model_id": .string(resolvedModelID),
+            ]
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: false,
+                output: structuredOutput(summary: summary, body: reason)
+            )
+        }
+
+        if let validationFailure = validateLocalTaskParameters(
+            taskKind: taskKind,
+            parameters: parameters
+        ) {
+            let summary: [String: JSONValue] = [
+                "tool": .string(call.tool.rawValue),
+                "ok": .bool(false),
+                "reason": .string(validationFailure),
+                "task_kind": .string(taskKind),
+                "model_id": .string(resolvedModelID),
+                "parameter_keys": .array(parameters.keys.sorted().map(JSONValue.string)),
+            ]
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: false,
+                output: structuredOutput(summary: summary, body: validationFailure)
+            )
+        }
+
+        let deviceID = normalized(
+            firstNonEmptyString(
+                optStrArg(call, "device_id"),
+                optStrArg(call, "deviceId")
+            )
+        )
+        let timeoutSec = min(
+            180.0,
+            max(
+                1.0,
+                optDoubleArg(call, "timeout_sec")
+                    ?? optDoubleArg(call, "timeoutSec")
+                    ?? defaultLocalTaskTimeoutSec(for: taskKind)
+            )
+        )
+        let result = HubIPCClient.executeLocalTaskViaLocalHub(
+            taskKind: taskKind,
+            modelID: resolvedModelID,
+            parameters: parameters,
+            deviceID: deviceID,
+            timeoutSec: timeoutSec
+        )
+
+        var summary: [String: JSONValue] = [
+            "tool": .string(call.tool.rawValue),
+            "ok": .bool(result.ok),
+            "task_kind": .string(normalized(result.taskKind) ?? taskKind),
+            "model_id": .string(normalized(result.modelId) ?? resolvedModelID),
+            "provider": normalized(result.provider).map(JSONValue.string) ?? .null,
+            "source": .string(result.source),
+            "runtime_source": normalized(result.runtimeSource).map(JSONValue.string) ?? .null,
+            "reason": normalized(result.reasonCode).map(JSONValue.string) ?? .null,
+            "runtime_reason": normalized(result.runtimeReasonCode).map(JSONValue.string) ?? .null,
+            "parameter_keys": .array(parameters.keys.sorted().map(JSONValue.string)),
+            "timeout_sec": .number(timeoutSec),
+            "requested_model_id": modelResolution.requestedModelID.map(JSONValue.string) ?? .null,
+            "preferred_model_id": modelResolution.preferredModelID.map(JSONValue.string) ?? .null,
+            "model_resolution": .string(modelResolution.reasonCode),
+        ]
+        summary["device_id"] = deviceID.map(JSONValue.string) ?? .null
+
+        if let text = localTaskPrimaryText(from: result.payload) {
+            summary["text_chars"] = .number(Double(text.count))
+        }
+        if let vectorCount = localTaskNumericValue(result.payload["vectorCount"] ?? result.payload["vector_count"]) {
+            summary["vector_count"] = .number(vectorCount)
+        }
+        if let dims = localTaskNumericValue(result.payload["dims"]) {
+            summary["dims"] = .number(dims)
+        }
+        if let audioPath = normalized(
+            result.payload["audioPath"]?.stringValue
+                ?? result.payload["audio_path"]?.stringValue
+        ) {
+            summary["audio_path"] = .string(audioPath)
+        }
+        if let routeTrace = result.payload["routeTrace"]?.objectValue ?? result.payload["route_trace"]?.objectValue,
+           let executionPath = normalized(
+            routeTrace["executionPath"]?.stringValue
+                ?? routeTrace["execution_path"]?.stringValue
+           ) {
+            summary["execution_path"] = .string(executionPath)
+        }
+
+        let body = result.ok
+            ? localTaskSuccessBody(result: result, requestedTaskKind: taskKind, requestedModelID: resolvedModelID)
+            : localTaskFailureBody(result: result, requestedTaskKind: taskKind, requestedModelID: resolvedModelID)
+        return ToolResult(
+            id: call.id,
+            tool: call.tool,
+            ok: result.ok,
+            output: structuredOutput(summary: summary, body: body)
+        )
+    }
+
+    private static func localTaskParameters(
+        from call: ToolCall
+    ) -> Result<[String: JSONValue], LocalTaskParameterParsingError> {
+        var parameters: [String: JSONValue] = [:]
+        if let raw = call.args["parameters"] {
+            guard let object = raw.objectValue else {
+                return .failure(.invalidParametersObject)
+            }
+            parameters = object
+        }
+
+        for (key, value) in call.args {
+            let token = key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !localTaskReservedArgTokens.contains(token) else { continue }
+            parameters[key] = value
+        }
+        return .success(parameters)
+    }
+
+    private static func validateLocalTaskParameters(
+        taskKind: String,
+        parameters: [String: JSONValue]
+    ) -> String? {
+        switch taskKind {
+        case "text_generate":
+            return localTaskHasAnyParameterValue(
+                parameters,
+                keys: ["prompt", "text", "content", "value", "messages", "multimodal_messages"]
+            ) ? nil : "missing_prompt"
+        case "embedding":
+            return localTaskHasAnyParameterValue(
+                parameters,
+                keys: ["texts", "text", "content", "value", "query", "documents"]
+            ) ? nil : "missing_embedding_input"
+        case "speech_to_text":
+            return localTaskHasAnyParameterValue(
+                parameters,
+                keys: ["audio_path"]
+            ) ? nil : "missing_audio_path"
+        case "text_to_speech":
+            return localTaskHasAnyParameterValue(
+                parameters,
+                keys: ["text", "content", "value", "prompt"]
+            ) ? nil : "missing_text"
+        case "vision_understand", "ocr":
+            return localTaskHasAnyParameterValue(
+                parameters,
+                keys: ["image_path", "image_paths", "multimodal_messages", "image"]
+            ) ? nil : "missing_image_input"
+        default:
+            return "unsupported_task_kind"
+        }
+    }
+
+    private static func defaultLocalTaskTimeoutSec(for taskKind: String) -> Double {
+        switch taskKind {
+        case "embedding":
+            return 15.0
+        case "speech_to_text", "vision_understand", "ocr":
+            return 45.0
+        default:
+            return 30.0
+        }
+    }
+
+    private static func localTaskHasAnyParameterValue(
+        _ parameters: [String: JSONValue],
+        keys: [String]
+    ) -> Bool {
+        for key in keys {
+            if localTaskParameterValue(parameters, key: key) != nil {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func localTaskParameterValue(
+        _ parameters: [String: JSONValue],
+        key: String
+    ) -> JSONValue? {
+        if let value = parameters[key], localTaskParameterHasValue(value) {
+            return value
+        }
+        if let input = parameters["input"]?.objectValue,
+           let value = input[key],
+           localTaskParameterHasValue(value) {
+            return value
+        }
+        return nil
+    }
+
+    private static func localTaskParameterHasValue(_ value: JSONValue) -> Bool {
+        switch value {
+        case .null:
+            return false
+        case .string(let text):
+            return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .array(let rows):
+            return !rows.isEmpty
+        case .object(let object):
+            return !object.isEmpty
+        case .bool, .number:
+            return true
+        }
+    }
+
+    private static func localTaskPrimaryText(
+        from payload: [String: JSONValue]
+    ) -> String? {
+        normalized(
+            payload["text"]?.stringValue
+                ?? payload["generated_text"]?.stringValue
+                ?? payload["transcript"]?.stringValue
+        )
+    }
+
+    private static func localTaskNumericValue(_ value: JSONValue?) -> Double? {
+        switch value {
+        case .number(let number):
+            return number
+        case .string(let text):
+            return Double(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        default:
+            return nil
+        }
+    }
+
+    private static func resolveLocalTaskInvocationModel(
+        taskKind: String,
+        explicitModelID: String?,
+        preferredModelID: String?
+    ) -> LocalTaskModelInvocationResolution {
+        if let explicitModelID {
+            if let snapshot = localTaskModelStateSnapshot() {
+                let resolution = HubModelSelectionAdvisor.resolveLocalTaskModel(
+                    taskKind: taskKind,
+                    explicitModelId: explicitModelID,
+                    snapshot: snapshot
+                )
+                if let resolvedModel = resolution.resolvedModel {
+                    return LocalTaskModelInvocationResolution(
+                        requestedModelID: explicitModelID,
+                        preferredModelID: preferredModelID,
+                        resolvedModelID: resolvedModel.id,
+                        reasonCode: resolution.reasonCode
+                    )
+                }
+            }
+            return LocalTaskModelInvocationResolution(
+                requestedModelID: explicitModelID,
+                preferredModelID: preferredModelID,
+                resolvedModelID: explicitModelID,
+                reasonCode: "explicit_model_passthrough"
+            )
+        }
+
+        if let preferredModelID {
+            if let snapshot = localTaskModelStateSnapshot() {
+                let resolution = HubModelSelectionAdvisor.resolveLocalTaskModel(
+                    taskKind: taskKind,
+                    preferredModelId: preferredModelID,
+                    snapshot: snapshot
+                )
+                return LocalTaskModelInvocationResolution(
+                    requestedModelID: preferredModelID,
+                    preferredModelID: preferredModelID,
+                    resolvedModelID: resolution.resolvedModel?.id,
+                    reasonCode: resolution.reasonCode
+                )
+            }
+            return LocalTaskModelInvocationResolution(
+                requestedModelID: preferredModelID,
+                preferredModelID: preferredModelID,
+                resolvedModelID: preferredModelID,
+                reasonCode: "preferred_model_passthrough"
+            )
+        }
+
+        guard let snapshot = localTaskModelStateSnapshot() else {
+            return LocalTaskModelInvocationResolution(
+                requestedModelID: nil,
+                preferredModelID: nil,
+                resolvedModelID: nil,
+                reasonCode: "missing_model_id"
+            )
+        }
+
+        let resolution = HubModelSelectionAdvisor.resolveLocalTaskModel(
+            taskKind: taskKind,
+            snapshot: snapshot
+        )
+        return LocalTaskModelInvocationResolution(
+            requestedModelID: nil,
+            preferredModelID: nil,
+            resolvedModelID: resolution.resolvedModel?.id,
+            reasonCode: resolution.reasonCode
+        )
+    }
+
+    private static func localTaskModelStateSnapshot() -> ModelStateSnapshot? {
+        let url = HubPaths.modelsStateURL()
+        guard let data = try? Data(contentsOf: url),
+              let snapshot = try? JSONDecoder().decode(ModelStateSnapshot.self, from: data) else {
+            return nil
+        }
+        return snapshot
+    }
+
+    private static func localTaskSuccessBody(
+        result: HubIPCClient.LocalTaskResult,
+        requestedTaskKind: String,
+        requestedModelID: String
+    ) -> String {
+        var lines = [
+            "本地模型任务已完成：task_kind=\(normalized(result.taskKind) ?? requestedTaskKind) model_id=\(normalized(result.modelId) ?? requestedModelID)"
+        ]
+        if let provider = normalized(result.provider) {
+            lines.append("provider=\(provider)")
+        }
+        if let runtimeSource = normalized(result.runtimeSource) {
+            lines.append("runtime_source=\(runtimeSource)")
+        }
+        if let text = localTaskPrimaryText(from: result.payload) {
+            let excerpt = text.count > 1_200 ? String(text.prefix(1_200)) + "..." : text
+            lines.append(excerpt)
+        } else if let audioPath = normalized(
+            result.payload["audioPath"]?.stringValue
+                ?? result.payload["audio_path"]?.stringValue
+        ) {
+            lines.append("audio_path=\(audioPath)")
+        } else if let vectorCount = localTaskNumericValue(result.payload["vectorCount"] ?? result.payload["vector_count"]) {
+            var vectorLine = "vector_count=\(Int(vectorCount.rounded()))"
+            if let dims = localTaskNumericValue(result.payload["dims"]) {
+                vectorLine += " dims=\(Int(dims.rounded()))"
+            }
+            lines.append(vectorLine)
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func localTaskFailureBody(
+        result: HubIPCClient.LocalTaskResult,
+        requestedTaskKind: String,
+        requestedModelID: String
+    ) -> String {
+        var lines = [
+            "本地模型任务未完成：task_kind=\(normalized(result.taskKind) ?? requestedTaskKind) model_id=\(normalized(result.modelId) ?? requestedModelID)"
+        ]
+        if let reason = normalized(result.reasonCode) {
+            lines.append("reason=\(reason)")
+        }
+        if let detail = normalized(result.detail), detail != normalized(result.reasonCode) {
+            lines.append(detail)
+        } else if let error = normalized(result.error), error != normalized(result.reasonCode) {
+            lines.append(error)
+        }
+        return lines.joined(separator: "\n")
     }
 
     private static func executeWebSearch(call: ToolCall, projectRoot: URL) async throws -> ToolResult {
@@ -5886,7 +6564,8 @@ return jsResult
     private static func governedReadableRoots(
         projectRoot: URL,
         config: AXProjectConfig,
-        effectiveRuntimeSurface: AXProjectRuntimeSurfaceEffectivePolicy
+        effectiveRuntimeSurface: AXProjectRuntimeSurfaceEffectivePolicy,
+        extraReadableRoots: [URL] = []
     ) -> [URL] {
         var roots: [URL] = [projectRoot]
         guard xtProjectGovernedDeviceAuthorityEnabled(
@@ -5894,7 +6573,10 @@ return jsResult
             config: config,
             effectiveRuntimeSurface: effectiveRuntimeSurface
         ) else {
-            return roots
+            for root in extraReadableRoots {
+                roots.append(root)
+            }
+            return deduplicatedReadableRoots(roots)
         }
 
         for raw in config.governedReadableRoots {
@@ -5902,7 +6584,12 @@ return jsResult
             guard !trimmed.isEmpty else { continue }
             roots.append(URL(fileURLWithPath: trimmed))
         }
+        roots.append(contentsOf: extraReadableRoots)
 
+        return deduplicatedReadableRoots(roots)
+    }
+
+    private static func deduplicatedReadableRoots(_ roots: [URL]) -> [URL] {
         var ordered: [URL] = []
         var seen = Set<String>()
         for root in roots {
@@ -6581,6 +7268,7 @@ High-risk bypass scan \(report.ok ? "PASS" : "FAIL")
             projectRootKey: rootKey,
             capability: HighRiskCapability.webFetch.rawValue,
             grantRequestId: nil,
+            approvedGrantId: nil,
             fallbackTTLSeconds: 120,
             now: now
         )
@@ -6630,16 +7318,17 @@ High-risk bypass scan \(report.ok ? "PASS" : "FAIL")
         projectRoot: URL,
         capability: String,
         grantRequestId: String?,
+        approvedGrantId: String? = nil,
         fallbackSeconds: Int
     ) async -> String? {
-        let token = capability.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard token == HighRiskCapability.webFetch.rawValue.lowercased() else {
+        guard highRiskCapabilityMatches(capability, target: .webFetch) else {
             return nil
         }
         return await noteActiveHighRiskGrant(
             projectRoot: projectRoot,
             capability: .webFetch,
             grantRequestId: grantRequestId,
+            approvedGrantId: approvedGrantId,
             fallbackSeconds: fallbackSeconds
         )
     }
@@ -6693,6 +7382,7 @@ High-risk bypass scan \(report.ok ? "PASS" : "FAIL")
         projectRoot: URL,
         capability: HighRiskCapability,
         grantRequestId: String?,
+        approvedGrantId: String?,
         fallbackSeconds: Int
     ) async -> String? {
         let ttl = max(60, fallbackSeconds)
@@ -6700,6 +7390,7 @@ High-risk bypass scan \(report.ok ? "PASS" : "FAIL")
             projectRootKey: normalizeRootKey(projectRoot),
             capability: capability.rawValue,
             grantRequestId: grantRequestId,
+            approvedGrantId: approvedGrantId,
             fallbackTTLSeconds: ttl,
             now: Date().timeIntervalSince1970
         )
@@ -6708,10 +7399,6 @@ High-risk bypass scan \(report.ok ? "PASS" : "FAIL")
 
     private static func toolCallGrantId(_ call: ToolCall) -> String? {
         if let grant = optStrArg(call, "grant_id") {
-            let token = normalizeGrantToken(grant)
-            if !token.isEmpty { return token }
-        }
-        if let grant = optStrArg(call, "grant_request_id") {
             let token = normalizeGrantToken(grant)
             if !token.isEmpty { return token }
         }
@@ -6724,10 +7411,6 @@ High-risk bypass scan \(report.ok ? "PASS" : "FAIL")
             let token = normalizeGrantToken(grant)
             if !token.isEmpty { return token }
         }
-        if let grant = input["grant_request_id"] as? String {
-            let token = normalizeGrantToken(grant)
-            if !token.isEmpty { return token }
-        }
         return nil
     }
 
@@ -6737,6 +7420,18 @@ High-risk bypass scan \(report.ok ? "PASS" : "FAIL")
 
     private static func normalizeGrantToken(_ raw: String) -> String {
         raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func highRiskCapabilityMatches(
+        _ raw: String,
+        target: HighRiskCapability
+    ) -> Bool {
+        let token = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch target {
+        case .webFetch:
+            return token == HighRiskCapability.webFetch.rawValue.lowercased()
+                || token == "web.fetch"
+        }
     }
 
     private static func readTailData(url: URL, maxBytes: Int) -> Data? {
@@ -6964,6 +7659,7 @@ private actor HighRiskGrantLedger {
         var projectRootKey: String
         var capability: String
         var grantId: String
+        var grantRequestId: String
         var issuedAt: TimeInterval
         var expiresAt: TimeInterval
     }
@@ -6975,6 +7671,7 @@ private actor HighRiskGrantLedger {
         projectRootKey: String,
         capability: String,
         grantRequestId: String?,
+        approvedGrantId: String?,
         fallbackTTLSeconds: Int,
         now: TimeInterval
     ) -> String {
@@ -6982,10 +7679,18 @@ private actor HighRiskGrantLedger {
         let cap = capability.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !root.isEmpty, !cap.isEmpty else { return "" }
 
-        let grantToken = normalizedGrant(grantRequestId)
+        let requestToken = normalizedGrant(grantRequestId)
+        let approvedToken = normalizedGrant(approvedGrantId)
         let grantId: String
-        if !grantToken.isEmpty {
-            grantId = grantToken
+        if !approvedToken.isEmpty {
+            grantId = approvedToken
+        } else if !requestToken.isEmpty,
+                  let existing = records.values.first(where: {
+                      $0.projectRootKey == root
+                          && $0.capability == cap
+                          && $0.grantRequestId == requestToken
+                  }) {
+            grantId = existing.grantId
         } else {
             grantId = "session_grant_\(Int(now * 1000))_\(UUID().uuidString.prefix(8))"
         }
@@ -6999,6 +7704,7 @@ private actor HighRiskGrantLedger {
             projectRootKey: root,
             capability: cap,
             grantId: grantId,
+            grantRequestId: requestToken,
             issuedAt: previous?.issuedAt ?? now,
             expiresAt: max(previous?.expiresAt ?? 0, expiresAt)
         )

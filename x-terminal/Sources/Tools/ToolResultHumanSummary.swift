@@ -54,7 +54,18 @@ enum ToolResultHumanSummary {
         let parsed = ToolExecutor.parseStructuredToolOutput(result.output)
         let summary = object(parsed.summary)
         let detail = normalizedDiagnostic(parsed.body.isEmpty ? result.output : parsed.body)
-        let lower = detail.lowercased()
+        let structuredReasonSignals = [
+            summary.flatMap { string($0["reason"]) },
+            summary.flatMap { string($0["reason_code"]) },
+            summary.flatMap { string($0["deny_code"]) }
+        ]
+        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+        .joined(separator: "\n")
+        let lower = [detail, structuredReasonSignals]
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+            .lowercased()
 
         if let summary,
            let guardrailBody = XTGuardrailMessagePresentation.toolResultBody(
@@ -133,6 +144,26 @@ enum ToolResultHumanSummary {
                 return "Hub 导入审查需要当前设备上有可用的 Hub 运行时连接。"
             }
             return detail.isEmpty ? "无法加载 Hub 导入记录。" : "无法加载 Hub 导入记录：\(detail)"
+        case .skills_pin:
+            if result.ok {
+                return detail.isEmpty ? "Hub 已更新技能可用性。" : detail
+            }
+            if lower.contains("missing_project_id") {
+                return "project scope 的技能启用请求必须带上 project_id。"
+            }
+            if lower.contains("package_not_found") {
+                return "Hub 还没有这个技能包，不能直接启用；需要先让包进入受治理技能仓库。"
+            }
+            if lower.contains("skill_package_mismatch") {
+                return "这次技能启用请求里的 skill_id 和 package_sha256 对不上。"
+            }
+            if lower.contains("official_skill_review_blocked") {
+                return "Hub 已自动审查该官方技能包，但当前 official_skills doctor 结果还不是 ready；请先在 Hub 查看 doctor 或 lifecycle 结果并修复后再重试。"
+            }
+            if lower.contains("trusted_automation_project_not_bound") || lower.contains("trusted_automation_workspace_mismatch") {
+                return "当前 Hub 侧 trusted automation 绑定不满足这次技能启用请求。"
+            }
+            return detail.isEmpty ? "无法更新技能可用性。" : "无法更新技能可用性：\(detail)"
         case .need_network, .web_fetch, .web_search, .browser_read, .bridge_status:
             if lower.contains("grant") || lower.contains("denied") || lower.contains("blocked") {
                 return "当前网络访问被现行策略或授权闸门拦截。"
@@ -140,6 +171,8 @@ enum ToolResultHumanSummary {
             return detail.isEmpty ? "网络操作未能完成。" : "网络操作未能完成：\(detail)"
         case .supervisorVoicePlayback:
             return detail.isEmpty ? "Supervisor 语音播放未能完成。" : "Supervisor 语音播放未能完成：\(detail)"
+        case .run_local_task:
+            return detail.isEmpty ? "本地模型任务未能完成。" : "本地模型任务未能完成：\(detail)"
         default:
             return detail.isEmpty ? "这次工具调用失败了。可打开诊断查看原始输出。" : detail
         }

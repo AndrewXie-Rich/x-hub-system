@@ -61,6 +61,14 @@ struct AXRoleExecutionSnapshot: Equatable, Identifiable, Sendable {
         return requestedModelId
     }
 
+    var effectiveFailureReasonCode: String {
+        let fallback = fallbackReasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !fallback.isEmpty {
+            return fallback
+        }
+        return denyCode.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     var statusLabel: String {
         switch executionPath {
         case "remote_model":
@@ -71,6 +79,8 @@ struct AXRoleExecutionSnapshot: Equatable, Identifiable, Sendable {
             return "Fallback"
         case "local_runtime":
             return "Local"
+        case "local_preflight", "local_direct_reply", "local_direct_action", "hub_brief_projection":
+            return "Control"
         case "direct_provider":
             return "Direct"
         case "remote_error":
@@ -114,8 +124,8 @@ struct AXRoleExecutionSnapshot: Equatable, Identifiable, Sendable {
             if !actualModelId.isEmpty {
                 parts.append("actual=\(actualModelId)")
             }
-            if !fallbackReasonCode.isEmpty {
-                parts.append("reason=\(fallbackReasonCode)")
+            if !effectiveFailureReasonCode.isEmpty {
+                parts.append("reason=\(effectiveFailureReasonCode)")
             }
             if !auditRef.isEmpty {
                 parts.append("audit_ref=\(auditRef)")
@@ -129,8 +139,8 @@ struct AXRoleExecutionSnapshot: Equatable, Identifiable, Sendable {
             if !actualModelId.isEmpty {
                 parts.append("actual=\(actualModelId)")
             }
-            if !fallbackReasonCode.isEmpty {
-                parts.append("reason=\(fallbackReasonCode)")
+            if !effectiveFailureReasonCode.isEmpty {
+                parts.append("reason=\(effectiveFailureReasonCode)")
             }
             if !auditRef.isEmpty {
                 parts.append("audit_ref=\(auditRef)")
@@ -156,13 +166,18 @@ struct AXRoleExecutionSnapshot: Equatable, Identifiable, Sendable {
                 return "actual=\(effectiveModelId)"
             }
             return "local_runtime"
+        case "local_preflight", "local_direct_reply", "local_direct_action", "hub_brief_projection":
+            if !effectiveModelId.isEmpty {
+                return "actual=\(effectiveModelId)"
+            }
+            return executionPath
         case "remote_error":
             var parts: [String] = []
             if !requestedModelId.isEmpty {
                 parts.append("requested=\(requestedModelId)")
             }
-            if !fallbackReasonCode.isEmpty {
-                parts.append("reason=\(fallbackReasonCode)")
+            if !effectiveFailureReasonCode.isEmpty {
+                parts.append("reason=\(effectiveFailureReasonCode)")
             }
             if !auditRef.isEmpty {
                 parts.append("audit_ref=\(auditRef)")
@@ -189,8 +204,8 @@ struct AXRoleExecutionSnapshot: Equatable, Identifiable, Sendable {
         if !runtimeProvider.isEmpty {
             lines.append("provider=\(runtimeProvider)")
         }
-        if !fallbackReasonCode.isEmpty {
-            lines.append("fallback_reason=\(fallbackReasonCode)")
+        if !effectiveFailureReasonCode.isEmpty {
+            lines.append("fallback_reason=\(effectiveFailureReasonCode)")
         }
         if !auditRef.isEmpty {
             lines.append("audit_ref=\(auditRef)")
@@ -290,7 +305,8 @@ enum AXRoleExecutionSnapshots {
             executionPath: normalizedExecutionPath(
                 executionPath,
                 actualModelId: actualModelId,
-                fallbackReasonCode: fallbackReasonCode
+                fallbackReasonCode: fallbackReasonCode,
+                denyCode: denyCode
             ),
             fallbackReasonCode: normalizedReasonCode(fallbackReasonCode),
             auditRef: normalize(auditRef),
@@ -375,13 +391,14 @@ enum AXRoleExecutionSnapshots {
     private static func normalizedExecutionPath(
         _ raw: String,
         actualModelId: String,
-        fallbackReasonCode: String
+        fallbackReasonCode: String,
+        denyCode: String
     ) -> String {
         let normalized = normalize(raw)
         if !normalized.isEmpty {
             return normalized
         }
-        if !normalize(fallbackReasonCode).isEmpty {
+        if !normalize(fallbackReasonCode).isEmpty || !normalize(denyCode).isEmpty {
             return "remote_error"
         }
         if !normalize(actualModelId).isEmpty {

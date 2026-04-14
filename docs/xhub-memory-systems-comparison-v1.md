@@ -1,7 +1,7 @@
 # Memory Systems Comparison (skills ecosystem vs progressive-disclosure reference architecture vs X-Hub) v1
 
 - Status: Draft（用于对齐“上下文记忆方法论”，并指导 X-Hub 5-layer 落地优先级）
-- Updated: 2026-02-12
+- Updated: 2026-03-21
 - Sources reviewed (local):
   - skills ecosystem: `refer open source/skill-cn-2026.1.31/docs/concepts/memory.md` + `refer open source/skill-cn-2026.1.31/src/memory/*`
   - progressive-disclosure reference architecture: `refer open source/external-progressive-disclosure/external-progressive-disclosure-main/README.md` + `refer open source/external-progressive-disclosure/external-progressive-disclosure-main/docs/public/progressive-disclosure.mdx` + `refer open source/external-progressive-disclosure/external-progressive-disclosure-main/src/services/sqlite/migrations.ts`
@@ -36,6 +36,12 @@
   - 远程外发/敏感分级/DLP/审计/回滚
   - 多 AI 角色分工，但单写入者 + 强校验
   - 记忆可晋升为 Canonical/Skill（生产力闭环）
+
+补充边界：
+- 当前冻结控制面不是“Memory-Core 自己执行一切”，而是：
+  - 用户在 X-Hub 选择 memory AI
+  - `Scheduler -> Worker -> Writer + Gate` 分层执行
+  - `Memory-Core` 作为 governed rule asset 约束运行时
 
 核心哲学：**“记忆维护是一个可审计、可回滚的流水线；记忆与权限/外发/成本控制绑定”**。更偏“系统工程”。
 
@@ -87,7 +93,7 @@
 3) **Embedding cache + 增量索引 + watcher**：
    - Hub 侧同样需要“低成本增量更新”，避免每次都全量重算。
 4) **Compaction 前的 memory flush**：
-   - 我们可以把它改成“Working Set 即将被裁剪/压缩时，触发一次 Memory-Core extract/canonicalize job”。
+   - 我们可以把它改成“Working Set 即将被裁剪/压缩时，由 Scheduler 按 Memory-Core 规则 enqueue 一次 extract/canonicalize job”。
 
 ### 3.2 从 progressive-disclosure reference architecture 借鉴
 1) **Progressive Disclosure 的“可见成本”**（index 里显示 token cost）：

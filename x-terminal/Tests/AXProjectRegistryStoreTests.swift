@@ -178,6 +178,45 @@ struct AXProjectRegistryStoreTests {
     }
 
     @Test
+    func sanitizeLoadedRegistryStripsMarkdownWrappersFromDisplayName() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("`坦克大战`", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+        let reg = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: projectId,
+            projects: [
+                AXProjectEntry(
+                    projectId: projectId,
+                    rootPath: root.path,
+                    displayName: "`坦克大战`",
+                    lastOpenedAt: 1,
+                    manualOrderIndex: 0,
+                    pinned: false,
+                    statusDigest: nil,
+                    currentStateSummary: nil,
+                    nextStepSummary: nil,
+                    blockerSummary: nil,
+                    lastSummaryAt: nil,
+                    lastEventAt: nil
+                )
+            ]
+        )
+
+        let sanitized = AXProjectRegistryStore.sanitizeLoadedRegistry(reg)
+
+        #expect(sanitized.changed == true)
+        #expect(sanitized.registry.projects.first?.displayName == "坦克大战")
+        #expect(AXProjectRegistryStore.displayName(forRoot: root, registry: sanitized.registry) == "坦克大战")
+    }
+
+    @Test
     func projectContextDisplayNameUsesFriendlyRegistryEntry() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("xt-context-display-name-\(UUID().uuidString)", isDirectory: true)

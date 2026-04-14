@@ -60,7 +60,7 @@ struct XTProjectCanonicalMemorySyncTests {
             schemaVersion: AXMemory.currentSchemaVersion,
             projectName: "  Demo  ",
             projectRoot: "/tmp/demo",
-            goal: "  Ship governed execution tiers  ",
+            goal: "  Ship governed A-Tiers  ",
             requirements: ["  first requirement  ", ""],
             currentState: [],
             decisions: [],
@@ -75,7 +75,7 @@ struct XTProjectCanonicalMemorySyncTests {
         let lookup = Dictionary(uniqueKeysWithValues: items.map { ($0.key, $0.value) })
 
         #expect(lookup["xterminal.project.memory.project_name"] == "Demo")
-        #expect(lookup["xterminal.project.memory.goal"] == "Ship governed execution tiers")
+        #expect(lookup["xterminal.project.memory.goal"] == "Ship governed A-Tiers")
         #expect(lookup["xterminal.project.memory.requirements"] == "1. first requirement")
         #expect(lookup["xterminal.project.memory.recommendations"] == nil)
 

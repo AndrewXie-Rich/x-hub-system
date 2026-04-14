@@ -99,6 +99,37 @@ struct XTModelCatalogTests {
     }
 
     @Test
+    func hubModelAdapterShowsRemoteAliasAndSourceIdentity() {
+        let hubModel = HubModel(
+            id: "openai/gpt-5.4",
+            name: "GPT 5.4",
+            backend: "openai",
+            quant: "remote",
+            contextLength: 8_192,
+            maxContextLength: 128_000,
+            paramsB: 0,
+            roles: nil,
+            state: .loaded,
+            memoryBytes: nil,
+            tokensPerSec: nil,
+            modelPath: nil,
+            note: nil,
+            defaultLoadProfile: nil,
+            remoteGroupDisplayName: "Team Pro",
+            remoteProviderModelID: "gpt-5.4",
+            remoteKeyReference: "crs",
+            remoteEndpointHost: "aispeed.store"
+        )
+
+        let presentation = XTModelCatalog.modelInfo(for: hubModel)
+
+        #expect(presentation.displayName == "Team Pro · GPT 5.4")
+        #expect(hubModel.remoteSourceIdentityLine(language: .defaultPreference) == "Key crs  ·  aispeed.store")
+        #expect(hubModel.remoteSearchKeywords.contains("crs"))
+        #expect(hubModel.remoteSearchKeywords.contains("Team Pro · GPT 5.4"))
+    }
+
+    @Test
     func hubModelAdapterMarksVoiceModelsAsSupervisorVoice() {
         let hubModel = HubModel(
             id: "hexgrad/kokoro-82m",
@@ -222,5 +253,32 @@ struct XTModelCatalogTests {
 
         #expect(model.defaultLoadProfile?.contextLength == 3072)
         #expect(model.defaultLoadProfile?.ttl == 600)
+    }
+
+    @Test
+    func remoteHubModelDisplaysConfiguredWindowInsteadOfPretendingToKnowProviderMax() throws {
+        let json = """
+        {
+          "models": [
+            {
+              "id": "openai/gpt-5.4",
+              "name": "GPT-5.4",
+              "backend": "openai",
+              "quant": "remote",
+              "context_length": 8192,
+              "max_context_length": 8192,
+              "params_b": 0,
+              "state": "loaded",
+              "remote_configured_context_length": 8192
+            }
+          ],
+          "updatedAt": 1
+        }
+        """
+        let snapshot = try JSONDecoder().decode(ModelStateSnapshot.self, from: Data(json.utf8))
+        let model = try #require(snapshot.models.first)
+
+        #expect(model.defaultLoadConfigDisplayLine == "远端配置窗口：8K · 真实上限：未回报")
+        #expect(model.localLoadConfigLimitLine == nil)
     }
 }

@@ -245,7 +245,7 @@ Provider 健康信息最小字段：
 - `backend`
 - `model_format`（`mlx|hf_transformers|gguf|onnx|other`）
 - `max_context_length`（若 provider / manifest 可判）
-- `default_load_profile`
+- `default_load_config`
   - `context_length`
   - `gpu_offload`
   - `rope_frequency_base`
@@ -269,7 +269,8 @@ Provider 健康信息最小字段：
 
 兼容要求：
 - 现有 `contextLength` 字段在迁移期继续保留
-- 其 canonical 语义改为 `default_load_profile.context_length` 的兼容别名
+- 其 canonical 语义改为 `default_load_config.context_length` 的兼容别名
+- `default_load_profile` 保留为 legacy alias，consumer 必须继续兼容，但新 contract 统一写 `default_load_config`
 - “模型能力上限”不得再复用 `contextLength`，应使用 `max_context_length`
 
 ### 4.3 本地 manifest（推荐强制）
@@ -536,7 +537,7 @@ v1 后续规范要求：
 
 唯一推荐合并顺序：
 1. provider safe defaults
-2. model descriptor 的 `default_load_profile`
+2. model descriptor 的 `default_load_config`
 3. paired terminal 的 `device_id + model_id` override
 4. request 级临时 hint（仅在 policy 显式允许时）
 
@@ -693,7 +694,7 @@ v1 推荐新增：
 
 1. 现有 `ModelCatalogEntry.contextLength` / `HubModel.contextLength`
    - 暂继续保留
-   - 视为 `default_load_profile.context_length` 的兼容映射
+   - 视为 `default_load_config.context_length` 的兼容映射
 2. 后续 provider / manifest 若能给出能力上限：
    - 新增 `max_context_length`
 3. paired terminal 的设备级差异：

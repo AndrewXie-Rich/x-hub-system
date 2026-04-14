@@ -1,13 +1,18 @@
 # X-Hub Remote Export Gate + Paid Prompt Assembly v1（可执行规范 / Draft）
 
 - Status: Draft
-- Updated: 2026-02-12
+- Updated: 2026-03-21
 - Why this exists: 当前 Hub 在 paid/remote 模型生成路径上会把 canonical + working set 直接拼进 prompt 并发给 remote（仅处理 `<private>`），这会绕过 Memory-Core 的 sensitivity / DLP / secret_mode。
 - Goal: 把“远程外发门禁（remote export gate）”统一为 Hub 的硬策略，覆盖：
   - Memory maintenance jobs（远程辅助模型）
   - HubAI.Generate 的 paid 模型调用（最关键）
 
 > 本文件专注“门禁与注入”，不重复 Memory 分层与 PD 细节；后者见 `docs/xhub-memory-system-spec-v1.md` 与 `docs/xhub-memory-core-policy-v1.md`。
+
+补充边界：
+- 本文件描述的是 `Memory-Core` 规则资产当前 active recipe/materialized policy view 中的 remote gate 语义。
+- 它不重新定义 memory model chooser；模型选择仍由用户在 X-Hub 配置，经 Scheduler 路由后执行。
+- 它也不赋予任何 remote path 直接 durable 写入权；最终 memory truth 仍只允许经 `Writer + Gate` 落库。
 
 ---
 
@@ -51,7 +56,7 @@
 
 ## 3) policy 扩展（可直接落地）
 
-在 `memory_core_policy.json` 的 `remote_export` 下新增：
+在当前 active `Memory-Core` recipe 的 materialized policy view（例如 `memory_core_policy.json`）里，`remote_export` 至少应包含：
 ```json
 {
   "remote_export": {

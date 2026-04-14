@@ -347,6 +347,7 @@ trusted automation 只在以下四平面同时为真时成立：
     - remote strict posture
     - last deny code
   - Hub 是 device/operator 视角，XT 是 current project 视角，但口径必须一致。
+  - XT 侧若通过 `XTUnifiedDoctor` 落地 explainability，source truth 受 `docs/memory-new/schema/xt_unified_doctor_report_contract.v1.json` 约束；跨产品 normalized doctor export 继续受 `docs/memory-new/schema/xhub_doctor_output_contract.v1.json` 约束
 - 交付物：
   - `build/reports/tam_w2_01_unified_doctor_evidence.v1.json`
 

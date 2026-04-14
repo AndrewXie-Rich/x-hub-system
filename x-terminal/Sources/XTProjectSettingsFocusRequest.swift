@@ -45,11 +45,26 @@ enum XTProjectGovernanceDestination: String, CaseIterable, Codable, Sendable {
         case .uiReview:
             return "UI Review"
         case .executionTier:
-            return "Execution Tier"
+            return "A-Tier"
         case .supervisorTier:
-            return "Supervisor Tier"
+            return "S-Tier"
         case .heartbeatReview:
-            return "Heartbeat & Review"
+            return "Heartbeat / Review"
+        }
+    }
+
+    var localizedDisplayTitle: String {
+        switch self {
+        case .overview:
+            return "治理总览"
+        case .uiReview:
+            return "UI 审查"
+        case .executionTier:
+            return "A-Tier"
+        case .supervisorTier:
+            return "S-Tier"
+        case .heartbeatReview:
+            return "Heartbeat / Review"
         }
     }
 
@@ -68,17 +83,17 @@ enum XTProjectGovernanceDestination: String, CaseIterable, Codable, Sendable {
         case .executionTier:
             return XTSectionFocusContext(
                 title: "Project Governance",
-                detail: "Execution Tier"
+                detail: "A-Tier"
             )
         case .supervisorTier:
             return XTSectionFocusContext(
                 title: "Project Governance",
-                detail: "Supervisor Tier"
+                detail: "S-Tier"
             )
         case .heartbeatReview:
             return XTSectionFocusContext(
                 title: "Project Governance",
-                detail: "Heartbeat & Review"
+                detail: "Heartbeat / Review"
             )
         }
     }
@@ -92,11 +107,16 @@ enum XTProjectSettingsSectionID {
     static let reviewCadence = XTProjectGovernanceDestination.heartbeatReview.rawValue
 }
 
+enum XTProjectSettingsOverviewAnchor: String, Codable, Sendable {
+    case contextAssembly = "project_context_assembly"
+}
+
 struct XTProjectSettingsFocusRequest: Equatable {
     var nonce: Int
     var projectId: String
     var destination: XTProjectGovernanceDestination
     var context: XTSectionFocusContext?
+    var overviewAnchor: XTProjectSettingsOverviewAnchor?
 
     var sectionId: String { destination.rawValue }
 }

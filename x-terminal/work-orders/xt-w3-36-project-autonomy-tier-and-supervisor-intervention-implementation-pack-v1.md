@@ -36,7 +36,7 @@
     - `swift test --filter XTToolAuthorizationTests`
   - 说明：当前普通测试里的旧 `settingAutonomyPolicy(...)` callsite 已归零，旧 `AXProjectAutonomy*` 类型名也已从 runtime-surface 主链测试里清出；剩余 compat 语义现在主要收敛在显式边界测试与 source-string 断言中，后续如果全量编译再出现同类 warning，应优先视为新的回退信号而不是预期噪音。
 - 2026-03-18:
-  - `XT-W3-36-B` UI split child pack 已收口完成：project settings、project detail、create flow 三处都已切到独立 `Execution Tier`、`Supervisor Tier`、`Heartbeat & Review` 治理页面/编辑器，`A4 Agent` 命名也已对齐文档与产品面。
+  - `XT-W3-36-B` UI split child pack 已收口完成：project settings、project detail、create flow 三处都已切到独立 `A-Tier`、`S-Tier`、`Heartbeat / Review` 治理页面/编辑器，`A4 Agent` 命名也已对齐文档与产品面。
   - `README`、`WORKING_INDEX`、`work-orders/README` 现在都应把 `XT-W3-36-B` 视为已完成子包，而不是仍在进行中的 active child。
   - 后续继续推进 `XT-W3-36` 时，应以 parent pack 为主真相源；`XT-W3-36-B` 只作为已完成 UI split 证据与回归锚点。
   - `XT-W3-36-E/F` 新增两条回归护栏：`SupervisorGuidanceInjectionStoreTests.latestPendingAckFallsBackToOlderActionableItemWhenNewestIsDeferredOrExpired` 锁定 guidance 队列不会被“更新但不可执行”的项挡住；`SupervisorSafePointCoordinatorTests.immediateGuidanceIsVisibleBeforeBoundaryButPauseWaitsForToolResult` 锁定 immediate guidance 会立刻进入可见上下文，但 batch pause 仍要等真实工具边界。
@@ -58,7 +58,7 @@
   - 本轮继续收紧了治理模板的外显命名：虽然底层仍保留 `full_autonomy` raw value 作为兼容编码，但产品面与 tests 已统一改成 `Agent` / `A4 Agent` 语义，不再把最高治理模板展示成“完全自治”或 `A4 治理模板`；同时通过 `AXProjectGovernanceTemplateTests` 与 `SupervisorPortfolioProjectPresentationTests` 锁定这层对外表述。
   - 本轮也开始把 XT-W3-36 主链源码中的新调用收口到 `runtimeSurface` 语义：`AXProjectResolvedGovernanceState` 新增 `effectiveRuntimeSurface` 首选访问器、resolver 新增 `effectiveRuntimeSurface` 入口并优先使用 `effectiveRuntimeSurfacePolicy()` / `settingRuntimeSurfacePolicy()`，project governance UI 与核心回归测试已改走新名字；旧 `effectiveAutonomy*` / `settingAutonomyPolicy()` 仍保留为 compat wrapper，避免破坏旧数据与外部调用。
 - 2026-03-17:
-  - 协议与 runtime resolver 仍保持 `A0..A4 + S0..S4 + heartbeat/review` 三轴分离，但当前产品表面确认仍有一段 UI 漂移：治理 chip 虽然分成三枚，点击后却仍然落到同一个 `ProjectSettingsView` 内部 section。
+  - 协议与 runtime resolver 仍保持 `A0..A4 + S0..S4 + Heartbeat / Review` 三轴分离，但当前产品表面确认仍有一段 UI 漂移：治理 chip 虽然分成三枚，点击后却仍然落到同一个 `ProjectSettingsView` 内部 section。
   - 因此 `XT-W3-36-B` 被继续拆成专门的 UI 回正子包：`x-terminal/work-orders/xt-w3-36-b-project-governance-surface-split-implementation-pack-v1.md`。
   - `XT-W3-36-B` 现在按“两段完成”理解：
     - 已完成：双拨盘 contract、governance badge/inspector、runtime surface 解释层、主治理字段迁移
@@ -68,9 +68,9 @@
   - `XT-W3-36-B/C` 继续把旧 `autonomy_*` 外显层向新 `runtime_surface` 协议迁移：runtime deny summary 现已补齐结构化 `runtime_surface` / `autonomy_policy` 对象、surface arrays、TTL/kill-switch/updated-at 字段，同时保留旧 top-level 兼容键不删。
   - `AppModel` 写入的模板应用 raw log 现以 `project_governance_template` 为主事件名，并保留 `legacy_type=project_autonomy_profile`；连同 `project_autonomy_policy` / `project_governance_bundle` 一起双写 `runtime_surface_configured/effective/...` 审计字段，证据测试会同时校验新旧命名，方便后续导出层切换。
   - `XTGuardrailMessagePresentation` 已兼容 `runtime_surface_effective=guided` 等新 reason alias，避免 deny reason 逐步迁移时 guardrail 文案退回默认提示。
-  - `project_snapshot` 现已补齐结构化 `governance` 对象和 `execution_tier / supervisor_intervention_tier / review_policy_mode` 顶层字段；文本 body 也改为优先展示 `A-tier / S-tier / review cadence + runtime_surface`，不再把旧 `autonomy_*` 行直接暴露给用户。
+  - `project_snapshot` 现已补齐结构化 `governance` 对象和 `execution_tier / supervisor_intervention_tier / review_policy_mode` 顶层字段；文本 body 也改为优先展示 `A-Tier / S-Tier / Heartbeat / Review cadence + runtime_surface`，不再把旧 `autonomy_*` 行直接暴露给用户。
   - runtime deny summary 现已新增 `runtime_surface_policy_reason` 规范化别名；guardrail 展示层会优先使用新字段，同时继续保留旧 `policy_reason` 作为兼容证据键。
-  - `XT-W3-36-B` 已把 project UI 主路径切到 `A-tier / S-tier / review cadence`，并修复 create flow 在切换 execution tier 时误重置 review 轴的问题。
+  - `XT-W3-36-B` 已把 project UI 主路径切到 `A-Tier / S-Tier / Heartbeat / Review cadence`，并修复 create flow 在切换 A-Tier 时误重置 review 轴的问题。
   - `XT-W3-36-B` 已补齐治理解释层：`ProjectGovernanceBadge` / inspector 现在会明确标出当前治理来源是 `A/S 档位显式配置`、`兼容旧项目卡片档位`、还是 `兼容旧执行面预设`；保守默认项目也会明确提示当前是 conservative baseline。
   - `XT-W3-36-B` 已把设置页里旧 `执行面策略` 文案收口为 `运行时 Surface`，避免把 `autonomyMode` 误读成 project 总治理档位；supervisor 本地记忆摘要也同步改用 `runtime_surface`，与 `execution_tier / supervisor_tier` 分层表达。
   - `XT-W3-36-B` 已继续把治理模板开发入口切到 `settingGovernanceTemplate / selectableTemplates / xtProjectGovernanceTemplatePresentation`，旧 switchboard helper 退到 compat wrapper，方便后续把残留 `autonomy profile` 命名继续收口到兼容层。
@@ -117,23 +117,23 @@
 
 每个 project 以后都按三组设置解析：
 
-1. `Execution Tier`
+1. `A-Tier`
    - 决定 project AI 能做什么。
    - 只讨论执行权限和执行面。
 
-2. `Supervisor Intervention Tier`
+2. `S-Tier`
    - 决定 supervisor 多频繁 review、多主动 brainstorm、多深地介入方向。
    - 只讨论 review / guidance / replan / interrupt 的强度。
 
-3. `Progress Heartbeat + Review Schedule`
+3. `Heartbeat / Review Schedule`
    - 决定多久汇报进度、多久做 pulse review、多久做 strategic brainstorm review。
    - 是时序调度，不是权限。
 
 冻结规则：
 
-- `A-tier` 只管 execution rights，不再混入 supervisor 行为。
-- `S-tier` 只管 intervention strength，不再暗含 device/repo 权限。
-- `heartbeat` 与 `review` 保持独立，不再用“心跳时间”替代 review policy。
+- `A-Tier` 只管 execution rights，不再混入 supervisor 行为。
+- `S-Tier` 只管 intervention strength，不再暗含 device/repo 权限。
+- `Heartbeat / Review` 保持独立，不再用“心跳时间”替代 review policy。
 
 ### 1.2 对用户和运行时的呈现
 
@@ -143,7 +143,7 @@
 - 点击后可看：
   - 当前 capability bundle
   - 当前 memory ceiling
-  - 当前 heartbeat / review cadence
+  - 当前 Heartbeat / Review cadence
   - 当前 Hub clamp / TTL / kill-switch 状态
 
 运行时真相源：
@@ -155,8 +155,8 @@
 
 本包同时冻结一条很关键的解释链：
 
-- `A-tier` 决定 project coder 的默认背景信息 ceiling
-- `S-tier` 决定 supervisor review 时可使用的默认 review memory ceiling
+- `A-Tier` 决定 project coder 的默认背景信息 ceiling
+- `S-Tier` 决定 supervisor review 时可使用的默认 review memory ceiling
 - `XT-W3-35` 的渐进检索能力为这两个 ceiling 提供“按需展开”通道
 
 也就是说：
@@ -177,13 +177,13 @@
 - `A3 Deliver Auto`
 - `A4 Agent`
 
-`A-tier` 不能再直接表达：
+`A-Tier` 不能再直接表达：
 
 - review 频率
 - review 是否 brainstorm
 - supervisor 是否旁路纠偏
 
-这些语义全部移到 `S-tier`。
+这些语义全部移到 `S-Tier`。
 
 ### 2.2 `S0..S4` 只表示 supervisor 介入强度
 
@@ -195,7 +195,7 @@
 - `S3 Strategic Coach`
 - `S4 Tight Supervision`
 
-`S-tier` 不能再直接放权给 repo / device / connector / extension。
+`S-Tier` 不能再直接放权给 repo / device / connector / extension。
 
 ### 2.3 Heartbeat 单独保留
 
@@ -249,7 +249,7 @@ supervisor 的 review 结果不能只靠自然语言漂在聊天里。
 
 ## 3) 档位冻结
 
-### 3.1 Execution Tier
+### 3.1 A-Tier
 
 | Tier | 名称 | 默认 project memory ceiling | 核心能力 | 不允许 |
 | --- | --- | --- | --- | --- |
@@ -259,7 +259,7 @@ supervisor 的 review 结果不能只靠自然语言漂在聊天里。
 | `a3_deliver_auto` | Deliver Auto | `m3_deep_dive` | 多 step 连续推进到交付完成、自动收口、汇总通知 | 未授权 device-level side effect |
 | `a4_openclaw` | Agent | `m4_full_scan` | 在受治理前提下使用 browser/device/connector/extension 完整执行面 | 绕过 trusted automation、Hub grant、kill-switch |
 
-### 3.2 Supervisor Intervention Tier
+### 3.2 S-Tier
 
 | Tier | 名称 | 默认 review memory ceiling | 触发语义 | 默认注入动作 |
 | --- | --- | --- | --- | --- |
@@ -271,7 +271,7 @@ supervisor 的 review 结果不能只靠自然语言漂在聊天里。
 
 ### 3.3 Heartbeat / Review Schedule
 
-冻结为独立调度对象，不再塞进 `A-tier` 或 `S-tier`：
+冻结为独立调度对象，不再塞进 `A-Tier` 或 `S-Tier`：
 
 - `progress_heartbeat_sec`
 - `review_pulse_sec`
@@ -305,9 +305,9 @@ supervisor 的 review 结果不能只靠自然语言漂在聊天里。
 - 复杂长期项目
 - 明确希望 supervisor 更强势跟进的场景
 
-### 4.3 无效组合
+### 4.3 高风险但允许用户选择的组合
 
-以下组合必须 fail-closed：
+以下组合默认标记为高风险，允许保存，但 UI / 审计 / Supervisor 都必须显著提示风险：
 
 - `A2 + S0`
 - `A3 + S0`
@@ -316,8 +316,13 @@ supervisor 的 review 结果不能只靠自然语言漂在聊天里。
 
 原因：
 
-- repo 及以上自主执行不能在“几乎无 review”下持续运行
-- device-level / OpenClaw 面不能只靠 milestone review
+- repo 及以上自主执行在“几乎无 review”下更容易放大 drift / rescue 窗口
+- device-level / Agent 面只靠 milestone review 时，更容易把高风险动作前的纠偏做得过晚
+
+补充：
+
+- 这是一组产品治理强警告，不是“物理不可能”的矩阵。
+- 真正的 fail-closed 仍只来自 runtime readiness、trusted automation、tool policy、Hub grant、TTL、kill-switch、scope / binding 等实证边界。
 
 ### 4.4 警告组合
 
@@ -517,7 +522,7 @@ supervisor 的 review 结果不能只靠自然语言漂在聊天里。
    - `guided -> A1`
    - `trusted_openclaw_mode -> A4`
 4. 若仍无法确定，则默认 `A0 + S0`
-5. `S-tier` 默认取推荐配对值
+5. `S-Tier` 默认取推荐配对值
 
 ### 7.4 旧 surface preset 的兼容
 
@@ -548,14 +553,16 @@ supervisor 的 review 结果不能只靠自然语言漂在聊天里。
 
 - `kill_switch` 总是最高优先级
 - `clamp_manual` 与 `clamp_guided` 继续压制 surface preset
-- 当 `effective governance` 低于最小安全组合时，必须：
-  - fail-closed
-  - 或把 `effective supervisor tier` 自动抬到最小值
+- 当 `effective governance` 低于参考监督线时，不能只因 `A/S` 组合本身直接 fail-closed。
+- 这时系统必须：
+  - 把组合标成高风险
+  - 在 UI / 审计 / Supervisor brief 中持续提示
+  - 继续只按真实 runtime 权限、grant、TTL、kill-switch、scope / binding 做执行放行或拒绝
 
 本包推荐第一版实现为：
 
-- UI 阻止保存无效组合
-- 运行时对旧项目或远端脏配置继续 fail-closed
+- UI 不阻止保存高风险组合，但必须给显著风险提示
+- 运行时对真实越权、未授权、未就绪、TTL 过期、Hub 收束路径继续 fail-closed
 
 ## 8) 可执行粒度工单
 
@@ -572,7 +579,7 @@ supervisor 的 review 结果不能只靠自然语言漂在聊天里。
   - 新增 `AXProjectSupervisorInterventionTier.swift`
   - 新增 `AXProjectGovernanceResolver.swift`
 - 实施步骤：
-  1. 冻结 `A-tier`、`S-tier`、schedule 字段和无效组合规则。
+  1. 冻结 `A-Tier`、`S-Tier`、schedule 字段和组合 guidance 规则。
   2. 新增 `effective governance resolution`：
      - configured combo
      - legacy compat source
@@ -592,10 +599,10 @@ supervisor 的 review 结果不能只靠自然语言漂在聊天里。
 - active_child_pack:
   - `x-terminal/work-orders/xt-w3-36-b-project-governance-surface-split-implementation-pack-v1.md`
 - progress_update_2026_03_15:
-  - `GlobalHomeView` 项目卡片已改为展示 `A-tier / S-tier / review` 治理拨盘摘要，不再沿用旧 `Autonomy` 单拨盘标题。
-  - `ProjectSettingsView` 已切到 `A-tier / S-tier / review policy / cadence / clamp / guidance ack` 展示。
-  - `CreateProjectSheet` 已切到新治理拨盘；切 `Execution Tier` 时不再重置独立的 review policy / cadence。
-  - `ProjectDetailView` 顶部与详情卡已突出显示 `A-tier / S-tier / review` 摘要，不再依赖旧 `autonomy level` 语义。
+  - `GlobalHomeView` 项目卡片已改为展示 `A-Tier / S-Tier / Heartbeat / Review` 治理拨盘摘要，不再沿用旧 `Autonomy` 单拨盘标题。
+  - `ProjectSettingsView` 已切到 `A-Tier / S-Tier / review policy / cadence / clamp / guidance ack` 展示。
+  - `CreateProjectSheet` 已切到新治理拨盘；切 `A-Tier` 时不再重置独立的 review policy / cadence。
+  - `ProjectDetailView` 顶部与详情卡已突出显示 `A-Tier / S-Tier / Heartbeat / Review` 摘要，不再依赖旧 `autonomy level` 语义。
   - `ProjectGovernanceBadge` / `ProjectGovernanceInspector` 已补上治理来源解释，能明确区分 `显式双拨盘`、`legacy card compat`、`legacy surface compat`、`default conservative`。
   - `ProjectSettingsView` 已把旧 `执行面策略` 标签降级成 `运行时 Surface`，强调它只是 runtime preset，不是 project 治理主档位。
   - 相关解释层回归已覆盖 compat / conservative 提示，避免 UI 重新把旧 `autonomy` 语义抬回主路径。
@@ -605,16 +612,16 @@ supervisor 的 review 结果不能只靠自然语言漂在聊天里。
   - `x-terminal/Sources/UI/Projects/ProjectDetailView.swift`
   - `x-terminal/Sources/UI/GlobalHomeView.swift`
 - 实施步骤：
-  1. 顶部显示 `A? / S? / clamp / ttl / heartbeat / review` 摘要。
+  1. 顶部显示 `A? / S? / clamp / ttl / Heartbeat / Review` 摘要。
   2. 设置页新增：
-     - Execution Tier picker
-     - Supervisor Intervention picker
+     - A-Tier picker
+     - S-Tier picker
      - Progress Heartbeat 输入
      - Review Pulse 输入
      - Brainstorm Review 输入
   3. `ProjectDetailView` 与 project header 共用同一份治理 badge / inspector，不再继续展示旧 `AutonomyLevel` 星级语义。
-  4. 对无效组合给出即时错误说明。
-  5. 对警告组合给出风险说明。
+  4. 对高风险组合给出即时强警告，但不阻止保存。
+  5. 对偏保守组合给出风险说明。
   6. 展示“当前 effective 值”与“被 clamp 后的值”。
 - DoD：
   - 用户能一眼区分“权限档位”和“supervisor 盯得多紧”。
@@ -630,7 +637,7 @@ supervisor 的 review 结果不能只靠自然语言漂在聊天里。
   - `x-terminal/Sources/Tools/XTToolRuntimePolicy.swift`
   - `x-terminal/Sources/Tools/ToolExecutor.swift`
 - 实施步骤：
-  1. 把 `A-tier` 映射到 capability bundle。
+  1. 把 `A-Tier` 映射到 capability bundle。
   2. 把旧 `surface preset` 保留为 surface clamp，而不是主权来源。
   3. 接入 trusted automation / Hub grant / clamp / TTL 复核。
   4. 为 deny path 统一 reason code。
@@ -648,7 +655,7 @@ supervisor 的 review 结果不能只靠自然语言漂在聊天里。
   - 新增 `SupervisorReviewPolicyEngine.swift`
   - 新增 `SupervisorReviewScheduleStore.swift`
 - 实施步骤：
-  1. 把 `S-tier` 映射到：
+  1. 把 `S-Tier` 映射到：
      - review depth
      - review triggers
      - default intervention mode
@@ -872,7 +879,7 @@ supervisor 的 review 结果不能只靠自然语言漂在聊天里。
   - `XT_GATE_VALIDATE_PROJECT_GOVERNANCE=1 bash scripts/ci/xt_release_gate.sh` 通过，0 warning。
 
 - 已继续收口 XT-W3-36 的测试名 / 文档语义尾巴：
-  - `x-terminal/README.md` 已把该节主标题与正文切到 `Project Governance` / `Execution Tier` / `Supervisor Tier` / `Heartbeat & Review` 语义，不再把 project 总治理继续描述成单一 autonomy 表述。
+  - `x-terminal/README.md` 已把该节主标题与正文切到 `Project Governance` / `A-Tier` / `S-Tier` / `Heartbeat / Review` 语义，不再把 project 总治理继续描述成单一 autonomy 表述。
   - `ProjectGovernanceDocsTruthSyncTests` 现额外锁定 `x-terminal/README.md` 的治理文案，防止后续再把旧 `Project Autonomy` 章节标题带回主路径。
   - `HubIPCClientRuntimeSurfaceOverrideSnapshotTests`、`XTToolRuntimePolicyGovernanceClampTests`、`ToolExecutorRuntimePolicyTests`、`ProjectDetailGovernanceSummaryTests`、`AXProjectGovernedAuthorityPresentationTests` 已优先改用 `runtimeSurface` 命名与 `settingRuntimeSurfacePolicy(...)`，仅在需要兼容断言的地方继续校验旧 `autonomy_*` 字段。
   - `AXProjectGovernanceSurfaceExplanation` 的英文 TTL 文案也已收口到 `runtime-surface window`，避免用户侧继续看到 `autonomy window` 这类旧语义。
@@ -889,7 +896,7 @@ supervisor 的 review 结果不能只靠自然语言漂在聊天里。
 
 - 已继续收口 XT-W3-36 最后一段 release/doc 尾巴：
   - `AXProjectConfigAutomationRecipeTests` 已随 runtime-surface-first API 命名完成收口，`runtimeSurfacePresetPersistsAndClampTakesEffect` 与 `runtimeSurfaceTTLExpiryFailsClosedToManual` 现在直接覆盖 `effectiveRuntimeSurfacePolicy(...)` 主路径，避免新测试继续反向放大旧 `effectiveAutonomyPolicy(...)` 命名。
-  - `docs/WORKING_INDEX.md` 已补回 `xt-w3-36-b-project-governance-surface-split-implementation-pack-v1.md`、`Execution Tier` / `Supervisor Tier` / `Heartbeat & Review` / `A4 Agent` 产品真相，以及 `xt_w3_36_project_governance_evidence.sh`、`xt_release_gate.sh`、`ProjectGovernanceDocsTruthSyncTests.swift` 三个发布/对齐入口。
+  - `docs/WORKING_INDEX.md` 已补回 `xt-w3-36-b-project-governance-surface-split-implementation-pack-v1.md`、`A-Tier` / `S-Tier` / `Heartbeat / Review` / `A4 Agent` 产品真相，以及 `xt_w3_36_project_governance_evidence.sh`、`xt_release_gate.sh`、`ProjectGovernanceDocsTruthSyncTests.swift` 三个发布/对齐入口。
   - `x-terminal/work-orders/README.md` 现已明确 `XT-W3-36-B` 是 `Completed child pack`，并把 `A0..A4`、`S0..S4`、`A4 Agent`、治理 evidence hook 写回主入口；同时补回缺失的 `xt-w3-08-release-gate-skeleton.md` 与 `xt-w3-29-whisperkit-funasr-voice-runtime-implementation-pack-v1.md` 索引项，修复 contract freeze 对 work-order index 的 NO_GO。
   - 经过这轮修复后，当前 XT-W3-36 主链剩余的旧 `autonomy_*` 命名已主要收束到有意保留的 compat wrapper / on-wire / on-disk 证据字段，不再是主路径 UI、resolver、runtime policy 或 release 索引的事实来源。
 - 已继续收口 Hub pairing / IPC 链路中的旧 autonomy 散点：

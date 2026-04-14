@@ -111,12 +111,20 @@ v1 可先不做 Sparkle；先完成“可验证手动更新”。
 2) 记录备份 ID
 3) 再进行 app 更新
 
+memory 边界要求：
+- 备份必须覆盖 `memory_model_preferences`、active `Memory-Core` rule asset state，以及当前 durable truth 所需的 policy/materialization 真相。
+- 更新流程不得在未记录策略与审计的情况下静默切换 memory executor。
+
 ### 6.2 迁移触发时机
 - hub_grpc_server 启动时检测 DB schema_version
 - 若需要迁移：
   - 先写审计：`db.migrate.started`
   - 成功：`db.migrate.completed`
   - 失败：`db.migrate.failed` 并提示用户回滚到备份
+
+迁移边界：
+- migration 可以升级 schema，但不应把 `Memory-Core` 重新解释成单体执行 AI，也不应绕过 `Writer + Gate` 直接重定义后续 durable write authority。
+- 若版本升级需要调整 memory rule asset、materialized policy view 或 memory routing contract，必须显式审计并可回滚。
 
 ### 6.3 回滚策略
 v1 最小要求：
@@ -138,4 +146,3 @@ v1 最小要求：
 ## 8) 与其它规范的关系
 - 备份/恢复/迁移：`docs/xhub-backup-restore-migration-v1.md`
 - Skills 签名与分发：`docs/xhub-skills-signing-distribution-and-runner-v1.md`
-

@@ -18,6 +18,7 @@ struct LLMRequest: Codable, Equatable {
     var projectId: String? = nil
     var sessionId: String? = nil
     var transportOverride: HubTransportMode? = nil
+    var remotePromptOverride: String? = nil
 }
 
 struct LLMUsage: Codable, Equatable {
@@ -34,6 +35,7 @@ struct LLMUsage: Codable, Equatable {
     var remoteRetryFromModelId: String?
     var remoteRetryToModelId: String?
     var remoteRetryReasonCode: String?
+    var memoryPromptProjection: HubMemoryPromptProjectionSnapshot?
 
     init(
         promptTokens: Int,
@@ -48,7 +50,8 @@ struct LLMUsage: Codable, Equatable {
         remoteRetryAttempted: Bool? = nil,
         remoteRetryFromModelId: String? = nil,
         remoteRetryToModelId: String? = nil,
-        remoteRetryReasonCode: String? = nil
+        remoteRetryReasonCode: String? = nil,
+        memoryPromptProjection: HubMemoryPromptProjectionSnapshot? = nil
     ) {
         self.promptTokens = promptTokens
         self.completionTokens = completionTokens
@@ -63,6 +66,7 @@ struct LLMUsage: Codable, Equatable {
         self.remoteRetryFromModelId = remoteRetryFromModelId
         self.remoteRetryToModelId = remoteRetryToModelId
         self.remoteRetryReasonCode = remoteRetryReasonCode
+        self.memoryPromptProjection = memoryPromptProjection
     }
 
     var totalTokens: Int {

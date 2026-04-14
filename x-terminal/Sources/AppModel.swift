@@ -1,23 +1,164 @@
 import AppKit
 import Combine
 import Foundation
+import Network
 
 enum HubSetupStepState: String {
     case idle
     case running
+    case awaitingApproval
     case success
     case failed
     case skipped
 }
 
+enum HubStartupAutomaticConnectDisposition: Equatable {
+    case none
+    case recoverExistingProfile(allowBootstrap: Bool)
+    case firstPairNearby
+}
+
+struct HubNetworkPathFingerprint: Equatable {
+    var statusKey: String
+    var usesWiFi: Bool
+    var usesWiredEthernet: Bool
+    var usesCellular: Bool
+    var isExpensive: Bool
+    var isConstrained: Bool
+
+    init(
+        statusKey: String,
+        usesWiFi: Bool,
+        usesWiredEthernet: Bool,
+        usesCellular: Bool,
+        isExpensive: Bool,
+        isConstrained: Bool
+    ) {
+        self.statusKey = statusKey
+        self.usesWiFi = usesWiFi
+        self.usesWiredEthernet = usesWiredEthernet
+        self.usesCellular = usesCellular
+        self.isExpensive = isExpensive
+        self.isConstrained = isConstrained
+    }
+
+    init(path: NWPath) {
+        self.init(
+            statusKey: Self.statusKey(path.status),
+            usesWiFi: path.usesInterfaceType(.wifi),
+            usesWiredEthernet: path.usesInterfaceType(.wiredEthernet),
+            usesCellular: path.usesInterfaceType(.cellular),
+            isExpensive: path.isExpensive,
+            isConstrained: path.isConstrained
+        )
+    }
+
+    var isSatisfied: Bool {
+        statusKey == Self.statusKey(.satisfied)
+    }
+
+    func hasMeaningfulReconnectChange(comparedTo previous: Self) -> Bool {
+        if previous.isSatisfied != isSatisfied {
+            return isSatisfied
+        }
+
+        guard isSatisfied else { return false }
+
+        // Ignore cost/constrained drift on the same active interface set.
+        // Those flags can bounce on a stable Wi-Fi path and should not tear
+        // down the current remote route.
+        return previous.usesWiFi != usesWiFi
+            || previous.usesWiredEthernet != usesWiredEthernet
+            || previous.usesCellular != usesCellular
+    }
+
+    private static func statusKey(_ status: NWPath.Status) -> String {
+        switch status {
+        case .satisfied:
+            return "satisfied"
+        case .requiresConnection:
+            return "requires_connection"
+        case .unsatisfied:
+            return "unsatisfied"
+        @unknown default:
+            return "unknown"
+        }
+    }
+}
+
+struct HubRemoteEndpointFingerprint: Equatable {
+    var pairingPort: Int
+    var grpcPort: Int
+    var internetHost: String
+
+    init(pairingPort: Int, grpcPort: Int, internetHost: String) {
+        self.pairingPort = pairingPort
+        self.grpcPort = grpcPort
+        self.internetHost = internetHost.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+struct HubPairingResetPlan: Equatable {
+    var endpoint: HubRemoteEndpointFingerprint
+    var preserveEndpointOverride: Bool
+    var shouldAutoDetect: Bool
+}
+
+private struct XTNotificationObservationToken {
+    var center: NotificationCenter
+    var token: NSObjectProtocol
+}
+
 @MainActor
 final class AppModel: ObservableObject {
+    private struct HistoricalProjectBoundaryRepairSummary {
+        var scanned: Int = 0
+        var repairedConfigCount: Int = 0
+        var repairedMemoryCount: Int = 0
+        var failedProjectRefs: [String] = []
+
+        var touchedCount: Int {
+            repairedConfigCount + repairedMemoryCount
+        }
+
+        var failedCount: Int {
+            failedProjectRefs.count
+        }
+
+        var outcomeToken: String {
+            if failedCount > 0 {
+                return touchedCount > 0 ? "partial" : "failed"
+            }
+            if touchedCount > 0 {
+                return "repaired"
+            }
+            return scanned == 0 ? "idle" : "noop"
+        }
+
+        func statusLine(reason: String) -> String {
+            var parts = [
+                "historical_project_boundary_repair=\(outcomeToken)",
+                "reason=\(reason)",
+                "scanned=\(scanned)",
+                "repaired_config=\(repairedConfigCount)",
+                "repaired_memory=\(repairedMemoryCount)"
+            ]
+            if failedCount > 0 {
+                parts.append("failed=\(failedCount)")
+            }
+            return parts.joined(separator: " ")
+        }
+    }
+
     @Published var settingsStore: SettingsStore
     @Published var llmRouter: LLMRouter
     @Published var projectRoot: URL? = nil {
         didSet {
-            Task { @MainActor in
-                await loadSelectedProject()
+            projectRootLoadTask?.cancel()
+            projectRootLoadTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                guard !Task.isCancelled else { return }
+                await self.loadSelectedProject()
             }
         }
     }
@@ -25,8 +166,11 @@ final class AppModel: ObservableObject {
     @Published var registry: AXProjectRegistry = .empty()
     @Published var selectedProjectId: String? = nil {
         didSet {
-            Task { @MainActor in
-                await applySelection()
+            projectSelectionTask?.cancel()
+            projectSelectionTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                guard !Task.isCancelled else { return }
+                await self.applySelection()
             }
         }
     }
@@ -39,6 +183,13 @@ final class AppModel: ObservableObject {
     @Published var skillsCompatibilitySnapshot: AXSkillsDoctorSnapshot = .empty
     @Published var unifiedDoctorReport: XTUnifiedDoctorReport = .empty
     @Published private(set) var officialSkillsRecheckStatusLine: String = ""
+    @Published private(set) var historicalProjectBoundaryRepairStatusLine: String = ""
+    @Published private(set) var supervisorVoiceSmokeRunning: Bool = false
+    @Published private(set) var supervisorVoiceSmokeStatusLine: String = ""
+    @Published private(set) var supervisorVoiceSmokeDetailLine: String = ""
+    @Published private(set) var supervisorVoiceSmokeLastPassed: Bool? = nil
+    @Published private(set) var supervisorVoiceSmokeReportURL: URL? = nil
+    @Published private(set) var supervisorVoiceSmokeReportSummary: XTSupervisorVoiceSmokeReportSummary? = nil
     @Published var lastImportedAgentSkillDirectory: URL? = nil
     @Published var lastImportedAgentSkillName: String = ""
     @Published var lastImportedAgentSkillStage: HubIPCClient.AgentImportStageResult? = nil
@@ -46,6 +197,18 @@ final class AppModel: ObservableObject {
     @Published var agentSkillImportBusy: Bool = false
     @Published var baselineInstallBusy: Bool = false
     @Published var baselineInstallStatusLine: String = ""
+    @Published private(set) var skillGovernanceActionStatusLine: String = ""
+
+    var skillsDirectoryOverrideForTesting: URL? = nil
+    var openPanelSelectionOverrideForTesting: ((NSOpenPanel) -> [URL]?)? = nil
+    var openedURLOverrideForTesting: ((URL) -> Void)? = nil
+    var alertPresenterOverrideForTesting: ((String, String) -> Void)? = nil
+    var baselineInstallConfirmationOverrideForTesting: ((String, String) -> Bool)? = nil
+    var baselineInstallActionOverrideForTesting: ((AXAgentBaselineInstallScope) -> Void)? = nil
+    var skillRemovalConfirmationOverrideForTesting: ((String, String) -> Bool)? = nil
+    var skillRenamePromptOverrideForTesting: ((String, String, String) -> String?)? = nil
+    var stagedImportSummaryOverrideForTesting: ((URL, URL) async -> String?)? = nil
+    var supervisorVoiceSmokeReportURLOverrideForTesting: URL? = nil
 
     @Published var runtimeStatus: AIRuntimeStatus? = nil
     @Published var modelsState: ModelStateSnapshot = .empty()
@@ -56,9 +219,12 @@ final class AppModel: ObservableObject {
     @Published var hubLastError: String? = nil
     @Published var hubRemoteConnected: Bool = false
     @Published var hubRemoteRoute: HubRemoteRoute = .none
+    @Published var hubRemotePaidAccessSnapshot: HubRemotePaidAccessSnapshot? = nil
     @Published var hubRemoteLog: String = ""
     @Published var hubRemoteLinking: Bool = false
     @Published var hubRemoteSummary: String = ""
+    @Published var hubFreshPairReconnectSmokeSnapshot: XTFreshPairReconnectSmokeSnapshot? = nil
+    @Published var hubRemoteShadowReconnectSmokeSnapshot: XTRemoteShadowReconnectSmokeSnapshot? = nil
     @Published var hubSetupDiscoverState: HubSetupStepState = .idle
     @Published var hubSetupBootstrapState: HubSetupStepState = .idle
     @Published var hubSetupConnectState: HubSetupStepState = .idle
@@ -69,6 +235,9 @@ final class AppModel: ObservableObject {
     @Published var hubPairingPort: Int = 50052
     @Published var hubGrpcPort: Int = 50051
     @Published var hubInternetHost: String = ""
+    @Published var hubInviteToken: String = ""
+    @Published var hubInviteAlias: String = ""
+    @Published var hubInviteInstanceID: String = ""
     @Published var hubAxhubctlPath: String = ""
 
     var hubInteractive: Bool {
@@ -155,6 +324,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var supervisorFocusRequest: AXSupervisorFocusRequest? = nil
     @Published private(set) var settingsFocusRequest: XTSettingsFocusRequest? = nil
     @Published private(set) var hubSetupFocusRequest: XTHubSetupFocusRequest? = nil
+    @Published private(set) var supervisorSettingsFocusRequest: XTSupervisorSettingsFocusRequest? = nil
     @Published private(set) var modelSettingsFocusRequest: XTModelSettingsFocusRequest? = nil
     @Published private(set) var projectDetailFocusRequest: XTProjectDetailFocusRequest? = nil
     @Published private(set) var projectSettingsFocusRequest: XTProjectSettingsFocusRequest? = nil
@@ -165,8 +335,12 @@ final class AppModel: ObservableObject {
 
     @Published var paneByProjectId: [String: AXProjectPane] = [:]
 
-    private var notifTokens: [NSObjectProtocol] = []
+    private var notifTokens: [XTNotificationObservationToken] = []
     private var settingsSubscriptions: Set<AnyCancellable> = []
+    private var projectRootLoadTask: Task<Void, Never>? = nil
+    private var projectSelectionTask: Task<Void, Never>? = nil
+    private let loadPersistedProjectRegistry: Bool
+    private let persistProjectRegistryChanges: Bool
     private var skillScanTimer: Timer? = nil
     private let skillScanLastKey = "xterminal_skill_scan_last_ts"
     private let legacySkillScanLastKey = "xterminal_skill_scan_last_ts"
@@ -180,8 +354,16 @@ final class AppModel: ObservableObject {
     private let legacyHubGrpcPortKey = "xterminal_hub_grpc_port"
     private let hubInternetHostKey = "xterminal_hub_internet_host"
     private let legacyHubInternetHostKey = "xterminal_hub_internet_host"
+    private let hubInviteTokenKey = "xterminal_hub_invite_token"
+    private let legacyHubInviteTokenKey = "xterminal_hub_invite_token"
+    private let hubInviteAliasKey = "xterminal_hub_invite_alias"
+    private let legacyHubInviteAliasKey = "xterminal_hub_invite_alias"
+    private let hubInviteInstanceIDKey = "xterminal_hub_invite_instance_id"
+    private let legacyHubInviteInstanceIDKey = "xterminal_hub_invite_instance_id"
     private let hubAxhubctlPathKey = "xterminal_hub_axhubctl_path"
     private let legacyHubAxhubctlPathKey = "xterminal_hub_axhubctl_path"
+    private let hubRemoteEndpointOverridePendingKey = "xterminal_hub_remote_endpoint_override_pending"
+    private let legacyHubRemoteEndpointOverridePendingKey = "xterminal_hub_remote_endpoint_override_pending"
     private let bridgeAlwaysOnKey = "xterminal_bridge_always_on"
     private let legacyBridgeAlwaysOnKey = "xterminal_bridge_always_on"
     private let localServerEnabledKey = "xterminal_local_server_enabled"
@@ -191,15 +373,20 @@ final class AppModel: ObservableObject {
     private let serverManager = AXServerManager.shared
     private let eventBus = AXEventBus.shared
     private let supervisorCalendarReminderScheduler: SupervisorCalendarReminderScheduler
+    private static let automaticReconnectStartupWarmupSec: TimeInterval = 6.0
+    private static let automaticRemoteConnectStartupDelaySec: TimeInterval = 1.5
+    private static let remoteSkillsCompatibilityOverlayRefreshIntervalSec: TimeInterval = 30.0
+    private static let hubRemotePrefsDoctorRefreshDebounceNs: UInt64 = 350_000_000
     private var hubReconnectLastAttemptAt: Date = .distantPast
     private var hubSetupAutofillLastAttemptAt: Date = .distantPast
-    private var bridgeAlwaysOn: Bool = true
+    private var bridgeAlwaysOn: Bool = false
     private var bridgeEnsureInFlight: Bool = false
     private var bridgeEnsureLastAttemptAt: Date = .distantPast
     private var nextProjectFocusRequestNonce: Int = 0
     private var nextSupervisorFocusRequestNonce: Int = 0
     private var nextSettingsFocusRequestNonce: Int = 0
     private var nextHubSetupFocusRequestNonce: Int = 0
+    private var nextSupervisorSettingsFocusRequestNonce: Int = 0
     private var nextModelSettingsFocusRequestNonce: Int = 0
     private var nextProjectDetailFocusRequestNonce: Int = 0
     private var nextProjectSettingsFocusRequestNonce: Int = 0
@@ -207,40 +394,72 @@ final class AppModel: ObservableObject {
     private var nextProjectRuntimeSurfaceOverrideRefreshAt: Date = .distantPast
     private var nextSkillsCompatibilityRefreshAt: Date = .distantPast
     private var nextUnifiedDoctorRefreshAt: Date = .distantPast
+    private var nextRemoteSkillsCompatibilityOverlayRefreshAt: Date = .distantPast
     private var pairedSurfaceHeartbeatBaseDir: URL? = nil
     private var remoteSkillsCompatibilityOverlayInFlight: Bool = false
+    private var lastRemoteSkillsCompatibilityOverlayProjectId: String? = nil
+    private var startupAutomaticFirstPairAttemptedThisLaunch: Bool = false
+    private var startupAutomaticFirstPairSmokeAttemptedThisLaunch: Bool = false
+    private var startupAutomaticFirstPairRemoteShadowSmokeAttemptedThisLaunch: Bool = false
+    private var hubNetworkMonitor: NWPathMonitor? = nil
+    private let hubNetworkMonitorQueue = DispatchQueue(label: "com.xterminal.hub-network-monitor")
+    private var lastHubNetworkPathFingerprint: HubNetworkPathFingerprint? = nil
+    private var hubConnectivityIncidentSnapshot: XTHubConnectivityIncidentSnapshot? = nil
+    private var hubRemotePrefsDoctorRefreshTask: Task<Void, Never>? = nil
+    private var automaticReconnectStartupWarmupUntil: Date = .distantPast
+    private var nextRemotePresenceRefreshAt: Date = .distantPast
     private var lastObservedModelAssignments: [AXRole: RoleProviderAssignment]
 
-    init() {
+    convenience init() {
+        let shouldPersistProjectRegistry = !Self.isRunningUnderTestProcess
+        self.init(
+            loadPersistedProjectRegistry: shouldPersistProjectRegistry,
+            persistProjectRegistryChanges: shouldPersistProjectRegistry
+        )
+    }
+
+    init(
+        loadPersistedProjectRegistry: Bool,
+        persistProjectRegistryChanges: Bool
+    ) {
         let ss = SettingsStore()
         let calendarReminderScheduler = SupervisorCalendarReminderScheduler()
         settingsStore = ss
         llmRouter = LLMRouter(settingsStore: ss)
         supervisorCalendarReminderScheduler = calendarReminderScheduler
         lastObservedModelAssignments = Self.modelAssignmentMap(for: ss.settings)
+        self.loadPersistedProjectRegistry = loadPersistedProjectRegistry
+        self.persistProjectRegistryChanges = persistProjectRegistryChanges
+        automaticReconnectStartupWarmupUntil = Date().addingTimeInterval(
+            Self.automaticReconnectStartupWarmupSec
+        )
 
         // Memory pipeline status (coarse/refine) for toolbar indicators.
         let nc = NotificationCenter.default
-        notifTokens.append(
-            nc.addObserver(forName: AXMemoryPipelineNotifications.coarseStart, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.memoryCoarseRunning = true }
-            }
-        )
-        notifTokens.append(
-            nc.addObserver(forName: AXMemoryPipelineNotifications.coarseEnd, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.memoryCoarseRunning = false }
-            }
-        )
-        notifTokens.append(
-            nc.addObserver(forName: AXMemoryPipelineNotifications.refineStart, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.memoryRefineRunning = true }
-            }
-        )
-        notifTokens.append(
-            nc.addObserver(forName: AXMemoryPipelineNotifications.refineEnd, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.memoryRefineRunning = false }
-            }
-        )
+        registerNotificationObserver(
+            center: nc,
+            name: AXMemoryPipelineNotifications.coarseStart
+        ) { [weak self] _ in
+            Task { @MainActor in self?.memoryCoarseRunning = true }
+        }
+        registerNotificationObserver(
+            center: nc,
+            name: AXMemoryPipelineNotifications.coarseEnd
+        ) { [weak self] _ in
+            Task { @MainActor in self?.memoryCoarseRunning = false }
+        }
+        registerNotificationObserver(
+            center: nc,
+            name: AXMemoryPipelineNotifications.refineStart
+        ) { [weak self] _ in
+            Task { @MainActor in self?.memoryRefineRunning = true }
+        }
+        registerNotificationObserver(
+            center: nc,
+            name: AXMemoryPipelineNotifications.refineEnd
+        ) { [weak self] _ in
+            Task { @MainActor in self?.memoryRefineRunning = false }
+        }
         observeModelAssignmentChanges()
 
         loadRegistry()
@@ -256,25 +475,155 @@ final class AppModel: ObservableObject {
             supervisorCalendarReminderScheduler.bind(settingsStore: ss)
         }
 
-        // Auto-connect if Hub is already running.
-        Task { @MainActor in
-            await connectToHub(auto: true)
-        }
-        Task { @MainActor in
-            await pollHubStatusLoop()
-        }
+        if !Self.isRunningUnderTestProcess {
+            startHubConnectivityLifecycleObservers()
+            startHubNetworkMonitor()
 
-        // Start local HTTP server only if enabled in settings.
-        Task { @MainActor in
-            await applyLocalServerPreference(isStartup: true)
+            // Auto-connect if Hub is already running.
+            Task { @MainActor in
+                await connectToHub(auto: true)
+            }
+            Task { @MainActor in
+                await pollHubStatusLoop()
+            }
+
+            // Start local HTTP server only if enabled in settings.
+            Task { @MainActor in
+                await applyLocalServerPreference(isStartup: true)
+            }
+        }
+    }
+
+    static func makeForTesting() -> AppModel {
+        AppModel(
+            loadPersistedProjectRegistry: false,
+            persistProjectRegistryChanges: false
+        )
+    }
+
+    func waitForPendingSelectionWorkForTesting() async {
+        if let selectionTask = projectSelectionTask {
+            _ = await selectionTask.result
+        }
+        if let rootLoadTask = projectRootLoadTask {
+            _ = await rootLoadTask.result
         }
     }
 
     deinit {
-        for t in notifTokens {
-            NotificationCenter.default.removeObserver(t)
+        projectRootLoadTask?.cancel()
+        projectSelectionTask?.cancel()
+        hubRemotePrefsDoctorRefreshTask?.cancel()
+        for observation in notifTokens {
+            observation.center.removeObserver(observation.token)
         }
         skillScanTimer?.invalidate()
+        hubNetworkMonitor?.cancel()
+    }
+
+    private func registerNotificationObserver(
+        center: NotificationCenter,
+        name: Notification.Name,
+        using block: @escaping @Sendable (Notification) -> Void
+    ) {
+        let token = center.addObserver(forName: name, object: nil, queue: .main, using: block)
+        notifTokens.append(
+            XTNotificationObservationToken(
+                center: center,
+                token: token
+            )
+        )
+    }
+
+    nonisolated static func shouldSuppressAutomaticReconnectDuringStartup(
+        now: Date,
+        warmupUntil: Date
+    ) -> Bool {
+        now < warmupUntil
+    }
+
+    nonisolated static func shouldSuppressAutomaticRemoteReconnect(
+        hubRemoteLinking: Bool,
+        startupSuppressed: Bool,
+        activeRemoteGenerate: Bool
+    ) -> Bool {
+        hubRemoteLinking || startupSuppressed || activeRemoteGenerate
+    }
+
+    nonisolated static func automaticRemoteReconnectCandidateRoutes(
+        internetHost: String
+    ) -> [XTHubRouteCandidate] {
+        HubAIClient.automaticRemoteReconnectCandidateRoutes(
+            internetHost: internetHost
+        )
+    }
+
+    nonisolated static func shouldConsumeHubInviteTokenAfterSuccessfulRemoteConnect(
+        report: HubRemoteConnectReport?,
+        inviteToken: String,
+        internetHost: String,
+        hasHubEnv: Bool
+    ) -> Bool {
+        guard let report, report.ok else { return false }
+        guard hasHubEnv else { return false }
+        guard !inviteToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+
+        let hostClassification = XTHubRemoteAccessHostClassification.classify(internetHost)
+        guard case .stableNamed = hostClassification.kind else { return false }
+        return true
+    }
+
+    nonisolated static func shouldDeferAutomaticRemoteRouteHandoff(
+        activeRemoteGenerate: Bool,
+        remoteConnected: Bool,
+        remoteRoute: HubRemoteRoute
+    ) -> Bool {
+        activeRemoteGenerate && (remoteConnected || remoteRoute != .none)
+    }
+
+    nonisolated static func shouldDeferBackgroundRemoteInventoryRefresh(
+        activeRemoteGenerate: Bool
+    ) -> Bool {
+        activeRemoteGenerate
+    }
+
+    nonisolated static func backgroundHubPollInterval(
+        activeRemoteGenerate: Bool,
+        connected: Bool
+    ) -> TimeInterval {
+        let disconnectedInterval: TimeInterval = 5.0
+        let connectedInterval: TimeInterval = 8.0
+        let remoteGenerateInterval: TimeInterval = 12.0
+        if activeRemoteGenerate {
+            return remoteGenerateInterval
+        }
+        return connected ? connectedInterval : disconnectedInterval
+    }
+
+    private func shouldSuppressAutomaticReconnectDuringStartup(now: Date = Date()) -> Bool {
+        Self.shouldSuppressAutomaticReconnectDuringStartup(
+            now: now,
+            warmupUntil: automaticReconnectStartupWarmupUntil
+        )
+    }
+
+    private func startHubConnectivityLifecycleObservers() {
+        registerNotificationObserver(
+            center: NotificationCenter.default,
+            name: NSApplication.didBecomeActiveNotification
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.handleHubConnectivityLifecycleTrigger(.appBecameActive)
+            }
+        }
+        registerNotificationObserver(
+            center: NSWorkspace.shared.notificationCenter,
+            name: NSWorkspace.didWakeNotification
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.handleHubConnectivityLifecycleTrigger(.systemWoke)
+            }
+        }
     }
 
     func connectToHub(auto: Bool = false) async {
@@ -286,7 +635,10 @@ final class AppModel: ObservableObject {
         if res.ok {
             hubRemoteConnected = false
             hubRemoteRoute = .none
+            hubRemotePaidAccessSnapshot = nil
             hubRemoteSummary = ""
+            nextRemotePresenceRefreshAt = .distantPast
+            await maybeRefreshRemotePresence(force: true)
             refreshSkillsCompatibilitySnapshot(force: true)
             refreshUnifiedDoctorReport(force: true)
             return
@@ -295,35 +647,480 @@ final class AppModel: ObservableObject {
         refreshSkillsCompatibilitySnapshot(force: true)
         refreshUnifiedDoctorReport(force: true)
         if auto {
-            maybeScheduleRemoteReconnect(allowBootstrap: false, force: false)
+            let startupDelayNs = UInt64(
+                (Self.automaticRemoteConnectStartupDelaySec * 1_000_000_000.0).rounded()
+            )
+            try? await Task.sleep(nanoseconds: startupDelayNs)
+            guard !Task.isCancelled else { return }
+            let hasEnv = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
+            let startupDisposition = Self.startupAutomaticConnectDisposition(
+                hasHubEnv: hasEnv,
+                internetHost: hubInternetHost,
+                inviteToken: hubInviteToken,
+                inviteAlias: hubInviteAlias,
+                inviteInstanceID: hubInviteInstanceID
+            )
+            switch startupDisposition {
+            case .none:
+                return
+            case .recoverExistingProfile(let allowBootstrap):
+                _ = await runRemoteConnectFlow(
+                    allowBootstrap: allowBootstrap,
+                    showAlertOnFinish: false,
+                    updateSetupProgress: true,
+                    repairTrigger: .startupAutoConnect,
+                    repairOwner: .xtRuntime,
+                    candidateRoutes: Self.automaticRemoteReconnectCandidateRoutes(
+                        internetHost: hubInternetHost
+                    )
+                )
+            case .firstPairNearby:
+                guard !startupAutomaticFirstPairAttemptedThisLaunch else { return }
+                startupAutomaticFirstPairAttemptedThisLaunch = true
+                try? await Task.sleep(nanoseconds: 700_000_000)
+                let report = await runRemoteConnectFlow(
+                    allowBootstrap: true,
+                    showAlertOnFinish: false,
+                    updateSetupProgress: true,
+                    initialSummary: "searching nearby hub ...",
+                    openHubSetupOnFailure: true,
+                    repairTrigger: .startupAutoConnect,
+                    repairOwner: .xtRuntime,
+                    candidateRoutes: Self.automaticRemoteReconnectCandidateRoutes(
+                        internetHost: hubInternetHost
+                    )
+                )
+                if Self.shouldRunAutomaticFirstPairReconnectSmoke(after: report) {
+                    _ = await runAutomaticFirstPairReconnectSmoke()
+                }
+            }
         } else {
-            _ = await runRemoteConnectFlow(allowBootstrap: true, showAlertOnFinish: true)
+            _ = await runHubOneClickSetup(showAlertOnFinish: true)
         }
     }
 
     func startHubOneClickSetup() {
         Task { @MainActor in
-            await runRemoteConnectFlow(allowBootstrap: true, showAlertOnFinish: true)
+            await runHubOneClickSetup(showAlertOnFinish: true)
         }
     }
 
     func startHubReconnectOnly() {
         Task { @MainActor in
-            await runRemoteConnectFlow(allowBootstrap: false, showAlertOnFinish: true)
+            await runRemoteConnectFlow(
+                allowBootstrap: false,
+                showAlertOnFinish: true,
+                repairTrigger: .manualReconnect,
+                repairOwner: .user
+            )
         }
     }
 
+    func runSupervisorVoiceSmokeDiagnostics() {
+        guard !supervisorVoiceSmokeRunning else { return }
+
+        let workspaceRoot: URL
+        do {
+            workspaceRoot = try supervisorVoiceSmokeDiagnosticsWorkspaceRoot()
+        } catch {
+            supervisorVoiceSmokeLastPassed = false
+            supervisorVoiceSmokeStatusLine = "Supervisor 语音自检无法启动"
+            supervisorVoiceSmokeDetailLine = "诊断工作区创建失败：\(error.localizedDescription)"
+            return
+        }
+
+        let outputURL = workspaceRoot
+            .appendingPathComponent(".axcoder/reports", isDirectory: true)
+            .appendingPathComponent("xt_supervisor_voice_smoke.runtime.json")
+
+        supervisorVoiceSmokeRunning = true
+        supervisorVoiceSmokeLastPassed = nil
+        supervisorVoiceSmokeReportURL = outputURL
+        supervisorVoiceSmokeStatusLine = "Supervisor 语音自检运行中..."
+        supervisorVoiceSmokeDetailLine = "工作区：\(workspaceRoot.path)"
+
+        Task { @MainActor in
+            let exitCode = await XTerminalGateSmokeRunner.runSupervisorVoiceSmokeCheck(
+                workspaceRoot: workspaceRoot,
+                outputURL: outputURL
+            )
+            finishSupervisorVoiceSmokeDiagnostics(exitCode: exitCode, outputURL: outputURL)
+        }
+    }
+
+    var canOpenSupervisorVoiceSmokeReport: Bool {
+        guard let url = effectiveSupervisorVoiceSmokeReportURL() else { return false }
+        return FileManager.default.fileExists(atPath: url.path)
+    }
+
+    func openSupervisorVoiceSmokeReport() {
+        guard canOpenSupervisorVoiceSmokeReport,
+              let url = effectiveSupervisorVoiceSmokeReportURL() else { return }
+        openURLInWorkspace(url)
+    }
+
     func runHubOneClickSetup(showAlertOnFinish: Bool = false) async -> HubRemoteConnectReport? {
-        await runRemoteConnectFlow(allowBootstrap: true, showAlertOnFinish: showAlertOnFinish)
+        guard let report = await runRemoteConnectFlow(
+            allowBootstrap: true,
+            showAlertOnFinish: false,
+            updateSetupProgress: true,
+            openHubSetupOnFailure: true,
+            repairTrigger: .manualOneClickSetup,
+            repairOwner: .user
+        ) else {
+            return nil
+        }
+
+        if Self.shouldRunFreshPairReconnectSmoke(after: report) {
+            let smokeReport = await runFreshPairReconnectSmoke(
+                source: .manualOneClickSetup,
+                useStartupLaunchGuard: false,
+                showAlertOnFinish: showAlertOnFinish,
+                openHubSetupOnFailure: true
+            )
+            return smokeReport ?? report
+        }
+
+        if showAlertOnFinish {
+            showHubRemoteConnectAlert(for: report)
+        }
+        return report
     }
 
     func runHubReconnectOnly(showAlertOnFinish: Bool = false) async -> HubRemoteConnectReport? {
-        await runRemoteConnectFlow(allowBootstrap: false, showAlertOnFinish: showAlertOnFinish)
+        await runRemoteConnectFlow(
+            allowBootstrap: false,
+            showAlertOnFinish: showAlertOnFinish,
+            repairTrigger: .manualReconnect,
+            repairOwner: .user
+        )
     }
 
-    func saveHubRemotePrefsNow() {
-        saveHubRemotePrefs()
+    private func runAutomaticFirstPairReconnectSmoke() async -> HubRemoteConnectReport? {
+        await runFreshPairReconnectSmoke(
+            source: .startupAutomaticFirstPair,
+            useStartupLaunchGuard: true,
+            showAlertOnFinish: false,
+            openHubSetupOnFailure: true
+        )
+    }
+
+    private func runFreshPairReconnectSmoke(
+        source: XTFreshPairReconnectSmokeSource,
+        useStartupLaunchGuard: Bool,
+        showAlertOnFinish: Bool,
+        openHubSetupOnFailure: Bool
+    ) async -> HubRemoteConnectReport? {
+        if useStartupLaunchGuard {
+            guard !startupAutomaticFirstPairSmokeAttemptedThisLaunch else { return nil }
+            startupAutomaticFirstPairSmokeAttemptedThisLaunch = true
+        }
+
+        let startedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
+        hubFreshPairReconnectSmokeSnapshot = XTFreshPairReconnectSmokeSnapshot(
+            source: source,
+            status: .running,
+            triggeredAtMs: startedAtMs,
+            completedAtMs: 0,
+            route: hubRemoteRoute,
+            reasonCode: nil,
+            summary: "verifying paired route ..."
+        )
+        hubRemoteSummary = "verifying paired route ..."
         refreshUnifiedDoctorReport(force: true)
+        guard var report = await runRemoteConnectFlow(
+            allowBootstrap: false,
+            showAlertOnFinish: false,
+            updateSetupProgress: false,
+            openHubSetupOnFailure: openHubSetupOnFailure,
+            repairTrigger: .freshPairReconnectSmoke,
+            repairOwner: .xtRuntime,
+            candidateRoutes: Self.automaticRemoteReconnectCandidateRoutes(
+                internetHost: hubInternetHost
+            )
+        ) else {
+            return nil
+        }
+        let completedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
+        if report.ok {
+            report.summary = "first pair complete; cached route verified."
+            hubRemoteSummary = report.summary
+            hubSetupFailureCode = ""
+            hubFreshPairReconnectSmokeSnapshot = XTFreshPairReconnectSmokeSnapshot(
+                source: source,
+                status: .succeeded,
+                triggeredAtMs: startedAtMs,
+                completedAtMs: completedAtMs,
+                route: report.route,
+                reasonCode: nil,
+                summary: report.summary
+            )
+            scheduleFirstPairRemoteShadowReconnectSmokeIfNeeded(
+                after: report,
+                useStartupLaunchGuard: useStartupLaunchGuard
+            )
+        } else {
+            hubSetupFailureCode = report.reasonCode ?? report.summary
+            hubFreshPairReconnectSmokeSnapshot = XTFreshPairReconnectSmokeSnapshot(
+                source: source,
+                status: .failed,
+                triggeredAtMs: startedAtMs,
+                completedAtMs: completedAtMs,
+                route: report.route,
+                reasonCode: report.reasonCode,
+                summary: report.summary
+            )
+        }
+        hubConnectivityIncidentSnapshot = currentHubConnectivityIncidentSnapshot(
+            trigger: .backgroundKeepalive,
+            currentPath: lastHubNetworkPathFingerprint
+        )
+        refreshUnifiedDoctorReport(force: true)
+        if showAlertOnFinish {
+            showHubRemoteConnectAlert(for: report)
+        }
+        return report
+    }
+
+    private func scheduleFirstPairRemoteShadowReconnectSmokeIfNeeded(
+        after report: HubRemoteConnectReport,
+        useStartupLaunchGuard: Bool
+    ) {
+        let pairedRouteSetSnapshot = currentPairedRouteSetSnapshot()
+        guard Self.shouldRunRemoteShadowReconnectSmoke(
+            after: report,
+            pairedRouteSetSnapshot: pairedRouteSetSnapshot,
+            existingSnapshot: hubRemoteShadowReconnectSmokeSnapshot
+        ) else {
+            return
+        }
+
+        if report.route == .internet {
+            let completedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
+            hubRemoteShadowReconnectSmokeSnapshot = XTRemoteShadowReconnectSmokeSnapshot(
+                source: .cachedRemoteReconnectEvidence,
+                status: .succeeded,
+                triggeredAtMs: completedAtMs,
+                completedAtMs: completedAtMs,
+                route: .internet,
+                reasonCode: nil,
+                summary: "stable remote route was already verified by cached reconnect smoke."
+            )
+            hubConnectivityIncidentSnapshot = currentHubConnectivityIncidentSnapshot(
+                trigger: .backgroundKeepalive,
+                currentPath: lastHubNetworkPathFingerprint,
+                pairedRouteSetSnapshot: currentPairedRouteSetSnapshot(),
+                updatedAt: Date()
+            )
+            refreshUnifiedDoctorReport(force: true)
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.runRemoteShadowReconnectSmoke(
+                useStartupLaunchGuard: useStartupLaunchGuard
+            )
+        }
+    }
+
+    private func runRemoteShadowReconnectSmoke(
+        useStartupLaunchGuard: Bool
+    ) async {
+        if useStartupLaunchGuard {
+            guard !startupAutomaticFirstPairRemoteShadowSmokeAttemptedThisLaunch else { return }
+            startupAutomaticFirstPairRemoteShadowSmokeAttemptedThisLaunch = true
+        }
+
+        guard currentPairedRouteSetSnapshot().stableRemoteRoute != nil else {
+            return
+        }
+        guard hubRemoteShadowReconnectSmokeSnapshot?.status != .running else {
+            return
+        }
+
+        let startedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
+        hubRemoteShadowReconnectSmokeSnapshot = XTRemoteShadowReconnectSmokeSnapshot(
+            source: .dedicatedStableRemoteProbe,
+            status: .running,
+            triggeredAtMs: startedAtMs,
+            completedAtMs: 0,
+            route: .internet,
+            reasonCode: nil,
+            summary: "verifying stable remote route shadow path ..."
+        )
+        hubConnectivityIncidentSnapshot = currentHubConnectivityIncidentSnapshot(
+            trigger: .backgroundKeepalive,
+            currentPath: lastHubNetworkPathFingerprint,
+            pairedRouteSetSnapshot: currentPairedRouteSetSnapshot(),
+            updatedAt: Date()
+        )
+        refreshUnifiedDoctorReport(force: true)
+
+        guard let report = await runRemoteConnectFlow(
+            allowBootstrap: false,
+            showAlertOnFinish: false,
+            updateSetupProgress: false,
+            openHubSetupOnFailure: false,
+            repairTrigger: .remoteShadowReconnectSmoke,
+            repairOwner: .xtRuntime,
+            preferredRoute: .stableNamedRemote,
+            candidateRoutes: [.stableNamedRemote]
+        ) else {
+            return
+        }
+
+        let completedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
+        hubRemoteShadowReconnectSmokeSnapshot = XTRemoteShadowReconnectSmokeSnapshot(
+            source: .dedicatedStableRemoteProbe,
+            status: report.ok ? .succeeded : .failed,
+            triggeredAtMs: startedAtMs,
+            completedAtMs: completedAtMs,
+            route: report.ok ? report.route : .internet,
+            reasonCode: report.reasonCode,
+            summary: report.ok
+                ? "stable remote route shadow verification passed."
+                : (report.summary.isEmpty ? "stable remote route shadow verification failed." : report.summary)
+        )
+        hubConnectivityIncidentSnapshot = currentHubConnectivityIncidentSnapshot(
+            trigger: .backgroundKeepalive,
+            currentPath: lastHubNetworkPathFingerprint,
+            pairedRouteSetSnapshot: currentPairedRouteSetSnapshot(),
+            updatedAt: Date()
+        )
+        refreshUnifiedDoctorReport(force: true)
+    }
+
+    func saveHubRemotePrefsNow(markEndpointOverride: Bool = false) {
+        if markEndpointOverride {
+            setHubRemoteEndpointOverridePending(true)
+        }
+        saveHubRemotePrefs()
+        scheduleHubRemotePrefsDoctorRefresh()
+    }
+
+    func setHubPairingPortFromUser(_ value: Int) {
+        hubPairingPort = max(1, min(65_535, value))
+        saveHubRemotePrefsNow(markEndpointOverride: true)
+    }
+
+    func setHubGrpcPortFromUser(_ value: Int) {
+        hubGrpcPort = max(1, min(65_535, value))
+        saveHubRemotePrefsNow(markEndpointOverride: true)
+    }
+
+    func setHubInternetHostFromUser(_ value: String) {
+        hubInternetHost = value
+        saveHubRemotePrefsNow(markEndpointOverride: true)
+    }
+
+    private func scheduleHubRemotePrefsDoctorRefresh() {
+        hubRemotePrefsDoctorRefreshTask?.cancel()
+        hubRemotePrefsDoctorRefreshTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: Self.hubRemotePrefsDoctorRefreshDebounceNs)
+            guard !Task.isCancelled else { return }
+            self?.refreshUnifiedDoctorReport(force: true)
+        }
+    }
+
+    private func finishSupervisorVoiceSmokeDiagnostics(exitCode: Int, outputURL: URL) {
+        supervisorVoiceSmokeRunning = false
+        supervisorVoiceSmokeReportURL = outputURL
+
+        do {
+            let report = try XTSupervisorVoiceSmokeReportSummary.load(from: outputURL)
+            supervisorVoiceSmokeReportSummary = report
+            let passed = exitCode == 0 && report.isPassing
+            let route = (report.voiceRoute ?? "unknown")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            supervisorVoiceSmokeLastPassed = passed
+            if let error = report.normalizedError {
+                supervisorVoiceSmokeStatusLine = "Supervisor 语音自检失败 · \(error)"
+            } else {
+                supervisorVoiceSmokeStatusLine = "\(passed ? "已通过" : "未通过") · \(report.passedCheckCount)/\(report.checkCount) checks · route=\(route.isEmpty ? "unknown" : route)"
+            }
+            if passed {
+                supervisorVoiceSmokeDetailLine = "报告：\(outputURL.path)"
+            } else if let failedPhase = report.firstFailedPhase,
+                      let failureLine = report.failureSummaryLine(for: failedPhase) {
+                supervisorVoiceSmokeDetailLine = "\(failureLine) 报告：\(outputURL.path)"
+            } else {
+                supervisorVoiceSmokeDetailLine = "报告：\(outputURL.path)"
+            }
+        } catch {
+            supervisorVoiceSmokeReportSummary = nil
+            supervisorVoiceSmokeLastPassed = false
+            supervisorVoiceSmokeStatusLine = exitCode == 0
+                ? "Supervisor 语音自检完成，但报告不可读"
+                : "Supervisor 语音自检失败"
+            supervisorVoiceSmokeDetailLine = "报告读取失败：\(error.localizedDescription)"
+        }
+        refreshUnifiedDoctorReport(force: true)
+    }
+
+    private func supervisorVoiceSmokeDiagnosticsWorkspaceRoot() throws -> URL {
+        let supportBase = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Application Support", isDirectory: true)
+        let workspaceRoot = supportBase
+            .appendingPathComponent("X-Terminal", isDirectory: true)
+            .appendingPathComponent("diagnostics", isDirectory: true)
+            .appendingPathComponent("voice-smoke", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        return workspaceRoot
+    }
+
+    private func loadSupervisorVoiceSmokeReportSummary() -> XTSupervisorVoiceSmokeReportSummary? {
+        let defaultReportURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Application Support", isDirectory: true)
+            .appendingPathComponent("X-Terminal", isDirectory: true)
+            .appendingPathComponent("diagnostics", isDirectory: true)
+            .appendingPathComponent("voice-smoke", isDirectory: true)
+            .appendingPathComponent(".axcoder/reports", isDirectory: true)
+            .appendingPathComponent("xt_supervisor_voice_smoke.runtime.json")
+        let candidates = [supervisorVoiceSmokeReportURL, defaultReportURL].compactMap { $0 }
+        for candidate in candidates {
+            guard FileManager.default.fileExists(atPath: candidate.path) else { continue }
+            if let report = try? XTSupervisorVoiceSmokeReportSummary.load(from: candidate) {
+                supervisorVoiceSmokeReportURL = candidate
+                supervisorVoiceSmokeReportSummary = report
+                if !supervisorVoiceSmokeRunning && supervisorVoiceSmokeStatusLine.isEmpty {
+                    supervisorVoiceSmokeLastPassed = report.isPassing
+                    let route = (report.voiceRoute ?? "unknown").trimmingCharacters(in: .whitespacesAndNewlines)
+                    supervisorVoiceSmokeStatusLine = "\(report.isPassing ? "已通过" : "最近一次未通过") · \(report.passedCheckCount)/\(report.checkCount) checks · route=\(route.isEmpty ? "unknown" : route)"
+                    supervisorVoiceSmokeDetailLine = "报告：\(candidate.path)"
+                }
+                return report
+            }
+        }
+        return supervisorVoiceSmokeReportSummary
+    }
+
+    func applyHubPairingInvitePrefill(_ prefill: XTHubPairingInvitePrefill) {
+        var endpointChanged = false
+        if let pairingPort = prefill.pairingPort {
+            hubPairingPort = max(1, min(65_535, pairingPort))
+            endpointChanged = true
+        }
+        if let grpcPort = prefill.grpcPort {
+            hubGrpcPort = max(1, min(65_535, grpcPort))
+            endpointChanged = true
+        }
+        if let internetHost = normalizedDeepLinkToken(prefill.internetHost) {
+            hubInternetHost = internetHost
+            endpointChanged = true
+        }
+        if let inviteToken = normalizedDeepLinkToken(prefill.inviteToken) {
+            hubInviteToken = inviteToken
+        }
+        if let inviteAlias = normalizedDeepLinkToken(prefill.hubAlias) {
+            hubInviteAlias = inviteAlias
+        }
+        if let inviteInstanceID = normalizedDeepLinkToken(prefill.hubInstanceID) {
+            hubInviteInstanceID = inviteInstanceID
+        }
+        saveHubRemotePrefsNow(markEndpointOverride: endpointChanged)
     }
 
     func setLocalServerEnabled(_ enabled: Bool) {
@@ -377,10 +1174,9 @@ final class AppModel: ObservableObject {
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
 
-        if panel.runModal() == .OK {
-            if let url = panel.url {
-                addProject(url)
-            }
+        presentOpenPanel(panel) { [weak self] urls in
+            guard let self, let url = urls.first else { return }
+            self.addProject(url)
         }
     }
 
@@ -394,17 +1190,18 @@ final class AppModel: ObservableObject {
             panel.directoryURL = base
         }
 
-        if panel.runModal() == .OK, let url = panel.url {
-            rememberSkillsDirectory(for: url)
+        presentOpenPanel(panel) { [weak self] urls in
+            guard let self, let url = urls.first else { return }
+            self.rememberSkillsDirectory(for: url)
             if url.hasDirectoryPath {
                 let skillMD = url.appendingPathComponent("SKILL.md")
                 if FileManager.default.fileExists(atPath: skillMD.path) {
-                    NSWorkspace.shared.open(skillMD)
+                    self.openURLInWorkspace(skillMD)
                 } else {
-                    NSWorkspace.shared.open(url)
+                    self.openURLInWorkspace(url)
                 }
             } else {
-                NSWorkspace.shared.open(url)
+                self.openURLInWorkspace(url)
             }
         }
     }
@@ -412,7 +1209,7 @@ final class AppModel: ObservableObject {
     func openCurrentSkillsIndex() {
         let selectedProject = selectedProjectId == AXProjectRegistry.globalHomeId ? nil : selectedProjectId
         let projectName = selectedProject.flatMap { registry.project(for: $0)?.displayName }
-        guard let skillsDir = AXSkillsLibrary.resolveSkillsDirectory() else {
+        guard let skillsDir = resolveSkillsDirectory() else {
             showAlert(title: "Skills Index", message: "Skills directory not configured.")
             return
         }
@@ -433,12 +1230,384 @@ final class AppModel: ObservableObject {
             showAlert(title: "Skills Index", message: "No \(scope) skills index found yet.")
             return
         }
-        NSWorkspace.shared.open(targetURL)
+        openURLInWorkspace(targetURL)
+    }
+
+    func openWorkspaceURL(_ url: URL?) {
+        guard let url else { return }
+        openURLInWorkspace(url)
+    }
+
+    func presentSkillLibraryAlert(title: String, message: String) {
+        showAlert(title: title, message: message)
+    }
+
+    func canPerformSkillGovernanceSurfaceAction(
+        _ action: String,
+        for entry: AXSkillGovernanceSurfaceEntry
+    ) -> Bool {
+        switch normalizedSkillGovernanceSurfaceAction(action) {
+        case "install_baseline":
+            return hubInteractive && !baselineInstallBusy
+        case "pin_package_project":
+            return hubInteractive && selectedProjectBaselineInstallScope() != nil
+        case "pin_package_global":
+            return hubInteractive
+        case "request_local_approval", "open_project_settings":
+            return selectedProjectBaselineInstallScope() != nil
+        case "request_hub_grant", "open_trusted_automation_doctor", "reconnect_hub",
+             "open_skill_governance_surface", "refresh_resolved_cache", "retry_dispatch":
+            return true
+        default:
+            return false
+        }
+    }
+
+    func performSkillGovernanceSurfaceAction(
+        _ action: String,
+        for entry: AXSkillGovernanceSurfaceEntry
+    ) {
+        let normalizedAction = normalizedSkillGovernanceSurfaceAction(action)
+        guard !normalizedAction.isEmpty else { return }
+
+        switch normalizedAction {
+        case "install_baseline":
+            let scope = selectedProjectBaselineInstallScope() ?? .global
+            let target = scope.hubScope
+            skillGovernanceActionStatusLine = "skill_governance_action=install_baseline skill=\(entry.skillID) target=\(target)"
+            if let override = baselineInstallActionOverrideForTesting {
+                override(scope)
+                return
+            }
+            if selectedProjectBaselineInstallScope() != nil {
+                installDefaultAgentBaselineForCurrentProject()
+            } else {
+                installDefaultAgentBaselineGlobally()
+            }
+        case "pin_package_project":
+            guard let scope = selectedProjectBaselineInstallScope() else {
+                showAlert(
+                    title: "Pin Governed Skill",
+                    message: "Select a project first before pinning \(governanceSurfaceSubject(entry)) to project scope."
+                )
+                return
+            }
+            Task { @MainActor [weak self] in
+                await self?.pinGovernedSkillFromGovernanceSurface(entry, scope: scope)
+            }
+        case "pin_package_global":
+            Task { @MainActor [weak self] in
+                await self?.pinGovernedSkillFromGovernanceSurface(entry, scope: .global)
+            }
+        case "refresh_resolved_cache":
+            skillGovernanceActionStatusLine = "skill_governance_action=refresh skill=\(entry.skillID) status=running"
+            recheckOfficialSkills(reason: "skill_governance_surface_refresh")
+            skillGovernanceActionStatusLine = officialSkillsRecheckStatusLine.isEmpty
+                ? "skill_governance_action=refresh skill=\(entry.skillID) status=done"
+                : officialSkillsRecheckStatusLine
+        case "retry_dispatch":
+            skillGovernanceActionStatusLine = "skill_governance_action=retry_dispatch skill=\(entry.skillID) status=rechecking"
+            recheckOfficialSkills(reason: "skill_governance_retry_dispatch")
+            openSkillGovernanceSurface(
+                for: entry,
+                title: "重查技能执行状态",
+                detail: governanceSurfaceDetail(
+                    entry,
+                    fallback: "已重查当前 governed skill truth；如果仍然 blocked，请继续沿当前治理面处理。"
+                )
+            )
+        case "request_local_approval":
+            guard let projectScope = selectedProjectBaselineInstallScope() else {
+                showAlert(
+                    title: "Handle Local Approval",
+                    message: "Select a project first before handling local approval for \(governanceSurfaceSubject(entry))."
+                )
+                return
+            }
+            skillGovernanceActionStatusLine = "skill_governance_action=request_local_approval skill=\(entry.skillID) scope=\(projectScope.hubScope)"
+            requestProjectSettingsFocus(
+                projectId: projectScope.projectId,
+                destination: .overview,
+                title: "处理本地技能审批",
+                detail: governanceSurfaceDetail(
+                    entry,
+                    fallback: "查看当前项目的技能治理概况，并处理待本地确认的技能动作。"
+                )
+            )
+        case "open_project_settings":
+            guard let projectScope = selectedProjectBaselineInstallScope() else {
+                showAlert(
+                    title: "Open Project Settings",
+                    message: "No project is currently selected. Open a project first to inspect governed skill settings."
+                )
+                return
+            }
+            skillGovernanceActionStatusLine = "skill_governance_action=open_project_settings skill=\(entry.skillID) scope=\(projectScope.hubScope)"
+            requestProjectSettingsFocus(
+                projectId: projectScope.projectId,
+                destination: .overview,
+                title: "技能治理总览",
+                detail: governanceSurfaceDetail(
+                    entry,
+                    fallback: "查看当前项目的 governed skill profiles / readiness / blockers。"
+                )
+            )
+        case "open_skill_governance_surface":
+            skillGovernanceActionStatusLine = "skill_governance_action=open_surface skill=\(entry.skillID)"
+            openSkillGovernanceSurface(
+                for: entry,
+                title: "技能治理明细",
+                detail: governanceSurfaceDetail(
+                    entry,
+                    fallback: "查看当前 governed skill 的 discover / install / request / run 真相。"
+                )
+            )
+        case "request_hub_grant":
+            skillGovernanceActionStatusLine = "skill_governance_action=request_hub_grant skill=\(entry.skillID)"
+            openGovernanceRouteURL(
+                XTDeepLinkURLBuilder.hubSetupURL(
+                    sectionId: "troubleshoot",
+                    title: "处理技能 Hub Grant",
+                    detail: governanceSurfaceDetail(
+                        entry,
+                        fallback: "打开 Hub Troubleshoot，优先确认缺少的 Hub grant / pairing / policy 条件。"
+                    )
+                )
+            )
+        case "open_trusted_automation_doctor":
+            skillGovernanceActionStatusLine = "skill_governance_action=open_trusted_automation_doctor skill=\(entry.skillID)"
+            openGovernanceRouteURL(
+                XTDeepLinkURLBuilder.settingsURL(
+                    sectionId: "diagnostics",
+                    title: "Trusted Automation Doctor",
+                    detail: governanceSurfaceDetail(
+                        entry,
+                        fallback: "打开 XT Diagnostics，检查 trusted automation readiness 与本地权限条件。"
+                    )
+                )
+            )
+        case "reconnect_hub":
+            skillGovernanceActionStatusLine = "skill_governance_action=reconnect_hub skill=\(entry.skillID)"
+            openGovernanceRouteURL(
+                XTDeepLinkURLBuilder.hubSetupURL(
+                    sectionId: "pair_progress",
+                    title: "Reconnect Hub",
+                    detail: governanceSurfaceDetail(
+                        entry,
+                        fallback: "打开 Hub Setup 并重查当前配对 / 远端可达性。"
+                    )
+                )
+            )
+        default:
+            showAlert(
+                title: "Skill Governance Action",
+                message: "Unsupported unblock action: \(normalizedAction)"
+            )
+        }
+    }
+
+    func createLocalSkillManifest(at folderURL: URL) {
+        let standardized = folderURL.standardizedFileURL
+        rememberSkillsDirectory(for: standardized)
+
+        guard FileManager.default.fileExists(atPath: standardized.path) else {
+            showAlert(
+                title: "Create skill.json",
+                message: "Skill folder no longer exists: \(standardized.path)"
+            )
+            return
+        }
+
+        let manifestURL = standardized.appendingPathComponent("skill.json")
+        if FileManager.default.fileExists(atPath: manifestURL.path) {
+            openURLInWorkspace(manifestURL)
+            showAlert(
+                title: "Create skill.json",
+                message: "skill.json already exists for \(standardized.lastPathComponent)\n\n\(manifestURL.path)"
+            )
+            return
+        }
+
+        do {
+            let manifestJSON = try defaultLocalSkillManifestJSON(for: standardized)
+            try manifestJSON.write(to: manifestURL, atomically: true, encoding: .utf8)
+            refreshSkillsCompatibilitySnapshot(force: true)
+            openURLInWorkspace(manifestURL)
+            showAlert(
+                title: "Create skill.json",
+                message: "Created minimal ABI-compatible manifest for \(standardized.lastPathComponent)\n\n\(manifestURL.path)"
+            )
+        } catch {
+            showAlert(
+                title: "Create skill.json",
+                message: "Failed to create skill.json: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    func renameLocalSkill(at folderURL: URL) {
+        let standardized = folderURL.standardizedFileURL
+        rememberSkillsDirectory(for: standardized)
+
+        guard FileManager.default.fileExists(atPath: standardized.path) else {
+            showAlert(
+                title: "Rename Skill Folder",
+                message: "Skill folder no longer exists: \(standardized.path)"
+            )
+            return
+        }
+
+        let title = "Rename Skill Folder"
+        let message = "Rename local skill folder for \"\(standardized.lastPathComponent)\".\n\nThis changes the folder name only. Existing skill_id / manifest identity is left untouched."
+        guard let requestedName = promptForSkillRename(
+            title: title,
+            message: message,
+            initialValue: standardized.lastPathComponent
+        ) else {
+            return
+        }
+
+        let sanitizedName = sanitizePathComponent(requestedName)
+        guard !sanitizedName.isEmpty else {
+            showAlert(
+                title: title,
+                message: "Folder name cannot be empty."
+            )
+            return
+        }
+
+        guard sanitizedName != standardized.lastPathComponent else {
+            return
+        }
+
+        let destination = standardized.deletingLastPathComponent().appendingPathComponent(sanitizedName, isDirectory: true)
+        guard !FileManager.default.fileExists(atPath: destination.path) else {
+            showAlert(
+                title: title,
+                message: "A skill folder named \"\(sanitizedName)\" already exists.\n\n\(destination.path)"
+            )
+            return
+        }
+
+        do {
+            try FileManager.default.moveItem(at: standardized, to: destination)
+            if lastImportedAgentSkillDirectory?.standardizedFileURL == standardized {
+                lastImportedAgentSkillDirectory = destination
+                lastImportedAgentSkillName = sanitizedName
+            }
+            refreshSkillsCompatibilitySnapshot(force: true)
+            let skillMarkdownURL = destination.appendingPathComponent("SKILL.md")
+            if FileManager.default.fileExists(atPath: skillMarkdownURL.path) {
+                openURLInWorkspace(skillMarkdownURL)
+            } else {
+                openURLInWorkspace(destination)
+            }
+            showAlert(
+                title: title,
+                message: "Renamed \(standardized.lastPathComponent) -> \(sanitizedName)\n\n\(destination.path)"
+            )
+        } catch {
+            showAlert(
+                title: title,
+                message: "Failed to rename skill folder: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    func duplicateLocalSkill(at folderURL: URL) {
+        let standardized = folderURL.standardizedFileURL
+        rememberSkillsDirectory(for: standardized)
+
+        guard FileManager.default.fileExists(atPath: standardized.path) else {
+            showAlert(
+                title: "Duplicate Skill",
+                message: "Skill folder no longer exists: \(standardized.path)"
+            )
+            return
+        }
+
+        let destination = uniqueDuplicatedSkillURL(for: standardized)
+        do {
+            try FileManager.default.copyItem(at: standardized, to: destination)
+            refreshSkillsCompatibilitySnapshot(force: true)
+            let duplicatedSkillMarkdown = destination.appendingPathComponent("SKILL.md")
+            if FileManager.default.fileExists(atPath: duplicatedSkillMarkdown.path) {
+                openURLInWorkspace(duplicatedSkillMarkdown)
+            } else {
+                openURLInWorkspace(destination)
+            }
+            showAlert(
+                title: "Duplicate Skill",
+                message: "Created \(destination.lastPathComponent)\n\n\(destination.path)"
+            )
+        } catch {
+            showAlert(
+                title: "Duplicate Skill",
+                message: "Failed to duplicate skill: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    func removeLocalSkill(at folderURL: URL) {
+        let standardized = folderURL.standardizedFileURL
+        rememberSkillsDirectory(for: standardized)
+
+        guard FileManager.default.fileExists(atPath: standardized.path) else {
+            showAlert(
+                title: "Remove Skill",
+                message: "Skill folder no longer exists: \(standardized.path)"
+            )
+            return
+        }
+
+        guard confirmRemoveSkill(name: standardized.lastPathComponent, path: standardized.path) else {
+            return
+        }
+
+        do {
+            try FileManager.default.removeItem(at: standardized)
+            if lastImportedAgentSkillDirectory?.standardizedFileURL == standardized {
+                lastImportedAgentSkillDirectory = nil
+                lastImportedAgentSkillName = ""
+                lastImportedAgentSkillStage = nil
+                lastImportedAgentSkillStatusLine = ""
+            }
+            refreshSkillsCompatibilitySnapshot(force: true)
+            showAlert(
+                title: "Remove Skill",
+                message: "Removed \(standardized.lastPathComponent)\n\n\(standardized.path)"
+            )
+        } catch {
+            showAlert(
+                title: "Remove Skill",
+                message: "Failed to remove skill: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    func openCurrentProjectXTerminalFolder() {
+        openCurrentProjectArtifact { $0.xterminalDir }
+    }
+
+    func openCurrentProjectMemoryMarkdown() {
+        openCurrentProjectArtifact { $0.memoryMarkdownURL }
+    }
+
+    func openCurrentProjectMemoryJSON() {
+        openCurrentProjectArtifact { $0.memoryJSONURL }
+    }
+
+    func openCurrentProjectConfig() {
+        openCurrentProjectArtifact { $0.configURL }
+    }
+
+    func openCurrentProjectRawLog() {
+        openCurrentProjectArtifact { $0.rawLogURL }
     }
 
     func importSkills() {
         let panel = NSOpenPanel()
-        panel.title = "Import Skill(s)"
+        panel.title = "Import Skills or Packages"
         panel.prompt = "Import"
         panel.canChooseDirectories = true
         panel.canChooseFiles = true
@@ -447,16 +1616,16 @@ final class AppModel: ObservableObject {
             panel.directoryURL = base
         }
 
-        if panel.runModal() == .OK {
-            guard let base = ensureSkillsDirectory() else { return }
-            rememberSkillsDirectory(for: base)
-            let selectedURLs = panel.urls
+        presentOpenPanel(panel) { [weak self] selectedURLs in
+            guard let self else { return }
+            guard let base = self.ensureSkillsDirectory() else { return }
+            self.rememberSkillsDirectory(for: base)
             Task { @MainActor in
                 var imported = 0
                 var skipped = 0
                 var stageSummaries: [String] = []
                 for url in selectedURLs {
-                    let result = await importSkill(from: url, to: base)
+                    let result = await self.importSkill(from: url, to: base)
                     if result.imported {
                         imported += 1
                     } else {
@@ -472,12 +1641,12 @@ final class AppModel: ObservableObject {
                     lines.append(contentsOf: stageSummaries)
                 }
                 if imported > 0 || skipped > 0 {
-                    showAlert(
+                    self.showAlert(
                         title: "Import Skills",
                         message: lines.joined(separator: "\n")
                     )
                 }
-                refreshSkillsCompatibilitySnapshot(force: true)
+                self.refreshSkillsCompatibilitySnapshot(force: true)
             }
         }
     }
@@ -491,7 +1660,9 @@ final class AppModel: ObservableObject {
         let removed = reg.projects.first(where: { $0.projectId == projectId })
         reg = AXProjectRegistryStore.removeProject(reg, projectId: projectId)
         registry = reg
-        AXProjectRegistryStore.save(reg)
+        if persistProjectRegistryChanges {
+            AXProjectRegistryStore.save(reg)
+        }
         if let removed {
             eventBus.publish(.projectRemoved(removed))
         }
@@ -539,6 +1710,18 @@ final class AppModel: ObservableObject {
         guard let entry = registry.projects.first(where: { $0.projectId == projectId }) else { return nil }
         let url = URL(fileURLWithPath: entry.rootPath, isDirectory: true)
         return AXProjectContext(root: url)
+    }
+
+    func projectConfigSnapshot(for ctx: AXProjectContext) -> AXProjectConfig? {
+        if isCurrentProjectContext(ctx), let projectConfig {
+            return projectConfig
+        }
+        return try? AXProjectStore.loadOrCreateConfig(for: ctx)
+    }
+
+    func projectConfigSnapshot(for projectId: String) -> AXProjectConfig? {
+        guard let ctx = projectContext(for: projectId) else { return nil }
+        return projectConfigSnapshot(for: ctx)
     }
 
     func sessionForProjectId(_ projectId: String) -> ChatSessionModel? {
@@ -680,6 +1863,22 @@ final class AppModel: ObservableObject {
         )
     }
 
+    func requestSupervisorCandidateReviewFocus(
+        projectId: String?,
+        requestId: String?
+    ) {
+        let normalizedProjectId = normalizedDeepLinkToken(projectId)
+        let normalizedRequestId = normalizedDeepLinkToken(requestId)
+        guard let normalizedRequestId else { return }
+
+        nextSupervisorFocusRequestNonce += 1
+        supervisorFocusRequest = AXSupervisorFocusRequest(
+            nonce: nextSupervisorFocusRequestNonce,
+            projectId: normalizedProjectId,
+            subject: .candidateReview(requestId: normalizedRequestId)
+        )
+    }
+
     func requestSupervisorSkillRecordFocus(
         projectId: String?,
         requestId: String?
@@ -789,10 +1988,35 @@ final class AppModel: ObservableObject {
         settingsFocusRequest = nil
     }
 
+    func requestSupervisorSettingsFocus(
+        section: XTSupervisorSettingsFocusSection,
+        title: String? = nil,
+        detail: String? = nil
+    ) {
+        let sectionContext = section.focusContext
+        let context = normalizedFocusContext(
+            title: title ?? sectionContext.title,
+            detail: detail ?? sectionContext.detail
+        )
+
+        nextSupervisorSettingsFocusRequestNonce += 1
+        supervisorSettingsFocusRequest = XTSupervisorSettingsFocusRequest(
+            nonce: nextSupervisorSettingsFocusRequestNonce,
+            section: section,
+            context: context
+        )
+    }
+
+    func clearSupervisorSettingsFocusRequest(_ request: XTSupervisorSettingsFocusRequest) {
+        guard supervisorSettingsFocusRequest?.nonce == request.nonce else { return }
+        supervisorSettingsFocusRequest = nil
+    }
+
     func requestProjectSettingsFocus(
         projectId: String?,
         destination: XTProjectGovernanceDestination?,
         preserveCurrentPane: Bool = false,
+        overviewAnchor: XTProjectSettingsOverviewAnchor? = nil,
         title: String? = nil,
         detail: String? = nil
     ) {
@@ -811,7 +2035,8 @@ final class AppModel: ObservableObject {
             nonce: nextProjectSettingsFocusRequestNonce,
             projectId: normalizedProjectId,
             destination: destination,
-            context: context
+            context: context,
+            overviewAnchor: overviewAnchor
         )
         if !preserveCurrentPane {
             setPane(.chat, for: normalizedProjectId)
@@ -823,6 +2048,7 @@ final class AppModel: ObservableObject {
         projectId: String?,
         sectionId: String?,
         preserveCurrentPane: Bool = false,
+        overviewAnchor: XTProjectSettingsOverviewAnchor? = nil,
         title: String? = nil,
         detail: String? = nil
     ) {
@@ -830,6 +2056,7 @@ final class AppModel: ObservableObject {
             projectId: projectId,
             destination: XTProjectGovernanceDestination.parse(sectionId),
             preserveCurrentPane: preserveCurrentPane,
+            overviewAnchor: overviewAnchor,
             title: title,
             detail: detail
         )
@@ -955,7 +2182,21 @@ final class AppModel: ObservableObject {
         switch action {
         case .recheckOfficialSkills:
             recheckOfficialSkills(reason: reason)
+        case .repairHistoricalProjectBoundaries:
+            repairHistoricalProjectBoundariesNow(reason: reason)
         }
+    }
+
+    @discardableResult
+    func repairHistoricalProjectBoundariesNow(reason: String? = nil) -> String {
+        let normalizedReason = normalizedDeepLinkToken(reason) ?? "manual"
+        let summary = runHistoricalProjectBoundaryRepair(reason: normalizedReason)
+        if projectRoot != nil {
+            Task { @MainActor in
+                await loadSelectedProject()
+            }
+        }
+        return summary.statusLine(reason: normalizedReason)
     }
 
     func recheckOfficialSkills(reason: String? = nil) {
@@ -1475,6 +2716,15 @@ final class AppModel: ObservableObject {
     private let skillsDirDefaultsKey = "xterminal_skills_dir"
 
     private func ensureSkillsDirectory() -> URL? {
+        if let override = skillsDirectoryOverrideForTesting {
+            do {
+                try FileManager.default.createDirectory(at: override, withIntermediateDirectories: true)
+                return override
+            } catch {
+                showAlert(title: "Import Skills", message: "Failed to create skills folder: \(error.localizedDescription)")
+                return nil
+            }
+        }
         if let existing = resolveSkillsDirectory() {
             return existing
         }
@@ -1493,6 +2743,13 @@ final class AppModel: ObservableObject {
     }
 
     private func resolveSkillsDirectory() -> URL? {
+        if let override = skillsDirectoryOverrideForTesting {
+            let standardized = override.standardizedFileURL
+            if FileManager.default.fileExists(atPath: standardized.path) {
+                return standardized
+            }
+        }
+
         let envKeys = ["XTERMINAL_SKILLS_DIR"]
         for key in envKeys {
             let env = (ProcessInfo.processInfo.environment[key] ?? "")
@@ -1537,6 +2794,10 @@ final class AppModel: ObservableObject {
         return nil
     }
 
+    static var isRunningUnderTestProcess: Bool {
+        ProcessInfo.processInfo.isRunningUnderAutomatedTests
+    }
+
     private func rememberSkillsDirectory(for url: URL) {
         let dir: URL
         if url.hasDirectoryPath {
@@ -1547,9 +2808,62 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.set(dir.path, forKey: skillsDirDefaultsKey)
     }
 
+    private func activateAppForModalPresentation() {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func preferredModalHostWindow() -> NSWindow? {
+        NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first(where: { $0.isVisible })
+    }
+
+    private func presentOpenPanel(_ panel: NSOpenPanel, onSelection: @escaping ([URL]) -> Void) {
+        if let override = openPanelSelectionOverrideForTesting {
+            guard let urls = override(panel), !urls.isEmpty else { return }
+            onSelection(urls)
+            return
+        }
+
+        activateAppForModalPresentation()
+        let completion: (NSApplication.ModalResponse) -> Void = { response in
+            guard response == .OK else { return }
+            let urls = panel.urls
+            guard !urls.isEmpty else { return }
+            onSelection(urls)
+        }
+
+        if let window = preferredModalHostWindow() {
+            panel.beginSheetModal(for: window, completionHandler: completion)
+        } else {
+            panel.begin(completionHandler: completion)
+        }
+    }
+
+    private func openURLInWorkspace(_ url: URL) {
+        if let override = openedURLOverrideForTesting {
+            override(url)
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func openCurrentProjectArtifact(_ resolveURL: (AXProjectContext) -> URL) {
+        guard let ctx = projectContext else { return }
+        openWorkspaceURL(resolveURL(ctx))
+    }
+
+    private func effectiveSupervisorVoiceSmokeReportURL() -> URL? {
+        supervisorVoiceSmokeReportURLOverrideForTesting ?? supervisorVoiceSmokeReportURL
+    }
+
     private struct SkillImportOperationResult {
         var imported: Bool
         var stageSummary: String?
+    }
+
+    private struct ResolvedSkillImportSource {
+        var skillDirectoryURL: URL
+        var cleanupDirectoryURL: URL?
     }
 
     private struct AgentSkillStageOutcome {
@@ -1560,23 +2874,20 @@ final class AppModel: ObservableObject {
 
     @discardableResult
     private func importSkill(from url: URL, to base: URL) async -> SkillImportOperationResult {
-        var source = url
-        if !url.hasDirectoryPath {
-            let lower = url.lastPathComponent.lowercased()
-            if lower == "skill.md" {
-                source = url.deletingLastPathComponent()
-            } else if ["zip", "skill"].contains(url.pathExtension.lowercased()) {
-                showAlert(
-                    title: "Import Skills",
-                    message: "Please unzip the skill package first, then select the skill folder."
-                )
-                return SkillImportOperationResult(imported: false, stageSummary: nil)
-            } else {
-                showAlert(
-                    title: "Import Skills",
-                    message: "Please select a skill folder or SKILL.md."
-                )
-                return SkillImportOperationResult(imported: false, stageSummary: nil)
+        let resolvedSource: ResolvedSkillImportSource
+        do {
+            resolvedSource = try resolveSkillImportSource(from: url)
+        } catch {
+            showAlert(
+                title: "Import Skills",
+                message: error.localizedDescription
+            )
+            return SkillImportOperationResult(imported: false, stageSummary: nil)
+        }
+        let source = resolvedSource.skillDirectoryURL
+        defer {
+            if let cleanupDirectoryURL = resolvedSource.cleanupDirectoryURL {
+                try? FileManager.default.removeItem(at: cleanupDirectoryURL)
             }
         }
 
@@ -1617,7 +2928,7 @@ final class AppModel: ObservableObject {
 
         do {
             try FileManager.default.copyItem(at: source, to: dest)
-            let stageOutcome = await stageImportedSkill(skillDirectory: dest, repoRoot: base)
+            let stageOutcome = await effectiveStageImportedSkill(skillDirectory: dest, repoRoot: base)
             rememberLastImportedAgentSkill(skillDirectory: dest, outcome: stageOutcome)
             return SkillImportOperationResult(imported: true, stageSummary: stageOutcome.summary)
         } catch {
@@ -1629,15 +2940,205 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func resolveSkillImportSource(from url: URL) throws -> ResolvedSkillImportSource {
+        if url.hasDirectoryPath {
+            return ResolvedSkillImportSource(skillDirectoryURL: url, cleanupDirectoryURL: nil)
+        }
+
+        let lower = url.lastPathComponent.lowercased()
+        if lower == "skill.md" {
+            return ResolvedSkillImportSource(skillDirectoryURL: url.deletingLastPathComponent(), cleanupDirectoryURL: nil)
+        }
+
+        guard isSupportedSkillArchive(url) else {
+            throw NSError(
+                domain: "xterminal.skill_import",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Please select a skill folder, SKILL.md, or a supported archive (.zip, .skill, .tgz, .tar.gz, .tar)."]
+            )
+        }
+
+        let extractionRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xt-skill-import-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: extractionRoot, withIntermediateDirectories: true)
+
+        do {
+            try extractSkillArchive(url, to: extractionRoot)
+            let fallbackNames = archiveFallbackNames(for: url)
+            let skillDirectory = try findImportedSkillDirectory(in: extractionRoot, fallbackNames: fallbackNames)
+            return ResolvedSkillImportSource(skillDirectoryURL: skillDirectory, cleanupDirectoryURL: extractionRoot)
+        } catch {
+            try? FileManager.default.removeItem(at: extractionRoot)
+            throw error
+        }
+    }
+
+    private func isSupportedSkillArchive(_ url: URL) -> Bool {
+        let lower = url.lastPathComponent.lowercased()
+        let ext = url.pathExtension.lowercased()
+        if ["zip", "skill", "tgz", "tar"].contains(ext) {
+            return true
+        }
+        return lower.hasSuffix(".tar.gz")
+    }
+
+    private func archiveFallbackNames(for url: URL) -> [String] {
+        let lower = url.lastPathComponent.lowercased()
+        var names: [String] = []
+        if lower.hasSuffix(".tar.gz") {
+            names.append(String(url.lastPathComponent.dropLast(".tar.gz".count)))
+        }
+        if !url.deletingPathExtension().lastPathComponent.isEmpty {
+            names.append(url.deletingPathExtension().lastPathComponent)
+        }
+        return Array(
+            Set(
+                names
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+            )
+        )
+    }
+
+    private func extractSkillArchive(_ archiveURL: URL, to destinationURL: URL) throws {
+        let lower = archiveURL.lastPathComponent.lowercased()
+        let ext = archiveURL.pathExtension.lowercased()
+
+        let result: ProcessResult
+        if ext == "zip" || ext == "skill" {
+            result = try ProcessCapture.run(
+                "/usr/bin/ditto",
+                ["-x", "-k", archiveURL.path, destinationURL.path],
+                cwd: nil,
+                timeoutSec: 30.0
+            )
+        } else if ext == "tgz" || lower.hasSuffix(".tar.gz") {
+            result = try ProcessCapture.run(
+                "/usr/bin/tar",
+                ["-xzf", archiveURL.path, "-C", destinationURL.path],
+                cwd: nil,
+                timeoutSec: 30.0
+            )
+        } else if ext == "tar" {
+            result = try ProcessCapture.run(
+                "/usr/bin/tar",
+                ["-xf", archiveURL.path, "-C", destinationURL.path],
+                cwd: nil,
+                timeoutSec: 30.0
+            )
+        } else {
+            throw NSError(
+                domain: "xterminal.skill_import",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Unsupported archive format: \(archiveURL.lastPathComponent)"]
+            )
+        }
+
+        guard result.exitCode == 0 else {
+            let detail = result.combined.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw NSError(
+                domain: "xterminal.skill_import",
+                code: Int(result.exitCode),
+                userInfo: [NSLocalizedDescriptionKey: detail.isEmpty ? "Failed to extract skill archive." : "Failed to extract skill archive: \(detail)"]
+            )
+        }
+    }
+
+    private func findImportedSkillDirectory(in rootURL: URL, fallbackNames: [String]) throws -> URL {
+        let rootSkillMarkdownURL = rootURL.appendingPathComponent("SKILL.md")
+        if FileManager.default.fileExists(atPath: rootSkillMarkdownURL.path) {
+            return rootURL
+        }
+
+        guard let enumerator = FileManager.default.enumerator(
+            at: rootURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else {
+            throw NSError(
+                domain: "xterminal.skill_import",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "Imported archive could not be scanned for SKILL.md."]
+            )
+        }
+
+        var candidates: [URL] = []
+        while let next = enumerator.nextObject() as? URL {
+            let values = try next.resourceValues(forKeys: [.isDirectoryKey])
+            guard values.isDirectory == true else { continue }
+            let skillMarkdownURL = next.appendingPathComponent("SKILL.md")
+            if FileManager.default.fileExists(atPath: skillMarkdownURL.path) {
+                candidates.append(next)
+            }
+        }
+
+        let uniqueCandidates = Array(
+            Set(candidates.map { $0.standardizedFileURL.resolvingSymlinksInPath() })
+        ).sorted { lhs, rhs in
+            lhs.path.localizedStandardCompare(rhs.path) == .orderedAscending
+        }
+
+        if uniqueCandidates.count == 1, let only = uniqueCandidates.first {
+            return only
+        }
+
+        let normalizedFallbacks = Set(fallbackNames.map { $0.lowercased() })
+        let matchedCandidates = uniqueCandidates.filter { candidate in
+            normalizedFallbacks.contains(candidate.lastPathComponent.lowercased())
+        }
+        if matchedCandidates.count == 1, let matched = matchedCandidates.first {
+            return matched
+        }
+
+        if uniqueCandidates.isEmpty {
+            throw NSError(
+                domain: "xterminal.skill_import",
+                code: 4,
+                userInfo: [NSLocalizedDescriptionKey: "No SKILL.md was found in the imported archive."]
+            )
+        }
+
+        let labels = uniqueCandidates.map(\.lastPathComponent).joined(separator: ", ")
+        throw NSError(
+            domain: "xterminal.skill_import",
+            code: 5,
+            userInfo: [NSLocalizedDescriptionKey: "The imported archive contains multiple skill folders. Please keep only one SKILL.md root. Candidates: \(labels)"]
+        )
+    }
+
+    private func effectiveStageImportedSkill(skillDirectory: URL, repoRoot: URL) async -> AgentSkillStageOutcome {
+        if let override = stagedImportSummaryOverrideForTesting,
+           let summary = await override(skillDirectory, repoRoot) {
+            let preflight = XTAgentSkillImportNormalizer.normalize(
+                skillMarkdownURL: skillDirectory.appendingPathComponent("SKILL.md"),
+                repoRoot: repoRoot
+            )
+            return AgentSkillStageOutcome(
+                summary: summary,
+                stageResult: nil,
+                importReport: preflight
+            )
+        }
+        return await stageImportedSkill(skillDirectory: skillDirectory, repoRoot: repoRoot)
+    }
+
     func reviewLastImportedSkill() {
-        Task { @MainActor in
-            await reviewLastImportedSkillNow()
+        let reviewSkillName = nonEmptyString(lastImportedAgentSkillName)
+            ?? nonEmptyString(lastImportedAgentSkillStage?.skillId)
+            ?? "skill"
+        lastImportedAgentSkillStatusLine = "\(reviewSkillName): reviewing..."
+        Task(priority: .userInitiated) { [weak self] in
+            await self?.reviewLastImportedSkillNow()
         }
     }
 
     func enableLastImportedSkill() {
-        Task { @MainActor in
-            await enableLastImportedSkillNow()
+        let enableSkillName = nonEmptyString(lastImportedAgentSkillName)
+            ?? lastImportedAgentSkillDirectory?.lastPathComponent
+            ?? "skill"
+        lastImportedAgentSkillStatusLine = "\(enableSkillName): enabling..."
+        Task(priority: .userInitiated) { [weak self] in
+            await self?.enableLastImportedSkillNow()
         }
     }
 
@@ -1677,8 +3178,10 @@ final class AppModel: ObservableObject {
         defer { baselineInstallBusy = false }
 
         let baseline = AXSkillsLibrary.defaultAgentBaselineSkills
+        let bundles = AXSkillsLibrary.defaultAgentBaselineBundles
         let targetProjectId = scope.projectId
         let targetLabel = scope.displayLabel
+        let currentProfileSnapshot = currentBaselineInstallProfileSnapshot(for: scope)
         let initialResolved = await HubIPCClient.listResolvedSkills(projectId: targetProjectId)
         guard initialResolved.ok else {
             baselineInstallStatusLine = "baseline: resolved lookup failed"
@@ -1715,10 +3218,43 @@ final class AppModel: ObservableObject {
         let plan = AXDefaultAgentBaselineInstaller.makePlan(
             scope: scope,
             baseline: baseline,
+            bundles: bundles,
             resolvedSkills: initialResolved.skills,
-            searchResultsBySkillID: searchResultsBySkillID
+            searchResultsBySkillID: searchResultsBySkillID,
+            currentProfileSnapshot: currentProfileSnapshot
         )
         let baselineIDs = Set(baseline.map(\.skillID))
+
+        let previewLines = AXDefaultAgentBaselineInstaller.previewLines(
+            plan: plan,
+            currentProfileSnapshot: currentProfileSnapshot
+        )
+        if plan.installableCandidates.isEmpty {
+            let currentReadyCount = plan.alreadyResolvedSkillIDs.count
+            var lines = ["Target: \(targetLabel)"]
+            lines.append("Baseline ready: \(currentReadyCount)/\(plan.totalBaselineCount)")
+            lines.append(contentsOf: previewLines)
+            if !plan.missingPackageSkills.isEmpty {
+                baselineInstallStatusLine = "baseline \(scope.hubScope) \(currentReadyCount)/\(plan.totalBaselineCount) missing_pkg=\(plan.missingPackageSkills.count)"
+                lines.append("No uploadable baseline package can be pinned yet for the missing skills above.")
+            } else {
+                baselineInstallStatusLine = "baseline \(scope.hubScope) \(plan.totalBaselineCount)/\(plan.totalBaselineCount) ready"
+                lines.append("No pin work was needed. The default Agent baseline is already resolved for this target.")
+            }
+            showAlert(title: "Install Default Agent Baseline", message: lines.joined(separator: "\n"))
+            return
+        }
+
+        var confirmationLines = ["Target: \(targetLabel)"]
+        confirmationLines.append(contentsOf: previewLines)
+        confirmationLines.append("Proceed with governed pinning for \(plan.installableCandidates.count) package(s)?")
+        guard confirmDefaultAgentBaselineInstall(
+            title: "Install Default Agent Baseline",
+            message: confirmationLines.joined(separator: "\n")
+        ) else {
+            baselineInstallStatusLine = "baseline \(scope.hubScope) canceled"
+            return
+        }
 
         var pinSuccesses: [HubIPCClient.SkillPinResult] = []
         var pinFailures: [String] = []
@@ -1741,7 +3277,20 @@ final class AppModel: ObservableObject {
         if !pinSuccesses.isEmpty {
             refreshSkillsCompatibilitySnapshot(force: true)
             refreshUnifiedDoctorReport(force: true)
-            refreshResolvedSkillsCacheForCurrentSelection()
+            if let selectedProjectId,
+               selectedProjectId != AXProjectRegistry.globalHomeId,
+               let ctx = projectContext {
+                let selectedProjectName = registry.project(for: selectedProjectId)?.displayName
+                _ = await XTResolvedSkillsCacheStore.refreshFromHubIfPossible(
+                    projectId: selectedProjectId,
+                    projectName: selectedProjectName,
+                    context: ctx,
+                    hubBaseDir: hubBaseDir ?? HubPaths.baseDir(),
+                    force: true
+                )
+            } else {
+                refreshResolvedSkillsCacheForCurrentSelection()
+            }
         }
 
         let finalResolved = await HubIPCClient.listResolvedSkills(projectId: targetProjectId)
@@ -1764,6 +3313,39 @@ final class AppModel: ObservableObject {
         var lines: [String] = []
         lines.append("Target: \(targetLabel)")
         lines.append("Baseline ready: \(readyBaselineCount)/\(plan.totalBaselineCount)")
+        if !plan.targetCapabilityProfiles.isEmpty {
+            lines.append("Bundle target profiles: \(plan.targetCapabilityProfiles.joined(separator: ", "))")
+        }
+        lines.append(
+            plan.deltaCapabilityProfiles.isEmpty
+                ? "Profile delta after install: none"
+                : "Profile delta after install: \(plan.deltaCapabilityProfiles.joined(separator: ", "))"
+        )
+        if !plan.residualBlockedProfiles.isEmpty {
+            let blockedLine = plan.residualBlockedProfiles.map { blocked in
+                let reason = blocked.reasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
+                return reason.isEmpty ? blocked.profileID : "\(blocked.profileID)=\(reason)"
+            }.joined(separator: ", ")
+            lines.append("Residual blocked profiles: \(blockedLine)")
+        } else if currentProfileSnapshot != nil {
+            lines.append("Residual blocked profiles: none")
+        }
+
+        for bundle in plan.bundles {
+            var bundleParts: [String] = [
+                "\(bundle.displayName) [\(bundle.bundleID)]"
+            ]
+            if !bundle.targetCapabilityProfiles.isEmpty {
+                bundleParts.append("profiles=\(bundle.targetCapabilityProfiles.joined(separator: ", "))")
+            }
+            if !bundle.deltaCapabilityProfiles.isEmpty {
+                bundleParts.append("delta=\(bundle.deltaCapabilityProfiles.joined(separator: ", "))")
+            }
+            if !bundle.missingPackageSkills.isEmpty {
+                bundleParts.append("missing_pkg=\(bundle.missingPackageSkills.count)")
+            }
+            lines.append(bundleParts.joined(separator: " | "))
+        }
 
         if !plan.alreadyResolvedSkillIDs.isEmpty {
             lines.append("Already resolved: \(plan.alreadyResolvedSkillIDs.joined(separator: ", "))")
@@ -1786,7 +3368,8 @@ final class AppModel: ObservableObject {
         if !plan.missingPackageSkills.isEmpty {
             lines.append("Missing uploadable packages:")
             for item in plan.missingPackageSkills {
-                lines.append("- \(item.skillID): \(item.installHint)")
+                let profiles = item.capabilityProfiles.isEmpty ? "" : " [\(item.capabilityProfiles.joined(separator: ", "))]"
+                lines.append("- \(item.skillID)\(profiles): \(item.installHint)")
             }
         } else if plan.installableCandidates.isEmpty && pinSuccesses.isEmpty {
             lines.append("No pin work was needed. The default Agent baseline was already resolved for this target.")
@@ -1799,17 +3382,49 @@ final class AppModel: ObservableObject {
         showAlert(title: "Install Default Agent Baseline", message: lines.joined(separator: "\n"))
     }
 
+    private func currentBaselineInstallProfileSnapshot(
+        for scope: AXAgentBaselineInstallScope
+    ) -> XTProjectEffectiveSkillProfileSnapshot? {
+        guard let ctx = projectContext else { return nil }
+
+        switch scope {
+        case .project(let projectId, let projectName):
+            guard selectedProjectId == projectId else { return nil }
+            return AXSkillsLibrary.projectEffectiveSkillProfileSnapshot(
+                projectId: projectId,
+                projectName: projectName,
+                projectRoot: ctx.root,
+                config: projectConfig,
+                hubBaseDir: hubBaseDir ?? HubPaths.baseDir()
+            )
+        case .global:
+            guard let selectedProjectId,
+                  selectedProjectId != AXProjectRegistry.globalHomeId else { return nil }
+            let projectName = registry.project(for: selectedProjectId)?.displayName
+            return AXSkillsLibrary.projectEffectiveSkillProfileSnapshot(
+                projectId: selectedProjectId,
+                projectName: projectName,
+                projectRoot: ctx.root,
+                config: projectConfig,
+                hubBaseDir: hubBaseDir ?? HubPaths.baseDir()
+            )
+        }
+    }
+
     private func refreshResolvedSkillsCacheForCurrentSelection() {
         guard let selectedProjectId,
               selectedProjectId != AXProjectRegistry.globalHomeId,
               let ctx = projectContext else { return }
         let projectName = registry.project(for: selectedProjectId)?.displayName
-        _ = XTResolvedSkillsCacheStore.refreshFromHub(
-            projectId: selectedProjectId,
-            projectName: projectName,
-            context: ctx,
-            hubBaseDir: hubBaseDir ?? HubPaths.baseDir()
-        )
+        Task {
+            _ = await XTResolvedSkillsCacheStore.refreshFromHubIfPossible(
+                projectId: selectedProjectId,
+                projectName: projectName,
+                context: ctx,
+                hubBaseDir: hubBaseDir ?? HubPaths.baseDir(),
+                force: true
+            )
+        }
     }
 
     private func stageImportedSkill(skillDirectory: URL, repoRoot: URL) async -> AgentSkillStageOutcome {
@@ -1911,7 +3526,7 @@ final class AppModel: ObservableObject {
         defer { agentSkillImportBusy = false }
 
         let repoRoot = resolveSkillsDirectory() ?? skillDirectory.deletingLastPathComponent()
-        let stageOutcome = await stageImportedSkill(skillDirectory: skillDirectory, repoRoot: repoRoot)
+        let stageOutcome = await effectiveStageImportedSkill(skillDirectory: skillDirectory, repoRoot: repoRoot)
         rememberLastImportedAgentSkill(skillDirectory: skillDirectory, outcome: stageOutcome)
 
         guard let stage = stageOutcome.stageResult,
@@ -1986,15 +3601,14 @@ final class AppModel: ObservableObject {
 
         let enabledSkillId = nonEmptyString(promote.skillId) ?? nonEmptyString(stage.skillId) ?? skillDirectory.lastPathComponent
         lastImportedAgentSkillStatusLine = "\(enabledSkillId): enabled @\(shortSHA(packageSHA256))"
-        refreshSkillsCompatibilitySnapshot(force: true)
-        refreshUnifiedDoctorReport(force: true)
-
         lines.append("Enabled: \(enabledSkillId)")
         lines.append("Scope: \(nonEmptyString(promote.scope) ?? "unknown")")
         if let previous = nonEmptyString(promote.previousPackageSHA256) {
             lines.append("Previous package: \(shortSHA(previous))")
         }
         showAlert(title: "Enable Imported Skill", message: lines.joined(separator: "\n"))
+        refreshSkillsCompatibilitySnapshot(force: true)
+        refreshUnifiedDoctorReport(force: true)
     }
 
     private func rememberLastImportedAgentSkill(skillDirectory: URL, outcome: AgentSkillStageOutcome) {
@@ -2027,6 +3641,190 @@ final class AppModel: ObservableObject {
         return String(normalized.prefix(12))
     }
 
+    private func defaultLocalSkillManifestJSON(for folderURL: URL) throws -> String {
+        let skillMarkdownURL = folderURL.appendingPathComponent("SKILL.md")
+        let skillText = (try? String(contentsOf: skillMarkdownURL, encoding: .utf8)) ?? ""
+        let frontmatter = parseSkillMarkdownFrontmatter(skillText)
+        let skillID = nonEmptyString(frontmatter["skill_id"])
+            ?? nonEmptyString(folderURL.lastPathComponent)
+            ?? "local-skill"
+        let displayName = nonEmptyString(frontmatter["name"]) ?? skillID
+        let version = nonEmptyString(frontmatter["version"]) ?? "0.1.0-local"
+        let description = nonEmptyString(frontmatter["description"])
+            ?? extractSkillMarkdownHeading(skillText)
+            ?? "Local skill managed in X-Terminal."
+        let entrypoint = inferLocalSkillEntrypoint(in: folderURL)
+
+        let manifest: [String: Any] = [
+            "schema_version": "xhub.skill_manifest.v1",
+            "skill_id": skillID,
+            "name": displayName,
+            "version": version,
+            "description": description,
+            "entrypoint": [
+                "runtime": entrypoint.runtime,
+                "command": entrypoint.command,
+                "args": entrypoint.args,
+            ],
+            "capabilities_required": [],
+            "network_policy": [
+                "direct_network_forbidden": true,
+            ],
+            "publisher": [
+                "publisher_id": "xhub.local.dev",
+            ],
+            "install_hint": "Created in X-Terminal Skill Library",
+        ]
+
+        let data = try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
+        guard var manifestJSON = String(data: data, encoding: .utf8) else {
+            throw NSError(
+                domain: "xterminal.skill_manifest_create",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Failed to encode skill.json as UTF-8."]
+            )
+        }
+        if !manifestJSON.hasSuffix("\n") {
+            manifestJSON.append("\n")
+        }
+        return manifestJSON
+    }
+
+    private func pinGovernedSkillFromGovernanceSurface(
+        _ entry: AXSkillGovernanceSurfaceEntry,
+        scope: AXAgentBaselineInstallScope
+    ) async {
+        let skillID = normalizedDeepLinkToken(entry.skillID) ?? ""
+        let packageSHA256 = normalizedDeepLinkToken(entry.packageSHA256) ?? ""
+        let subject = governanceSurfaceSubject(entry)
+
+        guard hubInteractive else {
+            skillGovernanceActionStatusLine = "skill_governance_action=pin skill=\(entry.skillID) scope=\(scope.hubScope) status=blocked reason=hub_pairing_required"
+            showAlert(
+                title: "Pin Governed Skill",
+                message: "Hub skills control plane is unavailable. Pair X-Terminal to X-Hub first before pinning \(subject)."
+            )
+            return
+        }
+
+        skillGovernanceActionStatusLine = "skill_governance_action=pin skill=\(entry.skillID) scope=\(scope.hubScope) status=running"
+        let result = await HubIPCClient.setSkillPin(
+            scope: scope.hubScope,
+            skillId: skillID,
+            packageSHA256: packageSHA256,
+            projectId: scope.projectId,
+            note: "xt_skill_governance_surface:\(scope.hubScope):\(skillID)",
+            requestId: "xt-skill-governance-\(UUID().uuidString)"
+        )
+
+        if result.ok {
+            skillGovernanceActionStatusLine = "skill_governance_action=pin skill=\(entry.skillID) scope=\(scope.hubScope) status=ok sha=\(shortSHA(packageSHA256))"
+            refreshSkillsCompatibilitySnapshot(force: true)
+            refreshResolvedSkillsCacheForCurrentSelection()
+            refreshUnifiedDoctorReport(force: true)
+
+            var lines = [
+                "Pinned \(subject)",
+                "Scope: \(scope.hubScope)",
+                "Package: \(shortSHA(packageSHA256))"
+            ]
+            if let previous = nonEmptyString(result.previousPackageSHA256) {
+                lines.append("Previous package: \(shortSHA(previous))")
+            }
+            showAlert(title: "Pin Governed Skill", message: lines.joined(separator: "\n"))
+        } else {
+            let reason = normalizedDeepLinkToken(result.reasonCode) ?? "pin_failed"
+            skillGovernanceActionStatusLine = "skill_governance_action=pin skill=\(entry.skillID) scope=\(scope.hubScope) status=failed reason=\(reason)"
+            showAlert(
+                title: "Pin Governed Skill",
+                message: "Failed to pin \(subject)\nScope: \(scope.hubScope)\nReason: \(reason)"
+            )
+        }
+    }
+
+    private func openSkillGovernanceSurface(
+        for entry: AXSkillGovernanceSurfaceEntry,
+        title: String,
+        detail: String
+    ) {
+        if let projectScope = selectedProjectBaselineInstallScope() {
+            requestProjectSettingsFocus(
+                projectId: projectScope.projectId,
+                destination: .overview,
+                title: title,
+                detail: detail
+            )
+        } else {
+            openGovernanceRouteURL(
+                XTDeepLinkURLBuilder.settingsURL(
+                    sectionId: "diagnostics",
+                    title: title,
+                    detail: detail
+                )
+            )
+        }
+    }
+
+    private func openGovernanceRouteURL(_ url: URL?) {
+        guard let url else { return }
+        openURLInWorkspace(url)
+    }
+
+    private func governanceSurfaceSubject(_ entry: AXSkillGovernanceSurfaceEntry) -> String {
+        let trimmedName = entry.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedSkillID = entry.skillID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedName.isEmpty, !trimmedSkillID.isEmpty, trimmedName.caseInsensitiveCompare(trimmedSkillID) != .orderedSame {
+            return "\(trimmedName) (\(trimmedSkillID))"
+        }
+        return trimmedName.isEmpty ? trimmedSkillID : trimmedName
+    }
+
+    private func governanceSurfaceDetail(
+        _ entry: AXSkillGovernanceSurfaceEntry,
+        fallback: String
+    ) -> String {
+        let subject = governanceSurfaceSubject(entry)
+        let whyNot = normalizedDeepLinkToken(entry.whyNotRunnable) ?? ""
+        let installHint = normalizedDeepLinkToken(entry.installHint) ?? ""
+        let state = normalizedDeepLinkToken(entry.stateLabel) ?? "unknown"
+
+        var parts = ["\(subject) · state=\(state)"]
+        if !whyNot.isEmpty {
+            parts.append("why_not=\(whyNot)")
+        }
+        if !installHint.isEmpty {
+            parts.append("hint=\(installHint)")
+        }
+        if parts.count == 1 && whyNot.isEmpty && installHint.isEmpty {
+            parts.append(fallback)
+        } else if !fallback.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append(fallback)
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func normalizedSkillGovernanceSurfaceAction(_ raw: String) -> String {
+        raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private func uniqueDuplicatedSkillURL(for folderURL: URL) -> URL {
+        let parent = folderURL.deletingLastPathComponent()
+        let baseName = folderURL.lastPathComponent
+        let ext = folderURL.pathExtension
+        let stem = ext.isEmpty ? baseName : String(baseName.dropLast(ext.count + 1))
+
+        var candidateIndex = 0
+        while true {
+            let suffix = candidateIndex == 0 ? "-copy" : "-copy-\(candidateIndex + 1)"
+            let candidateName = ext.isEmpty ? "\(stem)\(suffix)" : "\(stem)\(suffix).\(ext)"
+            let candidate = parent.appendingPathComponent(candidateName, isDirectory: true)
+            if !FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+            candidateIndex += 1
+        }
+    }
+
     private func confirmReplaceSkill(name: String) -> Bool {
         let alert = NSAlert()
         alert.messageText = "Skill already exists"
@@ -2036,21 +3834,151 @@ final class AppModel: ObservableObject {
         return alert.runModal() == .alertFirstButtonReturn
     }
 
+    private func confirmRemoveSkill(name: String, path: String) -> Bool {
+        let title = "Remove Skill"
+        let message = "Remove \"\(name)\"?\n\n\(path)\n\nThis deletes the local skill folder from disk."
+        if let override = skillRemovalConfirmationOverrideForTesting {
+            return override(title, message)
+        }
+
+        activateAppForModalPresentation()
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func confirmDefaultAgentBaselineInstall(title: String, message: String) -> Bool {
+        if let override = baselineInstallConfirmationOverrideForTesting {
+            return override(title, message)
+        }
+        activateAppForModalPresentation()
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "Install")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func promptForSkillRename(title: String, message: String, initialValue: String) -> String? {
+        if let override = skillRenamePromptOverrideForTesting {
+            return override(title, message, initialValue)
+        }
+
+        activateAppForModalPresentation()
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        field.stringValue = initialValue
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn else { return nil }
+        return field.stringValue
+    }
+
     private func showAlert(title: String, message: String) {
+        if let override = alertPresenterOverrideForTesting {
+            override(title, message)
+            return
+        }
+        activateAppForModalPresentation()
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
         alert.runModal()
     }
 
+    private func parseSkillMarkdownFrontmatter(_ text: String) -> [String: String] {
+        let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
+        guard normalized.hasPrefix("---\n") else { return [:] }
+        let remainder = String(normalized.dropFirst(4))
+        guard let closingRange = remainder.range(of: "\n---\n") ?? remainder.range(of: "\n---") else {
+            return [:]
+        }
+        let block = remainder[..<closingRange.lowerBound]
+        var values: [String: String] = [:]
+        for line in block.split(separator: "\n", omittingEmptySubsequences: false) {
+            let raw = String(line)
+            guard let separator = raw.firstIndex(of: ":") else { continue }
+            let key = raw[..<separator].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let value = raw[raw.index(after: separator)...]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            if !key.isEmpty, !value.isEmpty {
+                values[key] = value
+            }
+        }
+        return values
+    }
+
+    private func extractSkillMarkdownHeading(_ text: String) -> String? {
+        let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
+        var inFrontmatter = false
+        for line in normalized.split(separator: "\n", omittingEmptySubsequences: false) {
+            let raw = String(line)
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed == "---" {
+                inFrontmatter.toggle()
+                continue
+            }
+            guard !inFrontmatter else { continue }
+            if trimmed.hasPrefix("# ") {
+                return nonEmptyString(String(trimmed.dropFirst(2)))
+            }
+        }
+        return nil
+    }
+
+    private func inferLocalSkillEntrypoint(in folderURL: URL) -> (runtime: String, command: String, args: [String]) {
+        let candidates: [(String, String, [String])] = [
+            ("node", "node", ["dist/main.js"]),
+            ("node", "node", ["main.js"]),
+            ("python", "python3", ["dist/main.py"]),
+            ("python", "python3", ["main.py"]),
+            ("shell", "bash", ["run.sh"]),
+            ("shell", "bash", ["main.sh"]),
+        ]
+        for candidate in candidates {
+            let relativePath = candidate.2.first ?? ""
+            guard !relativePath.isEmpty else { continue }
+            let targetURL = folderURL.appendingPathComponent(relativePath)
+            if FileManager.default.fileExists(atPath: targetURL.path) {
+                return candidate
+            }
+        }
+        return ("text", "cat", ["SKILL.md"])
+    }
+
     func setProjectRoleModel(role: AXRole, modelId: String?) {
         guard let ctx = projectContext else { return }
-        guard var cfg = projectConfig else { return }
+        setProjectRoleModel(for: ctx, role: role, modelId: modelId)
+    }
+
+    func setProjectRoleModel(
+        for ctx: AXProjectContext,
+        role: AXRole,
+        modelId: String?
+    ) {
+        guard var cfg = editableProjectConfig(for: ctx) else { return }
         guard projectModelSwitchChanged(current: cfg.modelOverride(for: role), next: modelId) else { return }
+        let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
         _ = AXMemoryLifecycleStore.writeSessionSummaryCapsule(ctx: ctx, reason: "ai_switch")
         cfg = cfg.settingModelOverride(role: role, modelId: modelId)
-        projectConfig = cfg
+        syncProjectConfigIfCurrent(cfg, for: ctx)
         try? AXProjectStore.saveConfig(cfg, for: ctx)
+        syncLegacyProjectRoleModel(
+            role: role,
+            projectId: projectId,
+            ctx: ctx,
+            modelId: modelId
+        )
+        noteRemoteMemoryRouteOrModelPreferenceChanged(projectId: projectId)
     }
 
     func setProjectRoleModelOverride(projectId: String, role: AXRole, modelId: String?) {
@@ -2060,8 +3988,62 @@ final class AppModel: ObservableObject {
         _ = AXMemoryLifecycleStore.writeSessionSummaryCapsule(ctx: ctx, reason: "ai_switch")
         cfg.setModelOverride(role: role, modelId: modelId)
         try? AXProjectStore.saveConfig(cfg, for: ctx)
+        syncLegacyProjectRoleModel(role: role, projectId: projectId, ctx: ctx, modelId: modelId)
+        syncProjectConfigIfCurrent(cfg, for: ctx)
+        noteRemoteMemoryRouteOrModelPreferenceChanged(projectId: projectId)
+    }
 
-        if projectContext?.root.standardizedFileURL.path == ctx.root.standardizedFileURL.path {
+    private func syncLegacyProjectRoleModel(
+        role: AXRole,
+        projectId: String?,
+        ctx: AXProjectContext,
+        modelId: String?
+    ) {
+        guard role == .coder else { return }
+
+        let trimmedOverride = (modelId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallbackGlobal = settingsStore.settings.assignment(for: role).model?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let resolvedModelId = trimmedOverride.isEmpty ? fallbackGlobal : trimmedOverride
+        guard !resolvedModelId.isEmpty else { return }
+
+        let modelInfo = XTModelCatalog.modelInfo(
+            for: resolvedModelId,
+            preferLocalHint: resolvedModelId.lowercased().contains("local")
+                || resolvedModelId.lowercased().contains("mlx")
+        )
+        let standardizedRootPath = ctx.root.standardizedFileURL.path
+
+        for project in legacyMultiProjectManager.projects {
+            let boundProjectId = project.registeredProjectId?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let boundRootPath = project.registeredProjectRootPath?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let matchesProjectId = !(projectId ?? "").isEmpty && boundProjectId == projectId
+            let matchesRoot = !boundRootPath.isEmpty
+                && URL(fileURLWithPath: boundRootPath, isDirectory: true).standardizedFileURL.path == standardizedRootPath
+            guard matchesProjectId || matchesRoot else { continue }
+            project.currentModel = modelInfo
+        }
+    }
+
+    private func isCurrentProjectContext(_ ctx: AXProjectContext) -> Bool {
+        projectContext?.root.standardizedFileURL.path == ctx.root.standardizedFileURL.path
+    }
+
+    private func editableProjectConfig(for ctx: AXProjectContext) -> AXProjectConfig? {
+        if isCurrentProjectContext(ctx), let projectConfig {
+            return projectConfig
+        }
+        return try? AXProjectStore.loadOrCreateConfig(for: ctx)
+    }
+
+    private func runtimeSurfaceRemoteOverrideSnapshot(for ctx: AXProjectContext) -> AXProjectRuntimeSurfaceRemoteOverrideSnapshot? {
+        isCurrentProjectContext(ctx) ? projectRemoteRuntimeSurfaceOverride : nil
+    }
+
+    private func syncProjectConfigIfCurrent(_ cfg: AXProjectConfig, for ctx: AXProjectContext) {
+        if isCurrentProjectContext(ctx) {
             projectConfig = cfg
         }
     }
@@ -2073,7 +4055,23 @@ final class AppModel: ObservableObject {
         workspaceBindingHash: String? = nil
     ) {
         guard let ctx = projectContext else { return }
-        guard var cfg = projectConfig else { return }
+        setProjectTrustedAutomationBinding(
+            for: ctx,
+            mode: mode,
+            deviceId: deviceId,
+            deviceToolGroups: deviceToolGroups,
+            workspaceBindingHash: workspaceBindingHash
+        )
+    }
+
+    func setProjectTrustedAutomationBinding(
+        for ctx: AXProjectContext,
+        mode: AXProjectAutomationMode,
+        deviceId: String,
+        deviceToolGroups: [String]? = nil,
+        workspaceBindingHash: String? = nil
+    ) {
+        guard var cfg = editableProjectConfig(for: ctx) else { return }
         let resolvedHash = workspaceBindingHash ?? xtTrustedAutomationWorkspaceHash(forProjectRoot: ctx.root)
         cfg = cfg.settingTrustedAutomationBinding(
             mode: mode,
@@ -2081,15 +4079,22 @@ final class AppModel: ObservableObject {
             deviceToolGroups: deviceToolGroups,
             workspaceBindingHash: resolvedHash
         )
-        projectConfig = cfg
+        syncProjectConfigIfCurrent(cfg, for: ctx)
         try? AXProjectStore.saveConfig(cfg, for: ctx)
     }
 
     func setProjectHubMemoryPreference(enabled: Bool) {
         guard let ctx = projectContext else { return }
-        guard var cfg = projectConfig else { return }
+        setProjectHubMemoryPreference(for: ctx, enabled: enabled)
+    }
+
+    func setProjectHubMemoryPreference(
+        for ctx: AXProjectContext,
+        enabled: Bool
+    ) {
+        guard var cfg = editableProjectConfig(for: ctx) else { return }
         cfg = cfg.settingHubMemoryPreference(enabled: enabled)
-        projectConfig = cfg
+        syncProjectConfigIfCurrent(cfg, for: ctx)
         try? AXProjectStore.saveConfig(cfg, for: ctx)
     }
 
@@ -2105,6 +4110,30 @@ final class AppModel: ObservableObject {
                 profile: profile,
                 privacyMode: settingsStore.settings.supervisorPrivacyMode
             )
+        )
+    }
+
+    func setSupervisorReviewMemoryDepthProfile(_ profile: XTSupervisorReviewMemoryDepthProfile) {
+        let current = settingsStore.settings.supervisorReviewMemoryDepthProfile
+        guard current != profile else { return }
+        settingsStore.settings = settingsStore.settings.setting(
+            supervisorReviewMemoryDepthProfile: profile
+        )
+        settingsStore.save()
+        announceSupervisorSettingsNotice(
+            XTSettingsChangeNoticeBuilder.supervisorReviewMemoryDepth(profile)
+        )
+    }
+
+    func setInterfaceLanguage(_ language: XTInterfaceLanguage) {
+        let current = settingsStore.settings.interfaceLanguage
+        guard current != language else { return }
+        settingsStore.settings = settingsStore.settings.setting(
+            interfaceLanguage: language
+        )
+        settingsStore.save()
+        announceSupervisorSettingsNotice(
+            XTSettingsChangeNoticeBuilder.interfaceLanguage(language)
         )
     }
 
@@ -2158,13 +4187,24 @@ final class AppModel: ObservableObject {
         projectContextDepthProfile: AXProjectContextDepthProfile? = nil
     ) {
         guard let ctx = projectContext else { return }
-        guard var cfg = projectConfig else { return }
+        setProjectContextAssembly(
+            for: ctx,
+            projectRecentDialogueProfile: projectRecentDialogueProfile,
+            projectContextDepthProfile: projectContextDepthProfile
+        )
+    }
 
+    func setProjectContextAssembly(
+        for ctx: AXProjectContext,
+        projectRecentDialogueProfile: AXProjectRecentDialogueProfile? = nil,
+        projectContextDepthProfile: AXProjectContextDepthProfile? = nil
+    ) {
+        guard var cfg = editableProjectConfig(for: ctx) else { return }
         cfg = cfg.settingProjectContextAssembly(
             projectRecentDialogueProfile: projectRecentDialogueProfile,
             projectContextDepthProfile: projectContextDepthProfile
         )
-        projectConfig = cfg
+        syncProjectConfigIfCurrent(cfg, for: ctx)
         try? AXProjectStore.saveConfig(cfg, for: ctx)
         AXProjectStore.appendRawLog(
             [
@@ -2200,9 +4240,16 @@ final class AppModel: ObservableObject {
 
     func setProjectGovernedReadableRoots(paths: [String]) {
         guard let ctx = projectContext else { return }
-        guard var cfg = projectConfig else { return }
+        setProjectGovernedReadableRoots(for: ctx, paths: paths)
+    }
+
+    func setProjectGovernedReadableRoots(
+        for ctx: AXProjectContext,
+        paths: [String]
+    ) {
+        guard var cfg = editableProjectConfig(for: ctx) else { return }
         cfg = cfg.settingGovernedReadableRoots(paths: paths, projectRoot: ctx.root)
-        projectConfig = cfg
+        syncProjectConfigIfCurrent(cfg, for: ctx)
         try? AXProjectStore.saveConfig(cfg, for: ctx)
         AXProjectStore.appendRawLog(
             [
@@ -2219,9 +4266,16 @@ final class AppModel: ObservableObject {
 
     func setProjectGovernedAutoApproveLocalToolCalls(enabled: Bool) {
         guard let ctx = projectContext else { return }
-        guard var cfg = projectConfig else { return }
+        setProjectGovernedAutoApproveLocalToolCalls(for: ctx, enabled: enabled)
+    }
+
+    func setProjectGovernedAutoApproveLocalToolCalls(
+        for ctx: AXProjectContext,
+        enabled: Bool
+    ) {
+        guard var cfg = editableProjectConfig(for: ctx) else { return }
         cfg = cfg.settingGovernedAutoApproveLocalToolCalls(enabled: enabled)
-        projectConfig = cfg
+        syncProjectConfigIfCurrent(cfg, for: ctx)
         try? AXProjectStore.saveConfig(cfg, for: ctx)
         AXProjectStore.appendRawLog(
             [
@@ -2238,8 +4292,15 @@ final class AppModel: ObservableObject {
     func applyProjectGovernanceTemplate(_ template: AXProjectGovernanceTemplate) {
         guard template != .custom else { return }
         guard let ctx = projectContext else { return }
-        guard var cfg = projectConfig else { return }
+        applyProjectGovernanceTemplate(template, for: ctx)
+    }
 
+    func applyProjectGovernanceTemplate(
+        _ template: AXProjectGovernanceTemplate,
+        for ctx: AXProjectContext
+    ) {
+        guard template != .custom else { return }
+        guard var cfg = editableProjectConfig(for: ctx) else { return }
         let now = Date()
         cfg = cfg.settingGovernanceTemplate(
             template,
@@ -2249,10 +4310,21 @@ final class AppModel: ObservableObject {
         let resolved = xtResolveProjectGovernance(
             projectRoot: ctx.root,
             config: cfg,
-            remoteOverride: projectRemoteRuntimeSurfaceOverride
+            remoteOverride: runtimeSurfaceRemoteOverrideSnapshot(for: ctx)
         )
+        let governanceTruth = XTGovernanceTruthPresentation.truthLine(
+            configuredExecutionTier: resolved.configuredBundle.executionTier.rawValue,
+            effectiveExecutionTier: resolved.effectiveBundle.executionTier.rawValue,
+            configuredSupervisorTier: resolved.configuredBundle.supervisorInterventionTier.rawValue,
+            effectiveSupervisorTier: resolved.effectiveBundle.supervisorInterventionTier.rawValue,
+            reviewPolicyMode: resolved.effectiveBundle.reviewPolicyMode.rawValue,
+            progressHeartbeatSeconds: resolved.effectiveBundle.schedule.progressHeartbeatSeconds,
+            reviewPulseSeconds: resolved.effectiveBundle.schedule.reviewPulseSeconds,
+            brainstormReviewSeconds: resolved.effectiveBundle.schedule.brainstormReviewSeconds,
+            compatSource: resolved.compatSource.rawValue
+        ) ?? ""
 
-        projectConfig = cfg
+        syncProjectConfigIfCurrent(cfg, for: ctx)
         try? AXProjectStore.saveConfig(cfg, for: ctx)
         AXProjectStore.appendRawLog(
             [
@@ -2264,8 +4336,17 @@ final class AppModel: ObservableObject {
                 "template": template.rawValue,
                 "profile": template.rawValue,
                 "execution_tier": cfg.executionTier.rawValue,
+                "configured_execution_tier": resolved.configuredBundle.executionTier.rawValue,
+                "effective_execution_tier": resolved.effectiveBundle.executionTier.rawValue,
                 "supervisor_intervention_tier": cfg.supervisorInterventionTier.rawValue,
+                "configured_supervisor_tier": resolved.configuredBundle.supervisorInterventionTier.rawValue,
+                "effective_supervisor_tier": resolved.effectiveBundle.supervisorInterventionTier.rawValue,
+                "effective_supervisor_intervention_tier": resolved.effectiveBundle.supervisorInterventionTier.rawValue,
+                "effective_supervisor_work_order_depth": resolved.supervisorAdaptation.effectiveWorkOrderDepth.rawValue,
                 "review_policy_mode": cfg.reviewPolicyMode.rawValue,
+                "project_recent_dialogue_profile": cfg.projectRecentDialogueProfile.rawValue,
+                "project_context_depth_profile": cfg.projectContextDepthProfile.rawValue,
+                "governance_truth": governanceTruth,
                 "runtime_surface_configured": cfg.runtimeSurfaceMode.rawValue,
                 "runtime_surface_preset": cfg.runtimeSurfaceMode.rawValue,
                 "surface_preset": cfg.runtimeSurfaceMode.rawValue,
@@ -2303,12 +4384,24 @@ final class AppModel: ObservableObject {
         maxAutoRetryDepth: Int? = nil
     ) {
         guard let ctx = projectContext else { return }
-        guard var cfg = projectConfig else { return }
+        setProjectAutomationSelfIteration(
+            for: ctx,
+            enabled: enabled,
+            maxAutoRetryDepth: maxAutoRetryDepth
+        )
+    }
+
+    func setProjectAutomationSelfIteration(
+        for ctx: AXProjectContext,
+        enabled: Bool? = nil,
+        maxAutoRetryDepth: Int? = nil
+    ) {
+        guard var cfg = editableProjectConfig(for: ctx) else { return }
         cfg = cfg.settingAutomationSelfIteration(
             enabled: enabled,
             maxAutoRetryDepth: maxAutoRetryDepth
         )
-        projectConfig = cfg
+        syncProjectConfigIfCurrent(cfg, for: ctx)
         try? AXProjectStore.saveConfig(cfg, for: ctx)
     }
 
@@ -2322,12 +4415,34 @@ final class AppModel: ObservableObject {
         hubOverrideMode: AXProjectRuntimeSurfaceHubOverrideMode? = nil
     ) {
         guard let ctx = projectContext else { return }
-        guard var cfg = projectConfig else { return }
+        setProjectRuntimeSurfacePolicy(
+            for: ctx,
+            mode: mode,
+            allowDeviceTools: allowDeviceTools,
+            allowBrowserRuntime: allowBrowserRuntime,
+            allowConnectorActions: allowConnectorActions,
+            allowExtensions: allowExtensions,
+            ttlSeconds: ttlSeconds,
+            hubOverrideMode: hubOverrideMode
+        )
+    }
 
+    func setProjectRuntimeSurfacePolicy(
+        for ctx: AXProjectContext,
+        mode: AXProjectRuntimeSurfaceMode? = nil,
+        allowDeviceTools: Bool? = nil,
+        allowBrowserRuntime: Bool? = nil,
+        allowConnectorActions: Bool? = nil,
+        allowExtensions: Bool? = nil,
+        ttlSeconds: Int? = nil,
+        hubOverrideMode: AXProjectRuntimeSurfaceHubOverrideMode? = nil
+    ) {
+        guard var cfg = editableProjectConfig(for: ctx) else { return }
+        let remoteOverride = runtimeSurfaceRemoteOverrideSnapshot(for: ctx)
         let now = Date()
         let previous = cfg.effectiveRuntimeSurfacePolicy(
             now: now,
-            remoteOverride: projectRemoteRuntimeSurfaceOverride
+            remoteOverride: remoteOverride
         )
         cfg = cfg.settingRuntimeSurfacePolicy(
             mode: mode,
@@ -2341,10 +4456,10 @@ final class AppModel: ObservableObject {
         )
         let effective = cfg.effectiveRuntimeSurfacePolicy(
             now: now,
-            remoteOverride: projectRemoteRuntimeSurfaceOverride
+            remoteOverride: remoteOverride
         )
 
-        projectConfig = cfg
+        syncProjectConfigIfCurrent(cfg, for: ctx)
         try? AXProjectStore.saveConfig(cfg, for: ctx)
         AXProjectStore.appendRawLog(
             [
@@ -2438,8 +4553,31 @@ final class AppModel: ObservableObject {
         eventReviewTriggers: [AXProjectReviewTrigger]? = nil
     ) {
         guard let ctx = projectContext else { return }
-        guard var cfg = projectConfig else { return }
+        setProjectGovernance(
+            for: ctx,
+            executionTier: executionTier,
+            supervisorInterventionTier: supervisorInterventionTier,
+            reviewPolicyMode: reviewPolicyMode,
+            progressHeartbeatSeconds: progressHeartbeatSeconds,
+            reviewPulseSeconds: reviewPulseSeconds,
+            brainstormReviewSeconds: brainstormReviewSeconds,
+            eventDrivenReviewEnabled: eventDrivenReviewEnabled,
+            eventReviewTriggers: eventReviewTriggers
+        )
+    }
 
+    func setProjectGovernance(
+        for ctx: AXProjectContext,
+        executionTier: AXProjectExecutionTier? = nil,
+        supervisorInterventionTier: AXProjectSupervisorInterventionTier? = nil,
+        reviewPolicyMode: AXProjectReviewPolicyMode? = nil,
+        progressHeartbeatSeconds: Int? = nil,
+        reviewPulseSeconds: Int? = nil,
+        brainstormReviewSeconds: Int? = nil,
+        eventDrivenReviewEnabled: Bool? = nil,
+        eventReviewTriggers: [AXProjectReviewTrigger]? = nil
+    ) {
+        guard var cfg = editableProjectConfig(for: ctx) else { return }
         cfg = cfg.settingProjectGovernance(
             executionTier: executionTier,
             supervisorInterventionTier: supervisorInterventionTier,
@@ -2459,10 +4597,37 @@ final class AppModel: ObservableObject {
         let resolved = xtResolveProjectGovernance(
             projectRoot: ctx.root,
             config: cfg,
-            remoteOverride: projectRemoteRuntimeSurfaceOverride
+            remoteOverride: runtimeSurfaceRemoteOverrideSnapshot(for: ctx)
         )
+        let governanceTruth = XTGovernanceTruthPresentation.truthLine(
+            configuredExecutionTier: resolved.configuredBundle.executionTier.rawValue,
+            effectiveExecutionTier: resolved.effectiveBundle.executionTier.rawValue,
+            configuredSupervisorTier: resolved.configuredBundle.supervisorInterventionTier.rawValue,
+            effectiveSupervisorTier: resolved.effectiveBundle.supervisorInterventionTier.rawValue,
+            reviewPolicyMode: resolved.effectiveBundle.reviewPolicyMode.rawValue,
+            progressHeartbeatSeconds: resolved.effectiveBundle.schedule.progressHeartbeatSeconds,
+            reviewPulseSeconds: resolved.effectiveBundle.schedule.reviewPulseSeconds,
+            brainstormReviewSeconds: resolved.effectiveBundle.schedule.brainstormReviewSeconds,
+            compatSource: resolved.compatSource.rawValue
+        ) ?? ""
+        let governanceSnapshot: [String: Any] = [
+            "configured_execution_tier": resolved.configuredBundle.executionTier.rawValue,
+            "effective_execution_tier": resolved.effectiveBundle.executionTier.rawValue,
+            "configured_supervisor_tier": resolved.configuredBundle.supervisorInterventionTier.rawValue,
+            "effective_supervisor_tier": resolved.effectiveBundle.supervisorInterventionTier.rawValue,
+            "effective_supervisor_intervention_tier": resolved.effectiveBundle.supervisorInterventionTier.rawValue,
+            "effective_supervisor_work_order_depth": resolved.supervisorAdaptation.effectiveWorkOrderDepth.rawValue,
+            "review_policy_mode": resolved.effectiveBundle.reviewPolicyMode.rawValue,
+            "progress_heartbeat_sec": resolved.effectiveBundle.schedule.progressHeartbeatSeconds,
+            "review_pulse_sec": resolved.effectiveBundle.schedule.reviewPulseSeconds,
+            "brainstorm_review_sec": resolved.effectiveBundle.schedule.brainstormReviewSeconds,
+            "event_driven_review_enabled": resolved.effectiveBundle.schedule.eventDrivenReviewEnabled,
+            "event_review_triggers": resolved.effectiveBundle.schedule.eventReviewTriggers.map(\.rawValue),
+            "compat_source": resolved.compatSource.rawValue,
+            "governance_truth": governanceTruth
+        ]
 
-        projectConfig = cfg
+        syncProjectConfigIfCurrent(cfg, for: ctx)
         try? AXProjectStore.saveConfig(cfg, for: ctx)
         AXProjectStore.appendRawLog(
             [
@@ -2471,7 +4636,13 @@ final class AppModel: ObservableObject {
                 "created_at": Date().timeIntervalSince1970,
                 "project_id": AXProjectRegistryStore.projectId(forRoot: ctx.root),
                 "execution_tier": cfg.executionTier.rawValue,
+                "configured_execution_tier": resolved.configuredBundle.executionTier.rawValue,
+                "effective_execution_tier": resolved.effectiveBundle.executionTier.rawValue,
                 "supervisor_intervention_tier": cfg.supervisorInterventionTier.rawValue,
+                "configured_supervisor_tier": resolved.configuredBundle.supervisorInterventionTier.rawValue,
+                "effective_supervisor_tier": resolved.effectiveBundle.supervisorInterventionTier.rawValue,
+                "effective_supervisor_intervention_tier": resolved.effectiveBundle.supervisorInterventionTier.rawValue,
+                "effective_supervisor_work_order_depth": resolved.supervisorAdaptation.effectiveWorkOrderDepth.rawValue,
                 "review_policy_mode": cfg.reviewPolicyMode.rawValue,
                 "progress_heartbeat_sec": cfg.progressHeartbeatSeconds,
                 "review_pulse_sec": cfg.reviewPulseSeconds,
@@ -2479,6 +4650,9 @@ final class AppModel: ObservableObject {
                 "event_driven_review_enabled": cfg.eventDrivenReviewEnabled,
                 "event_review_triggers": cfg.eventReviewTriggers.map(\.rawValue),
                 "compat_source": cfg.governanceCompatSource.rawValue,
+                "governance_compat_source": resolved.compatSource.rawValue,
+                "governance_truth": governanceTruth,
+                "governance": governanceSnapshot,
                 "runtime_surface_configured": cfg.runtimeSurfaceMode.rawValue,
                 "runtime_surface_preset": cfg.runtimeSurfaceMode.rawValue,
                 "effective_runtime_surface": resolved.effectiveRuntimeSurface.effectiveMode.rawValue,
@@ -2511,6 +4685,28 @@ final class AppModel: ObservableObject {
             config: resolvedConfig,
             legacyAutonomyLevel: legacyAutonomyLevel,
             remoteOverride: projectRemoteRuntimeSurfaceOverride
+        )
+    }
+
+    func resolvedProjectGovernance(
+        for ctx: AXProjectContext,
+        config: AXProjectConfig? = nil,
+        legacyAutonomyLevel: AutonomyLevel? = nil
+    ) -> AXProjectResolvedGovernanceState {
+        let resolvedConfig: AXProjectConfig
+        if isCurrentProjectContext(ctx), let projectConfig {
+            resolvedConfig = projectConfig
+        } else if let config {
+            resolvedConfig = config
+        } else {
+            resolvedConfig = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: ctx.root)
+        }
+
+        return resolvedProjectGovernance(
+            ctx: ctx,
+            config: resolvedConfig,
+            legacyAutonomyLevel: legacyAutonomyLevel,
+            remoteOverride: runtimeSurfaceRemoteOverrideSnapshot(for: ctx)
         )
     }
 
@@ -2629,7 +4825,10 @@ final class AppModel: ObservableObject {
         let root = fallbackGovernanceTemplateProjectRoot(for: project)
         let config = xtGovernanceTemplateDraftConfig(
             projectRoot: root,
-            template: xtGovernanceTemplateBaseline(for: project.executionTier),
+            template: xtGovernanceTemplateBaseline(
+                for: project.executionTier,
+                supervisorInterventionTier: project.supervisorInterventionTier
+            ),
             executionTier: project.executionTier,
             supervisorInterventionTier: project.supervisorInterventionTier,
             reviewPolicyMode: project.reviewPolicyMode,
@@ -2703,7 +4902,7 @@ final class AppModel: ObservableObject {
             return
         }
         projectRemoteRuntimeSurfaceOverride = remoteOverride
-        nextProjectRuntimeSurfaceOverrideRefreshAt = now.addingTimeInterval(force ? 1.0 : 2.0)
+        nextProjectRuntimeSurfaceOverrideRefreshAt = now.addingTimeInterval(force ? 2.0 : 20.0)
     }
 
     func moveProjects(from offsets: IndexSet, to destination: Int) {
@@ -2722,7 +4921,9 @@ final class AppModel: ObservableObject {
 
         reg.projects = updated
         registry = reg
-        AXProjectRegistryStore.save(reg)
+        if persistProjectRegistryChanges {
+            AXProjectRegistryStore.save(reg)
+        }
     }
 
     func reloadMemory() {
@@ -2795,23 +4996,75 @@ final class AppModel: ObservableObject {
     }
 
     private func loadRegistry() {
+        guard loadPersistedProjectRegistry else {
+            registry = .empty()
+            historicalProjectBoundaryRepairStatusLine = HistoricalProjectBoundaryRepairSummary()
+                .statusLine(reason: "testing_empty_registry")
+            return
+        }
         registry = AXProjectRegistryStore.load()
+        historicalProjectBoundaryRepairStatusLine = HistoricalProjectBoundaryRepairSummary()
+            .statusLine(reason: "startup_deferred")
+    }
+
+    @discardableResult
+    private func runHistoricalProjectBoundaryRepair(reason: String) -> HistoricalProjectBoundaryRepairSummary {
+        historicalProjectBoundaryRepairStatusLine = "historical_project_boundary_repair=running reason=\(reason)"
+        let fm = FileManager.default
+        var summary = HistoricalProjectBoundaryRepairSummary()
+
+        for entry in registry.projects {
+            summary.scanned += 1
+            let rootPath = entry.rootPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !rootPath.isEmpty else { continue }
+
+            let root = URL(fileURLWithPath: rootPath, isDirectory: true)
+            var isDirectory: ObjCBool = false
+            guard fm.fileExists(atPath: root.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                continue
+            }
+
+            let ctx = AXProjectContext(root: root)
+            let missingConfig = !fm.fileExists(atPath: ctx.configURL.path)
+            let missingMemory = AXProjectStore.loadMemoryIfPresent(for: ctx) == nil
+            guard missingConfig || missingMemory else { continue }
+
+            do {
+                if missingConfig {
+                    _ = try AXProjectStore.loadOrCreateConfig(for: ctx)
+                    summary.repairedConfigCount += 1
+                }
+                if missingMemory {
+                    _ = try AXProjectStore.loadOrCreateMemory(for: ctx)
+                    summary.repairedMemoryCount += 1
+                }
+            } catch {
+                let ref = entry.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? entry.projectId
+                    : entry.displayName
+                summary.failedProjectRefs.append(ref)
+                print("Historical project boundary repair failed for \(ref): \(error)")
+            }
+        }
+
+        historicalProjectBoundaryRepairStatusLine = summary.statusLine(reason: reason)
+
+        if summary.touchedCount > 0 || summary.failedCount > 0 {
+            registry = AXProjectRegistryStore.load()
+            let failedSuffix = summary.failedProjectRefs.isEmpty
+                ? ""
+                : " failed=\(summary.failedProjectRefs.joined(separator: ","))"
+            print(
+                "Historical project boundary repair summary: scanned=\(summary.scanned) repaired_config=\(summary.repairedConfigCount) repaired_memory=\(summary.repairedMemoryCount)\(failedSuffix)"
+            )
+        }
+        return summary
     }
 
     private func bootstrapSelection() {
-        if let last = registry.lastSelectedProjectId,
-           let entry = registry.project(for: last),
-           resolvedProjectRootURL(for: entry) != nil {
-            selectedProjectId = last
-            return
-        }
-        if registry.globalHomeVisible {
-            selectedProjectId = AXProjectRegistry.globalHomeId
-            return
-        }
-        if let newest = registry.sortedProjects().last(where: { resolvedProjectRootURL(for: $0) != nil }) {
-            selectedProjectId = newest.projectId
-        }
+        // Startup stays empty on purpose so XT does not touch historical
+        // project roots or Home dashboards until the user explicitly opens one.
+        selectedProjectId = nil
     }
 
     private func applySelection() async {
@@ -2836,7 +5089,9 @@ final class AppModel: ObservableObject {
         reg = AXProjectRegistryStore.touchOpened(reg, projectId: pid)
         reg.lastSelectedProjectId = pid
         registry = reg
-        AXProjectRegistryStore.save(reg)
+        if persistProjectRegistryChanges {
+            AXProjectRegistryStore.save(reg)
+        }
 
         guard let resolvedRoot = resolvedProjectRootURL(for: entry) else {
             if reg.globalHomeVisible {
@@ -2852,20 +5107,26 @@ final class AppModel: ObservableObject {
     }
 
     private func addProject(_ url: URL) {
-        var reg = registry
         let normalizedRoot = AXProjectRegistryStore.normalizedRootPath(url)
-        let previous = reg.projects.first(where: { $0.rootPath == normalizedRoot })
-        let res = AXProjectRegistryStore.upsertProject(reg, root: url)
-        reg = res.0
-        reg.lastSelectedProjectId = res.1.projectId
-        registry = reg
-        AXProjectRegistryStore.save(reg)
-        if previous == nil {
-            eventBus.publish(.projectCreated(res.1))
-        } else {
-            eventBus.publish(.projectUpdated(res.1))
+        let previous = registry.projects.first(where: { $0.rootPath == normalizedRoot })
+        let ctx = AXProjectContext(root: URL(fileURLWithPath: normalizedRoot, isDirectory: true))
+        let hadExistingMemory = AXProjectStore.loadMemoryIfPresent(for: ctx) != nil
+
+        guard let entry = ensureRegisteredProjectBoundary(
+            at: url,
+            initializeMemoryBoundary: true,
+            selectAfterUpsert: true
+        ) else {
+            return
         }
-        selectedProjectId = res.1.projectId
+
+        if hadExistingMemory {
+            if previous == nil {
+                eventBus.publish(.projectCreated(entry))
+            } else {
+                eventBus.publish(.projectUpdated(entry))
+            }
+        }
     }
 
     private func resolvedProjectRootURL(for entry: AXProjectEntry) -> URL? {
@@ -2905,7 +5166,24 @@ final class AppModel: ObservableObject {
         guard modelAssignmentsChanged(lastObservedModelAssignments, nextAssignments) else {
             return
         }
+        noteRemoteMemoryRouteOrModelPreferenceChanged(projectId: nil)
         persistSessionSummariesForLifecycle(reason: "ai_switch")
+    }
+
+    private func noteRemoteMemoryRouteOrModelPreferenceChanged(projectId: String?) {
+        Task {
+            await HubIPCClient.noteSupervisorRemoteMemoryRouteOrModelPreferenceChanged()
+            if let projectId {
+                await HubIPCClient.noteProjectRemoteMemoryRouteOrModelPreferenceChanged(
+                    projectId: projectId
+                )
+            } else {
+                await HubIPCClient.invalidateProjectRemoteMemorySnapshotCache(
+                    projectId: nil,
+                    reason: .routeOrModelPreferenceChanged
+                )
+            }
+        }
     }
 
     private func activeProjectContextsForSessionSummary() -> [AXProjectContext] {
@@ -3012,19 +5290,37 @@ final class AppModel: ObservableObject {
     private func loadHubRemotePrefs() {
         let d = UserDefaults.standard
         let cached = HubAIClient.cachedRemoteProfile(stateDir: nil)
-        let p = d.object(forKey: hubPairingPortKey) as? Int
-            ?? d.object(forKey: legacyHubPairingPortKey) as? Int
-            ?? cached.pairingPort
-            ?? 50052
-        let g = d.object(forKey: hubGrpcPortKey) as? Int
-            ?? d.object(forKey: legacyHubGrpcPortKey) as? Int
-            ?? cached.grpcPort
-            ?? 50051
         let explicitHost = (d.string(forKey: hubInternetHostKey)
             ?? d.string(forKey: legacyHubInternetHostKey)
             ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let host = explicitHost.isEmpty ? (cached.internetHost ?? "") : explicitHost
+        let explicitPairingPort = d.object(forKey: hubPairingPortKey) as? Int
+            ?? d.object(forKey: legacyHubPairingPortKey) as? Int
+        let explicitGrpcPort = d.object(forKey: hubGrpcPortKey) as? Int
+            ?? d.object(forKey: legacyHubGrpcPortKey) as? Int
+        let endpointOverridePending = hasHubRemoteEndpointOverridePending()
+        let p = endpointOverridePending
+            ? (explicitPairingPort ?? cached.pairingPort ?? 50052)
+            : (cached.pairingPort ?? explicitPairingPort ?? 50052)
+        let g = endpointOverridePending
+            ? (explicitGrpcPort ?? cached.grpcPort ?? 50051)
+            : (cached.grpcPort ?? explicitGrpcPort ?? 50051)
+        let host = endpointOverridePending
+            ? (explicitHost.isEmpty ? (cached.internetHost ?? "") : explicitHost)
+            : (cached.internetHost ?? (explicitHost.isEmpty ? "" : explicitHost))
+        let inviteToken = (d.string(forKey: hubInviteTokenKey)
+            ?? d.string(forKey: legacyHubInviteTokenKey)
+            ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let inviteAlias = (d.string(forKey: hubInviteAliasKey)
+            ?? d.string(forKey: legacyHubInviteAliasKey)
+            ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let inviteInstanceID = (cached.hubInstanceID
+            ?? d.string(forKey: hubInviteInstanceIDKey)
+            ?? d.string(forKey: legacyHubInviteInstanceIDKey)
+            ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let ctl = d.string(forKey: hubAxhubctlPathKey)
             ?? d.string(forKey: legacyHubAxhubctlPathKey)
             ?? ""
@@ -3032,6 +5328,9 @@ final class AppModel: ObservableObject {
         hubPairingPort = max(1, min(65_535, p))
         hubGrpcPort = max(1, min(65_535, g))
         hubInternetHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        hubInviteToken = inviteToken
+        hubInviteAlias = inviteAlias
+        hubInviteInstanceID = inviteInstanceID
         hubAxhubctlPath = ctl.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
@@ -3043,16 +5342,155 @@ final class AppModel: ObservableObject {
         d.set(hubGrpcPort, forKey: legacyHubGrpcPortKey)
         d.set(hubInternetHost, forKey: hubInternetHostKey)
         d.set(hubInternetHost, forKey: legacyHubInternetHostKey)
+        d.set(hubInviteToken, forKey: hubInviteTokenKey)
+        d.set(hubInviteToken, forKey: legacyHubInviteTokenKey)
+        d.set(hubInviteAlias, forKey: hubInviteAliasKey)
+        d.set(hubInviteAlias, forKey: legacyHubInviteAliasKey)
+        d.set(hubInviteInstanceID, forKey: hubInviteInstanceIDKey)
+        d.set(hubInviteInstanceID, forKey: legacyHubInviteInstanceIDKey)
         d.set(hubAxhubctlPath, forKey: hubAxhubctlPathKey)
         d.set(hubAxhubctlPath, forKey: legacyHubAxhubctlPathKey)
     }
 
+    private func hasHubRemoteEndpointOverridePending() -> Bool {
+        let d = UserDefaults.standard
+        if d.object(forKey: hubRemoteEndpointOverridePendingKey) != nil {
+            return d.bool(forKey: hubRemoteEndpointOverridePendingKey)
+        }
+        return d.bool(forKey: legacyHubRemoteEndpointOverridePendingKey)
+    }
+
+    private func setHubRemoteEndpointOverridePending(_ pending: Bool) {
+        let d = UserDefaults.standard
+        if pending {
+            d.set(true, forKey: hubRemoteEndpointOverridePendingKey)
+            d.set(true, forKey: legacyHubRemoteEndpointOverridePendingKey)
+        } else {
+            d.removeObject(forKey: hubRemoteEndpointOverridePendingKey)
+            d.removeObject(forKey: legacyHubRemoteEndpointOverridePendingKey)
+        }
+    }
+
+    nonisolated static func shouldPreserveHubRemoteEndpointOverride(
+        overridePending: Bool,
+        currentEndpoint: HubRemoteEndpointFingerprint,
+        cachedProfile: HubAIClient.CachedRemoteProfile
+    ) -> Bool {
+        guard overridePending else { return false }
+
+        let cachedHost = (cachedProfile.internetHost ?? cachedProfile.host ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if currentEndpoint.internetHost != cachedHost {
+            return true
+        }
+        if let cachedPairingPort = cachedProfile.pairingPort,
+           currentEndpoint.pairingPort != cachedPairingPort {
+            return true
+        }
+        if let cachedGrpcPort = cachedProfile.grpcPort,
+           currentEndpoint.grpcPort != cachedGrpcPort {
+            return true
+        }
+        return false
+    }
+
+    nonisolated static func pairingResetPlan(
+        overridePending: Bool,
+        currentEndpoint: HubRemoteEndpointFingerprint
+    ) -> HubPairingResetPlan {
+        let hasMeaningfulManualEndpoint = shouldProtectManualHubEndpointFromAutofill(
+            overridePending: overridePending,
+            currentEndpoint: currentEndpoint
+        )
+        if hasMeaningfulManualEndpoint {
+            return HubPairingResetPlan(
+                endpoint: currentEndpoint,
+                preserveEndpointOverride: true,
+                shouldAutoDetect: false
+            )
+        }
+        return HubPairingResetPlan(
+            endpoint: HubRemoteEndpointFingerprint(
+                pairingPort: 50052,
+                grpcPort: 50051,
+                internetHost: ""
+            ),
+            preserveEndpointOverride: false,
+            shouldAutoDetect: true
+        )
+    }
+
+    nonisolated static func shouldProtectManualHubEndpointFromAutofill(
+        overridePending: Bool,
+        currentEndpoint: HubRemoteEndpointFingerprint
+    ) -> Bool {
+        guard overridePending else { return false }
+
+        let internetHost = currentEndpoint.internetHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !internetHost.isEmpty
+            || currentEndpoint.pairingPort != 50052
+            || currentEndpoint.grpcPort != 50051
+    }
+
+    @discardableResult
+    private func synchronizeHubRemotePrefsFromCachedProfile(
+        preferDiscoveredInternetHost: Bool
+    ) -> HubAIClient.CachedRemoteProfile {
+        let cachedProfile = HubAIClient.cachedRemoteProfile(stateDir: nil)
+        var changed = false
+        let preserveEndpointOverride = Self.shouldPreserveHubRemoteEndpointOverride(
+            overridePending: hasHubRemoteEndpointOverridePending(),
+            currentEndpoint: currentHubRemoteEndpointFingerprint(),
+            cachedProfile: cachedProfile
+        )
+
+        if !preserveEndpointOverride,
+           let pairingPort = cachedProfile.pairingPort,
+           hubPairingPort != pairingPort {
+            hubPairingPort = pairingPort
+            changed = true
+        }
+
+        if !preserveEndpointOverride,
+           let grpcPort = cachedProfile.grpcPort,
+           hubGrpcPort != grpcPort {
+            hubGrpcPort = grpcPort
+            changed = true
+        }
+
+        let discoveredInternetHost = (cachedProfile.internetHost ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !preserveEndpointOverride,
+           !discoveredInternetHost.isEmpty {
+            let currentInternetHost = hubInternetHost.trimmingCharacters(in: .whitespacesAndNewlines)
+            if preferDiscoveredInternetHost || currentInternetHost.isEmpty {
+                if currentInternetHost != discoveredInternetHost {
+                    hubInternetHost = discoveredInternetHost
+                    changed = true
+                }
+            }
+        }
+
+        if let cachedHubInstanceID = cachedProfile.hubInstanceID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !cachedHubInstanceID.isEmpty,
+           hubInviteInstanceID != cachedHubInstanceID {
+            hubInviteInstanceID = cachedHubInstanceID
+            changed = true
+        }
+
+        if changed {
+            saveHubRemotePrefs()
+        }
+        return cachedProfile
+    }
+
     private func loadBridgePrefs() {
         let d = UserDefaults.standard
-        // P0 policy: keep Network Bridge always-on by default.
-        bridgeAlwaysOn = true
-        d.set(true, forKey: bridgeAlwaysOnKey)
-        d.set(true, forKey: legacyBridgeAlwaysOnKey)
+        // Startup-safe policy: keep bridge off until a real workflow requests it.
+        // This also clears older forced-on defaults that made app launch too aggressive.
+        bridgeAlwaysOn = false
+        d.set(false, forKey: bridgeAlwaysOnKey)
+        d.set(false, forKey: legacyBridgeAlwaysOnKey)
     }
 
     private func loadLocalServerPrefs() {
@@ -3108,8 +5546,20 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func maybeScheduleRemoteReconnect(allowBootstrap: Bool, force: Bool) {
-        if hubRemoteLinking { return }
+    private func maybeScheduleRemoteReconnect(
+        decisionTrigger: XTHubConnectivityDecisionTrigger,
+        decision: XTHubConnectivityDecision,
+        incidentSnapshot: XTHubConnectivityIncidentSnapshot? = nil,
+        force: Bool
+    ) {
+        let startupSuppressed = shouldSuppressAutomaticReconnectDuringStartup()
+        if Self.shouldSuppressAutomaticRemoteReconnect(
+            hubRemoteLinking: hubRemoteLinking,
+            startupSuppressed: startupSuppressed,
+            activeRemoteGenerate: false
+        ) {
+            return
+        }
         if !force {
             let now = Date()
             if now.timeIntervalSince(hubReconnectLastAttemptAt) < 20.0 {
@@ -3117,40 +5567,673 @@ final class AppModel: ObservableObject {
             }
         }
         Task { @MainActor in
-            // Only run background reconnect after a paired profile exists.
+            let activeRemoteGenerate = await HubAIClient.shared.hasActiveRemoteGenerateRequests()
+            guard Self.shouldSuppressAutomaticRemoteReconnect(
+                hubRemoteLinking: hubRemoteLinking,
+                startupSuppressed: shouldSuppressAutomaticReconnectDuringStartup(),
+                activeRemoteGenerate: activeRemoteGenerate
+            ) == false else {
+                return
+            }
             let hasEnv = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
-            if !hasEnv { return }
-            _ = await runRemoteConnectFlow(
-                allowBootstrap: allowBootstrap,
-                showAlertOnFinish: false,
-                updateSetupProgress: false
+            guard Self.shouldAllowAutomaticBootstrapReconnect(
+                hasHubEnv: hasEnv,
+                internetHost: hubInternetHost,
+                inviteToken: hubInviteToken,
+                inviteAlias: hubInviteAlias,
+                inviteInstanceID: hubInviteInstanceID
+            ) else {
+                return
+            }
+            // Automatic recovery must stay connect-only for existing paired profiles.
+            let effectiveAllowBootstrap = false
+            let shouldSurfaceProgress = Self.shouldSurfaceAutomaticRemoteConnectProgress(
+                force: force,
+                allowBootstrap: effectiveAllowBootstrap,
+                existingSummary: hubRemoteSummary,
+                existingLog: hubRemoteLog
             )
+            _ = await runRemoteConnectFlow(
+                allowBootstrap: effectiveAllowBootstrap,
+                showAlertOnFinish: false,
+                updateSetupProgress: shouldSurfaceProgress,
+                repairTrigger: Self.connectivityRepairTrigger(for: decisionTrigger),
+                repairOwner: .xtRuntime,
+                repairDecisionReasonCode: decision.reasonCode,
+                preferredRoute: decision.selectedRoute,
+                candidateRoutes: decision.candidatesTried,
+                handoffReason: decision.handoffReason,
+                cooldownApplied: decision.cooldownApplied,
+                probeTrigger: decisionTrigger,
+                probeDecision: decision,
+                probeIncidentSnapshot: incidentSnapshot
+            )
+        }
+    }
+
+    private func currentHubConnectivityDecision(
+        trigger: XTHubConnectivityDecisionTrigger,
+        currentPath: HubNetworkPathFingerprint? = nil,
+        pairedRouteSetSnapshot: XTPairedRouteSetSnapshot? = nil
+    ) -> XTHubConnectivityDecision {
+        let pairedRouteSetSnapshot = pairedRouteSetSnapshot ?? currentPairedRouteSetSnapshot()
+        return XTHubConnectivityDecisionBuilder.build(
+            input: XTHubConnectivityDecisionInput(
+                trigger: trigger,
+                currentPath: currentPath,
+                pairedRouteSetSnapshot: pairedRouteSetSnapshot,
+                localConnected: hubConnected,
+                remoteConnected: hubRemoteConnected,
+                remoteRoute: hubRemoteRoute,
+                repairLedgerSnapshot: XTConnectivityRepairLedgerStore.loadSnapshot()
+            )
+        )
+    }
+
+    private func currentHubConnectivityIncidentSnapshot(
+        trigger: XTHubConnectivityDecisionTrigger,
+        currentPath: HubNetworkPathFingerprint? = nil,
+        pairedRouteSetSnapshot: XTPairedRouteSetSnapshot? = nil,
+        decision: XTHubConnectivityDecision? = nil,
+        localConnectedOverride: Bool? = nil,
+        remoteConnectedOverride: Bool? = nil,
+        remoteRouteOverride: HubRemoteRoute? = nil,
+        updatedAt: Date = Date()
+    ) -> XTHubConnectivityIncidentSnapshot {
+        let pairedRouteSetSnapshot = pairedRouteSetSnapshot ?? currentPairedRouteSetSnapshot()
+        let decision = decision ?? currentHubConnectivityDecision(
+            trigger: trigger,
+            currentPath: currentPath,
+            pairedRouteSetSnapshot: pairedRouteSetSnapshot
+        )
+        return XTHubConnectivityIncidentSnapshotBuilder.build(
+            input: XTHubConnectivityIncidentInput(
+                trigger: trigger,
+                decision: decision,
+                currentPath: currentPath,
+                pairedRouteSetSnapshot: pairedRouteSetSnapshot,
+                localConnected: localConnectedOverride ?? hubConnected,
+                remoteConnected: remoteConnectedOverride ?? hubRemoteConnected,
+                remoteRoute: remoteRouteOverride ?? hubRemoteRoute,
+                currentFailureCode: hubSetupFailureCode,
+                updatedAt: updatedAt
+            )
+        )
+    }
+
+    private func recordDeferredConnectivityRepairIfNeeded(
+        trigger: XTHubConnectivityDecisionTrigger,
+        incidentSnapshot: XTHubConnectivityIncidentSnapshot
+    ) {
+        guard let entry = XTConnectivityRepairLedgerStore.deferredEntry(
+            trigger: Self.connectivityRepairTrigger(for: trigger),
+            incidentSnapshot: incidentSnapshot
+        ) else {
+            return
+        }
+        XTConnectivityRepairLedgerStore.append(entry)
+    }
+
+    private func recordConnectivityRepairOutcome(
+        trigger: XTConnectivityRepairTrigger,
+        owner: XTConnectivityRepairOwner,
+        allowBootstrap: Bool,
+        decisionReasonCode: String?,
+        report: HubRemoteConnectReport,
+        incidentSnapshot: XTHubConnectivityIncidentSnapshot,
+        recordedAt: Date
+    ) {
+        let recordedAtMs = Int64((recordedAt.timeIntervalSince1970 * 1000).rounded())
+        let entry = XTConnectivityRepairLedgerStore.outcomeEntry(
+            trigger: trigger,
+            owner: owner,
+            allowBootstrap: allowBootstrap,
+            decisionReasonCode: decisionReasonCode,
+            report: report,
+            incidentSnapshot: incidentSnapshot,
+            recordedAtMs: recordedAtMs
+        )
+        XTConnectivityRepairLedgerStore.append(entry)
+    }
+
+    private func recordHubNetworkHandoffObservation(
+        trigger: XTHubConnectivityDecisionTrigger,
+        allowBootstrap: Bool,
+        decision: XTHubConnectivityDecision,
+        incidentSnapshot: XTHubConnectivityIncidentSnapshot,
+        recordedAt: Date = Date()
+    ) {
+        let recordedAtMs = Int64((recordedAt.timeIntervalSince1970 * 1000).rounded())
+        let entry = XTHubNetworkHandoffProbeLogStore.noAttemptEntry(
+            trigger: trigger,
+            allowBootstrap: allowBootstrap,
+            decision: decision,
+            incidentSnapshot: incidentSnapshot,
+            recordedAtMs: recordedAtMs
+        )
+        XTHubNetworkHandoffProbeLogStore.append(entry)
+    }
+
+    private func recordHubNetworkHandoffOutcome(
+        trigger: XTHubConnectivityDecisionTrigger,
+        allowBootstrap: Bool,
+        decision: XTHubConnectivityDecision,
+        incidentSnapshot: XTHubConnectivityIncidentSnapshot,
+        report: HubRemoteConnectReport,
+        recordedAt: Date
+    ) {
+        let recordedAtMs = Int64((recordedAt.timeIntervalSince1970 * 1000).rounded())
+        let entry = XTHubNetworkHandoffProbeLogStore.outcomeEntry(
+            trigger: trigger,
+            allowBootstrap: allowBootstrap,
+            decision: decision,
+            incidentSnapshot: incidentSnapshot,
+            report: report,
+            recordedAtMs: recordedAtMs
+        )
+        XTHubNetworkHandoffProbeLogStore.append(entry)
+    }
+
+    private static func connectivityRepairTrigger(
+        for trigger: XTHubConnectivityDecisionTrigger
+    ) -> XTConnectivityRepairTrigger {
+        switch trigger {
+        case .networkChanged:
+            return .networkChanged
+        case .backgroundKeepalive:
+            return .backgroundKeepalive
+        case .appBecameActive:
+            return .appBecameActive
+        case .systemWoke:
+            return .systemWoke
+        case .hubReachabilityChanged:
+            return .hubReachabilityChanged
+        }
+    }
+
+    private func maybeRefreshRemotePresence(force: Bool = false) async {
+        guard hubConnected || hubRemoteConnected else { return }
+
+        let route: HubRemoteRoute = hubConnected ? .lan : hubRemoteRoute
+        guard route != .none else { return }
+
+        let now = Date()
+        if !force, now < nextRemotePresenceRefreshAt {
+            return
+        }
+
+        let ok = await HubPairingCoordinator.shared.sendRemoteDevicePresence(
+            route: route,
+            stateDir: nil,
+            deviceName: Host.current().localizedName ?? "X-Terminal"
+        )
+
+        nextRemotePresenceRefreshAt = now.addingTimeInterval(ok ? 25.0 : 10.0)
+    }
+
+    private func startHubNetworkMonitor() {
+        let monitor = NWPathMonitor()
+        hubNetworkMonitor = monitor
+        monitor.pathUpdateHandler = { [weak self] path in
+            let fingerprint = HubNetworkPathFingerprint(path: path)
+            Task { @MainActor [weak self] in
+                self?.handleHubNetworkPathUpdate(fingerprint)
+            }
+        }
+        monitor.start(queue: hubNetworkMonitorQueue)
+    }
+
+    private func handleHubNetworkPathUpdate(_ fingerprint: HubNetworkPathFingerprint) {
+        let previous = lastHubNetworkPathFingerprint
+        lastHubNetworkPathFingerprint = fingerprint
+        let activeRemoteGenerate = HubAIClient.hasActiveRemoteGenerateRequestsForLifecycleGates()
+
+        if !fingerprint.isSatisfied {
+            guard !hubConnected else { return }
+            if Self.shouldDeferAutomaticRemoteRouteHandoff(
+                activeRemoteGenerate: activeRemoteGenerate,
+                remoteConnected: hubRemoteConnected,
+                remoteRoute: hubRemoteRoute
+            ) {
+                hubRemoteSummary = "network unavailable; holding active remote response route until reply completes."
+                hubConnectivityIncidentSnapshot = currentHubConnectivityIncidentSnapshot(
+                    trigger: .networkChanged,
+                    currentPath: fingerprint,
+                    updatedAt: Date()
+                )
+                refreshUnifiedDoctorReport(force: true)
+                return
+            }
+            if hubRemoteConnected || hubRemoteRoute != .none {
+                let decision = currentHubConnectivityDecision(
+                    trigger: .networkChanged,
+                    currentPath: fingerprint
+                )
+                hubRemoteConnected = false
+                hubRemoteRoute = .none
+                hubRemotePaidAccessSnapshot = nil
+                hubRemoteSummary = "network unavailable"
+                nextRemotePresenceRefreshAt = .distantPast
+                hubConnectivityIncidentSnapshot = currentHubConnectivityIncidentSnapshot(
+                    trigger: .networkChanged,
+                    currentPath: fingerprint,
+                    decision: decision
+                )
+                if let snapshot = hubConnectivityIncidentSnapshot {
+                    recordDeferredConnectivityRepairIfNeeded(
+                        trigger: .networkChanged,
+                        incidentSnapshot: snapshot
+                    )
+                    recordHubNetworkHandoffObservation(
+                        trigger: .networkChanged,
+                        allowBootstrap: decision.allowBootstrap,
+                        decision: decision,
+                        incidentSnapshot: snapshot
+                    )
+                }
+                refreshUnifiedDoctorReport(force: true)
+            }
+            return
+        }
+
+        guard Self.shouldForceHubReconnect(previous: previous, current: fingerprint) else { return }
+        guard !hubConnected else { return }
+        guard !shouldSuppressAutomaticReconnectDuringStartup() else { return }
+        if Self.shouldDeferAutomaticRemoteRouteHandoff(
+            activeRemoteGenerate: activeRemoteGenerate,
+            remoteConnected: hubRemoteConnected,
+            remoteRoute: hubRemoteRoute
+        ) {
+            hubRemoteSummary = "network changed during active remote response; deferring route handoff until reply completes."
+            let shouldPreserveRoute = Self.shouldPreserveExistingRemoteRouteDuringAutomaticReconnect(
+                current: fingerprint,
+                shouldAttemptReconnect: true,
+                remoteConnected: hubRemoteConnected,
+                remoteRoute: hubRemoteRoute
+            )
+            hubConnectivityIncidentSnapshot = currentHubConnectivityIncidentSnapshot(
+                trigger: .networkChanged,
+                currentPath: fingerprint,
+                remoteConnectedOverride: shouldPreserveRoute ? false : nil,
+                remoteRouteOverride: shouldPreserveRoute ? HubRemoteRoute.none : nil,
+                updatedAt: Date()
+            )
+            refreshUnifiedDoctorReport(force: true)
+            return
+        }
+
+        let pairedRouteSetSnapshot = currentPairedRouteSetSnapshot()
+        let decision = currentHubConnectivityDecision(
+            trigger: .networkChanged,
+            currentPath: fingerprint,
+            pairedRouteSetSnapshot: pairedRouteSetSnapshot
+        )
+        let shouldPreserveRoute = Self.shouldPreserveExistingRemoteRouteDuringAutomaticReconnect(
+            current: fingerprint,
+            shouldAttemptReconnect: decision.shouldAttemptReconnect,
+            remoteConnected: hubRemoteConnected,
+            remoteRoute: hubRemoteRoute
+        )
+        if !shouldPreserveRoute {
+            hubRemoteConnected = false
+            hubRemoteRoute = .none
+            hubRemotePaidAccessSnapshot = nil
+        }
+        hubRemoteSummary = decision.summaryLine
+        nextRemotePresenceRefreshAt = .distantPast
+        hubConnectivityIncidentSnapshot = currentHubConnectivityIncidentSnapshot(
+            trigger: .networkChanged,
+            currentPath: fingerprint,
+            pairedRouteSetSnapshot: pairedRouteSetSnapshot,
+            decision: decision,
+            remoteConnectedOverride: shouldPreserveRoute ? false : nil,
+            remoteRouteOverride: shouldPreserveRoute ? HubRemoteRoute.none : nil
+        )
+        refreshUnifiedDoctorReport(force: true)
+        guard decision.shouldAttemptReconnect else {
+            if let snapshot = hubConnectivityIncidentSnapshot {
+                recordDeferredConnectivityRepairIfNeeded(
+                    trigger: .networkChanged,
+                    incidentSnapshot: snapshot
+                )
+                recordHubNetworkHandoffObservation(
+                    trigger: .networkChanged,
+                    allowBootstrap: decision.allowBootstrap,
+                    decision: decision,
+                    incidentSnapshot: snapshot
+                )
+            }
+            return
+        }
+        maybeScheduleRemoteReconnect(
+            decisionTrigger: .networkChanged,
+            decision: decision,
+            incidentSnapshot: hubConnectivityIncidentSnapshot,
+            force: true
+        )
+    }
+
+    private func handleHubConnectivityLifecycleTrigger(
+        _ trigger: XTHubConnectivityDecisionTrigger
+    ) {
+        let currentPath = lastHubNetworkPathFingerprint
+        let pairedRouteSetSnapshot = currentPairedRouteSetSnapshot()
+        let decision = currentHubConnectivityDecision(
+            trigger: trigger,
+            currentPath: currentPath,
+            pairedRouteSetSnapshot: pairedRouteSetSnapshot
+        )
+
+        hubConnectivityIncidentSnapshot = currentHubConnectivityIncidentSnapshot(
+            trigger: trigger,
+            currentPath: currentPath,
+            pairedRouteSetSnapshot: pairedRouteSetSnapshot,
+            decision: decision
+        )
+        refreshUnifiedDoctorReport(force: true)
+
+        guard !hubConnected else { return }
+
+        if decision.shouldAttemptReconnect {
+            maybeScheduleRemoteReconnect(
+                decisionTrigger: trigger,
+                decision: decision,
+                incidentSnapshot: hubConnectivityIncidentSnapshot,
+                force: true
+            )
+        } else if let snapshot = hubConnectivityIncidentSnapshot {
+            recordDeferredConnectivityRepairIfNeeded(
+                trigger: trigger,
+                incidentSnapshot: snapshot
+            )
+            recordHubNetworkHandoffObservation(
+                trigger: trigger,
+                allowBootstrap: decision.allowBootstrap,
+                decision: decision,
+                incidentSnapshot: snapshot
+            )
+        }
+    }
+
+    private func handleHubReachabilityEdge(
+        previousConnected: Bool,
+        currentConnected: Bool
+    ) {
+        guard previousConnected != currentConnected else { return }
+
+        let currentPath = lastHubNetworkPathFingerprint
+        let pairedRouteSetSnapshot = currentPairedRouteSetSnapshot()
+
+        if currentConnected {
+            hubRemoteConnected = false
+            hubRemoteRoute = .none
+            hubRemotePaidAccessSnapshot = nil
+            nextRemotePresenceRefreshAt = .distantPast
+            let decision = currentHubConnectivityDecision(
+                trigger: .hubReachabilityChanged,
+                currentPath: currentPath,
+                pairedRouteSetSnapshot: pairedRouteSetSnapshot
+            )
+            hubConnectivityIncidentSnapshot = currentHubConnectivityIncidentSnapshot(
+                trigger: .hubReachabilityChanged,
+                currentPath: currentPath,
+                pairedRouteSetSnapshot: pairedRouteSetSnapshot,
+                decision: decision
+            )
+            if let snapshot = hubConnectivityIncidentSnapshot {
+                recordHubNetworkHandoffObservation(
+                    trigger: .hubReachabilityChanged,
+                    allowBootstrap: decision.allowBootstrap,
+                    decision: decision,
+                    incidentSnapshot: snapshot
+                )
+            }
+            refreshUnifiedDoctorReport(force: true)
+            return
+        }
+
+        let decision = currentHubConnectivityDecision(
+            trigger: .hubReachabilityChanged,
+            currentPath: currentPath,
+            pairedRouteSetSnapshot: pairedRouteSetSnapshot
+        )
+        hubRemoteSummary = decision.summaryLine
+        hubConnectivityIncidentSnapshot = currentHubConnectivityIncidentSnapshot(
+            trigger: .hubReachabilityChanged,
+            currentPath: currentPath,
+            pairedRouteSetSnapshot: pairedRouteSetSnapshot,
+            decision: decision
+        )
+        refreshUnifiedDoctorReport(force: true)
+
+        guard decision.shouldAttemptReconnect else {
+            if let snapshot = hubConnectivityIncidentSnapshot {
+                recordDeferredConnectivityRepairIfNeeded(
+                    trigger: .hubReachabilityChanged,
+                    incidentSnapshot: snapshot
+                )
+                recordHubNetworkHandoffObservation(
+                    trigger: .hubReachabilityChanged,
+                    allowBootstrap: decision.allowBootstrap,
+                    decision: decision,
+                    incidentSnapshot: snapshot
+                )
+            }
+            return
+        }
+
+        maybeScheduleRemoteReconnect(
+            decisionTrigger: .hubReachabilityChanged,
+            decision: decision,
+            incidentSnapshot: hubConnectivityIncidentSnapshot,
+            force: true
+        )
+    }
+
+    nonisolated static func shouldForceHubReconnect(
+        previous: HubNetworkPathFingerprint?,
+        current: HubNetworkPathFingerprint
+    ) -> Bool {
+        guard let previous else { return false }
+        return current.hasMeaningfulReconnectChange(comparedTo: previous)
+    }
+
+    nonisolated static func shouldAllowDiscoveryRepairReconnect(
+        current: HubNetworkPathFingerprint
+    ) -> Bool {
+        current.isSatisfied
+    }
+
+    nonisolated static func shouldPreserveExistingRemoteRouteDuringAutomaticReconnect(
+        current: HubNetworkPathFingerprint,
+        shouldAttemptReconnect: Bool,
+        remoteConnected: Bool,
+        remoteRoute: HubRemoteRoute
+    ) -> Bool {
+        current.isSatisfied && shouldAttemptReconnect && remoteConnected && remoteRoute != .none
+    }
+
+    nonisolated static func shouldAllowAutomaticBootstrapReconnect(
+        hasHubEnv: Bool,
+        internetHost: String,
+        inviteToken: String,
+        inviteAlias: String,
+        inviteInstanceID: String
+    ) -> Bool {
+        _ = internetHost
+        _ = inviteToken
+        _ = inviteAlias
+        _ = inviteInstanceID
+        // Automatic reconnect is only allowed for an already trusted paired profile.
+        // Fresh pairing / invite-driven bootstrap remains an explicit user action.
+        return hasHubEnv
+    }
+
+    nonisolated static func shouldAttemptStartupAutomaticFirstPair(
+        internetHost: String,
+        inviteToken: String,
+        inviteAlias: String,
+        inviteInstanceID: String
+    ) -> Bool {
+        guard normalizedStartupAutomaticFirstPairHint(inviteToken) != nil else { return false }
+
+        let hasRouteHint = normalizedStartupAutomaticFirstPairHint(internetHost) != nil
+        let hasIdentityHint =
+            normalizedStartupAutomaticFirstPairHint(inviteAlias) != nil
+            || normalizedStartupAutomaticFirstPairHint(inviteInstanceID) != nil
+        return hasRouteHint || hasIdentityHint
+    }
+
+    nonisolated static func startupAutomaticConnectDisposition(
+        hasHubEnv: Bool,
+        internetHost: String,
+        inviteToken: String,
+        inviteAlias: String,
+        inviteInstanceID: String
+    ) -> HubStartupAutomaticConnectDisposition {
+        _ = internetHost
+        _ = inviteToken
+        _ = inviteAlias
+        _ = inviteInstanceID
+        if hasHubEnv {
+            return .recoverExistingProfile(allowBootstrap: false)
+        }
+        if shouldAttemptStartupAutomaticFirstPair(
+            internetHost: internetHost,
+            inviteToken: inviteToken,
+            inviteAlias: inviteAlias,
+            inviteInstanceID: inviteInstanceID
+        ) {
+            return .firstPairNearby
+        }
+        return .none
+    }
+
+    nonisolated static func shouldRunAutomaticFirstPairReconnectSmoke(
+        after report: HubRemoteConnectReport?
+    ) -> Bool {
+        shouldRunFreshPairReconnectSmoke(after: report)
+    }
+
+    nonisolated static func shouldRunFreshPairReconnectSmoke(
+        after report: HubRemoteConnectReport?
+    ) -> Bool {
+        guard let report else { return false }
+        return report.ok && report.completedFreshPairing
+    }
+
+    private nonisolated static func normalizedStartupAutomaticFirstPairHint(
+        _ raw: String
+    ) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    nonisolated static func shouldRunRemoteShadowReconnectSmoke(
+        after report: HubRemoteConnectReport?,
+        pairedRouteSetSnapshot: XTPairedRouteSetSnapshot,
+        existingSnapshot: XTRemoteShadowReconnectSmokeSnapshot?
+    ) -> Bool {
+        guard let report, report.ok else { return false }
+        guard pairedRouteSetSnapshot.stableRemoteRoute != nil else { return false }
+        if existingSnapshot?.status == .running || existingSnapshot?.status == .succeeded {
+            return false
+        }
+        return true
+    }
+
+    nonisolated static func shouldSurfaceAutomaticRemoteConnectProgress(
+        force: Bool,
+        allowBootstrap: Bool,
+        existingSummary: String,
+        existingLog: String
+    ) -> Bool {
+        if force || allowBootstrap { return true }
+        if existingSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
+        if existingLog.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
+        return false
+    }
+
+    nonisolated static func shouldInvalidateRemoteRouteAfterEndpointChange(
+        previous: HubRemoteEndpointFingerprint,
+        current: HubRemoteEndpointFingerprint
+    ) -> Bool {
+        previous != current
+    }
+
+    private func currentHubRemoteEndpointFingerprint() -> HubRemoteEndpointFingerprint {
+        HubRemoteEndpointFingerprint(
+            pairingPort: hubPairingPort,
+            grpcPort: hubGrpcPort,
+            internetHost: hubInternetHost
+        )
+    }
+
+    func currentHubRemoteConnectOptions(stateDir: URL? = nil) -> HubRemoteConnectOptions {
+        HubRemoteConnectOptions(
+            grpcPort: hubGrpcPort,
+            pairingPort: hubPairingPort,
+            deviceName: Host.current().localizedName ?? "X-Terminal",
+            internetHost: hubInternetHost,
+            inviteToken: hubInviteToken,
+            inviteAlias: hubInviteAlias,
+            inviteInstanceID: hubInviteInstanceID,
+            axhubctlPath: hubAxhubctlPath,
+            configuredEndpointIsAuthoritative: hasHubRemoteEndpointOverridePending(),
+            stateDir: stateDir
+        )
+    }
+
+    private func refreshHubRemotePrefsFromPersistedStateIfNeeded() {
+        let previousEndpoint = currentHubRemoteEndpointFingerprint()
+        _ = synchronizeHubRemotePrefsFromCachedProfile(preferDiscoveredInternetHost: true)
+        let currentEndpoint = currentHubRemoteEndpointFingerprint()
+        guard Self.shouldInvalidateRemoteRouteAfterEndpointChange(
+            previous: previousEndpoint,
+            current: currentEndpoint
+        ) else {
+            return
+        }
+
+        if hubRemoteConnected || hubRemoteRoute != .none {
+            hubRemoteConnected = false
+            hubRemoteRoute = .none
+            hubRemotePaidAccessSnapshot = nil
+        }
+        if !hubConnected {
+            hubRemoteSummary = "paired hub updated; refreshing route ..."
         }
     }
 
     private func runRemoteConnectFlow(
         allowBootstrap: Bool,
         showAlertOnFinish: Bool,
-        updateSetupProgress: Bool = true
+        updateSetupProgress: Bool = true,
+        initialSummary: String? = nil,
+        openHubSetupOnFailure: Bool = false,
+        repairTrigger: XTConnectivityRepairTrigger? = nil,
+        repairOwner: XTConnectivityRepairOwner? = nil,
+        repairDecisionReasonCode: String? = nil,
+        preferredRoute: XTHubRouteCandidate? = nil,
+        candidateRoutes: [XTHubRouteCandidate] = [],
+        handoffReason: String? = nil,
+        cooldownApplied: Bool = false,
+        probeTrigger: XTHubConnectivityDecisionTrigger? = nil,
+        probeDecision: XTHubConnectivityDecision? = nil,
+        probeIncidentSnapshot: XTHubConnectivityIncidentSnapshot? = nil
     ) async -> HubRemoteConnectReport? {
         if hubRemoteLinking { return nil }
         hubRemoteLinking = true
         hubReconnectLastAttemptAt = Date()
         if updateSetupProgress {
-            hubRemoteSummary = allowBootstrap ? "discover/bootstrap/connect ..." : "connect ..."
+            hubRemoteSummary = initialSummary ?? Self.defaultHubRemoteSetupSummary(allowBootstrap: allowBootstrap)
             hubRemoteLog = ""
             resetHubSetupProgress(allowBootstrap: allowBootstrap)
         }
+        refreshHubRemotePrefsFromPersistedStateIfNeeded()
         saveHubRemotePrefs()
 
-        let opts = HubRemoteConnectOptions(
-            grpcPort: hubGrpcPort,
-            pairingPort: hubPairingPort,
-            deviceName: Host.current().localizedName ?? "X-Terminal",
-            internetHost: hubInternetHost,
-            axhubctlPath: hubAxhubctlPath,
-            stateDir: nil
-        )
+        let opts = currentHubRemoteConnectOptions(stateDir: nil)
 
         let progressHandler: (@Sendable (HubRemoteProgressEvent) -> Void)?
         if updateSetupProgress {
@@ -3167,6 +6250,10 @@ final class AppModel: ObservableObject {
         var report = await HubPairingCoordinator.shared.ensureConnected(
             options: opts,
             allowBootstrap: effectiveAllowBootstrap,
+            preferredRoute: preferredRoute,
+            candidateRoutes: candidateRoutes,
+            handoffReason: handoffReason,
+            cooldownApplied: cooldownApplied,
             onProgress: progressHandler
         )
 
@@ -3182,6 +6269,10 @@ final class AppModel: ObservableObject {
             report = await HubPairingCoordinator.shared.ensureConnected(
                 options: opts,
                 allowBootstrap: effectiveAllowBootstrap,
+                preferredRoute: preferredRoute,
+                candidateRoutes: candidateRoutes,
+                handoffReason: handoffReason,
+                cooldownApplied: cooldownApplied,
                 onProgress: progressHandler
             )
         }
@@ -3191,38 +6282,242 @@ final class AppModel: ObservableObject {
         hubRemoteConnected = report.ok
         hubRemoteRoute = report.route
         hubRemoteSummary = report.summary
+        if report.ok {
+            nextRemotePresenceRefreshAt = .distantPast
+            await maybeRefreshRemotePresence(force: true)
+            hubRemotePaidAccessSnapshot = await HubAIClient.shared.currentRemotePaidAccessSnapshot()
+        } else {
+            nextRemotePresenceRefreshAt = .distantPast
+            hubRemotePaidAccessSnapshot = nil
+        }
         if updateSetupProgress {
             hubSetupFailureCode = report.ok ? "" : (report.reasonCode ?? report.summary)
         }
+        let repairIncidentSnapshot = currentHubConnectivityIncidentSnapshot(
+            trigger: .backgroundKeepalive,
+            currentPath: lastHubNetworkPathFingerprint
+        )
+        if let repairTrigger, let repairOwner {
+            recordConnectivityRepairOutcome(
+                trigger: repairTrigger,
+                owner: repairOwner,
+                allowBootstrap: allowBootstrap,
+                decisionReasonCode: repairDecisionReasonCode,
+                report: report,
+                incidentSnapshot: repairIncidentSnapshot,
+                recordedAt: Date()
+            )
+        }
+        if let probeTrigger, let probeDecision, let probeIncidentSnapshot {
+            recordHubNetworkHandoffOutcome(
+                trigger: probeTrigger,
+                allowBootstrap: effectiveAllowBootstrap,
+                decision: probeDecision,
+                incidentSnapshot: probeIncidentSnapshot,
+                report: report,
+                recordedAt: Date()
+            )
+        }
+        hubConnectivityIncidentSnapshot = currentHubConnectivityIncidentSnapshot(
+            trigger: .backgroundKeepalive,
+            currentPath: lastHubNetworkPathFingerprint
+        )
 
         if report.ok {
-            let cachedProfile = HubAIClient.cachedRemoteProfile(stateDir: nil)
-            if hubInternetHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-               let discoveredInternetHost = cachedProfile.internetHost,
-               !discoveredInternetHost.isEmpty {
-                hubInternetHost = discoveredInternetHost
+            setHubRemoteEndpointOverridePending(false)
+            _ = synchronizeHubRemotePrefsFromCachedProfile(preferDiscoveredInternetHost: true)
+            if Self.shouldConsumeHubInviteTokenAfterSuccessfulRemoteConnect(
+                report: report,
+                inviteToken: hubInviteToken,
+                internetHost: hubInternetHost,
+                hasHubEnv: HubPairingCoordinator.hasHubEnvFast(stateDir: nil)
+            ) {
+                hubInviteToken = ""
                 saveHubRemotePrefs()
             }
             hubLastError = nil
             if showAlertOnFinish {
-                showAlert(
-                    title: "Hub Link Ready",
-                    message: "Route: \(report.route.rawValue)\n\n\(report.summary)"
-                )
+                showHubRemoteConnectAlert(for: report)
             }
         } else {
             if !hubConnected {
                 hubLastError = "hub_remote_connect_failed (\(report.summary))"
             }
+            if openHubSetupOnFailure {
+                routeAutomaticFirstPairFailureToHubSetup(report)
+            }
             if showAlertOnFinish {
-                showAlert(
-                    title: "Hub Link Failed",
-                    message: report.logText.isEmpty ? report.summary : report.logText
-                )
+                showHubRemoteConnectAlert(for: report)
             }
         }
         refreshUnifiedDoctorReport(force: true)
         return report
+    }
+
+    private func showHubRemoteConnectAlert(for report: HubRemoteConnectReport) {
+        if report.ok {
+            showAlert(
+                title: "Hub Link Ready",
+                message: "Route: \(report.route.rawValue)\n\n\(report.summary)"
+            )
+        } else {
+            showAlert(
+                title: "Hub Link Failed",
+                message: report.logText.isEmpty ? report.summary : report.logText
+            )
+        }
+    }
+
+    private func routeAutomaticFirstPairFailureToHubSetup(_ report: HubRemoteConnectReport) {
+        let rawReason = (report.reasonCode ?? report.summary)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawReason.isEmpty else { return }
+        let repairContext = Self.automaticFirstPairRepairContext(
+            for: rawReason,
+            internetHost: hubInternetHost
+        )
+
+        requestHubSetupFocus(
+            sectionId: "pair_hub",
+            title: repairContext.title,
+            detail: repairContext.detail
+        )
+        NotificationCenter.default.post(name: .xterminalOpenHubSetupWizard, object: nil)
+    }
+
+    nonisolated static func automaticFirstPairRepairContext(
+        for rawReason: String,
+        internetHost: String? = nil
+    ) -> (title: String, detail: String) {
+        let trimmedReason = rawReason.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedReason = UITroubleshootKnowledgeBase.normalizedFailureCode(trimmedReason)
+        let hostClassification = XTHubRemoteAccessHostClassification.classify(internetHost)
+        let host = hostClassification.displayHost ?? "未设置"
+
+        if normalizedReason.contains("first_pair_requires_same_lan") {
+            let detail: String
+            switch hostClassification.kind {
+            case .lanOnly, .rawIP(scope: .privateLAN), .rawIP(scope: .loopback), .rawIP(scope: .linkLocal):
+                detail = "Hub 已经明确拒绝这次首次配对，因为它没有把 XT 识别成“同一局域网来源”。即使你看到的是同一个 Wi‑Fi 名称，也可能因为 client isolation、访客网络或 VLAN 分段而被判成不同 LAN。当前目标 \(host) 这类入口只适合同一局域网 / 同一 VPN 使用；请先让 XT 和 Hub 真正回到同一 LAN 后再重试。reason=\(trimmedReason)"
+            case .rawIP(scope: .carrierGradeNat), .rawIP(scope: .publicInternet), .stableNamed:
+                detail = "首次 Hub 配对默认不会直接在公网或正式远端入口上放行；必须先在同一局域网内完成一次本地批准，后续才能稳定走异网重连。请先把 XT 和 Hub 放回同一 LAN 完成首配。reason=\(trimmedReason)"
+            case .missing:
+                detail = "首次 Hub 配对默认只允许在同一 Wi‑Fi 或同一局域网内完成。请让 XT 和 Hub 回到同网环境后重试。reason=\(trimmedReason)"
+            case .rawIP:
+                detail = "首次 Hub 配对默认只允许在同一 Wi‑Fi 或同一局域网内完成。请让 XT 和 Hub 回到同网环境后重试。reason=\(trimmedReason)"
+            }
+            return (
+                "回到同一 Wi-Fi 完成首次配对",
+                detail
+            )
+        }
+
+        if normalizedReason.contains("pairing_approval_timeout") {
+            return (
+                "在 Hub 上批准这次首次配对",
+                "XT 已经发起首次配对，但 Hub 端在等待本机 owner 批准时超时。请回到 Hub 主机，打开首配批准卡并完成 Touch ID / Face ID / 本机密码验证后重试。reason=\(trimmedReason)"
+            )
+        }
+
+        if normalizedReason.contains("pairing_owner_auth_cancelled") {
+            return (
+                "回到 Hub 重新确认首次配对",
+                "Hub 侧本机 owner 验证被取消，所以首次配对保持 pending 未完成。请在 Hub 主机重新批准，并完成 Touch ID / Face ID / 本机密码验证。reason=\(trimmedReason)"
+            )
+        }
+
+        if normalizedReason.contains("pairing_owner_auth_failed") {
+            return (
+                "先修复 Hub 本机验证再配对",
+                "Hub 无法完成本机 owner 验证，所以不会下发首次配对资料。请先在 Hub 主机确认 Touch ID / Face ID / 本机密码可用，再重新批准。reason=\(trimmedReason)"
+            )
+        }
+
+        if normalizedReason.contains("hub_instance_mismatch") {
+            return (
+                "清掉旧 Hub 档案后重新配对",
+                "XT 当前拿着的配对档案和现在响应的 Hub 实例不是同一台主机。继续重试通常只会反复得到 unauthenticated / certificate 失败；请先清理旧配对，再重新打开正确的 Hub 邀请或在同网环境重新首配。reason=\(trimmedReason)"
+            )
+        }
+
+        if normalizedReason.contains("pairing_profile_epoch_stale") {
+            return (
+                "刷新最新配对档案后再重连",
+                "Hub 侧配对档案已经更新，但 XT 还在使用旧 profile。请先清理本地旧令牌/证书与旧配对档案，再重新拉取当前 Hub 的配对材料。reason=\(trimmedReason)"
+            )
+        }
+
+        if normalizedReason.contains("route_pack_outdated") {
+            return (
+                "重新导入最新远端入口",
+                "Hub 当前正式远端入口已经换代，但 XT 还在使用旧的 host / port / token 材料。请重新打开最新邀请链接或重新导出接入包，再继续连接。reason=\(trimmedReason)"
+            )
+        }
+
+        if normalizedReason.contains("local_network_permission_required")
+            || normalizedReason.contains("local_network_discovery_blocked") {
+            return (
+                "先允许 XT 访问本地网络",
+                "XT 当前只能看到本机 loopback Hub，看不到同一 Wi-Fi 上的远端 Hub。先到系统设置 → 隐私与安全性 → 本地网络允许 X-Terminal；如果已经允许，再检查当前 Wi-Fi / AP 是否开启了 client isolation，并确认 XT 能访问 Hub 的 pairing 端口。reason=\(trimmedReason)"
+            )
+        }
+
+        let issue = UITroubleshootKnowledgeBase.issue(forFailureCode: trimmedReason)
+        switch issue {
+        case .multipleHubsAmbiguous:
+            return (
+                "选择要连接的 Hub",
+                "启动时自动发现到多台 Hub；请在“连接 Hub”里固定目标 Hub 后继续。reason=\(trimmedReason)"
+            )
+        case .hubPortConflict:
+            return (
+                "修复 Hub 端口冲突",
+                "后台自动首配被端口冲突拦住；请在“连接 Hub”里核对配对端口与 gRPC 端口。reason=\(trimmedReason)"
+            )
+        case .hubUnreachable:
+            let hostClassification = XTHubRemoteAccessHostClassification.classify(internetHost)
+            let host = hostClassification.displayHost ?? "未设置"
+            switch hostClassification.kind {
+            case .missing:
+                return (
+                    "先补正式远端入口，再继续连接",
+                    "XT 当前还没有正式 Internet Host。若这是第一次配对，请先把 XT 和 Hub 放回同一 Wi‑Fi / 同一局域网完成首配；若要异网接入，再到 Hub 配置稳定主机名并重新导出接入包。reason=\(trimmedReason)"
+                )
+            case .lanOnly:
+                return (
+                    "当前只有同网入口，先回同网或改正式入口",
+                    "XT 当前记录的 Internet Host 还是 \(host)，这类入口只适合同一 Wi‑Fi / 同一局域网或同一 VPN。若要异网接入，请到 Hub 配置稳定主机名后再重试。reason=\(trimmedReason)"
+                )
+            case .rawIP(let scope):
+                switch scope {
+                case .privateLAN, .loopback, .linkLocal:
+                    return (
+                        "先确认当前仍在同一局域网 / 同一 VPN",
+                        "XT 当前记录的是\(scope.doctorLabel) \(host)。这类 raw IP 只在同一局域网、同一 VPN，或本机回环路径里可达；一旦换 Wi‑Fi、跨 VLAN、跨网段或离开 VPN，通常就会直接超时。请先确认 XT 还能路由到这条 LAN 路径，或改成稳定命名入口后再试。reason=\(trimmedReason)"
+                    )
+                case .carrierGradeNat:
+                    return (
+                        "先替换运营商 NAT 地址入口",
+                        "XT 当前记录的是运营商 NAT 地址 \(host)。这类地址通常不适合被另一台设备直接回连；请改成稳定命名入口、relay 或 VPN 地址后再试。reason=\(trimmedReason)"
+                    )
+                case .publicInternet, .unknown:
+                    return (
+                        "先替换临时 raw IP 入口",
+                        "XT 当前记录的是\(scope.doctorLabel) \(host)。这类 raw IP 在换网、休眠、NAT 或公网 IP 变化后很容易失效；请先确认它仍指向当前 Hub，或改成稳定命名入口后再重试。reason=\(trimmedReason)"
+                    )
+                }
+            case .stableNamed:
+                return (
+                    "Hub 远端入口已配置，先检查服务是否在线",
+                    "XT 当前已有稳定命名入口 \(host)，但这次仍无法连通。请回 Hub 主机确认 app 没休眠、pairing / gRPC 端口正在监听，并检查防火墙、NAT 或 relay 转发。reason=\(trimmedReason)"
+                )
+            }
+        default:
+            return (
+                "完成首次 Hub 配对",
+                "后台自动首配未完成；请在“连接 Hub”里继续修复。reason=\(trimmedReason)"
+            )
+        }
     }
 
     private func configuredHubModelIDs() -> [String] {
@@ -3243,12 +6538,86 @@ final class AppModel: ObservableObject {
            let session = sessionManager.session(for: activeSessionId) {
             return session
         }
-        return sessionManager.sessions.sorted { lhs, rhs in
+        return sessionManager.sessions
+            .compactMap { sessionManager.session(for: $0.id) ?? $0 }
+            .sorted { lhs, rhs in
             if lhs.updatedAt != rhs.updatedAt {
                 return lhs.updatedAt > rhs.updatedAt
             }
             return lhs.id < rhs.id
-        }.first
+        }
+            .first
+    }
+
+    struct DoctorProjectSelection: Equatable {
+        var session: AXSessionInfo?
+        var projectId: String?
+        var projectLabel: String?
+        var context: AXProjectContext?
+        var config: AXProjectConfig?
+    }
+
+    struct DoctorProjectMemoryAdvisory: Equatable {
+        var projectId: String?
+        var projectLabel: String?
+        var readiness: XTProjectMemoryAssemblyReadiness?
+    }
+
+    func doctorProjectSelection(
+        preferredProjectId: String? = nil
+    ) -> DoctorProjectSelection {
+        if let preferredProjectId = normalizedDoctorProjectId(preferredProjectId),
+           let context = projectContext(for: preferredProjectId) {
+            return DoctorProjectSelection(
+                session: sessionManager.primarySession(for: preferredProjectId),
+                projectId: preferredProjectId,
+                projectLabel: doctorProjectLabel(
+                    projectId: preferredProjectId,
+                    context: context
+                ),
+                context: context,
+                config: projectConfigSnapshot(for: context)
+            )
+        }
+
+        let session = currentDoctorSession()
+        let context = currentDoctorProjectContext(session: session)
+        let config = currentDoctorProjectConfig(context: context)
+        let projectId = context.map { AXProjectRegistryStore.projectId(forRoot: $0.root) }
+            ?? normalizedDoctorProjectId(session?.projectId)
+        return DoctorProjectSelection(
+            session: session,
+            projectId: projectId,
+            projectLabel: doctorProjectLabel(
+                projectId: projectId,
+                context: context
+            ),
+            context: context,
+            config: config
+        )
+    }
+
+    func doctorProjectMemoryAdvisory(
+        preferredProjectId: String? = nil
+    ) -> DoctorProjectMemoryAdvisory {
+        let selection = doctorProjectSelection(preferredProjectId: preferredProjectId)
+        guard let context = selection.context else {
+            return DoctorProjectMemoryAdvisory(
+                projectId: selection.projectId,
+                projectLabel: selection.projectLabel,
+                readiness: nil
+            )
+        }
+
+        let diagnostics = AXProjectContextAssemblyDiagnosticsStore.doctorSummary(
+            for: context,
+            config: selection.config
+        )
+        return DoctorProjectMemoryAdvisory(
+            projectId: selection.projectId,
+            projectLabel: selection.projectLabel,
+            readiness: diagnostics.memoryAssemblyReadiness
+        )
     }
 
     private func currentDoctorProjectContext(session: AXSessionInfo?) -> AXProjectContext? {
@@ -3294,23 +6663,159 @@ final class AppModel: ObservableObject {
         return config
     }
 
+    private func currentDoctorHeartbeatGovernanceSnapshot(
+        context: AXProjectContext?,
+        config: AXProjectConfig?,
+        projectMemoryReadiness: XTProjectMemoryAssemblyReadiness?,
+        projectMemoryContext: XTHeartbeatProjectMemoryContextSnapshot?,
+        laneSnapshot: SupervisorLaneHealthSnapshot?,
+        now: Date
+    ) -> XTProjectHeartbeatGovernanceDoctorSnapshot? {
+        guard let context else { return nil }
+        let resolvedConfig = config ?? AXProjectConfig.default(forProjectRoot: context.root)
+        let projectId = AXProjectRegistryStore.projectId(forRoot: context.root)
+        let project = registry.project(for: projectId) ?? AXProjectEntry(
+            projectId: projectId,
+            rootPath: context.root.path,
+            displayName: AXProjectRegistryStore.displayName(forRoot: context.root, registry: registry),
+            lastOpenedAt: now.timeIntervalSince1970,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: nil,
+            currentStateSummary: nil,
+            nextStepSummary: nil,
+            blockerSummary: nil,
+            lastSummaryAt: nil,
+            lastEventAt: nil
+        )
+        return XTProjectHeartbeatGovernanceDoctorBuilder.build(
+            project: project,
+            context: context,
+            config: resolvedConfig,
+            projectMemoryReadiness: projectMemoryReadiness,
+            projectMemoryContext: projectMemoryContext,
+            laneSnapshot: laneSnapshot,
+            now: now
+        )
+    }
+
+    private func currentPairedRouteSetSnapshot() -> XTPairedRouteSetSnapshot {
+        let cachedProfile = HubAIClient.cachedRemoteProfile(stateDir: nil)
+        return XTPairedRouteSetSnapshotBuilder.build(
+            input: XTPairedRouteSetBuildInput(
+                cachedProfile: cachedProfile,
+                configuredInternetHost: hubInternetHost,
+                configuredHubInstanceID: hubInviteInstanceID,
+                pairingPort: hubPairingPort,
+                grpcPort: hubGrpcPort,
+                localConnected: hubConnected,
+                remoteConnected: hubRemoteConnected,
+                remoteRoute: hubRemoteRoute,
+                linking: hubRemoteLinking,
+                failureCode: hubSetupFailureCode,
+                freshPairReconnectSmokeSnapshot: hubFreshPairReconnectSmokeSnapshot,
+                remoteShadowReconnectSmokeSnapshot: hubRemoteShadowReconnectSmokeSnapshot
+            )
+        )
+    }
+
     private func refreshUnifiedDoctorReport(force: Bool = false) {
         let now = Date()
         if !force, now < nextUnifiedDoctorRefreshAt {
             return
         }
 
-        let session = currentDoctorSession()
-        let doctorProjectContext = currentDoctorProjectContext(session: session)
-        let doctorProjectConfig = currentDoctorProjectConfig(
-            context: doctorProjectContext
+        let doctorProjectSelectionSnapshot = doctorProjectSelection()
+        let doctorProjectContext = doctorProjectSelectionSnapshot.context
+        let doctorProjectConfig = doctorProjectSelectionSnapshot.config
+        let projectGovernanceResolved: AXProjectResolvedGovernanceState? = {
+            guard let doctorProjectContext, let doctorProjectConfig else {
+                return nil
+            }
+            return xtResolveProjectGovernance(
+                projectRoot: doctorProjectContext.root,
+                config: doctorProjectConfig,
+                permissionReadiness: .current()
+            )
+        }()
+        let projectContextDiagnostics = AXProjectContextAssemblyDiagnosticsStore.doctorSummary(
+            for: doctorProjectContext,
+            config: doctorProjectConfig
+        )
+        let heartbeatProjectMemoryContext = doctorProjectContext.flatMap { context in
+            XTHeartbeatMemoryProjectionStore.load(for: context)?.rawPayload.projectMemoryContext
+                ?? XTHeartbeatProjectMemoryContextSnapshot.from(summary: projectContextDiagnostics)
+        }
+        let supervisor = SupervisorManager.shared
+        let heartbeatGovernanceSnapshot = currentDoctorHeartbeatGovernanceSnapshot(
+            context: doctorProjectContext,
+            config: doctorProjectConfig,
+            projectMemoryReadiness: projectContextDiagnostics.memoryAssemblyReadiness,
+            projectMemoryContext: heartbeatProjectMemoryContext,
+            laneSnapshot: supervisor.supervisorLaneHealthSnapshot,
+            now: now
         )
         let reportURL = XTUnifiedDoctorStore.defaultReportURL()
-        let supervisor = SupervisorManager.shared
         let calendarReminderPreferences = settingsStore.settings.supervisorCalendarReminders.normalized()
         let calendarAccessController = XTCalendarAccessController.shared
         calendarAccessController.refreshAuthorizationStatus()
         let calendarEventStore = XTCalendarEventStore.shared
+        let pairedRouteSetSnapshot = currentPairedRouteSetSnapshot()
+        let cachedRemoteProfile = HubAIClient.cachedRemoteProfile(stateDir: nil)
+        let firstPairCompletionProofSnapshot = XTFirstPairCompletionProofBuilder.build(
+            input: XTFirstPairCompletionProofBuildInput(
+                generatedAt: now,
+                localConnected: hubConnected,
+                remoteConnected: hubRemoteConnected,
+                remoteRoute: hubRemoteRoute,
+                cachedProfile: cachedRemoteProfile,
+                freshPairReconnectSmokeSnapshot: hubFreshPairReconnectSmokeSnapshot,
+                remoteShadowReconnectSmokeSnapshot: hubRemoteShadowReconnectSmokeSnapshot,
+                pairedRouteSetSnapshot: pairedRouteSetSnapshot
+            )
+        )
+        let connectivityIncidentSnapshot = hubConnectivityIncidentSnapshot
+            ?? currentHubConnectivityIncidentSnapshot(
+                trigger: .backgroundKeepalive,
+                currentPath: lastHubNetworkPathFingerprint,
+                pairedRouteSetSnapshot: pairedRouteSetSnapshot,
+                updatedAt: now
+            )
+        let activeSessionInfo: AXSessionInfo? = projectContext.map { ctx in
+            sessionManager.ensurePrimarySession(
+                projectId: AXProjectRegistryStore.projectId(forRoot: ctx.root),
+                title: ctx.displayName(registry: registry),
+                directory: ctx.root.standardizedFileURL.path
+            )
+        }
+        let skillDoctorTruthProjection: XTUnifiedDoctorSkillDoctorTruthProjection? = {
+            guard let projectId = doctorProjectSelectionSnapshot.projectId?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !projectId.isEmpty,
+                  let context = doctorProjectContext else {
+                return nil
+            }
+            let projectName = doctorProjectSelectionSnapshot.projectLabel
+            let resolvedHubBaseDir = hubBaseDir ?? HubPaths.baseDir()
+            let effectiveProfileSnapshot = AXSkillsLibrary.projectEffectiveSkillProfileSnapshot(
+                projectId: projectId,
+                projectName: projectName,
+                projectRoot: context.root,
+                config: doctorProjectConfig,
+                hubBaseDir: resolvedHubBaseDir
+            )
+            let governanceEntries = skillsCompatibilitySnapshot.governanceSurfaceEntries(
+                projectId: projectId,
+                projectName: projectName,
+                projectRoot: context.root,
+                config: doctorProjectConfig,
+                hubBaseDir: resolvedHubBaseDir
+            )
+            return XTUnifiedDoctorSkillDoctorTruthProjection(
+                effectiveProfileSnapshot: effectiveProfileSnapshot,
+                governanceEntries: governanceEntries
+            )
+        }()
         let calendarReminderSnapshot = XTUnifiedDoctorCalendarReminderSnapshot(
             enabled: calendarReminderPreferences.enabled,
             headsUpMinutes: calendarReminderPreferences.headsUpMinutes,
@@ -3335,6 +6840,7 @@ final class AppModel: ObservableObject {
             localConnected: hubConnected,
             remoteConnected: hubRemoteConnected,
             remoteRoute: hubRemoteRoute,
+            remotePaidAccessSnapshot: hubRemotePaidAccessSnapshot,
             linking: hubRemoteLinking,
             pairingPort: hubPairingPort,
             grpcPort: hubGrpcPort,
@@ -3348,9 +6854,9 @@ final class AppModel: ObservableObject {
             bridgeAlive: bridgeAlive,
             bridgeEnabled: bridgeEnabled,
             bridgeLastError: bridgeLastEnsureError,
-            sessionID: session?.id,
-            sessionTitle: session?.title,
-            sessionRuntime: session?.runtime,
+            sessionID: activeSessionInfo?.id,
+            sessionTitle: activeSessionInfo?.title,
+            sessionRuntime: activeSessionInfo?.runtime,
             voiceRouteDecision: supervisor.voiceRouteDecision,
             voiceRuntimeState: supervisor.voiceRuntimeState,
             voiceAuthorizationStatus: supervisor.voiceAuthorizationStatus,
@@ -3360,18 +6866,26 @@ final class AppModel: ObservableObject {
             wakeProfileSnapshot: supervisor.voiceWakeProfileSnapshot,
             conversationSession: supervisor.conversationSessionSnapshot,
             voicePreferences: supervisor.effectiveVoicePreferencesForDiagnostics(),
+            voicePlaybackActivity: supervisor.voicePlaybackActivity,
             calendarReminderSnapshot: calendarReminderSnapshot,
             skillsSnapshot: skillsCompatibilitySnapshot,
+            skillDoctorTruthProjection: skillDoctorTruthProjection,
             reportPath: reportURL.path,
             modelRouteDiagnostics: AXModelRouteDiagnosticsStore.doctorSummary(
                 for: sortedProjects,
                 now: now
             ),
-            projectContextDiagnostics: AXProjectContextAssemblyDiagnosticsStore.doctorSummary(
-                for: doctorProjectContext,
-                config: doctorProjectConfig
-            ),
-            supervisorMemoryAssemblySnapshot: supervisor.supervisorMemoryAssemblySnapshot
+            projectContextDiagnostics: projectContextDiagnostics,
+            projectGovernanceResolved: projectGovernanceResolved,
+            heartbeatGovernanceSnapshot: heartbeatGovernanceSnapshot,
+            supervisorMemoryAssemblySnapshot: supervisor.supervisorMemoryAssemblySnapshot,
+            supervisorLatestTurnContextAssembly: supervisor.supervisorLatestTurnContextAssembly,
+            doctorProjectContext: doctorProjectContext,
+            supervisorVoiceSmokeReport: loadSupervisorVoiceSmokeReportSummary(),
+            freshPairReconnectSmokeSnapshot: hubFreshPairReconnectSmokeSnapshot,
+            firstPairCompletionProofSnapshot: firstPairCompletionProofSnapshot,
+            pairedRouteSetSnapshot: pairedRouteSetSnapshot,
+            connectivityIncidentSnapshot: connectivityIncidentSnapshot
         )
         let report = XTUnifiedDoctorBuilder.build(input: input)
         XTUnifiedDoctorStore.writeReport(report, to: reportURL)
@@ -3382,11 +6896,39 @@ final class AppModel: ObservableObject {
         )
         XHubDoctorOutputStore.writeReport(genericDoctorReport, to: genericDoctorURL)
         unifiedDoctorReport = report
-        nextUnifiedDoctorRefreshAt = now.addingTimeInterval(2.0)
+        nextUnifiedDoctorRefreshAt = now.addingTimeInterval(6.0)
+    }
+
+    private func normalizedDoctorProjectId(_ raw: String?) -> String? {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty,
+              raw != AXProjectRegistry.globalHomeId else {
+            return nil
+        }
+        return raw
+    }
+
+    private func doctorProjectLabel(
+        projectId: String?,
+        context: AXProjectContext?
+    ) -> String? {
+        if let projectId = normalizedDoctorProjectId(projectId),
+           let displayName = registry.project(for: projectId)?.displayName.trimmingCharacters(in: .whitespacesAndNewlines),
+           !displayName.isEmpty {
+            return displayName
+        }
+        if let context {
+            let displayName = AXProjectRegistryStore.displayName(forRoot: context.root, registry: registry)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !displayName.isEmpty {
+                return displayName
+            }
+        }
+        return normalizedDoctorProjectId(projectId)
     }
 
     private func capturedRuntimeSnapshot() -> UIFailClosedRuntimeSnapshot {
-        guard let orchestrator = supervisor.orchestrator else {
+        guard let orchestrator = legacySupervisorRuntimeContextIfLoaded?.orchestrator else {
             return .empty
         }
         return UIFailClosedRuntimeSnapshot.capture(
@@ -3457,7 +6999,7 @@ final class AppModel: ObservableObject {
             officialChannelLastTransitionSummary: previousOfficialChannelLastTransitionSummary
         )
         mergeOfficialSkillChannelStatusFallback(previousSnapshot)
-        nextSkillsCompatibilityRefreshAt = now.addingTimeInterval(5.0)
+        nextSkillsCompatibilityRefreshAt = now.addingTimeInterval(12.0)
         refreshUnifiedDoctorReport(force: force)
         refreshRemoteSkillsCompatibilityOverlayIfNeeded(projectId: selectedProject)
     }
@@ -3491,26 +7033,37 @@ final class AppModel: ObservableObject {
         guard hubInteractive else { return }
         guard !remoteSkillsCompatibilityOverlayInFlight else { return }
 
+        let normalizedProjectId = projectId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let now = Date()
+        if normalizedProjectId == lastRemoteSkillsCompatibilityOverlayProjectId,
+           now < nextRemoteSkillsCompatibilityOverlayRefreshAt {
+            return
+        }
+
         let baseline = skillsCompatibilitySnapshot.baselineRecommendedSkills.isEmpty
             ? AXSkillsLibrary.defaultAgentBaselineSkills
             : skillsCompatibilitySnapshot.baselineRecommendedSkills
         guard !baseline.isEmpty else { return }
 
+        lastRemoteSkillsCompatibilityOverlayProjectId = normalizedProjectId
+        nextRemoteSkillsCompatibilityOverlayRefreshAt = now.addingTimeInterval(
+            Self.remoteSkillsCompatibilityOverlayRefreshIntervalSec
+        )
         remoteSkillsCompatibilityOverlayInFlight = true
         Task { @MainActor in
             defer { remoteSkillsCompatibilityOverlayInFlight = false }
-            async let resolvedRequest = HubIPCClient.listResolvedSkills(projectId: projectId)
+            async let resolvedRequest = HubIPCClient.listResolvedSkills(projectId: normalizedProjectId)
             async let searchRequest = HubIPCClient.searchSkills(
                 query: "",
                 sourceFilter: "builtin:catalog",
-                projectId: projectId,
+                projectId: normalizedProjectId,
                 limit: 1
             )
             let resolved = await resolvedRequest
             let search = await searchRequest
 
             let currentDisplayedProjectId = selectedProjectId == AXProjectRegistry.globalHomeId ? nil : selectedProjectId
-            guard currentDisplayedProjectId == projectId else { return }
+            guard currentDisplayedProjectId == normalizedProjectId else { return }
             let statusChanged = applyOfficialSkillChannelStatusOverlay(search.officialChannelStatus)
             guard resolved.ok else {
                 if statusChanged {
@@ -3661,6 +7214,10 @@ final class AppModel: ObservableObject {
 
     private func pollHubStatusLoop() async {
         while !Task.isCancelled {
+            let activeRemoteGenerate = await HubAIClient.shared.hasActiveRemoteGenerateRequests()
+            refreshHubRemotePrefsFromPersistedStateIfNeeded()
+            let previousHubConnected = hubConnected
+
             // If we're not connected, keep trying in the background (lightweight).
             if !hubConnected {
                 let res = HubConnector.connect(ttl: 3.0)
@@ -3672,17 +7229,89 @@ final class AppModel: ObservableObject {
                 hubStatus = HubConnector.readHubStatusIfAny(ttl: 3.0)
             }
 
+            handleHubReachabilityEdge(
+                previousConnected: previousHubConnected,
+                currentConnected: hubConnected
+            )
+
             // If local file-IPC Hub is unavailable, keep remote gRPC link warm.
             // This allows LAN -> Internet route switching after first pairing/bootstrap.
             if !hubConnected {
-                maybeScheduleRemoteReconnect(allowBootstrap: false, force: false)
+                let pairedRouteSetSnapshot = currentPairedRouteSetSnapshot()
+                let decision = currentHubConnectivityDecision(
+                    trigger: .backgroundKeepalive,
+                    currentPath: lastHubNetworkPathFingerprint,
+                    pairedRouteSetSnapshot: pairedRouteSetSnapshot
+                )
+                hubConnectivityIncidentSnapshot = currentHubConnectivityIncidentSnapshot(
+                    trigger: .backgroundKeepalive,
+                    currentPath: lastHubNetworkPathFingerprint,
+                    pairedRouteSetSnapshot: pairedRouteSetSnapshot,
+                    decision: decision
+                )
+                if decision.shouldAttemptReconnect {
+                    maybeScheduleRemoteReconnect(
+                        decisionTrigger: .backgroundKeepalive,
+                        decision: decision,
+                        incidentSnapshot: hubConnectivityIncidentSnapshot,
+                        force: false
+                    )
+                } else {
+                    if let snapshot = hubConnectivityIncidentSnapshot {
+                        recordDeferredConnectivityRepairIfNeeded(
+                            trigger: .backgroundKeepalive,
+                            incidentSnapshot: snapshot
+                        )
+                        recordHubNetworkHandoffObservation(
+                            trigger: .backgroundKeepalive,
+                            allowBootstrap: decision.allowBootstrap,
+                            decision: decision,
+                            incidentSnapshot: snapshot
+                        )
+                    }
+                    let normalizedSummary = decision.summaryLine.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !normalizedSummary.isEmpty,
+                       hubRemoteSummary != normalizedSummary {
+                        hubRemoteSummary = normalizedSummary
+                        refreshUnifiedDoctorReport(force: true)
+                    }
+                }
             } else {
                 hubRemoteConnected = false
                 hubRemoteRoute = .none
+                hubRemotePaidAccessSnapshot = nil
+                hubConnectivityIncidentSnapshot = currentHubConnectivityIncidentSnapshot(
+                    trigger: .backgroundKeepalive,
+                    currentPath: lastHubNetworkPathFingerprint
+                )
             }
 
             runtimeStatus = await HubAIClient.shared.loadRuntimeStatus()
-            modelsState = await HubAIClient.shared.loadModelsState()
+            if !Self.shouldDeferBackgroundRemoteInventoryRefresh(
+                activeRemoteGenerate: activeRemoteGenerate
+            ) {
+                modelsState = await HubAIClient.shared.loadModelsState()
+            }
+            if hubConnected || hubRemoteConnected,
+               !Self.shouldDeferBackgroundRemoteInventoryRefresh(
+                    activeRemoteGenerate: activeRemoteGenerate
+               ) {
+                await maybeRefreshRemotePresence(force: false)
+            }
+            if hubRemoteConnected {
+                if !Self.shouldDeferBackgroundRemoteInventoryRefresh(
+                    activeRemoteGenerate: activeRemoteGenerate
+                ) {
+                    hubRemotePaidAccessSnapshot = await HubAIClient.shared.currentRemotePaidAccessSnapshot(
+                        refreshIfNeeded: false
+                    )
+                }
+            } else {
+                if !hubConnected {
+                    nextRemotePresenceRefreshAt = .distantPast
+                }
+                hubRemotePaidAccessSnapshot = nil
+            }
             updatePairedSurfaceHeartbeat()
             refreshSkillsCompatibilitySnapshot()
 
@@ -3698,23 +7327,38 @@ final class AppModel: ObservableObject {
                 usageSummary = AXProjectStore.usageSummary(for: ctx)
                 if let mem = try? AXProjectStore.loadOrCreateMemory(for: ctx) {
                     memory = mem
-                    registry = AXProjectRegistryStore.load()
+                    if loadPersistedProjectRegistry {
+                        registry = AXProjectRegistryStore.load()
+                    }
                 }
                 if let cfg = try? AXProjectStore.loadOrCreateConfig(for: ctx) {
                     projectConfig = cfg
                 }
                 // Throttle heavy local disk snapshots to keep text-input responsiveness stable.
-                nextProjectSnapshotRefreshAt = now.addingTimeInterval(3.0)
+                nextProjectSnapshotRefreshAt = now.addingTimeInterval(6.0)
             }
             if projectContext != nil {
                 await refreshProjectRemoteRuntimeSurfaceOverride(force: false)
             }
             refreshUnifiedDoctorReport()
-            try? await Task.sleep(nanoseconds: 800_000_000)
+            let pollIntervalNs = UInt64(
+                (
+                    Self.backgroundHubPollInterval(
+                        activeRemoteGenerate: activeRemoteGenerate,
+                        connected: hubConnected || hubRemoteConnected
+                    )
+                        * 1_000_000_000.0
+                ).rounded()
+            )
+            try? await Task.sleep(nanoseconds: pollIntervalNs)
         }
     }
 
     private func resetHubSetupProgress(allowBootstrap: Bool) {
+        if allowBootstrap {
+            hubFreshPairReconnectSmokeSnapshot = nil
+            hubRemoteShadowReconnectSmokeSnapshot = nil
+        }
         if allowBootstrap {
             hubSetupDiscoverState = .idle
             hubSetupBootstrapState = .idle
@@ -3727,28 +7371,106 @@ final class AppModel: ObservableObject {
     }
 
     private func applyHubSetupEvent(_ event: HubRemoteProgressEvent) {
-        let mapped: HubSetupStepState
-        switch event.state {
-        case .started:
-            mapped = .running
-        case .succeeded:
-            mapped = .success
-        case .failed:
-            mapped = .failed
-            if let detail = event.detail, !detail.isEmpty {
-                hubSetupFailureCode = detail
-            }
-        case .skipped:
-            mapped = .skipped
+        if let summary = Self.hubSetupSummary(for: event) {
+            hubRemoteSummary = summary
+        }
+        if event.state == .failed,
+           let detail = event.detail,
+           !detail.isEmpty {
+            hubSetupFailureCode = detail
         }
 
         switch event.phase {
         case .discover:
-            hubSetupDiscoverState = mapped
+            hubSetupDiscoverState = Self.resolveHubSetupDisplayState(
+                current: hubSetupDiscoverState,
+                for: event
+            )
         case .bootstrap:
-            hubSetupBootstrapState = mapped
+            hubSetupBootstrapState = Self.resolveHubSetupDisplayState(
+                current: hubSetupBootstrapState,
+                for: event
+            )
         case .connect:
-            hubSetupConnectState = mapped
+            hubSetupConnectState = Self.resolveHubSetupDisplayState(
+                current: hubSetupConnectState,
+                for: event
+            )
+        }
+    }
+
+    nonisolated static func defaultHubRemoteSetupSummary(allowBootstrap: Bool) -> String {
+        allowBootstrap ? "discover/bootstrap/connect ..." : "verifying saved hub route ..."
+    }
+
+    nonisolated static func hubSetupStepState(for event: HubRemoteProgressEvent) -> HubSetupStepState {
+        switch event.state {
+        case .started:
+            if event.phase == .bootstrap,
+               event.detail?.trimmingCharacters(in: .whitespacesAndNewlines) == "awaiting_hub_approval" {
+                return .awaitingApproval
+            }
+            return .running
+        case .succeeded:
+            return .success
+        case .failed:
+            return .failed
+        case .skipped:
+            return .skipped
+        }
+    }
+
+    nonisolated static func resolveHubSetupDisplayState(
+        current: HubSetupStepState,
+        for event: HubRemoteProgressEvent
+    ) -> HubSetupStepState {
+        let mapped = hubSetupStepState(for: event)
+        if shouldPreserveCompletedHubSetupStep(
+            current: current,
+            mapped: mapped,
+            event: event
+        ) {
+            return current
+        }
+        return mapped
+    }
+
+    nonisolated static func shouldPreserveCompletedHubSetupStep(
+        current: HubSetupStepState,
+        mapped: HubSetupStepState,
+        event: HubRemoteProgressEvent
+    ) -> Bool {
+        guard current == .success else { return false }
+        guard mapped == .skipped else { return false }
+        let detail = event.detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return detail == "bootstrap_disabled"
+    }
+
+    nonisolated static func hubSetupSummary(for event: HubRemoteProgressEvent) -> String? {
+        let detail = event.detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        switch (event.phase, event.state, detail) {
+        case (.discover, .started, _):
+            return "searching nearby hub ..."
+        case (.bootstrap, .started, "awaiting_hub_approval"):
+            return "waiting for Hub local approval ..."
+        case (.bootstrap, .started, "refresh"):
+            return "refreshing pairing profile ..."
+        case (.bootstrap, .started, _):
+            return "pairing with hub ..."
+        case (.bootstrap, .succeeded, "refresh"):
+            return "pairing profile refreshed; reconnecting ..."
+        case (.bootstrap, .succeeded, _):
+            return "pairing approved; connecting ..."
+        case (.connect, .started, _):
+            return "connecting hub route ..."
+        case (.connect, .succeeded, "lan"):
+            return "hub route connected over lan ..."
+        case (.connect, .succeeded, "internet"):
+            return "hub route connected over internet ..."
+        case (.connect, .succeeded, "tunnel"):
+            return "hub route connected over internet tunnel ..."
+        default:
+            return nil
         }
     }
 
@@ -3791,13 +7513,10 @@ final class AppModel: ObservableObject {
         hubPortAutoDetectMessage = "probing 50052/50053..."
         hubDiscoveredCandidates = []
 
-        let opts = HubRemoteConnectOptions(
-            grpcPort: hubGrpcPort,
-            pairingPort: hubPairingPort,
-            deviceName: Host.current().localizedName ?? "X-Terminal",
-            internetHost: hubInternetHost,
-            axhubctlPath: hubAxhubctlPath,
-            stateDir: nil
+        let opts = currentHubRemoteConnectOptions(stateDir: nil)
+        let preserveManualEndpoint = Self.shouldProtectManualHubEndpointFromAutofill(
+            overridePending: hasHubRemoteEndpointOverridePending(),
+            currentEndpoint: currentHubRemoteEndpointFingerprint()
         )
 
         let probe = await HubPairingCoordinator.shared.detectPorts(options: opts)
@@ -3805,15 +7524,11 @@ final class AppModel: ObservableObject {
         hubDiscoveredCandidates = probe.candidates
 
         if probe.ok {
-            hubPairingPort = probe.pairingPort
-            hubGrpcPort = probe.grpcPort
-            let cachedProfile = HubAIClient.cachedRemoteProfile(stateDir: nil)
-            if hubInternetHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-               let discoveredInternetHost = cachedProfile.internetHost,
-               !discoveredInternetHost.isEmpty {
-                hubInternetHost = discoveredInternetHost
+            if !preserveManualEndpoint {
+                hubPairingPort = probe.pairingPort
+                hubGrpcPort = probe.grpcPort
             }
-            saveHubRemotePrefs()
+            let cachedProfile = HubAIClient.cachedRemoteProfile(stateDir: nil)
             let detectedHost = (cachedProfile.host ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let detectedInternetHost = (cachedProfile.internetHost ?? "")
@@ -3835,6 +7550,13 @@ final class AppModel: ObservableObject {
             if detectedInternetHost.isEmpty {
                 details.append("remote_host=missing")
             }
+            if preserveManualEndpoint {
+                details.append("configured endpoint kept")
+            } else {
+                _ = synchronizeHubRemotePrefsFromCachedProfile(
+                    preferDiscoveredInternetHost: true
+                )
+            }
             hubPortAutoDetectMessage = "detected " + details.joined(separator: " · ")
             hubSetupFailureCode = ""
             refreshUnifiedDoctorReport(force: true)
@@ -3855,14 +7577,7 @@ final class AppModel: ObservableObject {
     }
 
     private func applySelectedHubCandidateNow(_ candidate: HubDiscoveredHubCandidateSummary) async {
-        let opts = HubRemoteConnectOptions(
-            grpcPort: hubGrpcPort,
-            pairingPort: hubPairingPort,
-            deviceName: Host.current().localizedName ?? "X-Terminal",
-            internetHost: hubInternetHost,
-            axhubctlPath: hubAxhubctlPath,
-            stateDir: nil
-        )
+        let opts = currentHubRemoteConnectOptions(stateDir: nil)
 
         do {
             try await HubPairingCoordinator.shared.pinDiscoveredHubCandidate(candidate, options: opts)
@@ -3872,7 +7587,7 @@ final class AppModel: ObservableObject {
                !internetHost.isEmpty {
                 hubInternetHost = internetHost
             }
-            saveHubRemotePrefs()
+            saveHubRemotePrefsNow(markEndpointOverride: true)
             hubPortAutoDetectMessage = "selected \(candidate.displayName) · hub=\(candidate.host) · pairing=\(candidate.pairingPort) · grpc=\(candidate.grpcPort)"
             hubSetupFailureCode = ""
             hubDiscoveredCandidates = [candidate]
@@ -3913,6 +7628,22 @@ final class AppModel: ObservableObject {
         }
 
         hubSetupAutofillLastAttemptAt = now
+        if Self.shouldProtectManualHubEndpointFromAutofill(
+            overridePending: hasHubRemoteEndpointOverridePending(),
+            currentEndpoint: currentHubRemoteEndpointFingerprint()
+        ) {
+            if let suggested = await HubPairingCoordinator.shared.suggestedAxhubctlPath() {
+                let trimmedCurrent = hubAxhubctlPath.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmedCurrent != suggested {
+                    hubAxhubctlPath = suggested
+                    saveHubRemotePrefs()
+                }
+            }
+            if hubPortAutoDetectMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                hubPortAutoDetectMessage = "using configured hub endpoint; discovery suggestions stay separate"
+            }
+            return
+        }
         await autoFillHubSetupPathAndPortsNow()
     }
 
@@ -3921,6 +7652,10 @@ final class AppModel: ObservableObject {
 
         hubPortAutoDetectMessage = "resetting local pairing state..."
         hubDiscoveredCandidates = []
+        let resetPlan = Self.pairingResetPlan(
+            overridePending: hasHubRemoteEndpointOverridePending(),
+            currentEndpoint: currentHubRemoteEndpointFingerprint()
+        )
         let reset = await HubPairingCoordinator.shared.resetLocalPairingState(stateDir: nil)
         hubRemoteLog = reset.logText
         if !reset.ok {
@@ -3937,13 +7672,25 @@ final class AppModel: ObservableObject {
 
         hubRemoteConnected = false
         hubRemoteRoute = .none
-        hubPairingPort = 50052
-        hubGrpcPort = 50051
-        hubInternetHost = ""
+        hubRemotePaidAccessSnapshot = nil
+        hubPairingPort = resetPlan.endpoint.pairingPort
+        hubGrpcPort = resetPlan.endpoint.grpcPort
+        hubInternetHost = resetPlan.endpoint.internetHost
+        setHubRemoteEndpointOverridePending(resetPlan.preserveEndpointOverride)
         saveHubRemotePrefs()
-        hubPortAutoDetectMessage = "pairing state reset; probing ports..."
-        await autoDetectHubPortsNow()
-        _ = await runRemoteConnectFlow(allowBootstrap: true, showAlertOnFinish: true, updateSetupProgress: true)
+        if resetPlan.shouldAutoDetect {
+            hubPortAutoDetectMessage = "pairing state reset; probing ports..."
+            await autoDetectHubPortsNow()
+        } else {
+            hubPortAutoDetectMessage = "pairing state reset; using configured hub endpoint ..."
+        }
+        _ = await runRemoteConnectFlow(
+            allowBootstrap: true,
+            showAlertOnFinish: true,
+            updateSetupProgress: true,
+            repairTrigger: .manualOneClickSetup,
+            repairOwner: .user
+        )
     }
 
     func cleanupPairedSurfaceHeartbeat() {

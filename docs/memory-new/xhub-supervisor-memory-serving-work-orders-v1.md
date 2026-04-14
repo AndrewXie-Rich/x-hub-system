@@ -1,13 +1,15 @@
 # X-Hub Supervisor Memory Serving Work Orders v1
 
-- version: v1.0
-- updatedAt: 2026-03-13
+- version: v1.1
+- updatedAt: 2026-03-21
 - owner: XT-L2 / Hub-L5 / QA / Product / Security
 - status: active-implementation
 - scope: 把 `Supervisor` 记忆系统从“layer-aware prompt assembly”推进到“portfolio / focused project / delta / evidence 四通道 serving plane”。
 - parent:
   - `docs/memory-new/xhub-supervisor-memory-serving-contract-v1.md`
   - `docs/memory-new/xhub-memory-serving-profiles-and-adaptive-context-v1.md`
+  - `docs/memory-new/xhub-supervisor-memory-routing-and-assembly-protocol-v1.md`
+  - `docs/memory-new/xhub-memory-model-preferences-and-routing-contract-v1.md`
   - `docs/memory-new/xhub-project-autonomy-tier-and-supervisor-review-protocol-v1.md`
   - `x-terminal/work-orders/xt-w3-31-supervisor-portfolio-awareness-and-project-action-feed-implementation-pack-v1.md`
   - `x-terminal/work-orders/xt-w3-35-supervisor-memory-retrieval-progressive-disclosure-implementation-pack-v1.md`
@@ -56,6 +58,7 @@
   - `review_level_hint` 已贯通 `SupervisorManager -> HubIPCClient -> RELFlowHubCore -> HubMemoryContextBuilder`
   - `Supervisor` 本地 fallback、Hub 侧 `MEMORY_V1` builder、remote snapshot fallback 已统一输出 `[SERVING_GOVERNOR]`
   - `SERVING_GOVERNOR` 已稳定暴露 `review_level_hint / profile_floor / minimum_pack / compression_policy`
+  - 上述本地/远端 snapshot fallback 当前按 serving fallback 理解，不重新执行 memory model resolution；`SERVING_GOVERNOR` 应继续回显上游 `route_source / route_reason_code / fallback_applied / fallback_reason / model_id`
   - `r1_pulse / r2_strategic / r3_rescue` 已开始对 supervisor serving object budget floor 生效，避免战略 review 退化成薄摘要
   - 已补 X-Terminal 定向测试，验证本地 governor 文本与远程 request payload 传播
 
@@ -64,6 +67,51 @@
 - `conflict_set / context_refs / evidence_pack` 已升格为标准 serving object，但 slot-level compression governor 还没补完
 - object-level compression governor 仍未把 dropped counters、freshness policy 与 staged evidence expansion 完全统一到 `M0..M4 / r1..r3`
 - `M0..M4 / r1..r3 / freshness policy` 仍需继续收束成一套完整且可量化的行为
+
+## 0.2) Wave-0 参考借鉴在 Supervisor Serving 下的承接范围
+
+来自 `docs/memory-new/xhub-memory-open-source-reference-wave0-execution-pack-v1.md` 的 `MRA-A2` 当前由本工单共同承接，范围限定为：
+
+- Supervisor 必须消费统一的 expansion routing outcome
+- Supervisor 不再私自发明一套与 Hub Retrieval 不一致的 deep recall 词典
+- `answer_directly / expand_shallow / delegate_traversal` 的 explain 应可进入 serving governor / prompt explainability surface
+- 最小 explain 字段固定为 `trigger_flags / budget_pressure / policy_floor / raw_evidence_allowed`
+
+本轮不做：
+
+- bounded expansion grant
+- 新的 evidence grant contract
+- 与 M2 主 PD contract 不一致的 recall API
+
+## 0.3) Control-Plane Boundary
+
+本工单固定是 `serving plane` 的执行父包，不是第二个 memory control plane。
+
+它消费的上游 truth 来自：
+
+- `memory_model_preferences`
+- upstream mode profile（例如 `assistant_personal / project_code`）
+- route diagnostics
+  - `route_source`
+  - `route_reason_code`
+  - `fallback_applied`
+  - `fallback_reason`
+  - `model_id`
+- `session_participation_class`
+- `write_permission_scope`
+
+本工单固定不做：
+
+- 不本地重跑 `memory_model_router`
+- 不替用户重选 memory maintenance model
+- 不把 `serving_profile`、`review_level_hint`、`portfolio-first` 或 `delta-first` 语义扩写成新的模型选择面
+- 不把 local fallback / remote snapshot fallback 当成第二次 memory route resolution
+
+关系必须固定：
+
+- 上游 control plane 决定“memory 维护链路按哪种 mode/profile bucket 执行”
+- 本工单决定“Supervisor 看哪些对象、压到多深、什么时候 staged expansion”
+- serving governor / prompt explainability 需要展示 route 信息时，必须直接回显上游 machine-readable truth，而不是在 Supervisor 侧派生第二套 route reason 词典
 
 ## 1) Finished State
 
@@ -204,6 +252,8 @@
   - `r1_pulse / r2_strategic / r3_rescue` 对应的最小输入梯子落实
   - 高风险动作优先 `freshness over size`
   - `remote_prompt_bundle` 仍 fail-closed
+  - `M0..M4` / review ladder 只消费上游 mode/profile/route truth，不形成第二套 chooser
+  - local / remote snapshot fallback 下 `SERVING_GOVERNOR` 仍可回放同一组上游 `route_source / route_reason_code / fallback_* / model_id`
 - Gate:
   - `SMS-G6`
 - KPI:
@@ -224,11 +274,21 @@
 - DoD:
   - 覆盖 profile 升级、delta 优先、longterm 注入、冲突显式化、cross-scope fail-closed
   - 关键路径有 machine-readable evidence
+  - `SERVING_GOVERNOR` / doctor / export 对同一请求复用同一份上游 route truth，不自行派生第二套 route 解释
+  - 当 full diagnostics surface 可得时，直接复用 `Diagnostic-First Route Surface` 六组字段：
+    - `request_snapshot`
+    - `resolution_chain`
+    - `winning_profile`
+    - `winning_binding`
+    - `route_result`
+    - `constraint_snapshot`
+  - Supervisor 本地追加的 `review_level_hint / profile_floor / minimum_pack / compression_policy / selected serving objects` 必须与上游 route truth 分开表达
   - 指标接入 CI 或 release gate
 - Gate:
   - `SMS-G7`
 - KPI:
   - `require_real_memory_serving_pass_rate = 1.0`
+  - `serving_route_truth_surface_drift = 0`
 
 ## 3) Recommended Sequence
 

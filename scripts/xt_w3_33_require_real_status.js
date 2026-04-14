@@ -1,13 +1,25 @@
 #!/usr/bin/env node
 const fs = require("node:fs");
 const path = require("node:path");
+const {
+  readCaptureBundle,
+  resolveBundlePath,
+  resolveRequireRealEvidencePath,
+} = require("./xt_w3_33_require_real_bundle_lib.js");
 
 const repoRoot = path.resolve(__dirname, "..");
-const bundlePath = path.join(repoRoot, "build/reports/xt_w3_33_h_require_real_capture_bundle.v1.json");
-const qaPath = path.join(repoRoot, "build/reports/xt_w3_33_h_require_real_evidence.v1.json");
 
 function readJSON(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+
+function readJSONIfExists(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    return readJSON(filePath);
+  } catch {
+    return null;
+  }
 }
 
 function parseArgs(argv) {
@@ -79,6 +91,14 @@ function recommendedEvidenceDir(sample) {
   return `build/reports/xt_w3_33_require_real/${sample.sample_id}`;
 }
 
+function recommendedTemplatePath(sample) {
+  return `${recommendedEvidenceDir(sample)}/machine_readable_template.v1.json`;
+}
+
+function recommendedCompletionNotePath(sample) {
+  return `${recommendedEvidenceDir(sample)}/completion_notes.txt`;
+}
+
 function exampleValueForField(sample, fieldName) {
   const checks = Array.isArray(sample.required_checks) ? sample.required_checks : [];
   const directCheck = checks.find((check) => String(check.field || "").trim() === fieldName) || null;
@@ -139,39 +159,48 @@ function requiredSetFieldHints(sample) {
 }
 
 function renderUpdateCommand(sample) {
-  const evidenceDir = recommendedEvidenceDir(sample);
+  const scaffoldDir = recommendedEvidenceDir(sample);
   return [
     "node scripts/update_xt_w3_33_require_real_capture_bundle.js",
-    `  --sample-id ${sample.sample_id}`,
+    `  --scaffold-dir ${scaffoldDir}`,
     "  --status passed",
     "  --success true",
-    "  --performed-at <ISO8601>",
-    `  --evidence-ref ${evidenceDir}/capture-1.png`,
-    `  --evidence-ref ${evidenceDir}/capture-2.log`,
     "  --note <operator_notes>",
-    ...requiredSetFieldHints(sample),
   ].join(" \\\n");
+}
+
+function renderFinalizeCommand(sample) {
+  return [
+    "node scripts/finalize_xt_w3_33_require_real_sample.js",
+    `  --scaffold-dir ${recommendedEvidenceDir(sample)}`,
+  ].join(" \\\n");
+}
+
+function renderPrepareCommand(sample) {
+  return `node scripts/prepare_xt_w3_33_require_real_sample.js --sample-id ${sample.sample_id}`;
 }
 
 function buildSummary(bundle, qa, focusSample, allSamples) {
   const samples = Array.isArray(bundle.samples) ? bundle.samples : [];
+  const resolvedBundlePath = resolveBundlePath();
+  const resolvedQAPath = resolveRequireRealEvidencePath();
   const executedSamples = samples.filter(isExecuted);
   const passedSamples = samples.filter(isPassed);
   const failedSamples = samples.filter((sample) => isExecuted(sample) && sample.success_boolean === false);
   const pendingSamples = samples.filter((sample) => !isPassed(sample));
 
   return {
-    bundle_path: path.relative(repoRoot, bundlePath),
-    qa_path: path.relative(repoRoot, qaPath),
+    bundle_path: path.relative(repoRoot, resolvedBundlePath),
+    qa_path: path.relative(repoRoot, resolvedQAPath),
     bundle_status: String(bundle.status || "").trim() || "unknown",
-    qa_gate_verdict: String(qa.gate_verdict || "").trim() || "unknown",
-    qa_release_stance: String(qa.release_stance || "").trim() || "unknown",
+    qa_gate_verdict: qa ? (String(qa.gate_verdict || "").trim() || "unknown") : "missing(run_generate_first)",
+    qa_release_stance: qa ? (String(qa.release_stance || "").trim() || "unknown") : "missing(run_generate_first)",
     total_samples: samples.length,
     executed_count: executedSamples.length,
     passed_count: passedSamples.length,
     failed_count: failedSamples.length,
     pending_count: pendingSamples.length,
-    fg_shadow_statuses: Array.isArray(qa.shadow_checklist)
+    fg_shadow_statuses: Array.isArray(qa?.shadow_checklist)
       ? qa.shadow_checklist
           .filter((row) => row.item === "XT-W3-33-F" || row.item === "XT-W3-33-G")
           .map((row) => ({
@@ -191,6 +220,10 @@ function buildSummary(bundle, qa, focusSample, allSamples) {
             ? focusSample.machine_readable_fields_to_record
             : [],
           recommended_evidence_dir: recommendedEvidenceDir(focusSample),
+          recommended_template_path: recommendedTemplatePath(focusSample),
+          recommended_completion_note_path: recommendedCompletionNotePath(focusSample),
+          prepare_command: renderPrepareCommand(focusSample),
+          suggested_finalize_command: renderFinalizeCommand(focusSample),
           suggested_update_command: renderUpdateCommand(focusSample),
           regenerate_command: "node scripts/generate_xt_w3_33_require_real_report.js",
         }
@@ -206,6 +239,10 @@ function buildSummary(bundle, qa, focusSample, allSamples) {
             ? sample.machine_readable_fields_to_record
             : [],
           recommended_evidence_dir: recommendedEvidenceDir(sample),
+          recommended_template_path: recommendedTemplatePath(sample),
+          recommended_completion_note_path: recommendedCompletionNotePath(sample),
+          prepare_command: renderPrepareCommand(sample),
+          suggested_finalize_command: renderFinalizeCommand(sample),
           suggested_update_command: renderUpdateCommand(sample),
           regenerate_command: "node scripts/generate_xt_w3_33_require_real_report.js",
           performed_at: sample.performed_at || "",
@@ -249,6 +286,11 @@ function printHuman(summary) {
       lines.push(`precondition: ${sample.precondition}`);
       lines.push(`expected_result: ${sample.expected_result}`);
       lines.push(`recommended_evidence_dir: ${sample.recommended_evidence_dir}`);
+      lines.push(`recommended_template_path: ${sample.recommended_template_path}`);
+      lines.push(`recommended_completion_note_path: ${sample.recommended_completion_note_path}`);
+      lines.push(`prepare_command: ${sample.prepare_command}`);
+      lines.push("suggested_finalize_command:");
+      lines.push(sample.suggested_finalize_command);
       lines.push("required_checks:");
       for (const check of sample.required_checks) {
         lines.push(`  - ${JSON.stringify(check)}`);
@@ -277,6 +319,11 @@ function printHuman(summary) {
   lines.push(`precondition: ${sample.precondition}`);
   lines.push(`expected_result: ${sample.expected_result}`);
   lines.push(`recommended_evidence_dir: ${sample.recommended_evidence_dir}`);
+  lines.push(`recommended_template_path: ${sample.recommended_template_path}`);
+  lines.push(`recommended_completion_note_path: ${sample.recommended_completion_note_path}`);
+  lines.push(`prepare_command: ${sample.prepare_command}`);
+  lines.push("suggested_finalize_command:");
+  lines.push(sample.suggested_finalize_command);
   lines.push("required_checks:");
   for (const check of sample.required_checks) {
     lines.push(`  - ${JSON.stringify(check)}`);
@@ -294,8 +341,8 @@ function printHuman(summary) {
 function main() {
   try {
     const args = parseArgs(process.argv);
-    const bundle = readJSON(bundlePath);
-    const qa = readJSON(qaPath);
+    const bundle = readCaptureBundle();
+    const qa = readJSONIfExists(resolveRequireRealEvidencePath());
     const samples = Array.isArray(bundle.samples) ? bundle.samples : [];
     const focusSample = findFocusSample(samples, args.sampleId);
 
@@ -315,4 +362,21 @@ function main() {
   }
 }
 
-main();
+module.exports = {
+  buildSummary,
+  exampleValueForField,
+  findFocusSample,
+  parseArgs,
+  printHuman,
+  recommendedCompletionNotePath,
+  recommendedTemplatePath,
+  readJSONIfExists,
+  recommendedEvidenceDir,
+  renderFinalizeCommand,
+  renderPrepareCommand,
+  renderUpdateCommand,
+};
+
+if (require.main === module) {
+  main();
+}

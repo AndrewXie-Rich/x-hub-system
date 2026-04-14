@@ -123,6 +123,127 @@ struct AXRouteRepairLogStoreTests {
     }
 
     @Test
+    func watchHeadlineAddsHubExportGateHintForBlockedRemoteRoute() throws {
+        let root = try makeProjectRoot(named: "route-repair-watch-export-gate")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        AXRouteRepairLogStore.record(
+            actionId: "open_hub_recovery",
+            outcome: "failed",
+            latestEvent: makeEvent(fallbackReasonCode: "remote_export_blocked"),
+            createdAt: 100,
+            for: ctx
+        )
+
+        let digest = AXRouteRepairLogStore.digest(for: ctx, limit: 20)
+        #expect(digest.watchHeadline.contains("Hub export gate / 策略挡住远端") == true)
+        #expect(digest.watchHeadline.contains("先查 Hub") == true)
+        #expect(digest.watchHeadline.contains("不要先急着改 XT 模型") == true)
+    }
+
+    @Test
+    func watchHeadlineAddsHubExportGateHintForCompositeConnectorScopeReason() throws {
+        let root = try makeProjectRoot(named: "route-repair-watch-composite-export-gate")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        AXRouteRepairLogStore.record(
+            actionId: "open_hub_recovery",
+            outcome: "failed",
+            latestEvent: makeEvent(fallbackReasonCode: "grant_required;deny_code=remote_export_blocked"),
+            createdAt: 100,
+            for: ctx
+        )
+
+        let digest = AXRouteRepairLogStore.digest(for: ctx, limit: 20)
+        #expect(digest.watchHeadline.contains("Hub export gate / 策略挡住远端") == true)
+        #expect(digest.watchHeadline.contains("先查 Hub") == true)
+    }
+
+    @Test
+    func watchHeadlineAddsPaidModelHintForPaidModelAccessBlock() throws {
+        let root = try makeProjectRoot(named: "route-repair-watch-paid-model")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        AXRouteRepairLogStore.record(
+            actionId: "open_choose_model",
+            outcome: "failed",
+            latestEvent: makeEvent(
+                fallbackReasonCode: "grant_required;deny_code=device_paid_model_not_allowed"
+            ),
+            createdAt: 100,
+            for: ctx
+        )
+
+        let digest = AXRouteRepairLogStore.digest(for: ctx, limit: 20)
+        #expect(digest.watchHeadline.contains("付费模型资格") == true)
+        #expect(digest.watchHeadline.contains("allowlist") == true)
+        #expect(digest.watchHeadline.contains("预算") == true)
+    }
+
+    @Test
+    func watchHeadlineCanAppendPairedDeviceBudgetTruthForPaidModelBlock() throws {
+        let root = try makeProjectRoot(named: "route-repair-watch-paid-model-truth")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        AXRouteRepairLogStore.record(
+            actionId: "open_choose_model",
+            outcome: "failed",
+            latestEvent: makeEvent(
+                fallbackReasonCode: "device_single_request_token_exceeded;policy_mode=new_profile;device_name=Andrew;model_id=openai/gpt-5.4"
+            ),
+            createdAt: 100,
+            for: ctx
+        )
+
+        let digest = AXRouteRepairLogStore.digest(for: ctx, limit: 20)
+        let watchHeadline = AXRouteRepairLogStore.watchHeadline(
+            for: digest,
+            paidAccessSnapshot: HubRemotePaidAccessSnapshot(
+                trustProfilePresent: true,
+                paidModelPolicyMode: "all_paid_models",
+                dailyTokenLimit: 640,
+                singleRequestTokenLimit: 256
+            )
+        )
+
+        #expect(watchHeadline.contains("付费模型资格") == true)
+        #expect(watchHeadline.contains("当前设备真值：单次 256 tok · 当日 640 tok · 策略 全部付费模型。") == true)
+    }
+
+    @Test
+    func watchHeadlineAddsHubDowngradeHintForDowngradedRoute() throws {
+        let root = try makeProjectRoot(named: "route-repair-watch-hub-downgrade")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        AXRouteRepairLogStore.record(
+            actionId: "open_xt_diagnostics",
+            outcome: "failed",
+            latestEvent: makeEvent(fallbackReasonCode: "downgrade_to_local"),
+            createdAt: 100,
+            for: ctx
+        )
+
+        let digest = AXRouteRepairLogStore.digest(for: ctx, limit: 20)
+        #expect(digest.watchHeadline.contains("Hub 执行阶段把远端降到了本地") == true)
+        #expect(digest.watchHeadline.contains("不是 XT 自己改模型") == true)
+    }
+
+    @Test
     func unifiedSupervisorControlCenterLabelIsUsedForModelSettingsRepairAction() throws {
         let root = try makeProjectRoot(named: "route-repair-supervisor-control-center")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -140,7 +261,7 @@ struct AXRouteRepairLogStoreTests {
 
         let lines = AXRouteRepairLogStore.userFacingSummaryLines(for: ctx, limit: 10)
         #expect(lines.count == 1)
-        #expect(lines[0].contains("打开 Supervisor 控制中心 · AI 模型（已打开）"))
+        #expect(lines[0].contains("打开 Supervisor Control Center · AI 模型（已打开）"))
         #expect(lines[0].contains("目标模型未加载（model_not_found）"))
     }
 
@@ -179,8 +300,67 @@ struct AXRouteRepairLogStoreTests {
     }
 
     @Test
-    func userFacingActionLabelUsesXTAIModelNamingForChooseModelEntry() {
-        #expect(AXRouteRepairLogStore.userFacingActionLabel("open_choose_model") == "打开 XT AI 模型")
+    func userFacingSummaryLineHumanizesCompositeConnectorAndPaidModelReasons() throws {
+        let root = try makeProjectRoot(named: "route-repair-user-facing-composite-reasons")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        AXRouteRepairLogStore.record(
+            actionId: "open_hub_recovery",
+            outcome: "failed",
+            latestEvent: makeEvent(fallbackReasonCode: "grant_required;deny_code=remote_export_blocked"),
+            createdAt: 100,
+            for: ctx
+        )
+        AXRouteRepairLogStore.record(
+            actionId: "open_choose_model",
+            outcome: "opened",
+            latestEvent: makeEvent(
+                fallbackReasonCode: "device_paid_model_not_allowed;policy_mode=new_profile;device_name=Andrew;model_id=openai/gpt-5.4"
+            ),
+            createdAt: 200,
+            for: ctx
+        )
+
+        let lines = AXRouteRepairLogStore.userFacingSummaryLines(for: ctx, limit: 10)
+        #expect(lines.count == 2)
+        #expect(lines[0].contains("当前模型不在设备付费模型允许范围内（device_paid_model_not_allowed）"))
+        #expect(lines[1].contains("远端导出被拦截（remote_export_blocked）"))
+    }
+
+    @Test
+    func userFacingActionLabelUsesSupervisorControlCenterNamingForChooseModelEntry() {
+        #expect(AXRouteRepairLogStore.userFacingActionLabel("open_choose_model") == "打开 Supervisor Control Center · AI 模型")
+    }
+
+    @Test
+    func userFacingActionLabelHumanizesStatusBarDiagnoseEntry() {
+        #expect(AXRouteRepairLogStore.userFacingActionLabel("open_route_diagnose") == "运行项目路由诊断")
+    }
+
+    @Test
+    func userFacingSummaryLineHumanizesStatusBarSourceNote() throws {
+        let root = try makeProjectRoot(named: "route-repair-status-bar-note")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        AXRouteRepairLogStore.record(
+            actionId: "open_xt_diagnostics",
+            outcome: "opened",
+            latestEvent: makeEvent(fallbackReasonCode: "provider_not_ready"),
+            note: "source=status_bar",
+            createdAt: 100,
+            for: ctx
+        )
+
+        let lines = AXRouteRepairLogStore.userFacingSummaryLines(for: ctx, limit: 10)
+        #expect(lines.count == 1)
+        #expect(lines[0].contains("打开 XT Diagnostics（已打开）"))
+        #expect(lines[0].contains("来源 顶部状态栏快捷动作"))
     }
 
     @Test

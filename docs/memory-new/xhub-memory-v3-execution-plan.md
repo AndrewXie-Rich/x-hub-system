@@ -1,7 +1,7 @@
 # X-Hub Memory v3 实施计划（效率 + 安全）
 
 - version: v1.2
-- updatedAt: 2026-02-28
+- updatedAt: 2026-03-22
 - owner: Hub Memory / X-Terminal / Security 联合推进
 - status: active
 
@@ -16,6 +16,18 @@
 非目标（本期不做）
 - 不做新的营销型性能宣称；先完成基线测试与复现流程。
 - 不引入多套并行 Memory 规范；只保留一套 Canonical 规范。
+
+## 0.1) Control-Plane Freeze
+
+这份实施计划覆盖的是 memory 的 schema / storage / retrieval / safety / rollout 主线，不重开第二个 memory control plane。
+
+固定边界：
+
+- 用户继续在 X-Hub 中通过 `memory_model_preferences` 选择哪个 AI 执行 memory jobs。
+- `Memory-Core` 继续只作为 governed rule asset / recipe asset 约束提取、晋升、外发与回滚，不直接成为单体执行 AI。
+- 真正的运行时执行链继续是 `Scheduler -> Worker -> Writer + Gate`。
+- `M0..M3` 任一工作流都不得在 XT、Supervisor、retrieval pipeline、agent runtime 或 release gate 中本地再造新的 memory model chooser。
+- 产品层若继续沿用 `Memory-Core Skill` 命名，也只能理解为规则资产，不改变上述实现边界。
 
 ## 1) 唯一架构（Canonical）
 
@@ -197,7 +209,7 @@ M3 进度快照（2026-02-28）
 - 已验证（XT-Ready / 工具链）：本地已跑通 `xt_ready_incident_events.sample.json -> m3_generate_xt_ready_e2e_evidence -> m3_check_xt_ready_gate --strict-e2e`，文档绑定 + 严格 E2E 校验通过（样例证据）。
 - 已完成（XT-Ready / 严格化）：`m3_check_xt_ready_gate --strict-e2e` 增加 incident 集合“精确匹配”校验（禁止未知 incident_code、禁止数量漂移），并固定 contract 回放基线输入为 `scripts/fixtures/xt_ready_incident_events.sample.json`；新增 duplicate incident 回归测试，且证据生成 strict 模式拒绝重复 required incident；CI 上传 `xt_ready_gate_doc_report.json` 文档绑定证据。
 - 已完成（XT-Ready / 去重）：已移除遗留输出样例 `scripts/m3_xt_ready_e2e_evidence.sample.json`，contract 样例统一收敛到 fixture + generator 路径（不再维护独立输出样例文件）。
-- 已完成（XT-Ready / CI 证据源选择）：新增 `scripts/m3_resolve_xt_ready_audit_input.js` + 回归 `scripts/m3_resolve_xt_ready_audit_input.test.js`，CI 统一“真实联测 audit 导出优先、sample fixture 兜底”选择逻辑，贯通 `audit export -> incident extract -> evidence generate -> strict-e2e`，并输出 `xt_ready_evidence_source.json` 标记本次门禁证据来源；`m3_check_xt_ready_gate.js` 新增 `--evidence-source/--require-real-audit-source`，把证据来源约束并入 gate；`XT_READY_REQUIRE_REAL_AUDIT=1`（或 workflow_dispatch `xt_ready_require_real_audit=true`）可启用 release 硬失败（禁止 sample 回退）。
+- 已完成（XT-Ready / CI 证据源选择）：新增 `scripts/m3_resolve_xt_ready_audit_input.js` + 回归 `scripts/m3_resolve_xt_ready_audit_input.test.js`，CI 统一“真实联测 audit 导出优先、sample fixture 兜底”选择逻辑，贯通 `audit export -> incident extract -> evidence generate -> strict-e2e`，并输出 `xt_ready_evidence_source.json` 标记本次门禁证据来源；`m3_check_xt_ready_gate.js` 新增 `--evidence-source/--require-real-audit-source`，把证据来源约束并入 gate；`XT_READY_REQUIRE_REAL_AUDIT=1`（或 workflow_dispatch `xt_ready_require_real_audit=true`）可启用 release 硬失败（禁止 sample 回退）。release/refresh/report helper 现统一按 `require_real -> db_real -> current` 选择 XT-ready report/source/connector snapshot，对应产物名分别为 `build/xt_ready_gate_e2e_require_real_report.json` / `build/xt_ready_evidence_source.require_real.json` / `build/connector_ingress_gate_snapshot.require_real.json`、`build/xt_ready_gate_e2e_db_real_report.json` / `build/xt_ready_evidence_source.db_real.json` / `build/connector_ingress_gate_snapshot.db_real.json`、以及 legacy current trio。
 - XT-Ready 门禁状态（2026-02-28）：Hub 侧能力已就绪，`XT-Ready-G0..G5` 仍为 `pending`（需 X-Terminal 主工单与 Supervisor 专项工单联测全绿后，方可宣告 Hub 主线完成）。
 - XT-Ready require-real 干跑（2026-03-01）：已实跑 `m3_export_xt_ready_audit_from_db -> m3_resolve_xt_ready_audit_input --require-real -> m3_extract_xt_ready_incident_events_from_audit --strict`；当前 `./data/hub.sqlite3` 导出 `events=0`，严格抽取仍 fail-closed（缺失 `grant_pending/awaiting_instruction/runtime_error` handled 事件），待 X-Terminal/Supervisor 联测事件入库后重跑转绿。
 - XT-Ready require-real 复核（2026-03-01）：再次复跑 require-real 链路，导出仍为 `events=0`，`m3_extract_xt_ready_incident_events_from_audit --strict` 持续 fail-closed（缺失 `grant_pending/awaiting_instruction/runtime_error` handled 事件）；同轮复跑 `memory_agent_grant_chain.test.js` / `m3_check_lineage_contract_tests.js` / `memory_project_lineage.test.js` 全绿，Lane-G2 KPI 诊断更新为 `gate_p95_ms=0.653`、`low_risk_false_block_rate=0.00%`、`bypass_grant_execution=0`。

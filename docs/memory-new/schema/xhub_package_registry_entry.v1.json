@@ -1,0 +1,406 @@
+{
+  "schema_version": "xhub.package_registry_entry.v1",
+  "contract_version": "2026-03-27",
+  "contract_id": "HUB-L3-GPK-W1-02",
+  "owner_lane": "Hub Runtime / Packaging / Security",
+  "fixed_decisions": [
+    "registry_is_distribution_metadata_not_execution_permission",
+    "catalog_resolution_must_fail_closed_for_revoked_or_integrity_mismatched_packages",
+    "source_fallback_requires_the_same_verification_chain_as_primary_artifacts",
+    "embedded_catalog_is_required_for_offline_official_package_resolution",
+    "registry_may_not_upgrade_manifest_trust_tier",
+    "remote_catalog_unreachable_without_verified_fallback_must_fail_closed",
+    "checksum_signature_or_fallback_verification_failures_must_emit_stable_error_codes",
+    "fallback_path_must_not_expand_manifest_capability_or_required_grant_scope"
+  ],
+  "package_kind_enum": [
+    "official_skill",
+    "operator_channel",
+    "connector",
+    "local_provider_pack",
+    "external_adapter"
+  ],
+  "catalog_tier_enum": [
+    "embedded_official",
+    "signed_remote",
+    "local_staging"
+  ],
+  "source_type_enum": [
+    "embedded_catalog",
+    "signed_remote_catalog",
+    "local_staging",
+    "source_fallback"
+  ],
+  "checksum_algorithm_enum": [
+    "sha256"
+  ],
+  "downloadability_enum": [
+    "downloadable",
+    "catalog_only",
+    "offline_only",
+    "revoked"
+  ],
+  "buildability_enum": [
+    "prebuilt_only",
+    "source_build_supported",
+    "local_build_required",
+    "not_buildable"
+  ],
+  "support_tier_enum": [
+    "official",
+    "maintained_preview",
+    "best_effort",
+    "deprecated"
+  ],
+  "revoke_state_enum": [
+    "active",
+    "degraded",
+    "revoked",
+    "blocked"
+  ],
+  "compatibility_state_enum": [
+    "verified",
+    "unknown",
+    "incompatible",
+    "deprecated"
+  ],
+  "risk_floor_enum": [
+    "low",
+    "medium",
+    "high",
+    "critical"
+  ],
+  "grant_scope_enum": [
+    "readonly",
+    "privileged",
+    "critical"
+  ],
+  "artifact_resolution_mode_enum": [
+    "artifact_only",
+    "source_fallback_allowed",
+    "embedded_only"
+  ],
+  "fallback_trigger_enum": [
+    "primary_unavailable",
+    "primary_checksum_mismatch",
+    "primary_signature_invalid",
+    "catalog_unreachable"
+  ],
+  "doctor_bundle_enum": [
+    "official_skills",
+    "operator_channels",
+    "local_provider_runtime",
+    "trusted_automation_readiness"
+  ],
+  "quality_evidence_state_enum": [
+    "passed",
+    "partial",
+    "missing",
+    "blocked"
+  ],
+  "install_outcome_enum": [
+    "installed",
+    "upgraded",
+    "revoked",
+    "blocked_integrity",
+    "blocked_compatibility",
+    "blocked_policy",
+    "fallback_used"
+  ],
+  "integrity_error_code_enum": [
+    "artifact_checksum_mismatch",
+    "artifact_signature_invalid",
+    "artifact_signature_missing",
+    "fallback_unavailable",
+    "fallback_checksum_mismatch",
+    "fallback_signature_invalid",
+    "fallback_verification_chain_mismatch",
+    "catalog_unreachable",
+    "registry_entry_revoked",
+    "registry_trust_tier_upgrade_rejected"
+  ],
+  "integrity_error_code_dictionary": [
+    {
+      "code": "artifact_checksum_mismatch",
+      "retryable": false,
+      "fail_closed": true,
+      "description": "Primary artifact checksum verification failed."
+    },
+    {
+      "code": "artifact_signature_invalid",
+      "retryable": false,
+      "fail_closed": true,
+      "description": "Primary artifact signature verification failed."
+    },
+    {
+      "code": "artifact_signature_missing",
+      "retryable": false,
+      "fail_closed": true,
+      "description": "Official primary artifact is missing signature metadata."
+    },
+    {
+      "code": "fallback_unavailable",
+      "retryable": true,
+      "fail_closed": true,
+      "description": "Primary source failed and no verified fallback source is available."
+    },
+    {
+      "code": "fallback_checksum_mismatch",
+      "retryable": false,
+      "fail_closed": true,
+      "description": "Fallback artifact checksum verification failed."
+    },
+    {
+      "code": "fallback_signature_invalid",
+      "retryable": false,
+      "fail_closed": true,
+      "description": "Fallback artifact signature verification failed."
+    },
+    {
+      "code": "fallback_verification_chain_mismatch",
+      "retryable": false,
+      "fail_closed": true,
+      "description": "Fallback integrity chain does not match primary artifact verification chain."
+    },
+    {
+      "code": "catalog_unreachable",
+      "retryable": true,
+      "fail_closed": true,
+      "description": "Remote catalog could not be reached and no verified offline fallback path succeeded."
+    },
+    {
+      "code": "registry_entry_revoked",
+      "retryable": false,
+      "fail_closed": true,
+      "description": "Registry entry is revoked or blocked and cannot be installed."
+    },
+    {
+      "code": "registry_trust_tier_upgrade_rejected",
+      "retryable": false,
+      "fail_closed": true,
+      "description": "Registry metadata attempted to widen manifest trust tier."
+    }
+  ],
+  "objects": {
+    "xhub.package_registry_entry.v1": {
+      "required_fields": [
+        "schema_version",
+        "package_id",
+        "kind",
+        "display_name",
+        "description",
+        "version",
+        "tags",
+        "catalog_tier",
+        "published_at_ms",
+        "artifact_refs",
+        "downloadability",
+        "buildability",
+        "auth_hint",
+        "doctor_support",
+        "fallback_source",
+        "risk_summary",
+        "compatibility_envelope",
+        "quality_evidence_status",
+        "support_tier",
+        "revoke_state",
+        "audit_ref"
+      ],
+      "optional_fields": [
+        "integrity_chain_id"
+      ],
+      "nested_required_fields": {
+        "fallback_source": [
+          "source_type",
+          "uri",
+          "sha256",
+          "signature_ref",
+          "allowed",
+          "notes"
+        ],
+        "risk_summary": [
+          "risk_floor",
+          "required_grant_scope",
+          "secrets_required",
+          "network_required",
+          "device_side_effect_possible",
+          "remote_export_possible"
+        ],
+        "compatibility_envelope": [
+          "manifest_contract_version",
+          "protocol_versions",
+          "min_hub_version",
+          "min_xt_version",
+          "runtime_hosts",
+          "compatibility_state",
+          "last_verified_at_ms"
+        ],
+        "quality_evidence_status": [
+          "replay",
+          "fuzz",
+          "doctor",
+          "smoke"
+        ]
+      },
+      "enum_refs": {
+        "kind": "package_kind_enum",
+        "catalog_tier": "catalog_tier_enum",
+        "downloadability": "downloadability_enum",
+        "buildability": "buildability_enum",
+        "support_tier": "support_tier_enum",
+        "revoke_state": "revoke_state_enum"
+      },
+      "rules": [
+        "Registry entries are catalog records and do not bypass policy, grant, or audit at execution time.",
+        "Revoked or blocked entries may not resolve to installable artifacts.",
+        "Registry metadata may narrow but never widen the trust tier declared by the manifest.",
+        "Catalog resolution must return stable integrity error codes for checksum/signature/fallback failures.",
+        "Fallback metadata may only narrow execution posture and cannot widen capabilities or required grants."
+      ]
+    },
+    "xhub.package_registry_artifact_ref.v1": {
+      "required_fields": [
+        "artifact_id",
+        "download_url",
+        "sha256",
+        "signature_ref",
+        "source_type",
+        "resolution_mode",
+        "size_bytes"
+      ],
+      "optional_fields": [
+        "checksum_algorithm",
+        "integrity_chain_id"
+      ],
+      "enum_refs": {
+        "source_type": "source_type_enum",
+        "resolution_mode": "artifact_resolution_mode_enum",
+        "checksum_algorithm": "checksum_algorithm_enum"
+      },
+      "rules": [
+        "Checksum is required for every artifact reference.",
+        "Official remote artifacts require signature references.",
+        "Artifact references should keep source_type aligned to primary distribution sources; source_fallback belongs to fallback_source metadata."
+      ]
+    },
+    "xhub.package_registry_fallback_source.v1": {
+      "required_fields": [
+        "source_type",
+        "uri",
+        "sha256",
+        "signature_ref",
+        "allowed",
+        "notes"
+      ],
+      "optional_fields": [
+        "integrity_chain_id",
+        "allowed_triggers"
+      ],
+      "enum_refs": {
+        "source_type": "source_type_enum"
+      },
+      "array_enum_refs": {
+        "allowed_triggers": "fallback_trigger_enum"
+      },
+      "rules": [
+        "Fallback is optional, but if present it must follow the same verification chain as the primary artifact.",
+        "Fallback usage must be auditable.",
+        "If fallback_source.allowed is false, fallback resolution must fail closed instead of silently bypassing verification.",
+        "Fallback verification failures must return stable error codes and blocked_integrity outcomes."
+      ]
+    },
+    "xhub.package_registry_risk_summary.v1": {
+      "required_fields": [
+        "risk_floor",
+        "required_grant_scope",
+        "secrets_required",
+        "network_required",
+        "device_side_effect_possible",
+        "remote_export_possible"
+      ],
+      "enum_refs": {
+        "risk_floor": "risk_floor_enum",
+        "required_grant_scope": "grant_scope_enum"
+      },
+      "rules": [
+        "Risk summary is a catalog hint for discovery, not a substitute for runtime risk classification.",
+        "Device or remote export risk flags must be conservative."
+      ]
+    },
+    "xhub.package_registry_compatibility_envelope.v1": {
+      "required_fields": [
+        "manifest_contract_version",
+        "protocol_versions",
+        "min_hub_version",
+        "min_xt_version",
+        "runtime_hosts",
+        "compatibility_state",
+        "last_verified_at_ms"
+      ],
+      "enum_refs": {
+        "compatibility_state": "compatibility_state_enum"
+      },
+      "rules": [
+        "Compatibility verification must cover contract, protocol, and runtime dimensions.",
+        "Unknown compatibility state cannot auto-promote into active."
+      ]
+    },
+    "xhub.package_registry_doctor_support.v1": {
+      "required_fields": [
+        "bundles",
+        "doctor_entrypoint",
+        "guided_repair_supported"
+      ],
+      "array_enum_refs": {
+        "bundles": "doctor_bundle_enum"
+      },
+      "rules": [
+        "Doctor support must identify at least one supported bundle for governed packages.",
+        "Guided repair support must be explicit."
+      ]
+    },
+    "xhub.package_registry_quality_evidence_status.v1": {
+      "required_fields": [
+        "replay",
+        "fuzz",
+        "doctor",
+        "smoke"
+      ],
+      "enum_refs": {
+        "replay": "quality_evidence_state_enum",
+        "fuzz": "quality_evidence_state_enum",
+        "doctor": "quality_evidence_state_enum",
+        "smoke": "quality_evidence_state_enum"
+      },
+      "rules": [
+        "Missing replay or doctor evidence must be visible at catalog resolution time.",
+        "Blocked quality evidence must prevent official promotion."
+      ]
+    },
+    "xhub.package_install_resolution.v1": {
+      "required_fields": [
+        "package_id",
+        "resolved_version",
+        "artifact_id",
+        "outcome",
+        "used_fallback_source",
+        "audit_ref"
+      ],
+      "optional_fields": [
+        "error_code",
+        "fallback_trigger",
+        "integrity_chain_id"
+      ],
+      "enum_refs": {
+        "outcome": "install_outcome_enum",
+        "error_code": "integrity_error_code_enum",
+        "fallback_trigger": "fallback_trigger_enum"
+      },
+      "rules": [
+        "Fallback usage must be explicit in install results.",
+        "Blocked integrity or compatibility outcomes are fail-closed.",
+        "Integrity-blocked outcomes should include error_code for checksum/signature/fallback diagnosis and audit correlation."
+      ]
+    }
+  }
+}

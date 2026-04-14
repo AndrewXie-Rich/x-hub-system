@@ -1,7 +1,7 @@
 # XT-W3-38-I7 Supervisor Continuity Floor And Context Depth Implementation Pack v1
 
 - version: v1.0
-- updatedAt: 2026-03-20
+- updatedAt: 2026-03-29
 - owner: XT-L2 / Supervisor / Hub Memory / Hub App / QA / Product
 - status: active
 - scope: `XT-W3-38-I7`（把 Supervisor 最近原始上下文硬底线、dual-plane memory assembly、Hub-first continuity thread、project AI context depth 三件事真正接到 runtime 和设置表面；确保别的 AI 接手时可以直接顺着切片继续做）
@@ -18,6 +18,98 @@
 
 ## Status Notes
 
+- 2026-03-29:
+  - 已把 `heartbeat -> governance_review` 的记忆解释链真正接进 runtime：
+    - `XTRoleAwareMemoryPolicyResolver.resolveSupervisor(...)` 不再把 heartbeat 排队的 governed review 一律折叠成旧 `user_turn / manual_request` 语义。
+    - 当前已固定的 heartbeat governance memory resolution trigger 包括：
+      - `heartbeat_periodic_pulse_review`
+      - `heartbeat_no_progress_review`
+      - `heartbeat_blocker_review`
+      - 以及其他 heartbeat review fallback 变体
+    - `SupervisorMemoryAssemblySnapshot` 已新增 machine-readable explainability：
+      - `trigger_source`
+      - `governance_review_trigger`
+      - `governance_review_run_kind`
+    - Memory Board 现在会在治理复盘场景显示：
+      - `Governance Review: source ... · trigger ... · run kind ...`
+    - 这一步只让 Supervisor memory assembly 对 heartbeat governance semantics “说真话”：
+      - 不改 Hub gate / grant / audit / kill-switch 主链
+      - 不让 heartbeat 接管普通 `conversation` / `project_assist`
+      - 不改变 `Hub preferred / fail-closed / constitution injection`
+  - 已补 `assembly purpose` guardrail，防止后续 heartbeat / review cadence / anomaly 信号误把普通 Supervisor turn 拉成治理厚上下文：
+    - `Supervisor` runtime 现在先判定本轮装配用途：
+      - `conversation`
+      - `project_assist`
+      - `governance_review`
+      - `portfolio_review`
+    - 普通聊天默认只允许轻量 review-memory：
+      - `conversation -> review memory cap = m1_execute`
+      - `project_assist -> review memory cap = m2_plan_review`
+    - `governance_review / portfolio_review` 仍按既有 `S-Tier ceiling` 决定，不被本地 purpose cap 额外截断。
+    - `purposeCapApplied` 与 `reviewMemoryCeilingHit` 已分离：
+      - `reviewMemoryCeilingHit` 继续只表达 `S-Tier ceiling`
+      - `purposeCapApplied` 单独表达“这次被用途边界压住了”
+    - `SupervisorMemoryAssemblySnapshot` / Memory Board 已新增 machine-readable explainability：
+      - `assembly_purpose`
+      - `purpose_scoped_review_memory_cap`
+      - `purpose_scoped_review_memory_cap_applied`
+    - 这一步固定了 heartbeat integration 的 runtime boundary：
+      - heartbeat / cadence / anomaly 后续只能把 Supervisor turn 推向 `governance_review`
+      - 不能直接接管普通 `conversation` 或 `project_assist` memory assembly
+  - 已继续把 `Review Memory Depth` 接成真正生效的 Supervisor 控制面：
+    - `XTerminalSettings` 新增 `supervisorReviewMemoryDepthProfile`，默认 `auto`，并完成 encode / decode / persist
+    - `SupervisorManager.composeSupervisorMemoryV1(...)` 现在会把用户配置传入 `resolveSupervisor(...)`
+    - `Supervisor Settings` 新增 `Review Memory Depth` section，并显示配置值与最近一次 runtime effective / ceiling explainability
+    - 当前仍保持：
+      - `S-Tier` 只提供 review-memory ceiling
+      - 真正 effective depth 仍由 resolver + focused project governance 决定
+      - 不改变 `Hub preferred / fail-closed / constitution injection / audit` 主链
+  - 已把 `xhub-role-aware-memory-serving-and-tier-coupling-v1.md` 的最小 runtime slice 接进 XT：
+    - 新增统一 resolver：
+      - `project_memory_policy`
+      - `supervisor_memory_policy`
+      - `memory_assembly_resolution`
+    - `Project AI` runtime 现在开始显式区分并记录：
+      - `configured / recommended / effective recent_project_dialogue_profile`
+      - `configured / recommended / effective project_context_depth`
+      - `a_tier_memory_ceiling`
+      - `project_memory_ceiling_hit`
+    - `Supervisor` runtime 现在开始显式区分并记录：
+      - `dominant_mode`
+      - `configured / recommended / effective supervisor_recent_raw_context_profile`
+      - `configured / recommended / effective review_memory_depth`
+      - `s_tier_review_memory_ceiling`
+      - `review_memory_ceiling_hit`
+    - `Project AI` 真正开始按 `A-Tier ceiling` clamp 实际 context depth / serving profile，而不再只是 UI 上有拨盘。
+    - `Supervisor` 真正开始按 focused project 的 `S-Tier ceiling` clamp review memory depth；`profile_floor` 也同步按 ceiling 收束，避免旧 strategic floor 在低 `S-Tier` 上制造伪 underfed。
+    - Doctor / diagnostics / board presentation 已同步暴露这组三值和 ceiling explainability，不再只显示单一 effective 值。
+  - 本轮定向验证通过：
+    - `swift test --filter 'XTRoleAwareMemoryPolicyTests|AXProjectContextAssemblyDiagnosticsTests|AXProjectContextAssemblyPresentationTests|SupervisorMemoryBoardPresentationTests|ChatSessionModelRecentContextTests'`
+    - `swift test --filter 'XTerminalSettingsSupervisorAssistantTests|XTRoleAwareMemoryPolicyTests|SupervisorMemoryBoardPresentationTests'`
+    - 由于主工作区存在并发写入 `SupervisorManager.swift` 的情况，本轮 purpose-guardrail 额外采用快照验证：
+      - snapshot: `/tmp/xt_memory_verify_snapshot`
+      - command: `swift test --scratch-path /tmp/xt_memory_verify_build --filter 'XTRoleAwareMemoryPolicyTests|SupervisorMemoryBoardPresentationTests'`
+      - result: `19 tests in 2 suites passed`
+  - 当前仍未做：
+    - 更完整的 doctor/export route-level aggregation
+    - 把更多 trigger dictionary 细化到 event-loop / coder stage 语义
+- 2026-03-27:
+  - 已补一段 runtime truth closure，专门收口 Supervisor 对 memory origin / constitution / recent raw context 这组问题的回答语义：
+    - 不再让远端模型自由解释“这些记忆是不是都来自 Hub”“X-宪章有没有生效”“现在能看到多少轮上下文”。
+    - 当前改成读取本地 runtime contract + `SupervisorMemoryAssemblySnapshot` 的 deterministic reply。
+  - 当前固定 truth：
+    - durable truth 目标仍是 `Hub Writer + Gate`
+    - 当前 Supervisor 记忆装配仍是 `Hub 快照 + 本地 overlay（快照拼接，非 durable 真相）`
+    - `X-宪章` 当前已生效，并以 `[L0_CONSTITUTION]` 注入
+    - recent raw context 硬底线固定 `8 pairs`
+    - 若 snapshot 可用，则直报最近一次真实带入 `rawWindowSelectedPairs`
+  - 已补验证：
+    - `swift test --filter SupervisorMemoryAwareConversationRoutingTests`
+    - `swift test --filter SupervisorFailureFormattingTests`
+    - `swift test --filter XTDoctorMemoryTruthClosureEvidenceTests`
+  - 这一步解决的是“运行时说真话”，不是“read-source 已经纯 Hub 化”：
+    - 当前 continuity lane 仍允许 XT local overlay / fallback
+    - `I7-D2` 继续负责把 handoff / doctor / fallback evidence 推到更完整的 Hub-first 收口
 - 2026-03-20:
   - 本包新冻结，目的不是再发明一套 memory，而是把已经写进协议、但还没做成硬保证的几件关键事补到 runtime：
     - `Conversation Continuity Floor` 从“意图”升级成“不可被 budget 吃掉的 contract”
@@ -288,7 +380,7 @@
 - `Recent Project Dialogue`
 - `Project Context Depth`
 
-都要独立于 `A-tier / S-tier / Heartbeat`
+都要独立于 `A-Tier / S-Tier / Heartbeat`
 
 ## 3) Ordered Implementation Slices
 

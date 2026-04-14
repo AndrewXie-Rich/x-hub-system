@@ -37,7 +37,7 @@ Module-level follow-ups:
 Memory and constitutional references:
 
 - `X_MEMORY.md`
-- `docs/xhub-constitution-l0-injection-v1.md`
+- `docs/memory-new/xhub-constitution-l0-injection-v2.md`
 - `docs/xhub-constitution-l1-guidance-v1.md`
 - `docs/xhub-constitution-policy-engine-checklist-v1.md`
 
@@ -134,6 +134,8 @@ Use these files for GitHub-facing wording and release packaging notes. They must
 ### `x-hub/`
 
 Owns trust, grants, policy enforcement, route control, audit, memory-backed constitutional guidance, and Hub-side runtime services.
+
+For memory control specifically, the user chooses which AI executes memory jobs in X-Hub, `Memory-Core` stays on the governed rule layer, and durable writes stay bounded to `Writer + Gate`.
 
 ### `x-terminal/`
 

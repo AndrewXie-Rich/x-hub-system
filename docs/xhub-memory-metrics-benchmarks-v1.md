@@ -1,10 +1,17 @@
 # X-Hub Memory Metrics & Benchmarks v1（可执行规范 / Draft）
 
 - Status: Draft
-- Updated: 2026-02-12
+- Updated: 2026-03-21
 - Purpose:
   1) 定义“速度/成本/精度/可用性/安全”等关键指标，便于把 X‑Hub 与 skills ecosystem / progressive-disclosure reference architecture 做可量化对比
   2) 给出可执行的 benchmark 方案（不依赖外网）
+
+补充边界：
+- 本文衡量的是 retrieval / maintenance / promotion / safety 的结果，不重新设计 memory 控制面。
+- 指标解释默认建立在当前冻结控制面之上：
+  - 用户在 X-Hub 选择 memory AI
+  - `Scheduler -> Worker -> Writer + Gate` 分层执行
+  - `Memory-Core` 只提供规则与门禁，不作为单体执行者计量
 
 ---
 

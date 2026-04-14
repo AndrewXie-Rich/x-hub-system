@@ -1,9 +1,37 @@
 import Foundation
 
+private let pendingToolApprovalStub =
+    "有待审批的工具操作（本页处理，或从首页打开对应项目）。"
+
+private func xtCompactJSONObject<T: Encodable>(_ value: T) -> Any? {
+    let encoder = JSONEncoder()
+    guard let data = try? encoder.encode(value) else { return nil }
+    return try? JSONSerialization.jsonObject(with: data)
+}
+
+private func xtCompactJSONString<T: Encodable>(_ value: T) -> String? {
+    let encoder = JSONEncoder()
+    guard let data = try? encoder.encode(value),
+          let text = String(data: data, encoding: .utf8) else {
+        return nil
+    }
+    return text
+}
+
+private func xtDecodeJSONString<T: Decodable>(_ type: T.Type, from jsonString: String?) -> T? {
+    guard let jsonString,
+          let data = jsonString.data(using: .utf8) else {
+        return nil
+    }
+    return try? JSONDecoder().decode(T.self, from: data)
+}
+
 @MainActor
 final class ChatSessionModel: ObservableObject {
     @Published var messages: [AXChatMessage] = []
     @Published var draft: String = ""
+    @Published var draftAttachments: [AXChatAttachment] = []
+    @Published var importContinuation: AXChatImportContinuationSuggestion? = nil
     @Published var isSending: Bool = false
     @Published var lastError: String? = nil
 
@@ -20,11 +48,24 @@ final class ChatSessionModel: ObservableObject {
     private var expandRecentOnceAfterLoad: Bool = false
     private var activeConfig: AXProjectConfig? = nil
     private var toolStreamStates: [String: ToolStreamState] = [:]
-    private var assistantProgressLinesByMessageID: [String: [String]] = [:]
-    private var assistantVisibleStreamingMessageIDs: Set<String> = []
+    @Published private var assistantProgressLinesByMessageID: [String: [String]] = [:]
+    @Published private var assistantVisibleStreamingMessageIDs: Set<String> = []
     private let sessionManager = AXSessionManager.shared
     private var boundSessionId: String? = nil
     private var currentRunId: String? = nil
+    typealias LLMGenerateOverrideForTesting = @Sendable (
+        AXRole,
+        String,
+        AXProjectPreferredModelRouteDecision
+    ) throws -> String
+    typealias ToolExecutionOverrideForTesting = @Sendable (ToolCall, URL) async throws -> ToolResult?
+    typealias ApprovedPendingToolFinalizeOverrideForTesting = @Sendable () -> String?
+    private static let llmGenerateTestingLock = NSLock()
+    private static let toolExecutionTestingLock = NSLock()
+    private static let approvedPendingToolFinalizeTestingLock = NSLock()
+    private static var llmGenerateOverrideForTesting: LLMGenerateOverrideForTesting?
+    private static var toolExecutionOverrideForTesting: ToolExecutionOverrideForTesting?
+    private static var approvedPendingToolFinalizeOverrideForTesting: ApprovedPendingToolFinalizeOverrideForTesting?
 
     private struct ToolStreamState {
         var header: String
@@ -43,11 +84,217 @@ final class ChatSessionModel: ObservableObject {
         Int64((Date().timeIntervalSince1970 * 1000.0).rounded())
     }
 
+    private func normalizedUserPayload(
+        draft: String,
+        attachments: [AXChatAttachment]
+    ) -> String? {
+        AXChatAttachmentSupport.normalizedUserPrompt(
+            draft: draft,
+            attachments: attachments
+        )
+    }
+
+    private func activeConversationAttachments() -> [AXChatAttachment] {
+        AXChatAttachmentSupport.merge(
+            existing: [],
+            resolved: messages.flatMap(\.attachments)
+        )
+    }
+
+    private func activeAttachmentReadableRoots() -> [URL] {
+        AXChatAttachmentSupport.readableRoots(for: activeConversationAttachments())
+    }
+
+    private func attachmentPromptSummary(
+        currentTurnAttachments: [AXChatAttachment],
+        projectRoot: URL
+    ) async -> String {
+        let previewOverrides = await AXChatAttachmentLocalModelPreview.previewOverrides(
+            for: currentTurnAttachments
+        )
+        let summary = AXChatAttachmentSupport.promptSummary(
+            currentTurnAttachments: currentTurnAttachments,
+            activeAttachments: activeConversationAttachments(),
+            projectRoot: projectRoot,
+            previewOverrides: previewOverrides
+        )
+        let heading = "Attachment Context:\n"
+        if summary.hasPrefix(heading) {
+            return String(summary.dropFirst(heading.count))
+        }
+        return summary
+    }
+
+    private func currentTurnMultimodalInputSummary(
+        userText: String,
+        currentTurnAttachments: [AXChatAttachment]
+    ) async -> String {
+        await AXChatTurnMultimodalInput.summary(
+            userText: userText,
+            attachments: currentTurnAttachments
+        ) ?? ""
+    }
+
+    func handleDroppedFiles(_ urls: [URL], ctx: AXProjectContext) {
+        let resolved = AXChatAttachmentSupport.resolveDroppedURLs(
+            urls,
+            projectRoot: ctx.root
+        )
+        guard !resolved.isEmpty else { return }
+        draftAttachments = AXChatAttachmentSupport.merge(
+            existing: draftAttachments,
+            resolved: resolved
+        )
+        lastError = nil
+    }
+
+    func removeDraftAttachment(_ attachment: AXChatAttachment) {
+        draftAttachments.removeAll { $0.id == attachment.id }
+        refreshImportContinuation()
+    }
+
+    func importDroppedFilesToProject(_ urls: [URL], ctx: AXProjectContext) {
+        let resolved = AXChatAttachmentSupport.resolveDroppedURLs(
+            urls,
+            projectRoot: ctx.root
+        )
+        guard !resolved.isEmpty else { return }
+
+        let workspaceAttachments = resolved.filter { !$0.isReadOnlyExternal }
+        if !workspaceAttachments.isEmpty {
+            draftAttachments = AXChatAttachmentSupport.merge(
+                existing: draftAttachments,
+                resolved: workspaceAttachments
+            )
+        }
+
+        let externalAttachments = resolved.filter(\.isReadOnlyExternal)
+        guard !externalAttachments.isEmpty else {
+            lastError = nil
+            return
+        }
+
+        _ = importAttachmentsToProject(externalAttachments, ctx: ctx)
+    }
+
+    func importAttachmentToProject(
+        _ attachment: AXChatAttachment,
+        ctx: AXProjectContext
+    ) {
+        _ = importAttachmentsToProject([attachment], ctx: ctx)
+    }
+
+    func importAllExternalDraftAttachments(ctx: AXProjectContext) {
+        let pending = draftAttachments.filter(\.isReadOnlyExternal)
+        guard !pending.isEmpty else { return }
+        _ = importAttachmentsToProject(pending, ctx: ctx)
+    }
+
+    func applyImportContinuationToDraft() {
+        guard let importContinuation else { return }
+        draft = AXChatAttachmentSupport.draftApplyingImportContinuation(
+            importContinuation,
+            existingDraft: draft
+        )
+        self.importContinuation = nil
+    }
+
+    func dismissImportContinuation() {
+        importContinuation = nil
+    }
+
+    @discardableResult
+    private func importAttachmentsToProject(
+        _ attachments: [AXChatAttachment],
+        ctx: AXProjectContext
+    ) -> [AXChatAttachmentImportResult] {
+        var importedResults: [AXChatAttachmentImportResult] = []
+        var failures: [String] = []
+
+        for attachment in attachments {
+            do {
+                let result = try AXChatAttachmentSupport.importAttachment(attachment, into: ctx.root)
+                draftAttachments.removeAll {
+                    PathGuard.resolve(URL(fileURLWithPath: $0.path)).path ==
+                        PathGuard.resolve(URL(fileURLWithPath: attachment.path)).path
+                }
+                draftAttachments = AXChatAttachmentSupport.merge(
+                    existing: draftAttachments,
+                    resolved: [result.importedAttachment]
+                )
+                AXProjectStore.appendRawLog(
+                    [
+                        "type": "attachment_import",
+                        "created_at": Date().timeIntervalSince1970,
+                        "source_path": result.sourceAttachment.path,
+                        "destination_path": result.destinationURL.path,
+                        "kind": result.sourceAttachment.kind.rawValue,
+                        "scope": result.sourceAttachment.scope.rawValue,
+                    ],
+                    for: ctx
+                )
+                importedResults.append(result)
+            } catch {
+                failures.append("\(attachment.displayName)：\(error.localizedDescription)")
+            }
+        }
+
+        if let notice = AXChatAttachmentSupport.importSuccessNotice(results: importedResults) {
+            _ = appendLocalAssistantNotice(
+                notice,
+                ctx: ctx
+            )
+        }
+
+        importContinuation = AXChatAttachmentSupport.importContinuationSuggestion(
+            results: importedResults,
+            projectRoot: ctx.root
+        )
+
+        if let firstFailure = failures.first {
+            lastError = firstFailure
+        } else {
+            lastError = nil
+        }
+
+        return importedResults
+    }
+
+    private func refreshImportContinuation() {
+        guard let importContinuation else { return }
+        guard importContinuation.isRelevant(to: draftAttachments) else {
+            self.importContinuation = nil
+            return
+        }
+    }
+
+    @discardableResult
+    private static func withLLMGenerateTestingLock<T>(_ body: () -> T) -> T {
+        llmGenerateTestingLock.lock()
+        defer { llmGenerateTestingLock.unlock() }
+        return body()
+    }
+
+    @discardableResult
+    private static func withToolExecutionTestingLock<T>(_ body: () -> T) -> T {
+        toolExecutionTestingLock.lock()
+        defer { toolExecutionTestingLock.unlock() }
+        return body()
+    }
+
+    @discardableResult
+    private static func withApprovedPendingToolFinalizeTestingLock<T>(_ body: () -> T) -> T {
+        approvedPendingToolFinalizeTestingLock.lock()
+        defer { approvedPendingToolFinalizeTestingLock.unlock() }
+        return body()
+    }
+
     private struct ToolFlowState {
         var ctx: AXProjectContext
         var memory: AXMemory?
         var config: AXProjectConfig?
         var userText: String
+        var currentTurnAttachments: [AXChatAttachment] = []
         var runStartedAtMs: Int64
         var step: Int
         var toolResults: [ToolResult]
@@ -72,6 +319,14 @@ final class ChatSessionModel: ObservableObject {
         var longtermMode: String?
         var retrievalAvailable: Bool?
         var fulltextNotLoaded: Bool?
+        var freshness: String? = nil
+        var cacheHit: Bool? = nil
+        var remoteSnapshotCacheScope: String? = nil
+        var remoteSnapshotCachedAtMs: Int64? = nil
+        var remoteSnapshotAgeMs: Int? = nil
+        var remoteSnapshotTTLRemainingMs: Int? = nil
+        var remoteSnapshotCachePosture: String? = nil
+        var remoteSnapshotInvalidationReason: String? = nil
         var usedTokens: Int?
         var budgetTokens: Int?
         var truncatedLayers: [String]
@@ -113,40 +368,311 @@ messages:
     }
 
     private struct ProjectPromptExplainabilityDiagnostics {
+        var roleAwareMemoryMode: String
+        var projectMemoryResolutionTrigger: String
+        var configuredRecentProjectDialogueProfile: String
+        var recommendedRecentProjectDialogueProfile: String
+        var effectiveRecentProjectDialogueProfile: String
         var recentProjectDialogueProfile: String
         var recentProjectDialogueSelectedPairs: Int
         var recentProjectDialogueFloorPairs: Int
         var recentProjectDialogueFloorSatisfied: Bool
         var recentProjectDialogueSource: String
         var recentProjectDialogueLowSignalDropped: Int
+        var configuredProjectContextDepth: String
+        var recommendedProjectContextDepth: String
+        var effectiveProjectContextDepth: String
         var projectContextDepth: String
         var effectiveProjectServingProfile: String
+        var aTierMemoryCeiling: String
+        var projectMemoryCeilingHit: Bool
         var workflowPresent: Bool
         var executionEvidencePresent: Bool
         var reviewGuidancePresent: Bool
         var crossLinkHintsSelected: Int
         var personalMemoryExcludedReason: String
+        var projectMemoryPolicy: XTProjectMemoryPolicySnapshot
+        var policyMemoryAssemblyResolution: XTMemoryAssemblyResolution? = nil
+        var memoryAssemblyResolution: XTMemoryAssemblyResolution
+        var memoryAssemblyIssueCodes: [String] = []
+        var memoryResolutionProjectionDriftDetail: String? = nil
+        var heartbeatDigestWorkingSetPresent: Bool = false
+        var heartbeatDigestVisibility: String = ""
+        var heartbeatDigestReasonCodes: [String] = []
+        var automationContextSource: String = ""
+        var automationRunID: String? = nil
+        var automationEffectiveRunID: String? = nil
+        var automationRunState: String? = nil
+        var automationAttempt: Int? = nil
+        var automationRetryAfterSeconds: Int? = nil
+        var automationDeliveryClosureSource: String? = nil
+        var automationDeliveryRef: String? = nil
+        var automationRecoverySelection: String? = nil
+        var automationRecoveryReason: String? = nil
+        var automationRecoveryDecision: String? = nil
+        var automationRecoveryHoldReason: String? = nil
+        var automationRecoveryRetryAfterRemainingSeconds: Int? = nil
+        var automationLastRecoveryDecision: String? = nil
+        var automationLastRecoveryMode: String? = nil
+        var automationCurrentStepPresent: Bool = false
+        var automationCurrentStepID: String? = nil
+        var automationCurrentStepTitle: String? = nil
+        var automationCurrentStepState: String? = nil
+        var automationCurrentStepSummary: String? = nil
+        var automationVerificationPresent: Bool = false
+        var automationVerificationRequired: Bool? = nil
+        var automationVerificationExecuted: Bool? = nil
+        var automationVerificationCommandCount: Int? = nil
+        var automationVerificationPassedCommandCount: Int? = nil
+        var automationVerificationHoldReason: String? = nil
+        var automationVerificationContract: XTAutomationVerificationContract? = nil
+        var automationBlockerPresent: Bool = false
+        var automationBlockerCode: String? = nil
+        var automationBlockerSummary: String? = nil
+        var automationBlockerStage: String? = nil
+        var automationRetryReasonPresent: Bool = false
+        var automationRetryReasonCode: String? = nil
+        var automationRetryReasonSummary: String? = nil
+        var automationRetryReasonStrategy: String? = nil
+        var automationRetryVerificationContract: XTAutomationVerificationContract? = nil
 
         var usageFields: [String: Any] {
-            [
+            var fields: [String: Any] = [
+                "role_aware_memory_mode": roleAwareMemoryMode,
+                "project_memory_resolution_trigger": projectMemoryResolutionTrigger,
+                "configured_recent_project_dialogue_profile": configuredRecentProjectDialogueProfile,
+                "recommended_recent_project_dialogue_profile": recommendedRecentProjectDialogueProfile,
+                "effective_recent_project_dialogue_profile": effectiveRecentProjectDialogueProfile,
                 "recent_project_dialogue_profile": recentProjectDialogueProfile,
                 "recent_project_dialogue_selected_pairs": recentProjectDialogueSelectedPairs,
                 "recent_project_dialogue_floor_pairs": recentProjectDialogueFloorPairs,
                 "recent_project_dialogue_floor_satisfied": recentProjectDialogueFloorSatisfied,
                 "recent_project_dialogue_source": recentProjectDialogueSource,
                 "recent_project_dialogue_low_signal_dropped": recentProjectDialogueLowSignalDropped,
+                "configured_project_context_depth": configuredProjectContextDepth,
+                "recommended_project_context_depth": recommendedProjectContextDepth,
+                "effective_project_context_depth": effectiveProjectContextDepth,
                 "project_context_depth": projectContextDepth,
                 "effective_project_serving_profile": effectiveProjectServingProfile,
+                "a_tier_memory_ceiling": aTierMemoryCeiling,
+                "project_memory_ceiling_hit": projectMemoryCeilingHit,
                 "workflow_present": workflowPresent,
                 "execution_evidence_present": executionEvidencePresent,
                 "review_guidance_present": reviewGuidancePresent,
                 "cross_link_hints_selected": crossLinkHintsSelected,
                 "personal_memory_excluded_reason": personalMemoryExcludedReason,
             ]
+            if let policyObject = xtCompactJSONObject(projectMemoryPolicy) {
+                fields["project_memory_policy"] = policyObject
+            }
+            if let policyResolutionObject = policyMemoryAssemblyResolution.flatMap(xtCompactJSONObject) {
+                fields["project_memory_policy_resolution"] = policyResolutionObject
+            }
+            if let resolutionObject = xtCompactJSONObject(memoryAssemblyResolution) {
+                fields["memory_assembly_resolution"] = resolutionObject
+            }
+            if !memoryAssemblyIssueCodes.isEmpty {
+                fields["project_memory_issue_codes"] = memoryAssemblyIssueCodes
+            }
+            if let memoryResolutionProjectionDriftDetail,
+               !memoryResolutionProjectionDriftDetail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                fields["project_memory_issue_memory_resolution_projection_drift"] = memoryResolutionProjectionDriftDetail
+            }
+            fields["project_memory_heartbeat_digest_present"] = heartbeatDigestWorkingSetPresent
+            if !heartbeatDigestVisibility.isEmpty {
+                fields["project_memory_heartbeat_digest_visibility"] = heartbeatDigestVisibility
+            }
+            if !heartbeatDigestReasonCodes.isEmpty {
+                fields["project_memory_heartbeat_digest_reason_codes"] = heartbeatDigestReasonCodes
+            }
+            fields["project_memory_automation_current_step_present"] = automationCurrentStepPresent
+            fields["project_memory_automation_verification_present"] = automationVerificationPresent
+            fields["project_memory_automation_blocker_present"] = automationBlockerPresent
+            fields["project_memory_automation_retry_reason_present"] = automationRetryReasonPresent
+            if !automationContextSource.isEmpty {
+                fields["project_memory_automation_context_source"] = automationContextSource
+            }
+            if let automationRunID {
+                fields["project_memory_automation_run_id"] = automationRunID
+            }
+            if let automationEffectiveRunID {
+                fields["project_memory_automation_effective_run_id"] = automationEffectiveRunID
+            }
+            if let automationRunState {
+                fields["project_memory_automation_run_state"] = automationRunState
+            }
+            if let automationAttempt {
+                fields["project_memory_automation_attempt"] = automationAttempt
+            }
+            if let automationRetryAfterSeconds {
+                fields["project_memory_automation_retry_after_seconds"] = automationRetryAfterSeconds
+            }
+            if let automationDeliveryClosureSource {
+                fields["project_memory_automation_delivery_closure_source"] = automationDeliveryClosureSource
+            }
+            if let automationDeliveryRef,
+               !automationDeliveryRef.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                fields["project_memory_automation_delivery_ref"] = automationDeliveryRef
+            }
+            if let automationRecoverySelection {
+                fields["project_memory_automation_recovery_selection"] = automationRecoverySelection
+            }
+            if let automationRecoveryReason {
+                fields["project_memory_automation_recovery_reason"] = automationRecoveryReason
+            }
+            if let automationRecoveryDecision {
+                fields["project_memory_automation_recovery_decision"] = automationRecoveryDecision
+            }
+            if let automationRecoveryHoldReason,
+               !automationRecoveryHoldReason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                fields["project_memory_automation_recovery_hold_reason"] = automationRecoveryHoldReason
+            }
+            if let automationRecoveryRetryAfterRemainingSeconds {
+                fields["project_memory_automation_recovery_retry_after_remaining_seconds"] = automationRecoveryRetryAfterRemainingSeconds
+            }
+            if let automationLastRecoveryDecision {
+                fields["project_memory_automation_last_recovery_decision"] = automationLastRecoveryDecision
+            }
+            if let automationLastRecoveryMode {
+                fields["project_memory_automation_last_recovery_mode"] = automationLastRecoveryMode
+            }
+            if let automationCurrentStepID {
+                fields["project_memory_automation_current_step_id"] = automationCurrentStepID
+            }
+            if let automationCurrentStepTitle {
+                fields["project_memory_automation_current_step_title"] = automationCurrentStepTitle
+            }
+            if let automationCurrentStepState {
+                fields["project_memory_automation_current_step_state"] = automationCurrentStepState
+            }
+            if let automationCurrentStepSummary {
+                fields["project_memory_automation_current_step_summary"] = automationCurrentStepSummary
+            }
+            if let automationVerificationRequired {
+                fields["project_memory_automation_verification_required"] = automationVerificationRequired
+            }
+            if let automationVerificationExecuted {
+                fields["project_memory_automation_verification_executed"] = automationVerificationExecuted
+            }
+            if let automationVerificationCommandCount {
+                fields["project_memory_automation_verification_command_count"] = automationVerificationCommandCount
+            }
+            if let automationVerificationPassedCommandCount {
+                fields["project_memory_automation_verification_passed_command_count"] = automationVerificationPassedCommandCount
+            }
+            if let automationVerificationHoldReason,
+               !automationVerificationHoldReason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                fields["project_memory_automation_verification_hold_reason"] = automationVerificationHoldReason
+            }
+            if let automationVerificationContractObject = automationVerificationContract.flatMap(xtCompactJSONObject) {
+                fields["project_memory_automation_verification_contract"] = automationVerificationContractObject
+            }
+            if let automationBlockerCode {
+                fields["project_memory_automation_blocker_code"] = automationBlockerCode
+            }
+            if let automationBlockerSummary {
+                fields["project_memory_automation_blocker_summary"] = automationBlockerSummary
+            }
+            if let automationBlockerStage {
+                fields["project_memory_automation_blocker_stage"] = automationBlockerStage
+            }
+            if let automationRetryReasonCode {
+                fields["project_memory_automation_retry_reason_code"] = automationRetryReasonCode
+            }
+            if let automationRetryReasonSummary {
+                fields["project_memory_automation_retry_reason_summary"] = automationRetryReasonSummary
+            }
+            if let automationRetryReasonStrategy {
+                fields["project_memory_automation_retry_reason_strategy"] = automationRetryReasonStrategy
+            }
+            if let automationRetryVerificationContractObject = automationRetryVerificationContract.flatMap(xtCompactJSONObject) {
+                fields["project_memory_automation_retry_verification_contract"] = automationRetryVerificationContractObject
+            }
+            return fields
         }
     }
 
+    private struct ProjectHeartbeatDigestWorkingSetExplainability {
+        var present: Bool
+        var visibility: String
+        var reasonCodes: [String]
+    }
+
+    private struct ProjectAutomationMemoryContext {
+        var source: String
+        var runID: String?
+        var effectiveRunID: String?
+        var runState: XTAutomationRunState?
+        var attempt: Int?
+        var retryAfterSeconds: Int?
+        var deliveryClosureSource: XTAutomationDeliveryClosureProjectionSource?
+        var deliveryRef: String?
+        var recoveryState: XTAutomationProjectRecoveryState?
+        var lastRecoveryDecision: XTAutomationRestartRecoveryAction?
+        var lastRecoveryMode: XTAutomationRestartRecoveryMode?
+        var currentStepID: String?
+        var currentStepTitle: String?
+        var currentStepState: XTAutomationRunStepState?
+        var currentStepSummary: String?
+        var verificationReport: XTAutomationVerificationReport?
+        var verificationContract: XTAutomationVerificationContract?
+        var blocker: XTAutomationBlockerDescriptor?
+        var retryReasonDescriptor: XTAutomationRetryReasonDescriptor?
+        var retryVerificationContract: XTAutomationVerificationContract?
+
+        var hasCurrentStep: Bool {
+            currentStepState != nil || xtAutomationFirstNonEmpty([
+                currentStepID,
+                currentStepTitle,
+                currentStepSummary,
+            ]) != nil
+        }
+
+        var hasVerificationState: Bool {
+            verificationReport != nil
+        }
+
+        var verificationNeedsAttention: Bool {
+            guard let verificationReport else { return false }
+            return !verificationReport.ok
+        }
+
+        var hasBlocker: Bool {
+            blocker != nil
+        }
+
+        var hasRetryReason: Bool {
+            retryReasonDescriptor != nil
+        }
+    }
+
+    private static let projectTrackedServingObjectsForExplainability: [String] = [
+        "recent_project_dialogue_window",
+        "focused_project_anchor_pack",
+        "current_step",
+        "verification_state",
+        "blocker_state",
+        "retry_reason",
+        "active_workflow",
+        "selected_cross_link_hints",
+        "longterm_outline",
+        "execution_evidence",
+        "guidance",
+    ]
+
+    private static let projectExplainabilityObservablePlaneOrder: [String] = [
+        "project_dialogue_plane",
+        "project_anchor_plane",
+        "execution_state_plane",
+        "workflow_plane",
+        "cross_link_plane",
+        "longterm_plane",
+        "evidence_plane",
+        "guidance_plane",
+    ]
+
     private struct ProjectPromptContextAssembly {
+        var memoryPolicy: XTProjectMemoryPolicy
         var recentDialogueSelection: ProjectRecentDialogueSelection
         var contextDepthProfile: AXProjectContextDepthProfile
         var effectiveServingProfile: XTMemoryServingProfile?
@@ -156,6 +682,7 @@ messages:
         var longtermOutlineText: String
         var contextRefsText: String
         var evidencePackText: String
+        var heartbeatWorkingSetText: String
         var diagnostics: ProjectPromptExplainabilityDiagnostics
     }
 
@@ -258,7 +785,25 @@ messages:
     var shouldShowThinkingIndicator: Bool {
         guard isSending else { return false }
         guard let last = messages.last, last.role == .assistant else { return true }
+        if assistantThinkingPresentation(for: last) != nil {
+            return false
+        }
         return last.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    func assistantThinkingPresentation(for message: AXChatMessage) -> XTStreamingPlaceholderPresentation? {
+        guard message.role == .assistant else { return nil }
+        guard message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        guard !assistantVisibleStreamingMessageIDs.contains(message.id) else { return nil }
+
+        let lines = assistantProgressLinesByMessageID[message.id] ?? []
+        let isActivePendingAssistant = isSending && messages.last?.id == message.id
+        guard !lines.isEmpty || isActivePendingAssistant else { return nil }
+
+        return XTStreamingPlaceholderSupport.presentation(
+            from: lines.last,
+            fallbackTitle: "准备回复"
+        )
     }
 
     func cancel() {
@@ -282,7 +827,7 @@ messages:
         guard FileManager.default.fileExists(atPath: ctx.rawLogURL.path) else { return }
         guard let data = try? Data(contentsOf: ctx.rawLogURL), let s = String(data: data, encoding: .utf8) else { return }
 
-        var turns: [(Double, String, String)] = []
+        var turns: [(Double, String, String, [AXChatAttachment])] = []
         for line in s.split(separator: "\n", omittingEmptySubsequences: true) {
             guard let ld = line.data(using: .utf8) else { continue }
             guard let obj = try? JSONSerialization.jsonObject(with: ld) as? [String: Any] else { continue }
@@ -290,12 +835,29 @@ messages:
             let ts = (obj["created_at"] as? Double) ?? 0
             let u = (obj["user"] as? String) ?? ""
             let a = (obj["assistant"] as? String) ?? ""
-            turns.append((ts, u, a))
+            let attachments: [AXChatAttachment]
+            if let rawAttachments = obj["attachments"],
+               JSONSerialization.isValidJSONObject(rawAttachments),
+               let attachmentData = try? JSONSerialization.data(withJSONObject: rawAttachments) {
+                attachments = (try? JSONDecoder().decode([AXChatAttachment].self, from: attachmentData)) ?? []
+            } else {
+                attachments = []
+            }
+            turns.append((ts, u, a, attachments))
         }
         turns.sort { $0.0 < $1.0 }
         let tail = turns.suffix(max(0, limit))
-        for (ts, u, a) in tail {
-            if !u.isEmpty { messages.append(AXChatMessage(role: .user, content: u, createdAt: ts)) }
+        for (ts, u, a, attachments) in tail {
+            if !u.isEmpty {
+                messages.append(
+                    AXChatMessage(
+                        role: .user,
+                        content: u,
+                        createdAt: ts,
+                        attachments: attachments
+                    )
+                )
+            }
             if !a.isEmpty { messages.append(AXChatMessage(role: .assistant, content: a, createdAt: ts)) }
         }
     }
@@ -323,6 +885,7 @@ messages:
     private func resetSessionState() {
         messages = []
         draft = ""
+        draftAttachments = []
         isSending = false
         lastError = nil
         currentReqId = nil
@@ -461,6 +1024,31 @@ messages:
         }
     }
 
+    private func pendingToolApprovalAssistantStub(
+        ctx: AXProjectContext,
+        calls: [ToolCall],
+        isRemaining: Bool = false
+    ) -> String {
+        guard !calls.isEmpty else { return pendingToolApprovalStub }
+
+        var activityByRequestID: [String: ProjectSkillActivityItem] = [:]
+        for call in calls {
+            guard let item = AXProjectSkillActivityStore.loadEvents(
+                ctx: ctx,
+                requestID: call.id
+            ).last?.item else {
+                continue
+            }
+            activityByRequestID[call.id] = item
+        }
+
+        return XTPendingApprovalPresentation.pendingBatchAssistantStub(
+            calls: calls,
+            activityByRequestID: activityByRequestID,
+            isRemaining: isRemaining
+        )
+    }
+
     private func recordRunningTools(ctx: AXProjectContext, toolCalls: [ToolCall], reason: String? = nil) {
         let now = Date().timeIntervalSince1970
         let runID = ensureRunID()
@@ -541,6 +1129,7 @@ messages:
             step: flow.step,
             toolResults: cappedResults,
             runStartedAtMs: flow.runStartedAtMs,
+            currentTurnAttachments: flow.currentTurnAttachments,
             dirtySinceVerify: flow.dirtySinceVerify,
             verifyRunIndex: flow.verifyRunIndex,
             repairAttemptsUsed: flow.repairAttemptsUsed,
@@ -577,13 +1166,33 @@ messages:
     private func restorePendingToolApprovalIfAny(ctx: AXProjectContext) {
         guard let pending = AXPendingActionsStore.pendingToolApproval(for: ctx) else { return }
         guard let userText = pending.userText, !userText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        let stub = (pending.assistantStub ?? "有待审批的工具操作（本页或 Home 可处理）。").trimmingCharacters(in: .whitespacesAndNewlines)
+        let stub = (pending.assistantStub ?? pendingToolApprovalStub)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let calls = pending.toolCalls ?? []
         guard !calls.isEmpty else { return }
         guard let state = pending.flow else { return }
+        let projectSkillDispatchesByCallID = projectSkillDispatchesForToolCalls(
+            ctx: ctx,
+            toolCalls: calls
+        )
+        let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+        let projectName = currentProjectDisplayName(ctx: ctx)
+        refreshResolvedSkillsCacheSynchronouslyIfPossible(
+            ctx: ctx,
+            projectId: projectId,
+            projectName: projectName,
+            remoteStateDirPath: projectSkillDispatchesByCallID.values.compactMap(\.hubStateDirPath).first
+        )
 
         // Reconstruct a synthetic tail so the transcript doesn't "lose" the user's last input.
-        messages.append(AXChatMessage(role: .user, content: userText, createdAt: pending.createdAt))
+        messages.append(
+            AXChatMessage(
+                role: .user,
+                content: userText,
+                createdAt: pending.createdAt,
+                attachments: state.currentTurnAttachments
+            )
+        )
         let assistantIndex = messages.count
         messages.append(AXChatMessage(role: .assistant, tag: lastCoderProviderTag.isEmpty ? nil : lastCoderProviderTag, content: stub, createdAt: pending.createdAt))
 
@@ -594,6 +1203,7 @@ messages:
             memory: mem,
             config: cfg,
             userText: userText,
+            currentTurnAttachments: state.currentTurnAttachments,
             runStartedAtMs: state.runStartedAtMs,
             step: state.step,
             toolResults: state.toolResults,
@@ -673,20 +1283,39 @@ messages:
         activeRouter = router
         activeConfig = config
         lastCoderProviderTag = shortProviderTag(router.provider(for: .coder).displayName)
-        let userText = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !userText.isEmpty else { return }
+        let currentTurnAttachments = draftAttachments
+        guard let userText = normalizedUserPayload(
+            draft: draft,
+            attachments: currentTurnAttachments
+        ) else {
+            return
+        }
         let protectedInput = XTSecretProtection.analyzeUserInput(userText)
         let userDisplayText = protectedInput.shouldProtect ? protectedInput.sanitizedText : userText
         let userTextForPersistence = protectedInput.shouldProtect ? protectedInput.sanitizedText : userText
 
         draft = ""
+        draftAttachments = []
+        importContinuation = nil
         lastError = nil
         isSending = true
 
         let userCreatedAt = Date().timeIntervalSince1970
-        messages.append(AXChatMessage(role: .user, content: userDisplayText, createdAt: userCreatedAt))
+        messages.append(
+            AXChatMessage(
+                role: .user,
+                content: userDisplayText,
+                createdAt: userCreatedAt,
+                attachments: currentTurnAttachments
+            )
+        )
         // Keep a crash-resilient short-term buffer so prompt assembly doesn't depend on UI state.
-        AXRecentContextStore.appendUserMessage(ctx: ctx, text: userTextForPersistence, createdAt: userCreatedAt)
+        AXRecentContextStore.appendUserMessage(
+            ctx: ctx,
+            text: userTextForPersistence,
+            createdAt: userCreatedAt,
+            attachments: currentTurnAttachments
+        )
         touchProjectActivity(ctx: ctx, eventAt: userCreatedAt)
         let assistantIndex = messages.count
         messages.append(AXChatMessage(role: .assistant, tag: lastCoderProviderTag, content: ""))
@@ -704,7 +1333,8 @@ messages:
                 ctx: ctx,
                 userText: userTextForPersistence,
                 assistantText: XTSecretProtection.blockedInputReply(for: protectedInput),
-                assistantIndex: assistantIndex
+                assistantIndex: assistantIndex,
+                attachments: currentTurnAttachments
             )
             return
         }
@@ -757,6 +1387,7 @@ messages:
                 memory: memory,
                 config: config,
                 userText: userText,
+                currentTurnAttachments: currentTurnAttachments,
                 runStartedAtMs: currentEpochMs(),
                 step: 0,
                 toolResults: [],
@@ -791,6 +1422,14 @@ messages:
             let projectSkillDispatchesByCallID = projectSkillDispatchesForToolCalls(
                 ctx: flow.ctx,
                 toolCalls: calls
+            )
+            let projectId = AXProjectRegistryStore.projectId(forRoot: flow.ctx.root)
+            let projectName = currentProjectDisplayName(ctx: flow.ctx)
+            refreshResolvedSkillsCacheSynchronouslyIfPossible(
+                ctx: flow.ctx,
+                projectId: projectId,
+                projectName: projectName,
+                remoteStateDirPath: projectSkillDispatchesByCallID.values.compactMap(\.hubStateDirPath).first
             )
 
             let plan = await xtApprovedToolExecutionPlan(
@@ -874,6 +1513,14 @@ messages:
                 ctx: flow.ctx,
                 toolCalls: approvedCalls
             )
+            let projectId = AXProjectRegistryStore.projectId(forRoot: flow.ctx.root)
+            let projectName = currentProjectDisplayName(ctx: flow.ctx)
+            refreshResolvedSkillsCacheSynchronouslyIfPossible(
+                ctx: flow.ctx,
+                projectId: projectId,
+                projectName: projectName,
+                remoteStateDirPath: projectSkillDispatchesByCallID.values.compactMap(\.hubStateDirPath).first
+            )
 
             let plan = await xtApprovedToolExecutionPlan(
                 calls: approvedCalls,
@@ -935,11 +1582,21 @@ messages:
 
             if remainingCalls.isEmpty {
                 AXPendingActionsStore.clearToolApproval(for: flow.ctx)
+                if let assistantText = Self.withApprovedPendingToolFinalizeTestingLock({
+                    Self.approvedPendingToolFinalizeOverrideForTesting
+                }).flatMap({ $0() }) {
+                    finalizeToolFlowTurn(flow: updated, assistantText: assistantText)
+                    return
+                }
                 await runToolLoop(flow: updated, router: router)
                 return
             }
 
-            let assistantStub = "仍有待审批的工具操作（本页或 Home 可处理）。"
+            let assistantStub = pendingToolApprovalAssistantStub(
+                ctx: flow.ctx,
+                calls: remainingCalls,
+                isRemaining: true
+            )
             pendingToolCalls = remainingCalls
             pendingFlow = updated
             if updated.assistantIndex < messages.count {
@@ -1039,7 +1696,11 @@ messages:
             return
         }
 
-        let assistantStub = "仍有待审批的工具操作（本页或 Home 可处理）。"
+        let assistantStub = pendingToolApprovalAssistantStub(
+            ctx: flow.ctx,
+            calls: remainingCalls,
+            isRemaining: true
+        )
         if flow.assistantIndex < messages.count {
             messages[flow.assistantIndex].content = assistantStub
         }
@@ -1099,12 +1760,21 @@ messages:
             userText: "retry skill activity \(item.skillID.isEmpty ? item.requestID : item.skillID)"
         )
 
-        let dispatch = XTProjectMappedSkillDispatch(
-            skillId: item.skillID,
-            toolCall: call,
-            toolName: item.toolName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? call.tool.rawValue
-                : item.toolName
+        guard let dispatch = AXProjectSkillActivityStore.dispatch(
+            for: item,
+            requestID: retryRequestID
+        ) else {
+            lastError = "无法从这条技能活动恢复完整的 governed dispatch 元数据。"
+            isSending = false
+            return
+        }
+        let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+        let projectName = currentProjectDisplayName(ctx: ctx)
+        refreshResolvedSkillsCacheSynchronouslyIfPossible(
+            ctx: ctx,
+            projectId: projectId,
+            projectName: projectName,
+            remoteStateDirPath: dispatch.hubStateDirPath
         )
         recordProjectSkillResolvedDispatches(
             ctx: ctx,
@@ -1174,7 +1844,10 @@ messages:
                         dispatchesByCallID: [call.id: dispatch],
                         toolCalls: [call]
                     )
-                    let assistantStub = "该技能重试需要你的审批（本页或 Home 可处理）。"
+                    let assistantStub = pendingToolApprovalAssistantStub(
+                        ctx: ctx,
+                        calls: [call]
+                    )
                     pendingToolCalls = [call]
                     pendingFlow = flow
                     if assistantIndex < messages.count {
@@ -1202,7 +1875,10 @@ messages:
                     dispatchesByCallID: [call.id: dispatch],
                     toolCalls: [call]
                 )
-                let assistantStub = "该技能重试需要你的审批（本页或 Home 可处理）。"
+                let assistantStub = pendingToolApprovalAssistantStub(
+                    ctx: ctx,
+                    calls: [call]
+                )
                 pendingToolCalls = [call]
                 pendingFlow = flow
                 if assistantIndex < messages.count {
@@ -1311,23 +1987,16 @@ messages:
                         config: flow.config,
                         userText: userText,
                         toolResults: flow.toolResults,
+                        currentTurnAttachments: flow.currentTurnAttachments,
                         safePointState: safePointExecutionState(for: flow)
                     )
                     flow.lastPromptVisibleGuidanceInjectionId = promptBuild.visiblePendingGuidanceInjectionId
                     let prompt = promptBuild.prompt
                     recordAwaitingModel(ctx: ctx, detail: "awaiting finalize_only response")
-                    let finalizeOnlyUsageFields: [String: Any] = [
-                        "memory_v1_source": promptBuild.memory.source,
-                        "memory_v1_longterm_mode": promptBuild.memory.longtermMode as Any,
-                        "memory_v1_retrieval_available": promptBuild.memory.retrievalAvailable as Any,
-                        "memory_v1_fulltext_not_loaded": promptBuild.memory.fulltextNotLoaded as Any,
-                        "memory_v1_tokens_est": promptBuild.memory.usedTokens as Any,
-                        "memory_v1_budget_tokens": promptBuild.memory.budgetTokens as Any,
-                        "memory_v1_truncated_layers": promptBuild.memory.truncatedLayers,
-                        "memory_v1_redacted_items": promptBuild.memory.redactedItems as Any,
-                        "memory_v1_private_drops": promptBuild.memory.privateDrops as Any,
-                        "prompt_compact_mode": true,
-                    ]
+                    let finalizeOnlyUsageFields = projectMemoryUsageFields(
+                        from: promptBuild.memory,
+                        promptCompactMode: true
+                    )
                     let (out, strictFailure) = try await projectCoderGenerateWithRouteTruth(
                         stage: "chat_finalize_only",
                         prompt: prompt,
@@ -1462,10 +2131,20 @@ messages:
                         clearAssistantProgress(assistantIndex: assistantIndex)
                         pendingToolCalls = toConfirm
                         pendingFlow = flow
+                        let assistantStub = pendingToolApprovalAssistantStub(
+                            ctx: ctx,
+                            calls: toConfirm
+                        )
                         if assistantIndex < messages.count {
-                            messages[assistantIndex].content = "有待审批的验证操作（本页或 Home 可处理）。"
+                            messages[assistantIndex].content = assistantStub
                         }
-                        persistPendingToolApproval(ctx: ctx, flow: flow, calls: toConfirm, assistantStub: "有待审批的验证操作（本页或 Home 可处理）。", reason: "verify")
+                        persistPendingToolApproval(
+                            ctx: ctx,
+                            flow: flow,
+                            calls: toConfirm,
+                            assistantStub: assistantStub,
+                            reason: "verify"
+                        )
                         recordAwaitingToolApproval(ctx: ctx, calls: toConfirm, reason: "awaiting_verify_approval")
                         isSending = false
                         currentReqId = nil
@@ -1501,22 +2180,15 @@ messages:
                     config: flow.config,
                     userText: userText,
                     toolResults: flow.toolResults,
+                    currentTurnAttachments: flow.currentTurnAttachments,
                     safePointState: safePointExecutionState(for: flow)
                 )
                 flow.lastPromptVisibleGuidanceInjectionId = promptBuild.visiblePendingGuidanceInjectionId
                 let prompt = promptBuild.prompt
-                let planningUsageFields: [String: Any] = [
-                    "memory_v1_source": promptBuild.memory.source,
-                    "memory_v1_longterm_mode": promptBuild.memory.longtermMode as Any,
-                    "memory_v1_retrieval_available": promptBuild.memory.retrievalAvailable as Any,
-                    "memory_v1_fulltext_not_loaded": promptBuild.memory.fulltextNotLoaded as Any,
-                    "memory_v1_tokens_est": promptBuild.memory.usedTokens as Any,
-                    "memory_v1_budget_tokens": promptBuild.memory.budgetTokens as Any,
-                    "memory_v1_truncated_layers": promptBuild.memory.truncatedLayers,
-                    "memory_v1_redacted_items": promptBuild.memory.redactedItems as Any,
-                    "memory_v1_private_drops": promptBuild.memory.privateDrops as Any,
-                    "prompt_compact_mode": true,
-                ]
+                let planningUsageFields = projectMemoryUsageFields(
+                    from: promptBuild.memory,
+                    promptCompactMode: true
+                )
                 let (out, strictFailure) = try await projectCoderGenerateWithRouteTruth(
                     stage: "chat_plan",
                     prompt: prompt,
@@ -1838,14 +2510,18 @@ messages:
                                         clearAssistantProgress(assistantIndex: assistantIndex)
                                         pendingToolCalls = repairedToConfirm
                                         pendingFlow = flow
+                                        let assistantStub = pendingToolApprovalAssistantStub(
+                                            ctx: ctx,
+                                            calls: repairedToConfirm
+                                        )
                                         if assistantIndex < messages.count {
-                                            messages[assistantIndex].content = "有待审批的工具操作（本页或 Home 可处理）。"
+                                            messages[assistantIndex].content = assistantStub
                                         }
                                         persistPendingToolApproval(
                                             ctx: ctx,
                                             flow: flow,
                                             calls: repairedToConfirm,
-                                            assistantStub: "有待审批的工具操作（本页或 Home 可处理）。",
+                                            assistantStub: assistantStub,
                                             reason: "tools"
                                         )
                                         recordAwaitingToolApproval(ctx: ctx, calls: repairedToConfirm, reason: "awaiting_tool_approval")
@@ -1991,10 +2667,20 @@ messages:
                     clearAssistantProgress(assistantIndex: assistantIndex)
                     pendingToolCalls = toConfirm
                     pendingFlow = flow
+                    let assistantStub = pendingToolApprovalAssistantStub(
+                        ctx: ctx,
+                        calls: toConfirm
+                    )
                     if assistantIndex < messages.count {
-                        messages[assistantIndex].content = "有待审批的工具操作（本页或 Home 可处理）。"
+                        messages[assistantIndex].content = assistantStub
                     }
-                    persistPendingToolApproval(ctx: ctx, flow: flow, calls: toConfirm, assistantStub: "有待审批的工具操作（本页或 Home 可处理）。", reason: "tools")
+                    persistPendingToolApproval(
+                        ctx: ctx,
+                        flow: flow,
+                        calls: toConfirm,
+                        assistantStub: assistantStub,
+                        reason: "tools"
+                    )
                     recordAwaitingToolApproval(ctx: ctx, calls: toConfirm, reason: "awaiting_tool_approval")
                     isSending = false
                     currentReqId = nil
@@ -2184,7 +2870,7 @@ messages:
 
         if ["auto", "default", "none", "clear"].contains(mid.lowercased()) {
             guard var cfg = (config ?? (try? AXProjectStore.loadOrCreateConfig(for: ctx))) else {
-                return "无法读取 project config，未修改。"
+                return projectConfigUpdateUnavailableText()
             }
             if projectModelOverrideChanged(current: cfg.modelOverride(for: .coder), next: nil) {
                 writeSessionSummaryCapsuleIfPossible(
@@ -2224,7 +2910,7 @@ messages:
             )
         }
         guard var cfg = (config ?? (try? AXProjectStore.loadOrCreateConfig(for: ctx))) else {
-            return "无法读取 project config，未修改。"
+            return projectConfigUpdateUnavailableText()
         }
         if projectModelOverrideChanged(current: cfg.modelOverride(for: .coder), next: mid) {
             writeSessionSummaryCapsuleIfPossible(
@@ -2244,7 +2930,7 @@ messages:
             return [
                 "已将 coder 模型设置为：\(mid)",
                 "",
-                "当前拿不到 Hub 的模型快照，暂时无法确认它是否真的可用。可执行 `/models` 或去 Hub -> Models 检查。"
+                "当前拿不到 Hub 的模型快照，暂时无法确认它是否真的可用。可执行 `/models`，或去 Supervisor Control Center · AI 模型检查。"
             ].joined(separator: "\n")
         }
         return unavailableSlashModelSelectionText(modelId: mid, assessment: assessment, transportMode: HubAIClient.transportMode().rawValue)
@@ -2267,7 +2953,7 @@ messages:
 
         let modelArg = args.dropFirst().joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
         guard var cfg = (config ?? (try? AXProjectStore.loadOrCreateConfig(for: ctx))) else {
-            return "无法读取 project config，未修改。"
+            return projectConfigUpdateUnavailableText()
         }
 
         if ["auto", "default", "none", "clear"].contains(modelArg.lowercased()) {
@@ -2326,7 +3012,7 @@ messages:
             return [
                 "已将 \(role.rawValue) 模型设置为：\(modelArg)",
                 "",
-                "当前拿不到 Hub 的模型快照，暂时无法确认它是否真的可用。可执行 `/models` 或去 Hub -> Models 检查。"
+                "当前拿不到 Hub 的模型快照，暂时无法确认它是否真的可用。可执行 `/models`，或去 Supervisor Control Center · AI 模型检查。"
             ].joined(separator: "\n")
         }
         return "已将 \(role.rawValue) 模型设置为：\(modelArg)"
@@ -2363,12 +3049,17 @@ messages:
         Task {
             async let routeSnapshot = HubAIClient.shared.loadRouteDecisionModelsState()
             async let localSnapshot = HubAIClient.shared.loadModelsState(transportOverride: .fileIPC)
+            async let supervisorRouteDecision = currentProjectSupervisorRouteDecisionSnapshot(
+                ctx: ctx,
+                config: config
+            )
             let reply = projectRouteDiagnosisText(
                 ctx: ctx,
                 config: config,
                 router: router,
                 routeSnapshot: await routeSnapshot,
-                localSnapshot: await localSnapshot
+                localSnapshot: await localSnapshot,
+                supervisorRouteDecision: await supervisorRouteDecision
             )
             finalizeTurn(ctx: ctx, userText: userText, assistantText: reply, assistantIndex: assistantIndex)
         }
@@ -2425,10 +3116,10 @@ messages:
         let withRemoteBehavior = routeDecisionText(withRemote)
         let withoutRemoteBehavior = routeDecisionText(withoutRemote)
         return """
-Hub transport:
-- mode: \(mode.rawValue)
-- when remote profile exists: \(withRemoteBehavior)
-- when remote profile missing: \(withoutRemoteBehavior)
+Hub 传输模式：
+- 当前模式：\(mode.rawValue)
+- 有远端 profile 时：\(withRemoteBehavior)
+- 无远端 profile 时：\(withoutRemoteBehavior)
 
 命令：
 - /hub route
@@ -2441,21 +3132,23 @@ Hub transport:
         let checks = HubRouteStateMachine.runSelfChecks()
         let okCount = checks.filter(\.ok).count
         let total = checks.count
-        let status = okCount == total ? "PASS" : "FAIL"
+        let status = okCount == total ? "通过" : "失败"
         let lines = checks.map { check in
-            "- [\(check.ok ? "PASS" : "FAIL")] \(check.name): \(check.detail)"
+            "- [\(localizedPassFail(check.ok))] \(hubRouteSelfCheckNameText(check.name))：\(hubRouteSelfCheckDetailText(check.detail))"
         }
-        return "Hub route selftest: \(status) (\(okCount)/\(total))\n\n" + lines.joined(separator: "\n")
+        return "Hub 路由自检：\(status) (\(okCount)/\(total))\n\n" + lines.joined(separator: "\n")
     }
 
     private func routeDecisionText(_ decision: HubRouteDecision) -> String {
         if decision.preferRemote {
-            return decision.allowFileFallback ? "remote first -> fallback file on route failure" : "remote only (no fallback)"
+            return decision.allowFileFallback
+                ? "优先走远端；远端路由失败时允许回落到本地 file IPC"
+                : "只走远端；不再回落到本地"
         }
         if decision.requiresRemote {
-            return "fail-closed (\(decision.remoteUnavailableReasonCode ?? "remote_unavailable"))"
+            return "直接失败并拦下（\(decision.remoteUnavailableReasonCode ?? "remote_unavailable")）"
         }
-        return "file IPC only"
+        return "只走本地 file IPC"
     }
 
     private func handleSlashSandbox(args: [String]) -> String {
@@ -2473,10 +3166,10 @@ Hub transport:
             }
             let token = args[1]
             guard let mode = ToolExecutor.parseSandboxModeToken(token) else {
-                return "未知 sandbox mode：\(token)\n可选：host / sandbox"
+                return "未知工具执行路径模式：\(token)\n可选：host / sandbox"
             }
             ToolExecutor.setSandboxMode(mode)
-            return "已设置工具默认执行路径：\(mode.rawValue)\n\n" + slashSandboxText()
+            return "已设置工具默认执行路径：\(sandboxModeDisplayText(mode))（\(mode.rawValue)）\n\n" + slashSandboxText()
         default:
             return """
 用法：
@@ -2492,14 +3185,14 @@ Hub transport:
         let behavior: String
         switch mode {
         case .host:
-            behavior = "默认走宿主执行；传 `sandbox=true` 时走沙箱。"
+            behavior = "默认走宿主环境；传 `sandbox=true` 时临时改走沙箱。"
         case .sandbox:
-            behavior = "默认走沙箱执行；传 `sandbox=false` 时走宿主。"
+            behavior = "默认走沙箱环境；传 `sandbox=false` 时临时改走宿主。"
         }
         return """
-Tool sandbox route:
-- mode: \(mode.rawValue)
-- behavior: \(behavior)
+工具执行路径：
+- 当前默认：\(sandboxModeDisplayText(mode))（\(mode.rawValue)）
+- 生效方式：\(behavior)
 
 命令：
 - /sandbox
@@ -2581,15 +3274,15 @@ Tool sandbox route:
 
                 let overall = explicitSandboxOK && defaultSandboxOK && hostOverrideOK
                 let summary = """
-Sandbox selftest \(overall ? "PASS" : "FAIL")
-- explicit sandbox=true: \(explicitSandboxOK ? "PASS" : "FAIL")
-- default mode=sandbox: \(defaultSandboxOK ? "PASS" : "FAIL")
-- explicit sandbox=false override: \(hostOverrideOK ? "PASS" : "FAIL")
+工具执行路径自检：\(localizedPassFail(overall))
+- 明确指定 `sandbox=true`：\(localizedPassFail(explicitSandboxOK))
+- 默认模式为 sandbox：\(localizedPassFail(defaultSandboxOK))
+- 明确指定 `sandbox=false` 覆盖：\(localizedPassFail(hostOverrideOK))
 """
                 finalizeTurn(ctx: ctx, userText: userText, assistantText: summary, assistantIndex: assistantIndex)
             } catch {
                 let msg = String(describing: error)
-                let out = "Sandbox selftest FAIL\n- error: \(msg)"
+                let out = "工具执行路径自检：失败\n- 错误：\(msg)"
                 finalizeTurn(ctx: ctx, userText: userText, assistantText: out, assistantIndex: assistantIndex)
             }
         }
@@ -2607,9 +3300,9 @@ Sandbox selftest \(overall ? "PASS" : "FAIL")
             case "", "show", "status", "list":
                 let runtime = await ToolExecutor.highRiskGrantRuntimeStatus(projectRoot: ctx.root)
                 let reply = """
-High-risk grant gate:
-- enforced capability: web_fetch (requires args.grant_id)
-\(runtime)
+高风险授权状态：
+- 当前受控能力：联网抓取（web_fetch，请求参数里需要 `grant_id`）
+\(frontstageHighRiskGrantRuntimeStatus(runtime))
 
 命令：
 - /grant status
@@ -2620,24 +3313,13 @@ High-risk grant gate:
             case "scan":
                 let runtime = await ToolExecutor.highRiskGrantRuntimeStatus(projectRoot: ctx.root)
                 let report = ToolExecutor.scanHighRiskGrantBypass(ctx: ctx)
-                let scanText = ToolExecutor.formatHighRiskGrantBypassScanReport(report)
-                let reply = scanText + "\n\n" + runtime
+                let scanText = frontstageHighRiskGrantBypassScanReport(report)
+                let reply = scanText + "\n\n" + frontstageHighRiskGrantRuntimeStatus(runtime)
                 finalizeTurn(ctx: ctx, userText: userText, assistantText: reply, assistantIndex: assistantIndex)
             case "selftest":
                 let checks = await ToolExecutor.runHighRiskGrantSelfChecks(projectRoot: ctx.root)
-                let passCount = checks.filter(\.ok).count
-                let total = checks.count
-                let status = passCount == total ? "PASS" : "FAIL"
-                let lines = checks.map { check in
-                    "- [\(check.ok ? "PASS" : "FAIL")] \(check.name): \(check.detail)"
-                }
                 let scan = ToolExecutor.scanHighRiskGrantBypass(ctx: ctx, maxBytes: 180_000, maxFindings: 8)
-                let reply = """
-Grant gate selftest: \(status) (\(passCount)/\(total))
-\(lines.joined(separator: "\n"))
-
-\(ToolExecutor.formatHighRiskGrantBypassScanReport(scan))
-"""
+                let reply = frontstageHighRiskGrantSelfTestSummary(checks: checks, scan: scan)
                 finalizeTurn(ctx: ctx, userText: userText, assistantText: reply, assistantIndex: assistantIndex)
             default:
                 let runtime = await ToolExecutor.highRiskGrantRuntimeStatus(projectRoot: ctx.root)
@@ -2647,7 +3329,7 @@ Grant gate selftest: \(status) (\(passCount)/\(total))
 - /grant scan
 - /grant selftest
 
-\(runtime)
+\(frontstageHighRiskGrantRuntimeStatus(runtime))
 """
                 finalizeTurn(ctx: ctx, userText: userText, assistantText: reply, assistantIndex: assistantIndex)
             }
@@ -2656,7 +3338,7 @@ Grant gate selftest: \(status) (\(passCount)/\(total))
 
     private func handleSlashTrustedAutomation(args: [String], ctx: AXProjectContext, config: AXProjectConfig?) -> String {
         guard var cfg = (config ?? (try? AXProjectStore.loadOrCreateConfig(for: ctx))) else {
-            return "无法读取 project config，未修改。"
+            return projectConfigUpdateUnavailableText()
         }
 
         let workspaceHash = xtTrustedAutomationWorkspaceHash(forProjectRoot: ctx.root)
@@ -2677,18 +3359,18 @@ Grant gate selftest: \(status) (\(passCount)/\(total))
             )
             activeConfig = cfg
             try? AXProjectStore.saveConfig(cfg, for: ctx)
-            return "已关闭当前项目的 trusted automation 绑定。\n\n" + slashTrustedAutomationText(config: cfg, ctx: ctx)
+            return "已关闭当前项目的 Trusted Automation 绑定。\n\n" + slashTrustedAutomationText(config: cfg, ctx: ctx)
         case "open":
             let target = args.dropFirst().joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
             if target == "system" || target == "settings" {
                 XTSystemSettingsLinks.openSystemSettings()
-                return "已尝试打开 System Settings。\n\n" + slashTrustedAutomationDoctorText(config: cfg, ctx: ctx)
+                return "已尝试打开系统设置。\n\n" + slashTrustedAutomationDoctorText(config: cfg, ctx: ctx)
             }
             guard let permissionKey = AXTrustedAutomationPermissionKey.parseCommandToken(target) else {
                 return slashTrustedAutomationUsageText()
             }
             XTSystemSettingsLinks.openPrivacyAction(permissionKey.openSettingsAction)
-            return "已尝试打开 \(permissionKey.displayName) 设置。\n\n" + slashTrustedAutomationDoctorText(config: cfg, ctx: ctx)
+            return "已尝试打开“\(trustedAutomationPermissionDisplayName(permissionKey.rawValue))”设置。\n\n" + slashTrustedAutomationDoctorText(config: cfg, ctx: ctx)
         case "arm", "bind", "on", "enable":
             let deviceId = args.dropFirst().joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
             let resolvedDeviceId = deviceId.isEmpty ? currentDeviceId : deviceId
@@ -2703,7 +3385,7 @@ Grant gate selftest: \(status) (\(passCount)/\(total))
             )
             activeConfig = cfg
             try? AXProjectStore.saveConfig(cfg, for: ctx)
-            return "已为当前项目写入 trusted automation 绑定（device_id=\(resolvedDeviceId)）。\n\n" + slashTrustedAutomationText(config: cfg, ctx: ctx)
+            return "已为当前项目绑定 Trusted Automation 设备：\(resolvedDeviceId)。\n\n" + slashTrustedAutomationText(config: cfg, ctx: ctx)
         default:
             return slashTrustedAutomationUsageText()
         }
@@ -2713,23 +3395,26 @@ Grant gate selftest: \(status) (\(passCount)/\(total))
         let cfg = config ?? .default(forProjectRoot: ctx.root)
         let readiness = AXTrustedAutomationPermissionOwnerReadiness.current()
         let status = cfg.trustedAutomationStatus(forProjectRoot: ctx.root, permissionReadiness: readiness)
-        let missing = status.missingPrerequisites.isEmpty ? "(none)" : status.missingPrerequisites.joined(separator: ", ")
         let groups = status.deviceToolGroups.isEmpty ? "(none)" : status.deviceToolGroups.joined(separator: ", ")
         let deviceId = status.boundDeviceID.isEmpty ? "(none)" : status.boundDeviceID
         let requiredPermissions = AXTrustedAutomationPermissionOwnerReadiness.requiredPermissionKeys(forDeviceToolGroups: status.deviceToolGroups)
         let repairActions = readiness.suggestedOpenSettingsActions(forDeviceToolGroups: status.deviceToolGroups)
+        let workspaceBindingState = trustedAutomationWorkspaceBindingStateText(status)
+        let missingText = trustedAutomationMissingPrerequisitesText(status.missingPrerequisites)
+        let groupsText = groups == "(none)" ? "无" : groups
+        let deviceLabel = deviceId == "(none)" ? "未绑定" : deviceId
 
         return """
-Trusted automation:
-- mode: \(status.mode.rawValue)
-- state: \(status.state.rawValue)
-- device_id: \(deviceId)
-- workspace_binding_hash: \(status.expectedWorkspaceBindingHash)
-- permission_owner_ready: \(status.permissionOwnerReady ? "yes" : "no")
-- device_tool_groups: \(groups)
-- required_permissions: \(requiredPermissions.isEmpty ? "(none)" : requiredPermissions.joined(separator: ", "))
-- repair_actions: \(repairActions.isEmpty ? "(none)" : repairActions.joined(separator: ", "))
-- missing_prerequisites: \(missing)
+Trusted Automation：
+- 当前模式：\(trustedAutomationModeText(status.mode))
+- 当前状态：\(trustedAutomationStateText(status.state))
+- 绑定设备：\(deviceLabel)
+- 工作区绑定：\(workspaceBindingState)
+- 权限宿主已就绪：\(yesNoText(status.permissionOwnerReady))
+- 设备工具组：\(groupsText)
+- 需要权限：\(trustedAutomationPermissionListText(requiredPermissions))
+- 可直接打开的设置：\(trustedAutomationSettingsActionListText(repairActions))
+- 仍缺少前提：\(missingText)
 
 \(slashTrustedAutomationUsageText())
 """
@@ -2742,29 +3427,29 @@ Trusted automation:
         let requirementStatuses = readiness.requirementStatuses(forDeviceToolGroups: status.deviceToolGroups)
         let permissionLines: String
         if requirementStatuses.isEmpty {
-            permissionLines = "- permission_requirements: none"
+            permissionLines = "- 权限要求：无"
         } else {
             permissionLines = requirementStatuses.map { requirement in
                 let tools = requirement.requiredByDeviceToolGroups.isEmpty
-                    ? "(none)"
+                    ? "无"
                     : requirement.requiredByDeviceToolGroups.joined(separator: ", ")
-                return "- \(requirement.key.rawValue): \(requirement.status.rawValue) · tools=\(tools)"
+                return "- \(trustedAutomationPermissionDisplayName(requirement.key.rawValue))：\(trustedAutomationPermissionStatusText(requirement.status)) · 关联工具组：\(tools)"
             }.joined(separator: "\n")
         }
         let repairActions = readiness.suggestedOpenSettingsActions(forDeviceToolGroups: status.deviceToolGroups)
 
         return """
-Trusted automation doctor:
-- owner_id: \(readiness.ownerID)
-- owner_type: \(readiness.ownerType)
-- bundle_id: \(readiness.bundleID)
-- install_state: \(readiness.installState)
-- overall_state: \(readiness.overallState)
-- can_prompt_user: \(readiness.canPromptUser ? "yes" : "no")
-- managed_by_mdm: \(readiness.managedByMDM ? "yes" : "no")
-- audit_ref: \(readiness.auditRef)
+Trusted Automation 自检：
+- 权限宿主 ID：\(readiness.ownerID)
+- 宿主类型：\(trustedAutomationOwnerTypeText(readiness.ownerType))
+- Bundle ID：\(readiness.bundleID)
+- 安装状态：\(trustedAutomationInstallStateText(readiness.installState))
+- 总体状态：\(trustedAutomationOverallStateText(readiness.overallState))
+- 可主动拉起授权：\(yesNoText(readiness.canPromptUser))
+- 受 MDM 管理：\(yesNoText(readiness.managedByMDM))
+- 审计锚点：\(readiness.auditRef)
 \(permissionLines)
-- open_settings_actions: \(repairActions.isEmpty ? "(none)" : repairActions.joined(separator: ", "))
+- 可直接打开的设置：\(trustedAutomationSettingsActionListText(repairActions))
 
 \(slashTrustedAutomationUsageText())
 """
@@ -2781,9 +3466,399 @@ Trusted automation doctor:
 """
     }
 
+    private func sandboxModeDisplayText(_ mode: ToolSandboxMode) -> String {
+        switch mode {
+        case .host:
+            return "宿主环境"
+        case .sandbox:
+            return "沙箱环境"
+        }
+    }
+
+    private func localizedPassFail(_ ok: Bool) -> String {
+        ok ? "通过" : "失败"
+    }
+
+    private func hubRouteSelfCheckNameText(_ raw: String) -> String {
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "auto_remote_preferred":
+            return "auto 模式在有远端 profile 时优先走远端"
+        case "auto_no_remote_file_only":
+            return "auto 模式在没有远端 profile 时直接走本地 file IPC"
+        case "grpc_remote_only":
+            return "grpc 模式在有远端 profile 时只走远端"
+        case "grpc_missing_profile_fail_closed":
+            return "grpc 模式在没有远端 profile 时直接 fail-closed"
+        case "file_forces_local":
+            return "fileIPC 模式始终只走本地"
+        case "fallback_on_route_unavailable":
+            return "远端路由不可用时允许在 auto 模式下回落"
+        case "fallback_on_timeout":
+            return "远端超时时允许在 auto 模式下回落"
+        case "no_fallback_on_model_not_found":
+            return "`model_not_found` 不应自动回落"
+        case "no_fallback_on_api_key_missing":
+            return "`api_key_missing` 不应自动回落"
+        case "pending_grants_auto_fallback_truth":
+            return "pending grant 快照会披露 auto 回落真相"
+        case "pending_grants_grpc_fail_closed_truth":
+            return "grpc 模式下 pending grant 快照保持 fail-closed"
+        default:
+            return raw
+        }
+    }
+
+    private func hubRouteSelfCheckDetailText(_ raw: String) -> String {
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "auto + remote profile => remote first, file fallback allowed":
+            return "auto 模式下如果存在远端 profile，会先走远端，并且保留 file IPC 回落。"
+        case "auto + no remote profile => direct file route":
+            return "auto 模式下如果没有远端 profile，会直接走本地 file IPC。"
+        case "grpc + remote profile => remote only (no silent fallback)":
+            return "grpc 模式下如果存在远端 profile，只走远端，不允许静默回落。"
+        case "grpc + no remote profile => fail closed (hub_env_missing)":
+            return "grpc 模式下如果没有远端 profile，会直接 fail-closed（hub_env_missing）。"
+        case "file mode => local file ipc only":
+            return "fileIPC 模式只走本地。"
+        case "remote route unavailable should fallback in auto":
+            return "远端路由不可用时，auto 模式应该允许回落。"
+        case "timeout should fallback in auto":
+            return "远端超时时，auto 模式应该允许回落。"
+        case "model_not_found should surface error without fallback":
+            return "`model_not_found` 应该直接报错，不做自动回落。"
+        case "api_key_missing should surface error without fallback":
+            return "`api_key_missing` 应该直接报错，不做自动回落。"
+        case "pending grant source truth should disclose auto fallback + remote unavailable reason":
+            return "pending grant 快照需要明确写出 auto 回落和远端不可用原因。"
+        case "pending grant snapshot should stay fail-closed in grpc mode":
+            return "grpc 模式下 pending grant 快照必须保持 fail-closed。"
+        default:
+            return raw
+        }
+    }
+
+    private func frontstageHighRiskGrantRuntimeStatus(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "当前有效授权：无" }
+        if trimmed == "active grants: (none)" {
+            return "当前有效授权：无"
+        }
+        guard trimmed.hasPrefix("active grants:") else {
+            return trimmed
+        }
+
+        let body = trimmed
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .dropFirst()
+            .map { frontstageHighRiskGrantRuntimeLine(String($0)) }
+        guard !body.isEmpty else { return "当前有效授权：无" }
+        return "当前有效授权：\n" + body.joined(separator: "\n")
+    }
+
+    private func frontstageHighRiskGrantRuntimeLine(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("- ") else { return trimmed }
+        let payload = String(trimmed.dropFirst(2))
+        let parts = payload.split(separator: " ", omittingEmptySubsequences: true)
+        var grantId = ""
+        var capability = ""
+        var remaining = ""
+        for part in parts {
+            let token = String(part)
+            if token.hasPrefix("grant=") {
+                grantId = String(token.dropFirst("grant=".count))
+            } else if token.hasPrefix("capability=") {
+                capability = String(token.dropFirst("capability=".count))
+            } else if token.hasPrefix("remaining=") {
+                remaining = String(token.dropFirst("remaining=".count))
+            }
+        }
+        guard !grantId.isEmpty || !capability.isEmpty || !remaining.isEmpty else {
+            return trimmed
+        }
+        let remainingText = remaining.hasSuffix("s")
+            ? "\(remaining.dropLast()) 秒"
+            : remaining
+        return "- 授权 ID：\(grantId.isEmpty ? "未记录" : grantId) · 能力：\(highRiskGrantCapabilityText(capability)) · 剩余：\(remainingText.isEmpty ? "未知" : remainingText)"
+    }
+
+    private func frontstageHighRiskGrantBypassScanReport(_ report: ToolExecutor.HighRiskGrantBypassScanReport) -> String {
+        let header = """
+高风险授权旁路扫描：\(report.ok ? "未发现问题" : "发现风险")
+- 扫描到的工具事件：\(report.scannedToolEvents)
+- 联网抓取请求：\(report.webFetchEvents)
+- 被授权闸门拦下：\(report.deniedEvents)
+- 旁路风险记录：\(report.bypassCount)
+"""
+        guard !report.findings.isEmpty else { return header }
+
+        let lines = report.findings.prefix(6).map { finding in
+            let ts: String
+            if finding.createdAt > 0 {
+                let date = Date(timeIntervalSince1970: finding.createdAt)
+                let fmt = DateFormatter()
+                fmt.dateFormat = "MM-dd HH:mm:ss"
+                ts = fmt.string(from: date)
+            } else {
+                ts = "时间未知"
+            }
+            return "- [\(ts)] \(frontstageHighRiskGrantFindingDetail(finding.detail))"
+        }
+        return header + "\n" + lines.joined(separator: "\n")
+    }
+
+    private func frontstageHighRiskGrantSelfTestSummary(
+        checks: [ToolExecutor.HighRiskGrantSelfCheck],
+        scan: ToolExecutor.HighRiskGrantBypassScanReport
+    ) -> String {
+        let passCount = checks.filter(\.ok).count
+        let total = checks.count
+        let status = passCount == total ? "通过" : "失败"
+        let lines = checks.map { check in
+            "- [\(localizedPassFail(check.ok))] \(frontstageHighRiskGrantSelfCheckName(check.name))：\(frontstageHighRiskGrantSelfCheckDetail(check.detail))"
+        }
+
+        return """
+高风险授权自检：\(status) (\(passCount)/\(total))
+\(lines.joined(separator: "\n"))
+
+\(frontstageHighRiskGrantBypassScanReport(scan))
+"""
+    }
+
+    private func highRiskGrantCapabilityText(_ raw: String) -> String {
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "capability_web_fetch", "web_fetch":
+            return "联网抓取（web_fetch）"
+        default:
+            return raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未知能力" : raw
+        }
+    }
+
+    private func frontstageHighRiskGrantFindingDetail(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed == "bypass_grant_execution: web_fetch ok=true but input.grant_id is missing" {
+            return "联网抓取请求已经执行成功，但输入里缺少 `grant_id`。"
+        }
+        return trimmed
+    }
+
+    private func frontstageHighRiskGrantSelfCheckName(_ raw: String) -> String {
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "registered grant is accepted":
+            return "已登记的授权会被接受"
+        case "expired grant is denied":
+            return "过期授权会被拒绝"
+        case "missing grant is denied":
+            return "缺少授权会被拒绝"
+        default:
+            return raw
+        }
+    }
+
+    private func frontstageHighRiskGrantSelfCheckDetail(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("state=") {
+            let state = String(trimmed.dropFirst("state=".count))
+            return "结果：\(frontstageHighRiskGrantValidationStateText(state))"
+        }
+        return trimmed
+    }
+
+    private func frontstageHighRiskGrantValidationStateText(_ raw: String) -> String {
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "valid":
+            return "有效"
+        case "expired":
+            return "已过期"
+        case "missing":
+            return "缺失"
+        case "invalid":
+            return "无效"
+        case "bridgedisabled", "bridge_disabled":
+            return "桥接未启用"
+        default:
+            return raw
+        }
+    }
+
+    private func trustedAutomationModeText(_ mode: AXProjectAutomationMode) -> String {
+        switch mode {
+        case .standard:
+            return "标准模式"
+        case .trustedAutomation:
+            return "Trusted Automation（设备级自动化）"
+        }
+    }
+
+    private func trustedAutomationStateText(_ state: AXTrustedAutomationProjectState) -> String {
+        switch state {
+        case .off:
+            return "已关闭"
+        case .armed:
+            return "已布防，等待权限就绪"
+        case .active:
+            return "已激活，可用于设备执行"
+        case .blocked:
+            return "配置未完成，暂不可用"
+        }
+    }
+
+    private func trustedAutomationWorkspaceBindingStateText(_ status: AXTrustedAutomationProjectStatus) -> String {
+        if status.boundDeviceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "未绑定"
+        }
+        let currentHash = status.workspaceBindingHash.trimmingCharacters(in: .whitespacesAndNewlines)
+        let expectedHash = status.expectedWorkspaceBindingHash.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !currentHash.isEmpty, !expectedHash.isEmpty else {
+            return "未写入"
+        }
+        return currentHash == expectedHash ? "已匹配" : "未匹配"
+    }
+
+    private func trustedAutomationPermissionListText(_ values: [String]) -> String {
+        let labels = values.map(trustedAutomationPermissionDisplayName).filter { !$0.isEmpty }
+        return labels.isEmpty ? "无" : labels.joined(separator: "、")
+    }
+
+    private func trustedAutomationSettingsActionListText(_ values: [String]) -> String {
+        let labels = values.map(trustedAutomationSettingsActionDisplayText).filter { !$0.isEmpty }
+        return labels.isEmpty ? "无" : labels.joined(separator: "、")
+    }
+
+    private func trustedAutomationMissingPrerequisitesText(_ values: [String]) -> String {
+        let labels = values.map(trustedAutomationMissingPrerequisiteText).filter { !$0.isEmpty }
+        return labels.isEmpty ? "无" : labels.joined(separator: "；")
+    }
+
+    private func trustedAutomationPermissionDisplayName(_ raw: String) -> String {
+        guard let key = AXTrustedAutomationPermissionKey.parseCommandToken(raw) else {
+            return raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        switch key {
+        case .accessibility:
+            return "辅助功能"
+        case .automation:
+            return "自动化"
+        case .screenRecording:
+            return "屏幕录制"
+        case .fullDiskAccess:
+            return "完全磁盘访问"
+        case .inputMonitoring:
+            return "输入监控"
+        }
+    }
+
+    private func trustedAutomationPermissionStatusText(_ status: AXTrustedAutomationPermissionStatus) -> String {
+        switch status {
+        case .granted:
+            return "已授权"
+        case .missing:
+            return "未授权"
+        case .denied:
+            return "已拒绝"
+        case .managed:
+            return "由系统或组织托管"
+        }
+    }
+
+    private func trustedAutomationSettingsActionDisplayText(_ raw: String) -> String {
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "privacy_accessibility":
+            return "辅助功能"
+        case "privacy_automation":
+            return "自动化"
+        case "privacy_screen_recording":
+            return "屏幕录制"
+        case "privacy_full_disk_access":
+            return "完全磁盘访问"
+        case "privacy_input_monitoring":
+            return "输入监控"
+        case "system", "settings":
+            return "系统设置"
+        default:
+            return raw
+        }
+    }
+
+    private func trustedAutomationMissingPrerequisiteText(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch trimmed {
+        case "trusted_automation_mode_off":
+            return "当前项目还没开启 Trusted Automation"
+        case "trusted_automation_project_not_bound":
+            return "还没有绑定设备 ID"
+        case "trusted_automation_workspace_mismatch":
+            return "当前工作区和绑定记录不一致"
+        case "trusted_automation_device_tool_groups_missing":
+            return "还没有配置设备工具组"
+        case "trusted_automation_surface_not_enabled":
+            return "当前项目还没打开设备自动化入口"
+        default:
+            if trimmed.hasPrefix("trusted_automation_required_device_tool_group_missing:") {
+                let group = String(trimmed.dropFirst("trusted_automation_required_device_tool_group_missing:".count))
+                return "缺少必需的设备工具组：\(group)"
+            }
+            if trimmed.hasPrefix("permission_"), trimmed.hasSuffix("_missing") {
+                let permission = String(
+                    trimmed
+                        .dropFirst("permission_".count)
+                        .dropLast("_missing".count)
+                )
+                return "缺少权限：\(trustedAutomationPermissionDisplayName(permission))"
+            }
+            return trimmed
+        }
+    }
+
+    private func trustedAutomationOwnerTypeText(_ raw: String) -> String {
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "xterminal_app":
+            return "X-Terminal App"
+        default:
+            return raw
+        }
+    }
+
+    private func trustedAutomationInstallStateText(_ raw: String) -> String {
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "ready":
+            return "安装位置正常"
+        case "degraded":
+            return "安装位置不符合推荐"
+        default:
+            return raw
+        }
+    }
+
+    private func trustedAutomationOverallStateText(_ raw: String) -> String {
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "ready":
+            return "已就绪"
+        case "partial":
+            return "部分就绪"
+        case "missing":
+            return "未就绪"
+        default:
+            return raw
+        }
+    }
+
+    private func yesNoText(_ value: Bool) -> String {
+        value ? "是" : "否"
+    }
+
+    private func projectConfigUpdateUnavailableText() -> String {
+        "无法读取当前项目配置，未修改。"
+    }
+
+    private func memoryModeDisplayText(prefersHubMemory: Bool) -> String {
+        prefersHubMemory ? "优先使用 Hub Memory" : "仅使用本地 Memory"
+    }
+
     private func handleSlashMemory(args: [String], ctx: AXProjectContext, config: AXProjectConfig?) -> String {
         guard var cfg = (config ?? (try? AXProjectStore.loadOrCreateConfig(for: ctx))) else {
-            return "无法读取 project config，未修改。"
+            return projectConfigUpdateUnavailableText()
         }
 
         let lowered = args.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
@@ -2802,17 +3877,17 @@ Trusted automation doctor:
             cfg = cfg.settingHubMemoryPreference(enabled: true)
             activeConfig = cfg
             try? AXProjectStore.saveConfig(cfg, for: ctx)
-            return "已为当前项目启用 Hub memory 优先模式。\n\n" + slashMemoryText(config: cfg)
+            return "已将当前项目的 Memory 切到“优先使用 Hub Memory”。\n\n" + slashMemoryText(config: cfg)
         case "off", "disable", "local", "local-only", "local_only":
             cfg = cfg.settingHubMemoryPreference(enabled: false)
             activeConfig = cfg
             try? AXProjectStore.saveConfig(cfg, for: ctx)
-            return "已为当前项目关闭 Hub memory，改为本地 memory only。\n\n" + slashMemoryText(config: cfg)
+            return "已将当前项目的 Memory 切到“只使用本地 Memory”。\n\n" + slashMemoryText(config: cfg)
         case "default", "reset":
             cfg = cfg.settingHubMemoryPreference(enabled: true)
             activeConfig = cfg
             try? AXProjectStore.saveConfig(cfg, for: ctx)
-            return "已恢复当前项目的默认 memory 模式（Hub preferred）。\n\n" + slashMemoryText(config: cfg)
+            return "已将当前项目的 Memory 恢复为默认设置（优先使用 Hub Memory）。\n\n" + slashMemoryText(config: cfg)
         default:
             return slashMemoryUsageText()
         }
@@ -2820,19 +3895,18 @@ Trusted automation doctor:
 
     private func slashMemoryText(config: AXProjectConfig?) -> String {
         let preferHubMemory = XTProjectMemoryGovernance.prefersHubMemory(config)
-        let mode = XTProjectMemoryGovernance.modeLabel(config)
         let localBehavior = preferHubMemory
-            ? "Hub memory 不可用时回退本地 `.xterminal/AX_MEMORY.md` / `recent_context.json`。"
-            : "始终只用本地 `.xterminal/AX_MEMORY.md` / `recent_context.json`。"
+            ? "先使用 Hub Memory；如果 Hub 当前不可用，会自动回退到本地 `.xterminal/AX_MEMORY.md` 和 `recent_context.json`。"
+            : "只使用本地 `.xterminal/AX_MEMORY.md` 和 `recent_context.json`，这次不会读取 Hub Memory。"
 
         return """
-Memory routing:
-- mode: \(mode)
-- default: \(XTProjectMemoryGovernance.hubPreferredMode)
-- prefer_hub_memory: \(preferHubMemory ? "yes" : "no")
-- local_files: .xterminal/AX_MEMORY.md, .xterminal/recent_context.json
-- behavior: \(localBehavior)
-- governance: Hub X-宪章 + remote export gate + skills trust/revocation gate + grant/revoke + kill-switch
+Memory 使用方式：
+- 当前设置：\(memoryModeDisplayText(prefersHubMemory: preferHubMemory))
+- 默认设置：\(memoryModeDisplayText(prefersHubMemory: true))
+- 使用 Hub Memory：\(yesNoText(preferHubMemory))
+- 本地文件：`.xterminal/AX_MEMORY.md`、`.xterminal/recent_context.json`
+- 当前行为：\(localBehavior)
+- 生效约束：受 Hub X-宪章、远端导出闸门、技能信任/撤销、高风险授权与 kill switch 共同约束
 
 \(slashMemoryUsageText())
 """
@@ -2841,10 +3915,10 @@ Memory routing:
     private func slashMemoryUsageText() -> String {
         """
 命令：
-- /memory
-- /memory on
-- /memory off
-- /memory default
+- /memory                  查看当前项目的 Memory 使用方式
+- /memory on               优先使用 Hub Memory
+- /memory off              只使用本地 Memory
+- /memory default          恢复默认使用方式（优先使用 Hub Memory）
 """
     }
 
@@ -2862,6 +3936,73 @@ Memory routing:
         let profile = ToolPolicy.parseProfile(profileRaw)
         let allowed = ToolPolicy.effectiveAllowedTools(profileRaw: profile.rawValue, allowTokens: allow, denyTokens: deny)
         return EffectiveToolPolicy(profile: profile, allowTokens: allow, denyTokens: deny, allowed: allowed)
+    }
+
+    private func toolProfileDisplayText(_ profile: ToolProfile) -> String {
+        switch profile {
+        case .minimal:
+            return "最小（minimal）"
+        case .coding:
+            return "开发（coding）"
+        case .full:
+            return "全量（full）"
+        }
+    }
+
+    private func toolPolicyTokenDisplayText(_ token: String) -> String {
+        let normalized = token.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return token }
+
+        switch normalized {
+        case "*", "all":
+            return "全部工具（\(normalized)）"
+        case "group:readonly":
+            return "只读工具（group:readonly）"
+        case "group:fs":
+            return "文件与搜索（group:fs）"
+        case "group:runtime":
+            return "运行与会话（group:runtime）"
+        case "group:git":
+            return "Git（group:git）"
+        case "group:delivery":
+            return "交付发布（group:delivery）"
+        case "group:network":
+            return "联网（group:network）"
+        case "group:device_automation":
+            return "设备自动化（group:device_automation）"
+        case "group:minimal":
+            return "最小档（group:minimal）"
+        case "group:coding":
+            return "开发档（group:coding）"
+        case "group:full":
+            return "全量档（group:full）"
+        default:
+            if let tool = ToolName(rawValue: normalized) {
+                return "\(XTPendingApprovalPresentation.displayToolName(for: tool))（\(normalized)）"
+            }
+            return token
+        }
+    }
+
+    private func toolPolicyTokensDisplayText(_ tokens: [String]) -> String {
+        let values = tokens.map(toolPolicyTokenDisplayText).filter { !$0.isEmpty }
+        return values.isEmpty ? "无" : values.joined(separator: "、")
+    }
+
+    private func toolPolicyAllowedToolsDisplayText(_ tools: [ToolName]) -> String {
+        let values = tools.map(XTPendingApprovalPresentation.displayToolName(for:)).filter { !$0.isEmpty }
+        return values.isEmpty ? "无" : values.joined(separator: "、")
+    }
+
+    private func slashToolsUsageText() -> String {
+        """
+命令：
+- /tools
+- /tools profile <minimal|coding|full>
+- /tools allow <token...>        token 支持工具名或 group:*
+- /tools deny <token...>
+- /tools reset
+"""
     }
 
     private func resolvedToolRuntimeConfig(ctx: AXProjectContext, config: AXProjectConfig?) -> AXProjectConfig {
@@ -2913,7 +4054,7 @@ Memory routing:
 
     private func handleSlashTools(args: [String], ctx: AXProjectContext, config: AXProjectConfig?) -> String {
         guard var cfg = (config ?? (try? AXProjectStore.loadOrCreateConfig(for: ctx))) else {
-            return "无法读取 project config，未修改。"
+            return projectConfigUpdateUnavailableText()
         }
 
         guard let headRaw = args.first?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !headRaw.isEmpty else {
@@ -2927,7 +4068,7 @@ Memory routing:
             cfg = cfg.settingToolPolicy(profile: ToolPolicy.defaultProfile.rawValue, allow: [], deny: [])
             activeConfig = cfg
             try? AXProjectStore.saveConfig(cfg, for: ctx)
-            return "已重置工具策略为默认（profile=\(ToolPolicy.defaultProfile.rawValue)）。\n\n" + slashToolsText(config: cfg)
+            return "已将当前项目的工具策略恢复为默认档位（\(toolProfileDisplayText(ToolPolicy.defaultProfile))）。\n\n" + slashToolsText(config: cfg)
         case "profile":
             guard args.count >= 2 else {
                 return "用法：/tools profile <\(ToolPolicy.profileOptionsText())>"
@@ -2935,33 +4076,26 @@ Memory routing:
             let raw = args[1]
             let profile = ToolPolicy.parseProfile(raw)
             if profile.rawValue != raw.lowercased() {
-                return "未知 profile：\(raw)\n可选：\(ToolPolicy.profileOptionsText())"
+                return "未知工具档位：\(raw)\n可选：\(ToolPolicy.profileOptionsText())"
             }
             cfg = cfg.settingToolPolicy(profile: profile.rawValue)
             activeConfig = cfg
             try? AXProjectStore.saveConfig(cfg, for: ctx)
-            return "已设置工具 profile：\(profile.rawValue)\n\n" + slashToolsText(config: cfg)
+            return "已将当前项目的工具档位切到“\(toolProfileDisplayText(profile))”。\n\n" + slashToolsText(config: cfg)
         case "allow":
             let tokens = normalizedToolPolicyTokens(from: Array(args.dropFirst()))
             cfg = cfg.settingToolPolicy(allow: tokens)
             activeConfig = cfg
             try? AXProjectStore.saveConfig(cfg, for: ctx)
-            return "已更新 tools allow。\n\n" + slashToolsText(config: cfg)
+            return "已更新当前项目的额外放行规则。\n\n" + slashToolsText(config: cfg)
         case "deny":
             let tokens = normalizedToolPolicyTokens(from: Array(args.dropFirst()))
             cfg = cfg.settingToolPolicy(deny: tokens)
             activeConfig = cfg
             try? AXProjectStore.saveConfig(cfg, for: ctx)
-            return "已更新 tools deny。\n\n" + slashToolsText(config: cfg)
+            return "已更新当前项目的额外禁用规则。\n\n" + slashToolsText(config: cfg)
         default:
-            return """
-用法：
-- /tools                         查看当前策略
-- /tools profile <minimal|coding|full>
-- /tools allow <token...>        token 支持 tool 名称 / group:*
-- /tools deny <token...>
-- /tools reset
-"""
+            return slashToolsUsageText()
         }
     }
 
@@ -2973,22 +4107,28 @@ Memory routing:
 
     private func slashToolsText(config: AXProjectConfig?) -> String {
         let policy = effectiveToolPolicy(config: config)
-        let allowedTools = ToolPolicy.sortedTools(policy.allowed).map { $0.rawValue }
-        let allowedText = allowedTools.isEmpty ? "(none)" : allowedTools.joined(separator: ", ")
-        let allowText = policy.allowTokens.isEmpty ? "(none)" : policy.allowTokens.joined(separator: ", ")
-        let denyText = policy.denyTokens.isEmpty ? "(none)" : policy.denyTokens.joined(separator: ", ")
+        let allowedTools = ToolPolicy.sortedTools(policy.allowed)
+        let allowedText = toolPolicyAllowedToolsDisplayText(allowedTools)
+        let allowText = toolPolicyTokensDisplayText(policy.allowTokens)
+        let denyText = toolPolicyTokensDisplayText(policy.denyTokens)
 
         return """
-Tool policy:
-- profile: \(policy.profile.rawValue)
-- allow: \(allowText)
-- deny: \(denyText)
-- effective tools: \(allowedText)
+工具策略：
+- 当前档位：\(toolProfileDisplayText(policy.profile))
+- 额外放行：\(allowText)
+- 额外禁用：\(denyText)
+- 当前可直接调用：\(allowedText)
 
 常用 token：
-- group:fs / group:runtime / group:git / group:network
-- group:minimal / group:coding / group:full / group:device_automation
-- all 或 *
+- 文件与搜索：group:fs
+- 运行与会话：group:runtime
+- Git：group:git
+- 联网：group:network
+- 最小 / 开发 / 全量：group:minimal / group:coding / group:full
+- 设备自动化：group:device_automation
+- 全部工具：all 或 *
+
+\(slashToolsUsageText())
 """
     }
 
@@ -3032,37 +4172,49 @@ Tool policy:
         }
 
         let nowMs = Int64((Date().timeIntervalSince1970 * 1000.0).rounded())
-        var lines: [String] = []
+        var lines: [String] = ["Supervisor 指导："]
         if let pending {
+            lines.append("")
             lines.append("待确认指导：")
-            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("injection_id", value: pending.injectionId))")
-            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("delivery", value: pending.deliveryMode.displayName))")
-            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("intervention", value: pending.interventionMode.displayName))")
-            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("safe_point", value: pending.safePointPolicy.displayName))")
-            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("ack", value: slashGuidanceAckSummary(status: pending.ackStatus, required: pending.ackRequired)))")
-            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("lifecycle", value: SupervisorGuidanceInjectionStore.lifecycleSummary(for: pending, nowMs: nowMs)))")
-            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("expires_at_ms", value: slashGuidanceTimestampText(pending.expiresAtMs)))")
-            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("retry_at_ms", value: slashGuidanceTimestampText(pending.retryAtMs)))")
-            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("retry_count", value: "\(pending.retryCount)/\(pending.maxRetryCount)"))")
-            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("guidance", value: pending.guidanceText))")
+            lines.append("- 指导 ID：\(pending.injectionId)")
+            lines.append("- 交付方式：\(frontstageGuidanceDisplayValue(label: "delivery", value: pending.deliveryMode.displayName))")
+            lines.append("- 干预方式：\(frontstageGuidanceDisplayValue(label: "intervention", value: pending.interventionMode.displayName))")
+            lines.append("- 安全点：\(frontstageGuidanceDisplayValue(label: "safe_point", value: pending.safePointPolicy.displayName))")
+            lines.append("- 确认状态：\(frontstageGuidanceAckSummary(status: pending.ackStatus, required: pending.ackRequired))")
+            lines.append("- 生命周期：\(frontstageGuidanceLifecycleText(for: pending, nowMs: nowMs))")
+            lines.append("- 过期时间：\(frontstageGuidanceTimestampText(pending.expiresAtMs))")
+            lines.append("- 下次重提：\(frontstageGuidanceTimestampText(pending.retryAtMs))")
+            lines.append("- 重提进度：\(frontstageGuidanceRetryProgressText(retryCount: pending.retryCount, maxRetryCount: pending.maxRetryCount))")
+            lines.append("- 指导摘要：\(presentedSupervisorGuidanceSummary(pending.guidanceText, maxChars: 220))")
         }
-        if let latest {
-            if !lines.isEmpty { lines.append("") }
+        if let latest, latest.injectionId != pending?.injectionId {
+            if pending != nil { lines.append("") }
             lines.append("最新指导：")
-            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("injection_id", value: latest.injectionId))")
-            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("ack", value: slashGuidanceAckSummary(status: latest.ackStatus, required: latest.ackRequired)))")
-            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("ack_note", value: latest.ackNote.isEmpty ? "无" : latest.ackNote))")
-            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("lifecycle", value: SupervisorGuidanceInjectionStore.lifecycleSummary(for: latest, nowMs: nowMs)))")
-            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("expires_at_ms", value: slashGuidanceTimestampText(latest.expiresAtMs)))")
-            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("retry_at_ms", value: slashGuidanceTimestampText(latest.retryAtMs)))")
-            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("retry_count", value: "\(latest.retryCount)/\(latest.maxRetryCount)"))")
-            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("delivery", value: latest.deliveryMode.displayName))")
-            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("intervention", value: latest.interventionMode.displayName))")
-            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("guidance", value: latest.guidanceText))")
+            lines.append("- 指导 ID：\(latest.injectionId)")
+            lines.append("- 确认状态：\(frontstageGuidanceAckSummary(status: latest.ackStatus, required: latest.ackRequired))")
+            lines.append("- 确认备注：\(latest.ackNote.isEmpty ? "无" : latest.ackNote)")
+            lines.append("- 生命周期：\(frontstageGuidanceLifecycleText(for: latest, nowMs: nowMs))")
+            lines.append("- 过期时间：\(frontstageGuidanceTimestampText(latest.expiresAtMs))")
+            lines.append("- 下次重提：\(frontstageGuidanceTimestampText(latest.retryAtMs))")
+            lines.append("- 重提进度：\(frontstageGuidanceRetryProgressText(retryCount: latest.retryCount, maxRetryCount: latest.maxRetryCount))")
+            lines.append("- 交付方式：\(frontstageGuidanceDisplayValue(label: "delivery", value: latest.deliveryMode.displayName))")
+            lines.append("- 干预方式：\(frontstageGuidanceDisplayValue(label: "intervention", value: latest.interventionMode.displayName))")
+            lines.append("- 指导摘要：\(presentedSupervisorGuidanceSummary(latest.guidanceText, maxChars: 220))")
         }
         lines.append("")
         lines.append(slashGuidanceUsageText())
         return lines.joined(separator: "\n")
+    }
+
+    private func presentedSupervisorGuidanceSummary(
+        _ guidanceText: String,
+        maxChars: Int
+    ) -> String {
+        let summary = SupervisorGuidanceTextPresentation.summary(
+            guidanceText,
+            maxChars: maxChars
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        return summary.isEmpty ? ProjectGovernanceActivityDisplay.noneText : summary
     }
 
     private func slashGuidanceAckSummary(
@@ -3072,8 +4224,44 @@ Tool policy:
         "\(status.displayName) · \(required ? "required" : "optional")"
     }
 
-    private func slashGuidanceTimestampText(_ value: Int64) -> String {
-        value > 0 ? String(value) : "无"
+    private func frontstageGuidanceDisplayValue(label: String, value: String) -> String {
+        ProjectGovernanceActivityDisplay.displayValue(label: label, value: value)
+    }
+
+    private func frontstageGuidanceAckSummary(
+        status: SupervisorGuidanceAckStatus,
+        required: Bool
+    ) -> String {
+        frontstageGuidanceDisplayValue(
+            label: "ack",
+            value: slashGuidanceAckSummary(status: status, required: required)
+        )
+    }
+
+    private func frontstageGuidanceLifecycleText(
+        for record: SupervisorGuidanceInjectionRecord,
+        nowMs: Int64
+    ) -> String {
+        frontstageGuidanceDisplayValue(
+            label: "lifecycle",
+            value: SupervisorGuidanceInjectionStore.lifecycleSummary(for: record, nowMs: nowMs)
+        )
+    }
+
+    private func frontstageGuidanceTimestampText(_ value: Int64) -> String {
+        guard value > 0 else { return "无" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter.string(from: Date(timeIntervalSince1970: Double(value) / 1000.0))
+    }
+
+    private func frontstageGuidanceRetryProgressText(
+        retryCount: Int,
+        maxRetryCount: Int
+    ) -> String {
+        guard maxRetryCount > 0 else { return "未启用" }
+        return "\(retryCount)/\(maxRetryCount)"
     }
 
     private func slashGuidanceUsageText() -> String {
@@ -3099,9 +4287,9 @@ Tool policy:
         let normalizedNote: String
         switch status {
         case .accepted:
-            normalizedNote = trimmedNote.isEmpty ? "manual_accept_from_slash_guidance" : trimmedNote
+            normalizedNote = trimmedNote
         case .deferred:
-            normalizedNote = trimmedNote.isEmpty ? "manual_defer_from_slash_guidance" : trimmedNote
+            normalizedNote = trimmedNote
         case .rejected:
             normalizedNote = trimmedNote
         case .pending:
@@ -3135,7 +4323,7 @@ Tool policy:
                 ctx: ctx,
                 injectionId: pending.injectionId
             )
-            return "已更新指导确认：\(pending.injectionId) -> \(ProjectGovernanceActivityDisplay.ackStatusLabel(status))"
+            return "已更新指导确认：\(pending.injectionId)，状态已改为\(ProjectGovernanceActivityDisplay.ackStatusLabel(status))。"
         } catch {
             return "更新指导确认失败：\(String(describing: error))"
         }
@@ -3245,12 +4433,57 @@ Tool policy:
         HubModelSelectionAdvisor.loadedModels(in: modelsSnapshotForSlash(snapshot: snapshot))
     }
 
+    private func effectiveProjectRouteDecision(
+        configuredModelId: String?,
+        role: AXRole,
+        ctx: AXProjectContext?,
+        snapshot: ModelStateSnapshot,
+        localSnapshot: ModelStateSnapshot? = nil,
+        transportMode: HubTransportMode = HubAIClient.transportMode()
+    ) -> AXProjectPreferredModelRouteDecision {
+        let baseDecision = AXProjectModelRouteMemoryStore.resolvePreferredModel(
+            configuredModelId: configuredModelId,
+            role: role,
+            ctx: ctx,
+            snapshot: snapshot,
+            localSnapshot: localSnapshot
+        )
+
+        guard role == .coder, transportMode == .grpc else {
+            return baseDecision
+        }
+
+        guard let configured = baseDecision.configuredModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !configured.isEmpty else {
+            return baseDecision
+        }
+
+        guard baseDecision.reasonCode != "project_configured_model_retrieval_only" else {
+            return baseDecision
+        }
+
+        guard baseDecision.forceLocalExecution || baseDecision.usedRememberedRemoteModel else {
+            return baseDecision
+        }
+
+        return AXProjectPreferredModelRouteDecision(
+            preferredModelId: configured,
+            configuredModelId: configured,
+            rememberedRemoteModelId: baseDecision.rememberedRemoteModelId,
+            preferredLocalModelId: nil,
+            usedRememberedRemoteModel: false,
+            forceLocalExecution: false,
+            reasonCode: "grpc_preserve_configured_model"
+        )
+    }
+
     private func slashModelsText(
         ctx: AXProjectContext? = nil,
         config: AXProjectConfig?,
         snapshot: ModelStateSnapshot? = nil,
         routeDecisionSnapshot: ModelStateSnapshot? = nil,
-        localSnapshot: ModelStateSnapshot? = nil
+        localSnapshot: ModelStateSnapshot? = nil,
+        transportMode: HubTransportMode = HubAIClient.transportMode()
     ) -> String {
         let baseSnapshot = modelsSnapshotForSlash(snapshot: snapshot)
         let resolvedRouteDecisionSnapshot = modelsSnapshotForSlash(snapshot: routeDecisionSnapshot ?? snapshot)
@@ -3258,9 +4491,10 @@ Tool policy:
         let current = config?.modelOverride(for: .coder)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let models = HubModelSelectionAdvisor.loadedModels(in: baseSnapshot)
         let inventory = HubModelSelectionAdvisor.allModels(in: baseSnapshot)
-        let mode = HubAIClient.transportMode().rawValue
+        let transport = transportMode
+        let mode = transport.rawValue
         var lines: [String] = []
-        let routeDecision = AXProjectModelRouteMemoryStore.resolvePreferredModel(
+        let routeDecision = effectiveProjectRouteDecision(
             configuredModelId: current,
             role: .coder,
             ctx: ctx,
@@ -3271,23 +4505,22 @@ Tool policy:
 
         if current.isEmpty {
             lines.append("当前 coder 模型：自动路由")
-            lines.append("状态：当前 project 没有固定 model id，会按全局/Hub 路由继续尝试。")
+            lines.append("状态：当前项目没有固定模型 ID，会继续按全局分配和 Hub 路由尝试。")
         } else {
             lines.append("当前 coder 模型：\(current)")
             lines.append("状态：\(slashConfiguredModelStatusText(configuredModelId: current, snapshot: resolvedRouteDecisionSnapshot))")
         }
-        lines.append("当前 transport：\(mode)")
+        lines.append("当前传输模式：\(mode)")
         if routeDecision.forceLocalExecution,
            let localModelId = (routeDecision.preferredLocalModelId ?? routeDecision.preferredModelId)?
             .trimmingCharacters(in: .whitespacesAndNewlines),
            !localModelId.isEmpty {
-            lines.append("路由状态：当前 project 已锁到本地模式。")
+            lines.append("路由状态：当前项目已锁定为本地模式。")
             lines.append("当前本地模型：\(localModelId)")
             if let routeMemory {
                 let requested = routeMemory.lastRequestedModelId.trimmingCharacters(in: .whitespacesAndNewlines)
-                let reason = routeMemory.lastFailureReasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !requested.isEmpty {
-                    let reasonSuffix = reason.isEmpty ? "" : "（原因：\(reason)）"
+                    let reasonSuffix = projectRouteFailureReasonParenthesized(routeMemory.lastFailureReasonCode)
                     lines.append("触发原因：`\(requested)` 最近连续 \(routeMemory.consecutiveRemoteFallbackCount) 次未稳定命中\(reasonSuffix)。")
                 }
             }
@@ -3296,7 +4529,8 @@ Tool policy:
             configuredModelId: current,
             routeDecision: routeDecision,
             routeMemory: routeMemory,
-            snapshot: resolvedRouteDecisionSnapshot
+            snapshot: resolvedRouteDecisionSnapshot,
+            transport: transport
         ) {
             lines.append(routeStatus)
         }
@@ -3308,19 +4542,19 @@ Tool policy:
             lines.append("")
             lines.append("当前没有已加载模型。")
             if !inventory.isEmpty {
-                lines.append("Hub inventory 里还能看到 \(inventory.count) 个候选，但它们目前还不能直接执行。")
+                lines.append("Hub 候选列表里还能看到 \(inventory.count) 个候选，但它们当前还不能直接执行。")
                 let sleepingOrAvailable = inventory.prefix(5).map { model in
-                    "- \(HubModelSelectionAdvisor.compactSuggestionLabel(model)) · \(HubModelSelectionAdvisor.stateLabel(model.state))"
+                    "- \(HubModelSelectionAdvisor.compactSuggestionLabel(model)) · \(slashInventoryCandidateStatusText(model))"
                 }
                 if !sleepingOrAvailable.isEmpty {
                     lines.append("")
-                    lines.append("Hub inventory：")
+                    lines.append("Hub 候选列表：")
                     lines.append(contentsOf: sleepingOrAvailable)
                 }
             }
             lines.append("")
             lines.append("建议动作：")
-            lines.append("1. 在 Hub -> Models 确认目标模型已经加载。")
+            lines.append("1. 在 Supervisor Control Center · AI 模型确认目标模型已经进入真实可执行列表。")
             lines.append("2. 运行 `/models` 刷新当前列表。")
             lines.append("3. 如果暂时没有远端模型，可先接受本地模式回答。")
             return lines.joined(separator: "\n")
@@ -3328,7 +4562,7 @@ Tool policy:
 
         let modelLines = models.flatMap { slashLoadedModelLines($0) }
         lines.append("")
-        lines.append("Hub loaded 模型：")
+        lines.append("Hub 已加载模型：")
         lines.append(contentsOf: modelLines)
 
         if !current.isEmpty {
@@ -3354,13 +4588,36 @@ Tool policy:
         return lines
     }
 
+    private func slashInventoryCandidateStatusText(_ model: HubModel) -> String {
+        if model.isKnownLocalButCurrentlyUnrunnable {
+            return "本地路径失效，当前不可执行"
+        }
+        return HubModelSelectionAdvisor.stateLabel(model.state)
+    }
+
+    private func slashUnavailableLocalModelIssue(_ model: HubModel) -> String? {
+        guard let reason = model.localExecutionBlockedReason else { return nil }
+        return "\(reason)；这个候选现在不能自动加载。"
+    }
+
     private func slashRouteStatusSummary(
         configuredModelId: String,
         routeDecision: AXProjectPreferredModelRouteDecision,
         routeMemory: AXProjectModelRouteMemory?,
-        snapshot: ModelStateSnapshot
+        snapshot: ModelStateSnapshot,
+        transport: HubTransportMode
     ) -> String? {
         let configured = configuredModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if shouldExplainGrpcConfiguredRemoteVerification(
+            configuredModelId: configured,
+            routeDecision: routeDecision,
+            routeMemory: routeMemory,
+            routeSnapshot: snapshot,
+            transport: transport
+        ) {
+            return "路由状态：当前传输模式是 grpc-only；XT 会保留你配置的 `\(configured)` 继续发起远端验证，不再让项目级本地锁或上次稳定远端改写这轮请求。"
+        }
 
         if routeDecision.usedRememberedRemoteModel,
            let remembered = routeDecision.preferredModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -3383,7 +4640,7 @@ Tool policy:
         guard AXProjectModelRouteMemoryStore.isDirectlyRunnable(assessment: configuredAssessment) else {
             return nil
         }
-        return "路由状态：之前因连续 fallback 触发的本地锁已自动解除；`\(configured)` 现在恢复可执行。"
+        return "路由状态：之前因连续回落触发的本地锁已自动解除；`\(configured)` 现在恢复可执行。"
     }
 
     private func unavailableSlashModelSelectionText(
@@ -3402,19 +4659,31 @@ Tool policy:
                     "`\(blocked.id)` 是非对话模型。\(blocked.interactiveRoutingDisabledReason ?? "这个模型属于非对话能力，会由 Supervisor 按需调用，不作为对话模型。")"
                 )
             } else if let exact = assessment.exactMatch {
-                lines.append(
-                    "但 Hub 当前还没有把它放进可执行列表。现在记录里看到的是 `\(exact.id)`，状态是 \(HubModelSelectionAdvisor.stateLabel(exact.state))。"
-                )
+                if let issue = slashUnavailableLocalModelIssue(exact) {
+                    lines.append("但 Hub 当前还没有把它放进可执行列表。现在记录里看到的是 `\(exact.id)`，\(issue)")
+                } else {
+                    lines.append(
+                        "但 Hub 当前还没有把它放进可执行列表。现在记录里看到的是 `\(exact.id)`，状态是 \(HubModelSelectionAdvisor.stateLabel(exact.state))。"
+                    )
+                }
             } else {
-                lines.append("但 Hub 当前既没有已加载这个模型，也没有在 inventory 里看到精确匹配。")
+                lines.append("但 Hub 当前既没有把这个模型加入已加载列表，也没有在候选列表里看到精确匹配。")
             }
         } else {
             lines.append("但当前拿不到 Hub 的模型快照，无法确认它是否真的可用。")
         }
 
-        lines.append("如果现在直接发请求，这一轮很可能会回退到本地模式。")
+        if slashIsGrpcTransport(transportMode) {
+            lines.append("如果现在直接发请求，这一轮大概率不会精确命中这个远端目标。")
+        } else {
+            lines.append("如果现在直接发请求，这一轮大概率不会精确命中这个远端目标；更可能由本地模式或其他可执行候选接住。")
+        }
+        if slashIsGrpcTransport(transportMode) {
+            lines.append(slashGrpcUnavailableRouteTruthHint())
+        }
 
         let suggestedCandidates = slashSuggestedCandidates(from: assessment)
+        let exactLocalPathBroken = assessment?.exactMatch?.isKnownLocalButCurrentlyUnrunnable == true
         if !suggestedCandidates.isEmpty {
             lines.append("")
             lines.append("如果你要立刻继续，可改用这些候选：\(suggestedCandidates.joined(separator: "、"))")
@@ -3422,14 +4691,18 @@ Tool policy:
 
         lines.append("")
         lines.append("建议动作：")
-        lines.append("1. 在 Hub -> Models 确认 `\(modelId)` 已加载。")
+        if exactLocalPathBroken {
+            lines.append("1. 去 REL Flow Hub → Models & Paid Access，重新选择 `\(modelId)` 对应的本地目录或文件，确保 modelPath 仍然有效。")
+        } else {
+            lines.append("1. 在 Supervisor Control Center · AI 模型确认 `\(modelId)` 已进入真实可执行列表。")
+        }
         lines.append("2. 运行 `/models` 刷新当前视图。")
         if let first = suggestedCandidates.first {
             lines.append("3. 如果你现在就要继续，可先执行 `/model \(first)`。")
         } else {
             lines.append("3. 如果你现在就要继续，可先接受本地模式回答，再检查 Hub 配置。")
         }
-        lines.append("4. transport=\(transportMode)")
+        lines.append("4. 当前传输模式：\(transportMode)")
 
         return lines.joined(separator: "\n")
     }
@@ -3457,7 +4730,7 @@ Tool policy:
         let requestedModelId = rawRequestedModelId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !requestedModelId.isEmpty else { return nil }
 
-        let routeDecision = AXProjectModelRouteMemoryStore.resolvePreferredModel(
+        let routeDecision = effectiveProjectRouteDecision(
             configuredModelId: requestedModelId,
             role: role,
             ctx: ctx,
@@ -3484,7 +4757,7 @@ Tool policy:
                         "如果你只是想继续，不用手动切模型；XT 下一轮会先试 `\(rememberedRaw)`。"
                     ],
                     actionItems: [
-                        "如果你是要固定到 `\(requestedModelId)`，先去 Hub -> Models 把它加载好，再运行 `/models`，然后重试 `\(requestedCommand)`。",
+                        "如果你是要固定到 `\(requestedModelId)`，先去 Supervisor Control Center · AI 模型确认它已进入真实可执行列表，再运行 `/models`，然后重试 `\(requestedCommand)`。",
                         "如果你只是想继续，保持当前配置即可；XT 会先自动试 `\(rememberedRaw)`。",
                         "如果你要把 `\(rememberedRaw)` 固定成当前配置，可执行 `\(rememberedCommand)`。"
                     ]
@@ -3497,8 +4770,8 @@ Tool policy:
                     "如果你只是想继续，XT 仍会先按 `\(rememberedRaw)` 去尝试；但它自己也可能还需要在 Hub 里恢复加载。"
                 ],
                 actionItems: [
-                    "如果你是要固定到 `\(requestedModelId)`，先去 Hub -> Models 把它加载好，再运行 `/models`，然后重试 `\(requestedCommand)`。",
-                    "如果你只是想继续，也最好顺手在 Hub -> Models 确认 `\(rememberedRaw)` 已加载；否则 XT 改试它时仍可能继续 fallback。",
+                    "如果你是要固定到 `\(requestedModelId)`，先去 Supervisor Control Center · AI 模型确认它已进入真实可执行列表，再运行 `/models`，然后重试 `\(requestedCommand)`。",
+                    "如果你只是想继续，也最好顺手在 Supervisor Control Center · AI 模型确认 `\(rememberedRaw)` 已进入真实可执行列表；否则 XT 改试它时仍可能继续命不中远端。",
                     "如果你要把 `\(rememberedRaw)` 固定成当前配置，可执行 `\(rememberedCommand)`。"
                 ]
             )
@@ -3509,15 +4782,17 @@ Tool policy:
             let localModelId = (routeDecision.preferredLocalModelId ?? routeDecision.preferredModelId)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let localModelText = localModelId.isEmpty ? "本地模型" : "`\(localModelId)`"
-            let reason = routeMemory.lastFailureReasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
-            let reasonSuffix = reason.isEmpty ? "" : "（最近原因：\(reason)）"
+            let reasonSuffix = projectRouteFailureReasonParenthesized(
+                routeMemory.lastFailureReasonCode,
+                recent: true
+            )
             let requestedCommand = slashModelSelectionCommand(role: role, modelId: requestedModelId)
 
             var detailLines = [
                 "项目路由记忆：这个项目最近连续 \(routeMemory.consecutiveRemoteFallbackCount) 次没有稳定命中 `\(requestedModelId)`\(reasonSuffix)，XT 当前仍会先锁到本地 \(localModelText)。"
             ]
             var actionItems = [
-                "如果你是要固定到 `\(requestedModelId)`，先去 Hub -> Models 把它恢复到已加载，再运行 `/models`，然后重试 `\(requestedCommand)`。",
+                "如果你是要固定到 `\(requestedModelId)`，先去 Supervisor Control Center · AI 模型确认它已恢复到真实可执行列表，再运行 `/models`，然后重试 `\(requestedCommand)`。",
                 "当前项目级本地锁还在；就算现在重新选择 `\(requestedModelId)`，这轮也不会立刻避开本地。"
             ]
             if let first = suggestions.first {
@@ -3586,21 +4861,31 @@ Tool policy:
         )
         var lines = ["未修改当前 \(role.rawValue) 模型配置。"]
         if let exact = assessment?.exactMatch {
-            lines.append("`\(exact.id)` 当前还不能直接执行，状态是 \(HubModelSelectionAdvisor.stateLabel(exact.state))。")
+            if let issue = slashUnavailableLocalModelIssue(exact) {
+                lines.append("`\(exact.id)` 当前还不能直接执行，\(issue)")
+            } else {
+                lines.append("`\(exact.id)` 当前还不能直接执行，状态是 \(HubModelSelectionAdvisor.stateLabel(exact.state))。")
+            }
         } else {
-            lines.append("当前 inventory 里没有找到 `\(requestedModelId)` 的精确匹配。")
+            lines.append("当前候选列表里没有找到 `\(requestedModelId)` 的精确匹配。")
+        }
+        if slashIsGrpcTransport(HubAIClient.transportMode().rawValue) {
+            lines.append(slashGrpcUnavailableRouteTruthHint())
         }
         if let routeGuidance {
             lines.append("")
             lines.append(contentsOf: routeGuidance.detailLines)
         } else if let first = suggestions.first {
-            lines.append("建议直接执行 `\(slashModelSelectionCommand(role: role, modelId: first))`，或先去 Hub -> Models 把目标模型加载好再试。")
+            lines.append("建议直接执行 `\(slashModelSelectionCommand(role: role, modelId: first))`，或先去 Supervisor Control Center · AI 模型确认目标模型已进入真实可执行列表再试。")
         } else {
-            lines.append("建议先去 Hub -> Models 确认目标模型已加载，再运行 `/models` 刷新。")
+            lines.append("建议先去 Supervisor Control Center · AI 模型确认目标模型已进入真实可执行列表，再运行 `/models` 刷新。")
         }
         let actionItems = routeGuidance?.actionItems ?? {
+            let localPathFix = assessment?.exactMatch?.isKnownLocalButCurrentlyUnrunnable == true
             var items = [
-                "先去 Hub -> Models 确认 `\(requestedModelId)` 已加载。",
+                localPathFix
+                    ? "先去 REL Flow Hub → Models & Paid Access，重新选择 `\(requestedModelId)` 对应的本地目录或文件，确保 modelPath 仍然有效。"
+                    : "先去 Supervisor Control Center · AI 模型确认 `\(requestedModelId)` 已进入真实可执行列表。",
                 "运行 `/models` 刷新当前视图。"
             ]
             if let first = suggestions.first {
@@ -3615,7 +4900,7 @@ Tool policy:
         for (index, item) in actionItems.enumerated() {
             lines.append("\(index + 1). \(item)")
         }
-        lines.append("\(actionItems.count + 1). transport=\(HubAIClient.transportMode().rawValue)")
+        lines.append("\(actionItems.count + 1). 当前传输模式：\(HubAIClient.transportMode().rawValue)")
         return lines.joined(separator: "\n")
     }
 
@@ -3625,6 +4910,10 @@ Tool policy:
             return "/model \(normalized)"
         }
         return "/rolemodel \(role.rawValue) \(normalized)"
+    }
+
+    private func slashGrpcUnavailableRouteTruthHint() -> String {
+        "当前传输模式是 grpc-only；如果之后实际仍落到本地，更像是 Hub 执行阶段触发降级、export gate 生效，或上游远端还没 ready，不是 XT 静默改成本地。"
     }
 
     private func slashConfiguredModelStatusText(
@@ -3644,15 +4933,26 @@ Tool policy:
             if exact.state == .loaded {
                 return "已加载，可直接执行（\(locality)）。"
             }
-            return "Hub inventory 已精确命中；当前会继续按远端执行尝试（\(locality)，状态=\(HubModelSelectionAdvisor.stateLabel(exact.state))）。"
+            return "Hub 候选列表已精确命中；当前会继续按远端执行尝试（\(locality)，状态：\(HubModelSelectionAdvisor.stateLabel(exact.state))）。"
         }
         if let blocked = assessment.nonInteractiveExactMatch {
             return "当前命中的是非对话模型：`\(blocked.id)`。\(blocked.interactiveRoutingDisabledReason ?? "这个模型属于非对话能力，会由 Supervisor 按需调用，不作为对话模型。")"
         }
         if let exact = assessment.exactMatch {
-            return "已配置，但当前只在 inventory 中可见，状态=\(HubModelSelectionAdvisor.stateLabel(exact.state))；本轮可能回退到本地。"
+            if let issue = slashUnavailableLocalModelIssue(exact) {
+                return "已配置，但\(issue)"
+            }
+            let tail = slashIsGrpcTransport(HubAIClient.transportMode().rawValue)
+                ? " 当前传输模式是 grpc-only；如果实际仍落到本地，更像是 Hub / 上游链路还没 ready，不是 XT 静默改成本地。"
+                : ""
+            let base = "已配置，但当前只在候选列表中可见，状态：\(HubModelSelectionAdvisor.stateLabel(exact.state))；这轮大概率不会精确命中这个目标。"
+            return base + tail
         }
-        return "当前 inventory 里没有精确匹配；本轮可能回退到本地。"
+        let tail = slashIsGrpcTransport(HubAIClient.transportMode().rawValue)
+            ? " 当前传输模式是 grpc-only；如果实际仍落到本地，更像是 Hub 执行阶段触发降级、export gate 生效，或上游远端还没 ready，不是 XT 静默改成本地。"
+            : ""
+        let base = "当前候选列表里没有精确匹配；这轮大概率不会精确命中这个目标。"
+        return base + tail
     }
 
     private func slashConfiguredModelActionLines(
@@ -3668,12 +4968,16 @@ Tool policy:
         guard !AXProjectModelRouteMemoryStore.isDirectlyRunnable(assessment: assessment) else { return [] }
 
         var lines = [
-            "检查 Hub -> Models，确认 `\(configuredModelId)` 已加载。",
+            "检查 Supervisor Control Center · AI 模型，确认 `\(configuredModelId)` 已进入真实可执行列表。",
             "执行 `/models` 刷新当前模型列表。"
         ]
         if assessment.nonInteractiveExactMatch != nil {
             lines[0] = "这个模型是检索专用，不建议作为当前对话模型。"
             lines[1] = "执行 `/model auto` 恢复自动路由，或切到一个可对话模型。"
+        } else if let exact = assessment.exactMatch,
+                  exact.isKnownLocalButCurrentlyUnrunnable {
+            lines[0] = "去 REL Flow Hub → Models & Paid Access，重新选择 `\(exact.id)` 对应的本地目录或文件，确保 modelPath 仍然有效。"
+            lines[1] = "执行 `/models` 刷新当前模型列表。"
         }
         if let first = slashSuggestedCandidates(from: assessment).first {
             lines.append("如果只是想先继续工作，可临时切到 `/model \(first)`。")
@@ -3722,7 +5026,9 @@ Tool policy:
         config: AXProjectConfig?,
         router: LLMRouter,
         routeSnapshot: ModelStateSnapshot,
-        localSnapshot: ModelStateSnapshot
+        localSnapshot: ModelStateSnapshot,
+        supervisorRouteDecision: HubIPCClient.SupervisorRouteDecisionResult? = nil,
+        transportMode: HubTransportMode = HubAIClient.transportMode()
     ) -> String {
         let projectOverride = config?.modelOverride(for: .coder)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let globalAssignment = router.preferredModelIdForHub(for: .coder, projectConfig: nil)?
@@ -3730,19 +5036,21 @@ Tool policy:
         let supervisorAssignment = router.preferredModelIdForHub(for: .supervisor, projectConfig: nil)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let configuredModelId = configuredProjectModelID(for: .coder, config: config, router: router)
-        let routeDecision = AXProjectModelRouteMemoryStore.resolvePreferredModel(
+        let routeDecision = effectiveProjectRouteDecision(
             configuredModelId: configuredModelId,
             role: .coder,
             ctx: ctx,
             snapshot: routeSnapshot,
-            localSnapshot: localSnapshot
+            localSnapshot: localSnapshot,
+            transportMode: transportMode
         )
         let routeMemory = AXProjectModelRouteMemoryStore.load(for: ctx, role: .coder)
         let executionSnapshot = currentProjectExecutionSnapshot(ctx: ctx, role: .coder)
-        let transport = HubAIClient.transportMode()
+        let transport = transportMode
         let mismatch = projectModelMismatchSummary(
             configuredModelId: configuredModelId,
-            snapshot: executionSnapshot
+            snapshot: executionSnapshot,
+            transport: transportMode
         )
         let remoteRetryPlan = projectRemoteRetryPlanSummary(
             ctx: ctx,
@@ -3752,10 +5060,10 @@ Tool policy:
         )
 
         var lines: [String] = [
-            "Project route diagnose: coder",
+            "项目路由诊断：coder",
             "配置来源：\(projectConfiguredModelSourceText(projectOverride: projectOverride, globalAssignment: globalAssignment))",
             "当前配置：\(configuredModelId.isEmpty ? "auto" : configuredModelId)",
-            "当前 transport：\(transport.rawValue)",
+            "当前传输模式：\(transport.rawValue)",
         ]
 
         if !configuredModelId.isEmpty {
@@ -3772,11 +5080,28 @@ Tool policy:
                 snapshot: routeSnapshot
             )
         )
+        if let splitSummary = projectSupervisorSplitSummary(
+            projectOverride: projectOverride,
+            globalCoderAssignment: globalAssignment,
+            supervisorAssignment: supervisorAssignment,
+            configuredModelId: configuredModelId,
+            routeDecision: routeDecision,
+            routeMemory: routeMemory,
+            executionSnapshot: executionSnapshot,
+            transport: transport
+        ) {
+            lines.append("分叉解释：\(splitSummary)")
+        }
         lines.append("")
-        lines.append("当前决策：\(projectRouteDecisionSummary(routeDecision, routeMemory: routeMemory, routeSnapshot: routeSnapshot))")
+        lines.append("当前决策：\(projectRouteDecisionSummary(routeDecision, routeMemory: routeMemory, routeSnapshot: routeSnapshot, transport: transport))")
         lines.append("远端备选：\(remoteRetryPlan)")
+        if let supervisorRouteDecision {
+            lines.append("")
+            lines.append("Supervisor 路由诊断：")
+            lines.append(projectSupervisorRouteDiagnosisSummary(supervisorRouteDecision))
+        }
         lines.append("")
-        lines.append("route memory：")
+        lines.append("路由记忆：")
         lines.append(projectRouteMemoryDiagnosisSummary(routeMemory))
         lines.append("")
         lines.append("最近路由异常 / 重试记录：")
@@ -3790,7 +5115,13 @@ Tool policy:
         }
         lines.append("")
         lines.append("最近一次 coder 真实记录：")
-        lines.append(projectExecutionSnapshotDiagnosis(executionSnapshot))
+        lines.append(
+            projectExecutionSnapshotDiagnosis(
+                configuredModelId: configuredModelId,
+                snapshot: executionSnapshot,
+                transport: transport
+            )
+        )
         if let auditHint = projectRouteHubAuditHint(executionSnapshot) {
             lines.append("Hub 审计锚点：\(auditHint)")
         }
@@ -3806,14 +5137,182 @@ Tool policy:
             mismatchSummary: mismatch
         ))
         lines.append("")
-        lines.append("提示：project override 会优先于 coder 全局 assignment；Supervisor 只看自己的全局 assignment，不读取 project override 或 project route memory。要排除项目级影响，可先执行 `/model auto`。")
+        lines.append("提示：项目覆盖会优先于 coder 的全局分配；Supervisor 只看自己的全局分配，不读取项目覆盖或项目级路由记忆。要排除项目级影响，可先执行 `/model auto`。")
         return lines.joined(separator: "\n")
+    }
+
+    private func currentProjectSupervisorRouteDecisionSnapshot(
+        ctx: AXProjectContext,
+        config: AXProjectConfig?
+    ) async -> HubIPCClient.SupervisorRouteDecisionResult? {
+        let transportMode = HubAIClient.transportMode()
+        if transportMode == .fileIPC {
+            return nil
+        }
+        if transportMode == .auto, !HubPairingCoordinator.hasHubEnvFast(stateDir: nil) {
+            return nil
+        }
+
+        let effectiveConfig = config ?? AXProjectConfig.default(forProjectRoot: ctx.root)
+        let governance = resolvedProjectPromptGovernance(ctx: ctx, config: effectiveConfig)
+        let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+        let requireRunner = governance.configuredBundle.executionTier == .a4OpenClaw
+            || governance.effectiveBundle.executionTier == .a4OpenClaw
+
+        return await HubIPCClient.requestSupervisorRouteDecision(
+            HubIPCClient.SupervisorRouteDecisionRequestPayload(
+                requestId: "xt-route-diagnose-\(String(UUID().uuidString.lowercased().prefix(12)))",
+                projectId: projectId,
+                runId: nil,
+                missionId: nil,
+                surfaceType: "xt_ui",
+                trustLevel: "paired_surface",
+                normalizedIntentType: "directive",
+                preferredDeviceId: nil,
+                requireXT: true,
+                requireRunner: requireRunner,
+                actorRef: "xt.route_diagnose",
+                conversationId: nil,
+                threadKey: nil
+            )
+        )
+    }
+
+    private func projectSupervisorRouteDiagnosisSummary(
+        _ result: HubIPCClient.SupervisorRouteDecisionResult
+    ) -> String {
+        var lines: [String] = []
+        let governanceHint = projectSupervisorRouteGovernanceHint(result)
+
+        if let route = result.route {
+            lines.append("- 决策=\(route.decision.isEmpty ? "(none)" : route.decision)")
+            let denyCode = route.denyCode.trimmingCharacters(in: .whitespacesAndNewlines)
+            if denyCode.isEmpty {
+                lines.append("- deny code：(none)")
+            } else {
+                let denyDisplay = XTRouteTruthPresentation.denyCodeText(denyCode) ?? denyCode
+                lines.append("- deny code：\(denyDisplay)")
+            }
+            if !route.auditRef.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                lines.append("- audit_ref=\(route.auditRef)")
+            }
+        } else {
+            lines.append("- 决策=(unavailable)")
+        }
+
+        if let readiness = result.governanceRuntimeReadiness {
+            let blockedKeys = readiness.blockedComponentKeys.map(\.rawValue)
+            lines.append("- runtime readiness=\(readiness.summaryLine.isEmpty ? readiness.state.rawValue : readiness.summaryLine)")
+            lines.append("- 阻塞平面=\(blockedKeys.isEmpty ? "(none)" : blockedKeys.joined(separator: ","))")
+            if let governanceHint {
+                lines.append("- 治理判断：\(governanceHint.summaryText)")
+            }
+
+            let blockedComponents = readiness.components.filter { $0.state == .blocked }
+            for component in blockedComponents {
+                let detail = projectSupervisorRouteComponentDetail(component)
+                lines.append("- \(projectSupervisorRouteComponentLabel(component.key))：\(detail)")
+            }
+
+            if let nextStep = projectSupervisorRouteNextStep(
+                readiness: readiness,
+                route: result.route
+            ) {
+                lines.append("- 修复方向：\(nextStep)")
+            }
+        } else if let reasonCode = result.reasonCode,
+                  !reasonCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.append("- 当前未拿到治理真相：\(reasonCode)")
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    private func projectSupervisorRouteComponentDetail(
+        _ component: HubIPCClient.SupervisorRouteGovernanceComponentSnapshot
+    ) -> String {
+        let reasonSummary = component.missingReasonCodes
+            .map { AXProjectGovernanceRuntimeReadinessSnapshot.reasonText($0) }
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .joined(separator: " / ")
+        if !reasonSummary.isEmpty {
+            return reasonSummary
+        }
+        if !component.summaryLine.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return component.summaryLine
+        }
+        let denyCode = component.denyCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        return denyCode.isEmpty ? component.state.displayName : denyCode
+    }
+
+    private func projectSupervisorRouteComponentLabel(
+        _ key: AXProjectGovernanceRuntimeReadinessComponentKey
+    ) -> String {
+        switch key {
+        case .routeReady:
+            return "route plane"
+        case .capabilityReady:
+            return "capability plane"
+        case .grantReady:
+            return "grant plane"
+        case .checkpointRecoveryReady:
+            return "checkpoint / recovery plane"
+        case .evidenceExportReady:
+            return "evidence / export plane"
+        }
+    }
+
+    private func projectSupervisorRouteNextStep(
+        readiness: HubIPCClient.SupervisorRouteGovernanceRuntimeReadinessSnapshot,
+        route: HubIPCClient.SupervisorRouteDecisionSnapshot?
+    ) -> String? {
+        let blockedKeys = readiness.blockedComponentKeys
+        if blockedKeys.isEmpty {
+            return "Hub 这侧的 Supervisor route / grant 已就绪；接下来优先看当前 project 自己的 route truth、拒绝原因和执行证据。"
+        }
+        if let governanceHint = XTRouteTruthPresentation.supervisorRouteGovernanceHint(
+            routeReasonCode: route?.denyCode,
+            denyCode: route?.denyCode
+        ) {
+            return governanceHint.repairHintText
+        }
+        if blockedKeys.contains(.routeReady) {
+            return "先检查 XT 是否在线、preferred device 是否仍可达，以及 project scope 是否一致。"
+        }
+        if blockedKeys.contains(.grantReady) {
+            return "先检查 trusted automation、permission owner、kill-switch、TTL 和当前 project 绑定。"
+        }
+        if blockedKeys.contains(.checkpointRecoveryReady) {
+            return "先检查事件能力和恢复链是否已接好。"
+        }
+        if blockedKeys.contains(.evidenceExportReady) {
+            return "先检查 memory/export gate 和审计导出链。"
+        }
+        if let route, !route.denyCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let denyDisplay = XTRouteTruthPresentation.denyCodeText(route.denyCode) ?? route.denyCode
+            return "先围绕 \(denyDisplay) 这条阻塞继续排查。"
+        }
+        return nil
+    }
+
+    private func projectSupervisorRouteGovernanceHint(
+        _ result: HubIPCClient.SupervisorRouteDecisionResult
+    ) -> XTSupervisorRouteGovernanceHint? {
+        let reason = result.route?.denyCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallbackReason = result.reasonCode?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return XTRouteTruthPresentation.supervisorRouteGovernanceHint(
+            routeReasonCode: (reason?.isEmpty == false ? reason : fallbackReason),
+            denyCode: (reason?.isEmpty == false ? reason : nil)
+        )
     }
 
     private func projectRouteHubAuditHint(_ snapshot: AXRoleExecutionSnapshot) -> String? {
         let auditRef = snapshot.auditRef.trimmingCharacters(in: .whitespacesAndNewlines)
         let denyCode = snapshot.denyCode.trimmingCharacters(in: .whitespacesAndNewlines)
-        let reason = normalizedRouteReasonCode(snapshot.fallbackReasonCode)
+        let reason = effectiveProjectFailureReasonCode(
+            fallbackReasonCode: snapshot.fallbackReasonCode,
+            denyCode: snapshot.denyCode
+        )
 
         guard !auditRef.isEmpty || !denyCode.isEmpty else {
             return nil
@@ -3821,20 +5320,21 @@ Tool policy:
 
         var tokens: [String] = []
         if !auditRef.isEmpty {
-            tokens.append("audit_ref=\(auditRef)")
+            tokens.append("审计锚点：\(auditRef)")
         }
         if !denyCode.isEmpty {
-            tokens.append("deny_code=\(denyCode)")
+            let displayDenyCode = XTGuardrailMessagePresentation.displayDenyCode(denyCode)
+            tokens.append("拒绝原因：\(displayDenyCode)")
         }
 
-        let evidence = tokens.joined(separator: " ")
+        let evidence = tokens.joined(separator: "；")
         switch reason {
         case "remote_export_blocked":
             return "\(evidence)。去 Hub Recovery / Hub 审计优先查 `remote_export_blocked`。"
         case "downgrade_to_local":
             return "\(evidence)。去 Hub 审计优先查 `ai.generate.downgraded_to_local`。"
         case "model_not_found", "remote_model_not_found":
-            return "\(evidence)。去 Hub Models / 审计优先核对目标模型是否真的可执行。"
+            return "\(evidence)。去 Supervisor Control Center · AI 模型 / Hub 审计优先核对目标模型是否真的可执行。"
         default:
             return "\(evidence)。去 Hub 审计优先按这条证据查。"
         }
@@ -3845,12 +5345,12 @@ Tool policy:
         globalAssignment: String
     ) -> String {
         if !projectOverride.isEmpty {
-            return "project override（当前项目覆盖）"
+            return "项目覆盖（当前项目单独配置）"
         }
         if !globalAssignment.isEmpty {
-            return "global assignment（全局角色配置）"
+            return "全局角色分配"
         }
-        return "default auto（没有固定 model id）"
+        return "默认自动选择（没有固定模型 ID）"
     }
 
     private func projectGlobalRouteComparisonSummary(
@@ -3860,8 +5360,8 @@ Tool policy:
         snapshot: ModelStateSnapshot
     ) -> String {
         var lines: [String] = [
-            "- global_coder_assignment=\(displayRouteValue(globalCoderAssignment.isEmpty ? "auto" : globalCoderAssignment))",
-            "- global_coder_status=\(globalAssignmentStatusText(globalCoderAssignment, snapshot: snapshot))",
+            "- Project AI 全局分配：\(displayRouteValue(globalCoderAssignment.isEmpty ? "auto" : globalCoderAssignment))",
+            "- Project AI 全局状态：\(globalAssignmentStatusText(globalCoderAssignment, snapshot: snapshot))",
         ]
 
         if let issue = HubModelSelectionAdvisor.globalAssignmentIssue(
@@ -3869,22 +5369,22 @@ Tool policy:
             configuredModelId: globalCoderAssignment,
             snapshot: snapshot
         ) {
-            lines.append("- global_coder_issue=\(singleLineRouteMessage(issue.message))")
+            lines.append("- Project AI 全局问题：\(singleLineRouteMessage(issue.message))")
         }
 
-        lines.append("- global_supervisor_assignment=\(displayRouteValue(supervisorAssignment.isEmpty ? "auto" : supervisorAssignment))")
-        lines.append("- global_supervisor_status=\(globalAssignmentStatusText(supervisorAssignment, snapshot: snapshot))")
+        lines.append("- Supervisor 全局分配：\(displayRouteValue(supervisorAssignment.isEmpty ? "auto" : supervisorAssignment))")
+        lines.append("- Supervisor 全局状态：\(globalAssignmentStatusText(supervisorAssignment, snapshot: snapshot))")
 
         if let issue = HubModelSelectionAdvisor.globalAssignmentIssue(
             for: .supervisor,
             configuredModelId: supervisorAssignment,
             snapshot: snapshot
         ) {
-            lines.append("- global_supervisor_issue=\(singleLineRouteMessage(issue.message))")
+            lines.append("- Supervisor 全局问题：\(singleLineRouteMessage(issue.message))")
         }
 
         lines.append(
-            "- relation=\(projectGlobalRouteRelationText(projectOverride: projectOverride, globalCoderAssignment: globalCoderAssignment, supervisorAssignment: supervisorAssignment))"
+            "- 关系说明：\(projectGlobalRouteRelationText(projectOverride: projectOverride, globalCoderAssignment: globalCoderAssignment, supervisorAssignment: supervisorAssignment))"
         )
         return lines.joined(separator: "\n")
     }
@@ -3911,24 +5411,121 @@ Tool policy:
 
         if !trimmedProjectOverride.isEmpty {
             if trimmedCoderAssignment.isEmpty {
-                return "当前项目有 project override；它会直接盖过 coder 的默认 Hub 路由。Supervisor 仍只看自己的全局 assignment。"
+                return "当前项目有项目覆盖；它会直接盖过 coder 的默认 Hub 路由。Supervisor 仍只看自己的全局分配。"
             }
-            return "当前项目有 project override；它会盖过 coder 全局 assignment `\(trimmedCoderAssignment)`。Supervisor 仍只看自己的全局 assignment。"
+            return "当前项目有项目覆盖；它会盖过 coder 全局分配 `\(trimmedCoderAssignment)`。Supervisor 仍只看自己的全局分配。"
         }
 
         if trimmedCoderAssignment.isEmpty && trimmedSupervisorAssignment.isEmpty {
-            return "coder 和 Supervisor 都没有固定全局 assignment；两边是否命中远端，主要取决于各自当轮的 Hub 路由与 fallback。"
+            return "coder 和 Supervisor 都没有固定全局分配；两边是否命中远端，主要取决于各自当轮的 Hub 路由与执行链状态。"
         }
         if trimmedCoderAssignment.isEmpty {
-            return "project coder 当前没有固定全局 assignment，但 Supervisor 有自己的全局 assignment；两边本来就不一定一致。"
+            return "当前项目的 coder 没有固定全局分配，但 Supervisor 有自己的全局分配；两边本来就不一定一致。"
         }
         if trimmedSupervisorAssignment.isEmpty {
-            return "Supervisor 当前没有固定全局 assignment，但 project coder 有自己的全局 assignment；两边本来就不一定一致。"
+            return "Supervisor 当前没有固定全局分配，但项目里的 coder 有自己的全局分配；两边本来就不一定一致。"
         }
         if projectModelIdentitiesMatch(trimmedCoderAssignment, trimmedSupervisorAssignment) {
-            return "Supervisor 和 project coder 的全局 assignment 一致；如果两边表现不同，通常是 project route memory、本地锁定或项目最近执行记录触发了 fallback。"
+            return "Supervisor 和 project coder 的全局分配一致；如果两边表现不同，通常是项目级路由记忆、本地锁定或项目最近执行记录触发了回落。"
         }
-        return "Supervisor 和 project coder 的全局 assignment 不同，这本身就会导致两边命中模型不一致。"
+        return "Supervisor 和 project coder 的全局分配不同，这本身就会导致两边命中模型不一致。"
+    }
+
+    private func projectSupervisorSplitSummary(
+        projectOverride: String,
+        globalCoderAssignment: String,
+        supervisorAssignment: String,
+        configuredModelId rawConfiguredModelId: String,
+        routeDecision: AXProjectPreferredModelRouteDecision,
+        routeMemory: AXProjectModelRouteMemory?,
+        executionSnapshot: AXRoleExecutionSnapshot,
+        transport: HubTransportMode
+    ) -> String? {
+        let trimmedProjectOverride = projectOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedCoderAssignment = globalCoderAssignment.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedSupervisorAssignment = supervisorAssignment.trimmingCharacters(in: .whitespacesAndNewlines)
+        let configuredModelId = rawConfiguredModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let overrideChangesProjectRoute: Bool = {
+            guard !trimmedProjectOverride.isEmpty else { return false }
+            if !trimmedCoderAssignment.isEmpty {
+                return !projectModelIdentitiesMatch(trimmedProjectOverride, trimmedCoderAssignment)
+            }
+            if !trimmedSupervisorAssignment.isEmpty {
+                return !projectModelIdentitiesMatch(trimmedProjectOverride, trimmedSupervisorAssignment)
+            }
+            return true
+        }()
+
+        if overrideChangesProjectRoute {
+            return "如果你看到 Supervisor 和 project coder 不一致，先看项目覆盖：当前项目已经单独覆盖到 `\(trimmedProjectOverride)`；Supervisor 不读取这个项目级覆盖。"
+        }
+
+        guard !trimmedCoderAssignment.isEmpty,
+              !trimmedSupervisorAssignment.isEmpty,
+              projectModelIdentitiesMatch(trimmedCoderAssignment, trimmedSupervisorAssignment) else {
+            return nil
+        }
+
+        let targetModelId = configuredModelId.isEmpty ? trimmedCoderAssignment : configuredModelId
+        let effectiveReason = effectiveProjectFailureReasonCode(
+            fallbackReasonCode: executionSnapshot.fallbackReasonCode,
+            denyCode: executionSnapshot.denyCode,
+            secondaryReasonCode: routeDecision.reasonCode ?? ""
+        )
+        let executionPath = executionSnapshot.executionPath
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
+        if routeDecision.forceLocalExecution {
+            let localModelId = (routeDecision.preferredLocalModelId ?? routeDecision.preferredModelId)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let localLabel = localModelId.isEmpty ? "本地模型" : "`\(localModelId)`"
+            let reasonSuffix = routeMemory.flatMap {
+                projectRouteFailureReasonParenthesized($0.lastFailureReasonCode, recent: true)
+            } ?? ""
+            return "如果你看到 Supervisor 还能继续按 `\(trimmedSupervisorAssignment)` 尝试、但 project coder 先落到本地，首因更像是这个项目自己的项目级路由记忆 / 本地锁：当前项目已先锁到 \(localLabel)\(reasonSuffix)，而 Supervisor 不读取这份项目级记忆。"
+        }
+
+        if routeDecision.usedRememberedRemoteModel,
+           let remembered = routeDecision.preferredModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !remembered.isEmpty,
+           !projectModelIdentitiesMatch(remembered, targetModelId) {
+            return "如果你看到 Supervisor 还能继续按 `\(trimmedSupervisorAssignment)` 尝试、但 project coder 没命中 `\(targetModelId)`，首因更像是这个项目当前会先改试上次稳定远端 `\(remembered)`；Supervisor 不使用这份项目级路由记忆。"
+        }
+
+        guard transport == .grpc else { return nil }
+
+        switch effectiveReason {
+        case "remote_export_blocked",
+             "device_remote_export_denied",
+             "policy_remote_denied",
+             "budget_remote_denied",
+             "remote_disabled_by_user_pref":
+            return "如果你看到 Supervisor 还能继续按 `\(trimmedSupervisorAssignment)` 尝试、但 project coder 这轮仍落到本地，更像是项目聊天这条执行链里发往 `\(targetModelId)` 的项目提示词 / 记忆导出被 Hub remote export gate 挡住了；Supervisor 不读取项目级路由记忆，实际上下文链也不会完全一样。"
+        case "downgrade_to_local":
+            return "如果你看到 Supervisor 还能继续按 `\(trimmedSupervisorAssignment)` 尝试、但 project coder 这轮落到本地，更像是 Hub 在执行阶段把这条 project 请求降到了本地，不是 XT 把模型静默改掉。"
+        case "blocked_waiting_upstream",
+             "provider_not_ready",
+             "grpc_route_unavailable",
+             "runtime_not_running",
+             "request_write_failed",
+             "response_timeout",
+             "remote_timeout",
+             "remote_unreachable":
+            return "如果你看到 Supervisor 还能继续按 `\(trimmedSupervisorAssignment)` 尝试、但 project coder 这轮落到本地，更像是项目聊天这条执行链在远端阶段没 ready 或执行失败后由本地兜底；先看当前回落原因、Hub 链路和 provider 就绪状态。"
+        default:
+            break
+        }
+
+        switch executionPath {
+        case "hub_downgraded_to_local":
+            return "如果你看到 Supervisor 还能继续按 `\(trimmedSupervisorAssignment)` 尝试、但 project coder 这轮落到本地，更像是 Hub 在执行阶段把这条 project 请求改派到了本地，不是 XT 把模型静默改掉。"
+        case "local_fallback_after_remote_error":
+            return "如果你看到 Supervisor 还能继续按 `\(trimmedSupervisorAssignment)` 尝试、但 project coder 这轮落到本地，更像是项目聊天这条执行链的远端失败后由本地兜底；先看当前回落原因、Hub 链路和 provider 就绪状态。"
+        default:
+            return nil
+        }
     }
 
     private func singleLineRouteMessage(_ text: String) -> String {
@@ -3937,24 +5534,66 @@ Tool policy:
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private func shouldExplainGrpcConfiguredRemoteVerification(
+        configuredModelId rawConfiguredModelId: String,
+        routeDecision: AXProjectPreferredModelRouteDecision,
+        routeMemory: AXProjectModelRouteMemory?,
+        routeSnapshot: ModelStateSnapshot?,
+        transport: HubTransportMode
+    ) -> Bool {
+        guard transport == .grpc else { return false }
+
+        let configuredModelId = rawConfiguredModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !configuredModelId.isEmpty else { return false }
+
+        if routeDecision.reasonCode == "grpc_preserve_configured_model" {
+            return true
+        }
+
+        guard !routeDecision.forceLocalExecution,
+              !routeDecision.usedRememberedRemoteModel,
+              let routeMemory,
+              routeMemory.shouldSuggestLocalModeNotice,
+              let routeSnapshot else {
+            return false
+        }
+
+        return AXProjectModelRouteMemoryStore.isDirectlyRunnable(
+            assessment: HubModelSelectionAdvisor.assess(
+                requestedId: configuredModelId,
+                snapshot: routeSnapshot
+            )
+        )
+    }
+
     private func projectRouteDecisionSummary(
         _ decision: AXProjectPreferredModelRouteDecision,
         routeMemory: AXProjectModelRouteMemory? = nil,
-        routeSnapshot: ModelStateSnapshot? = nil
+        routeSnapshot: ModelStateSnapshot? = nil,
+        transport: HubTransportMode = HubAIClient.transportMode()
     ) -> String {
+        let configured = decision.configuredModelId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        if shouldExplainGrpcConfiguredRemoteVerification(
+            configuredModelId: configured,
+            routeDecision: decision,
+            routeMemory: routeMemory,
+            routeSnapshot: routeSnapshot,
+            transport: transport
+        ) {
+            return "当前传输模式是 grpc-only；XT 会保留配置的远端模型继续验证：\(configured)"
+        }
         if decision.forceLocalExecution {
             let localModel = (decision.preferredLocalModelId ?? decision.preferredModelId)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown_local_model"
-            let reason = decision.reasonCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let reasonSuffix = reason.isEmpty ? "" : "，reason=\(reason)"
+            let reasonSuffix = projectRouteDecisionReasonSuffix(decision.reasonCode)
             return "XT 当前会先锁本地：\(localModel)\(reasonSuffix)"
         }
         if decision.usedRememberedRemoteModel,
            let remembered = decision.preferredModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
            let configured = decision.configuredModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
            !remembered.isEmpty {
-            let reason = decision.reasonCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let reasonSuffix = reason.isEmpty ? "" : "，reason=\(reason)"
+            let reasonSuffix = projectRouteDecisionReasonSuffix(decision.reasonCode)
             if !configured.isEmpty,
                remembered.caseInsensitiveCompare(configured) != .orderedSame {
                 return "当前配置还不能直接执行；XT 这轮会先自动试上次稳定远端：\(remembered)\(reasonSuffix)"
@@ -3993,10 +5632,10 @@ Tool policy:
             return "当前不启用。XT 已锁到本地执行，不会先试远端备选。"
         }
         if transport == .fileIPC {
-            return "当前不启用。transport=fileIPC，本轮不会先试远端备选。"
+            return "当前不启用。传输模式=fileIPC，本轮不会先试远端备选。"
         }
         if transport != .auto {
-            return "当前不启用。只有 auto 模式下，project 级远端失败才会先试同族备选远端。"
+            return "当前不启用。只有自动模式下，项目级远端失败才会先试同族备选远端。"
         }
         guard let requestedModelId = routeDecision.preferredModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
               !requestedModelId.isEmpty else {
@@ -4010,32 +5649,121 @@ Tool policy:
             transportMode: transport,
             projectId: projectId
         ), !backup.isEmpty else {
-            return "当前没有可用的同族 loaded 远端备选；首选远端失败后会按现有 fallback 规则处理。"
+            return "当前没有可用的同族已加载远端备选；首选远端失败后会按现有回落规则处理。"
         }
-        return "首选远端失败时，XT 会先改试同族已加载远端：\(backup)；如果仍失败，再按现有 fallback 规则处理。"
+        return "首选远端失败时，XT 会先改试同族已加载远端：\(backup)；如果仍失败，再按现有回落规则处理。"
     }
 
     private func projectRouteMemoryDiagnosisSummary(_ routeMemory: AXProjectModelRouteMemory?) -> String {
         guard let routeMemory else {
-            return "无可用 route memory 记录。"
+            return "无可用项目级路由记忆。"
         }
 
         var lines: [String] = [
-            "- consecutive_remote_fallbacks=\(routeMemory.consecutiveRemoteFallbackCount)",
-            "- last_requested_model=\(displayRouteValue(routeMemory.lastRequestedModelId))",
-            "- last_actual_model=\(displayRouteValue(routeMemory.lastActualModelId))",
-            "- last_execution_path=\(displayRouteValue(routeMemory.lastExecutionPath))",
-            "- last_failure_reason=\(displayRouteValue(routeMemory.lastFailureReasonCode))",
+            "- 最近连续远端回落：\(routeMemory.consecutiveRemoteFallbackCount)",
+            "- 最近请求模型：\(displayRouteValue(routeMemory.lastRequestedModelId))",
+            "- 最近实际模型：\(displayRouteValue(routeMemory.lastActualModelId))",
+            "- 最近执行路径：\(frontstageProjectExecutionPathText(routeMemory.lastExecutionPath))",
+            "- 最近失败原因：\(displayRouteValue(projectRouteFailureReasonText(routeMemory.lastFailureReasonCode) ?? routeMemory.lastFailureReasonCode))",
         ]
         let lastHealthyRemote = routeMemory.lastHealthyRemoteModelId.trimmingCharacters(in: .whitespacesAndNewlines)
         if !lastHealthyRemote.isEmpty {
-            lines.insert("- last_healthy_remote_model=\(lastHealthyRemote)", at: 1)
+            lines.insert("- 最近稳定远端：\(lastHealthyRemote)", at: 1)
         }
         return lines.joined(separator: "\n")
     }
 
     private func projectRouteIncidentDiagnosisSummary(_ ctx: AXProjectContext) -> String {
-        AXModelRouteDiagnosticsStore.diagnosisSummary(for: ctx, limit: 3)
+        let events = AXModelRouteDiagnosticsStore.recentEvents(for: ctx, limit: 3)
+        guard !events.isEmpty else {
+            return "无最近路由异常或远端重试记录。"
+        }
+
+        return events
+            .map { "- \(frontstageProjectRouteIncidentSummary($0))" }
+            .joined(separator: "\n")
+    }
+
+    private func frontstageProjectRouteIncidentSummary(_ event: AXModelRouteDiagnosticEvent) -> String {
+        var parts: [String] = []
+
+        if !event.role.isEmpty {
+            parts.append("角色：\(event.role)")
+        }
+        if !event.executionPath.isEmpty {
+            parts.append("执行路径：\(frontstageProjectExecutionPathText(event.executionPath))")
+        }
+        if event.remoteRetryAttempted {
+            let retryFrom = event.remoteRetryFromModelId.isEmpty ? event.requestedModelId : event.remoteRetryFromModelId
+            if !retryFrom.isEmpty || !event.remoteRetryToModelId.isEmpty {
+                let fromText = retryFrom.isEmpty ? "远端" : retryFrom
+                let toText = event.remoteRetryToModelId.isEmpty ? "备用远端" : event.remoteRetryToModelId
+                parts.append("远端改试：\(fromText) -> \(toText)")
+            } else {
+                parts.append("远端改试：已发生")
+            }
+            let retryReason = event.remoteRetryReasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !retryReason.isEmpty {
+                parts.append("改试原因：\(projectRouteFailureReasonText(retryReason) ?? retryReason)")
+            }
+        }
+        if !event.requestedModelId.isEmpty {
+            parts.append("请求模型：\(event.requestedModelId)")
+        }
+        if !event.actualModelId.isEmpty {
+            parts.append("实际模型：\(event.actualModelId)")
+        }
+
+        let effectiveReason = event.effectiveFailureReasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !effectiveReason.isEmpty {
+            parts.append("原因：\(projectRouteFailureReasonText(effectiveReason) ?? effectiveReason)")
+        }
+
+        let denyCode = event.denyCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !denyCode.isEmpty,
+           normalizedRouteReasonCode(denyCode) != normalizedRouteReasonCode(effectiveReason) {
+            parts.append("拒绝原因：\(XTGuardrailMessagePresentation.displayDenyCode(denyCode))")
+        }
+
+        if !event.runtimeProvider.isEmpty {
+            parts.append("执行提供方：\(event.runtimeProvider)")
+        }
+        if let auditRef = event.auditRef?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !auditRef.isEmpty {
+            parts.append("审计锚点：\(auditRef)")
+        }
+
+        return parts.joined(separator: " · ")
+    }
+
+    private func frontstageProjectExecutionPathText(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "（无）" }
+
+        switch trimmed {
+        case "remote_model":
+            return "远端执行（remote_model）"
+        case "hub_downgraded_to_local":
+            return "Hub 改派到本地（hub_downgraded_to_local）"
+        case "local_fallback_after_remote_error":
+            return "远端失败后本地兜底（local_fallback_after_remote_error）"
+        case "local_runtime":
+            return "本地执行（local_runtime）"
+        case "remote_error":
+            return "远端阶段失败（remote_error）"
+        case "direct_provider":
+            return "直连提供方（direct_provider）"
+        case "local_preflight":
+            return "本地预检（local_preflight）"
+        case "local_direct_reply":
+            return "本地直答（local_direct_reply）"
+        case "local_direct_action":
+            return "本地直行动作（local_direct_action）"
+        case "hub_brief_projection":
+            return "Hub brief 投影（hub_brief_projection）"
+        default:
+            return trimmed
+        }
     }
 
     private func projectRouteIncidentTrendDiagnosis(_ ctx: AXProjectContext) -> ProjectRouteIncidentTrendDiagnosis? {
@@ -4061,8 +5789,8 @@ Tool policy:
             }
             if let modelNotFound = reasonCounts["model_not_found"], modelNotFound > 0 {
                 return ProjectRouteIncidentTrendDiagnosis(
-                    summary: "最近 \(modelNotFound) 次主要是 `model_not_found`，更像目标远端模型没加载、模型 id 不匹配，或当前 assignment 指向了不可执行模型。",
-                    actionHint: "先去 Hub -> Models 确认目标模型已加载，再运行 `/models`；如果只是想先继续，先看当前 project 的路由状态是否已提示会自动改试上次稳定远端。"
+                    summary: "最近 \(modelNotFound) 次主要是 `model_not_found`，更像目标远端模型没加载、模型 ID 不匹配，或当前分配指向了不可执行模型。",
+                    actionHint: "先去 Supervisor Control Center · AI 模型确认目标模型已进入真实可执行列表，再运行 `/models`；如果只是想先继续，先看当前项目的路由状态是否已提示会自动改试上次稳定远端。"
                 )
             }
             if let remoteModelNotFound = reasonCounts["remote_model_not_found"], remoteModelNotFound > 0 {
@@ -4097,7 +5825,7 @@ Tool policy:
     private func countedRouteReasonCodes(in events: [AXModelRouteDiagnosticEvent]) -> [String: Int] {
         var counts: [String: Int] = [:]
         for event in events {
-            let key = normalizedRouteReasonCode(event.fallbackReasonCode)
+            let key = normalizedRouteReasonCode(event.effectiveFailureReasonCode)
             guard !key.isEmpty else { continue }
             counts[key, default: 0] += 1
         }
@@ -4112,40 +5840,148 @@ Tool policy:
             .replacingOccurrences(of: " ", with: "_")
     }
 
-    private func projectExecutionSnapshotDiagnosis(_ snapshot: AXRoleExecutionSnapshot) -> String {
+    private func effectiveProjectFailureReasonCode(
+        fallbackReasonCode: String,
+        denyCode: String,
+        secondaryReasonCode: String = ""
+    ) -> String {
+        let fallback = normalizedRouteReasonCode(fallbackReasonCode)
+        if !fallback.isEmpty {
+            return fallback
+        }
+
+        let deny = normalizedRouteReasonCode(denyCode)
+        if !deny.isEmpty {
+            return deny
+        }
+
+        return normalizedRouteReasonCode(secondaryReasonCode)
+    }
+
+    private func projectRouteTruthLines(
+        configuredModelId: String,
+        snapshot: AXRoleExecutionSnapshot,
+        transport: HubTransportMode? = nil,
+        includeConfiguredRoute: Bool = true,
+        includeRouteState: Bool = true,
+        includeTransport: Bool = true
+    ) -> [String] {
+        guard snapshot.hasRecord else { return [] }
+
+        let configuredTarget = configuredModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveConfiguredTarget = configuredTarget.isEmpty ? "auto" : configuredTarget
+        let evidence = XTRouteTruthPresentation.evidence(
+            configuredModelId: effectiveConfiguredTarget,
+            snapshot: projectRouteTruthSnapshot(snapshot),
+            transportMode: transport?.rawValue ?? ""
+        )
+
+        return [
+            includeConfiguredRoute ? evidence.configuredRouteLine : nil,
+            evidence.actualRouteLine,
+            evidence.fallbackReasonLine,
+            includeRouteState ? evidence.routeStateLine : nil,
+            evidence.auditRefLine,
+            evidence.denyCodeLine,
+            includeTransport ? evidence.transportLine : nil
+        ]
+        .compactMap { line in
+            let trimmed = line?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !trimmed.isEmpty else { return nil }
+            return frontstageProjectRouteTruthLine(trimmed)
+        }
+    }
+
+    private func frontstageProjectRouteTruthLine(_ line: String) -> String {
+        let replacements: [(String, String)] = [
+            ("configured route=", "配置目标："),
+            ("actual route=", "实际落点："),
+            ("fallback reason=", "回落原因："),
+            ("route state=", "路由状态："),
+            ("audit_ref=", "审计锚点："),
+            ("deny_code=", "拒绝原因："),
+            ("paired_device_truth=", "配对设备约束："),
+            ("transport=", "传输模式：")
+        ]
+
+        for (prefix, replacement) in replacements where line.hasPrefix(prefix) {
+            return replacement + String(line.dropFirst(prefix.count))
+        }
+        return line
+    }
+
+    private func projectRouteTruthSnapshot(_ snapshot: AXRoleExecutionSnapshot) -> AXRoleExecutionSnapshot {
+        var normalized = snapshot
+        normalized.fallbackReasonCode = effectiveProjectFailureReasonCode(
+            fallbackReasonCode: snapshot.fallbackReasonCode,
+            denyCode: snapshot.denyCode
+        )
+        return normalized
+    }
+
+    private func projectUsageRouteTruthSnapshot(_ usage: LLMUsage?) -> AXRoleExecutionSnapshot {
+        func trimmed(_ raw: String?) -> String {
+            (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        return AXRoleExecutionSnapshot(
+            role: .coder,
+            updatedAt: usage == nil ? 0 : 1,
+            stage: "",
+            requestedModelId: trimmed(usage?.requestedModelId),
+            actualModelId: trimmed(usage?.actualModelId),
+            runtimeProvider: trimmed(usage?.runtimeProvider),
+            executionPath: trimmed(usage?.executionPath),
+            fallbackReasonCode: effectiveProjectFailureReasonCode(
+                fallbackReasonCode: trimmed(usage?.fallbackReasonCode),
+                denyCode: trimmed(usage?.denyCode)
+            ),
+            auditRef: trimmed(usage?.auditRef),
+            denyCode: trimmed(usage?.denyCode),
+            remoteRetryAttempted: usage?.remoteRetryAttempted ?? false,
+            remoteRetryFromModelId: trimmed(usage?.remoteRetryFromModelId),
+            remoteRetryToModelId: trimmed(usage?.remoteRetryToModelId),
+            remoteRetryReasonCode: trimmed(usage?.remoteRetryReasonCode),
+            source: "llm_usage"
+        )
+    }
+
+    private func projectExecutionSnapshotDiagnosis(
+        configuredModelId: String,
+        snapshot: AXRoleExecutionSnapshot,
+        transport: HubTransportMode
+    ) -> String {
         guard snapshot.hasRecord else {
-            return "- no_record"
+            return "- 暂无真实调用记录"
         }
 
         var lines: [String] = [
-            "- requested_model=\(displayRouteValue(snapshot.requestedModelId))",
-            "- actual_model=\(displayRouteValue(snapshot.actualModelId))",
-            "- execution_path=\(displayRouteValue(snapshot.executionPath))",
-            "- runtime_provider=\(displayRouteValue(snapshot.runtimeProvider))",
+            "- 请求模型：\(displayRouteValue(snapshot.requestedModelId))",
+            "- 实际模型：\(displayRouteValue(snapshot.actualModelId))",
         ]
-        if !snapshot.fallbackReasonCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            lines.append("- fallback_reason=\(snapshot.fallbackReasonCode)")
-        }
-        if !snapshot.auditRef.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            lines.append("- audit_ref=\(snapshot.auditRef)")
-        }
-        if !snapshot.denyCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            lines.append("- deny_code=\(snapshot.denyCode)")
-        }
+        lines.append(
+            contentsOf: projectRouteTruthLines(
+                configuredModelId: configuredModelId,
+                snapshot: snapshot,
+                transport: transport
+            ).map { "- \($0)" }
+        )
         if snapshot.remoteRetryAttempted {
-            lines.append("- remote_retry_attempted=true")
+            lines.append("- 发生过远端改试：是")
         }
         if !snapshot.remoteRetryFromModelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            lines.append("- remote_retry_from_model=\(snapshot.remoteRetryFromModelId)")
+            lines.append("- 远端改试起点：\(snapshot.remoteRetryFromModelId)")
         }
         if !snapshot.remoteRetryToModelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            lines.append("- remote_retry_to_model=\(snapshot.remoteRetryToModelId)")
+            lines.append("- 远端改试目标：\(snapshot.remoteRetryToModelId)")
         }
         if !snapshot.remoteRetryReasonCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            lines.append("- remote_retry_reason=\(snapshot.remoteRetryReasonCode)")
+            let retryReasonText =
+                projectRouteFailureReasonText(snapshot.remoteRetryReasonCode) ?? snapshot.remoteRetryReasonCode
+            lines.append("- 远端改试原因：\(retryReasonText)")
         }
         if !snapshot.stage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            lines.append("- stage=\(snapshot.stage)")
+            lines.append("- 记录阶段：\(snapshot.stage)")
         }
         return lines.joined(separator: "\n")
     }
@@ -4159,8 +5995,17 @@ Tool policy:
         transport: HubTransportMode,
         mismatchSummary: String?
     ) -> String {
+        if shouldExplainGrpcConfiguredRemoteVerification(
+            configuredModelId: configuredModelId,
+            routeDecision: routeDecision,
+            routeMemory: routeMemory,
+            routeSnapshot: routeSnapshot,
+            transport: transport
+        ) {
+            return "XT 当前处于 grpc-only 验证模式；这轮会继续按 `\(configuredModelId)` 发起远端请求，不再让项目级本地锁或上次稳定远端抢路由。如果你之后仍看到本地接管，优先去查 Hub 执行阶段 downgrade 或远端 export gate。"
+        }
         if routeDecision.forceLocalExecution {
-            return "XT 当前仍会优先走本地。这通常表示近期远端连续 fallback，且当前 configured/remembered remote 都还不可直接执行。先检查 Hub 远端模型状态，再用 `/models` 或重新 `/model <id>` 验证。"
+            return "XT 当前仍会优先走本地。这通常表示近期远端连续没有稳定命中，且当前配置模型和上次稳定远端都还不可直接执行。先检查 Supervisor Control Center · AI 模型里的真实可执行状态，再用 `/models` 或重新 `/model <id>` 验证。"
         }
         if routeDecision.usedRememberedRemoteModel,
            let remembered = routeDecision.preferredModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -4168,7 +6013,7 @@ Tool policy:
            !remembered.isEmpty,
            !configured.isEmpty,
            remembered.caseInsensitiveCompare(configured) != .orderedSame {
-            return "XT 当前不会再直接掉回本地；因为 `\(configured)` 还不能直接执行，这轮会先自动试上次稳定远端 `\(remembered)`。如果你要验证原目标是否已恢复，先去 Hub -> Models 确认后再试。"
+            return "XT 当前不会再直接掉回本地；因为 `\(configured)` 还不能直接执行，这轮会先自动试上次稳定远端 `\(remembered)`。如果你要验证原目标是否已恢复，先去 Supervisor Control Center · AI 模型确认后再试。"
         }
         if let routeMemory,
            routeMemory.shouldSuggestLocalModeNotice,
@@ -4180,15 +6025,15 @@ Tool policy:
                 )
            ) {
             if transport == .fileIPC {
-                return "从 XT 这层看，之前因连续 fallback 触发的项目级本地锁已经解除；只是当前 transport 是 fileIPC，所以这轮本来就不会强制走远端。先把 transport 切回 `/hub route auto` 或 `/hub route grpc` 再验证。"
+                return "从 XT 这层看，之前因连续回落触发的项目级本地锁已经解除；只是当前传输模式是 fileIPC，所以这轮本来就不会强制走远端。先把传输模式切回 `/hub route auto` 或 `/hub route grpc` 再验证。"
             }
             if let mismatchSummary, !mismatchSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 return mismatchSummary
             }
-            return "从 XT 这层看，之前因连续 fallback 触发的项目级本地锁已经解除；当前 project 会按 `\(configuredModelId)` 正常继续尝试。如果你仍看到本地接管，优先去查 Hub 审计或执行阶段 downgrade。"
+            return "从 XT 这层看，之前因连续回落触发的项目级本地锁已经解除；当前项目会按 `\(configuredModelId)` 正常继续尝试。如果你仍看到本地接管，优先去查 Hub 审计或执行阶段 downgrade。"
         }
         if transport == .fileIPC {
-            return "XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端。先把 transport 切回 `/hub route auto` 或 `/hub route grpc` 再验证。"
+            return "XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端。先把传输模式切回 `/hub route auto` 或 `/hub route grpc` 再验证。"
         }
         if let mismatchSummary, !mismatchSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return mismatchSummary
@@ -4197,9 +6042,9 @@ Tool policy:
             return "XT 当前没有再主动锁本地；如果下一轮仍被本地接管，更可能是 Hub 侧在执行时触发了 downgrade_to_local。"
         }
         if configuredModelId.isEmpty {
-            return "当前没有固定 model id，XT 只会按默认 Hub 路由尝试，不存在项目级强制锁本地。"
+            return "当前没有固定模型 ID，XT 只会按默认 Hub 路由尝试，不存在项目级强制锁本地。"
         }
-        return "从 XT 这层看，当前 project 没有被历史 route memory 卡在本地；如果你仍看到本地接管，优先去查 Hub 审计或项目级 override 是否被重新写入。"
+        return "从 XT 这层看，当前项目没有被历史项目级路由记忆卡在本地；如果你仍看到本地接管，优先去查 Hub 审计或项目级覆盖是否被重新写入。"
     }
 
     private func displayRouteValue(_ raw: String) -> String {
@@ -4207,14 +6052,67 @@ Tool policy:
         return trimmed.isEmpty ? "(none)" : trimmed
     }
 
+    private func projectRouteFailureReasonText(_ raw: String?) -> String? {
+        let trimmed = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return XTRouteTruthPresentation.routeReasonDisplayText(trimmed, language: .defaultPreference)
+            ?? XTRouteTruthPresentation.denyCodeText(trimmed, language: .defaultPreference)
+            ?? trimmed
+    }
+
+    private func projectRouteFailureReasonOrRaw(_ raw: String?) -> String? {
+        let trimmed = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return projectRouteFailureReasonText(trimmed) ?? trimmed
+    }
+
+    private func projectRouteFailureReasonParenthesized(
+        _ raw: String?,
+        recent: Bool = false
+    ) -> String {
+        guard let reason = projectRouteFailureReasonText(raw),
+              !reason.isEmpty else {
+            return ""
+        }
+        return recent ? "（最近原因：\(reason)）" : "（原因：\(reason)）"
+    }
+
+    private func projectRouteDecisionReasonText(_ raw: String?) -> String? {
+        let trimmed = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        switch trimmed {
+        case "project_last_remote_success_loaded":
+            return "当前配置还不能直接执行，XT 先试上次稳定且仍已加载的远端（project_last_remote_success_loaded）"
+        case "project_last_remote_success_inventory":
+            return "当前配置还不能直接执行，XT 先试上次稳定且仍在候选列表中的远端（project_last_remote_success_inventory）"
+        case "project_configured_model_retrieval_only":
+            return "当前配置是非对话模型，不作为当前角色的对话模型（project_configured_model_retrieval_only）"
+        case "project_remote_fallback_lock_local_recent_actual":
+            return "当前配置和上次稳定远端都还不能直接执行，XT 暂时沿用最近本地接管结果（project_remote_fallback_lock_local_recent_actual）"
+        case "project_remote_fallback_lock_local_loaded":
+            return "当前配置和上次稳定远端都还不能直接执行，XT 暂时锁到当前已加载本地模型（project_remote_fallback_lock_local_loaded）"
+        default:
+            return trimmed
+        }
+    }
+
+    private func projectRouteDecisionReasonSuffix(_ raw: String?) -> String {
+        guard let reason = projectRouteDecisionReasonText(raw),
+              !reason.isEmpty else {
+            return ""
+        }
+        return "，原因：\(reason)"
+    }
+
     private func slashHelpText() -> String {
         """
 可用 / 命令：
 - /resume                 生成当前项目的接上次进度 / 交接摘要（本地整理，不回灌主记忆）
-- /memory                 查看当前 project 的 memory 路由
-- /memory on              当前 project 优先使用 Hub memory
-- /memory off             当前 project 只使用本地 memory
-- /memory default         恢复默认 Hub memory 优先模式
+- /memory                 查看当前项目的 Memory 使用方式
+- /memory on              当前项目优先使用 Hub Memory
+- /memory off             当前项目只使用本地 Memory
+- /memory default         恢复默认使用方式（优先使用 Hub Memory）
 - /tools                  查看当前工具策略与有效工具
 - /guidance               查看当前项目的 Supervisor 指导 / 确认状态
 - /guidance accept [note]
@@ -4227,20 +6125,20 @@ Tool policy:
 - /hub route              查看 Hub 会话通道（auto/grpc/file）
 - /hub route <mode>       设置 Hub 会话通道（mode: auto/grpc/file）
 - /hub route selftest     校验 Hub 路由状态机规则（XT-W1-02）
-- /route diagnose         诊断当前 project 的模型路由与真实落点
+- /route diagnose         诊断当前项目的模型路由与真实落点
 - /sandbox                查看工具默认执行路径（host/sandbox）
 - /sandbox mode <mode>    设置工具默认执行路径（mode: host/sandbox）
-- /sandbox selftest       执行工具沙箱路径自检（search）
-- /grant status           查看高风险 grant gate 状态（XT-W1-04）
-- /grant scan             扫描高风险动作旁路执行（XT-W1-04）
-- /grant selftest         执行高风险 grant gate 自检（XT-W1-04）
-- /trusted-automation     查看当前 project 的 trusted automation 绑定
+- /sandbox selftest       执行工具执行路径自检
+- /grant status           查看高风险授权状态（XT-W1-04）
+- /grant scan             扫描高风险授权旁路执行（XT-W1-04）
+- /grant selftest         执行高风险授权自检（XT-W1-04）
+- /trusted-automation     查看当前项目的 Trusted Automation 绑定
 - /trusted-automation doctor
 - /trusted-automation arm <paired_device_id>
 - /trusted-automation off
 - /trusted-automation open <permission>
-- /models                 查看 Hub 当前 loaded 模型
-- /model <id>             设置当前 project 的 coder 模型
+- /models                 查看 Hub 当前已加载模型
+- /model <id>             设置当前项目的 coder 模型
 - /model auto             清除 coder 项目级覆盖
 - /rolemodel <role> <id>  设置某个角色模型（role: coder/coarse/refine/reviewer/advisor）
 - /rolemodel <role> auto  清除角色覆盖
@@ -4636,50 +6534,38 @@ Previous non-executing response:
 
         let executionPath = usage?.executionPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let runtimeProvider = usage?.runtimeProvider?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let fallbackReasonToken =
-            usage?.fallbackReasonCode?.trimmingCharacters(in: .whitespacesAndNewlines)
-            ?? routeDecision.reasonCode?.trimmingCharacters(in: .whitespacesAndNewlines)
-            ?? ""
-        let fallbackReason = normalizedRouteReasonCode(
-            fallbackReasonToken
+        let fallbackReason = effectiveProjectFailureReasonCode(
+            fallbackReasonCode: usage?.fallbackReasonCode ?? "",
+            denyCode: usage?.denyCode ?? "",
+            secondaryReasonCode: routeDecision.reasonCode ?? ""
         )
-        let auditRef = usage?.auditRef?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let denyCode = usage?.denyCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let rememberedRemoteModelId = routeDecision.preferredModelId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let preferredLocalModelId = (routeDecision.preferredLocalModelId ?? routeDecision.preferredModelId)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-        var evidenceLines: [String] = []
-        if !executionPath.isEmpty {
-            evidenceLines.append("- execution_path=\(executionPath)")
-        }
-        if !runtimeProvider.isEmpty {
-            evidenceLines.append("- runtime_provider=\(runtimeProvider)")
-        }
-        if !fallbackReason.isEmpty {
-            evidenceLines.append("- fallback_reason=\(fallbackReason)")
-        }
-        if !auditRef.isEmpty {
-            evidenceLines.append("- audit_ref=\(auditRef)")
-        }
-        if !denyCode.isEmpty {
-            evidenceLines.append("- deny_code=\(denyCode)")
-        }
+        let routeTruthSnapshot = projectUsageRouteTruthSnapshot(usage)
+        let evidenceLines = projectRouteTruthLines(
+            configuredModelId: configuredModelId,
+            snapshot: routeTruthSnapshot,
+            transport: .grpc,
+            includeConfiguredRoute: false,
+            includeTransport: false
+        ).map { "- \($0)" }
         let evidenceBlock = evidenceLines.isEmpty
             ? ""
-            : "\n\n执行证据：\n" + evidenceLines.joined(separator: "\n")
+            : "\n\n执行证据 / 路由真相：\n" + evidenceLines.joined(separator: "\n")
 
         if routeDecision.forceLocalExecution {
             let localLabel = preferredLocalModelId.isEmpty ? actualModelId : preferredLocalModelId
             return """
 ❌ Project AI 已拒绝接受本次回复：当前配置首选是 \(configuredModelId)，但这轮实际执行返回的是 \(actualModelId)。
 
-XT 当前 transport 是 grpc-only，但这个项目在发请求前就被 project route-memory 强制切到了本地执行（当前本地目标：\(localLabel)）。这不是 Hub 静默降级；是当前项目自己的本地锁仍在生效。
+XT 当前传输模式是 grpc-only，但这个项目在发请求前就被项目路由记忆强制切到了本地执行（当前本地目标：\(localLabel)）。这不是 Hub 静默降级；是当前项目自己的本地锁仍在生效。
 为了避免“界面选了 GPT，但项目实际还是本地模型继续执行”，这轮结果已按 fail-closed 丢弃。\(evidenceBlock.isEmpty ? "" : evidenceBlock)
 
 下一步：
-1. 在当前项目运行 `/route diagnose`，确认是不是连续 fallback 触发了本地锁
-2. 到 Hub Models 确认 \(configuredModelId) 已真正可执行
+1. 在当前项目运行 `/route diagnose`，确认是不是连续回落触发了本地锁
+2. 到 Supervisor Control Center · AI 模型确认 \(configuredModelId) 已真正可执行
 3. 修完后重新 `/model \(configuredModelId)` 或 `/model auto` 再重试
 """
         }
@@ -4690,12 +6576,12 @@ XT 当前 transport 是 grpc-only，但这个项目在发请求前就被 project
             return """
 ❌ Project AI 已拒绝接受本次回复：当前配置首选是 \(configuredModelId)，但这轮实际执行返回的是 \(actualModelId)。
 
-XT 当前 transport 是 grpc-only。这轮不是按你选的模型精确命中，而是 project route-memory 改试了另一个远端模型 \(rememberedRemoteModelId)。
-为了避免“界面选了 GPT，但项目 quietly 改走别的模型继续执行”，这轮结果已按 fail-closed 丢弃。\(evidenceBlock.isEmpty ? "" : evidenceBlock)
+XT 当前传输模式是 grpc-only。这轮不是按你选的模型精确命中，而是项目路由记忆改试了另一个远端模型 \(rememberedRemoteModelId)。
+为了避免“界面选了 GPT，但项目静默改走别的模型继续执行”，这轮结果已按 fail-closed 丢弃。\(evidenceBlock.isEmpty ? "" : evidenceBlock)
 
 下一步：
 1. 在当前项目运行 `/route diagnose`，确认为什么改试了 \(rememberedRemoteModelId)
-2. 如果你只接受 \(configuredModelId)，先去 Hub Models 确认它已加载且可执行
+2. 如果你只接受 \(configuredModelId)，先去 Supervisor Control Center · AI 模型确认它已加载且可执行
 3. 修完后再重试当前请求
 """
         }
@@ -4732,7 +6618,7 @@ XT 当前 transport 是 grpc-only。这轮不是按你选的模型精确命中�
             let repairStep: String
             switch fallbackReason {
             case "model_not_found", "remote_model_not_found":
-                repairStep = "3. 到 Hub Models 确认 \(configuredModelId) 已真正可执行，再重试当前请求"
+                repairStep = "3. 到 Supervisor Control Center · AI 模型确认 \(configuredModelId) 已真正可执行，再重试当前请求"
             default:
                 repairStep = "3. 修完 Hub export / route gate 后，再重试当前请求"
             }
@@ -4740,8 +6626,8 @@ XT 当前 transport 是 grpc-only。这轮不是按你选的模型精确命中�
             return """
 ❌ Project AI 已拒绝接受本次回复：当前配置首选是 \(configuredModelId)，但这轮实际执行返回的是 \(actualModelId)。
 
-XT 当前 transport 是 grpc-only，但本轮实际没有命中所选远端模型。\(routeExplanation)
-为了避免“界面选了 GPT，但项目 quietly 用本地模型继续执行”，这轮结果已按 fail-closed 丢弃。\(evidenceBlock.isEmpty ? "" : evidenceBlock)
+XT 当前传输模式是 grpc-only，但本轮实际没有命中所选远端模型。\(routeExplanation)
+为了避免“界面选了 GPT，但项目静默用本地模型继续执行”，这轮结果已按 fail-closed 丢弃。\(evidenceBlock.isEmpty ? "" : evidenceBlock)
 
 下一步：
 1. 到 Hub 审计里查 `ai.generate.downgraded_to_local`
@@ -4753,7 +6639,7 @@ XT 当前 transport 是 grpc-only，但本轮实际没有命中所选远端模�
         return """
 ❌ Project AI 已拒绝接受本次回复：当前配置首选是 \(configuredModelId)，但这轮实际执行返回的是 \(actualModelId)。
 
-XT 当前 transport 是 grpc-only，但这轮实际命中的是另一条执行路由，而不是你当前配置的模型。由于 XT 不能证明它是可接受的等价替代，这轮结果已按 fail-closed 丢弃。\(evidenceBlock.isEmpty ? "" : evidenceBlock)
+XT 当前传输模式是 grpc-only，但这轮实际命中的是另一条执行路由，而不是你当前配置的模型。由于 XT 不能证明它是可接受的等价替代，这轮结果已按 fail-closed 丢弃。\(evidenceBlock.isEmpty ? "" : evidenceBlock)
 
 下一步：
 1. 在当前项目运行 `/route diagnose`
@@ -4798,14 +6684,15 @@ XT 当前 transport 是 grpc-only，但这轮实际命中的是另一条执行�
 
     private func projectRouteSummary(configuredModelId: String) -> String {
         if configuredModelId.isEmpty {
-            return "当前这个项目聊天窗口的 coder 角色没有绑定固定 model id，按默认 Hub 路由执行。"
+            return "当前这个项目聊天窗口的 coder 角色没有绑定固定模型 ID，按默认 Hub 路由执行。"
         }
         return "当前这个项目聊天窗口的 coder 首选模型路由是 \(configuredModelId)。"
     }
 
     private func projectModelMismatchSummary(
         configuredModelId: String,
-        snapshot: AXRoleExecutionSnapshot
+        snapshot: AXRoleExecutionSnapshot,
+        transport: HubTransportMode = HubAIClient.transportMode()
     ) -> String? {
         let configured = configuredModelId.trimmingCharacters(in: .whitespacesAndNewlines)
         let actual = snapshot.actualModelId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -4813,11 +6700,11 @@ XT 当前 transport 是 grpc-only，但这轮实际命中的是另一条执行�
         guard !projectModelIdentitiesMatch(configured, actual) else {
             return nil
         }
-        switch HubAIClient.transportMode() {
+        switch transport {
         case .grpc:
             return """
 当前配置首选是 \(configured)，但最近一次实际执行是 \(actual)。
-XT 当前已经是 grpc-only，所以这次不一致基本不是 XT 本地 auto fallback；更可能是 Hub 端触发了 downgrade_to_local，或 Hub 的 remote_export gate 主动把 paid 请求降到了本地模型。
+XT 当前已经是 grpc-only，所以这次不一致基本不是 XT 在本地层静默改路由；更可能是 Hub 端触发了 downgrade_to_local，或 Hub 的 remote_export gate 主动把 paid 请求降到了本地模型。
 下一步不要再看 XT 路由设置，直接去 Hub 侧查 `ai.generate.downgraded_to_local` / `remote_export_blocked` 审计。
 """
         case .auto:
@@ -4825,41 +6712,62 @@ XT 当前已经是 grpc-only，所以这次不一致基本不是 XT 本地 auto 
                 return """
 当前配置首选是 \(configured)，但最近一次实际执行是 \(actual)。
 这次不一致不一定是本地 fallback；也可能是 XT 在远端层改试了已加载的同族备选模型，或 Hub 自己把请求改派到了另一个远端模型。
-如果你要严格验证指定 paid GPT 是否被精确命中，请先把 Hub transport 切到 `/hub route grpc`，这样远端不可用时会直接报错，不会在 auto 模式下改走别的路径。
+如果你要严格验证指定 paid GPT 是否被精确命中，请先把 Hub 传输模式切到 `/hub route grpc`，这样远端不可用时会直接报错，不会在 auto 模式下改走别的路径。
 """
             }
             return """
 当前配置首选是 \(configured)，但最近一次实际执行是 \(actual)。
-这通常表示远端 paid 路由没有真正命中，而是发生了 XT 自动回退到本地模型，或 Hub 端触发了 downgrade_to_local。
-如果你要强制验证 paid GPT，请先把 Hub transport 切到 `/hub route grpc`，这样远端不可用时会直接报错，不会静默掉回本地。
+这通常表示远端 paid 路由没有真正命中；auto 模式下 XT 可能按可用性改试本地或其他可执行路径，Hub 也可能在执行阶段触发 downgrade_to_local。
+如果你要强制验证 paid GPT，请先把 Hub 传输模式切到 `/hub route grpc`，这样远端不可用时会直接报错，不会继续在 auto 模式下改试其他路径。
 """
         case .fileIPC:
             return """
 当前配置首选是 \(configured)，但最近一次实际执行是 \(actual)。
-XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 paid GPT；请先把 Hub transport 切到 grpc，再重新验证。
+XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端 paid GPT；请先把 Hub 传输模式切到 grpc，再重新验证。
 """
         }
+    }
+
+    private func slashIsGrpcTransport(_ raw: String) -> Bool {
+        raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "_") == "grpc"
+            || raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "_") == "grpc_only"
     }
 
     private func projectLastActualInvocationSummary(
         configuredModelId: String,
         snapshot: AXRoleExecutionSnapshot
     ) -> String {
-        func withEvidence(_ summary: String) -> String {
-            var lines: [String] = [summary]
-            let auditRef = snapshot.auditRef.trimmingCharacters(in: .whitespacesAndNewlines)
-            let denyCode = snapshot.denyCode.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !auditRef.isEmpty {
-                lines.append("audit_ref=\(auditRef)")
-            }
-            if !denyCode.isEmpty {
-                lines.append("deny_code=\(denyCode)")
-            }
-            return lines.joined(separator: "\n")
-        }
+        let effectiveFailureReason = snapshot.effectiveFailureReasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveFailureReasonText = effectiveFailureReason.isEmpty
+            ? nil
+            : (projectRouteFailureReasonOrRaw(effectiveFailureReason) ?? effectiveFailureReason)
+        let mismatch = projectModelMismatchSummary(
+            configuredModelId: configuredModelId,
+            snapshot: snapshot
+        )
 
-        if let mismatch = projectModelMismatchSummary(configuredModelId: configuredModelId, snapshot: snapshot) {
-            return withEvidence("最近一次实际执行没有按当前配置模型命中；实际执行的是：\(snapshot.actualModelId)\n\n\(mismatch)")
+        func withEvidence(_ summary: String, includeMismatch: Bool = false) -> String {
+            var lines: [String] = [summary]
+            if includeMismatch,
+               let mismatch,
+               !mismatch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                lines.append("")
+                lines.append(mismatch)
+            }
+            lines.append(
+                contentsOf: projectRouteTruthLines(
+                    configuredModelId: configuredModelId,
+                    snapshot: snapshot,
+                    includeConfiguredRoute: false,
+                    includeRouteState: false,
+                    includeTransport: false
+                )
+            )
+            return lines.joined(separator: "\n")
         }
 
         switch snapshot.executionPath {
@@ -4868,20 +6776,29 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
                 if snapshot.remoteRetryAttempted,
                    !snapshot.remoteRetryToModelId.isEmpty {
                     let from = snapshot.remoteRetryFromModelId.isEmpty ? snapshot.requestedModelId : snapshot.remoteRetryFromModelId
-                    let reason = snapshot.remoteRetryReasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let reasonSuffix = reason.isEmpty ? "" : "；retry_reason=\(reason)"
-                    return withEvidence("最近一次先请求了 \(from)，随后 XT 在远端层改试 \(snapshot.remoteRetryToModelId) 并成功命中；最终 actual model_id 是：\(snapshot.actualModelId)\(reasonSuffix)")
+                    let reason = projectRouteFailureReasonOrRaw(snapshot.remoteRetryReasonCode)
+                    let reasonSuffix = reason.map { "；远端改试原因：\($0)" } ?? ""
+                    return withEvidence(
+                        "最近一次先请求了 \(from)，随后 XT 在远端层改试 \(snapshot.remoteRetryToModelId) 并成功命中；最终实际模型 ID 是：\(snapshot.actualModelId)\(reasonSuffix)",
+                        includeMismatch: true
+                    )
                 }
-                return withEvidence("最近一次 Project AI / coder 真实调用返回的 actual model_id 是：\(snapshot.actualModelId)")
+                return withEvidence(
+                    "最近一次 Project AI / coder 真实调用返回的实际模型 ID 是：\(snapshot.actualModelId)",
+                    includeMismatch: true
+                )
             }
             if !snapshot.requestedModelId.isEmpty {
-                return withEvidence("最近一次 Project AI / coder 真实调用已经发生，首选模型是 \(snapshot.requestedModelId)，但运行层没有回传明确的 actual model_id。")
+                return withEvidence(
+                    "最近一次 Project AI / coder 真实调用已经发生，首选模型是 \(snapshot.requestedModelId)，但运行层没有回传明确的实际模型 ID。",
+                    includeMismatch: true
+                )
             }
-            return withEvidence("最近一次真实调用已经发生，但运行层没有回传明确的 actual model_id。")
+            return withEvidence("最近一次真实调用已经发生，但运行层没有回传明确的实际模型 ID。", includeMismatch: true)
         case "hub_downgraded_to_local":
             if !snapshot.requestedModelId.isEmpty, !snapshot.actualModelId.isEmpty {
-                if !snapshot.fallbackReasonCode.isEmpty {
-                    return withEvidence("最近一次先请求了 \(snapshot.requestedModelId)，但 Hub 在执行阶段把它降到了本地模型 \(snapshot.actualModelId)；reason=\(snapshot.fallbackReasonCode)。")
+                if let effectiveFailureReasonText {
+                    return withEvidence("最近一次先请求了 \(snapshot.requestedModelId)，但 Hub 在执行阶段把它降到了本地模型 \(snapshot.actualModelId)；原因：\(effectiveFailureReasonText)。")
                 }
                 return withEvidence("最近一次先请求了 \(snapshot.requestedModelId)，但 Hub 在执行阶段把它降到了本地模型 \(snapshot.actualModelId)。")
             }
@@ -4892,42 +6809,42 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
                !snapshot.actualModelId.isEmpty {
                 let from = snapshot.remoteRetryFromModelId.isEmpty ? snapshot.requestedModelId : snapshot.remoteRetryFromModelId
                 let retryReason = snapshot.remoteRetryReasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
-                let fallbackReason = snapshot.fallbackReasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
                 var reasonParts: [String] = []
                 if !retryReason.isEmpty {
-                    reasonParts.append("retry_reason=\(retryReason)")
+                    let retryReasonText = projectRouteFailureReasonOrRaw(retryReason) ?? retryReason
+                    reasonParts.append("远端改试原因：\(retryReasonText)")
                 }
-                if !fallbackReason.isEmpty {
-                    reasonParts.append("fallback_reason=\(fallbackReason)")
+                if let effectiveFailureReasonText {
+                    reasonParts.append("本地兜底原因：\(effectiveFailureReasonText)")
                 }
                 let suffix = reasonParts.isEmpty ? "" : "；" + reasonParts.joined(separator: "，")
                 return withEvidence("最近一次先请求了 \(from)，随后 XT 又改试了远端备选 \(snapshot.remoteRetryToModelId)，但仍未成功，最后由本地 \(snapshot.actualModelId) 兜底接管\(suffix)")
             }
             if !snapshot.actualModelId.isEmpty {
-                if !snapshot.requestedModelId.isEmpty, !snapshot.fallbackReasonCode.isEmpty {
-                    return withEvidence("最近一次先请求了 \(snapshot.requestedModelId)，但因 \(snapshot.fallbackReasonCode) 失败，随后由本地兜底接管；实际落到的 model_id 是：\(snapshot.actualModelId)")
+                if !snapshot.requestedModelId.isEmpty, let effectiveFailureReasonText {
+                    return withEvidence("最近一次先请求了 \(snapshot.requestedModelId)，但因 \(effectiveFailureReasonText) 失败，随后由本地兜底接管；实际落到的模型 ID 是：\(snapshot.actualModelId)")
                 }
-                return withEvidence("最近一次最终由本地兜底接管；实际落到的 model_id 是：\(snapshot.actualModelId)")
+                return withEvidence("最近一次最终由本地兜底接管；实际落到的模型 ID 是：\(snapshot.actualModelId)")
             }
-            if !snapshot.requestedModelId.isEmpty, !snapshot.fallbackReasonCode.isEmpty {
-                return withEvidence("最近一次先请求了 \(snapshot.requestedModelId)，但因 \(snapshot.fallbackReasonCode) 失败，随后由本地兜底接管；没有拿到可确认的实际 model_id。")
+            if !snapshot.requestedModelId.isEmpty, let effectiveFailureReasonText {
+                return withEvidence("最近一次先请求了 \(snapshot.requestedModelId)，但因 \(effectiveFailureReasonText) 失败，随后由本地兜底接管；没有拿到可确认的实际模型 ID。")
             }
-            return withEvidence("最近一次远端尝试后由本地兜底接管，但没有拿到可确认的实际 model_id。")
+            return withEvidence("最近一次远端尝试后由本地兜底接管，但没有拿到可确认的实际模型 ID。")
         case "local_runtime":
             if !snapshot.actualModelId.isEmpty {
-                return withEvidence("最近一次这一路实际走的是本地 runtime；model_id 是 \(snapshot.actualModelId)。")
+                return withEvidence("最近一次这一路实际走的是本地 runtime；模型 ID 是 \(snapshot.actualModelId)。")
             }
-            return withEvidence("最近一次这一路实际走的是本地 runtime，但没有拿到明确的 model_id。")
+            return withEvidence("最近一次这一路实际走的是本地 runtime，但没有拿到明确的模型 ID。")
         case "remote_error":
-            if !snapshot.requestedModelId.isEmpty, !snapshot.fallbackReasonCode.isEmpty {
-                return withEvidence("最近一次请求了 \(snapshot.requestedModelId)，但在远端阶段被 \(snapshot.fallbackReasonCode) 直接拦下，没有形成成功回复。")
+            if !snapshot.requestedModelId.isEmpty, let effectiveFailureReasonText {
+                return withEvidence("最近一次请求了 \(snapshot.requestedModelId)，但在远端阶段被 \(effectiveFailureReasonText) 直接拦下，没有形成成功回复。")
             }
             return withEvidence("最近一次远端调用失败，没有形成成功回复。")
         case "no_record":
             return "当前还没有 coder 角色的真实调用记录。"
         default:
             if snapshot.hasRecord {
-                return withEvidence(snapshot.detailedSummary)
+                return withEvidence(snapshot.detailedSummary, includeMismatch: true)
             }
             return "当前还没有 coder 角色的真实调用记录。"
         }
@@ -4937,31 +6854,37 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         configuredModelId: String,
         snapshot: AXRoleExecutionSnapshot
     ) -> String {
-        if projectModelMismatchSummary(configuredModelId: configuredModelId, snapshot: snapshot) != nil,
-           !snapshot.actualModelId.isEmpty {
-            return "未按配置模型执行。最近一次成功回复的实际模型与当前配置不一致。"
-        }
+        let effectiveFailureReason = snapshot.effectiveFailureReasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveFailureReasonText = effectiveFailureReason.isEmpty
+            ? nil
+            : (projectRouteFailureReasonOrRaw(effectiveFailureReason) ?? effectiveFailureReason)
+        let mismatchDetected =
+            projectModelMismatchSummary(configuredModelId: configuredModelId, snapshot: snapshot) != nil
+            && !snapshot.actualModelId.isEmpty
 
         switch snapshot.executionPath {
         case "remote_model":
             if !snapshot.actualModelId.isEmpty {
-                return "已验证。最近一次可确认的 Project AI / coder 实际 model_id 是 \(snapshot.actualModelId)。"
+                if mismatchDetected {
+                    return "未按配置模型执行。最近一次成功回复的实际模型与当前配置不一致。"
+                }
+                return "已验证。最近一次可确认的 Project AI / coder 实际模型 ID 是 \(snapshot.actualModelId)。"
             }
             if !snapshot.requestedModelId.isEmpty {
-                return "已触发过 Project AI / coder 远端调用，首选模型是 \(snapshot.requestedModelId)，但运行层没有回传明确 actual model_id，属于已调用未精确核验。"
+                return "已触发过 Project AI / coder 远端调用，首选模型是 \(snapshot.requestedModelId)，但运行层没有回传明确实际模型 ID，属于已调用未精确核验。"
             }
-            return "已触发过真实调用，但运行层没有回传明确 actual model_id，属于已调用未精确核验。"
+            return "已触发过真实调用，但运行层没有回传明确实际模型 ID，属于已调用未精确核验。"
         case "hub_downgraded_to_local":
             if !snapshot.requestedModelId.isEmpty, !snapshot.actualModelId.isEmpty {
-                if !snapshot.fallbackReasonCode.isEmpty {
-                    return "未验证成功。最近一次先请求 \(snapshot.requestedModelId)，但 Hub 侧把它降到了本地模型 \(snapshot.actualModelId)；reason=\(snapshot.fallbackReasonCode)。"
+                if let effectiveFailureReasonText {
+                    return "未验证成功。最近一次先请求 \(snapshot.requestedModelId)，但 Hub 侧把它降到了本地模型 \(snapshot.actualModelId)；原因：\(effectiveFailureReasonText)。"
                 }
                 return "未验证成功。最近一次先请求 \(snapshot.requestedModelId)，但 Hub 侧把它降到了本地模型 \(snapshot.actualModelId)。"
             }
             return "未验证成功。最近一次 paid 远端请求被 Hub 侧改派到了本地模型。"
         case "local_fallback_after_remote_error":
-            if !snapshot.requestedModelId.isEmpty, !snapshot.fallbackReasonCode.isEmpty {
-                return "未验证成功。最近一次先请求 \(snapshot.requestedModelId)，但因 \(snapshot.fallbackReasonCode) 失败并由本地兜底接管。"
+            if !snapshot.requestedModelId.isEmpty, let effectiveFailureReasonText {
+                return "未验证成功。最近一次先请求 \(snapshot.requestedModelId)，但因 \(effectiveFailureReasonText) 失败并由本地兜底接管。"
             }
             return "未验证成功。最近一次请求最终被本地兜底接管。"
         case "local_runtime":
@@ -4973,56 +6896,76 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         }
     }
 
+    private func projectExecutionSummary(
+        configuredModelId: String,
+        snapshot: AXRoleExecutionSnapshot
+    ) -> String {
+        [
+            projectVerificationSummary(
+                configuredModelId: configuredModelId,
+                snapshot: snapshot
+            ),
+            projectLastActualInvocationSummary(
+                configuredModelId: configuredModelId,
+                snapshot: snapshot
+            )
+        ].joined(separator: "\n\n")
+    }
+
     private func projectExecutionDisclosureNote(
         configuredModelId: String,
         snapshot: AXRoleExecutionSnapshot
     ) -> String? {
         let configured = configuredModelId.trimmingCharacters(in: .whitespacesAndNewlines)
         let actual = snapshot.actualModelId.trimmingCharacters(in: .whitespacesAndNewlines)
-        let reason = snapshot.fallbackReasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if let mismatch = projectModelMismatchSummary(configuredModelId: configuredModelId, snapshot: snapshot),
-           !actual.isEmpty {
-            _ = mismatch
-            if !configured.isEmpty {
-                if !reason.isEmpty {
-                    return "本轮未命中所选 \(configured)，实际由 \(actual) 接管，reason=\(reason)。"
-                }
-                return "本轮未命中所选 \(configured)，实际由 \(actual) 接管。"
-            }
-            if !reason.isEmpty {
-                return "本轮实际由 \(actual) 接管，reason=\(reason)。"
-            }
-            return "本轮实际由 \(actual) 接管。"
-        }
+        let reason = snapshot.effectiveFailureReasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        let reasonText = projectRouteFailureReasonOrRaw(reason)
+        let mismatchDetected =
+            projectModelMismatchSummary(configuredModelId: configuredModelId, snapshot: snapshot) != nil
+            && !actual.isEmpty
 
         switch snapshot.executionPath {
         case "hub_downgraded_to_local":
             if !configured.isEmpty, !actual.isEmpty {
-                if !reason.isEmpty {
-                    return "本轮 \(configured) 被 Hub 改派到本地 \(actual)，reason=\(reason)。"
+                if let reasonText {
+                    return "本轮 \(configured) 被 Hub 改派到本地 \(actual)。原因：\(reasonText)。"
                 }
                 return "本轮 \(configured) 被 Hub 改派到本地 \(actual)。"
             }
             if !actual.isEmpty {
-                return !reason.isEmpty
-                    ? "本轮远端请求改由本地 \(actual) 接管，reason=\(reason)。"
+                return reasonText != nil
+                    ? "本轮远端请求改由本地 \(actual) 接管。原因：\(reasonText!)。"
                     : "本轮远端请求改由本地 \(actual) 接管。"
             }
             return nil
         case "local_fallback_after_remote_error":
             if !actual.isEmpty {
-                return !reason.isEmpty
-                    ? "本轮远端失败后由本地 \(actual) 兜底，reason=\(reason)。"
+                return reasonText != nil
+                    ? "本轮远端失败后由本地 \(actual) 兜底。原因：\(reasonText!)。"
                     : "本轮远端失败后由本地 \(actual) 兜底。"
             }
-            if !reason.isEmpty {
-                return "本轮远端失败后走了本地兜底，reason=\(reason)。"
+            if let reasonText {
+                return "本轮远端失败后走了本地兜底。原因：\(reasonText)。"
             }
             return nil
         default:
-            return nil
+            break
         }
+
+        if mismatchDetected {
+            if !configured.isEmpty {
+                if let reasonText {
+                    return "本轮未命中所选 \(configured)，实际由 \(actual) 接管。原因：\(reasonText)。"
+                }
+                return "本轮未命中所选 \(configured)，实际由 \(actual) 接管。"
+            }
+            if let reasonText {
+                return "本轮实际由 \(actual) 接管。原因：\(reasonText)。"
+            }
+            return "本轮实际由 \(actual) 接管。"
+        }
+
+        return nil
     }
 
     private func directProjectReplyIfApplicable(
@@ -5112,19 +7055,67 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         )
     }
 
+    func effectiveProjectRouteDecisionForTesting(
+        configuredModelId: String?,
+        role: AXRole,
+        ctx: AXProjectContext?,
+        snapshot: ModelStateSnapshot,
+        localSnapshot: ModelStateSnapshot? = nil,
+        transportMode: HubTransportMode
+    ) -> AXProjectPreferredModelRouteDecision {
+        effectiveProjectRouteDecision(
+            configuredModelId: configuredModelId,
+            role: role,
+            ctx: ctx,
+            snapshot: snapshot,
+            localSnapshot: localSnapshot,
+            transportMode: transportMode
+        )
+    }
+
     func projectRouteDiagnosisTextForTesting(
         ctx: AXProjectContext,
         config: AXProjectConfig?,
         router: LLMRouter,
         routeSnapshot: ModelStateSnapshot,
-        localSnapshot: ModelStateSnapshot
+        localSnapshot: ModelStateSnapshot,
+        supervisorRouteDecision: HubIPCClient.SupervisorRouteDecisionResult? = nil,
+        transportMode: HubTransportMode = HubAIClient.transportMode()
     ) -> String {
         projectRouteDiagnosisText(
             ctx: ctx,
             config: config,
             router: router,
             routeSnapshot: routeSnapshot,
-            localSnapshot: localSnapshot
+            localSnapshot: localSnapshot,
+            supervisorRouteDecision: supervisorRouteDecision,
+            transportMode: transportMode
+        )
+    }
+
+    func presentProjectRouteDiagnosisForTesting(
+        ctx: AXProjectContext,
+        config: AXProjectConfig?,
+        router: LLMRouter,
+        routeSnapshot: ModelStateSnapshot,
+        localSnapshot: ModelStateSnapshot,
+        supervisorRouteDecision: HubIPCClient.SupervisorRouteDecisionResult? = nil,
+        transportMode: HubTransportMode = HubAIClient.transportMode()
+    ) {
+        ensureLoaded(ctx: ctx, limit: 200)
+        let assistantText = projectRouteDiagnosisText(
+            ctx: ctx,
+            config: config,
+            router: router,
+            routeSnapshot: routeSnapshot,
+            localSnapshot: localSnapshot,
+            supervisorRouteDecision: supervisorRouteDecision,
+            transportMode: transportMode
+        )
+        appendAssistantOnlyProjectPresentation(
+            assistantText,
+            ctx: ctx,
+            completionToken: "route_diagnose_displayed"
         )
     }
 
@@ -5133,14 +7124,64 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         config: AXProjectConfig?,
         snapshot: ModelStateSnapshot,
         routeDecisionSnapshot: ModelStateSnapshot? = nil,
-        localSnapshot: ModelStateSnapshot? = nil
+        localSnapshot: ModelStateSnapshot? = nil,
+        transportMode: HubTransportMode = HubAIClient.transportMode()
     ) -> String {
         slashModelsText(
             ctx: ctx,
             config: config,
             snapshot: snapshot,
             routeDecisionSnapshot: routeDecisionSnapshot,
-            localSnapshot: localSnapshot
+            localSnapshot: localSnapshot,
+            transportMode: transportMode
+        )
+    }
+
+    func projectRouteDecisionSummaryForTesting(
+        _ decision: AXProjectPreferredModelRouteDecision,
+        routeMemory: AXProjectModelRouteMemory? = nil,
+        routeSnapshot: ModelStateSnapshot? = nil,
+        transport: HubTransportMode = HubAIClient.transportMode()
+    ) -> String {
+        projectRouteDecisionSummary(
+            decision,
+            routeMemory: routeMemory,
+            routeSnapshot: routeSnapshot,
+            transport: transport
+        )
+    }
+
+    func projectRouteFailureReasonTextForTesting(_ raw: String?) -> String? {
+        projectRouteFailureReasonText(raw)
+    }
+
+    func projectExecutionSummaryForTesting(
+        configuredModelId: String,
+        snapshot: AXRoleExecutionSnapshot
+    ) -> String {
+        projectExecutionSummary(
+            configuredModelId: configuredModelId,
+            snapshot: snapshot
+        )
+    }
+
+    func projectVerificationSummaryForTesting(
+        configuredModelId: String,
+        snapshot: AXRoleExecutionSnapshot
+    ) -> String {
+        projectVerificationSummary(
+            configuredModelId: configuredModelId,
+            snapshot: snapshot
+        )
+    }
+
+    func projectExecutionDisclosureNoteForTesting(
+        configuredModelId: String,
+        snapshot: AXRoleExecutionSnapshot
+    ) -> String? {
+        projectExecutionDisclosureNote(
+            configuredModelId: configuredModelId,
+            snapshot: snapshot
         )
     }
 
@@ -5151,18 +7192,11 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
     func presentProjectResumeBrief(ctx: AXProjectContext, role: AXRole = .coder) {
         ensureLoaded(ctx: ctx, limit: 200)
         let assistantText = renderProjectResumeBrief(ctx: ctx, role: role)
-        let createdAt = Date().timeIntervalSince1970
-        messages.append(
-            AXChatMessage(
-                role: .assistant,
-                content: assistantText,
-                createdAt: createdAt
-            )
+        appendAssistantOnlyProjectPresentation(
+            assistantText,
+            ctx: ctx,
+            completionToken: "resume_brief_displayed"
         )
-        touchProjectActivity(ctx: ctx, eventAt: createdAt)
-        recordRunCompletion(ctx: ctx, assistantText: "resume_brief_displayed")
-        isSending = false
-        currentReqId = nil
     }
 
     func presentProjectRouteDiagnosis(
@@ -5182,20 +7216,32 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
                 localSnapshot: await localSnapshot
             )
             await MainActor.run {
-                let createdAt = Date().timeIntervalSince1970
-                messages.append(
-                    AXChatMessage(
-                        role: .assistant,
-                        content: assistantText,
-                        createdAt: createdAt
-                    )
+                appendAssistantOnlyProjectPresentation(
+                    assistantText,
+                    ctx: ctx,
+                    completionToken: "route_diagnose_displayed"
                 )
-                touchProjectActivity(ctx: ctx, eventAt: createdAt)
-                recordRunCompletion(ctx: ctx, assistantText: "route_diagnose_displayed")
-                isSending = false
-                currentReqId = nil
             }
         }
+    }
+
+    private func appendAssistantOnlyProjectPresentation(
+        _ assistantText: String,
+        ctx: AXProjectContext,
+        completionToken: String
+    ) {
+        let createdAt = Date().timeIntervalSince1970
+        messages.append(
+            AXChatMessage(
+                role: .assistant,
+                content: assistantText,
+                createdAt: createdAt
+            )
+        )
+        touchProjectActivity(ctx: ctx, eventAt: createdAt)
+        recordRunCompletion(ctx: ctx, assistantText: completionToken)
+        isSending = false
+        currentReqId = nil
     }
 
     @discardableResult
@@ -5266,6 +7312,10 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
             retrievalStage: retrievalStage,
             explicitRefs: explicitRefs
         )
+    }
+
+    func sanitizedRemoteProjectPromptForTesting(_ prompt: String) -> String {
+        sanitizedRemoteProjectPrompt(prompt)
     }
 
     func projectMemoryRetrievalStageForTesting(userText: String) -> String? {
@@ -5350,8 +7400,12 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
             recentText: contextAssembly.recentDialogueSelection.messagesText,
             retrievalBlock: recentText
         )
-        let workingSetWithGuidance = mergeProjectWorkingSetGuidance(
+        let workingSetWithHeartbeat = mergeProjectWorkingSetHeartbeat(
             recentText: mergedRecentText,
+            heartbeatBlock: contextAssembly.heartbeatWorkingSetText
+        )
+        let workingSetWithGuidance = mergeProjectWorkingSetGuidance(
+            recentText: workingSetWithHeartbeat,
             guidanceBlock: guidanceSnapshot.block
         )
         let workingSetText = mergeProjectWorkingSetUIReview(
@@ -5373,6 +7427,73 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
             rawEvidenceTextOverride: contextAssembly.rawEvidenceText,
             servingProfile: resolvedProjectMemoryServingProfile(userText: userText, config: config)
         )
+    }
+
+    func projectMemoryUsageFieldsForTesting(
+        ctx: AXProjectContext,
+        canonicalMemory: String,
+        userText: String,
+        config: AXProjectConfig? = nil,
+        toolResults: [ToolResult] = [],
+        safePointState: SupervisorSafePointExecutionState? = nil,
+        retrievalBlock: String = ""
+    ) async -> [String: Any] {
+        let guidanceSnapshot = projectSupervisorGuidancePromptSnapshot(
+            ctx: ctx,
+            safePointState: safePointState
+        )
+        let reviewBlock = projectUIReviewPromptBlock(ctx: ctx)
+        let contextAssembly = buildProjectPromptContextAssembly(
+            ctx: ctx,
+            config: config,
+            userText: userText,
+            toolResults: toolResults,
+            skillRegistrySnapshot: nil,
+            safePointState: safePointState,
+            shouldExpandRecent: false
+        )
+        let mergedRecentText = mergeProjectMemoryRetrieval(
+            recentText: contextAssembly.recentDialogueSelection.messagesText,
+            retrievalBlock: retrievalBlock
+        )
+        let workingSetWithHeartbeat = mergeProjectWorkingSetHeartbeat(
+            recentText: mergedRecentText,
+            heartbeatBlock: contextAssembly.heartbeatWorkingSetText
+        )
+        let workingSetWithGuidance = mergeProjectWorkingSetGuidance(
+            recentText: workingSetWithHeartbeat,
+            guidanceBlock: guidanceSnapshot.block
+        )
+        let workingSetText = mergeProjectWorkingSetUIReview(
+            recentText: workingSetWithGuidance,
+            uiReviewBlock: reviewBlock
+        )
+        let memoryInfo = await buildProjectMemoryV1ViaHub(
+            ctx: ctx,
+            config: config,
+            canonicalMemory: canonicalMemory,
+            contextAssembly: ProjectPromptContextAssembly(
+                memoryPolicy: contextAssembly.memoryPolicy,
+                recentDialogueSelection: contextAssembly.recentDialogueSelection,
+                contextDepthProfile: contextAssembly.contextDepthProfile,
+                effectiveServingProfile: contextAssembly.effectiveServingProfile,
+                observationsText: contextAssembly.observationsText,
+                rawEvidenceText: contextAssembly.rawEvidenceText,
+                focusedProjectAnchorPackText: contextAssembly.focusedProjectAnchorPackText,
+                longtermOutlineText: contextAssembly.longtermOutlineText,
+                contextRefsText: contextAssembly.contextRefsText,
+                evidencePackText: contextAssembly.evidencePackText,
+                heartbeatWorkingSetText: contextAssembly.heartbeatWorkingSetText,
+                diagnostics: contextAssembly.diagnostics
+            ),
+            toolResults: toolResults,
+            userText: userText,
+            skillRegistrySnapshot: nil,
+            safePointState: safePointState
+        )
+        var fields = projectMemoryUsageFields(from: memoryInfo, promptCompactMode: true)
+        fields["working_set_preview"] = workingSetText
+        return fields
     }
 
     func applySupervisorGuidanceAckForTesting(
@@ -5439,6 +7560,22 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         )
     }
 
+    func projectSupervisorFinalOnlyFailureMessageForTesting(
+        ctx: AXProjectContext,
+        injectionId: String
+    ) -> String? {
+        guard let pending = SupervisorGuidanceInjectionStore.record(
+            injectionId: injectionId,
+            for: ctx
+        ) else {
+            return nil
+        }
+        return projectSupervisorGuidanceFinalOnlyFailureMessage(
+            pending,
+            ctx: ctx
+        )
+    }
+
     func pendingSupervisorGuidancePauseBeforeToolExecutionForTesting(
         ctx: AXProjectContext,
         runStartedAtMs: Int64,
@@ -5477,6 +7614,81 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         ctx: AXProjectContext
     ) -> String {
         handleSlashGuidance(args: args, ctx: ctx)
+    }
+
+    func handleSlashSandboxForTesting(args: [String]) -> String {
+        handleSlashSandbox(args: args)
+    }
+
+    func handleSlashMemoryForTesting(
+        args: [String],
+        ctx: AXProjectContext,
+        config: AXProjectConfig?
+    ) -> String {
+        handleSlashMemory(args: args, ctx: ctx, config: config)
+    }
+
+    func slashMemoryTextForTesting(config: AXProjectConfig?) -> String {
+        slashMemoryText(config: config)
+    }
+
+    func handleSlashToolsForTesting(
+        args: [String],
+        ctx: AXProjectContext,
+        config: AXProjectConfig?
+    ) -> String {
+        handleSlashTools(args: args, ctx: ctx, config: config)
+    }
+
+    func slashToolsTextForTesting(config: AXProjectConfig?) -> String {
+        slashToolsText(config: config)
+    }
+
+    func slashHubRouteTextForTesting() -> String {
+        slashHubRouteText()
+    }
+
+    func slashHubRouteSelfTestTextForTesting() -> String {
+        slashHubRouteSelfTestText()
+    }
+
+    func frontstageHighRiskGrantRuntimeStatusForTesting(_ raw: String) -> String {
+        frontstageHighRiskGrantRuntimeStatus(raw)
+    }
+
+    func frontstageHighRiskGrantBypassScanReportForTesting(
+        _ report: ToolExecutor.HighRiskGrantBypassScanReport
+    ) -> String {
+        frontstageHighRiskGrantBypassScanReport(report)
+    }
+
+    func frontstageHighRiskGrantSelfTestSummaryForTesting(
+        checks: [ToolExecutor.HighRiskGrantSelfCheck],
+        scan: ToolExecutor.HighRiskGrantBypassScanReport
+    ) -> String {
+        frontstageHighRiskGrantSelfTestSummary(checks: checks, scan: scan)
+    }
+
+    func handleSlashTrustedAutomationForTesting(
+        args: [String],
+        ctx: AXProjectContext,
+        config: AXProjectConfig?
+    ) -> String {
+        handleSlashTrustedAutomation(args: args, ctx: ctx, config: config)
+    }
+
+    func slashTrustedAutomationTextForTesting(
+        config: AXProjectConfig?,
+        ctx: AXProjectContext
+    ) -> String {
+        slashTrustedAutomationText(config: config, ctx: ctx)
+    }
+
+    func slashTrustedAutomationDoctorTextForTesting(
+        config: AXProjectConfig?,
+        ctx: AXProjectContext
+    ) -> String {
+        slashTrustedAutomationDoctorText(config: config, ctx: ctx)
     }
 
     func handleSlashModelForTesting(
@@ -5539,7 +7751,7 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
     func persistPendingToolApprovalForTesting(
         ctx: AXProjectContext,
         calls: [ToolCall],
-        assistantStub: String = "有待审批的工具操作（本页或 Home 可处理）。",
+        assistantStub: String = pendingToolApprovalStub,
         reason: String? = nil,
         userText: String = "testing"
     ) {
@@ -5573,6 +7785,32 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         assistantToolOutcomeLines(toolResults: toolResults)
     }
 
+    func setAssistantProgressLinesForTesting(
+        _ lines: [String],
+        messageID: String,
+        visibleStreaming: Bool = false
+    ) {
+        let normalized = lines
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        if normalized.isEmpty {
+            assistantProgressLinesByMessageID.removeValue(forKey: messageID)
+        } else {
+            assistantProgressLinesByMessageID[messageID] = normalized
+        }
+        if visibleStreaming {
+            assistantVisibleStreamingMessageIDs.insert(messageID)
+        } else {
+            assistantVisibleStreamingMessageIDs.remove(messageID)
+        }
+    }
+
+    func assistantThinkingPresentationForTesting(
+        _ message: AXChatMessage
+    ) -> XTStreamingPlaceholderPresentation? {
+        assistantThinkingPresentation(for: message)
+    }
+
     func toolHistoryForPromptForTesting(toolResults: [ToolResult]) -> String {
         toolHistoryForPrompt(toolResults)
     }
@@ -5593,11 +7831,59 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         projectSkillProgressLine(for: dispatch)
     }
 
+    func projectSkillExecutionReadinessForTesting(
+        ctx: AXProjectContext,
+        dispatch: XTProjectMappedSkillDispatch,
+        config: AXProjectConfig? = nil
+    ) -> XTSkillExecutionReadiness? {
+        projectSkillExecutionReadiness(
+            ctx: ctx,
+            dispatch: dispatch,
+            config: config
+        )
+    }
+
     func mappedProjectSkillToolCallsForTesting(
         skillCalls: [GovernedSkillCall],
         ctx: AXProjectContext
     ) async -> Result<[ToolCall], ProjectSkillToolCallMappingError> {
         await mappedProjectSkillToolCalls(skillCalls: skillCalls, ctx: ctx)
+    }
+
+    static func installLLMGenerateOverrideForTesting(
+        _ override: LLMGenerateOverrideForTesting?
+    ) {
+        withLLMGenerateTestingLock {
+            llmGenerateOverrideForTesting = override
+        }
+    }
+
+    static func resetLLMGenerateOverrideForTesting() {
+        installLLMGenerateOverrideForTesting(nil)
+    }
+
+    static func installToolExecutionOverrideForTesting(
+        _ override: ToolExecutionOverrideForTesting?
+    ) {
+        withToolExecutionTestingLock {
+            toolExecutionOverrideForTesting = override
+        }
+    }
+
+    static func resetToolExecutionOverrideForTesting() {
+        installToolExecutionOverrideForTesting(nil)
+    }
+
+    static func installApprovedPendingToolFinalizeOverrideForTesting(
+        _ override: ApprovedPendingToolFinalizeOverrideForTesting?
+    ) {
+        withApprovedPendingToolFinalizeTestingLock {
+            approvedPendingToolFinalizeOverrideForTesting = override
+        }
+    }
+
+    static func resetApprovedPendingToolFinalizeOverrideForTesting() {
+        installApprovedPendingToolFinalizeOverrideForTesting(nil)
     }
 
     private func llmGenerate(
@@ -5657,8 +7943,12 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         if let path = usage?.executionPath, !path.isEmpty {
             usageEntry["execution_path"] = path
         }
-        if let reason = usage?.fallbackReasonCode, !reason.isEmpty {
-            usageEntry["fallback_reason_code"] = reason
+        let effectiveFailureReason = effectiveProjectFailureReasonCode(
+            fallbackReasonCode: usage?.fallbackReasonCode ?? "",
+            denyCode: usage?.denyCode ?? ""
+        )
+        if !effectiveFailureReason.isEmpty {
+            usageEntry["fallback_reason_code"] = effectiveFailureReason
         }
         if let auditRef = usage?.auditRef, !auditRef.isEmpty {
             usageEntry["audit_ref"] = auditRef
@@ -5677,6 +7967,10 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         }
         if let retryReason = usage?.remoteRetryReasonCode, !retryReason.isEmpty {
             usageEntry["remote_retry_reason_code"] = retryReason
+        }
+        if let memoryPromptProjection = usage?.memoryPromptProjection,
+           let projectionObject = xtCompactJSONObject(memoryPromptProjection) {
+            usageEntry["hub_memory_prompt_projection"] = projectionObject
         }
         AXProjectStore.appendUsage(usageEntry, for: ctx)
     }
@@ -5728,7 +8022,26 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
             routeDecision: routeDecision,
             usage: usage
         )
-        return (output, strictFailure)
+        if let strictFailure {
+            AXProjectStore.appendRawLog(
+                [
+                    "type": "project_route_mismatch_notice",
+                    "created_at": Date().timeIntervalSince1970,
+                    "role": AXRole.coder.rawValue,
+                    "stage": stage,
+                    "configured_model_id": routeDecision.configuredModelId as Any,
+                    "preferred_model_id": routeDecision.preferredModelId as Any,
+                    "actual_model_id": usage?.actualModelId as Any,
+                    "execution_path": usage?.executionPath as Any,
+                    "runtime_provider": usage?.runtimeProvider as Any,
+                    "reason_code": routeDecision.reasonCode as Any,
+                    "notice": truncateInline(strictFailure, max: 2_000)
+                ],
+                for: ctx
+            )
+        }
+        // Keep the reply and expose route truth in the header/diagnostics instead of fail-closing the whole turn.
+        return (output, nil)
     }
 
     private func llmGenerateWithUsage(
@@ -5743,16 +8056,31 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         let projectContext = currentProjectContextForLLM()
         async let routeSnapshot = HubAIClient.shared.loadRouteDecisionModelsState()
         async let localSnapshot = HubAIClient.shared.loadModelsState(transportOverride: .fileIPC)
+        async let hasRemoteProfile = HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
         let modelsSnapshot = await routeSnapshot
         let localModelsSnapshot = await localSnapshot
-        let routeDecision = AXProjectModelRouteMemoryStore.resolvePreferredModel(
+        let routeDecision = effectiveProjectRouteDecision(
             configuredModelId: configuredPreferredHub,
             role: role,
             ctx: projectContext,
             snapshot: modelsSnapshot,
             localSnapshot: localModelsSnapshot
         )
+        if let testingOverride = Self.withLLMGenerateTestingLock({ Self.llmGenerateOverrideForTesting }) {
+            let overriddenOutput = try testingOverride(role, prompt, routeDecision)
+            return (overriddenOutput, nil, routeDecision)
+        }
         let projectId = currentProjectIdForLLM()
+        let effectiveTransportOverride: HubTransportMode? = routeDecision.forceLocalExecution ? .fileIPC : nil
+        let effectiveTransportMode = effectiveTransportOverride ?? HubAIClient.transportMode()
+        let remotePromptOverride = remoteProjectPromptOverrideIfNeeded(
+            role: role,
+            prompt: prompt,
+            routeDecision: routeDecision,
+            transportMode: effectiveTransportMode,
+            hasRemoteProfile: await hasRemoteProfile
+        )
+
         let req = LLMRequest(
             role: role,
             messages: [
@@ -5765,22 +8093,43 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
             preferredModelId: routeDecision.preferredModelId,
             projectId: projectId,
             sessionId: currentSessionIdForLLM(),
-            transportOverride: routeDecision.forceLocalExecution ? .fileIPC : nil
+            transportOverride: effectiveTransportOverride,
+            remotePromptOverride: remotePromptOverride
         )
 
         var out = ""
         var usage: LLMUsage? = nil
-        for try await ev in provider.stream(req) {
-            switch ev {
-            case .delta(let t):
-                out += t
-                if let assistantIndex = assistantIndexForStreaming,
-                   let visible = visibleAssistantTextCandidate(from: out, mode: visibleStreamMode) {
-                    streamVisibleAssistantText(assistantIndex: assistantIndex, content: visible)
+        let waitDescriptor = llmGenerateWaitDescriptor(
+            preferredModelId: routeDecision.preferredModelId,
+            snapshot: modelsSnapshot,
+            transportMode: effectiveTransportMode
+        )
+        let waitTask = startAssistantWaitPulseIfNeeded(
+            assistantIndex: assistantIndexForStreaming,
+            descriptor: waitDescriptor
+        )
+        defer {
+            waitTask?.cancel()
+        }
+
+        do {
+            for try await ev in provider.stream(req) {
+                switch ev {
+                case .delta(let t):
+                    out += t
+                    if let assistantIndex = assistantIndexForStreaming,
+                       let visible = visibleAssistantTextCandidate(from: out, mode: visibleStreamMode) {
+                        streamVisibleAssistantText(assistantIndex: assistantIndex, content: visible)
+                    }
+                case .done(_, _, let u):
+                    usage = u
                 }
-            case .done(_, _, let u):
-                usage = u
             }
+        } catch {
+            if let assistantIndex = assistantIndexForStreaming {
+                clearAssistantProgress(assistantIndex: assistantIndex)
+            }
+            throw error
         }
         if let projectContext, (routeDecision.usedRememberedRemoteModel || routeDecision.forceLocalExecution) {
             var routeLog: [String: Any] = [
@@ -5803,12 +8152,76 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
             if routeDecision.forceLocalExecution {
                 routeLog["force_local_execution"] = true
             }
+            if routeDecision.reasonCode == "grpc_preserve_configured_model" {
+                routeLog["force_local_execution_bypassed"] = true
+                routeLog["force_local_execution_bypass_reason"] = "grpc_preserve_configured_model"
+            }
             if let reason = routeDecision.reasonCode, !reason.isEmpty {
                 routeLog["reason_code"] = reason
             }
             AXProjectStore.appendRawLog(routeLog, for: projectContext)
         }
         return (out, usage, routeDecision)
+    }
+
+    private func llmGenerateWaitDescriptor(
+        preferredModelId: String?,
+        snapshot: ModelStateSnapshot,
+        transportMode: HubTransportMode
+    ) -> XTHubGenerateWaitDescriptor {
+        let normalizedPreferred = preferredModelId?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        let model = snapshot.models.first {
+            let normalizedID = $0.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let normalizedName = $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return !normalizedPreferred.isEmpty
+                && (normalizedID == normalizedPreferred || normalizedName == normalizedPreferred)
+        }
+        let backend = model?.backend.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedBackend = backend?.lowercased() ?? ""
+        let usesHubLocalModel = model?.offlineReady == true
+            || ["mlx", "transformers", "llama_cpp", "llama.cpp", "mlx_vlm"].contains(normalizedBackend)
+        return XTHubGenerateWaitDescriptor(
+            transportMode: transportMode,
+            modelLabel: model?.name ?? model?.id ?? preferredModelId,
+            backend: backend,
+            usesHubLocalModel: usesHubLocalModel
+        )
+    }
+
+    private func startAssistantWaitPulseIfNeeded(
+        assistantIndex: Int?,
+        descriptor: XTHubGenerateWaitDescriptor
+    ) -> Task<Void, Never>? {
+        guard let assistantIndex else { return nil }
+        appendAssistantProgress(
+            assistantIndex: assistantIndex,
+            line: XTHubGenerateWaitPresentation.initialLine(for: descriptor)
+        )
+        let checkpoints = XTHubGenerateWaitPresentation.progressCheckpoints(for: descriptor)
+        guard !checkpoints.isEmpty else { return nil }
+
+        return Task { [weak self] in
+            var previous = 0
+            for checkpoint in checkpoints {
+                let waitSeconds = max(0, checkpoint - previous)
+                previous = checkpoint
+                if waitSeconds > 0 {
+                    try? await Task.sleep(nanoseconds: UInt64(waitSeconds) * 1_000_000_000)
+                }
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    self?.appendAssistantProgress(
+                        assistantIndex: assistantIndex,
+                        line: XTHubGenerateWaitPresentation.followUpLine(
+                            for: descriptor,
+                            elapsedSeconds: checkpoint
+                        )
+                    )
+                }
+            }
+        }
     }
 
     private func currentProjectIdForLLM() -> String? {
@@ -5820,6 +8233,25 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
     private func currentProjectContextForLLM() -> AXProjectContext? {
         guard let root = loadedRootPath else { return nil }
         return AXProjectContext(root: URL(fileURLWithPath: root, isDirectory: true))
+    }
+
+    func pendingProjectSkillActivityItems() -> [String: ProjectSkillActivityItem] {
+        guard !pendingToolCalls.isEmpty,
+              let ctx = currentProjectContextForLLM() else {
+            return [:]
+        }
+
+        var out: [String: ProjectSkillActivityItem] = [:]
+        for call in pendingToolCalls {
+            guard let latest = AXProjectSkillActivityStore.loadEvents(
+                ctx: ctx,
+                requestID: call.id
+            ).last?.item else {
+                continue
+            }
+            out[call.id] = latest
+        }
+        return out
     }
 
     private func currentSessionIdForLLM() -> String? {
@@ -5859,7 +8291,10 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
                 call: skillCall,
                 projectId: projectId,
                 projectName: projectName,
-                registrySnapshot: snapshot
+                registrySnapshot: snapshot,
+                projectRoot: ctx.root,
+                config: (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: ctx.root),
+                hubBaseDir: HubPaths.baseDir()
             ) {
             case .success(let dispatch):
                 mapped.append(dispatch)
@@ -5930,7 +8365,18 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
                 }
             }
             do {
-                let res = try await ToolExecutor.execute(call: call, projectRoot: root, stream: streamHandler)
+                let res: ToolResult
+                if let override = Self.withToolExecutionTestingLock({ Self.toolExecutionOverrideForTesting }),
+                   let overridden = try await override(call, root) {
+                    res = overridden
+                } else {
+                    res = try await ToolExecutor.execute(
+                        call: call,
+                        projectRoot: root,
+                        extraReadableRoots: activeAttachmentReadableRoots(),
+                        stream: streamHandler
+                    )
+                }
                 f.toolResults.append(res)
                 if let projectSkillDispatch {
                     recordProjectSkillExecutionResult(
@@ -6102,7 +8548,6 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
             lines = Array(lines.suffix(assistantProgressMaxLines))
         }
         assistantProgressLinesByMessageID[messageID] = lines
-        messages[assistantIndex].content = assistantProgressContent(lines: lines)
     }
 
     private func clearAssistantProgress(assistantIndex: Int) {
@@ -6121,13 +8566,6 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         if messages[assistantIndex].content != normalized {
             messages[assistantIndex].content = normalized
         }
-    }
-
-    private func assistantProgressContent(lines: [String]) -> String {
-        guard !lines.isEmpty else {
-            return "我先继续处理。"
-        }
-        return lines.joined(separator: "\n")
     }
 
     private func assistantProgressLine(for call: ToolCall) -> String {
@@ -6236,10 +8674,27 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
             return "我在检查 Bridge 状态。"
         case .skills_search:
             return "我在查询技能目录。"
+        case .skills_pin:
+            return "我在固定技能依赖。"
         case .summarize:
             return "我在整理内容摘要。"
         case .supervisorVoicePlayback:
             return "我在处理 Supervisor 的语音播放。"
+        case .run_local_task:
+            switch call.args["task_kind"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "embedding":
+                return "我在生成向量嵌入。"
+            case "speech_to_text":
+                return "我在转写音频内容。"
+            case "text_to_speech":
+                return "我在合成本地语音。"
+            case "vision_understand":
+                return "我在理解图片内容。"
+            case "ocr":
+                return "我在提取图片里的文字。"
+            default:
+                return "我在执行本地模型任务。"
+            }
         case .web_fetch, .browser_read:
             return "我在读取远端内容。"
         case .web_search:
@@ -6254,10 +8709,41 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
             return "我在通过技能 \(skillId) 读取网页内容。"
         case .skills_search:
             return "我在通过技能 \(skillId) 查询技能目录。"
+        case .skills_pin:
+            return "我在通过技能 \(skillId) 固定技能依赖。"
         case .summarize:
             return "我在通过技能 \(skillId) 总结内容。"
         case .supervisorVoicePlayback:
             return "我在通过技能 \(skillId) 处理 Supervisor 语音播放。"
+        case .run_local_task:
+            let canonicalSkillId = AXSkillsLibrary.canonicalSupervisorSkillID(dispatch.skillId).lowercased()
+            switch canonicalSkillId {
+            case "local-embeddings":
+                return "我在通过技能 \(skillId) 生成向量嵌入。"
+            case "local-transcribe":
+                return "我在通过技能 \(skillId) 转写音频内容。"
+            case "local-vision":
+                return "我在通过技能 \(skillId) 理解图片内容。"
+            case "local-ocr":
+                return "我在通过技能 \(skillId) 提取图片里的文字。"
+            case "local-tts":
+                return "我在通过技能 \(skillId) 合成本地语音。"
+            default:
+                switch dispatch.toolCall.args["task_kind"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+                case "embedding":
+                    return "我在通过技能 \(skillId) 生成向量嵌入。"
+                case "speech_to_text":
+                    return "我在通过技能 \(skillId) 转写音频内容。"
+                case "text_to_speech":
+                    return "我在通过技能 \(skillId) 合成本地语音。"
+                case "vision_understand":
+                    return "我在通过技能 \(skillId) 理解图片内容。"
+                case "ocr":
+                    return "我在通过技能 \(skillId) 提取图片里的文字。"
+                default:
+                    return "我在通过技能 \(skillId) 执行本地模型任务。"
+                }
+            }
         case .deviceBrowserControl:
             return "我在通过技能 \(skillId) 操作浏览器。"
         case .web_fetch, .web_search:
@@ -6276,7 +8762,8 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         let now = Date().timeIntervalSince1970
         for dispatch in dispatches {
             AXProjectStore.appendRawLog(
-                [
+                appendProjectSkillDispatchMetadata(
+                    to: [
                     "type": "project_skill_call",
                     "created_at": now,
                     "status": "resolved",
@@ -6285,7 +8772,10 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
                     "skill_id": dispatch.skillId,
                     "tool_name": dispatch.toolName,
                     "tool_args": jsonArgs(dispatch.toolCall.args)
-                ],
+                    ],
+                    dispatch: dispatch,
+                    ctx: ctx
+                ),
                 for: ctx
             )
         }
@@ -6301,7 +8791,8 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
             call: dispatch.toolCall,
             decision: decision
         )
-        var row: [String: Any] = [
+        var row = appendProjectSkillDispatchMetadata(
+            to: [
             "type": "project_skill_call",
             "created_at": Date().timeIntervalSince1970,
             "status": "blocked",
@@ -6315,7 +8806,12 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
             "detail": decision.detail,
             "policy_source": decision.policySource,
             "policy_reason": decision.policyReason
-        ]
+            ],
+            dispatch: dispatch,
+            ctx: ctx
+        )
+        let readiness = projectSkillExecutionReadiness(ctx: ctx, dispatch: dispatch)
+        appendProjectSkillReadiness(to: &row, readiness: readiness)
         if let runtimeDecision = decision.runtimePolicyDecision {
             let summary = xtToolRuntimePolicyDeniedSummary(
                 call: dispatch.toolCall,
@@ -6334,7 +8830,8 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         dispatch: XTProjectMappedSkillDispatch
     ) {
         AXProjectStore.appendRawLog(
-            [
+            appendProjectSkillDispatchMetadata(
+                to: [
                 "type": "project_skill_call",
                 "created_at": Date().timeIntervalSince1970,
                 "status": "blocked",
@@ -6347,7 +8844,10 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
                 "detail": "User rejected the pending approval before execution.",
                 "policy_source": "user_decision",
                 "policy_reason": "manual_reject"
-            ],
+                ],
+                dispatch: dispatch,
+                ctx: ctx
+            ),
             for: ctx
         )
     }
@@ -6358,10 +8858,48 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         toolCalls: [ToolCall]
     ) {
         let now = Date().timeIntervalSince1970
+        let config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: ctx.root)
+        let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+        let projectName = currentProjectDisplayName(ctx: ctx)
+        refreshResolvedSkillsCacheSynchronouslyIfPossible(
+            ctx: ctx,
+            projectId: projectId,
+            projectName: projectName,
+            remoteStateDirPath: dispatchesByCallID.values.compactMap(\.hubStateDirPath).first
+        )
+        let profileSnapshot = AXSkillsLibrary.projectEffectiveSkillProfileSnapshot(
+            projectId: projectId,
+            projectName: projectName,
+            projectRoot: ctx.root,
+            config: config,
+            hubBaseDir: HubPaths.baseDir()
+        )
         for call in toolCalls {
             guard let dispatch = dispatchesByCallID[call.id] else { continue }
-            AXProjectStore.appendRawLog(
-                [
+            let readiness = projectSkillExecutionReadiness(
+                ctx: ctx,
+                dispatch: dispatch,
+                config: config
+            )
+            let deltaApproval = XTSkillCapabilityProfileSupport.deltaApproval(
+                requestId: dispatch.toolCall.id,
+                projectId: projectId,
+                projectName: projectName,
+                requestedSkillId: dispatch.requestedSkillId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                    ? dispatch.requestedSkillId ?? dispatch.skillId
+                    : dispatch.skillId,
+                effectiveSkillId: dispatch.skillId,
+                toolName: dispatch.toolName,
+                requestedCapabilityFamilies: dispatch.capabilityFamilies.isEmpty
+                    ? readiness?.capabilityFamilies ?? []
+                    : dispatch.capabilityFamilies,
+                currentSnapshot: profileSnapshot,
+                reason: readiness?.reasonCode.isEmpty == false
+                    ? readiness?.reasonCode ?? ""
+                    : "waiting for local governed approval"
+            )
+            var row = appendProjectSkillDispatchMetadata(
+                to: [
                     "type": "project_skill_call",
                     "created_at": now,
                     "status": "awaiting_approval",
@@ -6370,6 +8908,13 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
                     "tool_name": dispatch.toolName,
                     "tool_args": jsonArgs(dispatch.toolCall.args)
                 ],
+                dispatch: dispatch,
+                ctx: ctx
+            )
+            appendProjectSkillReadiness(to: &row, readiness: readiness)
+            appendProjectSkillDeltaApproval(to: &row, deltaApproval: deltaApproval)
+            AXProjectStore.appendRawLog(
+                row,
                 for: ctx
             )
         }
@@ -6380,7 +8925,8 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         dispatch: XTProjectMappedSkillDispatch,
         result: ToolResult
     ) {
-        var entry: [String: Any] = [
+        var entry = appendProjectSkillDispatchMetadata(
+            to: [
             "type": "project_skill_call",
             "created_at": Date().timeIntervalSince1970,
             "status": result.ok ? "completed" : "failed",
@@ -6390,11 +8936,168 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
             "tool_args": jsonArgs(dispatch.toolCall.args),
             "ok": result.ok,
             "result_summary": ToolResultHumanSummary.body(for: result)
-        ]
+            ],
+            dispatch: dispatch,
+            ctx: ctx
+        )
+        appendProjectSkillReadiness(
+            to: &entry,
+            readiness: projectSkillExecutionReadiness(ctx: ctx, dispatch: dispatch)
+        )
         if let structured = ToolResultHumanSummary.structuredSummary(for: result) {
             entry["result_structured_summary"] = jsonArgs(structured)
         }
         AXProjectStore.appendRawLog(entry, for: ctx)
+    }
+
+    private func appendProjectSkillDispatchMetadata(
+        to row: [String: Any],
+        dispatch: XTProjectMappedSkillDispatch,
+        ctx: AXProjectContext
+    ) -> [String: Any] {
+        var out = row
+        if let requestedSkillId = dispatch.requestedSkillId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !requestedSkillId.isEmpty {
+            out["requested_skill_id"] = requestedSkillId
+        }
+        if !dispatch.intentFamilies.isEmpty {
+            out["intent_families"] = dispatch.intentFamilies
+        }
+        if !dispatch.capabilityFamilies.isEmpty {
+            out["capability_families"] = dispatch.capabilityFamilies
+        }
+        if !dispatch.capabilityProfiles.isEmpty {
+            out["capability_profiles"] = dispatch.capabilityProfiles
+        }
+        if !dispatch.grantFloor.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            out["grant_floor"] = dispatch.grantFloor
+        }
+        if !dispatch.approvalFloor.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            out["approval_floor"] = dispatch.approvalFloor
+        }
+        if let routingReasonCode = dispatch.routingReasonCode?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !routingReasonCode.isEmpty {
+            out["routing_reason_code"] = routingReasonCode
+        }
+        if let routingExplanation = dispatch.routingExplanation?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !routingExplanation.isEmpty {
+            out["routing_explanation"] = routingExplanation
+        }
+        if let hubStateDirPath = projectSkillHubStateDirPath(ctx: ctx, dispatch: dispatch) {
+            out["hub_state_dir_path"] = hubStateDirPath
+        }
+        if let requiredCapability = projectSkillRequiredHubCapability(for: dispatch.toolCall),
+           !requiredCapability.isEmpty {
+            out["required_capability"] = requiredCapability
+        }
+        return out
+    }
+
+    private func appendProjectSkillReadiness(
+        to row: inout [String: Any],
+        readiness: XTSkillExecutionReadiness?
+    ) {
+        guard let readiness else { return }
+        if (row["deny_code"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false,
+           !readiness.denyCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            row["deny_code"] = readiness.denyCode
+        }
+        row["execution_readiness"] = readiness.executionReadiness
+        row["state_label"] = readiness.stateLabel
+        row["grant_floor"] = readiness.grantFloor
+        row["approval_floor"] = readiness.approvalFloor
+        row["required_runtime_surfaces"] = readiness.requiredRuntimeSurfaces
+        row["unblock_actions"] = readiness.unblockActions
+        if !readiness.reasonCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            row["readiness_reason_code"] = readiness.reasonCode
+        }
+    }
+
+    private func appendProjectSkillDeltaApproval(
+        to row: inout [String: Any],
+        deltaApproval: XTSkillProfileDeltaApproval?
+    ) {
+        guard let deltaApproval else { return }
+        row["approval_summary"] = deltaApproval.summary
+        row["current_runnable_profiles"] = deltaApproval.currentRunnableProfiles
+        row["requested_profiles"] = deltaApproval.requestedProfiles
+        row["delta_profiles"] = deltaApproval.deltaProfiles
+        row["current_runnable_capability_families"] = deltaApproval.currentRunnableCapabilityFamilies
+        row["requested_capability_families"] = deltaApproval.requestedCapabilityFamilies
+        row["delta_capability_families"] = deltaApproval.deltaCapabilityFamilies
+        row["grant_floor"] = deltaApproval.grantFloor
+        row["approval_floor"] = deltaApproval.approvalFloor
+    }
+
+    private func projectSkillExecutionReadiness(
+        ctx: AXProjectContext,
+        dispatch: XTProjectMappedSkillDispatch,
+        config: AXProjectConfig? = nil
+    ) -> XTSkillExecutionReadiness? {
+        let skillId = dispatch.skillId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !skillId.isEmpty else { return nil }
+        let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+        let projectName = currentProjectDisplayName(ctx: ctx)
+        let resolvedConfig = config ?? ((try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: ctx.root))
+        refreshResolvedSkillsCacheSynchronouslyIfPossible(
+            ctx: ctx,
+            projectId: projectId,
+            projectName: projectName,
+            remoteStateDirPath: dispatch.hubStateDirPath
+        )
+        let registryItem = AXSkillsLibrary.preferredSupervisorSkillRegistrySnapshot(
+            projectId: projectId,
+            projectName: projectName,
+            projectRoot: ctx.root,
+            hubBaseDir: HubPaths.baseDir()
+        )?.items.first(where: {
+            AXSkillsLibrary.canonicalSupervisorSkillID($0.skillId) == skillId
+        })
+        let baseReadiness = AXSkillsLibrary.skillExecutionReadiness(
+            skillId: skillId,
+            projectId: projectId,
+            projectName: projectName,
+            projectRoot: ctx.root,
+            config: resolvedConfig,
+            registryItem: registryItem,
+            hubBaseDir: HubPaths.baseDir()
+        )
+        let hasExplicitGrant = dispatch.toolCall.args["grant_id"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty == false
+        return XTSkillCapabilityProfileSupport.effectiveReadinessForRequestScopedGrantOverride(
+            readiness: baseReadiness,
+            registryItem: registryItem,
+            toolCall: dispatch.toolCall,
+            hasExplicitGrant: hasExplicitGrant,
+            localAutoApproveEnabled: resolvedConfig.governedAutoApproveLocalToolCalls
+        )
+    }
+
+    private func projectSkillRequiredHubCapability(
+        for toolCall: ToolCall
+    ) -> String? {
+        switch toolCall.tool {
+        case .web_fetch, .web_search, .browser_read:
+            return "web.fetch"
+        case .deviceBrowserControl:
+            if let action = toolCall.args["action"]?.stringValue?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased(),
+               action == "extract" {
+                return "web.fetch"
+            }
+            return nil
+        case .summarize:
+            if let url = toolCall.args["url"]?.stringValue?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !url.isEmpty {
+                return "web.fetch"
+            }
+            return nil
+        default:
+            return nil
+        }
     }
 
     private func strArgValue(_ value: JSONValue?) -> String {
@@ -6583,6 +9286,7 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         config: AXProjectConfig?,
         userText: String,
         toolResults: [ToolResult],
+        currentTurnAttachments: [AXChatAttachment] = [],
         safePointState: SupervisorSafePointExecutionState? = nil
     ) async -> PromptBuildOutput {
         let base = await buildToolLoopPrompt(
@@ -6591,6 +9295,7 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
             config: config,
             userText: userText,
             toolResults: toolResults,
+            currentTurnAttachments: currentTurnAttachments,
             safePointState: safePointState
         )
         let governedResponseContract = projectSupervisorFinalizeOnlyResponseContractInstructions(
@@ -6629,9 +9334,19 @@ Original output:
         userText: String,
         assistantText: String,
         assistantIndex: Int,
+        attachments: [AXChatAttachment] = [],
         userTextForMirror: String? = nil
     ) {
         let messageID = assistantIndex < messages.count ? messages[assistantIndex].id : nil
+        let inferredAttachments: [AXChatAttachment] = {
+            guard attachments.isEmpty,
+                  assistantIndex > 0,
+                  messages.indices.contains(assistantIndex - 1),
+                  messages[assistantIndex - 1].role == .user else {
+                return attachments
+            }
+            return messages[assistantIndex - 1].attachments
+        }()
         clearAssistantProgress(assistantIndex: assistantIndex)
         if let messageID {
             assistantVisibleStreamingMessageIDs.remove(messageID)
@@ -6644,9 +9359,27 @@ Original output:
         AXRecentContextStore.appendAssistantMessage(ctx: ctx, text: assistantText, createdAt: createdAt)
         touchProjectActivity(ctx: ctx, eventAt: createdAt)
 
-        let turn = AXConversationTurn(createdAt: createdAt, user: userText, assistant: assistantText)
+        let turn = AXConversationTurn(
+            createdAt: createdAt,
+            user: userText,
+            assistant: assistantText,
+            attachments: inferredAttachments
+        )
+        let rawTurn: [String: Any] = {
+            var row: [String: Any] = [
+                "type": "turn",
+                "created_at": turn.createdAt,
+                "user": turn.user,
+                "assistant": turn.assistant,
+            ]
+            if let encodedAttachments = xtCompactJSONObject(inferredAttachments),
+               inferredAttachments.isEmpty == false {
+                row["attachments"] = encodedAttachments
+            }
+            return row
+        }()
         AXProjectStore.appendRawLog(
-            ["type": "turn", "created_at": turn.createdAt, "user": turn.user, "assistant": turn.assistant],
+            rawTurn,
             for: ctx
         )
 
@@ -6709,7 +9442,8 @@ Original output:
             ctx: flow.ctx,
             userText: flow.userText,
             assistantText: merged,
-            assistantIndex: flow.assistantIndex
+            assistantIndex: flow.assistantIndex,
+            attachments: flow.currentTurnAttachments
         )
     }
 
@@ -6830,6 +9564,7 @@ Original output:
              .list_dir,
              .search,
              .skills_search,
+             .skills_pin,
              .summarize,
              .run_command,
              .process_start,
@@ -6852,7 +9587,8 @@ Original output:
              .deviceScreenCapture,
              .deviceBrowserControl,
              .deviceAppleScript,
-             .supervisorVoicePlayback:
+             .supervisorVoicePlayback,
+             .run_local_task:
             return .blocking
         }
     }
@@ -6914,6 +9650,8 @@ Original output:
             return detail.isEmpty ? "联网操作失败。" : "联网操作失败：\(detail)"
         case .supervisorVoicePlayback:
             return detail.isEmpty ? "Supervisor 语音播放失败。" : "Supervisor 语音播放失败：\(detail)"
+        case .run_local_task:
+            return detail.isEmpty ? "本地模型任务执行失败。" : "本地模型任务执行失败：\(detail)"
         default:
             return detail.isEmpty ? "\(result.tool.rawValue) 执行失败。" : "\(result.tool.rawValue) 执行失败：\(detail)"
         }
@@ -7049,6 +9787,7 @@ Instructions:
         memory: AXMemory?,
         userText: String,
         toolResults: [ToolResult],
+        currentTurnAttachments: [AXChatAttachment] = [],
         safePointState: SupervisorSafePointExecutionState? = nil
     ) async -> PromptBuildOutput {
         return await buildToolLoopPrompt(
@@ -7057,6 +9796,7 @@ Instructions:
             config: nil,
             userText: userText,
             toolResults: toolResults,
+            currentTurnAttachments: currentTurnAttachments,
             safePointState: safePointState
         )
     }
@@ -7067,6 +9807,7 @@ Instructions:
         config: AXProjectConfig?,
         userText: String,
         toolResults: [ToolResult],
+        currentTurnAttachments: [AXChatAttachment] = [],
         safePointState: SupervisorSafePointExecutionState? = nil
     ) async -> PromptBuildOutput {
         var memText = ""
@@ -7145,6 +9886,27 @@ Networking:
         }()
 
         let toolHistory = toolHistoryForPrompt(toolResults)
+        let currentTurnMultimodalInput = await currentTurnMultimodalInputSummary(
+            userText: userText,
+            currentTurnAttachments: currentTurnAttachments
+        )
+        let currentTurnMultimodalBlock = currentTurnMultimodalInput.isEmpty
+            ? ""
+            : """
+\(currentTurnMultimodalInput)
+
+"""
+        let attachmentSummary = await attachmentPromptSummary(
+            currentTurnAttachments: currentTurnAttachments,
+            projectRoot: ctx.root
+        )
+        let attachmentContextBlock = attachmentSummary.isEmpty
+            ? ""
+            : """
+Attachment context:
+\(attachmentSummary)
+
+"""
 
         let verifyText: String = {
             guard let config, config.verifyAfterChanges else { return "(disabled)" }
@@ -7210,7 +9972,7 @@ Patch-first workflow (IMPORTANT):
 
 \(networkingGuidance)
 
-Tool results so far:
+\(currentTurnMultimodalBlock)\(attachmentContextBlock)Tool results so far:
 \(toolHistory)
 
 User request:
@@ -7239,18 +10001,24 @@ User request:
         guard maxTurns > 0 else { return "(disabled)" }
 
         // Prefer crash-resilient recent context stored on disk. Fall back to in-memory UI state if missing.
-        var hist: [(String, String)] = [] // (role, content)
+        var hist: [(String, String, [AXChatAttachment])] = [] // (role, content, attachments)
         let recent = AXRecentContextStore.load(for: ctx)
         if !recent.messages.isEmpty {
             hist = recent.messages.compactMap { m in
                 let r = m.role.trimmingCharacters(in: .whitespacesAndNewlines)
                 if r != "user" && r != "assistant" { return nil }
-                return (r, m.content)
+                return (r, m.content, m.attachments)
             }
         } else {
             hist = messages
                 .filter { $0.role == .user || $0.role == .assistant }
-                .map { ($0.role == .user ? "user" : "assistant", $0.content) }
+                .map {
+                    (
+                        $0.role == .user ? "user" : "assistant",
+                        $0.content,
+                        $0.attachments
+                    )
+                }
         }
 
         // Drop the current user message (already included separately in the prompt).
@@ -7269,6 +10037,16 @@ User request:
         history: [(String, String)],
         maxTurns: Int
     ) -> String {
+        renderRecentConversationForPrompt(
+            history: history.map { ($0.0, $0.1, []) },
+            maxTurns: maxTurns
+        )
+    }
+
+    private func renderRecentConversationForPrompt(
+        history: [(String, String, [AXChatAttachment])],
+        maxTurns: Int
+    ) -> String {
         let maxMsgs = max(2, maxTurns * 2)
         let slice = history.suffix(maxMsgs)
         if slice.isEmpty { return "(none)" }
@@ -7280,8 +10058,18 @@ User request:
             return String(t[..<idx]) + "…"
         }
 
-        return slice.map { (role, content) in
-            "\(role): \(truncateBlock(sanitizedPromptContextText(content), maxChars: 900))"
+        return slice.map { (role, content, attachments) in
+            let renderedContent = truncateBlock(
+                sanitizedPromptContextText(content),
+                maxChars: 900
+            )
+            guard !attachments.isEmpty else {
+                return "\(role): \(renderedContent)"
+            }
+            let attachmentSuffix = attachments
+                .map(\.displayPath)
+                .joined(separator: ", ")
+            return "\(role): \(renderedContent)\nattachments: \(attachmentSuffix)"
         }.joined(separator: "\n")
     }
 
@@ -7295,14 +10083,6 @@ User request:
         shouldExpandRecent: Bool
     ) -> ProjectPromptContextAssembly {
         let resolvedConfig = config ?? activeConfig ?? AXProjectConfig.default(forProjectRoot: ctx.root)
-        let recentDialogueProfile = resolvedConfig.projectRecentDialogueProfile
-        let contextDepthProfile = resolvedConfig.projectContextDepthProfile
-        let recentDialogueSelection = buildProjectRecentDialogueSelection(
-            ctx: ctx,
-            userText: userText,
-            profile: recentDialogueProfile,
-            shouldExpandRecent: shouldExpandRecent
-        )
         let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
         let projectName = currentProjectDisplayName(ctx: ctx)
         let workflowSnapshot = projectWorkflowSnapshot(
@@ -7316,8 +10096,14 @@ User request:
             safePointState: safePointState
         )
         let latestGuidance = SupervisorGuidanceInjectionStore.latest(for: ctx)
+        let heartbeatProjection = XTHeartbeatMemoryAssemblySupport.loadProjection(for: ctx)
         let crossLinkHints = projectCrossLinkPromptHints(projectId: projectId)
-        let observationsText = projectObservationDigest(ctx: ctx)
+        let observationsText = mergeProjectObservationSupplement(
+            baseText: projectObservationDigest(ctx: ctx),
+            supplementText: XTHeartbeatMemoryAssemblySupport.observationLines(
+                from: heartbeatProjection
+            ).joined(separator: "\n")
+        )
         let rawEvidenceText = sanitizedPromptContextText(
             projectRawEvidenceForMemoryV1(
                 ctx: ctx,
@@ -7330,11 +10116,6 @@ User request:
                 )
             )
         )
-        let effectiveServingProfile = resolvedProjectMemoryServingProfile(
-            userText: userText,
-            config: resolvedConfig,
-            contextDepthProfile: contextDepthProfile
-        )
         let latestUIReview = XTUIReviewStore.loadLatestBrowserPageReference(for: ctx)
         let executionEvidencePresent = !toolResults.isEmpty
             || latestUIReview != nil
@@ -7342,25 +10123,108 @@ User request:
         let reviewGuidancePresent = latestReview != nil
             || latestGuidance != nil
             || guidanceSnapshot.visiblePendingGuidanceInjectionId != nil
+        let automationContext = projectAutomationMemoryContext(
+            ctx: ctx,
+            projectId: projectId
+        )
+        let governance = resolvedProjectPromptGovernance(
+            ctx: ctx,
+            config: resolvedConfig
+        )
+        let memoryPolicy = XTRoleAwareMemoryPolicyResolver.resolveProject(
+            config: resolvedConfig,
+            governance: governance,
+            userText: userText,
+            shouldExpandRecent: shouldExpandRecent,
+            executionEvidencePresent: executionEvidencePresent,
+            reviewGuidancePresent: reviewGuidancePresent,
+            automationCurrentStepPresent: automationContext?.hasCurrentStep ?? false,
+            automationCurrentStepState: automationContext?.currentStepState?.rawValue,
+            automationVerificationPresent: automationContext?.hasVerificationState ?? false,
+            automationVerificationAttentionPresent: automationContext?.verificationNeedsAttention ?? false,
+            automationBlockerPresent: automationContext?.hasBlocker ?? false,
+            automationRetryReasonPresent: automationContext?.hasRetryReason ?? false,
+            automationRecoveryStatePresent: automationContext?.recoveryState != nil,
+            automationRecoveryReason: automationContext?.recoveryState?.reason.rawValue,
+            automationRecoveryDecision: automationContext?.recoveryState?.automaticDecision.rawValue
+        )
+        let recentDialogueSelection = buildProjectRecentDialogueSelection(
+            ctx: ctx,
+            userText: userText,
+            profile: memoryPolicy.effectiveRecentProjectDialogueProfile,
+            shouldExpandRecent: shouldExpandRecent
+        )
+        let contextDepthProfile = memoryPolicy.effectiveProjectContextDepth
+        let effectiveServingProfile = memoryPolicy.effectiveServingProfile
         let diagnostics = ProjectPromptExplainabilityDiagnostics(
+            roleAwareMemoryMode: memoryPolicy.resolution.role.rawValue,
+            projectMemoryResolutionTrigger: memoryPolicy.trigger,
+            configuredRecentProjectDialogueProfile: memoryPolicy.configuredRecentProjectDialogueProfile.rawValue,
+            recommendedRecentProjectDialogueProfile: memoryPolicy.recommendedRecentProjectDialogueProfile.rawValue,
+            effectiveRecentProjectDialogueProfile: memoryPolicy.effectiveRecentProjectDialogueProfile.rawValue,
             recentProjectDialogueProfile: recentDialogueSelection.profile.rawValue,
             recentProjectDialogueSelectedPairs: recentDialogueSelection.selectedPairs,
             recentProjectDialogueFloorPairs: recentDialogueSelection.floorPairs,
             recentProjectDialogueFloorSatisfied: recentDialogueSelection.floorSatisfied,
             recentProjectDialogueSource: recentDialogueSelection.source,
             recentProjectDialogueLowSignalDropped: recentDialogueSelection.lowSignalDroppedMessages,
+            configuredProjectContextDepth: memoryPolicy.configuredProjectContextDepth.rawValue,
+            recommendedProjectContextDepth: memoryPolicy.recommendedProjectContextDepth.rawValue,
+            effectiveProjectContextDepth: memoryPolicy.effectiveProjectContextDepth.rawValue,
             projectContextDepth: contextDepthProfile.rawValue,
-            effectiveProjectServingProfile: (effectiveServingProfile ?? .m1Execute).rawValue,
+            effectiveProjectServingProfile: effectiveServingProfile.rawValue,
+            aTierMemoryCeiling: memoryPolicy.aTierMemoryCeiling.rawValue,
+            projectMemoryCeilingHit: memoryPolicy.ceilingHit,
             workflowPresent: workflowSnapshot != nil,
             executionEvidencePresent: executionEvidencePresent,
             reviewGuidancePresent: reviewGuidancePresent,
             crossLinkHintsSelected: crossLinkHints.selectedCount,
-            personalMemoryExcludedReason: "project_ai_default_scopes_to_project_memory_only"
+            personalMemoryExcludedReason: "project_ai_default_scopes_to_project_memory_only",
+            projectMemoryPolicy: memoryPolicy.snapshot,
+            policyMemoryAssemblyResolution: memoryPolicy.resolution,
+            memoryAssemblyResolution: memoryPolicy.resolution,
+            automationContextSource: automationContext?.source ?? "",
+            automationRunID: automationContext?.runID,
+            automationEffectiveRunID: automationContext?.effectiveRunID,
+            automationRunState: automationContext?.runState?.rawValue,
+            automationAttempt: automationContext?.attempt,
+            automationRetryAfterSeconds: automationContext?.retryAfterSeconds,
+            automationDeliveryClosureSource: automationContext?.deliveryClosureSource?.rawValue,
+            automationDeliveryRef: automationContext?.deliveryRef,
+            automationRecoverySelection: automationContext?.recoveryState?.selection.rawValue,
+            automationRecoveryReason: automationContext?.recoveryState?.reason.rawValue,
+            automationRecoveryDecision: automationContext?.recoveryState?.automaticDecision.rawValue,
+            automationRecoveryHoldReason: automationContext?.recoveryState?.automaticHoldReason,
+            automationRecoveryRetryAfterRemainingSeconds: automationContext?.recoveryState?.retryAfterRemainingSeconds,
+            automationLastRecoveryDecision: automationContext?.lastRecoveryDecision?.rawValue,
+            automationLastRecoveryMode: automationContext?.lastRecoveryMode?.rawValue,
+            automationCurrentStepPresent: automationContext?.hasCurrentStep ?? false,
+            automationCurrentStepID: automationContext?.currentStepID,
+            automationCurrentStepTitle: automationContext?.currentStepTitle,
+            automationCurrentStepState: automationContext?.currentStepState?.rawValue,
+            automationCurrentStepSummary: automationContext?.currentStepSummary,
+            automationVerificationPresent: automationContext?.hasVerificationState ?? false,
+            automationVerificationRequired: automationContext?.verificationReport?.required,
+            automationVerificationExecuted: automationContext?.verificationReport?.executed,
+            automationVerificationCommandCount: automationContext?.verificationReport?.commandCount,
+            automationVerificationPassedCommandCount: automationContext?.verificationReport?.passedCommandCount,
+            automationVerificationHoldReason: automationContext?.verificationReport?.holdReason,
+            automationVerificationContract: automationContext?.verificationContract,
+            automationBlockerPresent: automationContext?.hasBlocker ?? false,
+            automationBlockerCode: automationContext?.blocker?.code,
+            automationBlockerSummary: automationContext?.blocker?.summary,
+            automationBlockerStage: automationContext?.blocker?.stage.rawValue,
+            automationRetryReasonPresent: automationContext?.hasRetryReason ?? false,
+            automationRetryReasonCode: automationContext?.retryReasonDescriptor?.code,
+            automationRetryReasonSummary: automationContext?.retryReasonDescriptor?.summary,
+            automationRetryReasonStrategy: automationContext?.retryReasonDescriptor?.strategy,
+            automationRetryVerificationContract: automationContext?.retryVerificationContract
         )
         let focusedProjectAnchorPackText = projectFocusedAnchorPackText(
             ctx: ctx,
             projectId: projectId,
             projectName: projectName,
+            memoryPolicy: memoryPolicy,
             recentDialogueSelection: recentDialogueSelection,
             contextDepthProfile: contextDepthProfile,
             effectiveServingProfile: effectiveServingProfile,
@@ -7368,7 +10232,9 @@ User request:
             latestReview: latestReview,
             reviewGuidancePresent: reviewGuidancePresent,
             executionEvidencePresent: executionEvidencePresent,
-            crossLinkHints: crossLinkHints
+            automationContext: automationContext,
+            crossLinkHints: crossLinkHints,
+            heartbeatProjection: heartbeatProjection
         )
         let longtermOutlineText = projectLongtermOutlineText(
             contextDepthProfile: contextDepthProfile,
@@ -7383,7 +10249,8 @@ User request:
             latestReview: latestReview,
             latestGuidance: latestGuidance,
             latestUIReview: latestUIReview,
-            crossLinkHints: crossLinkHints
+            crossLinkHints: crossLinkHints,
+            heartbeatProjection: heartbeatProjection
         )
         let evidencePackText = projectEvidencePackText(
             ctx: ctx,
@@ -7394,8 +10261,12 @@ User request:
             latestUIReview: latestUIReview,
             toolResults: toolResults
         )
+        let heartbeatWorkingSetText = XTHeartbeatMemoryAssemblySupport.workingSetBlock(
+            from: heartbeatProjection
+        )
 
         return ProjectPromptContextAssembly(
+            memoryPolicy: memoryPolicy,
             recentDialogueSelection: recentDialogueSelection,
             contextDepthProfile: contextDepthProfile,
             effectiveServingProfile: effectiveServingProfile,
@@ -7405,8 +10276,133 @@ User request:
             longtermOutlineText: longtermOutlineText,
             contextRefsText: contextRefsText,
             evidencePackText: evidencePackText,
+            heartbeatWorkingSetText: heartbeatWorkingSetText,
             diagnostics: diagnostics
         )
+    }
+
+    private func projectAutomationMemoryContext(
+        ctx: AXProjectContext,
+        projectId: String
+    ) -> ProjectAutomationMemoryContext? {
+        guard let snapshot = xtAutomationLatestProjectContinuitySnapshot(
+            for: ctx,
+            projectID: projectId
+        ) else {
+            return nil
+        }
+
+        return ProjectAutomationMemoryContext(
+            source: snapshot.contextSource,
+            runID: snapshot.runID,
+            effectiveRunID: snapshot.effectiveRunID,
+            runState: snapshot.runState,
+            attempt: snapshot.attempt,
+            retryAfterSeconds: snapshot.retryAfterSeconds,
+            deliveryClosureSource: snapshot.effectiveDeliveryClosureSource,
+            deliveryRef: snapshot.effectiveDeliveryRef,
+            recoveryState: snapshot.recoveryState,
+            lastRecoveryDecision: snapshot.persistedRecoveryAction?.decision.decision,
+            lastRecoveryMode: snapshot.persistedRecoveryAction?.recoveryMode,
+            currentStepID: snapshot.currentStepID,
+            currentStepTitle: snapshot.currentStepTitle,
+            currentStepState: snapshot.currentStepState,
+            currentStepSummary: snapshot.currentStepSummary,
+            verificationReport: snapshot.verificationReport,
+            verificationContract: snapshot.verificationReport?.contract,
+            blocker: snapshot.blocker,
+            retryReasonDescriptor: snapshot.retryReasonDescriptor,
+            retryVerificationContract: snapshot.retryPackage?.revisedVerificationContract
+        )
+    }
+
+    private func projectAutomationAnchorLines(
+        _ context: ProjectAutomationMemoryContext?
+    ) -> [String] {
+        guard let context else { return [] }
+
+        var lines: [String] = []
+        if !context.source.isEmpty {
+            lines.append("automation_context_source: \(context.source)")
+        }
+        if let runID = context.runID {
+            lines.append("automation_run_id: \(runID)")
+        }
+        if let effectiveRunID = context.effectiveRunID {
+            lines.append("automation_effective_run_id: \(effectiveRunID)")
+        }
+        if let runState = context.runState?.rawValue {
+            lines.append("automation_run_state: \(runState)")
+        }
+        if let attempt = context.attempt {
+            lines.append("automation_attempt: \(attempt)")
+        }
+        if let retryAfterSeconds = context.retryAfterSeconds {
+            lines.append("automation_retry_after_seconds: \(retryAfterSeconds)")
+        }
+        if let deliveryClosureSource = context.deliveryClosureSource?.rawValue {
+            lines.append("automation_delivery_closure_source: \(deliveryClosureSource)")
+        }
+        if let deliveryRef = context.deliveryRef,
+           !deliveryRef.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.append("automation_delivery_ref: \(deliveryRef)")
+        }
+        if let recoveryState = context.recoveryState {
+            lines.append("automation_recovery_selection: \(recoveryState.selection.rawValue)")
+            lines.append("automation_recovery_reason: \(recoveryState.reason.rawValue)")
+            lines.append("automation_recovery_decision: \(recoveryState.automaticDecision.rawValue)")
+            if !recoveryState.automaticHoldReason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                lines.append("automation_recovery_hold_reason: \(recoveryState.automaticHoldReason)")
+            }
+            if let retryAfterRemainingSeconds = recoveryState.retryAfterRemainingSeconds {
+                lines.append(
+                    "automation_recovery_retry_after_remaining_seconds: \(retryAfterRemainingSeconds)"
+                )
+            }
+        }
+        if let lastRecoveryDecision = context.lastRecoveryDecision?.rawValue {
+            lines.append("automation_last_recovery_decision: \(lastRecoveryDecision)")
+        }
+        if let lastRecoveryMode = context.lastRecoveryMode?.rawValue {
+            lines.append("automation_last_recovery_mode: \(lastRecoveryMode)")
+        }
+        if context.hasCurrentStep {
+            lines.append("automation_current_step_id: \(context.currentStepID ?? "(none)")")
+            lines.append("automation_current_step_title: \(context.currentStepTitle ?? "(none)")")
+            lines.append("automation_current_step_state: \(context.currentStepState?.rawValue ?? "(none)")")
+            lines.append("automation_current_step_summary: \(context.currentStepSummary ?? "(none)")")
+        }
+        if let verificationReport = context.verificationReport {
+            lines.append("automation_verification_required: \(verificationReport.required)")
+            lines.append("automation_verification_executed: \(verificationReport.executed)")
+            lines.append("automation_verification_command_count: \(verificationReport.commandCount)")
+            lines.append(
+                "automation_verification_passed_command_count: \(verificationReport.passedCommandCount)"
+            )
+            let holdReason = verificationReport.holdReason.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !holdReason.isEmpty {
+                lines.append("automation_verification_hold_reason: \(holdReason)")
+            }
+        }
+        if let verificationContract = context.verificationContract,
+           let json = xtCompactJSONString(verificationContract) {
+            lines.append("automation_verification_contract_json: \(json)")
+        }
+        if let blocker = context.blocker {
+            lines.append("automation_blocker_code: \(blocker.code)")
+            lines.append("automation_blocker_summary: \(blocker.summary)")
+            lines.append("automation_blocker_stage: \(blocker.stage.rawValue)")
+        }
+        if let retryReasonDescriptor = context.retryReasonDescriptor {
+            lines.append("automation_retry_reason_code: \(retryReasonDescriptor.code)")
+            lines.append("automation_retry_reason_summary: \(retryReasonDescriptor.summary)")
+            lines.append("automation_retry_reason_strategy: \(retryReasonDescriptor.strategy)")
+        }
+        if let retryVerificationContract = context.retryVerificationContract,
+           let json = xtCompactJSONString(retryVerificationContract) {
+            lines.append("automation_retry_verification_contract_json: \(json)")
+        }
+        return lines
     }
 
     private func buildProjectRecentDialogueSelection(
@@ -7590,25 +10586,43 @@ User request:
         config: AXProjectConfig?,
         contextDepthProfile: AXProjectContextDepthProfile? = nil
     ) -> XTMemoryServingProfile? {
-        let baselineProfile: XTMemoryServingProfile? = {
-            switch contextDepthProfile ?? config?.projectContextDepthProfile ?? .defaultProfile {
-            case .lean:
-                return .m1Execute
-            case .balanced:
-                return .m2PlanReview
-            case .deep:
-                return .m3DeepDive
-            case .full:
-                return .m4FullScan
-            case .auto:
-                return nil
-            }
-        }()
-        guard let requestedProfile = preferredProjectMemoryServingProfile(userText: userText) else {
-            return baselineProfile
+        let resolvedConfig = config ?? activeConfig
+            ?? AXProjectConfig.default(
+                forProjectRoot: URL(fileURLWithPath: "/tmp/xterminal-project-memory-policy-fallback", isDirectory: true)
+            )
+        var policyConfig = resolvedConfig
+        if let contextDepthProfile {
+            policyConfig = policyConfig.settingProjectContextAssembly(
+                projectContextDepthProfile: contextDepthProfile
+            )
         }
-        guard let baselineProfile else { return requestedProfile }
-        return baselineProfile.rank >= requestedProfile.rank ? baselineProfile : requestedProfile
+        let policy = XTRoleAwareMemoryPolicyResolver.resolveProject(
+            config: policyConfig,
+            governance: nil,
+            userText: userText,
+            shouldExpandRecent: false,
+            executionEvidencePresent: false,
+            reviewGuidancePresent: false
+        )
+        return policy.effectiveServingProfile
+    }
+
+    private func resolvedProjectPromptGovernance(
+        ctx: AXProjectContext,
+        config: AXProjectConfig
+    ) -> AXProjectResolvedGovernanceState {
+        let adaptationPolicy = AXProjectSupervisorAdaptationPolicy.default
+        let strengthProfile = AXProjectAIStrengthAssessor.assess(
+            ctx: ctx,
+            adaptationPolicy: adaptationPolicy
+        )
+        return xtResolveProjectGovernance(
+            projectRoot: ctx.root,
+            config: config,
+            projectAIStrengthProfile: strengthProfile,
+            adaptationPolicy: adaptationPolicy,
+            permissionReadiness: .current()
+        )
     }
 
     private func projectWorkflowSnapshot(
@@ -7645,14 +10659,17 @@ User request:
         ctx: AXProjectContext,
         projectId: String,
         projectName: String,
+        memoryPolicy: XTProjectMemoryPolicy,
         recentDialogueSelection: ProjectRecentDialogueSelection,
         contextDepthProfile: AXProjectContextDepthProfile,
-        effectiveServingProfile: XTMemoryServingProfile?,
+        effectiveServingProfile: XTMemoryServingProfile,
         workflowSnapshot: SupervisorProjectWorkflowSnapshot?,
         latestReview: SupervisorReviewNoteRecord?,
         reviewGuidancePresent: Bool,
         executionEvidencePresent: Bool,
-        crossLinkHints: ProjectCrossLinkPromptHints
+        automationContext: ProjectAutomationMemoryContext?,
+        crossLinkHints: ProjectCrossLinkPromptHints,
+        heartbeatProjection: XTHeartbeatMemoryProjectionArtifact?
     ) -> String {
         let registry = AXProjectRegistryStore.load()
         let entry = registry.projects.first(where: { $0.projectId == projectId })
@@ -7669,10 +10686,19 @@ User request:
 
         var lines = [
             "recent_project_dialogue_profile: \(recentDialogueSelection.profile.rawValue)",
+            "configured_recent_project_dialogue_profile: \(memoryPolicy.configuredRecentProjectDialogueProfile.rawValue)",
+            "recommended_recent_project_dialogue_profile: \(memoryPolicy.recommendedRecentProjectDialogueProfile.rawValue)",
+            "effective_recent_project_dialogue_profile: \(memoryPolicy.effectiveRecentProjectDialogueProfile.rawValue)",
             "recent_project_dialogue_selected_pairs: \(recentDialogueSelection.selectedPairs)",
             "recent_project_dialogue_source: \(recentDialogueSelection.source)",
             "project_context_depth: \(contextDepthProfile.rawValue)",
-            "effective_serving_profile: \((effectiveServingProfile ?? .m1Execute).rawValue)",
+            "configured_project_context_depth: \(memoryPolicy.configuredProjectContextDepth.rawValue)",
+            "recommended_project_context_depth: \(memoryPolicy.recommendedProjectContextDepth.rawValue)",
+            "effective_project_context_depth: \(memoryPolicy.effectiveProjectContextDepth.rawValue)",
+            "effective_serving_profile: \(effectiveServingProfile.rawValue)",
+            "a_tier_memory_ceiling: \(memoryPolicy.aTierMemoryCeiling.rawValue)",
+            "project_memory_ceiling_hit: \(memoryPolicy.ceilingHit)",
+            "project_memory_resolution_trigger: \(memoryPolicy.trigger)",
             "workflow_present: \(workflowSnapshot != nil)",
             "execution_evidence_present: \(executionEvidencePresent)",
             "review_guidance_present: \(reviewGuidancePresent)",
@@ -7693,10 +10719,12 @@ User request:
             "active_plan_steps:"
         ]
         lines.append(contentsOf: planSteps)
+        lines.append(contentsOf: projectAutomationAnchorLines(automationContext))
         if !crossLinkHints.lines.isEmpty {
             lines.append("selected_cross_link_hints:")
             lines.append(contentsOf: crossLinkHints.lines)
         }
+        lines.append(contentsOf: XTHeartbeatMemoryAssemblySupport.anchorLines(from: heartbeatProjection))
         return lines.joined(separator: "\n")
     }
 
@@ -7745,7 +10773,8 @@ User request:
         latestReview: SupervisorReviewNoteRecord?,
         latestGuidance: SupervisorGuidanceInjectionRecord?,
         latestUIReview: XTUIReviewLatestReference?,
-        crossLinkHints: ProjectCrossLinkPromptHints
+        crossLinkHints: ProjectCrossLinkPromptHints,
+        heartbeatProjection: XTHeartbeatMemoryProjectionArtifact?
     ) -> String {
         switch contextDepthProfile {
         case .lean:
@@ -7785,6 +10814,11 @@ User request:
         for ref in crossLinkHints.refs.prefix(3) {
             refs.append("- ref_id=\(ref) ref_kind=cross_link_ref title=project cross-link backing record source_scope=cross_link freshness_hint=recent")
         }
+        for heartbeatRef in XTHeartbeatMemoryAssemblySupport.contextRefs(from: heartbeatProjection) {
+            refs.append(
+                "- ref_id=\(heartbeatRef.refId) ref_kind=\(heartbeatRef.refKind) title=\(heartbeatRef.title) source_scope=\(heartbeatRef.sourceScope) freshness_hint=\(heartbeatRef.freshnessHint)"
+            )
+        }
         return refs.joined(separator: "\n")
     }
 
@@ -7809,7 +10843,7 @@ User request:
             items.append("- title=latest_review source_scope=review_note why_included=latest_supervisor_verdict excerpt=verdict=\(latestReview.verdict.rawValue) summary=\(capped(latestReview.summary, maxChars: 160))")
         }
         if let latestGuidance {
-            items.append("- title=latest_guidance source_scope=guidance_injection why_included=active_guidance_guardrail excerpt=delivery=\(latestGuidance.deliveryMode.rawValue) ack_status=\(latestGuidance.ackStatus.rawValue) guidance=\(capped(latestGuidance.guidanceText, maxChars: 160))")
+            items.append("- title=latest_guidance source_scope=guidance_injection why_included=active_guidance_guardrail excerpt=delivery=\(latestGuidance.deliveryMode.rawValue) ack_status=\(latestGuidance.ackStatus.rawValue) guidance=\(presentedSupervisorGuidanceSummary(latestGuidance.guidanceText, maxChars: 160))")
         }
         if let latestUIReview {
             items.append("- title=latest_ui_review source_scope=ui_review why_included=latest_browser_state excerpt=ref=\(latestUIReview.reviewRef) verdict=\(latestUIReview.verdict.rawValue) summary=\(capped(latestUIReview.summary, maxChars: 160))")
@@ -7868,15 +10902,64 @@ evidence_goal: recent_project_truth
     ) async -> SupervisorSkillRegistrySnapshot? {
         let normalizedProjectId = projectId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedProjectId.isEmpty else { return nil }
-        _ = XTResolvedSkillsCacheStore.refreshFromHub(
+        _ = await XTResolvedSkillsCacheStore.refreshFromHubIfPossible(
             projectId: normalizedProjectId,
             projectName: projectName,
             context: ctx,
             hubBaseDir: HubPaths.baseDir()
         )
-        return await HubIPCClient.requestSupervisorSkillRegistrySnapshot(
+        return AXSkillsLibrary.preferredSupervisorSkillRegistrySnapshot(
             projectId: normalizedProjectId,
-            projectName: projectName
+            projectName: projectName,
+            projectRoot: ctx.root,
+            hubBaseDir: HubPaths.baseDir()
+        )
+    }
+
+    private func refreshResolvedSkillsCacheSynchronouslyIfPossible(
+        ctx: AXProjectContext,
+        projectId: String,
+        projectName: String,
+        remoteStateDirPath: String? = nil
+    ) {
+        guard XTResolvedSkillsCacheStore.activeSnapshot(for: ctx) == nil else { return }
+        guard let remoteStateDirPath = normalizedProjectSkillRemoteStateDirPath(
+            remoteStateDirPath
+                ?? XTResolvedSkillsCacheStore.load(for: ctx)?.remoteStateDirPath
+                ?? ProcessInfo.processInfo.environment["AXHUBCTL_STATE_DIR"]
+        ) else {
+            return
+        }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        Task.detached(priority: .userInitiated) {
+            _ = await XTResolvedSkillsCacheStore.refreshFromHubIfPossible(
+                projectId: projectId,
+                projectName: projectName,
+                context: ctx,
+                hubBaseDir: HubPaths.baseDir(),
+                remoteStateDirPath: remoteStateDirPath,
+                force: true
+            )
+            semaphore.signal()
+        }
+        _ = semaphore.wait(timeout: .now() + 10)
+    }
+
+    private func normalizedProjectSkillRemoteStateDirPath(_ raw: String?) -> String? {
+        let trimmed = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return NSString(string: trimmed).expandingTildeInPath
+    }
+
+    private func projectSkillHubStateDirPath(
+        ctx: AXProjectContext,
+        dispatch: XTProjectMappedSkillDispatch? = nil
+    ) -> String? {
+        normalizedProjectSkillRemoteStateDirPath(
+            dispatch?.hubStateDirPath
+                ?? XTResolvedSkillsCacheStore.load(for: ctx)?.remoteStateDirPath
+                ?? ProcessInfo.processInfo.environment["AXHUBCTL_STATE_DIR"]
         )
     }
 
@@ -7894,15 +10977,32 @@ Skills registry:
 """
         }
 
+        let source = snapshot.memorySource.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let sourceGuidance: String = {
+            if source == "xt_builtin_skill_registry" {
+                return "- This registry is currently served from XT builtin fallback. Listed `scope=xt_builtin` skills remain callable for this project even if Hub package index is unavailable."
+            }
+            if source.contains("+xt_builtin") {
+                return "- This registry includes XT builtin governed skills alongside Hub-indexed entries. Treat listed `scope=xt_builtin` items as already available locally."
+            }
+            return ""
+        }()
+
         return """
 Skills registry (IMPORTANT):
 - This project currently has \(snapshot.items.count) governed skill(s) available.
 - When a matching installed skill exists, prefer `skill_calls` over raw `tool_calls`.
-- Use each skills_registry item's risk, grant, caps, dispatch, variant, routing, and payload hints to shape `payload` and choose a stable `skill_id`.
+- If `skills_registry` source is `xt_builtin_skill_registry` or an item says `scope=xt_builtin`, that still counts as a valid governed registry. Do not fall back to plain chat just because Hub package index is degraded.
+\(sourceGuidance.isEmpty ? "" : "\(sourceGuidance)\n")- Use each skills_registry item's risk, grant, caps, dispatch, variant, routing, and payload hints to shape `payload` and choose a stable `skill_id`.
 - Treat `routing: prefers_builtin=...` and `routing: entrypoints=...` as skill-family metadata. Wrapper ids, entrypoint ids, and builtin ids may describe one governed execution family.
 - If the user explicitly names a registered wrapper or entrypoint skill_id, keep that exact registered `skill_id` in `skill_calls` when it matches the request.
 - If the user asks only for a capability and the family advertises `routing: prefers_builtin=...`, choose the preferred builtin instead of an arbitrary sibling wrapper.
 - Do not emit duplicate sibling `skill_calls` for one intent just because multiple entrypoints map to the same routed family.
+- If `skills_registry` contains `local-ocr`, prefer it for OCR, screenshot text extraction, and image-to-text requests instead of guessing text from attachments.
+- If `skills_registry` contains `local-vision`, prefer it for screenshot, diagram, and image-understanding requests instead of plain text guesses.
+- If `skills_registry` contains `local-transcribe`, prefer it for audio transcription and speech-to-text work.
+- If `skills_registry` contains `local-tts`, prefer it when the user explicitly wants spoken output or an audio artifact.
+- If `skills_registry` contains `local-embeddings`, prefer it for embedding, retrieval-indexing, or vectorization work instead of converting the request into text generation.
 - High-risk or grant-gated skills may still pause on approval even when routed through `skill_calls`.
 
 skills_registry:
@@ -7922,10 +11022,16 @@ Response rules (STRICT):
   {"guidance_ack":{"injection_id":"guidance-id","status":"deferred","note":"Need extra evidence before replan"},"final":"..."}
 - `skill_calls` and `tool_calls` are both allowed. Prefer `skill_calls` when the work matches an installed governed skill in `skills_registry`.
 - Only use `skill_id` values that appear in the current project's `skills_registry` snapshot.
+- If `skills_registry` shows `source=xt_builtin_skill_registry` or a listed item with `scope=xt_builtin`, those builtin `skill_id`s are still valid for `skill_calls`.
 - Treat `routing: prefers_builtin=...` and `routing: entrypoints=...` as skill-family metadata when choosing `skill_id`.
 - If the user explicitly names a registered wrapper or entrypoint skill, keep that exact registered `skill_id` when it matches the request.
 - If the user asks only for a capability and the family marks a preferred builtin, choose the preferred builtin instead of an arbitrary sibling wrapper.
 - Do not emit duplicate sibling `skill_calls` for one intent just because multiple entrypoints map to the same routed family.
+- If `local-ocr` is present in `skills_registry`, use it for OCR and image-to-text requests instead of inferring text from attachments without a call.
+- If `local-vision` is present in `skills_registry`, use it for image understanding requests instead of answering from ungrounded guesses.
+- If `local-transcribe` is present in `skills_registry`, use it for audio transcription and speech-to-text requests.
+- If `local-tts` is present in `skills_registry`, use it for explicit spoken-output or audio artifact requests.
+- If `local-embeddings` is present in `skills_registry`, use it for embedding or vectorization requests instead of converting them into text generation.
 - Put variant selection inside `payload.action` when a skill exposes multiple actions.
 - If no pending supervisor guidance is present, `guidance_ack` may be omitted.
 - Do not include markdown. Do not include extra keys.
@@ -8096,6 +11202,10 @@ latest_user:
             recentText: contextAssembly.recentDialogueSelection.messagesText,
             retrievalBlock: retrievalBlock
         )
+        let workingSetWithHeartbeat = mergeProjectWorkingSetHeartbeat(
+            recentText: mergedRecentText,
+            heartbeatBlock: contextAssembly.heartbeatWorkingSetText
+        )
         let guidanceSnapshot = projectSupervisorGuidancePromptSnapshot(
             ctx: ctx,
             safePointState: safePointState
@@ -8103,7 +11213,7 @@ latest_user:
         let guidanceBlock = guidanceSnapshot.block
         let reviewBlock = projectUIReviewPromptBlock(ctx: ctx)
         let workingSetWithGuidance = mergeProjectWorkingSetGuidance(
-            recentText: mergedRecentText,
+            recentText: workingSetWithHeartbeat,
             guidanceBlock: guidanceBlock
         )
         let workingSetText = mergeProjectWorkingSetUIReview(
@@ -8128,18 +11238,34 @@ latest_user:
         )
 
         if !preferHubMemory {
+            let source = XTProjectMemoryGovernance.localSourceLabel(prefersHubMemory: false)
             return MemoryV1BuildInfo(
                 text: local,
-                source: XTProjectMemoryGovernance.localSourceLabel(prefersHubMemory: false),
+                source: source,
                 longtermMode: XTMemoryLongtermPolicy.summaryOnly.rawValue,
                 retrievalAvailable: false,
                 fulltextNotLoaded: true,
+                freshness: nil,
+                cacheHit: nil,
+                remoteSnapshotCacheScope: nil,
+                remoteSnapshotCachedAtMs: nil,
+                remoteSnapshotAgeMs: nil,
+                remoteSnapshotTTLRemainingMs: nil,
+                remoteSnapshotCachePosture: nil,
+                remoteSnapshotInvalidationReason: nil,
                 usedTokens: TokenEstimator.estimateTokens(local),
                 budgetTokens: nil,
                 truncatedLayers: [],
                 redactedItems: nil,
                 privateDrops: nil,
-                projectExplainability: contextAssembly.diagnostics,
+                projectExplainability: actualizedProjectPromptExplainability(
+                    contextAssembly.diagnostics,
+                    memoryText: local,
+                    source: source,
+                    usedTokens: TokenEstimator.estimateTokens(local),
+                    budgetTokens: nil,
+                    truncatedLayers: []
+                ),
                 visiblePendingGuidanceInjectionId: guidanceSnapshot.visiblePendingGuidanceInjectionId
             )
         }
@@ -8185,39 +11311,575 @@ latest_user:
                 overrideRetrievalAvailable: hubMemory.retrievalAvailable,
                 overrideFulltextNotLoaded: hubMemory.fulltextNotLoaded
             )
+            let finalText = HubIPCClient.ensureMemoryLongtermDisclosureText(
+                hubMemory.text,
+                disclosure: disclosure
+            )
             return MemoryV1BuildInfo(
-                text: HubIPCClient.ensureMemoryLongtermDisclosureText(
-                    hubMemory.text,
-                    disclosure: disclosure
-                ),
+                text: finalText,
                 source: source,
                 longtermMode: disclosure.longtermMode,
                 retrievalAvailable: disclosure.retrievalAvailable,
                 fulltextNotLoaded: disclosure.fulltextNotLoaded,
+                freshness: hubMemory.freshness,
+                cacheHit: hubMemory.cacheHit,
+                remoteSnapshotCacheScope: hubMemory.remoteSnapshotCacheScope,
+                remoteSnapshotCachedAtMs: hubMemory.remoteSnapshotCachedAtMs,
+                remoteSnapshotAgeMs: hubMemory.remoteSnapshotAgeMs,
+                remoteSnapshotTTLRemainingMs: hubMemory.remoteSnapshotTTLRemainingMs,
+                remoteSnapshotCachePosture: hubMemory.remoteSnapshotCachePosture,
+                remoteSnapshotInvalidationReason: hubMemory.remoteSnapshotInvalidationReason,
                 usedTokens: hubMemory.usedTotalTokens,
                 budgetTokens: hubMemory.budgetTotalTokens,
                 truncatedLayers: hubMemory.truncatedLayers,
                 redactedItems: hubMemory.redactedItems,
                 privateDrops: hubMemory.privateDrops,
-                projectExplainability: contextAssembly.diagnostics,
+                projectExplainability: actualizedProjectPromptExplainability(
+                    contextAssembly.diagnostics,
+                    memoryText: finalText,
+                    source: source,
+                    usedTokens: hubMemory.usedTotalTokens,
+                    budgetTokens: hubMemory.budgetTotalTokens,
+                    truncatedLayers: hubMemory.truncatedLayers
+                ),
                 visiblePendingGuidanceInjectionId: guidanceSnapshot.visiblePendingGuidanceInjectionId
             )
         }
 
+        let fallbackSource = XTProjectMemoryGovernance.localSourceLabel(prefersHubMemory: true)
         return MemoryV1BuildInfo(
             text: local,
-            source: XTProjectMemoryGovernance.localSourceLabel(prefersHubMemory: true),
+            source: fallbackSource,
             longtermMode: XTMemoryLongtermPolicy.summaryOnly.rawValue,
             retrievalAvailable: false,
             fulltextNotLoaded: true,
+            freshness: nil,
+            cacheHit: nil,
+            remoteSnapshotCacheScope: nil,
+            remoteSnapshotCachedAtMs: nil,
+            remoteSnapshotAgeMs: nil,
+            remoteSnapshotTTLRemainingMs: nil,
+            remoteSnapshotCachePosture: nil,
+            remoteSnapshotInvalidationReason: nil,
             usedTokens: TokenEstimator.estimateTokens(local),
             budgetTokens: nil,
             truncatedLayers: [],
             redactedItems: nil,
             privateDrops: nil,
-            projectExplainability: contextAssembly.diagnostics,
+            projectExplainability: actualizedProjectPromptExplainability(
+                contextAssembly.diagnostics,
+                memoryText: local,
+                source: fallbackSource,
+                usedTokens: TokenEstimator.estimateTokens(local),
+                budgetTokens: nil,
+                truncatedLayers: []
+            ),
             visiblePendingGuidanceInjectionId: guidanceSnapshot.visiblePendingGuidanceInjectionId
         )
+    }
+
+    private func projectMemoryUsageFields(
+        from memory: MemoryV1BuildInfo,
+        promptCompactMode: Bool
+    ) -> [String: Any] {
+        var fields: [String: Any] = [
+            "memory_v1_source": memory.source,
+            "memory_v1_longterm_mode": memory.longtermMode as Any,
+            "memory_v1_retrieval_available": memory.retrievalAvailable as Any,
+            "memory_v1_fulltext_not_loaded": memory.fulltextNotLoaded as Any,
+            "memory_v1_freshness": memory.freshness as Any,
+            "memory_v1_cache_hit": memory.cacheHit as Any,
+            "memory_v1_remote_snapshot_cache_scope": memory.remoteSnapshotCacheScope as Any,
+            "memory_v1_remote_snapshot_cached_at_ms": memory.remoteSnapshotCachedAtMs as Any,
+            "memory_v1_remote_snapshot_age_ms": memory.remoteSnapshotAgeMs as Any,
+            "memory_v1_remote_snapshot_ttl_remaining_ms": memory.remoteSnapshotTTLRemainingMs as Any,
+            "memory_v1_remote_snapshot_cache_posture": memory.remoteSnapshotCachePosture as Any,
+            "memory_v1_remote_snapshot_invalidation_reason": memory.remoteSnapshotInvalidationReason as Any,
+            "memory_v1_tokens_est": memory.usedTokens as Any,
+            "memory_v1_budget_tokens": memory.budgetTokens as Any,
+            "memory_v1_truncated_layers": memory.truncatedLayers,
+            "memory_v1_redacted_items": memory.redactedItems as Any,
+            "memory_v1_private_drops": memory.privateDrops as Any,
+            "prompt_compact_mode": promptCompactMode,
+        ]
+        if let diagnostics = memory.projectExplainability {
+            for (key, value) in diagnostics.usageFields {
+                fields[key] = value
+            }
+        }
+        return fields
+    }
+
+    private func actualizedProjectPromptExplainability(
+        _ diagnostics: ProjectPromptExplainabilityDiagnostics,
+        memoryText: String,
+        source: String,
+        usedTokens: Int?,
+        budgetTokens: Int?,
+        truncatedLayers: [String]
+    ) -> ProjectPromptExplainabilityDiagnostics {
+        var updated = diagnostics
+        let policyResolution = diagnostics.policyMemoryAssemblyResolution ?? diagnostics.memoryAssemblyResolution
+        var resolution = diagnostics.memoryAssemblyResolution
+        let anchorPackBody = projectMemorySectionBody(in: memoryText, tag: "FOCUSED_PROJECT_ANCHOR_PACK") ?? ""
+        let actualServingObjects = actualProjectServingObjects(
+            in: memoryText,
+            fallback: resolution.selectedServingObjects
+        )
+        let heartbeatExplainability = projectMemoryHeartbeatDigestExplainability(
+            in: projectMemorySectionBody(in: memoryText, tag: "L3_WORKING_SET")
+        )
+        let trackedSet = Set(Self.projectTrackedServingObjectsForExplainability)
+        let actualSet = Set(actualServingObjects)
+        let staticExcluded = resolution.excludedBlocks.filter { !trackedSet.contains($0) }
+        let actualExcluded = Self.projectTrackedServingObjectsForExplainability.filter { !actualSet.contains($0) }
+        let actualSelectedPlanes = actualProjectSelectedPlanes(
+            from: actualServingObjects,
+            fallback: resolution.selectedPlanes
+        )
+        resolution.selectedPlanes = actualSelectedPlanes
+        resolution.selectedSlots = actualServingObjects
+        resolution.selectedServingObjects = actualServingObjects
+        resolution.excludedBlocks = orderedUniqueProjectExplainabilityValues(staticExcluded + actualExcluded)
+        resolution.budgetSummary = projectMemoryBudgetSummary(
+            source: source,
+            usedTokens: usedTokens,
+            budgetTokens: budgetTokens,
+            truncatedLayers: truncatedLayers
+        )
+        updated.workflowPresent = actualSet.contains("active_workflow")
+        updated.executionEvidencePresent = actualSet.contains("execution_evidence")
+        updated.reviewGuidancePresent = actualSet.contains("guidance")
+        updated.crossLinkHintsSelected = actualProjectCrossLinkHintCount(
+            in: anchorPackBody,
+            actualServingObjects: actualSet
+        )
+        updated.automationContextSource = projectAnchorPackFieldValue(
+            "automation_context_source",
+            in: anchorPackBody
+        ) ?? ""
+        updated.automationRunID = projectAnchorPackFieldValue(
+            "automation_run_id",
+            in: anchorPackBody
+        ) ?? diagnostics.automationRunID
+        updated.automationEffectiveRunID = projectAnchorPackFieldValue(
+            "automation_effective_run_id",
+            in: anchorPackBody
+        ) ?? diagnostics.automationEffectiveRunID
+        updated.automationRunState = projectAnchorPackFieldValue(
+            "automation_run_state",
+            in: anchorPackBody
+        ) ?? diagnostics.automationRunState
+        updated.automationAttempt = projectAnchorPackFieldValue(
+            "automation_attempt",
+            in: anchorPackBody
+        ).flatMap(Int.init) ?? diagnostics.automationAttempt
+        updated.automationRetryAfterSeconds = projectAnchorPackFieldValue(
+            "automation_retry_after_seconds",
+            in: anchorPackBody
+        ).flatMap(Int.init) ?? diagnostics.automationRetryAfterSeconds
+        updated.automationDeliveryClosureSource = projectAnchorPackFieldValue(
+            "automation_delivery_closure_source",
+            in: anchorPackBody
+        ) ?? diagnostics.automationDeliveryClosureSource
+        updated.automationDeliveryRef = projectAnchorPackFieldValue(
+            "automation_delivery_ref",
+            in: anchorPackBody
+        ) ?? diagnostics.automationDeliveryRef
+        updated.automationLastRecoveryDecision = projectAnchorPackFieldValue(
+            "automation_last_recovery_decision",
+            in: anchorPackBody
+        ) ?? diagnostics.automationLastRecoveryDecision
+        updated.automationLastRecoveryMode = projectAnchorPackFieldValue(
+            "automation_last_recovery_mode",
+            in: anchorPackBody
+        ) ?? diagnostics.automationLastRecoveryMode
+        updated.automationCurrentStepPresent = actualSet.contains("current_step")
+            && projectAnchorPackContainsCurrentStep(anchorPackBody)
+        updated.automationCurrentStepID = updated.automationCurrentStepPresent
+            ? projectAnchorPackFieldValue("automation_current_step_id", in: anchorPackBody)
+            : nil
+        updated.automationCurrentStepTitle = updated.automationCurrentStepPresent
+            ? projectAnchorPackFieldValue("automation_current_step_title", in: anchorPackBody)
+            : nil
+        updated.automationCurrentStepState = updated.automationCurrentStepPresent
+            ? projectAnchorPackFieldValue("automation_current_step_state", in: anchorPackBody)
+            : nil
+        updated.automationCurrentStepSummary = updated.automationCurrentStepPresent
+            ? projectAnchorPackFieldValue("automation_current_step_summary", in: anchorPackBody)
+            : nil
+        updated.automationVerificationPresent = actualSet.contains("verification_state")
+            && projectAnchorPackContainsVerificationState(anchorPackBody)
+        updated.automationVerificationRequired = updated.automationVerificationPresent
+            ? projectAnchorPackBoolFieldValue("automation_verification_required", in: anchorPackBody)
+            : nil
+        updated.automationVerificationExecuted = updated.automationVerificationPresent
+            ? projectAnchorPackBoolFieldValue("automation_verification_executed", in: anchorPackBody)
+            : nil
+        updated.automationVerificationCommandCount = updated.automationVerificationPresent
+            ? projectAnchorPackFieldValue("automation_verification_command_count", in: anchorPackBody).flatMap(Int.init)
+            : nil
+        updated.automationVerificationPassedCommandCount = updated.automationVerificationPresent
+            ? projectAnchorPackFieldValue(
+                "automation_verification_passed_command_count",
+                in: anchorPackBody
+            ).flatMap(Int.init)
+            : nil
+        updated.automationVerificationHoldReason = updated.automationVerificationPresent
+            ? projectAnchorPackFieldValue("automation_verification_hold_reason", in: anchorPackBody)
+            : nil
+        updated.automationVerificationContract = xtDecodeJSONString(
+            XTAutomationVerificationContract.self,
+            from: projectAnchorPackFieldValue("automation_verification_contract_json", in: anchorPackBody)
+        ) ?? diagnostics.automationVerificationContract
+        updated.automationBlockerPresent = actualSet.contains("blocker_state")
+            && projectAnchorPackContainsBlockerState(anchorPackBody)
+        updated.automationBlockerCode = updated.automationBlockerPresent
+            ? projectAnchorPackFieldValue("automation_blocker_code", in: anchorPackBody)
+            : nil
+        updated.automationBlockerSummary = updated.automationBlockerPresent
+            ? projectAnchorPackFieldValue("automation_blocker_summary", in: anchorPackBody)
+            : nil
+        updated.automationBlockerStage = updated.automationBlockerPresent
+            ? projectAnchorPackFieldValue("automation_blocker_stage", in: anchorPackBody)
+            : nil
+        updated.automationRetryReasonPresent = actualSet.contains("retry_reason")
+            && projectAnchorPackContainsRetryReason(anchorPackBody)
+        updated.automationRetryReasonCode = updated.automationRetryReasonPresent
+            ? projectAnchorPackFieldValue("automation_retry_reason_code", in: anchorPackBody)
+            : nil
+        updated.automationRetryReasonSummary = updated.automationRetryReasonPresent
+            ? projectAnchorPackFieldValue("automation_retry_reason_summary", in: anchorPackBody)
+            : nil
+        updated.automationRetryReasonStrategy = updated.automationRetryReasonPresent
+            ? projectAnchorPackFieldValue("automation_retry_reason_strategy", in: anchorPackBody)
+            : nil
+        updated.automationRetryVerificationContract = xtDecodeJSONString(
+            XTAutomationVerificationContract.self,
+            from: projectAnchorPackFieldValue("automation_retry_verification_contract_json", in: anchorPackBody)
+        ) ?? diagnostics.automationRetryVerificationContract
+        updated.heartbeatDigestWorkingSetPresent = heartbeatExplainability.present
+        updated.heartbeatDigestVisibility = heartbeatExplainability.visibility
+        updated.heartbeatDigestReasonCodes = heartbeatExplainability.reasonCodes
+        updated.policyMemoryAssemblyResolution = policyResolution
+        updated.memoryAssemblyResolution = resolution
+        updated.memoryAssemblyIssueCodes = []
+        updated.memoryResolutionProjectionDriftDetail = nil
+        if policyResolution.selectedPlanes != resolution.selectedPlanes
+            || policyResolution.selectedServingObjects != resolution.selectedServingObjects
+            || policyResolution.excludedBlocks != resolution.excludedBlocks {
+            updated.memoryAssemblyIssueCodes = ["memory_resolution_projection_drift"]
+            updated.memoryResolutionProjectionDriftDetail = [
+                "policy_selected_planes=\(policyResolution.selectedPlanes.isEmpty ? "(none)" : policyResolution.selectedPlanes.joined(separator: ","))",
+                "actual_selected_planes=\(resolution.selectedPlanes.isEmpty ? "(none)" : resolution.selectedPlanes.joined(separator: ","))",
+                "policy_selected_serving_objects=\(policyResolution.selectedServingObjects.isEmpty ? "(none)" : policyResolution.selectedServingObjects.joined(separator: ","))",
+                "actual_selected_serving_objects=\(resolution.selectedServingObjects.isEmpty ? "(none)" : resolution.selectedServingObjects.joined(separator: ","))",
+                "policy_excluded_blocks=\(policyResolution.excludedBlocks.isEmpty ? "(none)" : policyResolution.excludedBlocks.joined(separator: ","))",
+                "actual_excluded_blocks=\(resolution.excludedBlocks.isEmpty ? "(none)" : resolution.excludedBlocks.joined(separator: ","))"
+            ]
+            .joined(separator: " ")
+        }
+        return updated
+    }
+
+    private func actualProjectSelectedPlanes(
+        from servingObjects: [String],
+        fallback: [String]
+    ) -> [String] {
+        let actualSet = Set(servingObjects)
+        let fallbackPlanes = orderedUniqueProjectExplainabilityValues(fallback)
+        var selectedSet = Set<String>()
+
+        if actualSet.contains("recent_project_dialogue_window") {
+            selectedSet.insert("project_dialogue_plane")
+        }
+        if actualSet.contains("focused_project_anchor_pack") {
+            selectedSet.insert("project_anchor_plane")
+        }
+        if actualSet.contains("current_step")
+            || actualSet.contains("verification_state")
+            || actualSet.contains("blocker_state")
+            || actualSet.contains("retry_reason") {
+            selectedSet.insert("execution_state_plane")
+        }
+        if actualSet.contains("active_workflow") {
+            selectedSet.insert("workflow_plane")
+        }
+        if actualSet.contains("selected_cross_link_hints") {
+            selectedSet.insert("cross_link_plane")
+        }
+        if actualSet.contains("longterm_outline") {
+            selectedSet.insert("longterm_plane")
+        }
+        if actualSet.contains("execution_evidence") {
+            selectedSet.insert("evidence_plane")
+        }
+        if actualSet.contains("guidance") {
+            selectedSet.insert("guidance_plane")
+        }
+
+        let ordered = Self.projectExplainabilityObservablePlaneOrder.filter { selectedSet.contains($0) }
+        let extras = fallbackPlanes.filter {
+            !selectedSet.contains($0) && !Self.projectExplainabilityObservablePlaneOrder.contains($0)
+        }
+        return ordered + extras
+    }
+
+    private func actualProjectServingObjects(
+        in memoryText: String,
+        fallback: [String]
+    ) -> [String] {
+        var selected: [String] = []
+        let dialogueWindowBody = projectMemorySectionBody(in: memoryText, tag: "DIALOGUE_WINDOW")
+        let anchorPackBody = projectMemorySectionBody(in: memoryText, tag: "FOCUSED_PROJECT_ANCHOR_PACK")
+        let longtermOutlineBody = projectMemorySectionBody(in: memoryText, tag: "LONGTERM_OUTLINE")
+        let contextRefsBody = projectMemorySectionBody(in: memoryText, tag: "CONTEXT_REFS")
+        let evidencePackBody = projectMemorySectionBody(in: memoryText, tag: "EVIDENCE_PACK")
+        let workingSetBody = projectMemorySectionBody(in: memoryText, tag: "L3_WORKING_SET")
+
+        if projectMemorySectionHasMeaningfulContent(dialogueWindowBody) {
+            selected.append("recent_project_dialogue_window")
+        }
+        if projectMemorySectionHasMeaningfulContent(anchorPackBody) {
+            selected.append("focused_project_anchor_pack")
+            if projectAnchorPackContainsCurrentStep(anchorPackBody ?? "") {
+                selected.append("current_step")
+            }
+            if projectAnchorPackContainsVerificationState(anchorPackBody ?? "") {
+                selected.append("verification_state")
+            }
+            if projectAnchorPackContainsBlockerState(anchorPackBody ?? "") {
+                selected.append("blocker_state")
+            }
+            if projectAnchorPackContainsRetryReason(anchorPackBody ?? "") {
+                selected.append("retry_reason")
+            }
+            if projectAnchorPackContainsActiveWorkflow(anchorPackBody ?? "") {
+                selected.append("active_workflow")
+            }
+            if projectAnchorPackContainsCrossLinkHints(anchorPackBody ?? "") {
+                selected.append("selected_cross_link_hints")
+            }
+        }
+        if projectMemorySectionHasMeaningfulContent(longtermOutlineBody) {
+            selected.append("longterm_outline")
+        }
+        if projectMemorySectionHasMeaningfulContent(evidencePackBody) {
+            selected.append("execution_evidence")
+        }
+        if projectMemoryContainsGuidance(
+            workingSetBody: workingSetBody,
+            contextRefsBody: contextRefsBody,
+            evidencePackBody: evidencePackBody
+        ) {
+            selected.append("guidance")
+        }
+
+        let ordered = orderedUniqueProjectExplainabilityValues(selected)
+        return ordered.isEmpty
+            ? orderedUniqueProjectExplainabilityValues(fallback)
+            : ordered
+    }
+
+    private func projectMemorySectionBody(
+        in text: String,
+        tag: String
+    ) -> String? {
+        let startTag = "[\(tag)]"
+        let endTag = "[/\(tag)]"
+        guard let startRange = text.range(of: startTag) else { return nil }
+        guard let endRange = text.range(
+            of: endTag,
+            range: startRange.upperBound..<text.endIndex
+        ) else {
+            return nil
+        }
+        return String(text[startRange.upperBound..<endRange.lowerBound])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func projectMemorySectionHasMeaningfulContent(_ body: String?) -> Bool {
+        guard let body else { return false }
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty && trimmed != "(none)"
+    }
+
+    private func projectAnchorPackContainsActiveWorkflow(_ body: String) -> Bool {
+        let activeJobID = projectAnchorPackFieldValue("active_job_id", in: body)
+        if let activeJobID, activeJobID != "(none)" {
+            return true
+        }
+        let activePlanID = projectAnchorPackFieldValue("active_plan_id", in: body)
+        if let activePlanID, activePlanID != "(none)" {
+            return true
+        }
+        return body.contains("active_plan_steps:\n- ")
+            && !body.contains("active_plan_steps:\n- (none)")
+    }
+
+    private func projectAnchorPackContainsCrossLinkHints(_ body: String) -> Bool {
+        if let count = projectAnchorPackFieldValue("cross_link_hints_selected", in: body).flatMap(Int.init),
+           count > 0 {
+            return true
+        }
+        return body.contains("selected_cross_link_hints:\n- ")
+    }
+
+    private func projectAnchorPackContainsCurrentStep(_ body: String) -> Bool {
+        projectAnchorPackFieldValue("automation_current_step_id", in: body) != nil
+            || projectAnchorPackFieldValue("automation_current_step_title", in: body) != nil
+            || projectAnchorPackFieldValue("automation_current_step_state", in: body) != nil
+            || projectAnchorPackFieldValue("automation_current_step_summary", in: body) != nil
+    }
+
+    private func projectAnchorPackContainsVerificationState(_ body: String) -> Bool {
+        projectAnchorPackFieldValue("automation_verification_required", in: body) != nil
+            || projectAnchorPackFieldValue("automation_verification_executed", in: body) != nil
+            || projectAnchorPackFieldValue("automation_verification_command_count", in: body) != nil
+            || projectAnchorPackFieldValue("automation_verification_passed_command_count", in: body) != nil
+            || projectAnchorPackFieldValue("automation_verification_hold_reason", in: body) != nil
+    }
+
+    private func projectAnchorPackContainsBlockerState(_ body: String) -> Bool {
+        projectAnchorPackFieldValue("automation_blocker_code", in: body) != nil
+            || projectAnchorPackFieldValue("automation_blocker_summary", in: body) != nil
+            || projectAnchorPackFieldValue("automation_blocker_stage", in: body) != nil
+    }
+
+    private func projectAnchorPackContainsRetryReason(_ body: String) -> Bool {
+        projectAnchorPackFieldValue("automation_retry_reason_code", in: body) != nil
+            || projectAnchorPackFieldValue("automation_retry_reason_summary", in: body) != nil
+            || projectAnchorPackFieldValue("automation_retry_reason_strategy", in: body) != nil
+    }
+
+    private func actualProjectCrossLinkHintCount(
+        in anchorPackBody: String,
+        actualServingObjects: Set<String>
+    ) -> Int {
+        guard actualServingObjects.contains("selected_cross_link_hints") else { return 0 }
+        if let count = projectAnchorPackFieldValue(
+            "cross_link_hints_selected",
+            in: anchorPackBody
+        ).flatMap(Int.init),
+           count > 0 {
+            return count
+        }
+        return 1
+    }
+
+    private func projectAnchorPackFieldValue(
+        _ field: String,
+        in body: String
+    ) -> String? {
+        let prefix = "\(field): "
+        guard let line = body.split(separator: "\n").map(String.init).first(where: { $0.hasPrefix(prefix) }) else {
+            return nil
+        }
+        let value = String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
+    private func projectAnchorPackBoolFieldValue(
+        _ field: String,
+        in body: String
+    ) -> Bool? {
+        switch projectAnchorPackFieldValue(field, in: body)?.lowercased() {
+        case "true":
+            return true
+        case "false":
+            return false
+        default:
+            return nil
+        }
+    }
+
+    private func projectMemoryContainsGuidance(
+        workingSetBody: String?,
+        contextRefsBody: String?,
+        evidencePackBody: String?
+    ) -> Bool {
+        let workingSet = workingSetBody?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if workingSet.contains("[pending_supervisor_guidance]") {
+            return true
+        }
+
+        let contextRefs = contextRefsBody?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if contextRefs.contains("title=latest guidance")
+            || contextRefs.contains("source_scope=guidance_injection") {
+            return true
+        }
+
+        let evidencePack = evidencePackBody?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return evidencePack.contains("source_scope=guidance_injection")
+    }
+
+    private func projectMemoryHeartbeatDigestExplainability(
+        in workingSetBody: String?
+    ) -> ProjectHeartbeatDigestWorkingSetExplainability {
+        let workingSet = workingSetBody?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !workingSet.isEmpty,
+              let digestBody = projectMemorySectionBody(in: workingSet, tag: "heartbeat_digest") else {
+            return ProjectHeartbeatDigestWorkingSetExplainability(
+                present: false,
+                visibility: "",
+                reasonCodes: []
+            )
+        }
+
+        let lines = digestBody
+            .split(separator: "\n")
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+        let visibility = lines.first(where: { $0.hasPrefix("visibility: ") }).map {
+            String($0.dropFirst("visibility: ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        } ?? ""
+        let reasonCodes = lines.first(where: { $0.hasPrefix("reason_codes: ") }).map {
+            String($0.dropFirst("reason_codes: ".count))
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty && $0 != "none" }
+        } ?? []
+
+        return ProjectHeartbeatDigestWorkingSetExplainability(
+            present: true,
+            visibility: visibility,
+            reasonCodes: reasonCodes
+        )
+    }
+
+    private func projectMemoryBudgetSummary(
+        source: String,
+        usedTokens: Int?,
+        budgetTokens: Int?,
+        truncatedLayers: [String]
+    ) -> String? {
+        var parts: [String] = []
+        if let usedTokens {
+            parts.append("used=\(usedTokens)")
+        }
+        if let budgetTokens {
+            parts.append("budget=\(budgetTokens)")
+        }
+        if !truncatedLayers.isEmpty {
+            parts.append("truncated=\(truncatedLayers.joined(separator: ","))")
+        }
+        guard !parts.isEmpty else { return nil }
+        parts.insert("source=\(source)", at: 0)
+        return parts.joined(separator: " · ")
+    }
+
+    private func orderedUniqueProjectExplainabilityValues(
+        _ values: [String]
+    ) -> [String] {
+        var seen = Set<String>()
+        var ordered: [String] = []
+        for value in values {
+            let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalized.isEmpty else { continue }
+            if seen.insert(normalized).inserted {
+                ordered.append(normalized)
+            }
+        }
+        return ordered
     }
 
     private func projectMemoryRetrievalPromptBlock(
@@ -8359,6 +12021,17 @@ latest_user:
         return "\(guidanceBlock)\n\n\(recentText)"
     }
 
+    private func mergeProjectWorkingSetHeartbeat(
+        recentText: String,
+        heartbeatBlock: String
+    ) -> String {
+        let recent = recentText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let heartbeat = heartbeatBlock.trimmingCharacters(in: .whitespacesAndNewlines)
+        if heartbeat.isEmpty { return recentText }
+        if recent.isEmpty || recent == "(none)" { return heartbeatBlock }
+        return "\(heartbeatBlock)\n\n\(recentText)"
+    }
+
     private func mergeProjectWorkingSetUIReview(
         recentText: String,
         uiReviewBlock: String
@@ -8368,6 +12041,17 @@ latest_user:
         if review.isEmpty { return recentText }
         if recent.isEmpty || recent == "(none)" { return uiReviewBlock }
         return "\(uiReviewBlock)\n\n\(recentText)"
+    }
+
+    private func mergeProjectObservationSupplement(
+        baseText: String,
+        supplementText: String
+    ) -> String {
+        let base = baseText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let supplement = supplementText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if supplement.isEmpty { return baseText }
+        if base.isEmpty || base == "(none)" { return supplementText }
+        return "\(baseText)\n\(supplementText)"
     }
 
     private func shouldRequestProjectMemoryRetrieval(userText: String) -> Bool {
@@ -8443,6 +12127,64 @@ latest_user:
 
     private func requestedProjectMemoryRetrievalKinds(userText: String) -> [String] {
         let lower = userText.lowercased()
+        if lower.contains("blocker")
+            || lower.contains("blocked")
+            || lower.contains("retry")
+            || lower.contains("recover")
+            || lower.contains("recovery")
+            || lower.contains("checkpoint")
+            || lower.contains("run ")
+            || lower.contains(" step")
+            || lower.contains("verify")
+            || lower.contains("verification")
+            || lower.contains("阻塞")
+            || lower.contains("卡住")
+            || lower.contains("重试")
+            || lower.contains("恢复")
+            || lower.contains("检查点")
+            || lower.contains("步骤")
+            || lower.contains("验证") {
+            return [
+                "automation_execution_report",
+                "automation_checkpoint",
+                "automation_retry_package",
+                "heartbeat_projection",
+                "guidance_injection",
+                "recent_context",
+                "decision_track",
+            ]
+        }
+        if lower.contains("guidance")
+            || lower.contains("review")
+            || lower.contains("ack")
+            || lower.contains("safe point")
+            || lower.contains("指导")
+            || lower.contains("复盘")
+            || lower.contains("审查")
+            || lower.contains("确认")
+            || lower.contains("安全点") {
+            return [
+                "guidance_injection",
+                "automation_execution_report",
+                "decision_track",
+                "recent_context",
+            ]
+        }
+        if lower.contains("heartbeat")
+            || lower.contains("cadence")
+            || lower.contains("anomaly")
+            || lower.contains("risk")
+            || lower.contains("心跳")
+            || lower.contains("节奏")
+            || lower.contains("异常")
+            || lower.contains("风险") {
+            return [
+                "heartbeat_projection",
+                "automation_execution_report",
+                "automation_retry_package",
+                "guidance_injection",
+            ]
+        }
         if lower.contains("之前") || lower.contains("上次") || lower.contains("history") || lower.contains("context") {
             return ["recent_context", "decision_track", "project_spec_capsule", "background_preferences"]
         }
@@ -9152,26 +12894,27 @@ effective_work_order_depth: \(contract.effectiveWorkOrderDepth.isEmpty ? "(none)
             ) ?? ""
 
         var lines: [String] = [
-            "已暂停继续自动化，先处理当前 UI 修复要求。"
+            "这次先别继续自动化，先把当前 UI 问题处理掉。"
         ]
         if !contract.summary.isEmpty {
             lines.append(contract.summary)
         }
         lines.append("")
-        lines.append("- repair_action: \(contract.repairAction.isEmpty ? "(none)" : contract.repairAction)")
-        lines.append("- repair_focus: \(contract.repairFocus.isEmpty ? "(none)" : contract.repairFocus)")
-        lines.append("- next_safe_action: \(contract.nextSafeAction.isEmpty ? "(none)" : contract.nextSafeAction)")
+        lines.append("先处理的重点：")
+        lines.append("- 修复动作：\(projectSupervisorRepairActionFrontstageText(contract.repairAction))")
+        lines.append("- 修复焦点：\(projectSupervisorRepairFocusFrontstageText(contract.repairFocus))")
+        lines.append("- 安全下一步：\(projectSupervisorNextSafeActionFrontstageText(contract.nextSafeAction))")
         if !ref.isEmpty {
-            lines.append("- ui_review_ref: \(ref)")
+            lines.append("- UI 审查引用：\(ref)")
         }
         if !contract.instruction.isEmpty {
-            lines.append("- instruction: \(contract.instruction)")
+            lines.append("- 处理说明：\(contract.instruction)")
         }
         if !evidence.isEmpty {
-            lines.append("- evidence: \(evidence)")
+            lines.append("- 当前依据：\(evidence)")
         }
         lines.append("")
-        lines.append("当前重规划：")
+        lines.append("接下来先这样处理：")
         lines.append(final)
         return lines.joined(separator: "\n")
     }
@@ -9196,33 +12939,142 @@ effective_work_order_depth: \(contract.effectiveWorkOrderDepth.isEmpty ? "(none)
         final: String,
         contract: ProjectSupervisorReplanContract
     ) -> String {
-        let actions = contract.recommendedActions.isEmpty
-            ? "(none)"
-            : contract.recommendedActions.joined(separator: " | ")
-
         var lines: [String] = [
-            "已暂停继续执行，先处理当前 supervisor replan 合同。"
+            "这次先别继续执行，先按当前重规划处理。"
         ]
         if !contract.summary.isEmpty {
             lines.append(contract.summary)
         }
         lines.append("")
-        lines.append("- contract_kind: \(contract.contractKind.isEmpty ? "(none)" : contract.contractKind)")
-        lines.append("- primary_blocker: \(contract.primaryBlocker.isEmpty ? "(none)" : contract.primaryBlocker)")
-        lines.append("- next_safe_action: \(contract.nextSafeAction.isEmpty ? "(none)" : contract.nextSafeAction)")
+        lines.append("先处理的重点：")
+        lines.append("- 指导类型：\(projectSupervisorContractKindFrontstageText(contract.contractKind))")
+        lines.append("- 当前阻塞：\(projectSupervisorBlockerFrontstageText(contract.primaryBlocker))")
+        lines.append("- 安全下一步：\(projectSupervisorNextSafeActionFrontstageText(contract.nextSafeAction))")
         if !contract.nextStep.isEmpty {
-            lines.append("- next_step: \(contract.nextStep)")
+            lines.append("- 建议下一步：\(contract.nextStep)")
         }
         if !contract.workOrderRef.isEmpty {
-            lines.append("- work_order_ref: \(contract.workOrderRef)")
+            lines.append("- 工单引用：\(contract.workOrderRef)")
         }
-        if !actions.isEmpty {
-            lines.append("- recommended_actions: \(actions)")
+        let actions = projectSupervisorRecommendedActionsFrontstageText(contract.recommendedActions)
+        if actions != "暂无" {
+            lines.append("- 建议动作：\(actions)")
         }
         lines.append("")
-        lines.append("当前重规划：")
+        lines.append("接下来先这样处理：")
         lines.append(final)
         return lines.joined(separator: "\n")
+    }
+
+    private func projectSupervisorContractKindFrontstageText(
+        _ raw: String
+    ) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != "(none)" else { return "暂无" }
+        if let kind = SupervisorGuidanceContractSummary.Kind(rawValue: trimmed) {
+            return "\(kind.displayName)（\(trimmed)）"
+        }
+        return projectSupervisorFallbackFrontstageToken(trimmed)
+    }
+
+    private func projectSupervisorNextSafeActionFrontstageText(
+        _ raw: String
+    ) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != "(none)" else { return "暂无" }
+        return SupervisorGuidanceTextPresentation.actionDisplayText(
+            trimmed,
+            includeRawToken: true
+        ) ?? projectSupervisorFallbackFrontstageToken(trimmed)
+    }
+
+    private func projectSupervisorBlockerFrontstageText(
+        _ raw: String
+    ) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != "(none)" else { return "暂无" }
+
+        switch trimmed.lowercased() {
+        case "runtime_error":
+            return "运行时错误（runtime_error）"
+        case "awaiting_instruction":
+            return "等待指令（awaiting_instruction）"
+        default:
+            let label = SupervisorBlockerPresentation.label(trimmed)
+            if label == trimmed {
+                return projectSupervisorFallbackFrontstageToken(trimmed)
+            }
+            return label
+        }
+    }
+
+    private func projectSupervisorRepairActionFrontstageText(
+        _ raw: String
+    ) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != "(none)" else { return "暂无" }
+
+        switch trimmed.lowercased() {
+        case "repair_primary_cta_visibility":
+            return "修复主操作按钮可见性（repair_primary_cta_visibility）"
+        case "repair_interactive_target_exposure":
+            return "补出缺失的可交互目标（repair_interactive_target_exposure）"
+        case "stabilize_ui_review_evidence":
+            return "稳定 UI 审查证据（stabilize_ui_review_evidence）"
+        case "repair_objective_path":
+            return "修复目标路径（repair_objective_path）"
+        case "review_recent_ui_regression":
+            return "排查最近的 UI 回归（review_recent_ui_regression）"
+        case "repair_ui_flow_before_resume":
+            return "修复当前 UI 流程后再继续（repair_ui_flow_before_resume）"
+        default:
+            return projectSupervisorFallbackFrontstageToken(trimmed)
+        }
+    }
+
+    private func projectSupervisorRepairFocusFrontstageText(
+        _ raw: String
+    ) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != "(none)" else { return "暂无" }
+
+        switch trimmed.lowercased() {
+        case "critical_action":
+            return "关键操作入口（critical_action）"
+        case "interactive_target":
+            return "可交互目标（interactive_target）"
+        case "ui_probe":
+            return "UI 探测证据（ui_probe）"
+        case "objective_path":
+            return "目标路径（objective_path）"
+        case "regression":
+            return "回归问题（regression）"
+        case "ui_flow":
+            return "UI 流程（ui_flow）"
+        default:
+            return projectSupervisorFallbackFrontstageToken(trimmed)
+        }
+    }
+
+    private func projectSupervisorRecommendedActionsFrontstageText(
+        _ actions: [String]
+    ) -> String {
+        let normalized = actions
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0 != "(none)" }
+        guard !normalized.isEmpty else { return "暂无" }
+        return SupervisorGuidanceTextPresentation.actionsDisplayText(normalized)
+            ?? normalized.joined(separator: " | ")
+    }
+
+    private func projectSupervisorFallbackFrontstageToken(
+        _ raw: String
+    ) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "暂无" }
+        let humanized = trimmed.replacingOccurrences(of: "_", with: " ")
+        guard humanized != trimmed else { return trimmed }
+        return "\(humanized)（\(trimmed)）"
     }
 
     private func firstNonEmptyProjectSupervisorRepairValue(
@@ -9374,10 +13226,12 @@ effective_work_order_depth: \(contract.effectiveWorkOrderDepth.isEmpty ? "(none)
         _ pending: SupervisorGuidanceInjectionRecord,
         ctx: AXProjectContext
     ) -> String {
-        let summary = pending.guidanceText
-            .split(whereSeparator: \.isNewline)
-            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-            .first(where: { !$0.isEmpty }) ?? ""
+        let intro =
+            "当前有一条需要先确认的 Supervisor 指导（\(pending.injectionId)），所以我先不继续发起新的工具或技能。"
+        let summary = SupervisorGuidanceTextPresentation.summary(
+            pending.guidanceText,
+            maxChars: 180
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
         let guidanceSummary = summary.isEmpty ? "先处理当前 Supervisor 指导。" : summary
         if let contract = projectUIReviewRepairContract(from: pending) {
             let evidence =
@@ -9386,12 +13240,13 @@ effective_work_order_depth: \(contract.effectiveWorkOrderDepth.isEmpty ? "(none)
                     contract.skillResultSummary
                 ) ?? ""
             var lines = [
-                "已命中 Supervisor 指导（\(pending.injectionId)）：当前必须先暂停新的工具/技能执行，只输出停机或重规划说明。",
+                intro,
                 guidanceSummary,
                 "",
-                "- \(ProjectGovernanceActivityDisplay.fieldLine("repair_action", value: contract.repairAction.isEmpty ? "无" : contract.repairAction))",
-                "- \(ProjectGovernanceActivityDisplay.fieldLine("repair_focus", value: contract.repairFocus.isEmpty ? "无" : contract.repairFocus))",
-                "- \(ProjectGovernanceActivityDisplay.fieldLine("next_safe_action", value: contract.nextSafeAction.isEmpty ? "无" : contract.nextSafeAction))"
+                "先处理的重点：",
+                "- 修复动作：\(projectSupervisorRepairActionFrontstageText(contract.repairAction))",
+                "- 修复焦点：\(projectSupervisorRepairFocusFrontstageText(contract.repairFocus))",
+                "- 安全下一步：\(projectSupervisorNextSafeActionFrontstageText(contract.nextSafeAction))"
             ]
             if !contract.uiReviewRef.isEmpty {
                 lines.append("- UI 审查引用：\(contract.uiReviewRef)")
@@ -9406,25 +13261,29 @@ effective_work_order_depth: \(contract.effectiveWorkOrderDepth.isEmpty ? "(none)
         }
         if let contract = projectSupervisorReplanContract(for: pending, ctx: ctx) {
             var lines = [
-                "已命中 Supervisor 指导（\(pending.injectionId)）：当前必须先暂停新的工具/技能执行，只输出停机或重规划说明。",
+                intro,
                 guidanceSummary,
                 "",
-                "- \(ProjectGovernanceActivityDisplay.fieldLine("contract_kind", value: contract.contractKind.isEmpty ? "无" : contract.contractKind))",
-                "- \(ProjectGovernanceActivityDisplay.fieldLine("primary_blocker", value: contract.primaryBlocker.isEmpty ? "无" : contract.primaryBlocker))",
-                "- \(ProjectGovernanceActivityDisplay.fieldLine("next_safe_action", value: contract.nextSafeAction.isEmpty ? "无" : contract.nextSafeAction))"
+                "先处理的重点：",
+                "- 指导类型：\(projectSupervisorContractKindFrontstageText(contract.contractKind))",
+                "- 当前阻塞：\(projectSupervisorBlockerFrontstageText(contract.primaryBlocker))",
+                "- 安全下一步：\(projectSupervisorNextSafeActionFrontstageText(contract.nextSafeAction))"
             ]
             if !contract.nextStep.isEmpty {
-                lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("next_step", value: contract.nextStep))")
+                lines.append("- 建议下一步：\(contract.nextStep)")
             }
             if !contract.workOrderRef.isEmpty {
-                lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("work_order_ref", value: contract.workOrderRef))")
+                lines.append("- 工单引用：\(contract.workOrderRef)")
             }
             if !contract.recommendedActions.isEmpty {
-                lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("recommended_actions", value: contract.recommendedActions.prefix(3).joined(separator: " | ")))")
+                lines.append("- 建议动作：\(contract.recommendedActions.prefix(3).joined(separator: " | "))")
             }
             return lines.joined(separator: "\n")
         }
-        return "已命中 Supervisor 指导（\(pending.injectionId)）：当前必须先暂停新的工具/技能执行，只输出停机或重规划说明。\(guidanceSummary)"
+        return [
+            intro,
+            guidanceSummary
+        ].joined(separator: "\n")
     }
 
     private func projectSupervisorGuidancePromptBlock(
@@ -9601,6 +13460,117 @@ effective_work_order_depth: \(contract.effectiveWorkOrderDepth.isEmpty ? "(none)
         return lines.joined(separator: "\n")
     }
 
+    private func remoteProjectPromptOverrideIfNeeded(
+        role: AXRole,
+        prompt: String,
+        routeDecision: AXProjectPreferredModelRouteDecision,
+        transportMode: HubTransportMode,
+        hasRemoteProfile: Bool
+    ) -> String? {
+        guard role == .coder, !routeDecision.forceLocalExecution else { return nil }
+        let route = HubRouteStateMachine.resolve(mode: transportMode, hasRemoteProfile: hasRemoteProfile)
+        guard route.preferRemote else { return nil }
+        let sanitized = sanitizedRemoteProjectPrompt(prompt)
+        return sanitized == prompt ? nil : sanitized
+    }
+
+    private func sanitizedRemoteProjectPrompt(_ prompt: String) -> String {
+        var out = sanitizedPromptContextText(prompt)
+        out = replacingRegex(
+            in: out,
+            pattern: #"<private>[\s\S]*?<\/private>"#,
+            with: "[REDACTED_PRIVATE_BLOCK]"
+        )
+        out = replacingRegex(
+            in: out,
+            pattern: #"\[private\]"#,
+            with: "[REDACTED_PRIVATE]",
+            options: [.caseInsensitive]
+        )
+        out = replacingPromptSection(
+            in: out,
+            tag: "L4_RAW_EVIDENCE",
+            body: """
+tool_results:
+(scope-limited raw evidence retained locally and omitted from remote export)
+latest_user:
+(refer to the explicit User request section below)
+"""
+        )
+        out = replacingRemoteToolResultsSection(in: out)
+        return out
+    }
+
+    private func replacingRemoteToolResultsSection(in text: String) -> String {
+        guard let headerRange = text.range(of: "Tool results so far:\n") else { return text }
+        guard let footerRange = text.range(
+            of: "\n\nUser request:\n",
+            range: headerRange.upperBound..<text.endIndex
+        ) else { return text }
+
+        let rawBlock = String(text[headerRange.upperBound..<footerRange.lowerBound])
+        let summarizedBlock = summarizedRemoteToolResultsBlock(rawBlock)
+        return String(text[..<headerRange.upperBound]) + summarizedBlock + String(text[footerRange.lowerBound...])
+    }
+
+    private func summarizedRemoteToolResultsBlock(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != "(none)" else { return "(none)" }
+
+        let entryChunks = trimmed
+            .components(separatedBy: "\n\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        let summarizedEntries = entryChunks.prefix(6).map { chunk -> String in
+            let lines = chunk
+                .components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+
+            var compact: [String] = []
+            if let idLine = lines.first(where: { $0.hasPrefix("id=") }) {
+                compact.append(idLine)
+            }
+            if let summaryLine = lines.first(where: { $0.hasPrefix("summary=") }) {
+                compact.append(summaryLine)
+            }
+            compact.append("details=(raw tool output retained locally in XT and omitted from remote export)")
+            return compact.joined(separator: "\n")
+        }
+
+        return summarizedEntries.joined(separator: "\n\n")
+    }
+
+    private func replacingPromptSection(
+        in text: String,
+        tag: String,
+        body: String
+    ) -> String {
+        replacingRegex(
+            in: text,
+            pattern: "\\[\(NSRegularExpression.escapedPattern(for: tag))\\][\\s\\S]*?\\[/\(NSRegularExpression.escapedPattern(for: tag))\\]",
+            with: """
+[\(tag)]
+\(body)
+[/\(tag)]
+"""
+        )
+    }
+
+    private func replacingRegex(
+        in text: String,
+        pattern: String,
+        with replacement: String,
+        options: NSRegularExpression.Options = []
+    ) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else {
+            return text
+        }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: replacement)
+    }
+
     private func sanitizedPromptContextText(_ text: String) -> String {
         var out = text
         let regexReplacements: [(pattern: String, template: String, options: NSRegularExpression.Options)] = [
@@ -9666,7 +13636,7 @@ effective_work_order_depth: \(contract.effectiveWorkOrderDepth.isEmpty ? "(none)
         to row: inout [String: Any],
         from summary: [String: JSONValue]
     ) {
-        for (key, value) in XTGovernanceTruthPresentation.snapshotFields(from: summary) {
+        for (key, value) in xtPersistedGovernanceEvidenceFields(from: summary) {
             row[key] = jsonValueToAny(value)
         }
     }

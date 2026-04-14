@@ -131,9 +131,9 @@
 - `.axcoder/reports/doctor-report.json`
 - `.axcoder/reports/secrets-dry-run-report.json`
 - `.axcoder/reports/xt-rollback-last.json`
-- `build/xt_ready_gate_e2e_report.json`
-- `build/xt_ready_evidence_source.json`
-- `build/connector_ingress_gate_snapshot.json`
+- `build/xt_ready_gate_e2e_require_real_report.json` or `build/xt_ready_gate_e2e_db_real_report.json` or `build/xt_ready_gate_e2e_report.json`
+- `build/xt_ready_evidence_source.require_real.json` or `build/xt_ready_evidence_source.db_real.json` or `build/xt_ready_evidence_source.json`
+- `build/connector_ingress_gate_snapshot.require_real.json` or `build/connector_ingress_gate_snapshot.db_real.json` or `build/connector_ingress_gate_snapshot.json`
 
 ## 5) 必跑命令（发布前）
 
@@ -158,13 +158,16 @@ node ./scripts/m3_check_xt_ready_gate.js \
 
 XT_READY_REQUIRE_REAL_AUDIT=1 node ./scripts/m3_resolve_xt_ready_audit_input.js \
   --require-real \
-  --out-json ./build/xt_ready_evidence_source.json
+  --out-json ./build/xt_ready_evidence_source.require_real.json
 
 # 3) 内部通过线裁决（输出 GO / NO-GO / INSUFFICIENT_EVIDENCE）
 node ./scripts/m3_check_internal_pass_lines.js \
   --window "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   --out-json ./build/internal_pass_lines_report.json
 ```
+
+默认路径选择现在会优先读取 `require_real -> db_real -> current` 这三档 XT-ready report/source；只有在你显式传 `--xt-ready-gate-report` 或 `--xt-ready-evidence-source` 时才会覆盖这个优先级。
+同一优先级也适用于 connector snapshot；如果你显式改的是标准 `require_real / db_real / current` 路径，脚本会自动补齐同链 connector snapshot；如果你传的是自定义非标准路径，仍建议同时传 `--connector-gate-snapshot`，避免把不同链路的证据混读。
 
 若修改了通过线裁决脚本本身，补跑：
 

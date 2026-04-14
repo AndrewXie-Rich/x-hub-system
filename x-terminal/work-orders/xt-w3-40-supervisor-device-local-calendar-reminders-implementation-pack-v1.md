@@ -462,7 +462,8 @@ Hub 只保留只读说明：
 - `bash x-terminal/tools/build_xterminal_app.command` 通过
 - `bash x-terminal/scripts/ci/xt_w3_40_calendar_boundary_evidence.sh` 通过
 - `bash x-terminal/scripts/ci/xt_w3_40_real_device_smoke_template.sh` 可生成真机 smoke 报告模板
-- `bash x-terminal/scripts/ci/xt_w3_40_real_device_smoke_validate.sh <report.json>` 可校验已填写的真机 smoke 报告
+- `bash x-terminal/scripts/ci/xt_w3_40_real_device_smoke_validate.sh <report.json>` 可做结构校验
+- `XT_W3_40_REQUIRE_PASS=1 bash x-terminal/scripts/ci/xt_w3_40_real_device_smoke_validate.sh <report.json>` 可对已填写完成的真机 smoke 报告执行严格通过校验
 - 打包产物 `build/X-Terminal.app/Contents/Info.plist` 已确认包含：
   - `NSCalendarsFullAccessUsageDescription`
   - `NSCalendarsUsageDescription`
@@ -486,7 +487,8 @@ Hub 只保留只读说明：
 - 实跑后需把结果填写进：
   - `x-terminal/build/reports/xt_w3_40_real_device_smoke_evidence.v1.json`
   - 可先运行：`bash x-terminal/scripts/ci/xt_w3_40_real_device_smoke_template.sh`
-  - 填完后校验：`bash x-terminal/scripts/ci/xt_w3_40_real_device_smoke_validate.sh x-terminal/build/reports/xt_w3_40_real_device_smoke_evidence.v1.json`
+  - 结构校验：`bash x-terminal/scripts/ci/xt_w3_40_real_device_smoke_validate.sh x-terminal/build/reports/xt_w3_40_real_device_smoke_evidence.v1.json`
+  - 严格通过校验：`XT_W3_40_REQUIRE_PASS=1 bash x-terminal/scripts/ci/xt_w3_40_real_device_smoke_validate.sh x-terminal/build/reports/xt_w3_40_real_device_smoke_evidence.v1.json`
   - 若要把它纳入 release gate：`XT_GATE_VALIDATE_CALENDAR_REAL_DEVICE_SMOKE=1 bash x-terminal/scripts/ci/xt_release_gate.sh`
 - 如后续要切到 sandbox 分发，还需要单独以 `XTERMINAL_ENABLE_APP_SANDBOX=1` 重新签名并验证 calendar entitlement 路径
 

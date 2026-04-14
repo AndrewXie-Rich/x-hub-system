@@ -6,7 +6,7 @@ import Testing
 struct XTToolRuntimePolicyGovernanceClampTests {
 
     @Test
-    func invalidGovernanceComboFailsClosedBeforeRuntimeClamp() {
+    func explicitDualDialOpenClawGovernanceStillFailsClosedAtToolPolicy() {
         let root = makeProjectRoot(named: "runtime-governance-fail-closed")
         var config = AXProjectConfig.default(forProjectRoot: root)
         config = config.settingProjectGovernance(
@@ -33,15 +33,21 @@ struct XTToolRuntimePolicyGovernanceClampTests {
         )
 
         #expect(!decision.allowed)
-        #expect(decision.denyCode == "governance_capability_denied")
-        #expect(decision.policySource == "project_governance")
-        #expect(decision.policyReason == "execution_tier_missing_device_tools")
+        #expect(decision.denyCode == "tool_policy_denied")
+        #expect(decision.policySource == "project_tool_policy")
+        #expect(decision.policyReason == "tool_not_allowed")
         #expect(jsonString(summary["execution_tier"]) == AXProjectExecutionTier.a4OpenClaw.rawValue)
-        #expect(jsonString(summary["effective_execution_tier"]) == AXProjectExecutionTier.a0Observe.rawValue)
-        #expect(jsonString(summary["review_policy_mode"]) == AXProjectReviewPolicyMode.milestoneOnly.rawValue)
-        #expect(jsonNumber(summary["progress_heartbeat_sec"]) == 1800)
-        #expect(jsonNumber(summary["review_pulse_sec"]) == 0)
+        #expect(jsonString(summary["effective_execution_tier"]) == AXProjectExecutionTier.a4OpenClaw.rawValue)
+        #expect(jsonString(summary["review_policy_mode"]) == AXProjectReviewPolicyMode.hybrid.rawValue)
+        #expect(jsonNumber(summary["progress_heartbeat_sec"]) == 600)
+        #expect(jsonNumber(summary["review_pulse_sec"]) == 1200)
         #expect(jsonString(summary["governance_compat_source"]) == AXProjectGovernanceCompatSource.explicitDualDial.rawValue)
+        #expect(jsonBool(summary["project_governance_runtime_ready"]) == false)
+        #expect(jsonString(summary["project_governance_runtime_component_route_ready_state"]) == "ready")
+        #expect(jsonString(summary["project_governance_runtime_component_capability_ready_state"]) == "ready")
+        #expect(jsonString(summary["project_governance_runtime_component_grant_ready_state"]) == "blocked")
+        #expect(jsonString(summary["project_governance_runtime_component_checkpoint_recovery_ready_state"]) == "ready")
+        #expect(jsonString(summary["project_governance_runtime_component_evidence_export_ready_state"]) == "ready")
     }
 
     @Test
@@ -92,6 +98,10 @@ struct XTToolRuntimePolicyGovernanceClampTests {
         #expect(jsonString(summary["autonomy_effective_mode"]) == AXProjectRuntimeSurfaceMode.guided.rawValue)
         #expect(jsonString(summary["review_policy_mode"]) == AXProjectReviewPolicyMode.hybrid.rawValue)
         #expect(jsonString(summary["governance_compat_source"]) == AXProjectGovernanceCompatSource.explicitDualDial.rawValue)
+        #expect(jsonString(summary["governance_reason"]) == "当前运行面不允许浏览器自动化。")
+        #expect(jsonString(summary["blocked_summary"])?.contains("当前运行面不允许浏览器自动化。") == true)
+        #expect(jsonString(summary["governance_truth"]) == XTGovernanceTruthPresentation.truthLine(from: summary))
+        #expect(jsonString(summary["repair_action"])?.contains("打开治理设置：") == true)
     }
 
     @Test
@@ -127,6 +137,10 @@ struct XTToolRuntimePolicyGovernanceClampTests {
         #expect(decision.policyReason == "execution_tier_missing_device_tools")
         #expect(jsonString(summary["execution_tier"]) == AXProjectExecutionTier.a3DeliverAuto.rawValue)
         #expect(jsonString(summary["effective_execution_tier"]) == AXProjectExecutionTier.a3DeliverAuto.rawValue)
+        #expect(jsonString(summary["governance_reason"]) == "当前项目 A-Tier 不允许设备级工具。")
+        #expect(jsonString(summary["blocked_summary"])?.contains("当前项目 A-Tier 不允许设备级工具。") == true)
+        #expect(jsonString(summary["governance_truth"])?.contains("治理真相：当前生效 A3/S3") == true)
+        #expect(jsonString(summary["repair_action"])?.contains("打开 A-Tier：") == true)
     }
 
     @Test

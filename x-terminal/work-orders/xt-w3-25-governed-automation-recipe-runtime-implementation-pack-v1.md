@@ -1,7 +1,7 @@
 # XT-W3-25 Governed Automation Recipe Runtime Implementation Pack v1
 
 - version: v1.0
-- updatedAt: 2026-03-10
+- updatedAt: 2026-03-30
 - owner: XT-L2（Primary）/ Hub-L5 / XT-L1 / QA / Security
 - status: planned
 - scope: `governed automation` 的 goal -> recipe 编译、recipe store、trigger router、run launch gate、state machine / restart recovery、directed takeover guard、timeline / explainability、one-click bootstrap
@@ -211,6 +211,13 @@
 }
 ```
 
+恢复语义冻结（latest grounded truth，2026-03-30）：
+
+- `retry_after_seconds` 是 restart recovery 的真实 cooldown，不是展示字段。
+- `automatic` recovery 只能在 checkpoint 仍可恢复且 `retry_after_seconds` 已到期时 `resume`。
+- 若 checkpoint 仍在 backoff 窗口内，必须 fail-closed 为 `hold`，并写稳定 reason `retry_after_not_elapsed`。
+- 只有 operator/manual recover 才允许走 `operator_override`；前提仍是 stable identity 通过，不能绕过 cancel / scavenging / retry budget。
+
 ### 3.6 `xt.automation_operator_brief.v1`
 
 ```json
@@ -347,14 +354,20 @@
   2. 为每个状态迁移写 checkpoint ref、retry-after、attempt。
   3. 进程重启后恢复 `blocked / takeover / downgraded` 状态，不得漂移 `run_id`。
   4. 支持 manual cancel、bounded retry、stale-run scavenging。
+  5. 区分 `automatic` 与 `operator_override` recovery：
+     - `automatic` 必须尊重 checkpoint `retry_after_seconds`
+     - backoff 未到期时返回 `hold(reason=retry_after_not_elapsed)`
+     - operator/manual recover 只在 stable identity 仍成立时才可 override cooldown
 - DoD：
   - 重启恢复后 `run_id` 与最后安全状态保持不变。
   - cancel 后不能静默复活。
   - checkpoint export 可以重建 state path。
+  - heartbeat 自动恢复不会越过 pending backoff 提前 resume。
 - 回归样例：
   - crash 导致同一 trigger 再次开出新 run。
   - `retry_after_seconds` 丢失。
   - cancel flag 在 restart 后被忽略。
+  - heartbeat automatic recovery 在 `retry_after_seconds` 未到时直接恢复执行。
 - 证据：
   - `build/reports/xt_w3_25_k_run_checkpoint_recovery_evidence.v1.json`
 

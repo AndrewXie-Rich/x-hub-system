@@ -95,6 +95,7 @@
   <text class="card-copy" x="754" y="539">MLX / Transformers</text>
 
   <text class="note" x="444" y="640">Trust, grants, audit, and memory truth stay on the Hub host.</text>
+  <text class="note" x="444" y="662">Memory executor stays user-selected; Writer + Gate remains the durable sink.</text>
 
   <rect class="panel ext-panel" x="1040" y="70" width="360" height="660" />
   <text class="panel-title" x="1064" y="106">OPTIONAL EXTERNAL SYSTEMS</text>

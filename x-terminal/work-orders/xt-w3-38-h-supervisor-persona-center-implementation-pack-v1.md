@@ -90,7 +90,7 @@ persona 不允许影响：
 
 - X-Constitution
 - grant / audit / kill-switch
-- project A-tier / S-tier
+- project A-Tier / S-Tier
 - Hub memory truth
 - 设备权限边界
 
@@ -431,7 +431,7 @@ v1 UI 要求：
 ## 6) 风险与边界
 
 - 不允许 persona 成为第二套记忆真相源
-- 不允许 persona 影响 `A-tier / S-tier / grants / kill-switch`
+- 不允许 persona 影响 `A-Tier / S-Tier / grants / kill-switch`
 - 不允许 voice overlay 反向污染 text persona registry
 - 不允许名字路由误匹配后静默切错 persona；要可解释、可调试
 

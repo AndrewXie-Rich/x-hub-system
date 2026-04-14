@@ -43,10 +43,20 @@ enum XTDeepLinkActionExecutor {
                 projectId: projectId,
                 requestId: requestId
             )
+        case let .supervisorCandidateReview(projectId, requestId):
+            appModel.requestSupervisorCandidateReviewFocus(
+                projectId: projectId,
+                requestId: requestId
+            )
         case let .supervisorSkillRecord(projectId, requestId):
             appModel.requestSupervisorSkillRecordFocus(
                 projectId: projectId,
                 requestId: requestId
+            )
+        case let .supervisorBoard(projectId, anchorID):
+            appModel.requestSupervisorBoardFocus(
+                anchorID: anchorID,
+                projectId: projectId
             )
         case let .projectToolApproval(projectId, requestId):
             appModel.requestProjectToolApprovalFocus(

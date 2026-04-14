@@ -74,9 +74,14 @@
 
 ### 3.1 分层 pin 解析（deterministic）
 
-- 生效优先级：`memory_core > global > project`
+- 普通 client-visible pin 生效优先级：`global > project`
+- `memory_core` 为保留系统层；若内部兼容快照暴露该层，也只表示规则资产状态，不接受普通 client pin。
 - 同层冲突：`updated_at_ms DESC`，再 `package_sha256` 字典序兜底。
 - 输出必须 deterministic（同输入重复解析结果一致）。
+
+补充边界：
+- `memory_core` 被保留并不意味着 client/runner 获得 memory authority；memory executor 仍由用户在 X-Hub 中选择。
+- 即使技能链路 fail-closed，也不替代 `memory_model_preferences -> Scheduler -> Worker -> Writer + Gate` 这条 memory 控制面。
 
 ### 3.2 Revocation 数据面
 
@@ -144,4 +149,3 @@ node src/skills_store_security.test.js
 - manifest 签名篡改 -> `deny(signature_invalid)`
 - 文件 hash 漂移 -> `deny(hash_mismatch)`
 - revoked 后离线缓存重放 -> `execute deny(revoked)`
-

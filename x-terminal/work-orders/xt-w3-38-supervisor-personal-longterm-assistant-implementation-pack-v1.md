@@ -1,7 +1,7 @@
 # XT-W3-38 Supervisor Personal Longterm Assistant Implementation Pack v1
 
 - version: v1.0
-- updatedAt: 2026-03-22
+- updatedAt: 2026-03-27
 - owner: XT-L2（Primary）/ Supervisor / Hub-L5 / QA / Product
 - status: active
 - scope: `XT-W3-38`（把 Supervisor 从“项目总控”扩成“长期个人助手”，但明确优先复用 OpenClaw 已有能力，不重复造轮子）
@@ -19,6 +19,28 @@
 
 ## Status Notes
 
+- 2026-03-27:
+  - 已补一段 Supervisor `runtime truth` 收口，避免它再对记忆来源、X-宪章、最近原始上下文窗口这三类问题自由发挥：
+    - `这些记忆都来自Hub吗`
+    - `X-宪章现在有生效吗`
+    - `你现在能看到多少轮上下文`
+  - 当前固定行为：
+    - 这三类问题会走本地 deterministic reply，而不是远端模型自由回答。
+    - 回复会明确说清：
+      - durable truth 目标仍是 `Hub Writer + Gate`
+      - 当前 Supervisor 运行时仍是 `Hub 快照 + 本地 overlay / fallback`
+      - `X-宪章` 当前通过 `[L0_CONSTITUTION]` 注入
+      - recent raw context 的硬底线是 `8 个来回`
+      - 若本轮存在 `SupervisorMemoryAssemblySnapshot`，会直接报告最近一次实际带入了多少组 recent raw dialogue
+  - 已补回归：
+    - `SupervisorMemoryAwareConversationRoutingTests`
+    - `SupervisorFailureFormattingTests`
+    - `XTDoctorMemoryTruthClosureEvidenceTests`
+  - 这一段的目的不是新增 memory 主线，而是让 Supervisor 至少在“自己到底看到了什么、这些记忆从哪来、X-宪章有没有生效”上先说真话，不再与 Hub-first memory 设计冲突。
+  - 当前剩余收口点固定为：
+    - 其余产品表面仍要继续对齐同一套 `Hub durable truth + XT overlay` 语义，避免 Doctor / Settings / 普通聊天文案各说各话。
+    - `X-宪章` 目前已在运行时真相回答里显式化，但 UI / drill-down 仍主要是 compact hint，不是可检查 artifact。
+    - Hub-first continuity / durable handoff 仍需继续沿 `I7-D2` 推完，当前还不是纯 Hub-only read path。
 - 2026-03-16:
   - `XT-W3-38-A` 已落第一段实现骨架：
     - 新增 `SupervisorPersonalProfile` / `SupervisorPersonalPolicy` 结构，冻结个人助手画像与默认陪跑策略的首版本地配置形状。
@@ -254,7 +276,7 @@ Supervisor 应能自然做到：
 
 也就是说：
 
-- 项目有 `A-tier / S-tier / review policy`
+- 项目有 `A-Tier / S-Tier / review policy`
 - 用户本人也要有 `personal assistant policy`
 
 ### 2.3 体验目标
@@ -557,7 +579,7 @@ X-Hub 落地方式：
   - 统一 persona cards + 编辑面板 UI
 - 注意：
   - 不创建第二套记忆真相源
-  - 不影响 grant / audit / kill-switch / A-tier / S-tier
+  - 不影响 grant / audit / kill-switch / A-Tier / S-Tier
   - UI 要求明确美化，不接受“系统表单堆叠”
 - 详细执行包：
   - `x-terminal/work-orders/xt-w3-38-h-supervisor-persona-center-implementation-pack-v1.md`

@@ -1,0 +1,53 @@
+{
+  "schema_version": "xhub.skill_manifest.v1",
+  "skill_id": "supervisor-voice",
+  "name": "Supervisor Voice",
+  "version": "1.0.0",
+  "description": "Inspect and drive the Supervisor voice playback path through governed XT voice controls, including preview, short speech, and stop.",
+  "entrypoint": {
+    "runtime": "text",
+    "command": "cat",
+    "args": [
+      "SKILL.md"
+    ]
+  },
+  "capabilities_required": [
+    "supervisor.voice.playback"
+  ],
+  "input_schema_ref": "schema://supervisor-voice.input",
+  "output_schema_ref": "schema://supervisor-voice.output",
+  "side_effect_class": "local_side_effect",
+  "risk_level": "low",
+  "requires_grant": false,
+  "timeout_ms": 12000,
+  "max_retries": 0,
+  "governed_dispatch": {
+    "tool": "supervisor.voice.playback",
+    "passthrough_args": [
+      "action",
+      "text"
+    ],
+    "arg_aliases": {
+      "action": [
+        "mode",
+        "operation"
+      ],
+      "text": [
+        "content",
+        "value"
+      ]
+    },
+    "exactly_one_of": []
+  },
+  "governed_dispatch_notes": [
+    "When no action is provided XT defaults to status, or speak if text/content/value is present.",
+    "Use action=preview for the built-in preview line, action=speak for short text, and action=stop to interrupt playback."
+  ],
+  "network_policy": {
+    "direct_network_forbidden": true
+  },
+  "publisher": {
+    "publisher_id": "xhub.official"
+  },
+  "install_hint": "Available immediately as an XT built-in governed skill; pin the official package only if you want it visible in Hub catalog workflows."
+}

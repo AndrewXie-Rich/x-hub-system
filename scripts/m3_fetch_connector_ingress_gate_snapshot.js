@@ -3,7 +3,15 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
-const DEFAULT_BASE_URL = "http://127.0.0.1:50052";
+const {
+  decryptRemoteSecretsCiphertext,
+  hubTokensFileCandidates,
+  remoteSecretsKeyFileCandidates,
+  resolveLocalAdminToken,
+  safeString,
+} = require("./lib/xhub_local_admin_token.js");
+
+const DEFAULT_BASE_URL = "http://127.0.0.1:50053";
 const DEFAULT_ROUTE_PATH = "/admin/pairing/connector-ingress/gate-snapshot";
 const VALID_SOURCES = new Set(["auto", "audit", "scan"]);
 
@@ -42,10 +50,10 @@ function safeNumber(value, fallback = 0) {
 }
 
 function buildSnapshotUrl(opts = {}) {
-  const baseUrl = String(opts.base_url || DEFAULT_BASE_URL).trim();
+  const baseUrl = safeString(opts.base_url || DEFAULT_BASE_URL);
   if (!baseUrl) throw new Error("missing base_url");
-  const routePath = String(opts.route_path || DEFAULT_ROUTE_PATH).trim() || DEFAULT_ROUTE_PATH;
-  const source = String(opts.source || "auto").trim().toLowerCase() || "auto";
+  const routePath = safeString(opts.route_path || DEFAULT_ROUTE_PATH) || DEFAULT_ROUTE_PATH;
+  const source = safeString(opts.source || "auto").toLowerCase() || "auto";
   if (!VALID_SOURCES.has(source)) {
     throw new Error(`invalid source: ${source} (expected auto|audit|scan)`);
   }
@@ -87,7 +95,7 @@ async function fetchConnectorIngressGateSnapshot(opts = {}, deps = {}) {
     throw new Error("fetch is unavailable in current runtime");
   }
 
-  const adminToken = String(opts.admin_token || "").trim();
+  const adminToken = safeString(opts.admin_token);
   if (!adminToken) throw new Error("missing admin_token");
 
   const requestMeta = buildSnapshotUrl(opts);
@@ -134,13 +142,35 @@ async function fetchConnectorIngressGateSnapshot(opts = {}, deps = {}) {
 
 async function runCli(argv = process.argv, env = process.env) {
   const args = parseArgs(argv);
-  const outPath = String(args["out-json"] || "").trim();
+  const outPath = safeString(args["out-json"]);
   if (!outPath) throw new Error("missing --out-json");
+
+  const explicitAdminToken = safeString(args["admin-token"] || env.HUB_ADMIN_TOKEN);
+  const tokenResolution = explicitAdminToken
+    ? {
+        admin_token: explicitAdminToken,
+        token_source: "explicit_arg_or_env",
+      }
+    : resolveLocalAdminToken(
+        {
+          home_dir: args["home-dir"] || env.XHUB_SOURCE_RUN_HOME || "",
+          hub_dir: args["hub-dir"] || env.XHUB_HUB_DIR || "",
+          hub_tokens_file: args["hub-tokens-file"] || "",
+          remote_secrets_key_file: args["remote-secrets-key-file"] || "",
+        },
+        env
+      );
+  const adminToken = safeString(tokenResolution.admin_token);
+  if (!adminToken) {
+    throw new Error(
+      `missing admin_token (explicit token absent and local Hub token resolution failed: ${tokenResolution.token_source || "unknown"})`
+    );
+  }
 
   const payload = await fetchConnectorIngressGateSnapshot({
     base_url: args["base-url"] || DEFAULT_BASE_URL,
     route_path: args["route-path"] || DEFAULT_ROUTE_PATH,
-    admin_token: args["admin-token"] || env.HUB_ADMIN_TOKEN || "",
+    admin_token: adminToken,
     source: args.source || "auto",
     since_ms: args["since-ms"] || "",
     until_ms: args["until-ms"] || "",
@@ -151,6 +181,9 @@ async function runCli(argv = process.argv, env = process.env) {
     limit: args.limit || "",
   });
 
+  payload.auth = {
+    source: tokenResolution.token_source || "unknown",
+  };
   writeText(path.resolve(outPath), `${JSON.stringify(payload, null, 2)}\n`);
   console.log(
     `ok - connector ingress gate snapshot fetched (source=${payload.source_used || payload.request.source}, blocked_event_miss_rate=${payload.summary.blocked_event_miss_rate}, out=${outPath})`
@@ -167,7 +200,11 @@ if (require.main === module) {
 
 module.exports = {
   buildSnapshotUrl,
+  decryptRemoteSecretsCiphertext,
   fetchConnectorIngressGateSnapshot,
+  hubTokensFileCandidates,
   parseArgs,
+  remoteSecretsKeyFileCandidates,
+  resolveLocalAdminToken,
   runCli,
 };

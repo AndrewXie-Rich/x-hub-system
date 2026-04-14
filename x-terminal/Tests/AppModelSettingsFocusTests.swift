@@ -77,7 +77,7 @@ struct AppModelSettingsFocusTests {
             projectId: "  hex:demo-project  ",
             destination: .heartbeatReview,
             title: " Project Governance ",
-            detail: " Heartbeat & Review "
+            detail: " Heartbeat / Review "
         )
 
         let request = try #require(appModel.projectSettingsFocusRequest)
@@ -85,9 +85,57 @@ struct AppModelSettingsFocusTests {
         #expect(request.destination == .heartbeatReview)
         #expect(request.sectionId == XTProjectGovernanceDestination.heartbeatReview.rawValue)
         #expect(request.context?.title == "Project Governance")
-        #expect(request.context?.detail == "Heartbeat & Review")
+        #expect(request.context?.detail == "Heartbeat / Review")
         #expect(appModel.selectedProjectId == "hex:demo-project")
         #expect(appModel.pane(for: "hex:demo-project") == .chat)
+    }
+
+    @Test
+    func projectSettingsFocusRequestCanCarryOverviewAnchor() throws {
+        let appModel = AppModel()
+
+        appModel.requestProjectSettingsFocus(
+            projectId: "project-memory",
+            destination: .overview,
+            preserveCurrentPane: true,
+            overviewAnchor: .contextAssembly,
+            title: "Project Governance",
+            detail: "Project AI Memory Controls"
+        )
+
+        let request = try #require(appModel.projectSettingsFocusRequest)
+        #expect(request.destination == .overview)
+        #expect(request.overviewAnchor == .contextAssembly)
+        #expect(request.context?.detail == "Project AI Memory Controls")
+        #expect(appModel.selectedProjectId == "project-memory")
+    }
+
+    @Test
+    func supervisorSettingsFocusDefaultsToSectionContext() throws {
+        let appModel = AppModel()
+
+        appModel.requestSupervisorSettingsFocus(section: .reviewMemoryDepth)
+
+        let request = try #require(appModel.supervisorSettingsFocusRequest)
+        #expect(request.section == .reviewMemoryDepth)
+        #expect(request.context == XTSupervisorSettingsFocusSection.reviewMemoryDepth.focusContext)
+    }
+
+    @Test
+    func clearSupervisorSettingsFocusRequestOnlyClearsMatchingNonce() throws {
+        let appModel = AppModel()
+
+        appModel.requestSupervisorSettingsFocus(section: .recentRawContext)
+        let first = try #require(appModel.supervisorSettingsFocusRequest)
+
+        appModel.requestSupervisorSettingsFocus(section: .reviewMemoryDepth)
+        let second = try #require(appModel.supervisorSettingsFocusRequest)
+
+        appModel.clearSupervisorSettingsFocusRequest(first)
+        #expect(appModel.supervisorSettingsFocusRequest?.nonce == second.nonce)
+
+        appModel.clearSupervisorSettingsFocusRequest(second)
+        #expect(appModel.supervisorSettingsFocusRequest == nil)
     }
 
     @Test
@@ -119,6 +167,22 @@ struct AppModelSettingsFocusTests {
         #expect(request.destination == .executionTier)
         #expect(appModel.selectedProjectId == "project-terminal")
         #expect(appModel.pane(for: "project-terminal") == .terminal)
+    }
+
+    @Test
+    func projectSettingsInlineMessagePreservesStructuredMultilineContext() {
+        let text = xtProjectSettingsInlineMessage(
+            title: "治理拦截修复",
+            detail: """
+            最近一次拦截：当前项目 A-Tier 不允许浏览器自动化。
+            governance_reason=当前项目 A-Tier 不允许浏览器自动化。
+            policy_reason=execution_tier_missing_browser_runtime
+            """
+        )
+
+        #expect(text.hasPrefix("治理拦截修复\n"))
+        #expect(text.contains("governance_reason=当前项目 A-Tier 不允许浏览器自动化。"))
+        #expect(text.contains("policy_reason=execution_tier_missing_browser_runtime"))
     }
 
     @Test

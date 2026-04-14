@@ -34,7 +34,7 @@ Validated release slice:
 
 Validated public statements for this release:
 
-- XT memory UX adapter backed by Hub truth-source
+- XT memory UX adapter backed by Hub truth-source, with user-selected memory executor and Writer + Gate durable-write boundary
 - Hub-governed multi-channel gateway
 - Hub-first governed automations
 
@@ -144,3 +144,5 @@ If rollback is required, use the last known good tag and the rollback procedure 
    - `Mac mini` 默认推荐
    - `Mac Studio` 高容量推荐
 5. 不要把内部工单名、内部 slice 进度、或 operator 导航内容直接写成公开 release claim
+6. 如果需要引用运行态/支持态的额外说明，先刷新 `build/reports/oss_release_support_snippet.v1.md`，但其中任何 operator-channel 文案都只能放在 preview/support 语境，不能写进 validated public statements
+7. 如果需要引用 safe-onboarding 的 preview/support 证据，先运行 `bash scripts/ci/xt_w3_24_s_safe_onboarding_gate.sh`，并只把 `build/reports/xt_w3_24_s_safe_onboarding_gate_summary.v1.json` 与 `docs/open-source/evidence/xt_w3_24_s_safe_onboarding_release_evidence.v1.json` 当成支持态资料，不得升级成 validated release claim

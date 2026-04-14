@@ -15,15 +15,9 @@ class ProjectCollaborationManager: ObservableObject {
     @Published var collaborations: [Collaboration] = []
     @Published var knowledgeCache: [UUID: ProjectKnowledge] = [:]
 
-    // MARK: - Private Properties
-
-    private let supervisor: SupervisorModel
-
     // MARK: - Initialization
 
-    init(supervisor: SupervisorModel) {
-        self.supervisor = supervisor
-    }
+    init() {}
 
     // MARK: - Public Methods
 

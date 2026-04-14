@@ -10,6 +10,7 @@ const {
   checkInternalPassLines,
   evaluateSampleSufficiency,
   extractDecisionFromXtGateReport,
+  resolvePreferredXtReadyPaths,
 } = require("./m3_check_internal_pass_lines.js");
 
 function run(name, fn) {
@@ -214,6 +215,166 @@ run("internal pass-lines: check returns INSUFFICIENT_EVIDENCE when sample thresh
   });
   const out = checkInternalPassLines({ paths, requireRealAudit: true });
   assert.equal(out.release_decision, "INSUFFICIENT_EVIDENCE");
+});
+
+run("internal pass-lines: preferred XT-ready resolver picks require-real artifacts before current gate", () => {
+  const tmp = makeTmpDir();
+  const paths = makeFixture(tmp);
+  fs.rmSync(paths.xt_ready_gate_report, { force: true });
+  fs.rmSync(paths.xt_ready_evidence_source, { force: true });
+  fs.rmSync(paths.connector_gate_snapshot, { force: true });
+
+  const requireRealGate = path.join(tmp, "build/xt_ready_gate_e2e_require_real_report.json");
+  const requireRealSource = path.join(tmp, "build/xt_ready_evidence_source.require_real.json");
+  const requireRealConnector = path.join(
+    tmp,
+    "build/connector_ingress_gate_snapshot.require_real.json"
+  );
+  writeJson(requireRealGate, {
+    ok: true,
+    require_real_audit_source: true,
+  });
+  writeJson(requireRealSource, {
+    selected_source: "audit_export",
+  });
+  writeJson(requireRealConnector, {
+    source_used: "audit",
+  });
+
+  const resolved = resolvePreferredXtReadyPaths(tmp);
+  assert.equal(resolved.reportPath, requireRealGate);
+  assert.equal(resolved.sourcePath, requireRealSource);
+  assert.equal(resolved.connectorPath, requireRealConnector);
+});
+
+run("internal pass-lines: CLI default XT-ready path selection accepts require-real artifacts", () => {
+  const tmp = makeTmpDir();
+  const paths = makeFixture(tmp);
+  fs.rmSync(paths.xt_ready_gate_report, { force: true });
+  fs.rmSync(paths.xt_ready_evidence_source, { force: true });
+  fs.rmSync(paths.connector_gate_snapshot, { force: true });
+
+  const requireRealGate = path.join(tmp, "build/xt_ready_gate_e2e_require_real_report.json");
+  const requireRealSource = path.join(tmp, "build/xt_ready_evidence_source.require_real.json");
+  const requireRealConnector = path.join(
+    tmp,
+    "build/connector_ingress_gate_snapshot.require_real.json"
+  );
+  writeJson(requireRealGate, {
+    ok: true,
+    require_real_audit_source: true,
+  });
+  writeJson(requireRealSource, {
+    selected_source: "real_audit_export_build",
+    selected_audit_json: "./build/xt_ready_audit_export.json",
+  });
+  writeJson(requireRealConnector, {
+    source_used: "audit",
+  });
+
+  const outPath = path.join(tmp, "build/internal_pass_lines_require_real_report.json");
+  const proc = spawnSync(
+    process.execPath,
+    [
+      path.join(__dirname, "m3_check_internal_pass_lines.js"),
+      "--xt-report-index",
+      paths.xt_report_index,
+      "--xt-gate-report",
+      paths.xt_gate_report,
+      "--xt-overflow-report",
+      paths.xt_overflow_report,
+      "--xt-origin-report",
+      paths.xt_origin_report,
+      "--xt-cleanup-report",
+      paths.xt_cleanup_report,
+      "--doctor-report",
+      paths.doctor_report,
+      "--secrets-dry-run-report",
+      paths.secrets_dry_run_report,
+      "--xt-rollback-last-report",
+      paths.xt_rollback_last_report,
+      "--metrics-json",
+      paths.metrics_json,
+      "--sample-summary-json",
+      paths.sample_summary_json,
+      "--out-json",
+      outPath,
+    ],
+    { cwd: tmp, encoding: "utf8" }
+  );
+
+  assert.equal(proc.status, 0, proc.stderr || proc.stdout);
+  const out = JSON.parse(fs.readFileSync(outPath, "utf8"));
+  assert.equal(out.release_decision, "GO");
+  assert.equal(out.missing_evidence.length, 0);
+  assert.equal(out.loader_errors.length, 0);
+});
+
+run("internal pass-lines: explicit require-real gate/source infer matching connector snapshot when connector arg is omitted", () => {
+  const tmp = makeTmpDir();
+  const paths = makeFixture(tmp);
+  fs.rmSync(paths.xt_ready_gate_report, { force: true });
+  fs.rmSync(paths.xt_ready_evidence_source, { force: true });
+  fs.rmSync(paths.connector_gate_snapshot, { force: true });
+
+  const requireRealGate = path.join(tmp, "build/xt_ready_gate_e2e_require_real_report.json");
+  const requireRealSource = path.join(tmp, "build/xt_ready_evidence_source.require_real.json");
+  const requireRealConnector = path.join(
+    tmp,
+    "build/connector_ingress_gate_snapshot.require_real.json"
+  );
+  writeJson(requireRealGate, {
+    ok: true,
+    require_real_audit_source: true,
+  });
+  writeJson(requireRealSource, {
+    selected_source: "real_audit_export_build",
+    selected_audit_json: "./build/xt_ready_audit_export.json",
+  });
+  writeJson(requireRealConnector, {
+    source_used: "audit",
+  });
+
+  const outPath = path.join(tmp, "build/internal_pass_lines_require_real_explicit_report.json");
+  const proc = spawnSync(
+    process.execPath,
+    [
+      path.join(__dirname, "m3_check_internal_pass_lines.js"),
+      "--xt-report-index",
+      paths.xt_report_index,
+      "--xt-gate-report",
+      paths.xt_gate_report,
+      "--xt-overflow-report",
+      paths.xt_overflow_report,
+      "--xt-origin-report",
+      paths.xt_origin_report,
+      "--xt-cleanup-report",
+      paths.xt_cleanup_report,
+      "--doctor-report",
+      paths.doctor_report,
+      "--secrets-dry-run-report",
+      paths.secrets_dry_run_report,
+      "--xt-rollback-last-report",
+      paths.xt_rollback_last_report,
+      "--xt-ready-gate-report",
+      requireRealGate,
+      "--xt-ready-evidence-source",
+      requireRealSource,
+      "--metrics-json",
+      paths.metrics_json,
+      "--sample-summary-json",
+      paths.sample_summary_json,
+      "--out-json",
+      outPath,
+    ],
+    { cwd: tmp, encoding: "utf8" }
+  );
+
+  assert.equal(proc.status, 0, proc.stderr || proc.stdout);
+  const out = JSON.parse(fs.readFileSync(outPath, "utf8"));
+  assert.equal(out.release_decision, "GO");
+  assert.equal(out.missing_evidence.length, 0);
+  assert.equal(out.loader_errors.length, 0);
 });
 
 run("internal pass-lines: CLI returns non-zero for NO-GO", () => {

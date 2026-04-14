@@ -117,5 +117,4 @@
 
 1. 将 pending grants 读取/审批链路挂到同一 `HubRouteStateMachine` 审计字段上（Lane-D）。
 2. 将高风险 grant gate 的拒绝码统一到 route/error taxonomy（Lane-C）。
-3. 把 `/hub route selftest` 纳入发布前 smoke（Lane-E 的 XT-W3-08 CI 骨架）。
-
+3. ✅ 已纳入发布前 smoke：新增 `--xt-route-smoke`，`XT-G4` 现在同时要求 `xt-route-smoke + xt-grant-smoke + xt-supervisor-voice-smoke + 新增静态检查` 通过。

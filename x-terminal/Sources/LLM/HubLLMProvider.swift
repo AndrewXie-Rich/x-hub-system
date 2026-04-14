@@ -6,12 +6,17 @@ final class HubLLMProvider: LLMProvider {
     func stream(_ req: LLMRequest) -> AsyncThrowingStream<LLMStreamEvent, Error> {
         // Hub runtime is single-turn prompt-based. Collapse messages.
         let prompt = req.messages.map { "[\($0.role)]\n\($0.content)" }.joined(separator: "\n\n")
+        let remotePromptOverride = req.remotePromptOverride?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedRemotePromptOverride: String? =
+            remotePromptOverride?.isEmpty == false ? remotePromptOverride : nil
 
         return AsyncThrowingStream { continuation in
             Task {
                 do {
                     let rid = try await HubAIClient.shared.enqueueGenerate(
                         prompt: prompt,
+                        remotePromptOverride: normalizedRemotePromptOverride,
                         taskType: req.taskType,
                         preferredModelId: req.preferredModelId,
                         explicitModelId: nil,
@@ -45,7 +50,8 @@ final class HubLLMProvider: LLMProvider {
                                     remoteRetryAttempted: ev.remoteRetryAttemptedFromMetadata,
                                     remoteRetryFromModelId: ev.remoteRetryFromModelIdFromMetadata,
                                     remoteRetryToModelId: ev.remoteRetryToModelIdFromMetadata,
-                                    remoteRetryReasonCode: ev.remoteRetryReasonCodeFromMetadata
+                                    remoteRetryReasonCode: ev.remoteRetryReasonCodeFromMetadata,
+                                    memoryPromptProjection: ev.memoryPromptProjectionFromMetadata
                                 )
                             }
                         }

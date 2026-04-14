@@ -24,6 +24,11 @@ enum AXProjectResumeBriefBuilder {
         let backgroundSnapshot = SupervisorBackgroundPreferenceTrackStore.load(for: ctx)
         let latestUIReview = XTUIReviewStore.loadLatestBrowserPageReference(for: ctx)
         let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+        let automationContinuity = latestAutomationContinuity(
+            for: ctx,
+            projectID: projectId
+        )
+        let heartbeatProjection = XTHeartbeatMemoryProjectionStore.load(for: ctx)
         let rails = SupervisorDecisionRailResolver.resolve(
             projectId: projectId,
             decisions: decisionSnapshot.events,
@@ -48,6 +53,10 @@ enum AXProjectResumeBriefBuilder {
         let preferenceLines = preferredBackgroundLines(rails: rails)
         let executionLine = executionSummaryLine(snapshot: executionSnapshot)
         let routeLine = routeMemorySummaryLine(routeMemory)
+        let automationSourceLine = automationContinuitySourceLine(automationContinuity)
+        let automationLine = automationContinuitySummaryLine(automationContinuity)
+        let automationRecoveryHandoffLine = automationRecoveryHandoffLine(automationContinuity)
+        let heartbeatLine = heartbeatRecoverySummaryLine(heartbeatProjection)
         let stageLine = stageSummary(
             goal: goal,
             currentState: currentState,
@@ -55,7 +64,8 @@ enum AXProjectResumeBriefBuilder {
             nextStep: nextStep,
             latestUser: latestUser,
             latestAssistant: latestAssistant,
-            executionSnapshot: executionSnapshot
+            executionSnapshot: executionSnapshot,
+            automationContinuity: automationContinuity
         )
 
         let hasMeaningfulContent =
@@ -66,8 +76,10 @@ enum AXProjectResumeBriefBuilder {
             latestUIReview != nil ||
             !latestUser.isEmpty ||
             !latestAssistant.isEmpty ||
+            automationContinuity != nil ||
             executionSnapshot.hasRecord ||
             routeMemory != nil ||
+            !heartbeatLine.isEmpty ||
             !decisionLines.isEmpty ||
             !preferenceLines.isEmpty
 
@@ -107,6 +119,18 @@ enum AXProjectResumeBriefBuilder {
         if !routeLine.isEmpty {
             lines.append("路由记忆：\(routeLine)")
         }
+        if !automationSourceLine.isEmpty {
+            lines.append("自动化接续来源：\(automationSourceLine)")
+        }
+        if !automationLine.isEmpty {
+            lines.append("自动化检查点：\(automationLine)")
+        }
+        if !automationRecoveryHandoffLine.isEmpty {
+            lines.append("自动化恢复落点：\(automationRecoveryHandoffLine)")
+        }
+        if !heartbeatLine.isEmpty {
+            lines.append("治理恢复：\(heartbeatLine)")
+        }
 
         let recentLines = recentConversationLines(
             latestUser: latestUser,
@@ -132,6 +156,8 @@ enum AXProjectResumeBriefBuilder {
             memory: memory,
             recent: recent,
             sessionSummary: sessionSummary,
+            hasAutomationCheckpoint: automationContinuity != nil,
+            hasHeartbeatProjection: heartbeatProjection != nil,
             executionSnapshot: executionSnapshot,
             routeMemory: routeMemory,
             hasUIReview: latestUIReview != nil,
@@ -190,11 +216,14 @@ enum AXProjectResumeBriefBuilder {
     }
 
     private static func preferredBlocker(memory: AXMemory?, sessionSummary: AXSessionSummaryCapsule?) -> String {
-        firstNonEmpty([
+        let blocker = firstNonEmpty([
             sessionSummary?.memorySummary.blocker,
             firstNonEmpty(memory?.openQuestions ?? []),
             firstNonEmpty(memory?.risks ?? [])
         ])
+        let trimmed = blocker.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        return SupervisorBlockerPresentation.label(trimmed)
     }
 
     private static func preferredNextStep(memory: AXMemory?, sessionSummary: AXSessionSummaryCapsule?) -> String {
@@ -256,7 +285,8 @@ enum AXProjectResumeBriefBuilder {
         nextStep: String,
         latestUser: String,
         latestAssistant: String,
-        executionSnapshot: AXRoleExecutionSnapshot
+        executionSnapshot: AXRoleExecutionSnapshot,
+        automationContinuity: XTAutomationProjectContinuitySnapshot?
     ) -> String {
         if !currentState.isEmpty && !blocker.isEmpty {
             return "\(currentState)；当前卡点是 \(blocker)"
@@ -276,6 +306,9 @@ enum AXProjectResumeBriefBuilder {
         if !goal.isEmpty {
             return "围绕目标推进中：\(goal)"
         }
+        if let automationContinuity {
+            return "自动化停在\(automationContinuitySummaryLine(automationContinuity))"
+        }
         if executionSnapshot.hasRecord {
             return "已有最近执行记录，可从最新落点继续。"
         }
@@ -293,8 +326,8 @@ enum AXProjectResumeBriefBuilder {
 
         let requested = displayModelID(snapshot.requestedModelId)
         let actual = displayModelID(snapshot.actualModelId.isEmpty ? snapshot.requestedModelId : snapshot.actualModelId)
-        let reason = cleanedInline(snapshot.fallbackReasonCode, max: 80)
-        let retryReason = cleanedInline(snapshot.remoteRetryReasonCode, max: 80)
+        let reason = humanizedFailureReason(snapshot.effectiveFailureReasonCode, max: 80)
+        let retryReason = humanizedFailureReason(snapshot.remoteRetryReasonCode, max: 80)
 
         switch snapshot.executionPath {
         case "remote_model":
@@ -354,12 +387,327 @@ enum AXProjectResumeBriefBuilder {
            routeMemory.lastExecutionPath != "remote_model" {
             parts.append("最近实际落点是 \(lastActual)")
         }
-        let lastReason = cleanedInline(routeMemory.lastFailureReasonCode, max: 80)
+        let lastReason = humanizedFailureReason(routeMemory.lastFailureReasonCode, max: 80)
         if !lastReason.isEmpty,
            routeMemory.lastExecutionPath != "remote_model" {
             parts.append("最近失败原因是 \(lastReason)")
         }
         return parts.joined(separator: "；")
+    }
+
+    private static func latestAutomationContinuity(
+        for ctx: AXProjectContext,
+        projectID: String
+    ) -> XTAutomationProjectContinuitySnapshot? {
+        xtAutomationLatestProjectContinuitySnapshot(
+            for: ctx,
+            projectID: projectID
+        )
+    }
+
+    private static func automationContinuitySummaryLine(
+        _ continuity: XTAutomationProjectContinuitySnapshot?
+    ) -> String {
+        guard let continuity else { return "" }
+
+        var parts: [String] = []
+        if let runID = continuity.runID {
+            parts.append("run \(runID)")
+        }
+        if let effectiveRunID = continuity.effectiveRunID,
+           effectiveRunID != continuity.runID {
+            parts.append("接续 run \(effectiveRunID)")
+        }
+        if let runState = continuity.runState {
+            parts.append(humanizedAutomationRunState(runState))
+        }
+        if let attempt = continuity.attempt {
+            parts.append("第 \(attempt) 次")
+        }
+        if let stepLine = automationStepLine(for: continuity) {
+            parts.append(stepLine)
+        }
+        if let verificationLine = automationVerificationLine(for: continuity) {
+            parts.append(verificationLine)
+        }
+        if let blockerLine = automationBlockerLine(for: continuity) {
+            parts.append(blockerLine)
+        }
+        if let retryReasonLine = automationRetryReasonLine(for: continuity) {
+            parts.append(retryReasonLine)
+        }
+        if let recoveryLine = automationRecoveryLine(for: continuity) {
+            parts.append(recoveryLine)
+        }
+        if let retryAfterSeconds = continuity.retryAfterSeconds,
+           retryAfterSeconds > 0 {
+            parts.append("\(retryAfterSeconds) 秒后可重试")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private static func automationRecoveryHandoffLine(
+        _ continuity: XTAutomationProjectContinuitySnapshot?
+    ) -> String {
+        guard let recovery = continuity?.persistedRecoveryAction else { return "" }
+
+        var parts: [String] = [
+            "最近恢复\(humanizedAutomationRecoveryAction(recovery.decision.decision))"
+        ]
+        if let resumeMode = recovery.resumeMode {
+            parts.append("resume \(humanizedAutomationResumeMode(resumeMode))")
+        }
+        let retryStrategy = cleanedInline(recovery.retryStrategy ?? "", max: 120)
+        if !retryStrategy.isEmpty {
+            parts.append("策略 \(retryStrategy)")
+        }
+        let retryRunID = cleanedInline(recovery.retryRunID ?? "", max: 120)
+        if !retryRunID.isEmpty {
+            parts.append("retry run \(retryRunID)")
+        } else if let effectiveRunID = continuity?.effectiveRunID,
+                  effectiveRunID != continuity?.runID {
+            parts.append("接续 run \(effectiveRunID)")
+        }
+        let holdReason = humanizedFailureReason(recovery.decision.holdReason, max: 80)
+        if !holdReason.isEmpty {
+            parts.append("hold \(holdReason)")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private static func automationContinuitySourceLine(
+        _ continuity: XTAutomationProjectContinuitySnapshot?
+    ) -> String {
+        guard let continuity else { return "" }
+
+        let sourceLabel = humanizedAutomationContinuitySource(continuity.contextSource)
+        guard !sourceLabel.isEmpty else { return "" }
+        return "\(sourceLabel) 重新水化（仅用于恢复接续，不替代 durable truth）"
+    }
+
+    private static func automationStepLine(for continuity: XTAutomationProjectContinuitySnapshot) -> String? {
+        let title = firstNonEmpty([
+            continuity.currentStepTitle,
+            continuity.currentStepID
+        ])
+        let summary = continuity.currentStepSummary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let stepState = continuity.currentStepState?.displayName ?? ""
+
+        var parts: [String] = []
+        if !title.isEmpty {
+            parts.append(title)
+        }
+        if !stepState.isEmpty {
+            parts.append(stepState)
+        }
+        if !summary.isEmpty {
+            parts.append(summary)
+        }
+
+        guard !parts.isEmpty else { return nil }
+        return parts.joined(separator: " · ")
+    }
+
+    private static func automationVerificationLine(
+        for continuity: XTAutomationProjectContinuitySnapshot
+    ) -> String? {
+        guard let report = continuity.verificationReport else { return nil }
+
+        if !report.required {
+            return "无需额外验证"
+        }
+
+        var base: String
+        if !report.executed {
+            base = "验证待执行"
+        } else if report.commandCount > 0 {
+            if report.passedCommandCount >= report.commandCount {
+                base = "验证已通过 \(report.passedCommandCount)/\(report.commandCount)"
+            } else {
+                base = "验证通过 \(report.passedCommandCount)/\(report.commandCount)"
+            }
+        } else {
+            base = "验证已执行"
+        }
+
+        let holdReason = humanizedFailureReason(report.holdReason, max: 80)
+        if holdReason.isEmpty {
+            return base
+        }
+        return "\(base)（原因：\(holdReason)）"
+    }
+
+    private static func automationBlockerLine(
+        for continuity: XTAutomationProjectContinuitySnapshot
+    ) -> String? {
+        guard let blocker = continuity.blocker else { return nil }
+        let summary = cleanedInline(blocker.summary, max: 160)
+        guard !summary.isEmpty else { return nil }
+        let stage = automationBlockerStageLabel(blocker.stage)
+        return stage.isEmpty ? "阻塞：\(summary)" : "\(stage)阻塞：\(summary)"
+    }
+
+    private static func automationRetryReasonLine(
+        for continuity: XTAutomationProjectContinuitySnapshot
+    ) -> String? {
+        guard let retryReason = continuity.retryReasonDescriptor else { return nil }
+
+        let summary = cleanedInline(retryReason.summary, max: 160)
+        let strategy = cleanedInline(retryReason.strategy, max: 120)
+        if !summary.isEmpty, !strategy.isEmpty {
+            return "重试原因：\(summary)；策略 \(strategy)"
+        }
+        if !summary.isEmpty {
+            return "重试原因：\(summary)"
+        }
+        if !strategy.isEmpty {
+            return "重试策略：\(strategy)"
+        }
+        return nil
+    }
+
+    private static func automationRecoveryLine(
+        for continuity: XTAutomationProjectContinuitySnapshot
+    ) -> String? {
+        guard let recoveryState = continuity.recoveryState else { return nil }
+
+        var parts: [String] = []
+        switch recoveryState.reason {
+        case .latestVisibleRecoverable:
+            parts.append("恢复可继续")
+        case .latestVisibleRetryWait:
+            parts.append("恢复等待重试窗口")
+        case .latestVisibleRetryBudgetExhausted:
+            parts.append("恢复重试额度已用尽")
+        case .latestVisibleStableIdentityFailed:
+            parts.append("恢复身份校验失败")
+        case .latestVisibleStaleRecoverable,
+             .latestVisibleActiveRun,
+             .latestVisibleCancelled,
+             .latestVisibleSuperseded,
+             .latestVisibleNotRecoverable,
+             .noRecoverableUnsupersededRun:
+            return nil
+        }
+
+        if !recoveryState.automaticHoldReason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append(
+                "hold \(humanizedFailureReason(recoveryState.automaticHoldReason, max: 80))"
+            )
+        }
+        if let retryAfterRemainingSeconds = recoveryState.retryAfterRemainingSeconds,
+           retryAfterRemainingSeconds >= 0 {
+            parts.append("剩余 \(retryAfterRemainingSeconds) 秒")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private static func heartbeatRecoverySummaryLine(
+        _ artifact: XTHeartbeatMemoryProjectionArtifact?
+    ) -> String {
+        guard let artifact else { return "" }
+
+        if let recoveryDecision = artifact.rawPayload.recoveryDecision {
+            let summary = cleanedInline(recoveryDecision.summary, max: 160)
+            let action = XTMemorySourceTruthPresentation.humanizeToken(recoveryDecision.action.rawValue)
+            let reason = humanizedFailureReason(recoveryDecision.reasonCode, max: 80)
+            let nextStep = cleanedInline(
+                artifact.rawPayload.digestExplainability.systemNextStepText,
+                max: 160
+            )
+
+            var parts: [String] = []
+            if !summary.isEmpty {
+                parts.append(summary)
+            } else {
+                parts.append("heartbeat recovery \(action)")
+            }
+            if !reason.isEmpty {
+                parts.append("原因 \(reason)")
+            }
+            if !nextStep.isEmpty {
+                parts.append("下一步 \(nextStep)")
+            }
+            return parts.joined(separator: "；")
+        }
+
+        if artifact.workingSetProjection.eligible,
+           artifact.rawPayload.digestExplainability.visibility == .shown {
+            let whatChanged = cleanedInline(
+                artifact.rawPayload.digestExplainability.whatChangedText,
+                max: 160
+            )
+            let nextStep = cleanedInline(
+                artifact.rawPayload.digestExplainability.systemNextStepText,
+                max: 160
+            )
+            let combined = [whatChanged, nextStep].filter { !$0.isEmpty }
+            return combined.joined(separator: "；")
+        }
+
+        return ""
+    }
+
+    private static func automationBlockerStageLabel(_ stage: XTAutomationBlockerStage) -> String {
+        switch stage {
+        case .bootstrap:
+            return "启动"
+        case .action:
+            return "执行"
+        case .verification:
+            return "验证"
+        case .policy:
+            return "治理"
+        case .recovery:
+            return "恢复"
+        case .runtime:
+            return "运行时"
+        }
+    }
+
+    private static func humanizedAutomationRunState(_ state: XTAutomationRunState) -> String {
+        switch state {
+        case .queued:
+            return "排队中"
+        case .running:
+            return "运行中"
+        case .blocked:
+            return "受阻"
+        case .takeover:
+            return "等待接管"
+        case .delivered:
+            return "已交付"
+        case .failed:
+            return "失败"
+        case .downgraded:
+            return "已降级"
+        }
+    }
+
+    private static func humanizedAutomationRecoveryAction(
+        _ action: XTAutomationRestartRecoveryAction
+    ) -> String {
+        switch action {
+        case .resume:
+            return "继续"
+        case .hold:
+            return "挂起"
+        case .scavenged:
+            return "已回收"
+        case .suppressed:
+            return "抑制"
+        }
+    }
+
+    private static func humanizedAutomationResumeMode(
+        _ mode: XTAutomationRecoveryResumeMode
+    ) -> String {
+        switch mode {
+        case .inPlace:
+            return "原地恢复"
+        case .retryPackage:
+            return "retry package"
+        }
     }
 
     private static func recentConversationLines(latestUser: String, latestAssistant: String) -> [String] {
@@ -377,6 +725,8 @@ enum AXProjectResumeBriefBuilder {
         memory: AXMemory?,
         recent: AXRecentContext,
         sessionSummary: AXSessionSummaryCapsule?,
+        hasAutomationCheckpoint: Bool,
+        hasHeartbeatProjection: Bool,
         executionSnapshot: AXRoleExecutionSnapshot,
         routeMemory: AXProjectModelRouteMemory?,
         hasUIReview: Bool,
@@ -392,6 +742,12 @@ enum AXProjectResumeBriefBuilder {
         }
         if sessionSummary != nil {
             labels.append("latest session summary")
+        }
+        if hasAutomationCheckpoint {
+            labels.append("automation checkpoint")
+        }
+        if hasHeartbeatProjection {
+            labels.append("heartbeat memory projection")
         }
         if hasUIReview {
             labels.append("latest ui review")
@@ -409,6 +765,30 @@ enum AXProjectResumeBriefBuilder {
             labels.append("background preference track")
         }
         return labels
+    }
+
+    private static func humanizedAutomationContinuitySource(_ raw: String) -> String {
+        let normalized = raw
+            .split(separator: "+")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        guard !normalized.isEmpty else { return "" }
+
+        let labels = normalized.map { token -> String in
+            switch token {
+            case "checkpoint":
+                return "本地 checkpoint"
+            case "execution_report":
+                return "execution report"
+            case "retry_package":
+                return "retry package"
+            default:
+                return XTMemorySourceTruthPresentation.humanizeToken(token)
+            }
+        }
+
+        return labels.joined(separator: " + ")
     }
 
     private static func dedupeScalars(_ rawValues: [String]) -> [String] {
@@ -487,6 +867,16 @@ enum AXProjectResumeBriefBuilder {
     private static func displayModelID(_ raw: String) -> String {
         let cleaned = cleanedInline(raw, max: 120)
         return cleaned.isEmpty ? "(none)" : cleaned
+    }
+
+    private static func humanizedFailureReason(_ raw: String, max: Int) -> String {
+        let cleaned = cleanedInline(raw, max: max * 2)
+        guard !cleaned.isEmpty else { return "" }
+
+        let display = XTRouteTruthPresentation.denyCodeText(cleaned)
+            ?? XTRouteTruthPresentation.routeReasonDisplayText(cleaned)
+            ?? cleaned
+        return cleanedInline(display, max: max)
     }
 
     private static func quoted(_ raw: String) -> String {

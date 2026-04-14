@@ -2,10 +2,10 @@
   "schema_version": "xt_ready_connector_ingress_gate_fetch.v1",
   "fetched_at_ms": 1730000000000,
   "request": {
-    "base_url": "http://127.0.0.1:50052",
+    "base_url": "http://127.0.0.1:50053",
     "route_path": "/admin/pairing/connector-ingress/gate-snapshot",
     "source": "auto",
-    "url": "http://127.0.0.1:50052/admin/pairing/connector-ingress/gate-snapshot?source=auto"
+    "url": "http://127.0.0.1:50053/admin/pairing/connector-ingress/gate-snapshot?source=auto"
   },
   "source_used": "scan",
   "data_ready": true,

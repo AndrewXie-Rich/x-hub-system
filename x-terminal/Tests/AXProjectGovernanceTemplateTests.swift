@@ -4,7 +4,7 @@ import Testing
 
 struct AXProjectGovernanceTemplateTests {
     @Test
-    func legacyDefaultProjectStillPresentsAsConservative() throws {
+    func legacyDefaultProjectStillPresentsAsLegacyObserveBaseline() throws {
         let root = try makeProjectRoot(named: "switchboard-legacy-conservative")
         let config = AXProjectConfig.default(forProjectRoot: root)
         let resolved = xtResolveProjectGovernance(
@@ -19,19 +19,19 @@ struct AXProjectGovernanceTemplateTests {
             resolved: resolved
         )
 
-        #expect(presentation.configuredProfile == .conservative)
+        #expect(presentation.configuredProfile == .legacyObserve)
         #expect(presentation.configuredDeviceAuthorityPosture == .off)
         #expect(presentation.configuredSupervisorScope == .focusedProject)
         #expect(presentation.configuredGrantPosture == .manualReview)
     }
 
     @Test
-    func agentTemplateAppliesCanonicalSettings() throws {
+    func highGovernanceTemplateAppliesCanonicalSettings() throws {
         let root = try makeProjectRoot(named: "switchboard-full-apply")
         let config = AXProjectConfig
             .default(forProjectRoot: root)
             .settingGovernanceTemplate(
-                .agent,
+                .highGovernance,
                 projectRoot: root,
                 now: Date(timeIntervalSince1970: 1_773_900_000)
             )
@@ -42,16 +42,52 @@ struct AXProjectGovernanceTemplateTests {
         #expect(config.runtimeSurfaceMode == .trustedOpenClawMode)
         #expect(config.governedAutoApproveLocalToolCalls)
         #expect(config.preferHubMemory)
+        #expect(config.projectRecentDialogueProfile == .extended40Pairs)
+        #expect(config.projectContextDepthProfile == .full)
         #expect(config.runtimeSurfaceHubOverrideMode == .none)
     }
 
     @Test
-    func agentTemplateWithoutTrustedAutomationKeepsConfiguredAgentButEffectiveDeviceAuthorityOff() throws {
+    func featureAndLargeProjectTemplatesApplyDistinctContinuityAndExecutionDefaults() throws {
+        let featureRoot = try makeProjectRoot(named: "switchboard-feature-defaults")
+        let featureConfig = AXProjectConfig
+            .default(forProjectRoot: featureRoot)
+            .settingGovernanceTemplate(.feature, projectRoot: featureRoot)
+
+        #expect(featureConfig.executionTier == .a2RepoAuto)
+        #expect(featureConfig.supervisorInterventionTier == .s2PeriodicReview)
+        #expect(featureConfig.projectRecentDialogueProfile == .standard12Pairs)
+        #expect(featureConfig.projectContextDepthProfile == .balanced)
+
+        let largeRoot = try makeProjectRoot(named: "switchboard-large-project-defaults")
+        let largeConfig = AXProjectConfig
+            .default(forProjectRoot: largeRoot)
+            .settingGovernanceTemplate(.largeProject, projectRoot: largeRoot)
+        let resolved = xtResolveProjectGovernance(
+            projectRoot: largeRoot,
+            config: largeConfig,
+            permissionReadiness: readyPermissionReadiness()
+        )
+        let presentation = xtProjectGovernanceTemplatePresentation(
+            projectRoot: largeRoot,
+            config: largeConfig,
+            resolved: resolved
+        )
+
+        #expect(largeConfig.executionTier == .a3DeliverAuto)
+        #expect(largeConfig.supervisorInterventionTier == .s3StrategicCoach)
+        #expect(largeConfig.projectRecentDialogueProfile == .deep20Pairs)
+        #expect(largeConfig.projectContextDepthProfile == .deep)
+        #expect(presentation.configuredDeviceAuthorityPosture == .off)
+    }
+
+    @Test
+    func highGovernanceTemplateWithoutTrustedAutomationKeepsConfiguredSceneButEffectiveDeviceAuthorityOff() throws {
         let root = try makeProjectRoot(named: "switchboard-full-without-binding")
         let config = AXProjectConfig
             .default(forProjectRoot: root)
             .settingGovernanceTemplate(
-                .agent,
+                .highGovernance,
                 projectRoot: root,
                 now: Date(timeIntervalSince1970: 1_773_900_000)
             )
@@ -67,18 +103,18 @@ struct AXProjectGovernanceTemplateTests {
             resolved: resolved
         )
 
-        #expect(presentation.configuredProfile == .agent)
+        #expect(presentation.configuredProfile == .highGovernance)
         #expect(presentation.effectiveProfile == .custom)
         #expect(presentation.effectiveDeviceAuthorityPosture == .off)
         #expect(presentation.effectiveDeviationReasons.contains { $0.localizedCaseInsensitiveContains("trusted automation") })
     }
 
     @Test
-    func agentTemplateUsesAgentCopyWhileKeepingLegacyRawValue() {
-        #expect(AXProjectGovernanceTemplate.agent.rawValue == "full_autonomy")
-        #expect(AXProjectGovernanceTemplate.agent.displayName == "Agent")
-        #expect(AXProjectGovernanceTemplate.agent.shortDescription.contains("A4 Agent + S3"))
-        #expect(AXProjectGovernanceTemplate.selectableTemplates == [.conservative, .safe, .agent])
+    func sceneTemplateCatalogExposesFiveSelectableTemplatesWhileKeepingLegacyRawValue() {
+        #expect(AXProjectGovernanceTemplate.highGovernance.rawValue == "full_autonomy")
+        #expect(AXProjectGovernanceTemplate.highGovernance.displayName == "高治理")
+        #expect(AXProjectGovernanceTemplate.highGovernance.shortDescription.contains("A4 Agent + S3"))
+        #expect(AXProjectGovernanceTemplate.selectableTemplates == [.prototype, .feature, .largeProject, .highGovernance, .inception])
     }
 
     @Test
@@ -87,7 +123,7 @@ struct AXProjectGovernanceTemplateTests {
         var config = AXProjectConfig
             .default(forProjectRoot: root)
             .settingGovernanceTemplate(
-                .safe,
+                .feature,
                 projectRoot: root,
                 now: Date(timeIntervalSince1970: 1_773_900_000)
             )
@@ -111,8 +147,10 @@ struct AXProjectGovernanceTemplateTests {
     @Test
     @available(*, deprecated, message: "Compat coverage for legacy baseline helper.")
     func governanceTemplateBaselineAliasMatchesLegacyBaselineHelper() {
-        #expect(xtGovernanceTemplateBaseline(for: .a1Plan) == xtAutonomyBaselineProfile(for: .a1Plan))
-        #expect(xtGovernanceTemplateBaseline(for: .a3DeliverAuto) == xtAutonomyBaselineProfile(for: .a3DeliverAuto))
+        #expect(xtGovernanceTemplateBaseline(for: .a1Plan) == .inception)
+        #expect(xtGovernanceTemplateBaseline(for: .a2RepoAuto, supervisorInterventionTier: .s1MilestoneReview) == .prototype)
+        #expect(xtGovernanceTemplateBaseline(for: .a2RepoAuto, supervisorInterventionTier: .s2PeriodicReview) == .feature)
+        #expect(xtGovernanceTemplateBaseline(for: .a3DeliverAuto, supervisorInterventionTier: .s3StrategicCoach) == .largeProject)
         #expect(xtGovernanceTemplateBaseline(for: .a4OpenClaw) == xtAutonomyBaselineProfile(for: .a4OpenClaw))
     }
 
@@ -121,7 +159,7 @@ struct AXProjectGovernanceTemplateTests {
         let root = try makeProjectRoot(named: "switchboard-draft-baseline")
         let config = xtGovernanceTemplateDraftConfig(
             projectRoot: root,
-            template: .agent,
+            template: .highGovernance,
             executionTier: .a4OpenClaw,
             supervisorInterventionTier: .s3StrategicCoach,
             reviewPolicyMode: .hybrid,
@@ -152,7 +190,7 @@ struct AXProjectGovernanceTemplateTests {
         let root = try makeProjectRoot(named: "switchboard-governance-template-draft")
         let legacy = xtAutonomySwitchboardDraftConfig(
             projectRoot: root,
-            baselineProfile: .safe,
+            baselineProfile: .feature,
             executionTier: .a3DeliverAuto,
             supervisorInterventionTier: .s3StrategicCoach,
             reviewPolicyMode: .hybrid,
@@ -163,7 +201,7 @@ struct AXProjectGovernanceTemplateTests {
         )
         let aliased = xtGovernanceTemplateDraftConfig(
             projectRoot: root,
-            template: .safe,
+            template: .feature,
             executionTier: .a3DeliverAuto,
             supervisorInterventionTier: .s3StrategicCoach,
             reviewPolicyMode: .hybrid,
@@ -206,7 +244,7 @@ struct AXProjectGovernanceTemplateTests {
             resolved: resolved
         )
 
-        #expect(presentation.configuredProfile == .safe)
+        #expect(presentation.configuredProfile == .largeProject)
         #expect(presentation.configuredSupervisorScope == .portfolio)
         #expect(presentation.configuredGrantPosture == .guidedAuto)
     }
@@ -216,7 +254,7 @@ struct AXProjectGovernanceTemplateTests {
         let root = try makeProjectRoot(named: "governance-template-custom-triggers")
         let config = xtGovernanceTemplateDraftConfig(
             projectRoot: root,
-            template: .safe,
+            template: .feature,
             executionTier: .a3DeliverAuto,
             supervisorInterventionTier: .s3StrategicCoach,
             reviewPolicyMode: .hybrid,
@@ -248,7 +286,7 @@ struct AXProjectGovernanceTemplateTests {
         let root = try makeProjectRoot(named: "switchboard-governance-template-presentation")
         let config = xtGovernanceTemplateDraftConfig(
             projectRoot: root,
-            template: .agent,
+            template: .highGovernance,
             executionTier: .a4OpenClaw,
             supervisorInterventionTier: .s3StrategicCoach,
             reviewPolicyMode: .hybrid,

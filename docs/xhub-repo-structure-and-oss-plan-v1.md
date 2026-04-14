@@ -55,6 +55,7 @@ x-hub-system/
 
 说明：
 - `docs/`：你当前写的可执行规范文件（memory/connectors/skills/crypto/release）非常适合直接作为开源 repo 的核心资产。
+  - 其中 memory 相关核心资产应沿同一冻结边界整理：用户在 X-Hub 中选择哪个 AI 执行 memory jobs，`Memory-Core` 继续作为 governed rule layer，而 durable writes 继续只经 `Writer + Gate`。
 - `third_party/skill/`：只放你真正复用的文件子集（不要整个 skill 复制进来），并保留 MIT LICENSE 与来源说明。
 - progressive-disclosure reference architecture（AGPL）：**不要 vendoring** 到主仓库。只在文档里“引用方法论/链接/对比”，避免让主仓库看起来像 AGPL 混合项目。
 

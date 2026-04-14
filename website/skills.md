@@ -62,5 +62,7 @@ That is why governed skills matter:
 - they are easier to audit and recover
 - they attach better to memory, review, and project continuity
 
+That does not make the skill runtime the memory authority: the user still chooses which AI executes memory jobs in X-Hub, `Memory-Core` remains the governed rule layer, and durable memory writes still terminate through `Writer + Gate`.
+
 The result is not just more capability.
 It is a more governable execution substrate.

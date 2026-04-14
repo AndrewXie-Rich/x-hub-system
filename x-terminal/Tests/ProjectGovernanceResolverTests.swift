@@ -29,8 +29,8 @@ struct ProjectGovernanceResolverTests {
     }
 
     @Test
-    func invalidA4S1ComboFailsClosedInResolver() {
-        let root = URL(fileURLWithPath: "/tmp/project-governance-invalid-\(UUID().uuidString)", isDirectory: true)
+    func highRiskA4S1ComboStaysSelectedAndShowsWarning() {
+        let root = URL(fileURLWithPath: "/tmp/project-governance-high-risk-\(UUID().uuidString)", isDirectory: true)
         var config = AXProjectConfig.default(forProjectRoot: root)
         config = config.settingProjectGovernance(
             executionTier: .a4OpenClaw,
@@ -43,10 +43,12 @@ struct ProjectGovernanceResolverTests {
             permissionReadiness: makeGovernancePermissionReadiness()
         )
 
-        #expect(resolved.validation.shouldFailClosed)
-        #expect(resolved.effectiveBundle.executionTier == .a0Observe)
-        #expect(resolved.effectiveBundle.supervisorInterventionTier == .s0SilentAudit)
-        #expect(resolved.capabilityBundle == .observeOnly)
+        #expect(!resolved.validation.shouldFailClosed)
+        #expect(resolved.validation.invalidReasons.isEmpty)
+        #expect(resolved.validation.warningReasons.count == 1)
+        #expect(resolved.effectiveBundle.executionTier == .a4OpenClaw)
+        #expect(resolved.effectiveBundle.supervisorInterventionTier == .s1MilestoneReview)
+        #expect(resolved.capabilityBundle == AXProjectExecutionTier.a4OpenClaw.baseCapabilityBundle)
     }
 
     @Test
@@ -137,7 +139,7 @@ struct ProjectGovernanceResolverTests {
     }
 
     @Test
-    func applyingExecutionTierPreservesReviewAxesButRaisesSupervisorFloor() {
+    func applyingExecutionTierPreservesReviewAxesAndExistingSupervisorSelection() {
         let original = AXProjectGovernanceBundle(
             executionTier: .a1Plan,
             supervisorInterventionTier: .s0SilentAudit,
@@ -154,7 +156,7 @@ struct ProjectGovernanceResolverTests {
         let updated = original.applyingExecutionTierPreservingReviewConfiguration(.a4OpenClaw)
 
         #expect(updated.executionTier == .a4OpenClaw)
-        #expect(updated.supervisorInterventionTier == .s2PeriodicReview)
+        #expect(updated.supervisorInterventionTier == .s0SilentAudit)
         #expect(updated.reviewPolicyMode == .aggressive)
         #expect(updated.schedule == original.schedule)
     }

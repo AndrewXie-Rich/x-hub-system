@@ -414,6 +414,23 @@ struct AppModelSessionSummaryLifecycleTests {
     }
 
     @Test
+    func supervisorCandidateReviewFocusRequestPersistsUntilCleared() throws {
+        let appModel = AppModel()
+
+        appModel.requestSupervisorCandidateReviewFocus(
+            projectId: "project-review",
+            requestId: "request-review-1"
+        )
+
+        let request = try #require(appModel.supervisorFocusRequest)
+        #expect(request.projectId == "project-review")
+        #expect(request.subject == .candidateReview(requestId: "request-review-1"))
+
+        appModel.clearSupervisorFocusRequest(request)
+        #expect(appModel.supervisorFocusRequest == nil)
+    }
+
+    @Test
     func projectToolApprovalFocusRequestPersistsUntilCleared() throws {
         let appModel = AppModel()
 

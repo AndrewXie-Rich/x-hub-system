@@ -24,6 +24,9 @@ struct XTAgentSkillImportManifest: Codable, Equatable, Sendable {
     var kind: String
     var upstreamPackageRef: String
     var normalizedCapabilities: [String]
+    var intentFamilies: [String]
+    var capabilityProfileHints: [String]
+    var approvalFloorHint: String
     var requiresGrant: Bool
     var riskLevel: String
     var policyScope: String
@@ -41,6 +44,9 @@ struct XTAgentSkillImportManifest: Codable, Equatable, Sendable {
         case kind
         case upstreamPackageRef = "upstream_package_ref"
         case normalizedCapabilities = "normalized_capabilities"
+        case intentFamilies = "intent_families"
+        case capabilityProfileHints = "capability_profile_hints"
+        case approvalFloorHint = "approval_floor_hint"
         case requiresGrant = "requires_grant"
         case riskLevel = "risk_level"
         case policyScope = "policy_scope"
@@ -141,6 +147,58 @@ enum XTAgentSkillImportReviewFormatter {
         appendLine(into: &lines, label: "enabled_package", value: shortSHA(stringValue(root["enabled_package_sha256"])))
         appendLine(into: &lines, label: "enabled_scope", value: stringValue(root["enabled_scope"]))
 
+        let trustRoot = importTrustRoot(root: root)
+        let pinnedVersion = importPinnedVersion(root: root)
+        let runnerRequirement = importRunnerRequirement(manifest: manifest)
+        let compatibilityStatus = importCompatibilityStatus(root: root, manifest: manifest)
+        let preflightResult = importPreflightResult(root: root, manifest: manifest)
+        let intentFamilies = stringArrayValue(manifest?["intent_families"])
+        let capabilityProfileHints = stringArrayValue(manifest?["capability_profile_hints"])
+        let approvalFloorHint = nonEmptyString(stringValue(manifest?["approval_floor_hint"]))
+        let canonicalDerivation = root["canonical_capability_derivation"] as? [String: Any]
+        let hintValidation = root["capability_hint_validation"] as? [String: Any]
+
+        lines.append("")
+        lines.append("governance:")
+        lines.append("- trust_root: \(trustRoot)")
+        lines.append("- pinned_version: \(pinnedVersion)")
+        lines.append("- runner_requirement: \(runnerRequirement)")
+        lines.append("- compatibility_status: \(compatibilityStatus)")
+        lines.append("- preflight_result: \(preflightResult)")
+        if !intentFamilies.isEmpty {
+            lines.append("- intent_families: \(intentFamilies.joined(separator: ", "))")
+        }
+        if !capabilityProfileHints.isEmpty {
+            lines.append("- capability_profile_hints: \(capabilityProfileHints.joined(separator: ", "))")
+        }
+        if let approvalFloorHint {
+            lines.append("- approval_floor_hint: \(approvalFloorHint)")
+        }
+        if let canonicalDerivation {
+            let canonicalIntents = stringArrayValue(canonicalDerivation["intent_families"])
+            let canonicalProfiles = stringArrayValue(canonicalDerivation["capability_profiles"])
+            let canonicalApprovalFloor = nonEmptyString(stringValue(canonicalDerivation["approval_floor"]))
+            if !canonicalIntents.isEmpty {
+                lines.append("- canonical_intent_families: \(canonicalIntents.joined(separator: ", "))")
+            }
+            if !canonicalProfiles.isEmpty {
+                lines.append("- canonical_capability_profiles: \(canonicalProfiles.joined(separator: ", "))")
+            }
+            if let canonicalApprovalFloor {
+                lines.append("- canonical_approval_floor: \(canonicalApprovalFloor)")
+            }
+        }
+        if let hintValidation {
+            let checked = boolStringValue(hintValidation["checked"]) ?? "false"
+            let failClosed = boolStringValue(hintValidation["fail_closed"]) ?? "false"
+            let mismatches = (hintValidation["mismatches"] as? [[String: Any]] ?? [])
+                .compactMap { nonEmptyString(stringValue($0["field"])) }
+            lines.append("- hint_validation: checked=\(checked) fail_closed=\(failClosed) mismatches=\(mismatches.count)")
+            if !mismatches.isEmpty {
+                lines.append("- hint_mismatches: \(mismatches.joined(separator: ", "))")
+            }
+        }
+
         let capabilities = stringArrayValue(manifest?["normalized_capabilities"])
         if !capabilities.isEmpty {
             lines.append("capabilities: \(capabilities.joined(separator: ", "))")
@@ -225,6 +283,65 @@ enum XTAgentSkillImportReviewFormatter {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    private static func importTrustRoot(root: [String: Any]) -> String {
+        if let enabledPackage = nonEmptyString(stringValue(root["enabled_package_sha256"])) {
+            return "governed package promoted @\(String(enabledPackage.prefix(12)))"
+        }
+        return "pending Hub promotion"
+    }
+
+    private static func importPinnedVersion(root: [String: Any]) -> String {
+        let enabledScope = nonEmptyString(stringValue(root["enabled_scope"])) ?? ""
+        let enabledPackage = nonEmptyString(stringValue(root["enabled_package_sha256"])) ?? ""
+        guard !enabledScope.isEmpty, !enabledPackage.isEmpty else {
+            return "not pinned yet"
+        }
+        return "@\(String(enabledPackage.prefix(12))) scope=\(enabledScope)"
+    }
+
+    private static func importRunnerRequirement(manifest: [String: Any]?) -> String {
+        let sandbox = nonEmptyString(stringValue(manifest?["sandbox_class"])) ?? ""
+        if !sandbox.isEmpty {
+            return "Hub-governed import runner | sandbox=\(sandbox)"
+        }
+        return "Hub-governed import runner"
+    }
+
+    private static func importCompatibilityStatus(
+        root: [String: Any],
+        manifest: [String: Any]?
+    ) -> String {
+        let preflight = nonEmptyString(stringValue(manifest?["preflight_status"])) ?? "unknown"
+        let vetter = nonEmptyString(stringValue(root["vetter_status"])) ?? "pending"
+        if preflight == "quarantined" || vetter == "critical" {
+            return "quarantined | vetter=\(vetter)"
+        }
+        if vetter == "passed" {
+            return "compatible for governed packaging"
+        }
+        return "pending verify | preflight=\(preflight) vetter=\(vetter)"
+    }
+
+    private static func importPreflightResult(
+        root: [String: Any],
+        manifest: [String: Any]?
+    ) -> String {
+        let preflight = nonEmptyString(stringValue(manifest?["preflight_status"])) ?? "unknown"
+        let blockedReason = nonEmptyString(stringValue(root["promotion_blocked_reason"])) ?? ""
+        let requiresGrant = boolStringValue(manifest?["requires_grant"]) == "true"
+
+        if preflight == "quarantined" {
+            return blockedReason.isEmpty ? "quarantined" : "quarantined | \(blockedReason)"
+        }
+        if requiresGrant {
+            return blockedReason.isEmpty ? "grant required before enable" : "grant required before enable | \(blockedReason)"
+        }
+        if blockedReason.isEmpty {
+            return preflight
+        }
+        return "\(preflight) | \(blockedReason)"
+    }
+
     private static func shortSHA(_ value: String?) -> String? {
         let normalized = nonEmptyString(value)
         guard let normalized else { return nil }
@@ -241,7 +358,12 @@ enum XTAgentSkillImportNormalizer {
         let slug = normalizedSlug(skillDirectory.lastPathComponent)
         let fileText = (try? String(contentsOf: rawSkillURL, encoding: .utf8)) ?? ""
         let frontmatter = parseFrontmatter(fileText)
-        let mapping = inferredMapping(slug: slug, frontmatter: frontmatter)
+        let companionManifest = loadCompanionManifestMetadata(skillDirectory: skillDirectory)
+        let mapping = inferredMapping(
+            slug: slug,
+            frontmatter: frontmatter,
+            companionManifest: companionManifest
+        )
 
         var findings: [XTAgentSkillImportFinding] = []
         if !resolvedSkillURL.path.hasPrefix(resolvedRepoRoot.path + "/") && resolvedSkillURL != resolvedRepoRoot {
@@ -277,16 +399,37 @@ enum XTAgentSkillImportNormalizer {
         let sourceRef = relativePath(of: rawSkillURL, under: resolvedRepoRoot) ?? rawSkillURL.lastPathComponent
         let packageRefPath = relativePath(of: skillDirectory, under: resolvedRepoRoot) ?? skillDirectory.lastPathComponent
         let preflightStatus = resolvedPreflightStatus(findings: findings)
+        let intentFamilies = canonicalIntentFamilies(
+            skillId: mapping.skillId,
+            normalizedCapabilities: mapping.capabilities
+        )
+        let capabilityFamilies = canonicalCapabilityFamilies(
+            intentFamilies: intentFamilies,
+            normalizedCapabilities: mapping.capabilities
+        )
+        let capabilityProfileHints = XTSkillCapabilityProfileSupport.capabilityProfiles(
+            for: capabilityFamilies
+        )
+        let approvalFloorHint = XTSkillCapabilityProfileSupport.approvalFloor(
+            for: capabilityFamilies
+        )
 
         let manifest = XTAgentSkillImportManifest(
             schemaVersion: XTAgentSkillImportManifest.currentSchemaVersion,
             source: "agent",
             sourceRef: sourceRef,
             skillId: mapping.skillId,
-            displayName: firstNonEmpty(frontmatter["name"], skillDirectory.lastPathComponent),
+            displayName: firstNonEmpty(
+                companionManifest?.displayName,
+                frontmatter["name"],
+                skillDirectory.lastPathComponent
+            ),
             kind: "skill",
             upstreamPackageRef: "local://\(packageRefPath)",
             normalizedCapabilities: mapping.capabilities,
+            intentFamilies: intentFamilies,
+            capabilityProfileHints: capabilityProfileHints,
+            approvalFloorHint: approvalFloorHint,
             requiresGrant: mapping.requiresGrant,
             riskLevel: mapping.riskLevel,
             policyScope: "project",
@@ -404,8 +547,80 @@ enum XTAgentSkillImportNormalizer {
         var sandboxClass: String
     }
 
-    private static func inferredMapping(slug: String, frontmatter: [String: String]) -> InferredMapping {
-        let description = firstNonEmpty(frontmatter["description"]).lowercased()
+    private struct CompanionSkillManifestMetadata {
+        var skillId: String
+        var displayName: String
+        var description: String
+        var capabilities: [String]
+        var riskLevel: String
+        var requiresGrant: Bool?
+    }
+
+    private static func inferredMapping(
+        slug: String,
+        frontmatter: [String: String],
+        companionManifest: CompanionSkillManifestMetadata?
+    ) -> InferredMapping {
+        let frontmatterCapabilities = stringArrayValue(
+            frontmatter["capabilities_required"]
+                ?? frontmatter["required_capabilities"]
+                ?? frontmatter["capabilities"]
+        )
+        let description = firstNonEmpty(
+            companionManifest?.description,
+            frontmatter["description"]
+        ).lowercased()
+        let explicitSkillId = firstNonEmpty(
+            companionManifest?.skillId,
+            frontmatter["skill_id"],
+            frontmatter["id"]
+        )
+
+        let companionCapabilities = companionManifest?.capabilities ?? []
+        if !companionCapabilities.isEmpty || !explicitSkillId.isEmpty {
+            let capabilities = companionCapabilities.isEmpty ? frontmatterCapabilities : companionCapabilities
+            let riskLevel = firstNonEmpty(
+                normalizedRiskLevel(companionManifest?.riskLevel),
+                normalizedRiskLevel(frontmatter["risk_level"]),
+                inferRiskLevel(capabilities: capabilities)
+            )
+            let requiresGrant = companionManifest?.requiresGrant
+                ?? parseBool(frontmatter["requires_grant"])
+                ?? inferRequiresGrant(capabilities: capabilities, riskLevel: riskLevel)
+            let resolvedSkillId = firstNonEmpty(explicitSkillId, "agent.\(slug)")
+            return InferredMapping(
+                skillId: resolvedSkillId,
+                capabilities: capabilities,
+                riskLevel: riskLevel,
+                requiresGrant: requiresGrant,
+                sandboxClass: inferSandboxClass(
+                    capabilities: capabilities,
+                    skillId: resolvedSkillId,
+                    description: description
+                )
+            )
+        }
+
+        if !frontmatterCapabilities.isEmpty {
+            let resolvedSkillId = firstNonEmpty(explicitSkillId, "agent.\(slug)")
+            let riskLevel = firstNonEmpty(
+                normalizedRiskLevel(frontmatter["risk_level"]),
+                inferRiskLevel(capabilities: frontmatterCapabilities)
+            )
+            return InferredMapping(
+                skillId: resolvedSkillId,
+                capabilities: frontmatterCapabilities,
+                riskLevel: riskLevel,
+                requiresGrant: parseBool(frontmatter["requires_grant"])
+                    ?? inferRequiresGrant(capabilities: frontmatterCapabilities, riskLevel: riskLevel),
+                sandboxClass: inferSandboxClass(
+                    capabilities: frontmatterCapabilities,
+                    skillId: resolvedSkillId,
+                    description: description
+                )
+            )
+        }
+
         if slug == "coding-agent" || description.contains("delegate coding tasks") {
             return InferredMapping(
                 skillId: "coder.run.command",
@@ -439,6 +654,323 @@ enum XTAgentSkillImportNormalizer {
             riskLevel: "low",
             requiresGrant: false,
             sandboxClass: "governed_project_local"
+        )
+    }
+
+    static func canonicalIntentFamilies(
+        skillId: String,
+        normalizedCapabilities: [String]
+    ) -> [String] {
+        var intents: [String] = []
+        let normalizedSkillId = AXSkillsLibrary.canonicalSupervisorSkillID(skillId)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        switch normalizedSkillId {
+        case "coder.run.command":
+            intents.append("repo.verify")
+        case "agent-browser":
+            intents.append(contentsOf: ["browser.observe", "browser.interact", "browser.secret_fill", "web.fetch_live"])
+        default:
+            break
+        }
+
+        for rawCapability in normalizedCapabilities {
+            let capability = rawCapability.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !capability.isEmpty else { continue }
+
+            if capability.hasPrefix("skills.search") || capability.hasPrefix("skills.discover") {
+                intents.append("skills.discover")
+            }
+            if capability.hasPrefix("skills.pin")
+                || capability.hasPrefix("skills.manage")
+                || capability.hasPrefix("skills.install")
+                || capability.hasPrefix("skills.enable")
+                || capability.hasPrefix("skills.import") {
+                intents.append("skills.manage")
+            }
+            if capability.hasPrefix("repo.read")
+                || capability.hasPrefix("filesystem.read")
+                || capability.hasPrefix("fs.read")
+                || capability == "document.read"
+                || capability == "git.status"
+                || capability == "git.diff"
+                || capability == "project.snapshot" {
+                intents.append("repo.read")
+            }
+            if capability.hasPrefix("repo.write")
+                || capability.hasPrefix("repo.mutate")
+                || capability.hasPrefix("repo.modify")
+                || capability.hasPrefix("repo.delete")
+                || capability.hasPrefix("repo.move")
+                || capability == "git.apply"
+                || capability == "git.commit" {
+                intents.append("repo.modify")
+            }
+            if capability.hasPrefix("repo.verify")
+                || capability.hasPrefix("repo.test")
+                || capability.hasPrefix("repo.build")
+                || capability == "run_command"
+                || capability == "repo.exec.agent"
+                || capability.hasPrefix("process.") {
+                intents.append("repo.verify")
+            }
+            if capability.hasPrefix("repo.delivery")
+                || capability == "git.push"
+                || capability == "pr.create"
+                || capability == "ci.trigger" {
+                intents.append("repo.deliver")
+            }
+            if capability.hasPrefix("web.search") {
+                intents.append("web.search_live")
+            }
+            if capability.hasPrefix("web.fetch") || capability.hasPrefix("web.live") {
+                intents.append("web.fetch_live")
+            }
+            if capability.hasPrefix("web.navigate") {
+                intents.append(contentsOf: ["web.fetch_live", "browser.observe"])
+            }
+            if capability.hasPrefix("browser.read") || capability.hasPrefix("browser.observe") {
+                intents.append("browser.observe")
+            }
+            if capability == "device.browser.control" || capability.hasPrefix("browser.interact") {
+                intents.append(contentsOf: ["browser.observe", "browser.interact"])
+            }
+            if capability.hasPrefix("browser.secret_fill") {
+                intents.append("browser.secret_fill")
+            }
+            if capability.hasPrefix("device.ui.observe") || capability.hasPrefix("device.screen.capture") {
+                intents.append("device.observe")
+            }
+            if capability.hasPrefix("device.ui.act")
+                || capability.hasPrefix("device.ui.step")
+                || capability.hasPrefix("device.applescript")
+                || capability.hasPrefix("device.clipboard.write") {
+                intents.append("device.act")
+            }
+            if capability.hasPrefix("memory.snapshot")
+                || capability.hasPrefix("memory.inspect")
+                || capability == "project.snapshot" {
+                intents.append("memory.inspect")
+            }
+            if capability.hasPrefix("ai.generate.local") {
+                intents.append("ai.generate.local")
+            }
+            if capability.hasPrefix("ai.embed.local") {
+                intents.append("ai.embed.local")
+            }
+            if capability.hasPrefix("ai.audio.tts.local") {
+                intents.append("ai.audio.tts.local")
+            }
+            if capability.hasPrefix("ai.audio.local") {
+                intents.append("ai.audio.local")
+            }
+            if capability.hasPrefix("ai.vision.local") {
+                intents.append("ai.vision.local")
+            }
+            if capability.hasPrefix("supervisor.voice.playback") {
+                intents.append("voice.playback")
+            }
+            if capability.hasPrefix("supervisor.orchestrate") {
+                intents.append("supervisor.orchestrate")
+            }
+            if capability.hasPrefix("connector.") || capability.hasPrefix("connectors.") {
+                intents.append("repo.deliver")
+            }
+        }
+
+        return XTSkillCapabilityProfileSupport.normalizedStrings(intents)
+    }
+
+    static func canonicalCapabilityFamilies(
+        intentFamilies: [String],
+        normalizedCapabilities: [String]
+    ) -> [String] {
+        var families: [String] = []
+        for rawIntent in intentFamilies {
+            switch rawIntent.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "skills.discover",
+                 "skills.manage",
+                 "repo.read",
+                 "repo.verify",
+                 "browser.observe",
+                 "browser.interact",
+                 "browser.secret_fill",
+                 "device.observe",
+                 "device.act",
+                 "memory.inspect",
+                 "ai.generate.local",
+                 "ai.embed.local",
+                 "ai.audio.local",
+                 "ai.audio.tts.local",
+                 "ai.vision.local",
+                 "voice.playback",
+                 "supervisor.orchestrate":
+                families.append(rawIntent)
+            case "repo.modify":
+                families.append("repo.mutate")
+            case "repo.deliver":
+                families.append("repo.delivery")
+            case "web.search_live", "web.fetch_live":
+                families.append("web.live")
+            default:
+                break
+            }
+        }
+
+        for rawCapability in normalizedCapabilities {
+            let capability = rawCapability.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !capability.isEmpty else { continue }
+
+            if capability.hasPrefix("skills.search") || capability.hasPrefix("skills.discover") {
+                families.append("skills.discover")
+            }
+            if capability.hasPrefix("skills.pin")
+                || capability.hasPrefix("skills.manage")
+                || capability.hasPrefix("skills.install")
+                || capability.hasPrefix("skills.enable")
+                || capability.hasPrefix("skills.import") {
+                families.append("skills.manage")
+            }
+            if capability.hasPrefix("repo.read")
+                || capability.hasPrefix("filesystem.read")
+                || capability.hasPrefix("fs.read")
+                || capability == "document.read"
+                || capability == "git.status"
+                || capability == "git.diff"
+                || capability == "project.snapshot" {
+                families.append("repo.read")
+            }
+            if capability.hasPrefix("repo.write")
+                || capability.hasPrefix("repo.mutate")
+                || capability.hasPrefix("repo.modify")
+                || capability.hasPrefix("repo.delete")
+                || capability.hasPrefix("repo.move")
+                || capability == "git.apply"
+                || capability == "git.commit" {
+                families.append("repo.mutate")
+            }
+            if capability.hasPrefix("repo.verify")
+                || capability.hasPrefix("repo.test")
+                || capability.hasPrefix("repo.build")
+                || capability == "run_command"
+                || capability == "repo.exec.agent"
+                || capability.hasPrefix("process.") {
+                families.append("repo.verify")
+            }
+            if capability.hasPrefix("repo.delivery")
+                || capability == "git.push"
+                || capability == "pr.create"
+                || capability == "ci.trigger" {
+                families.append("repo.delivery")
+            }
+            if capability.hasPrefix("web.search")
+                || capability.hasPrefix("web.fetch")
+                || capability.hasPrefix("web.live")
+                || capability.hasPrefix("web.navigate") {
+                families.append("web.live")
+            }
+            if capability.hasPrefix("browser.read")
+                || capability.hasPrefix("browser.observe")
+                || capability.hasPrefix("web.navigate") {
+                families.append("browser.observe")
+            }
+            if capability == "device.browser.control" || capability.hasPrefix("browser.interact") {
+                families.append(contentsOf: ["browser.observe", "browser.interact"])
+            }
+            if capability.hasPrefix("browser.secret_fill") {
+                families.append("browser.secret_fill")
+            }
+            if capability.hasPrefix("device.ui.observe") || capability.hasPrefix("device.screen.capture") {
+                families.append("device.observe")
+            }
+            if capability.hasPrefix("device.ui.act")
+                || capability.hasPrefix("device.ui.step")
+                || capability.hasPrefix("device.applescript")
+                || capability.hasPrefix("device.clipboard.write") {
+                families.append("device.act")
+            }
+            if capability.hasPrefix("memory.snapshot")
+                || capability.hasPrefix("memory.inspect")
+                || capability == "project.snapshot" {
+                families.append("memory.inspect")
+            }
+            if capability.hasPrefix("ai.generate.local") {
+                families.append("ai.generate.local")
+            }
+            if capability.hasPrefix("ai.embed.local") {
+                families.append("ai.embed.local")
+            }
+            if capability.hasPrefix("ai.audio.tts.local") {
+                families.append("ai.audio.tts.local")
+            }
+            if capability.hasPrefix("ai.audio.local") {
+                families.append("ai.audio.local")
+            }
+            if capability.hasPrefix("ai.vision.local") {
+                families.append("ai.vision.local")
+            }
+            if capability.hasPrefix("supervisor.voice.playback") {
+                families.append("voice.playback")
+            }
+            if capability.hasPrefix("supervisor.orchestrate") {
+                families.append("supervisor.orchestrate")
+            }
+            if capability.hasPrefix("connector.") || capability.hasPrefix("connectors.") {
+                families.append("connector.deliver")
+            }
+        }
+
+        return XTSkillCapabilityProfileSupport.orderedCapabilityFamilies(families)
+    }
+
+    private static func loadCompanionManifestMetadata(skillDirectory: URL) -> CompanionSkillManifestMetadata? {
+        let manifestURL = skillDirectory.appendingPathComponent("skill.json")
+        guard FileManager.default.fileExists(atPath: manifestURL.path),
+              let data = try? Data(contentsOf: manifestURL),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+
+        let skillId = firstNonEmpty(
+            stringValue(root["skill_id"]),
+            stringValue(root["id"])
+        )
+        let displayName = firstNonEmpty(
+            stringValue(root["name"]),
+            stringValue(root["title"])
+        )
+        let description = firstNonEmpty(
+            stringValue(root["description"]),
+            stringValue(root["summary"])
+        )
+        let capabilities = stringArrayValue(
+            root["capabilities_required"]
+                ?? root["required_capabilities"]
+                ?? root["capabilities"]
+        )
+        let riskLevel = firstNonEmpty(
+            normalizedRiskLevel(stringValue(root["risk_level"])),
+            normalizedRiskLevel(stringValue(root["riskLevel"])),
+            normalizedRiskLevel(stringValue(root["risk_profile"]))
+        )
+        let requiresGrant = boolValue(root["requires_grant"] ?? root["requiresGrant"])
+
+        guard !skillId.isEmpty
+            || !displayName.isEmpty
+            || !description.isEmpty
+            || !capabilities.isEmpty
+            || !riskLevel.isEmpty
+            || requiresGrant != nil else {
+            return nil
+        }
+
+        return CompanionSkillManifestMetadata(
+            skillId: skillId,
+            displayName: displayName,
+            description: description,
+            capabilities: capabilities,
+            riskLevel: riskLevel,
+            requiresGrant: requiresGrant
         )
     }
 
@@ -529,6 +1061,172 @@ enum XTAgentSkillImportNormalizer {
             }
         }
         return ""
+    }
+
+    private static func stringValue(_ value: Any?) -> String? {
+        switch value {
+        case let string as String:
+            return string
+        case let number as NSNumber:
+            return number.stringValue
+        default:
+            return nil
+        }
+    }
+
+    private static func stringArrayValue(_ value: Any?) -> [String] {
+        switch value {
+        case let array as [Any]:
+            return XTSkillCapabilityProfileSupport.normalizedStrings(
+                array.compactMap { item in
+                    let raw: String
+                    switch item {
+                    case let string as String:
+                        raw = string
+                    case let number as NSNumber:
+                        raw = number.stringValue
+                    default:
+                        raw = ""
+                    }
+                    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return trimmed.isEmpty ? nil : trimmed
+                }
+            )
+        case let string as String:
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return [] }
+            let body: String
+            if trimmed.hasPrefix("[") && trimmed.hasSuffix("]") {
+                body = String(trimmed.dropFirst().dropLast())
+            } else {
+                body = trimmed
+            }
+            return XTSkillCapabilityProfileSupport.normalizedStrings(
+                body
+                    .split(whereSeparator: { $0 == "," || $0 == "\n" })
+                    .map {
+                        $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+                    }
+                    .filter { !$0.isEmpty }
+            )
+        default:
+            return []
+        }
+    }
+
+    private static func boolValue(_ value: Any?) -> Bool? {
+        switch value {
+        case let bool as Bool:
+            return bool
+        case let number as NSNumber:
+            return number.boolValue
+        case let string as String:
+            return parseBool(string)
+        default:
+            return nil
+        }
+    }
+
+    private static func parseBool(_ raw: String?) -> Bool? {
+        switch (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "1", "true", "yes", "y", "on":
+            return true
+        case "0", "false", "no", "n", "off":
+            return false
+        default:
+            return nil
+        }
+    }
+
+    private static func normalizedRiskLevel(_ raw: String?) -> String {
+        let token = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch token {
+        case "moderate":
+            return "medium"
+        case "low", "medium", "high", "critical":
+            return token
+        default:
+            return ""
+        }
+    }
+
+    private static func inferRiskLevel(capabilities: [String]) -> String {
+        let normalized = XTSkillCapabilityProfileSupport.normalizedStrings(
+            capabilities.map { $0.lowercased() }
+        )
+        if normalized.contains(where: { capability in
+            capability.hasPrefix("connector.")
+                || capability.hasPrefix("connectors.")
+                || capability.hasPrefix("web.")
+                || capability.hasPrefix("network.")
+                || capability.hasPrefix("ai.generate.paid")
+                || capability.hasPrefix("ai.generate.remote")
+                || capability.hasPrefix("payments.")
+                || capability.hasPrefix("payment.")
+                || capability.hasPrefix("shell.")
+                || capability.hasPrefix("filesystem.")
+                || capability.hasPrefix("fs.")
+        }) {
+            return "high"
+        }
+        if normalized.contains(where: { capability in
+            capability.hasPrefix("browser.")
+                || capability.hasPrefix("email.")
+                || capability.hasPrefix("repo.")
+        }) {
+            return "medium"
+        }
+        return "low"
+    }
+
+    private static func inferRequiresGrant(capabilities: [String], riskLevel: String) -> Bool {
+        if ["high", "critical"].contains(normalizedRiskLevel(riskLevel)) {
+            return true
+        }
+        return capabilities.contains { capability in
+            let normalized = capability.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return normalized.hasPrefix("connector.")
+                || normalized.hasPrefix("connectors.")
+                || normalized.hasPrefix("web.")
+                || normalized.hasPrefix("network.")
+                || normalized.hasPrefix("ai.generate.paid")
+                || normalized.hasPrefix("ai.generate.remote")
+                || normalized.hasPrefix("payments.")
+                || normalized.hasPrefix("payment.")
+                || normalized.hasPrefix("shell.")
+                || normalized.hasPrefix("filesystem.")
+                || normalized.hasPrefix("fs.")
+        }
+    }
+
+    private static func inferSandboxClass(
+        capabilities: [String],
+        skillId: String,
+        description: String
+    ) -> String {
+        let normalizedCapabilities = capabilities.map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
+        if normalizedCapabilities.contains(where: { $0.hasPrefix("connector.") || $0.hasPrefix("connectors.") }) {
+            return "hub_connector_governed"
+        }
+        if normalizedCapabilities.contains(where: {
+            $0.hasPrefix("web.")
+                || $0.hasPrefix("browser.")
+                || $0 == "device.browser.control"
+                || $0 == "device.ui.act"
+                || $0.hasPrefix("device.ui.")
+                || $0.hasPrefix("device.applescript")
+        }) {
+            return "governed_device_local"
+        }
+
+        let normalizedSkillId = skillId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalizedSkillId.contains("browser") || description.contains("browser") {
+            return "governed_device_local"
+        }
+        return "governed_project_local"
     }
 
     private static func scanInputEligible(url: URL) -> Bool {

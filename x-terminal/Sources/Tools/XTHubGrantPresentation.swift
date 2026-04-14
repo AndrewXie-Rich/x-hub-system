@@ -26,7 +26,19 @@ enum XTHubGrantPresentation {
             return cleanedModelID.isEmpty ? "付费模型调用" : "付费模型调用（\(cleanedModelID)）"
         }
         if normalizedCapability.contains("ai_generate_local") || normalizedCapability.contains("ai.generate.local") {
-            return cleanedModelID.isEmpty ? "本地模型调用" : "本地模型调用（\(cleanedModelID)）"
+            return cleanedModelID.isEmpty ? "本地文本模型调用" : "本地文本模型调用（\(cleanedModelID)）"
+        }
+        if normalizedCapability.contains("ai_embed_local") || normalizedCapability.contains("ai.embed.local") {
+            return cleanedModelID.isEmpty ? "本地向量模型调用" : "本地向量模型调用（\(cleanedModelID)）"
+        }
+        if normalizedCapability.contains("ai_audio_tts_local") || normalizedCapability.contains("ai.audio.tts.local") {
+            return cleanedModelID.isEmpty ? "本地语音合成调用" : "本地语音合成调用（\(cleanedModelID)）"
+        }
+        if normalizedCapability.contains("ai_audio_local") || normalizedCapability.contains("ai.audio.local") {
+            return cleanedModelID.isEmpty ? "本地语音转写调用" : "本地语音转写调用（\(cleanedModelID)）"
+        }
+        if normalizedCapability.contains("ai_vision_local") || normalizedCapability.contains("ai.vision.local") {
+            return cleanedModelID.isEmpty ? "本地图像理解调用" : "本地图像理解调用（\(cleanedModelID)）"
         }
         if normalizedCapability.isEmpty {
             return "高风险能力"

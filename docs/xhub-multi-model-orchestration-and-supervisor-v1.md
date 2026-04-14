@@ -2,7 +2,7 @@
 
 - Status: Draft（用于 X-Terminal + X-Hub 落地“多项目并行 + 监督汇总”）
 - Updated: 2026-02-12
-- Applies to: X-Terminal（Orchestrator/UI）+ X-Hub（Models/Grants/AI/Web/Events/Audit/Memory）+ Memory-Core
+- Applies to: X-Terminal（Orchestrator/UI）+ X-Hub（Models/Grants/AI/Web/Events/Audit/Memory）+ Memory serving/control plane
 
 > 场景目标（你提出的核心体验）：
 > - X-Terminal 同时调用 X-Hub 的 4 个模型
@@ -20,6 +20,7 @@
 2) 项目隔离是硬约束：project1/2/3 的记忆与工具输出必须分域；Supervisor 只能按需读取每个项目的“摘要/索引”，避免交叉泄漏。
 3) Supervisor 是“单一对话入口”：用户输入只给 Supervisor；其它 worker 只接收由 Orchestrator 生成的任务说明与必要上下文。
 4) 结构化输出优先：worker 报告必须输出可机读 JSON（便于 Supervisor 汇总与 UI 呈现）。
+5) 会话编排模型与 memory 维护模型必须分离：本文件里的 orchestration mapping 只决定 `worker/supervisor` 生成用哪个模型；memory 维护模型仍必须由用户在 X-Hub 通过 `memory_model_preferences` 显式选择，并由 `Scheduler -> Worker -> Writer + Gate` 执行。
 
 ---
 
@@ -42,6 +43,7 @@
 - Supervisor 默认不直接读 worker 的 full raw turns；只读：
   - worker 的结构化 `worker_report`（由 Orchestrator 注入）
   - 或通过 Memory progressive disclosure（Search/Timeline/Get）按需取证据（可选）。
+- Worker / Supervisor 不能因为拿到了 thread 上下文，就直接写 durable memory truth；after-turn writeback 仍必须经过 Hub memory control plane。
 
 ---
 
@@ -68,6 +70,12 @@
   }
 }
 ```
+
+这份 mapping 的边界必须固定：
+
+- 它只解决“这次 worker / supervisor 用哪个生成模型”。
+- 它不负责“哪个模型维护 memory”。
+- 它不能绕过用户在 X-Hub 里已经选定的 `memory_model_preferences`。
 
 ### 2.2 paid 模型的一次性授权（必须兼容）
 若 Worker/Supervisor 使用 `ai.generate.paid`：
@@ -185,6 +193,7 @@ Schema：`xhub.supervisor_brief.v1`
 - 项目隔离：对每个 worker request 使用不同 `ClientIdentity.project_id` + `thread_id`
 - 审计：Hub 自动落库 `ai.generate.*`（并能通过 `HubAudit.ListAuditEvents` 查询）
 - kill-switch：HubAdmin 可随时冻结
+- memory 维护模型选择继续留在 Hub memory 控制面；本文件不引入第二套 memory model chooser
 
 ### 5.2 建议补充的字段（v2，便于追踪）
 为 `GenerateRequest` 增加可选字段：
@@ -203,13 +212,19 @@ Schema：`xhub.supervisor_brief.v1`
 ## 6) 记忆与上下文注入（多项目下的关键约束）
 
 ### 6.1 Worker 注入（每个项目独立）
-worker prompt 拼接顺序建议与 Memory-Core 一致：
+worker prompt 拼接顺序建议与 Hub memory serving contract 一致：
 1) System
 2) Constitution（如有）
 3) project scope Canonical
 4) worker Working Set（该 thread 最近 N 轮）
 5) 按需检索片段（同 project）
 6) task_brief
+
+补充边界：
+
+- 这里定义的是 serving / assembly 顺序，不是 memory maintenance model 的选择逻辑。
+- X-Terminal 不应因为自己在拼 prompt，就替用户决定 memory maintenance model。
+- durable memory 的维护仍走 `memory_model_preferences -> Scheduler -> Worker -> Writer + Gate`。
 
 ### 6.2 Supervisor 注入（避免跨项目泄漏）
 Supervisor 默认只注入：
@@ -307,4 +322,3 @@ Phase 2（深度治理）
 - Grants/paid entitlement/Connectors/UndoSend：`docs/xhub-client-modes-and-connectors-v1.md`
 - Memory progressive disclosure：`docs/xhub-memory-core-policy-v1.md`
 - Hub 架构 tradeoffs：`docs/xhub-hub-architecture-tradeoffs-v1.md`
-

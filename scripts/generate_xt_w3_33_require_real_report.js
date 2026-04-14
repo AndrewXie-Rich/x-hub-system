@@ -1,18 +1,21 @@
 #!/usr/bin/env node
 const fs = require("node:fs");
 const path = require("node:path");
+const {
+  readCaptureBundle,
+  resolveDecisionBlockerAssistEvidencePath,
+  resolveMemoryCompactionEvidencePath,
+  resolveRequireRealEvidencePath,
+} = require("./xt_w3_33_require_real_bundle_lib.js");
 
 const repoRoot = path.resolve(__dirname, "..");
-const bundlePath = path.join(repoRoot, "build/reports/xt_w3_33_h_require_real_capture_bundle.v1.json");
-const outputPath = path.join(repoRoot, "build/reports/xt_w3_33_h_require_real_evidence.v1.json");
-const fEvidencePath = path.join(repoRoot, "build/reports/xt_w3_33_f_decision_blocker_assist_evidence.v1.json");
-const gEvidencePath = path.join(repoRoot, "build/reports/xt_w3_33_g_memory_compaction_evidence.v1.json");
 
 function readJSON(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
 }
 
 function writeJSON(filePath, value) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
@@ -185,10 +188,16 @@ function normalizeGateReadinessFromStatus(raw, fallback) {
   return trimmed;
 }
 
+function normalizeGateReadiness(raw, fallback) {
+  const trimmed = String(raw || "").trim();
+  return trimmed || fallback;
+}
+
 function buildRequireRealReport(bundle, options = {}) {
   const generatedAt = options.generatedAt || isoNow();
   const timezone = options.timezone || "Asia/Shanghai";
   const shadowStatuses = options.shadowStatuses || {};
+  const shadowGateReadiness = options.shadowGateReadiness || {};
   const fShadowStatus = normalizeShadowChecklistStatus(
     shadowStatuses.f,
     "candidate_pass(contract_and_tests_present)"
@@ -197,13 +206,21 @@ function buildRequireRealReport(bundle, options = {}) {
     shadowStatuses.g,
     "candidate_pass(contract_and_tests_present)"
   );
-  const fGateReadiness = normalizeGateReadinessFromStatus(
+  const derivedFGateReadiness = normalizeGateReadinessFromStatus(
     shadowStatuses.f,
     "candidate_pass(proposal_first_contract_and_tests_present)"
   );
-  const gGateReadiness = normalizeGateReadinessFromStatus(
+  const derivedGGateReadiness = normalizeGateReadinessFromStatus(
     shadowStatuses.g,
     "candidate_pass(compaction_traceability_contract_and_tests_present)"
+  );
+  const fGateReadiness = normalizeGateReadiness(
+    shadowGateReadiness.f,
+    derivedFGateReadiness
+  );
+  const gGateReadiness = normalizeGateReadiness(
+    shadowGateReadiness.g,
+    derivedGGateReadiness
   );
   const samples = Array.isArray(bundle.samples) ? bundle.samples : [];
   const evaluations = samples.map((sample) => ({
@@ -357,26 +374,35 @@ function buildRequireRealReport(bundle, options = {}) {
   };
 }
 
-function main() {
-  const bundle = readJSON(bundlePath);
-  const fEvidence = readJSONIfExists(fEvidencePath);
-  const gEvidence = readJSONIfExists(gEvidencePath);
+function generateRequireRealReport(options = {}) {
+  const bundle = readCaptureBundle(options);
+  const fEvidence = readJSONIfExists(resolveDecisionBlockerAssistEvidencePath(options));
+  const gEvidence = readJSONIfExists(resolveMemoryCompactionEvidencePath(options));
   const output = buildRequireRealReport(bundle, {
     shadowStatuses: {
       f: fEvidence?.status,
       g: gEvidence?.status,
     },
+    shadowGateReadiness: {
+      f: fEvidence?.gate_readiness?.["XT-SDK-G5"],
+      g: gEvidence?.gate_readiness?.["XT-SDK-G6"],
+    },
   });
+  const outputPath = resolveRequireRealEvidencePath(options);
   writeJSON(outputPath, output);
+  return { output, outputPath };
+}
+
+function main() {
+  const { outputPath } = generateRequireRealReport();
   process.stdout.write(`${outputPath}\n`);
 }
 
 module.exports = {
   buildRequireRealReport,
-  bundlePath,
   evaluateCheck,
   evaluateSample,
-  outputPath,
+  generateRequireRealReport,
   readJSON,
   sampleSummary,
   syntheticEvidenceReasons,

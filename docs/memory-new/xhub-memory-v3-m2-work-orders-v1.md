@@ -1,7 +1,7 @@
 # X-Hub Memory v3 M2 执行工单（W1-W6）
 
-- version: v1.0
-- updatedAt: 2026-02-27
+- version: v1.1
+- updatedAt: 2026-03-22
 - owner: Hub Memory / Security / X-Terminal 联合推进
 - status: active
 - parent: `docs/memory-new/xhub-memory-v3-execution-plan.md`
@@ -40,11 +40,284 @@
 - `Now-24 / M2-W5-05`：已完成（周回归自动生成），新增周报生成脚本 `scripts/m2_generate_weekly_regression_report.js` 与回归测试，自动输出 baseline 对比、趋势图、告警摘要与退化 TODO；产物见 `docs/memory-new/benchmarks/m2-w5-weekly/`，CI 已新增周报生成与归档（`.github/workflows/m2-memory-bench.yml`）。
 - 首轮结果快照：`gate1_correctness=pass`，`gate2_performance=pass`，`gate3_security=fail`（符合 W1“先测量再收敛”的基线定位）。
 
+## 0.1) Control-Plane Boundary
+
+M2 当前只是 retrieval / index / projection / repair / observability 的执行工单池，不是第二个 memory control plane。
+
+固定边界：
+
+- 用户继续在 X-Hub 里通过 `memory_model_preferences` 选择哪个 AI 执行 memory jobs。
+- `Memory-Core Skill` 若在产品层出现，仍只代表 governed rule asset / recipe，不代表 M2 自己持有模型选择权。
+- M2 里的 pipeline、property、hybrid recall、Markdown projection、repair/rebuild，只能提升检索与供给质量，不能替用户重选 memory AI，也不能绕过 `Writer + Gate` 直接形成 durable truth。
+- `assistant_personal` 与 `project_code` 继续属于同一个 memory control plane；M2 里的 profile / route / bench 语义，只能消费并验证上游 truth，不得再造平行 chooser。
+- 如果问题是 recall 质量、索引漂移、projection 退化，优先看 M2；如果问题是走错模型、fallback 漂移、晋升写坏，优先看 `memory_model_preferences`、route diagnostics 或 `Writer + Gate`。
+
 ## 1) 优先级定义
 
 - `P0`：阻断型工单；不完成会卡住后续周目标或 Gate。
 - `P1`：关键收益工单；完成后可显著提升效率/稳定性/安全性。
 - `P2`：增强型工单；不阻断主线，但建议在 M2 尾段进入灰度。
+
+## 1.1) 开源参考借鉴 Wave-0 在 M2 下的承接范围
+
+来自 `docs/memory-new/xhub-memory-open-source-reference-wave0-execution-pack-v1.md` 的 Wave-0 子切片，在 M2 下的正式承接范围如下：
+
+- `MRA-A2` expansion routing policy
+  - 主要挂在 `W2 correctness/explain` + `W5 observability`
+  - 目标是把 staged expansion 的输入/输出词典与 bench 回归收紧
+- `MRA-A8` cheap computed properties
+  - 主要挂在 `W2 retrieval pipeline` + `W3 incremental indexing`
+  - 目标是在 embedding / rerank 前增加 deterministic property 粗筛
+- `MRA-A9` integrity / reconcile discipline
+  - 主要挂在 `W3 reliability` + `W5 metrics` + `W6 rollback drill`
+  - 目标是把 repair / reconcile / retention consistency 入口制度化
+
+固定边界：
+
+- 这些子切片只能作为 M2 child backlog 或 acceptance hardening 落地
+- 不允许为了这些子切片回改 `Gate-0` 已冻结 contract
+
+### 1.1.1 `W0-A2-S1` 当前已冻结的 expansion routing inputs
+
+为避免 staged expansion 继续依赖隐式经验，当前 M2 承认并沿用以下最小输入词典（主定义见 `docs/memory-new/xhub-memory-serving-profiles-and-adaptive-context-v1.md`）：
+
+- `candidate_count`
+- `requested_depth`
+- `token_risk_ratio`
+- `broad_time_range_indicator`
+- `multi_hop_indicator`
+- `needs_raw_chunk`
+
+M2 下的固定要求：
+
+- Retrieval / explain / bench 路径使用同一组输入语义。
+- 允许阈值按 profile 或 mode 调整，但不允许更改这些字段的定义。
+- 输入缺失或估算不稳定时，route 默认保守。
+
+### 1.1.2 `W0-A2-S2` 当前已冻结的 expansion routing outcomes
+
+当前 M2 还应承认并复用以下最小 outcome 词典（主定义见 `docs/memory-new/xhub-memory-serving-profiles-and-adaptive-context-v1.md`）：
+
+- `answer_directly`
+- `expand_shallow`
+- `delegate_traversal`
+
+最小 explain 字段：
+
+- `trigger_flags`
+- `budget_pressure`
+- `policy_floor`
+- `raw_evidence_allowed`
+
+M2 下的固定要求：
+
+- score explain、retrieval explain、bench 报告使用同一组 outcome 词典。
+- outcome 不得因调用方不同而改变语义。
+- `delegate_traversal` 在本轮不自动等价于新的 grant 行为。
+
+### 1.1.3 `W0-A2-S3` 当前已冻结的 route-sensitive bench 承接
+
+当前 M2 需要把 expansion routing 从“解释得出来”推进到“退化时会被机器发现”。
+
+在 M2 下，route-sensitive 样本最少应补：
+
+- golden 扩展字段
+  - `expected_expansion_outcome`
+  - `route_bucket`
+  - `expected_raw_evidence_allowed`
+  - 可选 `expected_trigger_flags`
+- adversarial 扩展字段
+  - `route_attack_type`
+  - `expected_policy_floor`
+  - `expected_max_outcome`
+- 报告扩展字段
+  - `route_outcome_match_rate`
+  - `over_expand_rate`
+  - `under_expand_rate`
+  - `raw_evidence_overgrant_rate`
+
+M2 下的固定要求：
+
+- `M2-W1-03` 承接 golden route annotations。
+- `M2-W1-04` 承接 adversarial route-pressure annotations。
+- `M2-W2-05` 承接 correctness matrix 断言。
+- `M2-W5-05` 与 weekly report 承接 route drift 展示。
+
+### 1.1.4 `W0-A8-S1` 当前已冻结的 cheap computed properties v1
+
+当前 M2 承认以下第一批 deterministic property，可作为 retrieval/index 的低成本结构信号：
+
+- `has_code`
+- `has_todo`
+- `has_error`
+- `has_decision`
+- `has_approval`
+- `has_blocker`
+- `has_link`
+- `title_like`
+
+M2 下的固定要求：
+
+- property extractor 只能使用 deterministic 规则、轻量 parser、pattern matcher，不得额外调用昂贵模型。
+- property 只属于派生索引信号，不构成新的 durable truth source。
+- extractor 必须同时支持：
+  - changelog 增量消费
+  - rebuild 全量回放
+- 不确定时必须保守，允许 `unknown/false`，不允许 hallucinated true。
+
+### 1.1.5 `W0-A8-S2` 当前已冻结的 property integration 边界
+
+在 M2 下，property 只允许承担以下角色：
+
+- prefilter hint
+- cheap boost / tie-break hint
+- explainable coarse bucket
+
+明确不允许：
+
+- 绕过 `scope / sensitivity / trust` gate
+- 替代 embedding / rerank
+- 因 code property 命中而强行偏置所有 personal assistant 查询
+
+M2 下的固定要求：
+
+- `project_code` 查询可对 `has_code / has_error / has_blocker` 做正向利用。
+- `assistant_personal` 查询默认不得因 code property 产生系统性偏置，除非 query 自身已有强代码信号。
+- property hit 缺失时，pipeline 必须能平滑退回原有路径。
+
+### 1.1.6 `W0-A8-S3` 当前已冻结的 property explain / metrics 承接
+
+M2 下，property 必须成为可观察信号，而不是“代码里存在但运营不可见”的内部小技巧。
+
+最少 explain / metrics 承接：
+
+- explain 侧
+  - `property_hits`
+  - `property_prefilter_applied`
+  - `property_bias_profile`
+- metrics 侧
+  - `property_prefilter_hit_rate`
+  - `property_prefilter_drop_count`
+  - `property_assisted_topk_lift`
+  - `property_false_bias_incident`
+
+固定要求：
+
+- explain 不得暴露 secret 明文，只能暴露 property 名与命中事实。
+- metrics 字段必须进入统一 schema，不允许单独写一套旁路日志。
+
+### 1.1.7 `W0-A9-S1` 当前已冻结的 replay / repair checklist
+
+当前 M2 需要把以下 drift / reconcile 场景纳入统一 repair checklist：
+
+- changelog gap
+- consumer checkpoint 与 processed marker 不一致
+- rebuild generation ready 但 swap 前后文档数异常
+- retention delete 后仍有派生索引残留
+- retention restore 后派生层未回补
+- property schema 升级后旧 property sidecar 未重算
+
+M2 下的固定要求：
+
+- repair 只能修派生层与索引层，不得直接篡改 Raw Vault 真相。
+- 每类 drift 都必须有：
+  - 发现信号
+  - 建议 repair 动作
+  - repair 后验证项
+- QA 与 release gate 必须能引用同一份 checklist。
+
+### 1.1.8 `W0-A9-S2` 当前已冻结的 migration invariants
+
+当前 M2 下，memory migration / rebuild / repair 至少要遵守以下 invariant：
+
+- Raw / canonical truth 不得被 migration silently rewritten。
+- 同一时刻只能有一个 active generation 对外服务。
+- retention tombstone、restore 与派生索引可见性必须一致。
+- property extractor 版本变更若影响结果，必须标记为 `backfill_required`。
+- migration 必须显式归类为：
+  - `append_only`
+  - `backfill_required`
+  - `destructive_rebuild_gated`
+
+固定要求：
+
+- 任何新 migration 都必须在工单或 PR 中声明 invariant 影响面。
+- doctor / release / rebuild dry-run 输出必须能引用 invariant 结论，而不是只给“成功/失败”。
+
+### 1.1.9 `W0-A9-S3` 当前已冻结的 retention consistency audit
+
+当前 M2 需要在以下动作后自动补 consistency audit：
+
+- retention delete
+- retention restore
+- rebuild swap
+- replay / repair 完成
+
+最少可观测产物：
+
+- `retention_consistency_audit_failures`
+- `derived_orphan_count`
+- `restore_visibility_lag_ms`
+- `reconcile_backlog_count`
+
+固定要求：
+
+- 一致性审计失败必须可见，不得只写 debug log。
+- delete / restore / rebuild 三类路径都必须能触发同一套审计口径。
+
+## 1.2) Wave-0 child slice -> M2 父工单映射
+
+| Slice | 主承接工单 | 辅承接工单 | 当前收口重点 |
+| --- | --- | --- | --- |
+| `W0-A2-S1` | `M2-W2-01` | `M2-W2-04` | expansion inputs 进入 pipeline trace 与 explain |
+| `W0-A2-S2` | `M2-W2-04` | `M2-W2-05` | outcome 词典与 explain 字段锁定 |
+| `W0-A2-S3` | `M2-W1-03/04` | `M2-W2-05`、`M2-W5-05` | golden/adversarial/report route drift |
+| `W0-A8-S1` | `M2-W3-02` | `M2-W3-03` | property extractor 支持增量消费与 rebuild |
+| `W0-A8-S2` | `M2-W2-01` | `M2-W2-05` | property hint 接入 coarse prefilter 且不越权 |
+| `W0-A8-S3` | `M2-W2-04` | `M2-W5-01`、`M2-W5-04` | property explain + metrics + alert |
+| `W0-A9-S1` | `M2-W3-04` | `M2-W3-05` | replay / repair checklist |
+| `W0-A9-S2` | `M2-W3-04` | `M2-W6-05` | migration invariant & release signoff |
+| `W0-A9-S3` | `M2-W3-05` | `M2-W5-01`、`M2-W5-04` | retention consistency audit + alert |
+
+## 1.3) 开源参考借鉴 Wave-1 在 M2 下的承接范围
+
+来自 `docs/memory-new/xhub-memory-open-source-reference-wave1-execution-pack-v1.md` 的 `MRA-A4 large-file / large-blob sidecar`，在 M2 下的正式承接范围限定为 `W1-A4-S3 sidecar integrity / retention` 这一段：
+
+- 主要挂在 `M2-W3-05` 可靠性演练，并由 `M2-W5-01`、`M2-W5-04` 承接 machine-readable metrics 与 alert。
+- 目标不是把 sidecar 变成新的 retrieval/storage plane，而是把 sidecar orphan、provenance mismatch、retention delete / restore 后的一致性风险正式纳入 M2 reliability 主链。
+- 固定边界：
+  - 不新增新的 `search/get blob` 外部 contract
+  - 不把 sidecar 升格成第二套 durable truth source
+  - 不允许为了 sidecar integrity 回改 `Gate-0` 已冻结 PD contract
+
+### 1.3.1 `W1-A4-S3` 当前已冻结的 sidecar integrity / retention invariants
+
+当前 M2 承认并沿用以下最小 invariant：
+
+- `sidecar` 只是受控投影；主记录与 provenance 仍是唯一 truth anchor。
+- retention delete 后，sidecar 不得继续以“可见正文/可见 body”状态悬挂。
+- retention restore 后，sidecar visibility / provenance back-link 必须与主记录一起恢复；不得出现 restore 了主记录但 sidecar 仍缺席或仍指向旧 generation。
+- rebuild / replay / repair 完成后，sidecar provenance mismatch 默认 fail-closed，不得静默继续服务。
+
+### 1.3.2 `W1-A4-S3` 当前已冻结的最少可观测产物
+
+当前 M2 需要把以下 sidecar integrity 指标纳入 machine-readable 口径：
+
+- `sidecar_orphan_count`
+- `sidecar_provenance_mismatch_count`
+- `sidecar_restore_visibility_lag_ms`
+- `sidecar_cleanup_backlog_count`
+
+固定要求：
+
+- delete / restore / rebuild / repair 四类路径都必须能触发同一套 sidecar consistency audit。
+- 一致性失败必须进入 doctor / report / alert，不得只写 debug log。
+
+### 1.3.3 `W1-A4-S3` -> M2 父工单映射
+
+| Slice | 主承接工单 | 辅承接工单 | 当前收口重点 |
+| --- | --- | --- | --- |
+| `W1-A4-S3` | `M2-W3-05` | `M2-W5-01`、`M2-W5-04` | sidecar orphan / provenance / retention-restore consistency |
 
 ## 2) W1-W6 工单总览（按优先级）
 
@@ -136,6 +409,7 @@
 - 验收标准：
   - 至少覆盖 keyword/semantic/time/intention 四类；
   - 每条 query 有相关 ID 标注或 empty 标注；
+  - route-sensitive 样本额外带 `expected_expansion_outcome / route_bucket / expected_raw_evidence_allowed`；
   - 能直接用于 recall@k/nDCG@k。
 - 对应 Gate：Gate-1/2
 - 估时：1 天
@@ -147,6 +421,7 @@
 - 验收标准：
   - 包含 prompt injection/replay/exfiltration 样本；
   - 每类至少 20 条；
+  - route-sensitive 对抗样本额外带 `route_attack_type / expected_policy_floor / expected_max_outcome`；
   - 可自动回归并输出 blocked/allowed 统计。
 - 对应 Gate：Gate-3
 - 估时：0.5 天
@@ -180,6 +455,7 @@
 - 验收标准：
   - 过滤顺序不可跳过；
   - scope 越界返回 0；
+  - pipeline trace 可见 expansion routing inputs 与 property prefilter 决策；
   - 结果附 pipeline stage trace（调试可见）。
 - 对应 Gate：Gate-1/3
 - 估时：1 天
@@ -212,6 +488,7 @@
 - 交付物：score explain 字段
 - 验收标准：
   - 至少包含 vector/text/recency/risk 四项分量；
+  - 扩展输出可选包含 `expansion_outcome / trigger_flags / budget_pressure / raw_evidence_allowed / property_hits`；
   - 支持 debug 开关；
   - 不增加默认响应体过大风险（受限输出）。
 - 对应 Gate：Gate-1
@@ -223,6 +500,7 @@
 - 交付物：单测 + 集成测试
 - 验收标准：
   - 覆盖空结果、恶意 query、超长 query、损坏索引；
+  - 覆盖“该直答却展开 / 该展开却直答 / property bias 误伤 personal query”；
   - 全绿可复跑；
   - 报告可追溯到工单版本。
 - 对应 Gate：Gate-1
@@ -246,6 +524,7 @@
 - 验收标准：
   - 重复消费不重复索引；
   - 中断后可从 checkpoint 恢复；
+  - property extractor replay 不得双算或漏算；
   - 失败重试有指数回退。
 - 对应 Gate：Gate-4
 - 估时：1 天
@@ -257,6 +536,7 @@
 - 验收标准：
   - 任意时刻读侧都有可用索引；
   - swap 失败自动回退；
+  - rebuild 完成后可重算 property sidecar 并触发 consistency audit；
   - 重建可观测（耗时/失败原因）。
 - 对应 Gate：Gate-4
 - 估时：1 天
@@ -268,6 +548,7 @@
 - 验收标准：
   - 兼容空库和大库；
   - 支持 dry-run；
+  - dry-run 可显示 replay / repair checklist 与 invariant 风险分类；
   - 重建后指标与基线误差在阈值内。
 - 对应 Gate：Gate-4
 - 估时：0.5 天
@@ -279,6 +560,8 @@
 - 验收标准：
   - 三类故障均可恢复；
   - 无数据越权泄露；
+  - 覆盖 changelog gap / retention delete / retention restore / property schema bump 演练；
+  - 覆盖 sidecar orphan / provenance mismatch / restore visibility lag / cleanup backlog 演练；
   - 回滚路径可执行。
 - 对应 Gate：Gate-4
 - 估时：0.5 天
@@ -400,6 +683,7 @@
 - 验收标准：
   - 包含 latency/quality/cost/freshness；
   - 字段稳定，向后兼容；
+  - 承接 property / retention consistency / sidecar integrity / route drift 相关 machine-readable 字段；
   - 样本不包含 secret 明文。
 - 对应 Gate：Gate-2/3
 - 估时：1 天
@@ -433,6 +717,7 @@
 - 验收标准：
   - p95/p99、queue depth、freshness 有阈值；
   - 异常可定位到 pipeline stage；
+  - 可对 `over_expand / under_expand / reconcile_backlog / derived_orphan_count / sidecar_orphan_count / sidecar_provenance_mismatch_count / sidecar_cleanup_backlog_count` 告警；
   - 告警噪声可控。
 - 对应 Gate：Gate-2
 - 估时：0.5 天
@@ -444,6 +729,7 @@
 - 验收标准：
   - 自动附趋势图；
   - 自动比较上周基线；
+  - route drift / property value / consistency audit / sidecar integrity 异常进入摘要；
   - 退化项自动生成 TODO。
 - 对应 Gate：Gate-2/3
 - 估时：0.5 天
@@ -499,6 +785,7 @@
 - 验收标准：
   - Gate-0..4 全通过；
   - 回滚可在目标窗口完成；
+  - replay / repair checklist 与 migration invariants 有签字结论；
   - 性能/安全/可靠性三方签字。
 - 对应 Gate：Gate-4（收口）
 - 估时：0.5 天

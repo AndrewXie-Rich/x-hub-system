@@ -114,10 +114,6 @@ struct AXProjectGovernanceBundle: Codable, Equatable, Sendable {
     ) -> AXProjectGovernanceBundle {
         var out = self
         out.executionTier = executionTier
-        out.supervisorInterventionTier = max(
-            out.supervisorInterventionTier,
-            executionTier.minimumSafeSupervisorTier
-        )
         return out
     }
 
@@ -254,6 +250,654 @@ struct AXProjectGovernanceValidation: Equatable, Sendable {
     var shouldFailClosed: Bool { !invalidReasons.isEmpty }
 }
 
+enum AXProjectGovernanceRuntimeReadinessState: String, Codable, Equatable, Sendable {
+    case notRequired = "not_required"
+    case ready
+    case blocked
+}
+
+enum AXProjectGovernanceRuntimeReadinessComponentKey: String, Codable, CaseIterable, Sendable {
+    case routeReady = "route_ready"
+    case capabilityReady = "capability_ready"
+    case grantReady = "grant_ready"
+    case checkpointRecoveryReady = "checkpoint_recovery_ready"
+    case evidenceExportReady = "evidence_export_ready"
+
+    var displayName: String {
+        switch self {
+        case .routeReady:
+            return "route ready"
+        case .capabilityReady:
+            return "capability ready"
+        case .grantReady:
+            return "grant ready"
+        case .checkpointRecoveryReady:
+            return "checkpoint/recovery ready"
+        case .evidenceExportReady:
+            return "evidence/export ready"
+        }
+    }
+}
+
+enum AXProjectGovernanceRuntimeReadinessComponentState: String, Codable, Equatable, Sendable {
+    case notRequired = "not_required"
+    case ready
+    case blocked
+    case notReported = "not_reported"
+
+    var displayName: String {
+        switch self {
+        case .notRequired:
+            return "不要求"
+        case .ready:
+            return "已就绪"
+        case .blocked:
+            return "未就绪"
+        case .notReported:
+            return "未接线"
+        }
+    }
+}
+
+struct AXProjectGovernanceRuntimeReadinessComponentProjection: Codable, Equatable, Sendable {
+    var key: AXProjectGovernanceRuntimeReadinessComponentKey
+    var state: AXProjectGovernanceRuntimeReadinessComponentState
+    var missingReasonCodes: [String]
+    var summaryLine: String
+
+    func detailLines() -> [String] {
+        let prefix = "project_governance_runtime_component_\(key.rawValue)"
+        var lines = [
+            "\(prefix)_state=\(state.rawValue)",
+            "\(prefix)_summary=\(summaryLine)"
+        ]
+        if !missingReasonCodes.isEmpty {
+            lines.append("\(prefix)_missing=\(missingReasonCodes.joined(separator: ","))")
+        }
+        return lines
+    }
+}
+
+struct AXProjectGovernanceRuntimeReadinessSnapshot: Codable, Equatable, Sendable {
+    static let currentSchemaVersion = "xhub.project_governance_runtime_readiness.v1"
+
+    var schemaVersion: String
+    var configuredExecutionTier: String
+    var effectiveExecutionTier: String
+    var configuredRuntimeSurfaceMode: String
+    var effectiveRuntimeSurfaceMode: String
+    var runtimeSurfaceOverrideMode: String
+    var trustedAutomationState: String
+    var requiresA4RuntimeReady: Bool
+    var runtimeReady: Bool
+    var state: AXProjectGovernanceRuntimeReadinessState
+    var missingReasonCodes: [String]
+    var effectiveSurfaceCapabilityLabels: [String]?
+    var summaryLine: String
+    var missingSummaryLine: String?
+
+    init(resolved: AXProjectResolvedGovernanceState) {
+        let configuredExecutionTier = resolved.configuredBundle.executionTier
+        let effectiveExecutionTier = resolved.effectiveBundle.executionTier
+        let runtimeSurface = resolved.effectiveRuntimeSurface
+        let trustedAutomationStatus = resolved.trustedAutomationStatus
+        let requiresA4RuntimeReady = configuredExecutionTier == .a4OpenClaw
+        let missingReasonCodes = requiresA4RuntimeReady
+            ? Self.normalizedReasonCodes(
+                Self.routeMissingReasonCodes(
+                    configuredRuntimeSurfaceMode: runtimeSurface.configuredMode,
+                    runtimeSurfaceOverrideMode: runtimeSurface.hubOverrideMode
+                )
+                + Self.capabilityMissingReasonCodes(
+                    effectiveSurfaceCapabilityLabels: runtimeSurface.allowedSurfaceLabels,
+                    trustedAutomationReady: trustedAutomationStatus.trustedAutomationReady,
+                    permissionOwnerReady: trustedAutomationStatus.permissionOwnerReady
+                )
+                + Self.grantMissingReasonCodes(
+                    shouldFailClosed: resolved.validation.shouldFailClosed,
+                    expired: runtimeSurface.expired,
+                    killSwitchEngaged: runtimeSurface.killSwitchEngaged
+                )
+            )
+            : []
+
+        let runtimeReady = !requiresA4RuntimeReady || missingReasonCodes.isEmpty
+        let state: AXProjectGovernanceRuntimeReadinessState
+        if !requiresA4RuntimeReady {
+            state = .notRequired
+        } else if runtimeReady {
+            state = .ready
+        } else {
+            state = .blocked
+        }
+
+        self.schemaVersion = Self.currentSchemaVersion
+        self.configuredExecutionTier = configuredExecutionTier.rawValue
+        self.effectiveExecutionTier = effectiveExecutionTier.rawValue
+        self.configuredRuntimeSurfaceMode = runtimeSurface.configuredMode.rawValue
+        self.effectiveRuntimeSurfaceMode = runtimeSurface.effectiveMode.rawValue
+        self.runtimeSurfaceOverrideMode = runtimeSurface.hubOverrideMode.rawValue
+        self.trustedAutomationState = trustedAutomationStatus.state.rawValue
+        self.requiresA4RuntimeReady = requiresA4RuntimeReady
+        self.runtimeReady = runtimeReady
+        self.state = state
+        self.missingReasonCodes = missingReasonCodes
+        self.effectiveSurfaceCapabilityLabels = runtimeSurface.allowedSurfaceLabels
+
+        switch state {
+        case .notRequired:
+            summaryLine = "\(configuredExecutionTier.displayName) 当前不要求 A4 execution-surface runtime ready。"
+            missingSummaryLine = nil
+        case .ready:
+            summaryLine = "A4 Agent 已配置，runtime ready 已就绪。"
+            missingSummaryLine = nil
+        case .blocked:
+            summaryLine = "A4 Agent 已配置，但 runtime ready 还没完成。"
+            missingSummaryLine = "缺口：\(Self.reasonSummary(missingReasonCodes))"
+        }
+    }
+
+    init?(
+        detailLines: [String]
+    ) {
+        func value(_ key: String) -> String? {
+            let prefix = "\(key)="
+            guard let line = detailLines.first(where: { $0.hasPrefix(prefix) }) else {
+                return nil
+            }
+            let value = String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            return value.isEmpty ? nil : value
+        }
+
+        func listValue(_ key: String) -> [String]? {
+            let prefix = "\(key)="
+            guard let line = detailLines.first(where: { $0.hasPrefix(prefix) }) else {
+                return nil
+            }
+            let raw = String(line.dropFirst(prefix.count))
+            return raw
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        }
+
+        func boolValue(_ key: String) -> Bool? {
+            switch value(key)?.lowercased() {
+            case "true":
+                return true
+            case "false":
+                return false
+            default:
+                return nil
+            }
+        }
+
+        guard let stateRaw = value("project_governance_runtime_readiness_state"),
+              let state = AXProjectGovernanceRuntimeReadinessState(rawValue: stateRaw),
+              let configuredExecutionTier = value("project_governance_configured_execution_tier"),
+              let effectiveExecutionTier = value("project_governance_effective_execution_tier"),
+              let configuredRuntimeSurfaceMode = value("project_governance_configured_runtime_surface_mode"),
+              let effectiveRuntimeSurfaceMode = value("project_governance_effective_runtime_surface_mode"),
+              let runtimeSurfaceOverrideMode = value("project_governance_runtime_surface_override_mode"),
+              let trustedAutomationState = value("project_governance_trusted_automation_state"),
+              let requiresA4RuntimeReady = boolValue("project_governance_requires_a4_runtime_ready"),
+              let runtimeReady = boolValue("project_governance_runtime_ready"),
+              let summaryLine = value("project_governance_runtime_readiness_summary") else {
+            return nil
+        }
+
+        self.schemaVersion = value("project_governance_runtime_readiness_schema_version")
+            ?? Self.currentSchemaVersion
+        self.configuredExecutionTier = configuredExecutionTier
+        self.effectiveExecutionTier = effectiveExecutionTier
+        self.configuredRuntimeSurfaceMode = configuredRuntimeSurfaceMode
+        self.effectiveRuntimeSurfaceMode = effectiveRuntimeSurfaceMode
+        self.runtimeSurfaceOverrideMode = runtimeSurfaceOverrideMode
+        self.trustedAutomationState = trustedAutomationState
+        self.requiresA4RuntimeReady = requiresA4RuntimeReady
+        self.runtimeReady = runtimeReady
+        self.state = state
+        self.missingReasonCodes = Self.normalizedReasonCodes(
+            listValue("project_governance_missing_readiness") ?? []
+        )
+        self.effectiveSurfaceCapabilityLabels = listValue(
+            "project_governance_effective_surface_capabilities"
+        )
+        self.summaryLine = summaryLine
+        self.missingSummaryLine = value("project_governance_runtime_readiness_missing_summary")
+    }
+
+    func detailLines() -> [String] {
+        var lines = [
+            "project_governance_runtime_readiness_schema_version=\(schemaVersion)",
+            "project_governance_configured_execution_tier=\(configuredExecutionTier)",
+            "project_governance_effective_execution_tier=\(effectiveExecutionTier)",
+            "project_governance_configured_runtime_surface_mode=\(configuredRuntimeSurfaceMode)",
+            "project_governance_effective_runtime_surface_mode=\(effectiveRuntimeSurfaceMode)",
+            "project_governance_runtime_surface_override_mode=\(runtimeSurfaceOverrideMode)",
+            "project_governance_trusted_automation_state=\(trustedAutomationState)",
+            "project_governance_requires_a4_runtime_ready=\(requiresA4RuntimeReady)",
+            "project_governance_runtime_ready=\(runtimeReady)",
+            "project_governance_runtime_readiness_state=\(state.rawValue)",
+            "project_governance_effective_surface_capabilities=\(effectiveSurfaceCapabilityLabelsResolved.joined(separator: ","))",
+            "project_governance_runtime_readiness_summary=\(summaryLine)"
+        ]
+        if !missingReasonCodes.isEmpty {
+            lines.append("project_governance_missing_readiness=\(missingReasonCodes.joined(separator: ","))")
+        }
+        if let missingSummaryLine, !missingSummaryLine.isEmpty {
+            lines.append("project_governance_runtime_readiness_missing_summary=\(missingSummaryLine)")
+        }
+        for component in componentProjections {
+            lines += component.detailLines()
+        }
+        return lines
+    }
+
+    var runtimeReadyLine: String {
+        switch state {
+        case .notRequired:
+            return "runtime ready：当前档位不要求"
+        case .ready:
+            return "runtime ready：已就绪"
+        case .blocked:
+            return "runtime ready：未就绪"
+        }
+    }
+
+    var effectiveSurfaceCapabilityLabelsResolved: [String] {
+        if let effectiveSurfaceCapabilityLabels {
+            return Self.normalizedSurfaceLabels(effectiveSurfaceCapabilityLabels)
+        }
+        return Self.defaultEffectiveSurfaceCapabilityLabels(
+            for: effectiveRuntimeSurfaceMode
+        )
+    }
+
+    var componentProjections: [AXProjectGovernanceRuntimeReadinessComponentProjection] {
+        [
+            routeComponentProjection,
+            capabilityComponentProjection,
+            grantComponentProjection,
+            checkpointRecoveryComponentProjection,
+            evidenceExportComponentProjection
+        ]
+    }
+
+    static func reasonText(_ code: String) -> String {
+        switch code {
+        case "governance_fail_closed":
+            return "治理冲突触发 fail-closed"
+        case "runtime_surface_not_configured_full":
+            return "完整执行面还没配置到 trusted_openclaw_mode"
+        case "runtime_surface_kill_switch":
+            return "kill-switch 已生效"
+        case "runtime_surface_ttl_expired":
+            return "runtime surface TTL 已过期"
+        case "runtime_surface_clamped_guided":
+            return "执行面被收束到 guided"
+        case "runtime_surface_clamped_manual":
+            return "执行面被收束到 manual"
+        case "trusted_automation_not_ready":
+            return "受治理自动化未就绪"
+        case "permission_owner_not_ready":
+            return "权限宿主未就绪"
+        case "capability_device_tools_unavailable":
+            return "A4 基线 device tools 未打开"
+        case "checkpoint_recovery_contract_not_ready":
+            return "checkpoint / recovery 合同还没就绪"
+        case "evidence_export_contract_not_ready":
+            return "evidence / export 合同还没就绪"
+        case "preferred_device_offline":
+            return "首选 XT 设备当前离线"
+        case "preferred_device_missing":
+            return "首选 XT 设备不存在"
+        case "preferred_device_project_scope_mismatch":
+            return "首选 XT 设备不在当前 project scope"
+        case "xt_device_missing":
+            return "没有可路由的 XT 设备"
+        case "runner_device_missing":
+            return "没有可路由的 runner 设备"
+        case "xt_route_ambiguous":
+            return "XT 路由目标不唯一"
+        case "runner_route_ambiguous":
+            return "runner 路由目标不唯一"
+        case "supervisor_intent_unknown":
+            return "Supervisor 意图无法判定"
+        case "project_id_required":
+            return "当前动作缺少 project 绑定"
+        default:
+            return code.replacingOccurrences(of: "_", with: " ")
+        }
+    }
+
+    static func reasonSummary(_ codes: [String]) -> String {
+        let normalized = codes.map(reasonText)
+        return normalized.isEmpty ? "无" : normalized.joined(separator: " / ")
+    }
+
+    private var routeComponentProjection: AXProjectGovernanceRuntimeReadinessComponentProjection {
+        guard requiresA4RuntimeReady else {
+            return AXProjectGovernanceRuntimeReadinessComponentProjection(
+                key: .routeReady,
+                state: .notRequired,
+                missingReasonCodes: [],
+                summaryLine: "当前执行档位不要求 A4 route readiness。"
+            )
+        }
+
+        let routeMissingReasonCodes = Self.routeMissingReasonCodes(
+            configuredRuntimeSurfaceMode: configuredRuntimeSurfaceMode,
+            runtimeSurfaceOverrideMode: runtimeSurfaceOverrideMode
+        )
+        if routeMissingReasonCodes.isEmpty {
+            return AXProjectGovernanceRuntimeReadinessComponentProjection(
+                key: .routeReady,
+                state: .ready,
+                missingReasonCodes: [],
+                summaryLine: "A4 执行面路由已指向 trusted_openclaw_mode。"
+            )
+        }
+
+        return AXProjectGovernanceRuntimeReadinessComponentProjection(
+            key: .routeReady,
+            state: .blocked,
+            missingReasonCodes: routeMissingReasonCodes,
+            summaryLine: "当前还缺 \(Self.reasonSummary(routeMissingReasonCodes))；实际执行面 \(effectiveRuntimeSurfaceMode)。"
+        )
+    }
+
+    private var capabilityComponentProjection: AXProjectGovernanceRuntimeReadinessComponentProjection {
+        guard requiresA4RuntimeReady else {
+            return AXProjectGovernanceRuntimeReadinessComponentProjection(
+                key: .capabilityReady,
+                state: .notRequired,
+                missingReasonCodes: [],
+                summaryLine: "当前执行档位不要求 A4 capability readiness。"
+            )
+        }
+
+        let capabilityMissingReasonCodes = Self.capabilityMissingReasonCodes(
+            effectiveSurfaceCapabilityLabels: effectiveSurfaceCapabilityLabelsResolved
+        )
+        let surfaceSummary = Self.surfaceCapabilitySummary(
+            effectiveSurfaceCapabilityLabelsResolved
+        )
+        if capabilityMissingReasonCodes.isEmpty {
+            return AXProjectGovernanceRuntimeReadinessComponentProjection(
+                key: .capabilityReady,
+                state: .ready,
+                missingReasonCodes: [],
+                summaryLine: "A4 基线执行能力已打开；当前 surface：\(surfaceSummary)。"
+            )
+        }
+
+        return AXProjectGovernanceRuntimeReadinessComponentProjection(
+            key: .capabilityReady,
+            state: .blocked,
+            missingReasonCodes: capabilityMissingReasonCodes,
+            summaryLine: "当前还缺 \(Self.reasonSummary(capabilityMissingReasonCodes))；当前 surface：\(surfaceSummary)。"
+        )
+    }
+
+    private var grantComponentProjection: AXProjectGovernanceRuntimeReadinessComponentProjection {
+        guard requiresA4RuntimeReady else {
+            return AXProjectGovernanceRuntimeReadinessComponentProjection(
+                key: .grantReady,
+                state: .notRequired,
+                missingReasonCodes: [],
+                summaryLine: "当前执行档位不要求高治理放行窗口。"
+            )
+        }
+
+        let grantMissingReasonCodes = Self.grantMissingReasonCodes(
+            missingReasonCodes: missingReasonCodes
+        )
+        if grantMissingReasonCodes.isEmpty {
+            return AXProjectGovernanceRuntimeReadinessComponentProjection(
+                key: .grantReady,
+                state: .ready,
+                missingReasonCodes: [],
+                summaryLine: "当前没有 fail-closed / TTL / kill-switch 阻断。"
+            )
+        }
+
+        return AXProjectGovernanceRuntimeReadinessComponentProjection(
+            key: .grantReady,
+            state: .blocked,
+            missingReasonCodes: grantMissingReasonCodes,
+            summaryLine: "当前还缺 \(Self.reasonSummary(grantMissingReasonCodes))。"
+        )
+    }
+
+    private var checkpointRecoveryComponentProjection: AXProjectGovernanceRuntimeReadinessComponentProjection {
+        guard requiresA4RuntimeReady else {
+            return AXProjectGovernanceRuntimeReadinessComponentProjection(
+                key: .checkpointRecoveryReady,
+                state: .notRequired,
+                missingReasonCodes: [],
+                summaryLine: "当前执行档位不要求 checkpoint / recovery readiness。"
+            )
+        }
+
+        let missingReasonCodes = Self.checkpointRecoveryMissingReasonCodes(
+            effectiveExecutionTier: effectiveExecutionTier
+        )
+        if missingReasonCodes.isEmpty {
+            return AXProjectGovernanceRuntimeReadinessComponentProjection(
+                key: .checkpointRecoveryReady,
+                state: .ready,
+                missingReasonCodes: [],
+                summaryLine: "checkpoint / recovery 预算与自动恢复能力已就绪。"
+            )
+        }
+
+        return AXProjectGovernanceRuntimeReadinessComponentProjection(
+            key: .checkpointRecoveryReady,
+            state: .blocked,
+            missingReasonCodes: missingReasonCodes,
+            summaryLine: "当前还缺 \(Self.reasonSummary(missingReasonCodes))。"
+        )
+    }
+
+    private var evidenceExportComponentProjection: AXProjectGovernanceRuntimeReadinessComponentProjection {
+        guard requiresA4RuntimeReady else {
+            return AXProjectGovernanceRuntimeReadinessComponentProjection(
+                key: .evidenceExportReady,
+                state: .notRequired,
+                missingReasonCodes: [],
+                summaryLine: "当前执行档位不要求 evidence / export readiness。"
+            )
+        }
+
+        let missingReasonCodes = Self.evidenceExportMissingReasonCodes(
+            effectiveExecutionTier: effectiveExecutionTier
+        )
+        if missingReasonCodes.isEmpty {
+            return AXProjectGovernanceRuntimeReadinessComponentProjection(
+                key: .evidenceExportReady,
+                state: .ready,
+                missingReasonCodes: [],
+                summaryLine: "evidence / export 合同已要求证据闭环与 pre-done 收口。"
+            )
+        }
+
+        return AXProjectGovernanceRuntimeReadinessComponentProjection(
+            key: .evidenceExportReady,
+            state: .blocked,
+            missingReasonCodes: missingReasonCodes,
+            summaryLine: "当前还缺 \(Self.reasonSummary(missingReasonCodes))。"
+        )
+    }
+
+    private static func routeMissingReasonCodes(
+        configuredRuntimeSurfaceMode: AXProjectRuntimeSurfaceMode,
+        runtimeSurfaceOverrideMode: AXProjectRuntimeSurfaceHubOverrideMode
+    ) -> [String] {
+        var codes: [String] = []
+        if configuredRuntimeSurfaceMode != .trustedOpenClawMode {
+            codes.append("runtime_surface_not_configured_full")
+        }
+        switch runtimeSurfaceOverrideMode {
+        case .clampGuided:
+            codes.append("runtime_surface_clamped_guided")
+        case .clampManual:
+            codes.append("runtime_surface_clamped_manual")
+        case .killSwitch, .none:
+            break
+        }
+        return normalizedReasonCodes(codes)
+    }
+
+    private static func routeMissingReasonCodes(
+        configuredRuntimeSurfaceMode: String,
+        runtimeSurfaceOverrideMode: String
+    ) -> [String] {
+        let configuredMode = AXProjectRuntimeSurfaceMode(rawValue: configuredRuntimeSurfaceMode)
+        let overrideMode = AXProjectRuntimeSurfaceHubOverrideMode(rawValue: runtimeSurfaceOverrideMode)
+
+        var codes: [String] = []
+        if configuredMode != .trustedOpenClawMode {
+            codes.append("runtime_surface_not_configured_full")
+        }
+        switch overrideMode {
+        case .clampGuided?:
+            codes.append("runtime_surface_clamped_guided")
+        case .clampManual?:
+            codes.append("runtime_surface_clamped_manual")
+        case .killSwitch?, .some(.none), nil:
+            break
+        }
+        return normalizedReasonCodes(codes)
+    }
+
+    private static func capabilityMissingReasonCodes(
+        effectiveSurfaceCapabilityLabels: [String]
+    ) -> [String] {
+        let labels = Set(normalizedSurfaceLabels(effectiveSurfaceCapabilityLabels))
+        var codes: [String] = []
+        if !labels.contains("device") {
+            codes.append("capability_device_tools_unavailable")
+        }
+        return normalizedReasonCodes(codes)
+    }
+
+    private static func capabilityMissingReasonCodes(
+        effectiveSurfaceCapabilityLabels: [String],
+        trustedAutomationReady: Bool,
+        permissionOwnerReady: Bool
+    ) -> [String] {
+        var codes = capabilityMissingReasonCodes(
+            effectiveSurfaceCapabilityLabels: effectiveSurfaceCapabilityLabels
+        )
+        if !trustedAutomationReady {
+            codes.append("trusted_automation_not_ready")
+        }
+        if !permissionOwnerReady {
+            codes.append("permission_owner_not_ready")
+        }
+        return normalizedReasonCodes(codes)
+    }
+
+    private static func grantMissingReasonCodes(
+        shouldFailClosed: Bool,
+        expired: Bool,
+        killSwitchEngaged: Bool
+    ) -> [String] {
+        var codes: [String] = []
+        if shouldFailClosed {
+            codes.append("governance_fail_closed")
+        }
+        if killSwitchEngaged {
+            codes.append("runtime_surface_kill_switch")
+        }
+        if expired {
+            codes.append("runtime_surface_ttl_expired")
+        }
+        return normalizedReasonCodes(codes)
+    }
+
+    private static func grantMissingReasonCodes(
+        missingReasonCodes: [String]
+    ) -> [String] {
+        let allowed = Set([
+            "governance_fail_closed",
+            "trusted_automation_not_ready",
+            "permission_owner_not_ready",
+            "runtime_surface_kill_switch",
+            "runtime_surface_ttl_expired"
+        ])
+        return normalizedReasonCodes(
+            missingReasonCodes.filter { allowed.contains($0) }
+        )
+    }
+
+    private static func checkpointRecoveryMissingReasonCodes(
+        effectiveExecutionTier: String
+    ) -> [String] {
+        guard let tier = AXProjectExecutionTier(rawValue: effectiveExecutionTier) else {
+            return ["checkpoint_recovery_contract_not_ready"]
+        }
+        let budget = tier.defaultExecutionBudget
+        let capabilityBundle = tier.baseCapabilityBundle
+        let ready = budget.maxRetryDepth > 0 && capabilityBundle.allowManagedProcesses
+        return ready ? [] : ["checkpoint_recovery_contract_not_ready"]
+    }
+
+    private static func evidenceExportMissingReasonCodes(
+        effectiveExecutionTier: String
+    ) -> [String] {
+        guard let tier = AXProjectExecutionTier(rawValue: effectiveExecutionTier) else {
+            return ["evidence_export_contract_not_ready"]
+        }
+        let budget = tier.defaultExecutionBudget
+        let ready = budget.preDoneReviewRequired && budget.doneRequiresEvidence
+        return ready ? [] : ["evidence_export_contract_not_ready"]
+    }
+
+    private static func normalizedReasonCodes(_ codes: [String]) -> [String] {
+        var seen = Set<String>()
+        var ordered: [String] = []
+        for raw in codes {
+            let token = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !token.isEmpty, seen.insert(token).inserted else { continue }
+            ordered.append(token)
+        }
+        return ordered
+    }
+
+    private static func normalizedSurfaceLabels(_ labels: [String]) -> [String] {
+        var seen = Set<String>()
+        var ordered: [String] = []
+        for raw in labels {
+            let token = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !token.isEmpty, seen.insert(token).inserted else { continue }
+            ordered.append(token)
+        }
+        return ordered
+    }
+
+    private static func defaultEffectiveSurfaceCapabilityLabels(for rawMode: String) -> [String] {
+        guard let mode = AXProjectRuntimeSurfaceMode(rawValue: rawMode) else {
+            return []
+        }
+
+        switch mode {
+        case .manual:
+            return []
+        case .guided:
+            return ["browser"]
+        case .trustedOpenClawMode:
+            return ["device", "browser", "connector", "extension"]
+        }
+    }
+
+    private static func surfaceCapabilitySummary(_ labels: [String]) -> String {
+        let normalized = normalizedSurfaceLabels(labels)
+        return normalized.isEmpty ? "无" : normalized.joined(separator: " / ")
+    }
+}
+
 struct AXProjectResolvedGovernanceState: Equatable {
     var projectId: String
     var configuredBundle: AXProjectGovernanceBundle
@@ -274,10 +918,15 @@ struct AXProjectResolvedGovernanceState: Equatable {
         set { effectiveRuntimeSurface = newValue }
     }
 
+    var runtimeReadinessSnapshot: AXProjectGovernanceRuntimeReadinessSnapshot {
+        AXProjectGovernanceRuntimeReadinessSnapshot(resolved: self)
+    }
+
     func debugSnapshot() -> [String: JSONValue] {
         let runtimeSurface = effectiveRuntimeSurface
         let projectAIStrengthProfile = supervisorAdaptation.projectAIStrengthProfile
         let schedule = effectiveBundle.schedule
+        let runtimeReadiness = runtimeReadinessSnapshot
         var snapshot: [String: JSONValue] = [:]
         snapshot["project_id"] = .string(projectId)
         snapshot["compat_source"] = .string(compatSource.rawValue)
@@ -320,6 +969,38 @@ struct AXProjectResolvedGovernanceState: Equatable {
         snapshot["trusted_automation_state"] = .string(trustedAutomationStatus.state.rawValue)
         snapshot["trusted_automation_ready"] = .bool(trustedAutomationStatus.trustedAutomationReady)
         snapshot["permission_owner_ready"] = .bool(trustedAutomationStatus.permissionOwnerReady)
+        snapshot["project_governance_runtime_ready"] = .bool(runtimeReadiness.runtimeReady)
+        snapshot["project_governance_runtime_readiness_state"] = .string(runtimeReadiness.state.rawValue)
+        snapshot["project_governance_requires_a4_runtime_ready"] = .bool(runtimeReadiness.requiresA4RuntimeReady)
+        snapshot["project_governance_runtime_readiness_summary"] = .string(runtimeReadiness.summaryLine)
+        snapshot["project_governance_runtime_readiness_missing_summary"] = .string(
+            runtimeReadiness.missingSummaryLine ?? ""
+        )
+        snapshot["project_governance_effective_surface_capabilities"] = .array(
+            runtimeReadiness.effectiveSurfaceCapabilityLabelsResolved.map(JSONValue.string)
+        )
+        snapshot["project_governance_missing_readiness"] = .array(
+            runtimeReadiness.missingReasonCodes.map(JSONValue.string)
+        )
+        for component in runtimeReadiness.componentProjections {
+            snapshot["project_governance_runtime_component_\(component.key.rawValue)_state"] = .string(component.state.rawValue)
+            snapshot["project_governance_runtime_component_\(component.key.rawValue)_summary"] = .string(component.summaryLine)
+            snapshot["project_governance_runtime_component_\(component.key.rawValue)_missing"] = .array(
+                component.missingReasonCodes.map(JSONValue.string)
+            )
+        }
+        snapshot["project_governance_runtime_readiness_components"] = .object(
+            Dictionary(uniqueKeysWithValues: runtimeReadiness.componentProjections.map { component in
+                (
+                    component.key.rawValue,
+                    .object([
+                        "state": .string(component.state.rawValue),
+                        "missing_reason_codes": .array(component.missingReasonCodes.map(JSONValue.string)),
+                        "summary": .string(component.summaryLine)
+                    ])
+                )
+            })
+        )
         snapshot["allowed_capabilities"] = .array(capabilityBundle.allowedCapabilityLabels.map(JSONValue.string))
         return snapshot
     }

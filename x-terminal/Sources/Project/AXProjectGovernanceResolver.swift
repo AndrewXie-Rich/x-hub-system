@@ -169,17 +169,17 @@ enum AXProjectGovernanceResolver {
         let executionTier = bundle.executionTier
         let supervisorTier = bundle.supervisorInterventionTier
 
-        var invalidReasons: [String] = []
+        let invalidReasons: [String] = []
         var warningReasons: [String] = []
 
         if supervisorTier < executionTier.minimumSafeSupervisorTier {
-            invalidReasons.append(
-                "execution_\(executionTier.rawValue)_requires_supervisor_at_least_\(executionTier.minimumSafeSupervisorTier.rawValue)"
+            warningReasons.append(
+                "execution_\(executionTier.rawValue)_is_below_review_reference_\(executionTier.minimumSafeSupervisorTier.rawValue)"
             )
         }
 
         let recommended = executionTier.defaultSupervisorInterventionTier
-        if supervisorTier < recommended && invalidReasons.isEmpty {
+        if supervisorTier < recommended && supervisorTier >= executionTier.minimumSafeSupervisorTier {
             warningReasons.append(
                 "execution_\(executionTier.rawValue)_is_below_recommended_supervision_\(recommended.rawValue)"
             )
@@ -219,7 +219,12 @@ enum AXProjectGovernanceResolver {
         case .manualOnly:
             effectiveTier = configuredTier
         case .raiseOnly, .bidirectional:
-            effectiveTier = max(configuredTier, recommendedTier)
+            // A-Tier recommendations remain advisory by default.
+            // Only explicit AI-strength evidence should auto-raise the effective S-Tier.
+            effectiveTier = configuredTier
+            if let projectAIStrengthProfile {
+                effectiveTier = max(configuredTier, projectAIStrengthProfile.recommendedSupervisorFloor)
+            }
         }
 
         let recommendedWorkOrderDepth = resolvedWorkOrderDepth(
@@ -324,7 +329,10 @@ func xtResolveProjectGovernance(
     legacyAutonomyLevel: AutonomyLevel? = nil
 ) async -> AXProjectResolvedGovernanceState {
     let projectId = AXProjectRegistryStore.projectId(forRoot: projectRoot)
-    let remoteOverride = await HubIPCClient.requestProjectRuntimeSurfaceOverride(projectId: projectId)
+    let remoteOverride = await HubIPCClient.requestProjectRuntimeSurfaceOverride(
+        projectId: projectId,
+        timeoutSec: 0.6
+    )
     return AXProjectGovernanceResolver.resolve(
         projectRoot: projectRoot,
         config: config,

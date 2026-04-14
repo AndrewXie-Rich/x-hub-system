@@ -1,10 +1,20 @@
 # X-Hub Memory-Core Policy v1（可执行规范 / Draft）
 
 - Status: Draft（用于直接落地实现；后续可按版本迭代）
+- Updated: 2026-03-21
 - Applies to: X-Hub（Hub 端记忆系统与维护流水线）+ X-Terminal（终端侧仅做 working set 缓冲与 UI 审核）
 - Design baseline: White paper 的 5-layer memory（Raw Vault / Observations / Longterm / Canonical / Working Set）+ Progressive Disclosure
+- Related:
+  - `docs/memory-new/xhub-memory-scheduler-and-memory-core-runtime-architecture-v1.md`
+  - `docs/memory-new/xhub-memory-core-recipe-asset-versioning-freeze-v1.md`
+  - `docs/memory-new/xhub-memory-model-preferences-and-routing-contract-v1.md`
 
 > 目标：把“记忆维护”变成 Hub 的控制面（control plane），支持多 AI 角色分工协作，但**单写入者 + 强校验 + 全审计 + 可回滚**，避免记忆污染与越权外发。
+
+补充边界：
+- 本文描述的是 `Memory-Core` 规则内容与门禁语义，不再把 `Memory-Core` 理解成单体执行 AI。
+- 运行时控制面固定为：用户在 X-Hub 选择 memory AI，`Scheduler -> Worker -> Writer + Gate` 分层执行。
+- 因此本文中的 policy/rules 负责约束“什么允许、什么禁止、什么能晋升、什么能外发”，不负责代替 Scheduler 做模型选择，也不负责代替 Writer + Gate 直接落库。
 
 ---
 
@@ -758,7 +768,7 @@ danger_score = clamp01(sum(weights_hit))
 ### 7.1 对话注入的默认拼接（Hub 侧组装）
 默认顺序（预算严格）：
 1) System prompt
-2)（触发时）X-Constitution snippet（Pinned L0；见 `docs/xhub-constitution-l0-injection-v1.md`）
+2)（触发时）X-Constitution snippet（Pinned L0；见 `docs/memory-new/xhub-constitution-l0-injection-v2.md`）
 3) Canonical（小而精）
 4) Working Set（最近 N 轮）
 5)（按需）检索片段：Observations/Longterm 的小片段
@@ -853,11 +863,20 @@ POST /api/memory/get
 
 ---
 
-## 8) Policy 文件（可执行配置）：`memory_core_policy.json`
+## 8) Active Policy Materialization（示例）：`memory_core_policy.json`
+
+本节边界要明确：
+
+- `Memory-Core` 的真实身份是 Hub 内建 governed rule asset，而不是“就等于某个 JSON 文件”。
+- `memory_core_policy.json` 在这里应理解为：
+  - 当前 active recipe 的可执行物化快照；或
+  - 本地 runtime 读取的一份 materialized policy view
+- 版本、冷更新、回滚、审计、doctor 真相源不应只靠这一个文件表达，相关冻结见：
+  - `docs/memory-new/xhub-memory-core-recipe-asset-versioning-freeze-v1.md`
 
 ### 8.1 存放位置（建议）
 - 默认：`<hub_base>/memory/memory_core_policy.json`
-- App 首次启动：从 bundle 内置 default 复制一份；后续由 admin 在 Hub UI 修改并写入。
+- App 首次启动：可由当前 active recipe materialize 一份默认视图；后续若仍保留文件落地，也应视为 active recipe 的派生产物，而不是独立绕过版本链的修改入口。
 
 ### 8.2 示例配置（可直接用作 v1）
 ```json

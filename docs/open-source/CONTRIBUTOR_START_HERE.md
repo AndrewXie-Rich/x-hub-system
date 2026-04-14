@@ -87,7 +87,7 @@ Good first changes:
 - targeted fixes in gRPC service handlers
 - provider compatibility and route-readiness improvements
 - audit/event correctness fixes
-- memory retrieval or gating correctness improvements
+- memory retrieval or gating correctness improvements that preserve the existing Hub-side memory control plane
 
 Likely entrypoints:
 
@@ -119,12 +119,15 @@ Open an issue before writing code if the change would do any of the following:
 
 - change protocol contracts in `protocol/`
 - move trust, grant, policy, or audit authority out of the Hub
+- change who chooses the memory executor, move durable memory writes away from `Writer + Gate`, or turn XT / skill runtimes into a new memory authority
 - expand public release claims beyond the validated mainline
 - redesign cross-module architecture
 - rename large parts of the repository
 - weaken fail-closed behavior on high-risk paths
 
 If the change touches trust boundaries, grants, route control, audit integrity, or constitutional guardrails, explain the boundary impact before implementation.
+
+For memory specifically, keep this boundary intact: the user chooses which AI executes memory jobs in X-Hub, `Memory-Core` stays a governed rule asset, and durable writes stay bounded to `Writer + Gate`.
 
 ## Safe First Pull Request Shape
 

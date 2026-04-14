@@ -29,6 +29,7 @@ coverage_xt_w3_40_status="SKIP"
 coverage_crk_w1_08_status="PASS"
 coverage_cm_w5_20_status="PASS"
 coverage_xt_w3_36_required=0
+coverage_supervisor_voice_smoke_report_path="(not checked)"
 coverage_doctor_report_path="(not checked)"
 coverage_secrets_report_path="(not checked)"
 coverage_rollback_report_path="(not checked)"
@@ -1567,47 +1568,102 @@ run_gate_g4() {
   local gate_name="XT-G4 / Reliability"
   local tool_exec="${ROOT_DIR}/Sources/Tools/ToolExecutor.swift"
   local chat_model="${ROOT_DIR}/Sources/Chat/ChatSessionModel.swift"
+  local route_machine="${ROOT_DIR}/Sources/Hub/HubRouteStateMachine.swift"
+  local app_entry="${ROOT_DIR}/Sources/XTerminalApp.swift"
   local xt_parallel_doc="${ROOT_DIR}/work-orders/xterminal-parallel-work-orders-v1.md"
+  local route_smoke_log="/tmp/xt_gate_route_smoke.log"
   local smoke_log="/tmp/xt_gate_grant_smoke.log"
+  local supervisor_voice_smoke_log="/tmp/xt_gate_supervisor_voice_smoke.log"
+  local supervisor_voice_smoke_report="${REPORT_DIR}/xt_supervisor_voice_smoke.runtime.json"
   local xt_cli_binary=""
   xt_cli_binary="$(resolve_xt_cli_binary || true)"
+  coverage_supervisor_voice_smoke_report_path="${supervisor_voice_smoke_report}"
 
-  local smoke_state="pass"
-  if [[ -n "${xt_cli_binary}" ]]; then
-    if (cd "${ROOT_DIR}" && "${xt_cli_binary}" --xt-grant-smoke >"${smoke_log}" 2>&1); then
-      note_pass "${gate_name}: xt-grant-smoke runtime check passed"
-    else
-      if rg -q "Operation not permitted|sandbox_apply: Operation not permitted" "${smoke_log}"; then
-        if [[ "${MODE}" == "strict" ]]; then
-          note_fail "${gate_name}: runtime smoke hit sandbox restriction in strict mode (see ${smoke_log})"
-          smoke_state="fail"
-        else
-          note_warn "${gate_name}: runtime smoke hit local sandbox restriction (baseline mode allows this)"
-          smoke_state="warn"
-        fi
+  run_runtime_smoke() {
+    local smoke_label="$1"
+    local smoke_flag="$2"
+    local log_file="$3"
+    local result_var="$4"
+    shift 4
+    local smoke_args=("$@")
+    local runtime_state="pass"
+    local command=()
+
+    if [[ -n "${xt_cli_binary}" ]]; then
+      command=("${xt_cli_binary}" "${smoke_flag}")
+      if [[ ${#smoke_args[@]} -gt 0 ]]; then
+        command+=("${smoke_args[@]}")
+      fi
+      if (cd "${ROOT_DIR}" && "${command[@]}" >"${log_file}" 2>&1); then
+        note_pass "${gate_name}: ${smoke_label} runtime check passed"
       else
-        note_fail "${gate_name}: xt-grant-smoke failed (see ${smoke_log})"
-        smoke_state="fail"
+        if rg -q "Operation not permitted|sandbox_apply: Operation not permitted" "${log_file}"; then
+          if [[ "${MODE}" == "strict" ]]; then
+            note_fail "${gate_name}: ${smoke_label} hit sandbox restriction in strict mode (see ${log_file})"
+            runtime_state="fail"
+          else
+            note_warn "${gate_name}: ${smoke_label} hit local sandbox restriction (baseline mode allows this)"
+            runtime_state="warn"
+          fi
+        else
+          note_fail "${gate_name}: ${smoke_label} failed (see ${log_file})"
+          runtime_state="fail"
+        fi
+      fi
+    else
+      command=(swift run XTerminal "${smoke_flag}")
+      if [[ ${#smoke_args[@]} -gt 0 ]]; then
+        command+=("${smoke_args[@]}")
+      fi
+      if (cd "${ROOT_DIR}" && "${command[@]}" >"${log_file}" 2>&1); then
+      note_pass "${gate_name}: ${smoke_label} runtime check passed"
+      else
+        if rg -q "Operation not permitted|sandbox_apply: Operation not permitted" "${log_file}"; then
+          if [[ "${MODE}" == "strict" ]]; then
+            note_fail "${gate_name}: ${smoke_label} hit sandbox restriction in strict mode (see ${log_file})"
+            runtime_state="fail"
+          else
+            note_warn "${gate_name}: ${smoke_label} hit local sandbox restriction (baseline mode allows this)"
+            runtime_state="warn"
+          fi
+        else
+          note_fail "${gate_name}: ${smoke_label} failed (see ${log_file})"
+          runtime_state="fail"
+        fi
       fi
     fi
-  elif (cd "${ROOT_DIR}" && swift run XTerminal --xt-grant-smoke >"${smoke_log}" 2>&1); then
-    note_pass "${gate_name}: xt-grant-smoke runtime check passed"
-  else
-    if rg -q "Operation not permitted|sandbox_apply: Operation not permitted" "${smoke_log}"; then
-      if [[ "${MODE}" == "strict" ]]; then
-        note_fail "${gate_name}: runtime smoke hit sandbox restriction in strict mode (see ${smoke_log})"
-        smoke_state="fail"
-      else
-        note_warn "${gate_name}: runtime smoke hit local sandbox restriction (baseline mode allows this)"
-        smoke_state="warn"
-      fi
+
+    printf -v "${result_var}" "%s" "${runtime_state}"
+  }
+
+  local route_smoke_state="pass"
+  local grant_smoke_state="pass"
+  local supervisor_voice_smoke_state="pass"
+  run_runtime_smoke "xt-route-smoke" "--xt-route-smoke" "${route_smoke_log}" route_smoke_state
+  run_runtime_smoke "xt-grant-smoke" "--xt-grant-smoke" "${smoke_log}" grant_smoke_state
+  run_runtime_smoke \
+    "xt-supervisor-voice-smoke" \
+    "--xt-supervisor-voice-smoke" \
+    "${supervisor_voice_smoke_log}" \
+    supervisor_voice_smoke_state \
+    "--project-root" "${ROOT_DIR}" \
+    "--out-json" "${supervisor_voice_smoke_report}"
+  if [[ "${supervisor_voice_smoke_state}" == "pass" ]]; then
+    if [[ -f "${supervisor_voice_smoke_report}" ]]; then
+      note_pass "${gate_name}: xt-supervisor-voice-smoke report captured (${supervisor_voice_smoke_report})"
     else
-      note_fail "${gate_name}: xt-grant-smoke failed (see ${smoke_log})"
-      smoke_state="fail"
+      note_fail "${gate_name}: xt-supervisor-voice-smoke passed but report is missing (${supervisor_voice_smoke_report})"
+      supervisor_voice_smoke_state="fail"
     fi
   fi
 
   local static_ok=1
+  if ! check_pattern_fixed "${route_machine}" "static func runSelfChecks()" "${gate_name}" "route state self-check contract"; then
+    static_ok=0
+  fi
+  if ! check_pattern_fixed "${chat_model}" "/hub route selftest" "${gate_name}" "slash route selftest hook"; then
+    static_ok=0
+  fi
   if ! check_pattern_fixed "${tool_exec}" "scanHighRiskGrantBypass(" "${gate_name}" "grant bypass scan hook"; then
     static_ok=0
   fi
@@ -1617,6 +1673,9 @@ run_gate_g4() {
   if ! check_pattern_fixed "${chat_model}" "performSlashGrantCommand(" "${gate_name}" "slash grant command hook"; then
     static_ok=0
   fi
+  if ! check_pattern_fixed "${app_entry}" "static let supervisorVoiceSmokeFlag = \"--xt-supervisor-voice-smoke\"" "${gate_name}" "supervisor voice smoke flag"; then
+    static_ok=0
+  fi
   if ! check_pattern_fixed "${xt_parallel_doc}" "WS unauthorized flood breaker" "${gate_name}" "CRK-W1-08 flood breaker static contract"; then
     static_ok=0
   fi
@@ -1624,13 +1683,13 @@ run_gate_g4() {
     static_ok=0
   fi
 
-  if [[ "${smoke_state}" == "pass" && ${static_ok} -eq 1 ]]; then
-    note_pass "${gate_name}: xt-grant-smoke + 新增静态检查同时通过"
-  elif [[ "${smoke_state}" == "warn" && ${static_ok} -eq 1 && "${MODE}" != "strict" ]]; then
-    note_warn "${gate_name}: xt-grant-smoke blocked by local sandbox but static checks passed (baseline mode)"
+  if [[ "${route_smoke_state}" == "pass" && "${grant_smoke_state}" == "pass" && "${supervisor_voice_smoke_state}" == "pass" && ${static_ok} -eq 1 ]]; then
+    note_pass "${gate_name}: xt-route-smoke + xt-grant-smoke + xt-supervisor-voice-smoke + 新增静态检查同时通过"
+  elif [[ "${route_smoke_state}" != "fail" && "${grant_smoke_state}" != "fail" && "${supervisor_voice_smoke_state}" != "fail" && ${static_ok} -eq 1 && "${MODE}" != "strict" && ( "${route_smoke_state}" == "warn" || "${grant_smoke_state}" == "warn" || "${supervisor_voice_smoke_state}" == "warn" ) ]]; then
+    note_warn "${gate_name}: route/grant/supervisor-voice smokes blocked by local sandbox but static checks passed (baseline mode)"
     mark_status_warn coverage_xt_w3_08_status
   else
-    note_fail "${gate_name}: xt-grant-smoke + 新增静态检查未同时通过"
+    note_fail "${gate_name}: xt-route-smoke + xt-grant-smoke + xt-supervisor-voice-smoke + 新增静态检查未同时通过"
     mark_status_fail coverage_xt_w3_08_status
   fi
 }
@@ -1643,6 +1702,18 @@ run_gate_g5() {
   local cm_validator="${ROOT_DIR}/scripts/ci/cm_w5_20_report_validator.js"
   local cm_regression_script="${ROOT_DIR}/scripts/ci/cm_w5_20_gate_regression.js"
   local project_reports_dir="${ROOT_DIR}/.axcoder/reports"
+  local heartbeat_doctor_snapshot_source="${ROOT_DIR}/Sources/Supervisor/HeartbeatGovernanceDoctorSnapshot.swift"
+  local heartbeat_canonical_sync_source="${ROOT_DIR}/Sources/Supervisor/SupervisorProjectHeartbeatCanonicalSync.swift"
+  local heartbeat_memory_projection_source="${ROOT_DIR}/Sources/Supervisor/XTHeartbeatMemoryProjectionStore.swift"
+  local xt_unified_doctor_source="${ROOT_DIR}/Sources/UI/XTUnifiedDoctor.swift"
+  local xt_doctor_projection_source="${ROOT_DIR}/Sources/UI/XTDoctorProjectionPresentation.swift"
+  local xhub_doctor_output_source="${ROOT_DIR}/Sources/UI/XHubDoctorOutput.swift"
+  local heartbeat_canonical_sync_tests="${ROOT_DIR}/Tests/SupervisorProjectHeartbeatCanonicalSyncTests.swift"
+  local heartbeat_memory_projection_tests="${ROOT_DIR}/Tests/XTHeartbeatMemoryProjectionStoreTests.swift"
+  local xt_unified_doctor_report_tests="${ROOT_DIR}/Tests/XTUnifiedDoctorReportTests.swift"
+  local xhub_doctor_output_tests="${ROOT_DIR}/Tests/XHubDoctorOutputTests.swift"
+  local xt_unified_doctor_contract_schema="${ROOT_DIR}/../docs/memory-new/schema/xt_unified_doctor_report_contract.v1.json"
+  local xhub_doctor_output_contract_schema="${ROOT_DIR}/../docs/memory-new/schema/xhub_doctor_output_contract.v1.json"
 
   local doctor_report
   doctor_report="$(resolve_first_existing_file "${XT_DOCTOR_REPORT:-${REPORT_DIR}/doctor-report.json}" \
@@ -1711,6 +1782,121 @@ run_gate_g5() {
       cm_warn=1
       crk_warn=1
     fi
+  fi
+
+  if ! check_pattern_fixed "${xt_unified_doctor_source}" "heartbeatGovernanceProjection" "${gate_name}" "XT unified doctor heartbeat governance structured projection"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xt_doctor_projection_source}" "XTDoctorHeartbeatGovernancePresentation" "${gate_name}" "XT doctor heartbeat governance summary presentation"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xhub_doctor_output_source}" "heartbeat_governance_snapshot" "${gate_name}" "generic doctor export heartbeat governance snapshot"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xt_unified_doctor_contract_schema}" "\"heartbeatGovernanceProjection\"" "${gate_name}" "XT unified doctor contract heartbeat governance schema field"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xhub_doctor_output_contract_schema}" "\"heartbeat_governance_snapshot\"" "${gate_name}" "generic doctor export heartbeat governance schema field"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xt_unified_doctor_source}" "hubMemoryPromptProjection" "${gate_name}" "XT unified doctor Hub prompt projection structured field"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xt_doctor_projection_source}" "XTDoctorHubMemoryPromptProjectionPresentation" "${gate_name}" "XT doctor Hub prompt projection summary presentation"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xhub_doctor_output_source}" "hub_memory_prompt_projection" "${gate_name}" "generic doctor export Hub prompt projection snapshot"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xt_unified_doctor_contract_schema}" "\"hubMemoryPromptProjection\"" "${gate_name}" "XT unified doctor contract Hub prompt projection schema field"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xhub_doctor_output_contract_schema}" "\"hub_memory_prompt_projection\"" "${gate_name}" "generic doctor export Hub prompt projection schema field"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xt_unified_doctor_report_tests}" "hub_memory_prompt_projection_projection_source=hub_generate_done_metadata" "${gate_name}" "XT doctor report tests keep Hub prompt projection detail-line evidence"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xhub_doctor_output_tests}" "exportsHubMemoryPromptProjectionFromSessionRuntimeSection" "${gate_name}" "generic doctor output tests keep Hub prompt projection export evidence"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${heartbeat_doctor_snapshot_source}" "heartbeat_open_anomalies=" "${gate_name}" "heartbeat doctor snapshot anomaly detail line"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${heartbeat_doctor_snapshot_source}" "heartbeat_effective_cadence progress=" "${gate_name}" "heartbeat doctor snapshot cadence detail line"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${heartbeat_doctor_snapshot_source}" "heartbeat_digest_visibility=" "${gate_name}" "heartbeat doctor snapshot digest visibility detail line"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${heartbeat_doctor_snapshot_source}" "heartbeat_digest_reason_codes=" "${gate_name}" "heartbeat doctor snapshot digest reason detail line"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${heartbeat_doctor_snapshot_source}" "heartbeat_next_review_due kind=" "${gate_name}" "heartbeat doctor snapshot next review detail line"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xt_unified_doctor_source}" "prefix: \"heartbeat_open_anomalies=\"" "${gate_name}" "XT unified doctor heartbeat anomaly parser"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xt_unified_doctor_source}" "prefix: \"heartbeat_digest_visibility=\"" "${gate_name}" "XT unified doctor heartbeat digest visibility parser"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xt_unified_doctor_source}" "prefix: \"heartbeat_digest_reason_codes=\"" "${gate_name}" "XT unified doctor heartbeat digest reason parser"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xhub_doctor_output_source}" "case digestVisibility = \"digest_visibility\"" "${gate_name}" "generic doctor export heartbeat digest visibility field"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xhub_doctor_output_source}" "case digestReasonCodes = \"digest_reason_codes\"" "${gate_name}" "generic doctor export heartbeat digest reason field"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xt_unified_doctor_contract_schema}" "\"digestVisibility\"" "${gate_name}" "XT doctor contract heartbeat digest visibility field"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xt_unified_doctor_contract_schema}" "\"digestReasonCodes\"" "${gate_name}" "XT doctor contract heartbeat digest reason field"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xt_unified_doctor_contract_schema}" "\"projectMemoryReady\"" "${gate_name}" "XT doctor contract heartbeat project-memory readiness field"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xhub_doctor_output_contract_schema}" "\"digest_visibility\"" "${gate_name}" "generic doctor contract heartbeat digest visibility field"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xhub_doctor_output_contract_schema}" "\"digest_reason_codes\"" "${gate_name}" "generic doctor contract heartbeat digest reason field"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xhub_doctor_output_contract_schema}" "\"project_memory_ready\"" "${gate_name}" "generic doctor contract heartbeat project-memory readiness field"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${heartbeat_canonical_sync_source}" "xterminal.project.heartbeat" "${gate_name}" "heartbeat canonical sync key prefix"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${heartbeat_canonical_sync_source}" "\"digest_visibility\"" "${gate_name}" "heartbeat canonical sync digest visibility field"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${heartbeat_memory_projection_source}" "\"routine_heartbeat_not_promoted\"" "${gate_name}" "heartbeat layer mapping longterm discipline guard"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${heartbeat_memory_projection_source}" "hub://project/" "${gate_name}" "heartbeat layer mapping canonical ref"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${heartbeat_canonical_sync_tests}" "xterminal.project.heartbeat.recovery_action" "${gate_name}" "heartbeat canonical sync test keeps recovery projection evidence"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${heartbeat_memory_projection_tests}" "routine_heartbeat_not_promoted" "${gate_name}" "heartbeat projection tests keep longterm filtering evidence"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${heartbeat_memory_projection_tests}" "digest_suppressed" "${gate_name}" "heartbeat projection tests keep working-set suppression evidence"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xt_unified_doctor_report_tests}" "heartbeat_digest_reason_codes=stable_runtime_update_suppressed" "${gate_name}" "XT doctor report fixture keeps digest suppression evidence"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xhub_doctor_output_tests}" "stable_runtime_update_suppressed" "${gate_name}" "generic doctor output tests keep digest suppression evidence"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_regex "${xhub_doctor_output_tests}" "openAnomalyTypes: \\[\\.(weakDoneClaim|queueStall)\\]" "${gate_name}" "generic doctor output tests keep anomaly evidence"; then
+    cm_fail=1
   fi
 
   if [[ -f "${secrets_report}" ]]; then
@@ -1850,6 +2036,7 @@ render_report() {
     echo "- XT-W3-40: ${coverage_xt_w3_40_status}"
     echo "- CRK-W1-08: ${coverage_crk_w1_08_status}"
     echo "- CM-W5-20: ${coverage_cm_w5_20_status}"
+    echo "- evidence.supervisor_voice_smoke_report: ${coverage_supervisor_voice_smoke_report_path}"
     echo "- evidence.doctor_report: ${coverage_doctor_report_path}"
     echo "- evidence.secrets_dry_run_report: ${coverage_secrets_report_path}"
     echo "- evidence.rollback_verify_report: ${coverage_rollback_report_path}"
@@ -1915,6 +2102,7 @@ render_report() {
   COVERAGE_XT_W3_40="${coverage_xt_w3_40_status}" \
   COVERAGE_CRK_W1_08="${coverage_crk_w1_08_status}" \
   COVERAGE_CM_W5_20="${coverage_cm_w5_20_status}" \
+  EVIDENCE_SUPERVISOR_VOICE_SMOKE_REPORT="${coverage_supervisor_voice_smoke_report_path}" \
   EVIDENCE_DOCTOR_REPORT="${coverage_doctor_report_path}" \
   EVIDENCE_SECRETS_REPORT="${coverage_secrets_report_path}" \
   EVIDENCE_ROLLBACK_REPORT="${coverage_rollback_report_path}" \
@@ -1971,6 +2159,7 @@ const report = {
   },
   evidence: {
     xt_gate_report: process.env.REPORT_FILE || "",
+    supervisor_voice_smoke_report: process.env.EVIDENCE_SUPERVISOR_VOICE_SMOKE_REPORT || "",
     doctor_report: process.env.EVIDENCE_DOCTOR_REPORT || "",
     secrets_dry_run_report: process.env.EVIDENCE_SECRETS_REPORT || "",
     rollback_verify_report: process.env.EVIDENCE_ROLLBACK_REPORT || "",

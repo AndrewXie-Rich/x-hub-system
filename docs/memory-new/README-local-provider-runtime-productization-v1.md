@@ -1,6 +1,6 @@
 # X-Hub Local Provider Runtime Productization README
 
-Last updated: `2026-03-15`
+Last updated: `2026-03-25`
 
 Scope:
 - `LPR-W3-05` Provider-aware Warmup / Unload / Instance Lifecycle
@@ -20,11 +20,14 @@ What is already true:
 - MLX text generation path exists and remains the legacy compatibility baseline.
 - Local Provider Runtime already supports non-MLX task execution for `embedding`, `speech_to_text`, and `vision_understand` preview paths.
 - Per-device load profile and context-length controls were added in `LPR-W3-04-A/B/C`, so runtime identity is no longer only `model_id`; it can now resolve by effective load profile and device.
+- Hub 模型库的空状态与 runtime truth 文案已开始按 provider-aware 口径收口，不再默认把本地模型入口讲成 “MLX-only” 产品路径。
+- Hub 的通知 / 修复入口也开始按真实设备边界收口：来自 `X-Terminal` 的 grant、runtime、缺背景等事件默认走 inspect-first + 可复制摘要，而不是假设 Hub 和 Terminal 在同一台机器上、可以直接用一个 `Open` 按钮解决。
 
 What is not finished yet:
-- `LPR-W3-05 / W3-06 / W3-07 / W3-08` are now delivered under `LPR-G5`, but `LPR-G6` still needs require-real smoke with actual local model directories.
+- `LPR-W3-05 / W3-06 / W3-07 / W3-08` are now delivered under `LPR-G5`, and `LPR-G6` now has require-real execution evidence on real local model directories plus export-backed closure artifacts.
 - `process_local` providers intentionally remain on-demand; only `runtime_process` providers can truthfully expose Hub `Warmup / Unload`.
 - resident lifecycle, bench, and monitor now share one control plane, but they still need a real-machine validation pass for memory pressure and eviction behavior.
+- `W9-C5` now has a single fail-closed closure artifact at `build/reports/w9_c5_require_real_closure_evidence.v1.json`; that artifact is now the authoritative closure reference for require-real status, while the remaining work moves to packaged shell hardening and broader provider expansion.
 
 The product target is not "support more loaders."
 The product target is "make local models governable and useful through one Hub control plane."
@@ -85,17 +88,17 @@ Start reusing the same product shape:
 
 If the question is "can Hub already load non-MLX models," the answer is:
 - yes for the supported local task kinds and product path
-- with the remaining caveat that require-real smoke is still pending
+- with require-real execution now evidenced on real local model directories and inputs
 
 If the question is "can Hub UI already use Bench to evaluate these models," the answer is:
 - yes
-- Bench v2 is delivered, but it still needs require-real fixture runs on actual user model directories
+- Bench v2 is delivered, and its require-real evidence pack now covers real user-local model directories and inputs
 
 In practical terms:
 - runtime-side Transformers execution exists for the currently supported local task kinds
 - per-device effective context and load-profile resolution exists
 - Hub now has the common lifecycle, routing, monitor, and bench layers needed for normal operators
-- the remaining gap is proof on real local model directories rather than missing product surfaces
+- require-real proof on real local model directories is already captured; the remaining gap is packaged shell hardening, provider expansion, and memory-pressure/eviction validation
 
 ## What Already Landed
 
@@ -138,16 +141,18 @@ It is not yet enough to become the best local-model product surface.
 
 The next tranche is therefore fixed as:
 
-1. `LPR-W3-03` require-real closure
-2. `LPR-W4-01` managed provider pack / engine manifest
-3. `LPR-W4-02` managed runtime bundle / dependency isolation
-4. `LPR-W4-03` typed load config + loaded instance contract
-5. `LPR-W4-04` Add Model / library UX simplification
-6. `LPR-W4-05` loaded models / runtime operations console
-7. `LPR-W4-06` bench + monitor fusion
-8. `LPR-W4-07` `mlx_vlm` provider pack
-9. `LPR-W4-08` `llama.cpp` / GGUF provider pack
-10. `LPR-W4-09` product exit / migration / require-real closure
+1. `LPR-W4-01` managed provider pack / engine manifest
+2. `LPR-W4-02` managed runtime bundle / dependency isolation
+3. `LPR-W4-03` typed load config + loaded instance contract
+4. `LPR-W4-04` Add Model / library UX simplification
+5. `LPR-W4-05` loaded models / runtime operations console
+6. `LPR-W4-06` bench + monitor fusion
+7. `LPR-W4-07` `mlx_vlm` provider pack
+8. `LPR-W4-08` `llama.cpp` / GGUF provider pack
+9. `LPR-W4-09` product exit / migration / require-real closure
+
+As of 2026-03-27, `LPR-W3-03` require-real closure and `LPR-W4-04 / W4-05 / W4-06 / W4-07 / W4-08` are already delivered candidates on the current branch.
+The remaining forward product path is `LPR-W4-09`, and its `LPR-W4-09-A` matrix has now been reduced to one remaining release-facing artifact: `transformers_embed_asr`.
 
 Why this order is correct:
 - provider packs come before new backends because otherwise `mlx_vlm` and `llama.cpp` will become one-off integrations
@@ -174,10 +179,10 @@ Why this order is correct:
 
 | Workstream | Status | Immediate Value | Depends On | Blocks |
 |---|---|---|---|---|
-| `LPR-W3-05` | `delivered` | gives Hub a real lifecycle control plane | `LPR-W3-04-C` | require-real smoke |
-| `LPR-W3-08` | `delivered` | lets users bind models to real tasks | `LPR-W3-05` | require-real smoke |
-| `LPR-W3-07` | `delivered` | gives operators usable runtime truth | `LPR-W3-05`, `LPR-W3-08` | require-real smoke |
-| `LPR-W3-06` | `delivered` | turns bench into task-aware capability summary | `LPR-W3-05`, `LPR-W3-07`, `LPR-W3-08` | require-real fixture runs |
+| `LPR-W3-05` | `delivered` | gives Hub a real lifecycle control plane | `LPR-W3-04-C` | closure evidence captured |
+| `LPR-W3-08` | `delivered` | lets users bind models to real tasks | `LPR-W3-05` | closure evidence captured |
+| `LPR-W3-07` | `delivered` | gives operators usable runtime truth | `LPR-W3-05`, `LPR-W3-08` | closure evidence captured |
+| `LPR-W3-06` | `delivered` | turns bench into task-aware capability summary | `LPR-W3-05`, `LPR-W3-07`, `LPR-W3-08` | closure evidence captured |
 
 ## Detailed Execution Plan
 
@@ -335,7 +340,7 @@ Paths:
 
 Definition of done:
 - model cards support `Use For...`
-- at minimum, users can bind `Generate / Embedding / ASR / Vision / OCR`
+- at minimum, users can bind `Generate / Embedding / ASR / Voice / Vision / OCR`
 - paired terminal view can show device-level override
 - UI shows routing source clearly
 
@@ -605,9 +610,16 @@ Guardrails:
 
 The next implementation entry point is:
 
-- `LPR-W3-03` require-real closure, then `LPR-W4-01` Managed Provider Pack / Engine Manifest
+- mainline product contract: `LPR-W4-03-C` Hub/X-Terminal typed load-config consumer-surface unification
+- current remaining slice inside that contract: continue the remaining X-Terminal consumer surfaces after doctor/export + picker/settings summaries have started reading the typed load-config contract
+- release-facing follow-through in parallel: keep packaged shell / provider truth / capability-matrix wording aligned with the now-ready `W9-C5` closure artifact
 
 Reason:
-- W3 is already functionally closed enough for real use, but not yet release-credible without require-real
-- once require-real is in place, provider-pack inventory becomes the single highest-leverage next step
-- that step prevents `mlx_vlm`, `llama.cpp`, and future local runtimes from repeating the current ad-hoc dependency pattern
+- `LPR-W4-03-A` 已补到 Node contract 与 evidence：当前机器 `build/reports/lpr_w4_03_a_typed_load_config_evidence.v1.json` 已拿到 `PASS(typed_load_config_contract_captured)`
+- Hub 侧 consumer adoption 已拿到 focused green：runtime schema、runtime summary、diagnostics export、settings panel、main panel 文案都开始消费 `load_config_hash / current_context_length / max_context_length / load_config`，且 monitor export / request payload 已开始把这些 typed alias 写回结构化 JSON
+- `LPR-W4-03-B` 的 `ttl` truth 已补到 loaded instance 顶层字段，scheduler active task 也已补齐真实 `lease_ttl_sec / lease_remaining_ttl_sec / expires_at`；Node / Python / Hub Swift / X-Terminal decode 已通过 focused verification
+- `LPR-W4-03-C` 的 schema residual 又收了一刀：`default_load_config` 现在已被 Node model-record reader、Python runtime normalizer、Hub Swift schema、XT Swift schema 和 manifest decode 统一接受，`default_load_profile` 保留为 legacy alias，不再要求 consumer 只懂旧 key 才能吃到 typed load config
+- `LPR-W4-03-C` 已不再是纯待办：XT 现已消费 `local_runtime_monitor_snapshot.redacted.json` 的 load-summary 信息，XT-ready incident export / status / board 与 Hub runtime diagnosis 都能显式看到 `hub_runtime_load_config` / `ctx / ttl / par / id` 摘要；模型设置与 picker 已收口到 typed load-config 词汇，不再在 fallback 文案里退回“Hub 默认上下文 / 本地上限”；本轮又把 `/models`、`/route diagnose`、Supervisor system prompt 与 Hub runtime 尾部 fallback 文案继续统一到 `默认加载配置 / 本地加载上限`
+- `LPR-W4-01` provider packs and `LPR-W4-02` runtime inventory are now machine-readable enough that load config can stop hanging off legacy `default_load_profile + effective_context_length`
+- `LPR-W3-03` require-real closure is now in the ready state, so release credibility no longer depends on “pending smoke” wording; the remaining release-facing task is to keep README / capability matrix / packaged shell language aligned with that ready artifact
+- the next risk is no longer schema absence or `ttl` omission; the primary XT chat/supervisor surfaces are now on the typed load-config vocabulary, and focused grep is clean for legacy wording in `x-terminal/Sources/{Chat,Supervisor,UI}`. The remaining release risk is that `progress` must stay fail-closed until the upstream runtime can report real values.

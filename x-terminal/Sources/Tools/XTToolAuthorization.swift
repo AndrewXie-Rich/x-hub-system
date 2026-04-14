@@ -172,6 +172,10 @@ func xtToolAuthorizationDecision(
     config: AXProjectConfig,
     projectRoot: URL
 ) async -> XTToolAuthorizationDecision {
+    let governedRepoCommandProfile = call.tool == .run_command
+        ? xtGovernedRepoCommandProfile(for: call)
+        : nil
+
     let deviceGateTools = xtToolAuthorizationDeviceGateTools(for: call.tool)
     if !deviceGateTools.isEmpty {
         let permissionReadiness = await MainActor.run {
@@ -200,11 +204,17 @@ func xtToolAuthorizationDecision(
         config: config,
         effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
     )
-    guard runtimePolicyDecision.allowed else {
-        return .denyRuntime(
-            runtimePolicyDecision,
-            effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
-        )
+    if !runtimePolicyDecision.allowed {
+        let shouldDeferRunCommandToolPolicyDecision =
+            call.tool == .run_command
+            && runtimePolicyDecision.policySource == "project_tool_policy"
+            && runtimePolicyDecision.policyReason == "tool_not_allowed"
+        if shouldDeferRunCommandToolPolicyDecision == false {
+            return .denyRuntime(
+                runtimePolicyDecision,
+                effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
+            )
+        }
     }
 
     let effectiveRisk: ToolRisk
@@ -214,10 +224,6 @@ func xtToolAuthorizationDecision(
         effectiveRisk = ToolPolicy.risk(for: call)
     }
 
-    let governedRepoCommandProfile = call.tool == .run_command
-        ? xtGovernedRepoCommandProfile(for: call)
-        : nil
-
     if call.tool == .run_command,
        effectiveRisk == .needsConfirm,
        governedRepoCommandProfile == nil {
@@ -225,6 +231,15 @@ func xtToolAuthorizationDecision(
             risk: .needsConfirm,
             policySource: "governed_command_guard",
             policyReason: "command_outside_governed_repo_allowlist"
+        )
+    }
+
+    if call.tool == .run_command,
+       effectiveRisk == .alwaysConfirm {
+        return .ask(
+            risk: .alwaysConfirm,
+            policySource: "always_confirm_guard",
+            policyReason: "dangerous_run_command"
         )
     }
 

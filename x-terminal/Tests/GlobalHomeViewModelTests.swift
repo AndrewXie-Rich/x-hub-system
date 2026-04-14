@@ -36,7 +36,7 @@ struct GlobalHomeViewModelTests {
             )
         )
         #expect(disconnected.primaryStatus.state == .blockedWaitingUpstream)
-        #expect(disconnected.primaryStatus.userAction.contains("Pair Hub"))
+        #expect(disconnected.primaryStatus.userAction.contains("连接 Hub"))
         #expect(disconnected.actions.first?.id == "pair_hub")
         #expect(disconnected.badge.badgeText == "Validated mainline only")
 
@@ -50,7 +50,7 @@ struct GlobalHomeViewModelTests {
             )
         )
         #expect(grantRequired.primaryStatus.state == .grantRequired)
-        #expect(grantRequired.primaryStatus.hardLine == "grant_fail_closed must remain visible")
+        #expect(grantRequired.primaryStatus.hardLine == "授权完成前，不自动继续")
         #expect(grantRequired.actions.first?.id == "resume_project")
 
         let ready = GlobalHomePresentation.map(
@@ -63,18 +63,98 @@ struct GlobalHomeViewModelTests {
             )
         )
         #expect(ready.primaryStatus.state == .ready)
-        #expect(ready.primaryStatus.headline.contains("Project watchlist"))
+        #expect(ready.primaryStatus.headline.contains("项目总览已同步"))
         #expect(ready.actions.first?.id == "resume_project")
         #expect(
             ready.actions.first(where: { $0.id == "model_status" })?.title
-                == "Supervisor 控制中心"
+                == "打开 Supervisor"
         )
         #expect(
             ready.actions.first(where: { $0.id == "model_status" })?.subtitle
-                == "统一查看 AI 模型、治理边界与 Hub 真实可用视图"
+                == "统一查看 AI 模型、项目状态和真实可用视图"
         )
-        #expect(ready.releaseStatus.state == .releaseFrozen)
+        #expect(ready.releaseStatus.state == .ready)
         #expect(ready.consumedFrozenFields.contains("xt.ui_release_scope_badge.v1.badge_text"))
+    }
+
+    @Test
+    func globalHomeProjectRowsBindGovernanceSummaryToWatchlistConfiguration() {
+        let configuration = ProjectGovernanceCompactSummarySurfaceConfiguration.watchlist
+        #expect(configuration.showAxisLegend)
+        #expect(configuration.displayStyle == .watchlist)
+
+        let steadyPresentation = ProjectGovernancePresentation(
+            executionTier: .a2RepoAuto,
+            supervisorInterventionTier: .s2PeriodicReview,
+            reviewPolicyMode: .hybrid,
+            progressHeartbeatSeconds: 900,
+            reviewPulseSeconds: 1800,
+            brainstormReviewSeconds: 0,
+            eventDrivenReviewEnabled: true
+        )
+        let steadyItems = ProjectGovernanceCompactMetaResolver.items(
+            context: ProjectGovernanceCompactMetaResolver.context(
+                presentation: steadyPresentation,
+                displayStyle: configuration.displayStyle
+            ),
+            showAxisLegend: configuration.showAxisLegend,
+            showCallout: true,
+            displayStyle: configuration.displayStyle
+        )
+
+        #expect(steadyItems.map(\.kind) == [.axisLegend, .truthLine])
+        #expect(steadyItems[0].text == "三轴：A 管执行，S 管监督，节奏管 review")
+        #expect(steadyItems[1].text.contains("当前生效 A2/S2"))
+
+        let highRiskPresentation = ProjectGovernancePresentation(
+            executionTier: .a4OpenClaw,
+            supervisorInterventionTier: .s1MilestoneReview,
+            reviewPolicyMode: .hybrid,
+            progressHeartbeatSeconds: 600,
+            reviewPulseSeconds: 1200,
+            brainstormReviewSeconds: 2400,
+            eventDrivenReviewEnabled: true
+        )
+        let highRiskItems = ProjectGovernanceCompactMetaResolver.items(
+            context: ProjectGovernanceCompactMetaResolver.context(
+                presentation: highRiskPresentation,
+                displayStyle: configuration.displayStyle
+            ),
+            showAxisLegend: configuration.showAxisLegend,
+            showCallout: true,
+            displayStyle: configuration.displayStyle
+        )
+
+        #expect(highRiskItems.map(\.kind) == [.axisLegend, .callout])
+        #expect(highRiskItems[1].text.contains("高风险组合"))
+    }
+
+    @Test
+    func denseGovernanceSummarySurfacesExposeLatestGovernedRuntimeModelLine() {
+        let presentation = ProjectGovernancePresentation(
+            executionTier: .a4OpenClaw,
+            supervisorInterventionTier: .s3StrategicCoach,
+            reviewPolicyMode: .hybrid,
+            progressHeartbeatSeconds: 600,
+            reviewPulseSeconds: 1200,
+            brainstormReviewSeconds: 2400,
+            eventDrivenReviewEnabled: true
+        )
+
+        let items = ProjectGovernanceCompactMetaResolver.items(
+            context: ProjectGovernanceCompactMetaResolver.context(
+                presentation: presentation,
+                displayStyle: .dense
+            ),
+            showAxisLegend: true,
+            showCallout: true,
+            displayStyle: .dense
+        )
+
+        #expect(items.first?.kind == .axisLegend)
+        #expect(items[1].kind == .governanceModel)
+        #expect(items[1].text.contains("双环治理"))
+        #expect(items[1].text.contains("角色记忆"))
     }
 
     @Test
@@ -107,13 +187,108 @@ struct GlobalHomeViewModelTests {
         )
 
         #expect(presentation.primaryStatus.state == .permissionDenied)
-        #expect(presentation.primaryStatus.headline.contains("permission_denied"))
+        #expect(presentation.primaryStatus.headline.contains("权限拒绝"))
         #expect(presentation.primaryStatus.userAction.contains("continue_current_task_only"))
-        #expect(presentation.releaseStatus.state == .blockedWaitingUpstream)
-        #expect(presentation.releaseStatus.machineStatusRef.contains("allowed_public_statements=3"))
+        #expect(presentation.releaseStatus.state == .permissionDenied)
+        #expect(presentation.releaseStatus.machineStatusRef.contains("freeze=no_go"))
+        #expect(presentation.primaryStatus.highlights.contains("top_launch_issue=permission_denied"))
         #expect(presentation.consumedFrozenFields.contains("xt.unblock_baton.v1.next_action"))
         #expect(presentation.consumedFrozenFields.contains("xt.one_shot_autonomy_policy.v1.auto_launch_policy"))
         #expect(presentation.consumedFrozenFields.contains("xt.one_shot_replay_regression.v1.scenarios"))
+    }
+
+    @Test
+    func launchDenyTaxonomyKeepsHomeFailClosedForModelConnectorPaidAndConnectivityIssues() {
+        let modelNotReady = GlobalHomePresentation.map(
+            input: GlobalHomePresentationInput(
+                hubInteractive: true,
+                projectCount: 1,
+                runningProjectCount: 0,
+                pendingGrantCount: 0,
+                highlightedProjectName: "Atlas",
+                deniedLaunchCount: 1,
+                topLaunchDenyCode: "provider_not_ready"
+            )
+        )
+        #expect(modelNotReady.primaryStatus.state == .diagnosticRequired)
+        #expect(modelNotReady.primaryStatus.headline.contains("还没 ready"))
+        #expect(modelNotReady.primaryStatus.userAction.contains("Supervisor"))
+        #expect(modelNotReady.primaryStatus.hardLine == "模型链路恢复前，不继续推进")
+
+        let connectorScopeBlocked = GlobalHomePresentation.map(
+            input: GlobalHomePresentationInput(
+                hubInteractive: true,
+                projectCount: 1,
+                runningProjectCount: 0,
+                pendingGrantCount: 0,
+                highlightedProjectName: "Atlas",
+                deniedLaunchCount: 1,
+                topLaunchDenyCode: "grant_required;deny_code=remote_export_blocked"
+            )
+        )
+        #expect(connectorScopeBlocked.primaryStatus.state == .diagnosticRequired)
+        #expect(connectorScopeBlocked.primaryStatus.headline.contains("安全边界"))
+        #expect(connectorScopeBlocked.primaryStatus.userAction.contains("XT 设置 → 诊断"))
+        #expect(connectorScopeBlocked.primaryStatus.hardLine == "安全边界解除前，不继续放行")
+
+        let paidModelBlocked = GlobalHomePresentation.map(
+            input: GlobalHomePresentationInput(
+                hubInteractive: true,
+                projectCount: 1,
+                runningProjectCount: 0,
+                pendingGrantCount: 0,
+                highlightedProjectName: "Atlas",
+                deniedLaunchCount: 1,
+                topLaunchDenyCode: "device_paid_model_not_allowed"
+            )
+        )
+        #expect(paidModelBlocked.primaryStatus.state == .diagnosticRequired)
+        #expect(paidModelBlocked.primaryStatus.headline.contains("付费模型访问受阻"))
+        #expect(paidModelBlocked.primaryStatus.userAction.contains("模型与付费访问"))
+        #expect(paidModelBlocked.primaryStatus.hardLine == "付费模型访问恢复前，不继续放行")
+
+        let connectivityBlocked = GlobalHomePresentation.map(
+            input: GlobalHomePresentationInput(
+                hubInteractive: true,
+                projectCount: 1,
+                runningProjectCount: 0,
+                pendingGrantCount: 0,
+                highlightedProjectName: "Atlas",
+                deniedLaunchCount: 1,
+                topLaunchDenyCode: "grpc_unavailable"
+            )
+        )
+        #expect(connectivityBlocked.primaryStatus.state == .blockedWaitingUpstream)
+        #expect(connectivityBlocked.primaryStatus.headline.contains("先修连接"))
+        #expect(connectivityBlocked.primaryStatus.userAction.contains("XT 设置 → 连接 Hub"))
+        #expect(connectivityBlocked.primaryStatus.hardLine == "连接恢复前，不继续推进")
+    }
+
+    @Test
+    func projectHomeEntryControlsRouteThroughApprovalOrSupervisorOnly() {
+        let pendingApproval = ProjectHomeEntryControlPresentation.make(
+            pendingCount: 2,
+            hubInteractive: true
+        )
+        #expect(pendingApproval.opensPendingApproval)
+        #expect(pendingApproval.primaryActionTitle == "打开审批")
+        #expect(pendingApproval.message.contains("不再直接发送新指令"))
+
+        let connectedIdle = ProjectHomeEntryControlPresentation.make(
+            pendingCount: 0,
+            hubInteractive: true
+        )
+        #expect(!connectedIdle.opensPendingApproval)
+        #expect(connectedIdle.primaryActionTitle == "去 Supervisor 建任务")
+        #expect(connectedIdle.message.contains("统一从 Supervisor 发起"))
+
+        let disconnectedIdle = ProjectHomeEntryControlPresentation.make(
+            pendingCount: 0,
+            hubInteractive: false
+        )
+        #expect(!disconnectedIdle.opensPendingApproval)
+        #expect(disconnectedIdle.primaryActionTitle == "去 Supervisor 建任务")
+        #expect(disconnectedIdle.message.contains("Hub 未连接"))
     }
 
     @Test

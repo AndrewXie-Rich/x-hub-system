@@ -1,0 +1,77 @@
+{
+  "schema_version": "xhub.skill_manifest.v1",
+  "skill_id": "local-ocr",
+  "name": "Local OCR",
+  "version": "1.0.0",
+  "description": "Governed local OCR wrapper over Hub local model execution for screenshots, scans, and text-heavy image extraction.",
+  "entrypoint": {
+    "runtime": "text",
+    "command": "cat",
+    "args": [
+      "SKILL.md"
+    ]
+  },
+  "capabilities_required": [
+    "ai.vision.local"
+  ],
+  "input_schema_ref": "schema://local-ocr.input",
+  "output_schema_ref": "schema://local-ocr.output",
+  "side_effect_class": "read_only",
+  "risk_level": "medium",
+  "requires_grant": false,
+  "timeout_ms": 45000,
+  "max_retries": 0,
+  "governed_dispatch": {
+    "tool": "run_local_task",
+    "fixed_args": {
+      "task_kind": "ocr"
+    },
+    "passthrough_args": [
+      "model_id",
+      "preferred_model_id",
+      "image_path",
+      "image_paths",
+      "image",
+      "multimodal_messages",
+      "prompt",
+      "language",
+      "input",
+      "options",
+      "device_id",
+      "timeout_sec"
+    ],
+    "arg_aliases": {
+      "model_id": [
+        "model"
+      ],
+      "image_path": [
+        "path",
+        "file"
+      ],
+      "image_paths": [
+        "files"
+      ]
+    },
+    "required_any": [
+      [
+        "image_path",
+        "image_paths",
+        "image",
+        "multimodal_messages"
+      ]
+    ],
+    "exactly_one_of": []
+  },
+  "governed_dispatch_notes": [
+    "Routes through XT run_local_task with task_kind=ocr.",
+    "If model_id/preferred_model_id is omitted, XT binds the best runnable Hub local OCR model for this task kind.",
+    "Use this for text extraction, not general image narration."
+  ],
+  "network_policy": {
+    "direct_network_forbidden": true
+  },
+  "publisher": {
+    "publisher_id": "xhub.official"
+  },
+  "install_hint": "Publish and sign this wrapper into the official dist before recommending Hub pinning; until then treat it as source-present only."
+}

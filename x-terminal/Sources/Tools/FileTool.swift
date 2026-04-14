@@ -216,8 +216,15 @@ enum FileTool {
             detail: "list_dir is outside the governed readable roots for this project"
         )
 
-        let items = try FileManager.default.contentsOfDirectory(atPath: url.path)
-        return items.sorted()
+        let resolvedDirectory = PathGuard.resolve(url)
+        let items = try FileManager.default.contentsOfDirectory(atPath: resolvedDirectory.path)
+        let filteredItems: [String]
+        if shouldHideProjectSystemStateEntries(listingDirectory: resolvedDirectory, projectRoot: projectRoot) {
+            filteredItems = items.filter { !isProjectSystemStateEntry($0) }
+        } else {
+            filteredItems = items
+        }
+        return filteredItems.sorted()
     }
 
     static func search(
@@ -231,6 +238,8 @@ enum FileTool {
         let pat = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
         if pat.isEmpty { return [] }
         let searchRoot = resolvePath(path, projectRoot: projectRoot)
+        let resolvedSearchRoot = PathGuard.resolve(searchRoot)
+        let resolvedProjectRoot = PathGuard.resolve(projectRoot)
         try PathGuard.requireInsideAny(
             roots: allowedRoots ?? [projectRoot],
             target: searchRoot,
@@ -238,6 +247,9 @@ enum FileTool {
             policyReason: "governed_read_roots",
             detail: "search path is outside the governed readable roots for this project"
         )
+        if shouldSkipProjectSystemStateOnlySearch(searchRoot: resolvedSearchRoot, projectRoot: resolvedProjectRoot) {
+            return []
+        }
         var isDirectory: ObjCBool = false
         let searchCWD: URL
         if FileManager.default.fileExists(atPath: searchRoot.path, isDirectory: &isDirectory), !isDirectory.boolValue {
@@ -245,6 +257,10 @@ enum FileTool {
         } else {
             searchCWD = searchRoot
         }
+        let excludeProjectSystemState = shouldExcludeProjectSystemState(
+            from: resolvedSearchRoot,
+            projectRoot: resolvedProjectRoot
+        )
 
         // Prefer ripgrep when available.
         if let rg = findExecutable(["/opt/homebrew/bin/rg", "/usr/local/bin/rg", "/usr/bin/rg"]) {
@@ -252,12 +268,20 @@ enum FileTool {
             if let g = glob?.trimmingCharacters(in: .whitespacesAndNewlines), !g.isEmpty {
                 args += ["--glob", g]
             }
+            if excludeProjectSystemState {
+                args += ["--glob", "!.xterminal/**"]
+            }
             args.append(pat)
-            args.append(searchRoot.path)
+            args.append(resolvedSearchRoot.path)
 
             let res = try ProcessCapture.run(rg, args, cwd: searchCWD, timeoutSec: 20.0)
             if res.exitCode == 0 {
-                return res.stdout.split(separator: "\n", omittingEmptySubsequences: true).map { String($0) }
+                let lines = res.stdout.split(separator: "\n", omittingEmptySubsequences: true).map { String($0) }
+                return filterProjectSystemStateMatches(
+                    lines,
+                    searchRoot: resolvedSearchRoot,
+                    projectRoot: resolvedProjectRoot
+                )
             }
             // rg returns 1 when no matches.
             if res.exitCode == 1 {
@@ -268,15 +292,62 @@ enum FileTool {
 
         // Fallback to grep.
         let grepExe = "/usr/bin/grep"
-        let args: [String] = ["-RIn", "--", pat, searchRoot.path]
+        let args: [String] = ["-RIn", "--", pat, resolvedSearchRoot.path]
         let res = try ProcessCapture.run(grepExe, args, cwd: searchCWD, timeoutSec: 20.0)
         if res.exitCode == 0 {
-            return res.stdout.split(separator: "\n", omittingEmptySubsequences: true).prefix(maxResults).map { String($0) }
+            let lines = res.stdout
+                .split(separator: "\n", omittingEmptySubsequences: true)
+                .map { String($0) }
+            return filterProjectSystemStateMatches(
+                Array(lines.prefix(maxResults)),
+                searchRoot: resolvedSearchRoot,
+                projectRoot: resolvedProjectRoot
+            )
         }
         if res.exitCode == 1 {
             return []
         }
         throw NSError(domain: "xterminal", code: Int(res.exitCode), userInfo: [NSLocalizedDescriptionKey: res.combined])
+    }
+
+    private static func shouldHideProjectSystemStateEntries(listingDirectory: URL, projectRoot: URL) -> Bool {
+        PathGuard.resolve(listingDirectory).path == PathGuard.resolve(projectRoot).path
+    }
+
+    private static func shouldExcludeProjectSystemState(from searchRoot: URL, projectRoot: URL) -> Bool {
+        searchRoot.standardizedFileURL.path == projectRoot.standardizedFileURL.path
+    }
+
+    private static func shouldSkipProjectSystemStateOnlySearch(searchRoot: URL, projectRoot: URL) -> Bool {
+        guard shouldExcludeProjectSystemState(from: searchRoot, projectRoot: projectRoot) else {
+            return false
+        }
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: searchRoot.path) else {
+            return false
+        }
+        let visibleEntries = entries.filter { !isProjectSystemStateEntry($0) }
+        return visibleEntries.isEmpty
+    }
+
+    private static func filterProjectSystemStateMatches(
+        _ lines: [String],
+        searchRoot: URL,
+        projectRoot: URL
+    ) -> [String] {
+        guard shouldExcludeProjectSystemState(from: searchRoot, projectRoot: projectRoot) else {
+            return lines
+        }
+        let internalPrefix = projectRoot
+            .appendingPathComponent(".xterminal", isDirectory: true)
+            .standardizedFileURL
+            .path
+        return lines.filter { line in
+            !line.hasPrefix(internalPrefix + "/") && !line.hasPrefix(internalPrefix + ":")
+        }
+    }
+
+    private static func isProjectSystemStateEntry(_ name: String) -> Bool {
+        name == ".xterminal"
     }
 
     private static func findExecutable(_ candidates: [String]) -> String? {

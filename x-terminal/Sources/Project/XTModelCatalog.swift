@@ -201,7 +201,13 @@ enum XTModelCatalog {
     static func modelInfo(for hubModel: HubModel) -> ModelInfo {
         let base = modelInfo(for: hubModel.id, preferLocalHint: hubModel.isLocalModel)
         let preferredName = hubModel.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let displayName = preferredName.isEmpty ? base.displayName : preferredName
+        let remoteDisplayName = hubModel.remoteDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayName = {
+            if let remoteDisplayName, !remoteDisplayName.isEmpty {
+                return remoteDisplayName
+            }
+            return preferredName.isEmpty ? base.displayName : preferredName
+        }()
         let modelType: ModelType = hubModel.isLocalModel ? .local : .hubPaid
         var suitableFor = base.suitableFor
 
@@ -215,7 +221,7 @@ enum XTModelCatalog {
 
         return ModelInfo(
             id: hubModel.id,
-            name: preferredName.isEmpty ? base.name : preferredName,
+            name: displayName,
             displayName: displayName,
             type: modelType,
             capability: base.capability,

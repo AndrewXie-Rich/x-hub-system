@@ -36,8 +36,19 @@
 	<string>需要读取本机日历以便由 Supervisor 在 X-Terminal 上做会议提醒</string>
 	<key>NSCalendarsUsageDescription</key>
 	<string>需要读取本机日历以便由 Supervisor 在 X-Terminal 上做会议提醒</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>需要访问本地网络以便发现并连接同一局域网中的 Hub 设备</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>需要麦克风权限以支持语音输入功能</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_axhub._tcp</string>
+	</array>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>需要语音识别权限以支持语音输入功能</string>
 </dict>

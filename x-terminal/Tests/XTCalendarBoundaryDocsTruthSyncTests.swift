@@ -42,7 +42,8 @@ struct XTCalendarBoundaryDocsTruthSyncTests {
             root.appendingPathComponent("x-terminal/Sources/UI/SupervisorSettingsView.swift")
         )
 
-        #expect(hubStore.contains("日历已迁移到 X-Terminal"))
+        #expect(hubStore.contains("HubUIStrings.Menu.calendarMigrated"))
+        #expect(hubUIStrings.contains("日历已迁移到 X-Terminal"))
         #expect(hubUIStrings.contains("日历提醒已经迁到 X-Terminal Supervisor，这样 Hub 启动时就不需要再申请日历权限。"))
         #expect(!hubStore.contains("CalendarPipeline"))
         #expect(!hubStore.contains("requestCalendarAccessAndStart"))
@@ -62,6 +63,9 @@ struct XTCalendarBoundaryDocsTruthSyncTests {
         let installDoctor = try read(
             root.appendingPathComponent("x-hub/macos/RELFlowHub/Sources/RELFlowHub/AppInstallDoctor.swift")
         )
+        let hubUIStrings = try read(
+            root.appendingPathComponent("x-hub/macos/RELFlowHub/Sources/RELFlowHub/HubUIStrings.swift")
+        )
         let dmgScript = try read(
             root.appendingPathComponent("x-hub/tools/build_hub_dmg.command")
         )
@@ -69,8 +73,9 @@ struct XTCalendarBoundaryDocsTruthSyncTests {
             "x-hub/macos/RELFlowHub/Sources/RELFlowHub/CalendarPipeline.swift"
         )
 
-        #expect(installDoctor.contains("为了让辅助功能权限和辅助进程启动路径保持稳定"))
-        #expect(installDoctor.contains("请把 X-Hub.app 拖到 /Applications，然后从那里重新打开。"))
+        #expect(installDoctor.contains("HubUIStrings.InstallDoctor.currentLocation"))
+        #expect(hubUIStrings.contains("为了让辅助功能权限和辅助进程启动路径保持稳定"))
+        #expect(hubUIStrings.contains("请把 X-Hub.app 拖到 /Applications，然后从那里重新打开。"))
         #expect(!installDoctor.contains("Calendar/Accessibility permissions"))
         #expect(!installDoctor.contains("X-Hub Dock Agent.app / X-Hub Bridge.app"))
 
@@ -111,10 +116,7 @@ struct XTCalendarBoundaryDocsTruthSyncTests {
     }
 
     private func repoRoot() -> URL {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
+        monorepoTestRepoRoot(filePath: #filePath)
     }
 
     private func read(_ url: URL) throws -> String {

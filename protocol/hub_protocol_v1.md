@@ -237,6 +237,7 @@ but all calls MUST still be routed through Hub for monitoring, quotas, and kill-
 - `ai.generate.local` (default allow; still audited)
 - `ai.embed.local` (default allow; local embedding / retrieval vectors)
 - `ai.audio.local` (default allow; local speech-to-text / audio understanding)
+- `ai.audio.tts.local` (default allow; local text-to-speech / voice-pack playback, maps to `CAPABILITY_AI_AUDIO_LOCAL` for wire compatibility)
 - `ai.vision.local` (default allow; local OCR / vision-understand)
 - `ai.generate.paid` (requires grant unless policy auto-approves)
 - `web.fetch` (requires grant unless policy auto-approves)
@@ -311,7 +312,7 @@ Hub MUST push grant decisions to the requesting device:
 Hub MUST support an emergency kill-switch that overrides grants/quotas:
 - `models_disabled=true` MUST reject all `ai.generate.*` (local + paid).
 - `network_disabled=true` MUST reject `web.fetch` and paid/online model calls.
-- `disabled_local_capabilities[]` MAY reject `ai.generate.local / ai.embed.local / ai.audio.local / ai.vision.local` independently.
+- `disabled_local_capabilities[]` MAY reject `ai.generate.local / ai.embed.local / ai.audio.local / ai.audio.tts.local / ai.vision.local` independently.
 - `disabled_local_providers[]` MAY reject specific local providers (for example `mlx`, `transformers`) without disabling the whole local runtime.
 
 Scope (string):
@@ -324,6 +325,7 @@ gRPC (draft v1):
 - `HubAdmin.SetKillSwitch` / `HubAdmin.GetKillSwitch` (see proto).
 - `KillSwitchUpdated` carries `disabled_local_capabilities[]` and `disabled_local_providers[]` for additive backward-compatible rollout.
 - `HubRuntime.GetSchedulerStatus` (paid AI queue/in-flight snapshot for Supervisor dashboards).
+- `HubRuntime.GetSupervisorCandidateReviewQueue` (request-level Supervisor candidate review queue snapshot for XT-side review intake and stage action).
 - `HubRuntime.GetConnectorIngressReceipts` (recent connector/webhook ingress receipts for XT-side governed automation binding).
 
 Push:
@@ -384,6 +386,28 @@ Errors:
 
 ### 7.3 gRPC (streaming; recommended)
 See `HubAI.Generate` in `protocol/hub_protocol_v1.proto`.
+
+Recommended event contract:
+- `start`: `request_id`, requested `model_id`, `started_at_ms`
+- `delta`: incremental text chunks
+- `done`: `ok`, `reason`, `usage`, `finished_at_ms`, plus route-truth fields:
+  - `actual_model_id`: model that actually produced the final text
+  - `runtime_provider`: `Hub (Remote)` / `Hub (Local)` or equivalent provider label
+  - `execution_path`: e.g. `remote_model`, `hub_downgraded_to_local`, `local_runtime`, `remote_error`
+  - `fallback_reason_code`: normalized reason for downgrade / failure path
+  - `audit_ref`: Hub audit event id for the decisive route event (prefer downgrade / deny audit when present)
+  - `deny_code`: normalized deny / gate code when a policy block or guarded fallback occurred
+- `error`: terminal failure with `error`, `model_id`, and the same route-truth fields:
+  - `runtime_provider`
+  - `execution_path`
+  - `fallback_reason_code`
+  - `audit_ref`
+  - `deny_code`
+
+Client guidance:
+- clients SHOULD treat `audit_ref` as the authoritative route evidence id instead of synthesizing local route event ids
+- clients SHOULD surface `deny_code` separately from `fallback_reason_code`; they can match, but they are not equivalent by contract
+- when `fail_closed_on_downgrade=true`, Hub MUST terminate with `error` instead of silently returning a downgraded local `done`
 
 ---
 
@@ -568,6 +592,8 @@ See `service HubMemory` in `protocol/hub_protocol_v1.proto`:
 - `AppendTurns` (sync turns; supports dropping/redacting `<private>...</private>`)
 - `GetWorkingSet` (fetch last N turns)
 - `UpsertCanonicalMemory` / `ListCanonicalMemory` (small, pinned memory)
+  - `UpsertCanonicalMemory` request now accepts optional `request_id` / `audit_ref`
+  - `UpsertCanonicalMemory` response returns `audit_ref`, plus stable `evidence_ref` / `writeback_ref` for the durable canonical row
 - `UpsertProjectLineage` / `GetProjectLineageTree` (parent-child lineage source-of-truth + lineage tree query)
 - `AttachDispatchContext` (bind per-project dispatch context: agent profile / lane / budget / priority / expected artifacts)
 - `RegisterAgentCapsule` / `VerifyAgentCapsule` / `ActivateAgentCapsule`
@@ -600,6 +626,7 @@ See `service HubMemory` in `protocol/hub_protocol_v1.proto`:
 - M3-W1-03 contract test checklist (deny_code grouped): `docs/memory-new/xhub-memory-v3-m3-lineage-contract-tests-v1.md`
 - `LongtermMarkdownExport` (Longterm Markdown projection export; DB remains source-of-truth)
 - `LongtermMarkdownBeginEdit` / `LongtermMarkdownApplyPatch` (edit session + optimistic-lock patch draft; no direct canonical write)
+- `StageSupervisorCandidateReview` (materialize one Supervisor candidate handoff into the existing Longterm Markdown draft/review boundary; fail-closed on scope mismatch; still no direct canonical write)
 - `LongtermMarkdownReview` / `LongtermMarkdownWriteback` (review/approve/writeback gate; write only to Longterm candidate queue)
 - `LongtermMarkdownRollback` (rollback by `pending_change_id`; idempotent and fail-closed on cross-scope mismatch)
 
@@ -633,6 +660,7 @@ See `service HubMemory` in `protocol/hub_protocol_v1.proto`:
 - `POST /memory/supervisor/voice/challenge/verify`
 - `POST /memory/longterm/markdown/export`
 - `POST /memory/longterm/markdown/begin_edit`
+- `POST /memory/supervisor/candidate_review/stage`
 - `POST /memory/longterm/markdown/apply_patch`
 - `POST /memory/longterm/markdown/review`
 - `POST /memory/longterm/markdown/writeback`
@@ -716,9 +744,13 @@ Goal: preserve a portable “search + install skill” UX while keeping Hub as t
 ### 13.1 gRPC
 See `service HubSkills` in `protocol/hub_protocol_v1.proto`:
 - `SearchSkills` (built-in catalog search; also used by `skills.search` tool)
+  - `SkillsSearchResponse.official_channel_status` exposes the read-only health of the synced official public channel (`healthy|stale|failed|missing`) so XT can show whether Hub is using a fresh or last-known-good official catalog.
+  - `official_channel_status` also carries passive background-maintenance metadata (`maintenance_enabled`, `maintenance_interval_ms`, `maintenance_last_run_at_ms`, `maintenance_source_kind`) so XT can explain that Hub is auto-repairing the official channel without an extra manual sync action.
+  - `official_channel_status.last_transition_*` carries the latest low-noise maintenance transition summary (for example `missing -> healthy`, `current_snapshot_repaired`) so XT / Supervisor surfaces can explain the last important recovery or degradation without reading a raw log.
+  - When a public official source is available locally, Hub MAY opportunistically auto-repair the synced official channel during `SearchSkills` reads so users do not need a separate manual sync step.
 - `UploadSkillPackage` (upload tgz/zip bytes + `skill.json` manifest)
 - `SetSkillPin` (scope `global|project`, identity bound by pairing; global pins are keyed by `user_id`)
-- `ListResolvedSkills` (Memory-Core > Global > Project precedence, returns effective list for a `(user_id, project_id)` context)
+- `ListResolvedSkills` (`Memory-Core` governed rule layer > `Global` > `Project` precedence for resolution visibility, returns the effective list for a `(user_id, project_id)` context; this does not choose the memory executor, and durable memory writes still terminate through `Writer + Gate`)
 - `GetSkillManifest` / `DownloadSkillPackage` (runner fetch)
 
 Audit event types (minimum set):

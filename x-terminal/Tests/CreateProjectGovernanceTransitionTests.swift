@@ -4,7 +4,7 @@ import Testing
 
 struct CreateProjectGovernanceTransitionTests {
     @Test
-    func executionTierTransitionPreservesReviewCadenceButRaisesSupervisorFloor() {
+    func executionTierTransitionPreservesReviewCadenceAndExistingSupervisorSelection() {
         let original = AXProjectGovernanceBundle(
             executionTier: .a1Plan,
             supervisorInterventionTier: .s0SilentAudit,
@@ -21,7 +21,7 @@ struct CreateProjectGovernanceTransitionTests {
         let updated = original.applyingExecutionTierPreservingReviewConfiguration(.a4OpenClaw)
 
         #expect(updated.executionTier == .a4OpenClaw)
-        #expect(updated.supervisorInterventionTier == .s2PeriodicReview)
+        #expect(updated.supervisorInterventionTier == .s0SilentAudit)
         #expect(updated.reviewPolicyMode == .aggressive)
         #expect(updated.schedule.progressHeartbeatSeconds == 420)
         #expect(updated.schedule.reviewPulseSeconds == 840)

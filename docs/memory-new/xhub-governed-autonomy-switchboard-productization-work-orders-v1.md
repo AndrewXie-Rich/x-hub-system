@@ -3,7 +3,7 @@
 - Status: Active
 - Updated: 2026-03-14
 - Owner: Product（Primary）/ XT-L2 / Hub-L5 / Security / QA / Supervisor
-- Purpose: 把当前分散在 `execution tier`、`supervisor intervention tier`、`trusted automation`、`project device authority`、`Hub grant`、`governed readable roots`、`local auto-approve` 里的控制面，收口成一套用户能直接理解和操作的产品级开关体系，让用户明确在“保守 / 安全 / 完全自治”之间切换，同时保持 Hub-first 治理、可审计、可 clamp、可 kill-switch。
+- Purpose: 把当前分散在 `A-Tier`、`S-Tier`、`trusted automation`、`project device authority`、`Hub grant`、`governed readable roots`、`local auto-approve` 里的控制面，收口成一套用户能直接理解和操作的产品级开关体系，让用户明确在“保守 / 安全 / 完全自治”之间切换，同时保持 Hub-first 治理、可审计、可 clamp、可 kill-switch。
 - Depends on:
   - `docs/memory-new/xhub-project-autonomy-tier-and-supervisor-review-protocol-v1.md`
   - `x-terminal/work-orders/xt-w3-36-project-autonomy-tier-and-supervisor-intervention-implementation-pack-v1.md`
@@ -22,7 +22,7 @@
 
 截至 2026-03-14，仓库里已经存在这些基础能力：
 
-- `Execution Tier` / `Supervisor Intervention Tier`
+- `A-Tier` / `S-Tier`
 - `manual / guided / trusted full surface` 兼容自治模式
 - `trusted automation` 绑定
 - `project-scoped device authority`
@@ -46,8 +46,8 @@
 
 - 用户只需要先选一个 `Autonomy Profile`
 - 系统再把它展开成：
-  - `execution tier`
-  - `supervisor scope`
+  - `A-Tier`
+  - `S-Tier`
   - `grant posture`
   - `device authority posture`
   - `memory serving ceiling`
@@ -467,7 +467,7 @@ Owner:
 交付：
 
 - 旧的 `manual / guided / trusted_openclaw_mode`
-- 旧的 execution/supervisor tier 组合
+- 旧的 A/S tier 组合
 - 现有 project config
 
 全部都要能迁移成：

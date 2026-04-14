@@ -7,6 +7,7 @@ const {
 } = require("./generate_xt_w3_33_require_real_report.js");
 const {
   updateBundle,
+  applyFromJSONArgs,
 } = require("./update_xt_w3_33_require_real_capture_bundle.js");
 
 function run(name, fn) {
@@ -103,7 +104,20 @@ run("XT-W3-33 require-real report passes only when all samples are real and chec
 
 run("XT-W3-33 capture bundle updater dedupes refs and marks executed samples", () => {
   const bundle = makeBundle([
-    baseSample({ sample_id: "xt_w3_33_rr_04" }),
+    baseSample({
+      sample_id: "xt_w3_33_rr_04",
+      machine_readable_fields_to_record: [
+        "decision_node_loss",
+        "release_refs_traceable",
+        "evidence_origin",
+        "synthetic_runtime_evidence",
+        "synthetic_markers",
+      ],
+      required_checks: [
+        { field: "decision_node_loss", equals: 0 },
+        { field: "release_refs_traceable", equals: true },
+      ],
+    }),
   ]);
 
   const { bundle: updated, sample } = updateBundle(bundle, {
@@ -116,6 +130,9 @@ run("XT-W3-33 capture bundle updater dedupes refs and marks executed samples", (
     setFields: {
       decision_node_loss: "0",
       release_refs_traceable: "true",
+      evidence_origin: "real_runtime",
+      synthetic_runtime_evidence: "false",
+      synthetic_markers: "[]",
     },
   }, "2026-03-11T14:00:00Z");
 
@@ -127,6 +144,58 @@ run("XT-W3-33 capture bundle updater dedupes refs and marks executed samples", (
   assert.equal(updated.status, "executed");
 });
 
+run("XT-W3-33 capture bundle updater rejects passed samples with missing machine-readable fields", () => {
+  const bundle = makeBundle([
+    baseSample({
+      sample_id: "xt_w3_33_rr_06",
+      machine_readable_fields_to_record: [
+        "decision_track_written",
+        "evidence_origin",
+      ],
+      required_checks: [
+        { field: "decision_track_written", equals: true },
+      ],
+    }),
+  ]);
+
+  assert.throws(() => updateBundle(bundle, {
+    sampleId: "xt_w3_33_rr_06",
+    status: "passed",
+    success: true,
+    performedAt: "2026-03-11T15:00:00Z",
+    evidenceRefs: ["build/reports/proof.png"],
+    setFields: {
+      decision_track_written: "true",
+    },
+  }, "2026-03-11T15:00:00Z"), /machine_readable_field_missing:evidence_origin/);
+});
+
+run("XT-W3-33 capture bundle updater rejects synthetic passed samples", () => {
+  const bundle = makeBundle([
+    baseSample({
+      sample_id: "xt_w3_33_rr_07",
+      machine_readable_fields_to_record: [
+        "evidence_origin",
+        "synthetic_runtime_evidence",
+        "synthetic_markers",
+      ],
+    }),
+  ]);
+
+  assert.throws(() => updateBundle(bundle, {
+    sampleId: "xt_w3_33_rr_07",
+    status: "passed",
+    success: true,
+    performedAt: "2026-03-11T15:30:00Z",
+    evidenceRefs: ["build/reports/proof.png"],
+    setFields: {
+      evidence_origin: "synthetic_fixture",
+      synthetic_runtime_evidence: "true",
+      synthetic_markers: "[\"fixture\"]",
+    },
+  }, "2026-03-11T15:30:00Z"), /synthetic_runtime_evidence_not_accepted/);
+});
+
 run("XT-W3-33 require-real report carries refreshed F/G shadow statuses when provided", () => {
   const report = buildRequireRealReport(makeBundle([
     baseSample({ sample_id: "xt_w3_33_rr_05" }),
@@ -135,10 +204,39 @@ run("XT-W3-33 require-real report carries refreshed F/G shadow statuses when pro
       f: "candidate_pass_runtime_output_wired",
       g: "candidate_pass_runtime_digest_rollup_wired",
     },
+    shadowGateReadiness: {
+      f: "candidate_pass(runtime_output_wired_exact)",
+      g: "candidate_pass(compaction_traceability_contract_and_tests_present)",
+    },
   });
 
   assert.equal(report.shadow_checklist[0].current_status, "candidate_pass_runtime_output_wired");
   assert.equal(report.shadow_checklist[1].current_status, "candidate_pass_runtime_digest_rollup_wired");
-  assert.equal(report.gate_readiness["XT-SDK-G5"], "candidate_pass(runtime_output_wired)");
-  assert.equal(report.gate_readiness["XT-SDK-G6"], "candidate_pass(runtime_digest_rollup_wired)");
+  assert.equal(report.gate_readiness["XT-SDK-G5"], "candidate_pass(runtime_output_wired_exact)");
+  assert.equal(report.gate_readiness["XT-SDK-G6"], "candidate_pass(compaction_traceability_contract_and_tests_present)");
+});
+
+run("XT-W3-33 updater can hydrate machine-readable fields from --from-json payloads", () => {
+  const merged = applyFromJSONArgs({
+    sampleId: "xt_w3_33_rr_08",
+    setFields: {
+      decision_status: "approved",
+    },
+  }, {
+    machine_readable_template: {
+      decision_track_written: true,
+      decision_status: "proposal_pending",
+      evidence_origin: "real_runtime",
+      synthetic_runtime_evidence: false,
+      synthetic_markers: [],
+    },
+  });
+
+  assert.deepEqual(merged.setFields, {
+    decision_track_written: true,
+    decision_status: "approved",
+    evidence_origin: "real_runtime",
+    synthetic_runtime_evidence: false,
+    synthetic_markers: [],
+  });
 });

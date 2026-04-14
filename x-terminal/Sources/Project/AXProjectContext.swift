@@ -35,6 +35,10 @@ struct AXProjectContext: Equatable {
         sessionSummariesDir.appendingPathComponent("latest.json")
     }
 
+    var heartbeatMemoryProjectionURL: URL {
+        xterminalDir.appendingPathComponent("heartbeat_memory_projection.json")
+    }
+
     var supervisorJobsURL: URL {
         xterminalDir.appendingPathComponent("supervisor_jobs.json")
     }

@@ -42,6 +42,10 @@
 
 数据敏感级别：`public | internal | secret`
 
+补充边界：
+- 本文只定义存储加密与密钥管理，不重新定义 memory control plane。
+- 用户继续在 X-Hub 中选择哪个 AI 执行 memory jobs；`Memory-Core` 继续作为 governed rule layer；durable writes 继续只经 `Writer + Gate`。
+
 ### 2.1 强制加密（secret）
 以下数据必须进入 Vault（加密 blob），不得以明文存储：
 - paid model provider keys（OpenAI/Anthropic/Gemini/OpenAI-compatible 等）

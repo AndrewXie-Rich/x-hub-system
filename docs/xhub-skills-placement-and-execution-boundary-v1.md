@@ -1,7 +1,7 @@
 # X-Hub Skills Placement And Execution Boundary v1
 
 - Status: Frozen
-- Updated: 2026-03-12
+- Updated: 2026-03-23
 - Applies to:
   - X-Hub `skills_store` / trust / pin / revocation / audit
   - X-Terminal runner / governed tools / local approvals / device authority
@@ -26,6 +26,8 @@
 3. `X-Terminal` 可以缓存 skill 包、resolved manifest、grant snapshot，用于断网或离开局域网后的连续执行，但缓存不能升级成新的权威源。
 4. 项目级或 Supervisor 级“设备权限开关”只改变本地可执行能力上限，不改变 skill 的 trust / pin / revoke / audit 主权。
 5. 第三方/Agent skills 进入系统后，必须先被规范化为 Hub 可治理条目，不能把上游目录直接当成可信执行体。
+6. `Memory-Core Skill` 保留为产品层命名，但实现边界上属于 Hub 内建 governed rule asset，不进入普通第三方 skill 的 import / client pin / runner execution 链。
+7. 普通 skill authority 不替代 memory control plane：用户仍通过 `memory_model_preferences` 选择执行 memory jobs 的 AI，durable memory truth 仍只允许经 `Writer + Gate` 落库。
 
 ### 0.2 如果只能选一边，选哪边
 
@@ -112,6 +114,7 @@
 - skill registry item
 - normalized import manifest
 - package store
+- `Memory-Core` recipe asset version / active state / audit chain
 - Hub-native import vetter / quarantine scoring
 - trusted publishers
 - pins
@@ -135,6 +138,11 @@
 - fresh memory recheck before high-risk execution
 - raw tool logs / local evidence capture
 - active process kill / timeout / retry on device
+
+补充边界：
+
+- `X-Terminal` 可以消费 `Memory-Core` 相关诊断或 explainability 结果，但不把它当作普通 skill 包执行。
+- 普通 runner 的解析链只面向 Hub 已解析出的可执行 skill surface，不重新解释保留系统层 `memory_core`。
 
 ### 3.3 共享但不混权的内容
 

@@ -1,16 +1,20 @@
 #!/usr/bin/env node
 const fs = require("node:fs");
 const path = require("node:path");
+const {
+  readCaptureBundle,
+  resolveBundlePath,
+  resolveRequireRealEvidencePath,
+} = require("./xt_w3_24_n_whatsapp_cloud_require_real_bundle_lib.js");
 
 const repoRoot = path.resolve(__dirname, "..");
-const bundlePath = path.join(repoRoot, "build/reports/xt_w3_24_n_whatsapp_cloud_require_real_capture_bundle.v1.json");
-const outputPath = path.join(repoRoot, "build/reports/xt_w3_24_n_action_grant_whatsapp_evidence.v1.json");
 
 function readJSON(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
 }
 
 function writeJSON(filePath, value) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
@@ -97,7 +101,7 @@ function syntheticEvidenceReasons(sample) {
   }
   for (const text of [origin, notes]) {
     if (!text) continue;
-    if (["sample_fixture", "synthetic", "mock", "storybook", "static_story"].some((token) => text.includes(token))) {
+    if (["sample_fixture", "synthetic", "mock", "storybook", "static_story", "offline_story"].some((token) => text.includes(token))) {
       reasons.push(`synthetic_origin=${text}`);
       break;
     }
@@ -154,6 +158,7 @@ function sampleSummary(sample, evaluation) {
 function buildRequireRealReport(bundle, options = {}) {
   const generatedAt = options.generatedAt || isoNow();
   const timezone = options.timezone || "Asia/Shanghai";
+  const resolvedBundlePath = resolveBundlePath(options);
   const samples = Array.isArray(bundle.samples) ? bundle.samples : [];
   const evaluations = samples.map((sample) => ({
     sample,
@@ -326,22 +331,25 @@ function buildRequireRealReport(bundle, options = {}) {
         sample_summaries: evaluations.map((row) => sampleSummary(row.sample, row.evaluation)),
       },
     },
+    shadow_inputs: {
+      consumed_capture_bundle_path: path.relative(repoRoot, resolvedBundlePath),
+      generated_from: "scripts/generate_xt_w3_24_n_whatsapp_cloud_require_real_report.js",
+    },
   };
 }
 
 function main() {
-  const bundle = readJSON(bundlePath);
+  const bundle = readCaptureBundle();
   const output = buildRequireRealReport(bundle);
+  const outputPath = resolveRequireRealEvidencePath();
   writeJSON(outputPath, output);
   process.stdout.write(`${outputPath}\n`);
 }
 
 module.exports = {
   buildRequireRealReport,
-  bundlePath,
   evaluateCheck,
   evaluateSample,
-  outputPath,
   readJSON,
   sampleSummary,
   syntheticEvidenceReasons,

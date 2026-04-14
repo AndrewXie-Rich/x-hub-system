@@ -19,4 +19,25 @@ struct PaidModelAccessTroubleshootRoutingTests {
         #expect(UITroubleshootKnowledgeBase.issue(forFailureCode: "device_single_request_token_exceeded") == .paidModelAccessBlocked)
         #expect(UITroubleshootKnowledgeBase.issue(forFailureCode: "legacy_grant_flow_required") == .paidModelAccessBlocked)
     }
+
+    @Test
+    func pairingApprovalTimeoutMapsToPairingRepairGuide() {
+        #expect(UITroubleshootKnowledgeBase.issue(forFailureCode: "pairing_approval_timeout") == .pairingRepairRequired)
+    }
+
+    @Test
+    func paidModelGuideCanIncludeCurrentPairedDeviceBudgetTruth() {
+        let guide = UITroubleshootKnowledgeBase.guide(
+            for: .paidModelAccessBlocked,
+            paidAccessSnapshot: HubRemotePaidAccessSnapshot(
+                trustProfilePresent: true,
+                paidModelPolicyMode: "all_paid_models",
+                dailyTokenLimit: 640,
+                singleRequestTokenLimit: 256
+            )
+        )
+
+        #expect(guide.summary.contains("当前设备真值：单次 256 tok · 当日 640 tok · 策略 全部付费模型"))
+        #expect(guide.steps[2].instruction.contains("当前设备真值：单次 256 tok · 当日 640 tok · 策略 全部付费模型"))
+    }
 }

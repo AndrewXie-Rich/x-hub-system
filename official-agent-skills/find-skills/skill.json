@@ -49,5 +49,11 @@
   "publisher": {
     "publisher_id": "xhub.official"
   },
-  "install_hint": "Install from the Agent Baseline menu in X-Terminal or pin the official package from X-Hub."
+  "install_hint": "Install from the Agent Baseline menu in X-Terminal or pin the official package from X-Hub.",
+  "quality_evidence_status": {
+    "replay": "missing",
+    "fuzz": "missing",
+    "doctor": "passed",
+    "smoke": "passed"
+  }
 }

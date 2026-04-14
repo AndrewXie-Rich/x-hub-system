@@ -34,19 +34,19 @@ class MultiProjectManager: ObservableObject {
     // MARK: - Private Properties
 
     private var cancellables = Set<AnyCancellable>()
-    private let supervisor: SupervisorModel
+    private let runtimeHost: any SupervisorProjectRuntimeHosting
     private let sandboxManager: SandboxManager
 
     // MARK: - Initialization
 
-    init(supervisor: SupervisorModel, sandboxManager: SandboxManager) {
-        self.supervisor = supervisor
+    init(runtimeHost: any SupervisorProjectRuntimeHosting, sandboxManager: SandboxManager) {
+        self.runtimeHost = runtimeHost
         self.sandboxManager = sandboxManager
         setupObservers()
     }
 
-    convenience init(supervisor: SupervisorModel) {
-        self.init(supervisor: supervisor, sandboxManager: SandboxManager.shared)
+    convenience init(runtimeHost: any SupervisorProjectRuntimeHosting) {
+        self.init(runtimeHost: runtimeHost, sandboxManager: SandboxManager.shared)
     }
 
     // MARK: - Public Methods
@@ -79,7 +79,7 @@ class MultiProjectManager: ObservableObject {
         _ = await ensureSandboxReady(for: project.id)
 
         // 通知 Supervisor
-        await supervisor.onProjectCreated(project)
+        await runtimeHost.onProjectCreated(project)
 
         // 自动开始项目（如果设置了自动启动）
         if config.autoStart {
@@ -106,7 +106,7 @@ class MultiProjectManager: ObservableObject {
         archivedProjects.removeAll { $0.id == id }
 
         // 通知 Supervisor
-        await supervisor.onProjectDeleted(project)
+        await runtimeHost.onProjectDeleted(project)
 
         do {
             try await sandboxManager.destroySandbox(for: id)
@@ -132,7 +132,7 @@ class MultiProjectManager: ObservableObject {
         pausedProjects.removeAll { $0.id == id }
 
         // 通知 Supervisor 开始调度
-        await supervisor.onProjectStarted(project)
+        await runtimeHost.onProjectStarted(project)
     }
 
     /// 暂停项目
@@ -151,7 +151,7 @@ class MultiProjectManager: ObservableObject {
         activeProjects.removeAll { $0.id == id }
 
         // 通知 Supervisor
-        await supervisor.onProjectPaused(project)
+        await runtimeHost.onProjectPaused(project)
     }
 
     /// 恢复项目
@@ -171,7 +171,7 @@ class MultiProjectManager: ObservableObject {
         pausedProjects.removeAll { $0.id == id }
 
         // 通知 Supervisor
-        await supervisor.onProjectResumed(project)
+        await runtimeHost.onProjectResumed(project)
     }
 
     /// 完成项目
@@ -190,7 +190,7 @@ class MultiProjectManager: ObservableObject {
         activeProjects.removeAll { $0.id == id }
 
         // 通知 Supervisor
-        await supervisor.onProjectCompleted(project)
+        await runtimeHost.onProjectCompleted(project)
     }
 
     /// 归档项目
@@ -211,7 +211,7 @@ class MultiProjectManager: ObservableObject {
         completedProjects.removeAll { $0.id == id }
 
         // 通知 Supervisor
-        await supervisor.onProjectArchived(project)
+        await runtimeHost.onProjectArchived(project)
     }
 
     /// 选择项目

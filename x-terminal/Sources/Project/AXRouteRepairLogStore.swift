@@ -46,6 +46,15 @@ struct AXRouteRepairLogDigest: Equatable, Sendable {
         return parts.joined(separator: "；")
     }
 
+    var watchHeadline: String {
+        let base = headline
+        guard let hint = AXRouteRepairLogStore.watchRouteTruthHint(for: self),
+              !hint.isEmpty else {
+            return base
+        }
+        return "\(base)；\(hint)"
+    }
+
     var detailLines: [String] {
         guard totalEvents > 0 else { return [] }
 
@@ -79,6 +88,10 @@ struct AXRouteRepairProjectWatchItem: Identifiable, Equatable, Sendable {
 
     var summary: String {
         digest.headline
+    }
+
+    var watchSummary: String {
+        digest.watchHeadline
     }
 }
 
@@ -176,11 +189,105 @@ struct AXRouteRepairLogEvent: Codable, Equatable, Identifiable, Sendable {
 }
 
 enum AXRouteRepairLogStore {
+    static func watchRouteTruthHint(
+        for digest: AXRouteRepairLogDigest,
+        paidAccessSnapshot: HubRemotePaidAccessSnapshot? = nil
+    ) -> String? {
+        guard digest.failureCount > 0 else { return nil }
+
+        let candidate = [
+            digest.latestFailure?.fallbackReasonCode,
+            digest.latestFailure?.repairReasonCode
+        ]
+        .map(normalizedText)
+        .first { !$0.isEmpty } ?? ""
+
+        guard !candidate.isEmpty else { return nil }
+
+        switch normalizedFailureToken(candidate) {
+        case "remote_export_blocked",
+             "device_remote_export_denied",
+             "policy_remote_denied",
+             "budget_remote_denied",
+             "remote_disabled_by_user_pref":
+            return "更像 Hub export gate / 策略挡住远端，先查 Hub，不要先急着改 XT 模型。"
+        case "device_paid_model_disabled",
+             "device_paid_model_not_allowed",
+             "device_daily_token_budget_exceeded",
+             "device_single_request_token_exceeded",
+             "legacy_grant_flow_required":
+            let base = "更像付费模型资格、allowlist 或预算边界没放行，先查设备信任、模型访问策略和预算，不要先急着改 XT 模型。"
+            guard let paidTruth = XTRouteTruthPresentation.pairedDeviceTruthText(
+                routeReasonCode: candidate,
+                paidAccessSnapshot: paidAccessSnapshot
+            ) else {
+                return base
+            }
+            return "\(base) 当前设备真值：\(paidTruth)。"
+        case "downgrade_to_local":
+            return "更像 Hub 执行阶段把远端降到了本地，不是 XT 自己改模型。"
+        case "blocked_waiting_upstream",
+             "provider_not_ready",
+             "grpc_route_unavailable",
+             "runtime_not_running",
+             "request_write_failed",
+             "response_timeout",
+             "remote_timeout",
+             "remote_unreachable":
+            return "更像 Hub / 上游远端链路问题，先别急着改 XT 模型。"
+        default:
+            return nil
+        }
+    }
+
+    static func watchHeadline(
+        for digest: AXRouteRepairLogDigest,
+        paidAccessSnapshot: HubRemotePaidAccessSnapshot? = nil
+    ) -> String {
+        let base = digest.headline
+        guard let hint = watchRouteTruthHint(for: digest, paidAccessSnapshot: paidAccessSnapshot),
+              !hint.isEmpty else {
+            return base
+        }
+        return "\(base)；\(hint)"
+    }
+
+    static func latestStatusBarFollowUp(
+        for digest: AXRouteRepairLogDigest,
+        now: TimeInterval = Date().timeIntervalSince1970,
+        freshnessWindowSec: TimeInterval = 30 * 60
+    ) -> AXRouteRepairLogEvent? {
+        guard let latestSuccess = digest.latestSuccess else { return nil }
+        guard normalizedText(latestSuccess.note).lowercased() == "source=status_bar" else {
+            return nil
+        }
+        guard now - latestSuccess.createdAt <= freshnessWindowSec else {
+            return nil
+        }
+        if let latestFailure = digest.latestFailure,
+           latestSuccess.createdAt < latestFailure.createdAt {
+            return nil
+        }
+        switch normalizedText(latestSuccess.actionId).lowercased() {
+        case "open_route_diagnose",
+             "open_model_settings",
+             "open_choose_model",
+             "open_xt_diagnostics",
+             "open_hub_recovery",
+             "open_hub_connection_log":
+            return latestSuccess
+        default:
+            return nil
+        }
+    }
+
     static func userFacingActionLabel(_ raw: String) -> String {
         let normalized = normalizedText(raw)
         guard !normalized.isEmpty else { return "" }
 
         switch normalized.lowercased() {
+        case "open_route_diagnose":
+            return "运行项目路由诊断"
         case "open_model_picker":
             return "打开模型候选"
         case "apply_recommended_model":
@@ -190,9 +297,9 @@ enum AXRouteRepairLogStore {
         case "reconnect_hub_and_diagnose":
             return "重连并重诊断"
         case "open_choose_model":
-            return "打开 XT AI 模型"
+            return "打开 Supervisor Control Center · AI 模型"
         case "open_model_settings":
-            return "打开 Supervisor 控制中心 · AI 模型"
+            return "打开 Supervisor Control Center · AI 模型"
         case "open_xt_diagnostics":
             return "打开 XT Diagnostics"
         case "open_hub_recovery":
@@ -232,9 +339,10 @@ enum AXRouteRepairLogStore {
     ) -> String {
         let normalized = normalizedText(raw)
         guard !normalized.isEmpty else { return "" }
+        let token = normalizedFailureToken(normalized)
 
         let label: String
-        switch normalized.lowercased() {
+        switch token {
         case "model_not_found", "remote_model_not_found":
             label = "目标模型未加载"
         case "grpc_route_unavailable":
@@ -243,21 +351,47 @@ enum AXRouteRepairLogStore {
             label = "Hub runtime 未启动"
         case "response_timeout":
             label = "远端响应超时"
+        case "remote_timeout":
+            label = "远端请求超时"
+        case "remote_unreachable":
+            label = "远端链路不可达"
         case "request_write_failed":
             label = "请求发送失败"
+        case "blocked_waiting_upstream":
+            label = "上游尚未就绪"
+        case "provider_not_ready":
+            label = "provider 未就绪"
         case "remote_export_blocked":
             label = "远端导出被拦截"
+        case "device_remote_export_denied":
+            label = "当前设备不允许远端导出"
+        case "policy_remote_denied":
+            label = "当前策略不允许远端执行"
+        case "budget_remote_denied":
+            label = "当前预算策略不允许远端执行"
+        case "remote_disabled_by_user_pref":
+            label = "用户偏好禁用了远端执行"
+        case "device_paid_model_disabled":
+            label = "这台设备未开启付费模型访问"
+        case "device_paid_model_not_allowed":
+            label = "当前模型不在设备付费模型允许范围内"
+        case "device_daily_token_budget_exceeded":
+            label = "设备每日付费模型额度已用尽"
+        case "device_single_request_token_exceeded":
+            label = "单次请求超出付费模型额度"
+        case "legacy_grant_flow_required":
+            label = "付费模型仍停在旧授权链"
         case "downgrade_to_local":
             label = "Hub 降级到本地"
         default:
-            label = normalized
+            label = token
         }
 
         guard includeCode,
-              label.caseInsensitiveCompare(normalized) != .orderedSame else {
+              label.caseInsensitiveCompare(token) != .orderedSame else {
             return label
         }
-        return "\(label)（\(normalized)）"
+        return "\(label)（\(token)）"
     }
 
     static func userFacingNoteLabel(_ raw: String) -> String? {
@@ -265,6 +399,8 @@ enum AXRouteRepairLogStore {
         guard !normalized.isEmpty else { return nil }
 
         switch normalized.lowercased() {
+        case "source=status_bar":
+            return "来源 顶部状态栏快捷动作"
         case "source=connect_hub_and_diagnose_failed":
             return "来源 连接 Hub 失败后自动打开"
         case "source=reconnect_hub_and_diagnose_failed":
@@ -310,7 +446,7 @@ enum AXRouteRepairLogStore {
             outcome: normalizedOutcome,
             requestedModelId: normalizedText(latestEvent?.requestedModelId),
             actualModelId: normalizedText(latestEvent?.actualModelId),
-            fallbackReasonCode: normalizedText(latestEvent?.fallbackReasonCode),
+            fallbackReasonCode: normalizedText(latestEvent?.effectiveFailureReasonCode),
             repairReasonCode: normalizedText(repairReasonCode),
             note: normalizedText(note)
         )
@@ -418,6 +554,46 @@ enum AXRouteRepairLogStore {
         (raw ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "\n", with: " ")
+    }
+
+    private static func normalizedFailureToken(_ raw: String?) -> String {
+        let normalized = normalizedText(raw)
+        guard !normalized.isEmpty else { return "" }
+
+        let segments = normalized
+            .split(separator: ";", omittingEmptySubsequences: true)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+
+        if let resolutionState = reasonFieldValue("resolution_state", in: segments) {
+            return canonicalReasonCode(resolutionState)
+        }
+        if let denyCode = reasonFieldValue("deny_code", in: segments) {
+            return canonicalReasonCode(denyCode)
+        }
+        if let firstBareToken = segments.first(where: { !$0.contains("=") }) {
+            return canonicalReasonCode(firstBareToken)
+        }
+        return canonicalReasonCode(normalized)
+    }
+
+    private static func reasonFieldValue(_ key: String, in segments: [String]) -> String? {
+        let prefix = "\(key)="
+        guard let segment = segments.first(where: {
+            $0.lowercased().hasPrefix(prefix.lowercased())
+        }) else {
+            return nil
+        }
+        let value = String(segment.dropFirst(prefix.count))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
+    private static func canonicalReasonCode(_ raw: String) -> String {
+        raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
     }
 
     private static func topCountedValue(_ values: [String]) -> (value: String?, count: Int) {

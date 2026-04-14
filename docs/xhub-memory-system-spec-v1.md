@@ -1,7 +1,7 @@
 # X-Hub Memory System Spec v1（skills ecosystem + progressive-disclosure reference architecture 优势整合版 / 可执行规范）
 
 - Status: Draft（按本文可直接实现 v1；后续迭代出 v2/v3）
-- Updated: 2026-02-12
+- Updated: 2026-03-21
 - Applies to: X‑Hub（Hub gRPC server + Memory Worker + Index DB）+ X‑Terminal（事件上报 + UI 展示）
 - Decisions baked in (已拍板默认值)：
   - PD 注入：SessionStart 注入一次 Index + `/memory` 手动刷新；全文按需 Get
@@ -16,8 +16,22 @@
 > - 高安全：DLP + sensitivity + remote gate + 审计 + Kill‑Switch
 > - 高可控：Markdown 视图可读可改；单写入者+回滚防污染
 
+补充边界：
+- 本文继续保留 5-layer / PD / Single Writer / remote gate 主装配语义。
+- 但 memory 控制面已补充冻结为：
+  - 用户在 X-Hub 选择 memory AI
+  - `Scheduler -> Worker -> Writer + Gate` 分层执行
+  - `Memory-Core` 作为 governed rule asset 约束运行时，而不是单体执行 AI
+- 因此本文里提到的 `Memory-Core Policy`，应与下列新文档一起阅读，而不应单独被理解为完整控制面：
+  - `docs/memory-new/xhub-memory-scheduler-and-memory-core-runtime-architecture-v1.md`
+  - `docs/memory-new/xhub-memory-model-preferences-and-routing-contract-v1.md`
+  - `docs/memory-new/xhub-memory-core-recipe-asset-versioning-freeze-v1.md`
+
 相关分部 spec（本文件为“总装配可实现版本”）：
 - Memory-Core Policy：`docs/xhub-memory-core-policy-v1.md`
+- Memory Scheduler + Runtime Architecture：`docs/memory-new/xhub-memory-scheduler-and-memory-core-runtime-architecture-v1.md`
+- Memory Model Preferences + Routing Contract：`docs/memory-new/xhub-memory-model-preferences-and-routing-contract-v1.md`
+- Memory-Core Recipe Asset Versioning Freeze：`docs/memory-new/xhub-memory-core-recipe-asset-versioning-freeze-v1.md`
 - PD + Hooks：`docs/xhub-memory-progressive-disclosure-hooks-v1.md`
 - Hybrid Index（skills ecosystem Port）：`docs/xhub-memory-hybrid-index-v1.md`
 - Fusion（概览）：`docs/xhub-memory-fusion-v1.md`
