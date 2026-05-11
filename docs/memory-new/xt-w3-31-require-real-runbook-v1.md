@@ -23,14 +23,14 @@
 建议目录：
 
 ```bash
-cd /Users/andrew.xie/Documents/AX/x-hub-system
+cd ${PROJECT_ROOT:-$(cd "$(dirname "$0")/.." $HOME/path/to/workspace/x-hub-system$HOME/path/to/workspace/x-hub-system pwd)}
 mkdir -p build/reports/xt_w3_31_require_real
 ```
 
 ## 3) 当前状态速查
 
 ```bash
-cd /Users/andrew.xie/Documents/AX/x-hub-system
+cd ${PROJECT_ROOT:-$(cd "$(dirname "$0")/.." $HOME/path/to/workspace/x-hub-system$HOME/path/to/workspace/x-hub-system pwd)}
 node scripts/xt_w3_31_require_real_status.js
 ```
 
@@ -125,7 +125,7 @@ node scripts/xt_w3_31_require_real_status.js --all --json
 先为下一条或指定样本生成 scaffold：
 
 ```bash
-cd /Users/andrew.xie/Documents/AX/x-hub-system
+cd ${PROJECT_ROOT:-$(cd "$(dirname "$0")/.." $HOME/path/to/workspace/x-hub-system$HOME/path/to/workspace/x-hub-system pwd)}
 node scripts/prepare_xt_w3_31_require_real_sample.js
 ```
 
@@ -200,7 +200,7 @@ fail-closed 约束：
 使用 `finalize` 时，report 会自动刷新。若你手工用了 updater，再执行一次：
 
 ```bash
-cd /Users/andrew.xie/Documents/AX/x-hub-system
+cd ${PROJECT_ROOT:-$(cd "$(dirname "$0")/.." $HOME/path/to/workspace/x-hub-system$HOME/path/to/workspace/x-hub-system pwd)}
 node scripts/generate_xt_w3_31_require_real_report.js
 node scripts/xt_w3_31_require_real_status.js
 ```

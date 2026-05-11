@@ -36,10 +36,10 @@ final class LocalRuntimeProviderGuidanceTests: XCTestCase {
             reasonCode: "import_error",
             importError: "missing_module:torch",
             selectedPythonPath: "/usr/bin/python3",
-            preferredPythonPath: "/Users/test/Documents/AX/project/.venv/bin/python3",
+            preferredPythonPath: "/Users/test/path/to/workspace/project/.venv/bin/python3",
             candidates: [
                 LocalPythonRuntimeCandidateStatus(
-                    path: "/Users/test/Documents/AX/project/.venv/bin/python3",
+                    path: "/Users/test/path/to/workspace/project/.venv/bin/python3",
                     version: "3.11",
                     readyProviders: ["transformers", "mlx"],
                     score: 18
@@ -49,7 +49,7 @@ final class LocalRuntimeProviderGuidanceTests: XCTestCase {
 
         XCTAssertTrue(hint.contains("更合适的本地 Python"))
         XCTAssertTrue(hint.contains("Hub 会自动切换"))
-        XCTAssertTrue(hint.contains("/Users/test/Documents/AX/project/.venv/bin/python3"))
+        XCTAssertTrue(hint.contains("/Users/test/path/to/workspace/project/.venv/bin/python3"))
     }
 
     func testTransformersHintMentionsUserRuntimeFallbackSource() {
@@ -184,10 +184,10 @@ final class LocalRuntimeProviderGuidanceTests: XCTestCase {
             reasonCode: "import_error",
             importError: "missing_module:torch",
             selectedPythonPath: "/usr/bin/python3",
-            preferredPythonPath: "/Users/test/Documents/AX/project/.venv/bin/python3",
+            preferredPythonPath: "/Users/test/path/to/workspace/project/.venv/bin/python3",
             candidates: [
                 LocalPythonRuntimeCandidateStatus(
-                    path: "/Users/test/Documents/AX/project/.venv/bin/python3",
+                    path: "/Users/test/path/to/workspace/project/.venv/bin/python3",
                     version: "3.11",
                     readyProviders: ["mlx_vlm"],
                     score: 18
@@ -198,7 +198,7 @@ final class LocalRuntimeProviderGuidanceTests: XCTestCase {
         XCTAssertTrue(hint.contains("MLX VLM"))
         XCTAssertTrue(hint.contains("更合适的本地 Python"))
         XCTAssertTrue(hint.contains("自动切换"))
-        XCTAssertTrue(hint.contains("/Users/test/Documents/AX/project/.venv/bin/python3"))
+        XCTAssertTrue(hint.contains("/Users/test/path/to/workspace/project/.venv/bin/python3"))
     }
 
     func testPythonCandidatesSummaryIncludesSelectedAndAutoProviderPaths() {
@@ -206,12 +206,12 @@ final class LocalRuntimeProviderGuidanceTests: XCTestCase {
             selectedPythonPath: "/usr/bin/python3",
             preferredProviderPaths: [
                 "mlx": "/Library/Frameworks/Python.framework/Versions/3.11/bin/python3.11",
-                "mlx_vlm": "/Users/test/Documents/AX/project/.venv/bin/python3",
-                "transformers": "/Users/test/Documents/AX/project/.venv/bin/python3",
+                "mlx_vlm": "/Users/test/path/to/workspace/project/.venv/bin/python3",
+                "transformers": "/Users/test/path/to/workspace/project/.venv/bin/python3",
             ],
             candidates: [
                 LocalPythonRuntimeCandidateStatus(
-                    path: "/Users/test/Documents/AX/project/.venv/bin/python3",
+                    path: "/Users/test/path/to/workspace/project/.venv/bin/python3",
                     version: "3.11",
                     readyProviders: ["transformers", "mlx"],
                     score: 18
@@ -226,9 +226,9 @@ final class LocalRuntimeProviderGuidanceTests: XCTestCase {
         )
 
         XCTAssertTrue(summary.contains("selected_python=/usr/bin/python3"))
-        XCTAssertTrue(summary.contains("auto_mlx_vlm_python=/Users/test/Documents/AX/project/.venv/bin/python3"))
-        XCTAssertTrue(summary.contains("auto_transformers_python=/Users/test/Documents/AX/project/.venv/bin/python3"))
-        XCTAssertTrue(summary.contains("candidate=/Users/test/Documents/AX/project/.venv/bin/python3"))
+        XCTAssertTrue(summary.contains("auto_mlx_vlm_python=/Users/test/path/to/workspace/project/.venv/bin/python3"))
+        XCTAssertTrue(summary.contains("auto_transformers_python=/Users/test/path/to/workspace/project/.venv/bin/python3"))
+        XCTAssertTrue(summary.contains("candidate=/Users/test/path/to/workspace/project/.venv/bin/python3"))
         XCTAssertTrue(summary.contains("ready=transformers,mlx"))
     }
 }

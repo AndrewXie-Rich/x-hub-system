@@ -76,7 +76,7 @@
   "schema_version": "xt.device_automation_command.v1",
   "command_id": "cmd-20260310-001",
   "project_id": "project_alpha",
-  "workspace_root": "/Users/andrew.xie/Documents/AX",
+  "workspace_root": "$HOME/x-hub-system",
   "session_id": "sess-001",
   "tool_name": "device.browser.control",
   "grant_id": "grant-001",

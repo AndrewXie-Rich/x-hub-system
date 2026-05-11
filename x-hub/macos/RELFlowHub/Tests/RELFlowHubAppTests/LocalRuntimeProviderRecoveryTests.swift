@@ -31,13 +31,13 @@ final class LocalRuntimeProviderRecoveryTests: XCTestCase {
             runtimeAlive: false,
             providerReady: false,
             currentPythonPath: "/usr/bin/python3",
-            targetPythonPath: "/Users/test/Documents/AX/project/.venv/bin/python3",
+            targetPythonPath: "/Users/test/path/to/workspace/project/.venv/bin/python3",
             targetSupportsProvider: true
         )
 
         XCTAssertEqual(
             action,
-            .start(targetPythonPath: "/Users/test/Documents/AX/project/.venv/bin/python3")
+            .start(targetPythonPath: "/Users/test/path/to/workspace/project/.venv/bin/python3")
         )
     }
 

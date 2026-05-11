@@ -21,14 +21,14 @@
 5. 所有截图、导出、音频、图像、日志统一保存到仓内：
 
 ```bash
-cd /Users/andrew.xie/Documents/AX/x-hub-system
+cd ${PROJECT_ROOT:-$(cd "$(dirname "$0")/.." $HOME/path/to/workspace/x-hub-system$HOME/path/to/workspace/x-hub-system pwd)}
 mkdir -p build/reports/lpr_w3_03_require_real
 ```
 
 ## 3) 当前状态速查
 
 ```bash
-cd /Users/andrew.xie/Documents/AX/x-hub-system
+cd ${PROJECT_ROOT:-$(cd "$(dirname "$0")/.." $HOME/path/to/workspace/x-hub-system$HOME/path/to/workspace/x-hub-system pwd)}
 node scripts/rebuild_lpr_w3_03_prerequisite_evidence.js
 node scripts/generate_lpr_w3_03_a_require_real_evidence.js
 node scripts/lpr_w3_03_require_real_status.js
@@ -68,7 +68,7 @@ node scripts/generate_w9_c5_require_real_closure_evidence.js
 如果要先看“本机到底有没有可跑 sample1 的 runtime + model 组合”，先跑：
 
 ```bash
-cd /Users/andrew.xie/Documents/AX/x-hub-system
+cd ${PROJECT_ROOT:-$(cd "$(dirname "$0")/.." $HOME/path/to/workspace/x-hub-system$HOME/path/to/workspace/x-hub-system pwd)}
 node scripts/generate_lpr_w3_03_b_runtime_candidate_probe.js
 node scripts/generate_lpr_w3_03_c_model_native_loadability_probe.js
 node scripts/generate_lpr_w3_03_sample1_candidate_acceptance.js
@@ -80,7 +80,7 @@ node scripts/generate_lpr_w3_03_sample1_operator_handoff.js
 如果你已经拿到一条候选模型目录路径，想先判断“这条路径到底能不能直接喂给 sample1”，直接跑：
 
 ```bash
-cd /Users/andrew.xie/Documents/AX/x-hub-system
+cd ${PROJECT_ROOT:-$(cd "$(dirname "$0")/.." $HOME/path/to/workspace/x-hub-system$HOME/path/to/workspace/x-hub-system pwd)}
 node scripts/generate_lpr_w3_03_sample1_candidate_registration_packet.js \
   --model-path /absolute/path/to/model_dir
 node scripts/generate_lpr_w3_03_sample1_candidate_catalog_patch_plan.js
@@ -104,7 +104,7 @@ node scripts/generate_lpr_w3_03_sample1_candidate_validation.js \
 如果你想在“手工改 catalog 之前”先把这个目录规范化成一份可执行导入单，直接跑：
 
 ```bash
-cd /Users/andrew.xie/Documents/AX/x-hub-system
+cd ${PROJECT_ROOT:-$(cd "$(dirname "$0")/.." $HOME/path/to/workspace/x-hub-system$HOME/path/to/workspace/x-hub-system pwd)}
 node scripts/generate_lpr_w3_03_sample1_candidate_registration_packet.js \
   --model-path /absolute/path/to/model_dir
 ```
@@ -136,7 +136,7 @@ node scripts/generate_lpr_w3_03_sample1_candidate_registration_packet.js \
 如果你不确定本机都扫到了哪些候选目录，或想把一个新导入目录和默认搜索根一起拉平检查，直接跑：
 
 ```bash
-cd /Users/andrew.xie/Documents/AX/x-hub-system
+cd ${PROJECT_ROOT:-$(cd "$(dirname "$0")/.." $HOME/path/to/workspace/x-hub-system$HOME/path/to/workspace/x-hub-system pwd)}
 node scripts/refresh_lpr_w3_03_sample1_candidate_bundle.js \
   --wide-common-user-roots
 node scripts/refresh_lpr_w3_03_sample1_candidate_bundle.js \
@@ -179,7 +179,7 @@ node scripts/generate_lpr_w3_03_sample1_candidate_shortlist.js \
 如果你想先看“什么目录才算 sample1 可接受，什么情况一票否决”，直接跑：
 
 ```bash
-cd /Users/andrew.xie/Documents/AX/x-hub-system
+cd ${PROJECT_ROOT:-$(cd "$(dirname "$0")/.." $HOME/path/to/workspace/x-hub-system$HOME/path/to/workspace/x-hub-system pwd)}
 node scripts/generate_lpr_w3_03_sample1_candidate_acceptance.js
 ```
 
@@ -210,7 +210,7 @@ node scripts/generate_lpr_w3_03_sample1_candidate_acceptance.js
 - helper bridge probe 会继续检查 `~/.lmstudio/bin/lms` 这条备用路径是否真能替代 native-loadable model dir
 - `2026-03-25` 最新 helper probe：helper binary 仍存在，且 helper bridge 已恢复到可用态；机读证据现为 `ready_candidate=true`
 - 机读证据已确认 `~/.lmstudio/settings.json` 当前为 `enableLocalService=true`, `cliInstalled=false`, `appFirstLoad=false`
-- 所选 runtime 仍会反解到 `/Users/andrew.xie/Documents/AX/Opensource/LM Studio.app`；当前 `codesign --verify --deep --strict` 已通过，bundle 仍带 `com.apple.quarantine`，但不再阻塞 helper readiness
+- 所选 runtime 仍会反解到 `$HOME/path/to/workspace/Opensource/LM Studio.app`；当前 `codesign --verify --deep --strict` 已通过，bundle 仍带 `com.apple.quarantine`，但不再阻塞 helper readiness
 - 真实 `lms daemon up` / `lms server start` 已可拉起服务；`daemon status` 返回 `llmster v0.0.6+1 is running (PID: 62130)`，`server status` 返回 `The server is running on port 1234.`
 - helper probe 的状态词修正继续保留，当前 running 输出已被稳定机读成 `daemon_running_signal=true` 与 `server_running_signal=true`
 - `2026-03-25` `LPR-W4-07-C` 已完成 closure：真实 `Qwen3-VL-4B-Instruct-3bit` 已通过 helper bridge 完成 `warmup -> vision_understand -> ocr -> quick bench -> monitor`；证据位于 `build/reports/lpr_w4_07_c_real_run/`，live helper residency 快照为 `build/reports/lpr_w4_07_c_real_run/lms_ps_final.json`，capture bundle 为 `build/reports/lpr_w4_07_c_real_run/capture_bundle.json`
@@ -291,7 +291,7 @@ node scripts/lpr_w3_03_require_real_status.js --all --json
 建议直接生成这份 support/release summary：
 
 ```bash
-cd /Users/andrew.xie/Documents/AX/x-hub-system
+cd ${PROJECT_ROOT:-$(cd "$(dirname "$0")/.." $HOME/path/to/workspace/x-hub-system$HOME/path/to/workspace/x-hub-system pwd)}
 bash scripts/ci/xhub_doctor_source_gate.sh
 node scripts/generate_xhub_local_service_operator_recovery_report.js
 ```
@@ -431,7 +431,7 @@ node scripts/finalize_lpr_w3_03_require_real_sample.js \
 ## 8) 每次回填后重算机读证据
 
 ```bash
-cd /Users/andrew.xie/Documents/AX/x-hub-system
+cd ${PROJECT_ROOT:-$(cd "$(dirname "$0")/.." $HOME/path/to/workspace/x-hub-system$HOME/path/to/workspace/x-hub-system pwd)}
 node scripts/generate_lpr_w3_03_a_require_real_evidence.js
 node scripts/lpr_w3_03_require_real_status.js
 node scripts/generate_xhub_local_service_operator_recovery_report.js

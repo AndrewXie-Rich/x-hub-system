@@ -192,7 +192,7 @@
     "project_alpha"
   ],
   "allowed_workspace_roots": [
-    "/Users/andrew.xie/Documents/AX"
+    "$HOME/x-hub-system"
   ],
   "xt_binding_required": true,
   "auto_grant_profile": "trusted_automation_default",
@@ -208,7 +208,7 @@
 {
   "schema_version": "xt.project_trusted_automation_binding.v1",
   "project_id": "project_alpha",
-  "project_root": "/Users/andrew.xie/Documents/AX",
+  "project_root": "$HOME/x-hub-system",
   "device_id": "device_xt_001",
   "mode": "trusted_automation",
   "state": "armed",

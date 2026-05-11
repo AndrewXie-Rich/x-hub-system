@@ -8,7 +8,7 @@
   - 动态官方 skill 生命周期
   - Supervisor 事件驱动闭环
 - Local reference repo:
-  - `/Users/andrew.xie/Documents/AX/Opensource/openclaw-main`
+  - `$HOME/path/to/workspace/Opensource/openclaw-main`
 - Depends on:
   - `docs/memory-new/xhub-dynamic-official-agent-skills-governance-work-orders-v1.md`
   - `docs/memory-new/xhub-agent-skill-vetter-gate-work-orders-v1.md`
@@ -173,8 +173,8 @@
   - `node x-hub-system/x-hub/grpc-server/hub_grpc_server/src/skills_store_agent_import.test.js`
 
 - Source:
-  - `/Users/andrew.xie/Documents/AX/Opensource/openclaw-main/src/security/skill-scanner.ts`
-  - `/Users/andrew.xie/Documents/AX/Opensource/openclaw-main/src/security/skill-scanner.test.ts`
+  - `$HOME/path/to/workspace/Opensource/openclaw-main/src/security/skill-scanner.ts`
+  - `$HOME/path/to/workspace/Opensource/openclaw-main/src/security/skill-scanner.test.ts`
 - Target:
   - `x-hub/grpc-server/hub_grpc_server/src/agent_skill_vetter.js`
   - `x-hub/grpc-server/hub_grpc_server/src/agent_skill_vetter.test.js`
@@ -203,10 +203,10 @@
   - catalog snapshot 仍缺更明确的 source diagnostics 输出
 
 - Source:
-  - `/Users/andrew.xie/Documents/AX/Opensource/openclaw-main/src/plugins/manifest.ts`
-  - `/Users/andrew.xie/Documents/AX/Opensource/openclaw-main/src/plugins/discovery.ts`
-  - `/Users/andrew.xie/Documents/AX/Opensource/openclaw-main/src/plugins/manifest-registry.ts`
-  - `/Users/andrew.xie/Documents/AX/Opensource/openclaw-main/src/plugins/slots.ts`
+  - `$HOME/path/to/workspace/Opensource/openclaw-main/src/plugins/manifest.ts`
+  - `$HOME/path/to/workspace/Opensource/openclaw-main/src/plugins/discovery.ts`
+  - `$HOME/path/to/workspace/Opensource/openclaw-main/src/plugins/manifest-registry.ts`
+  - `$HOME/path/to/workspace/Opensource/openclaw-main/src/plugins/slots.ts`
 - Target:
   - `x-hub/grpc-server/hub_grpc_server/src/skills_store.js`
   - `x-hub/grpc-server/hub_grpc_server/src/skills_catalog_*`
@@ -223,10 +223,10 @@
 #### `REUSE-HUB-03` 吸收 skills install gating
 
 - Source:
-  - `/Users/andrew.xie/Documents/AX/Opensource/openclaw-main/src/agents/skills-install.ts`
-  - `/Users/andrew.xie/Documents/AX/Opensource/openclaw-main/docs/tools/skills.md`
-  - `/Users/andrew.xie/Documents/AX/Opensource/openclaw-main/docs/tools/skills-config.md`
-  - `/Users/andrew.xie/Documents/AX/Opensource/openclaw-main/docs/tools/clawhub.md`
+  - `$HOME/path/to/workspace/Opensource/openclaw-main/src/agents/skills-install.ts`
+  - `$HOME/path/to/workspace/Opensource/openclaw-main/docs/tools/skills.md`
+  - `$HOME/path/to/workspace/Opensource/openclaw-main/docs/tools/skills-config.md`
+  - `$HOME/path/to/workspace/Opensource/openclaw-main/docs/tools/clawhub.md`
 - Target:
   - `docs/memory-new/xhub-dynamic-official-agent-skills-governance-work-orders-v1.md`
   - Hub install/update/revoke flow code
@@ -248,7 +248,7 @@
 #### `REUSE-BROWSER-01` 吸收 navigation guard
 
 - Source:
-  - `/Users/andrew.xie/Documents/AX/Opensource/openclaw-main/src/browser/navigation-guard.ts`
+  - `$HOME/path/to/workspace/Opensource/openclaw-main/src/browser/navigation-guard.ts`
 - Target:
   - `X-Hub browser sidecar` 或当前 `device.browser.control` 相关运行面
 - Action:
@@ -260,8 +260,8 @@
 #### `REUSE-BROWSER-02` 吸收 profile isolation
 
 - Source:
-  - `/Users/andrew.xie/Documents/AX/Opensource/openclaw-main/src/browser/profiles-service.ts`
-  - `/Users/andrew.xie/Documents/AX/Opensource/openclaw-main/docs/tools/browser.md`
+  - `$HOME/path/to/workspace/Opensource/openclaw-main/src/browser/profiles-service.ts`
+  - `$HOME/path/to/workspace/Opensource/openclaw-main/docs/tools/browser.md`
 - Target:
   - XT/Hub 的 agent browser profile 管理
 - Action:
@@ -272,7 +272,7 @@
 #### `REUSE-PERM-01` 借 exec approvals 产品模型
 
 - Source:
-  - `/Users/andrew.xie/Documents/AX/Opensource/openclaw-main/docs/tools/exec-approvals.md`
+  - `$HOME/path/to/workspace/Opensource/openclaw-main/docs/tools/exec-approvals.md`
 - Target:
   - `docs/memory-new/xhub-governed-autonomy-switchboard-productization-work-orders-v1.md`
   - `x-terminal/Sources/UI/ProjectSettingsView.swift`
@@ -291,7 +291,7 @@
 #### `REUSE-REF-01` memory slot 参考
 
 - Source:
-  - `/Users/andrew.xie/Documents/AX/Opensource/openclaw-main/extensions/memory-core/openclaw.plugin.json`
+  - `$HOME/path/to/workspace/Opensource/openclaw-main/extensions/memory-core/openclaw.plugin.json`
 - Action:
   - 只借 exclusive slot 概念
   - 不迁实现
@@ -299,8 +299,8 @@
 #### `REUSE-REF-02` plugin runtime 参考
 
 - Source:
-  - `/Users/andrew.xie/Documents/AX/Opensource/openclaw-main/src/plugins/runtime/*`
-  - `/Users/andrew.xie/Documents/AX/Opensource/openclaw-main/src/plugin-sdk/*`
+  - `$HOME/path/to/workspace/Opensource/openclaw-main/src/plugins/runtime/*`
+  - `$HOME/path/to/workspace/Opensource/openclaw-main/src/plugin-sdk/*`
 - Action:
   - 仅在写文档或比对产品架构时参考
   - 不进入当前代码主线
@@ -311,7 +311,7 @@
 
 参考仓库许可：
 
-- `/Users/andrew.xie/Documents/AX/Opensource/openclaw-main/LICENSE`
+- `$HOME/path/to/workspace/Opensource/openclaw-main/LICENSE`
 
 冻结要求：
 

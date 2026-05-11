@@ -180,27 +180,27 @@ const AMBIGUOUS_PROVIDER_ALIASES = Object.freeze(new Set([
 export const HUB_CHANNEL_OPENCLAW_REUSE_MAP = Object.freeze({
   registry: Object.freeze({
     reuse_class: 'direct_logic',
-    source_path: '/Users/andrew.xie/Documents/AX/Opensource/openclaw-main/src/channels/registry.ts',
+    source_path: '$HOME/path/to/workspace/Opensource/openclaw-main/src/channels/registry.ts',
     notes: 'Reuse provider order/meta/alias normalization shape only.',
   }),
   delivery_context: Object.freeze({
     reuse_class: 'direct_logic',
-    source_path: '/Users/andrew.xie/Documents/AX/Opensource/openclaw-main/src/utils/delivery-context.ts',
+    source_path: '$HOME/path/to/workspace/Opensource/openclaw-main/src/utils/delivery-context.ts',
     notes: 'Reuse normalized provider+conversation+thread route-key shape.',
   }),
   ingress_envelope: Object.freeze({
     reuse_class: 'shape_only',
-    source_path: '/Users/andrew.xie/Documents/AX/Opensource/openclaw-main/src/channels/registry.ts',
+    source_path: '$HOME/path/to/workspace/Opensource/openclaw-main/src/channels/registry.ts',
     notes: 'Freeze one provider-normalized ingress envelope so adapters only emit fail-closed contract fields.',
   }),
   provider_exposure_matrix: Object.freeze({
     reuse_class: 'shape_only',
-    source_path: '/Users/andrew.xie/Documents/AX/Opensource/openclaw-main/src/channels/registry.ts',
+    source_path: '$HOME/path/to/workspace/Opensource/openclaw-main/src/channels/registry.ts',
     notes: 'Keep listener/process/path/auth/replay/body-cap metadata machine-readable instead of adapter-local constants.',
   }),
   command_gate: Object.freeze({
     reuse_class: 'shape_only',
-    source_path: '/Users/andrew.xie/Documents/AX/Opensource/openclaw-main/src/channels/command-gating.ts',
+    source_path: '$HOME/path/to/workspace/Opensource/openclaw-main/src/channels/command-gating.ts',
     notes: 'Reuse pure gating contract shape; Hub adds role+scope+grant semantics later.',
   }),
   xt_runtime_tokens: Object.freeze({

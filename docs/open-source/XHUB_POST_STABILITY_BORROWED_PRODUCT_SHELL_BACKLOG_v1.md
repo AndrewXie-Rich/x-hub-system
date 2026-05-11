@@ -7,9 +7,9 @@
 - source context:
   - `docs/open-source/XHUB_NEXT_10_WORK_ORDERS_v1.md`
   - `docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md`
-  - `/Users/andrew.xie/Documents/AX/Opensource/edict-main/README.md`
-  - `/Users/andrew.xie/Documents/AX/Opensource/edict-main/docs/task-dispatch-architecture.md`
-  - `/Users/andrew.xie/Documents/AX/Opensource/edict-main/edict/frontend/src/components/MemorialPanel.tsx`
+  - `$HOME/path/to/workspace/Opensource/edict-main/README.md`
+  - `$HOME/path/to/workspace/Opensource/edict-main/docs/task-dispatch-architecture.md`
+  - `$HOME/path/to/workspace/Opensource/edict-main/edict/frontend/src/components/MemorialPanel.tsx`
 
 ## 0) 这份 backlog 的定位
 

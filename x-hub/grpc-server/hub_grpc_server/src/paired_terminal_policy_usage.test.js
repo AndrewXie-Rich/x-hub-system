@@ -86,7 +86,7 @@ const TRUSTED_AUTOMATION_TEST_CAPABILITIES = [
   'ai.generate.paid',
   'web.fetch',
 ];
-const TRUSTED_AUTOMATION_ALLOWED_WORKSPACE_ROOT = '/Users/andrew.xie/Documents/AX';
+const TRUSTED_AUTOMATION_ALLOWED_WORKSPACE_ROOT = '$HOME/x-hub-system';
 
 function baseEnv(runtimeBaseDir) {
   return {
@@ -1488,7 +1488,7 @@ run('loadClients normalizes trusted automation fields from approved trust profil
       mode: 'trusted_automation',
       state: 'armed',
       allowedProjectIds: ['project_alpha', 'project_alpha'],
-      allowedWorkspaceRoots: ['/Users/andrew.xie/Documents/AX'],
+      allowedWorkspaceRoots: ['$HOME/x-hub-system'],
       xtBindingRequired: true,
       autoGrantProfile: 'trusted_automation_default',
       devicePermissionOwnerRef: 'xt.device_permission_owner_readiness.v1:local_owner',
@@ -1501,7 +1501,7 @@ run('loadClients normalizes trusted automation fields from approved trust profil
     assert.equal(client.trusted_automation_mode, 'trusted_automation');
     assert.equal(client.trusted_automation_state, 'armed');
     assert.deepEqual(client.allowed_project_ids, ['project_alpha']);
-    assert.deepEqual(client.allowed_workspace_roots, ['/Users/andrew.xie/Documents/AX']);
+    assert.deepEqual(client.allowed_workspace_roots, ['$HOME/x-hub-system']);
     assert.equal(client.xt_binding_required, true);
     assert.equal(client.auto_grant_profile, 'trusted_automation_default');
     assert.equal(client.device_permission_owner_ref, 'xt.device_permission_owner_readiness.v1:local_owner');
@@ -2334,7 +2334,7 @@ await runAsync('generate returns trusted_automation_workspace_mismatch for works
           mode: 'trusted_automation',
           state: 'armed',
           allowedProjectIds: [],
-          allowedWorkspaceRoots: ['/Users/andrew.xie/Documents/AX'],
+          allowedWorkspaceRoots: ['$HOME/x-hub-system'],
           xtBindingRequired: true,
           autoGrantProfile: 'trusted_automation_default',
           devicePermissionOwnerRef: 'xt.device_permission_owner_readiness.v1:local_owner',

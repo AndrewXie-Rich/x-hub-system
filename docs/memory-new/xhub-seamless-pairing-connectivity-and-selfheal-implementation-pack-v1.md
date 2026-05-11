@@ -602,8 +602,8 @@
 ### 8.2 doctor 与 source-run
 
 - `bash scripts/run_xhub_doctor_from_source.command hub`
-- `bash scripts/run_xhub_doctor_from_source.command xt --workspace-root /Users/andrew.xie/Documents/AX`
-- `bash scripts/run_xhub_doctor_from_source.command all --workspace-root /Users/andrew.xie/Documents/AX --out-dir /tmp/xhub_doctor_bundle`
+- `bash scripts/run_xhub_doctor_from_source.command xt --workspace-root $HOME/x-hub-system`
+- `bash scripts/run_xhub_doctor_from_source.command all --workspace-root $HOME/x-hub-system --out-dir /tmp/xhub_doctor_bundle`
 
 ### 8.3 重点测试入口
 

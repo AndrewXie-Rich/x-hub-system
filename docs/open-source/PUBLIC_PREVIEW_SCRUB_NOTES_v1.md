@@ -54,7 +54,7 @@ These files are not good first-public-preview material and should stay out of th
 - `run_xt_ready_db_check.sh`
 - `xt_ready_require_real_run.sh`
 
-These are useful locally, but they currently encode one-machine assumptions such as `/Users/andrew.xie/...` and local container paths.
+These are useful locally, but they currently encode one-machine assumptions such as `$HOME/...` and local container paths.
 
 ### Yellow: internal operating memory / internal delivery material
 

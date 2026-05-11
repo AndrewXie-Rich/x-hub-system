@@ -900,7 +900,7 @@ Local Provider Runtime 只能按下面这条主链推进：
   - `relflowhub_mlx_runtime.py` 启动改为先走子进程安全探测 MLX；即便 `mlx_lm / libmlx` 在当前环境硬崩，resident daemon 也会继续存活，并把 MLX 标成 `import_error`
   - `ModelStore.swift` 的 planner / enqueue 路径已接受 provider lifecycle command；`runtime_process` warmable provider 不再被 UI 无条件阻断
   - compat tests 新增 file IPC round-trip 与 `main(...)` 优先走 daemon proxy 的验证
-  - 已完成一轮真实目录 smoke：使用 `/Users/andrew.xie/Documents/AX/Local Model/GLM-4.6V-Flash-MLX-4bit` 注册为 `transformers / vision_understand`，daemon 在 `mlx_probe_failed` 条件下仍可存活，`run-local-bench` 经 daemon proxy 返回 `fallback_only / Preview only`，`warmup_local_model` 对视觉模型继续 fail-closed
+  - 已完成一轮真实目录 smoke：使用 `$HOME/path/to/workspace/Local Model/GLM-4.6V-Flash-MLX-4bit` 注册为 `transformers / vision_understand`，daemon 在 `mlx_probe_failed` 条件下仍可存活，`run-local-bench` 经 daemon proxy 返回 `fallback_only / Preview only`，`warmup_local_model` 对视觉模型继续 fail-closed
 - residual gap：
   - 这一工单验证的是 contract、proxy 与 planner；仍需要用真实本地模型目录做一轮 Hub UI require-real smoke，才能完成 `LPR-G6`
   - `process_local` provider 仍保持 `On-Demand`，不应因为 resident daemon 已存在就误报为可 warmup
@@ -1219,11 +1219,11 @@ Local Provider Runtime 只能按下面这条主链推进：
   - 真机 require-real 与迁移出口属于 `LPR-W4-08-B` / `LPR-W4-09-A`
 - 本轮验证：
   - `python3 x-hub/python-runtime/python_service/test_local_provider_runtime_compat.py` 通过
-  - `bash -lc 'TMPDIR=/tmp SWIFTPM_MODULECACHE_OVERRIDE=/tmp/relflowhub-module-cache CLANG_MODULE_CACHE_PATH=/tmp/relflowhub-clang-module-cache swift test --package-path /Users/andrew.xie/Documents/AX/x-hub-system/x-hub/macos/RELFlowHub --filter "Local(ModelRuntimeCompatibilityPolicyTests|ModelBenchCapabilityPolicyTests|ProviderPackRegistryTests|RuntimeProviderGuidanceTests)"'` 通过
+  - `bash -lc 'TMPDIR=/tmp SWIFTPM_MODULECACHE_OVERRIDE=/tmp/relflowhub-module-cache CLANG_MODULE_CACHE_PATH=/tmp/relflowhub-clang-module-cache swift test --package-path ${PROJECT_ROOT:-$(cd "$(dirname "$0")/.." $HOME/path/to/workspace/x-hub-system$HOME/path/to/workspace/x-hub-system pwd)}/x-hub/macos/RELFlowHub --filter "Local(ModelRuntimeCompatibilityPolicyTests|ModelBenchCapabilityPolicyTests|ProviderPackRegistryTests|RuntimeProviderGuidanceTests)"'` 通过
   - `node x-hub/grpc-server/hub_grpc_server/src/local_runtime_ipc.test.js` 通过
 - 验证：
   - `PYTHONPYCACHEPREFIX=/tmp python3 x-hub/python-runtime/python_service/test_local_provider_runtime_compat.py`
-  - `bash -lc 'TMPDIR=/tmp SWIFTPM_MODULECACHE_OVERRIDE=/tmp/relflowhub-module-cache CLANG_MODULE_CACHE_PATH=/tmp/relflowhub-clang-module-cache swift test --package-path /Users/andrew.xie/Documents/AX/x-hub-system/x-hub/macos/RELFlowHub --filter "Local(ModelRuntimeCompatibilityPolicyTests|ModelBenchCapabilityPolicyTests|ProviderPackRegistryTests|RuntimeProviderGuidanceTests)"'`
+  - `bash -lc 'TMPDIR=/tmp SWIFTPM_MODULECACHE_OVERRIDE=/tmp/relflowhub-module-cache CLANG_MODULE_CACHE_PATH=/tmp/relflowhub-clang-module-cache swift test --package-path ${PROJECT_ROOT:-$(cd "$(dirname "$0")/.." $HOME/path/to/workspace/x-hub-system$HOME/path/to/workspace/x-hub-system pwd)}/x-hub/macos/RELFlowHub --filter "Local(ModelRuntimeCompatibilityPolicyTests|ModelBenchCapabilityPolicyTests|ProviderPackRegistryTests|RuntimeProviderGuidanceTests)"'`
   - `node x-hub/grpc-server/hub_grpc_server/src/local_runtime_ipc.test.js`
 - 证据：
   - `build/reports/lpr_w4_08_a_llama_cpp_provider_pack_evidence.v1.json`

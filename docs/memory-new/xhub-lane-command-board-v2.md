@@ -851,8 +851,8 @@
     - `x-terminal/Sources/Supervisor/SupervisorManager.swift`
     - `x-terminal/Sources/Voice/SupervisorVoiceScriptBuilder.swift`
     - `x-terminal/Tests/SupervisorHeartbeatVoiceTests.swift`
-    - `bash -lc 'swift build --package-path /Users/andrew.xie/Documents/AX/x-hub-system/x-terminal --scratch-path /tmp/xterminal_build_slice_20260320_008'`
-    - `bash -lc 'swift test --package-path /Users/andrew.xie/Documents/AX/x-hub-system/x-terminal --scratch-path /tmp/xterminal_build_slice_20260320_008 --filter SupervisorHeartbeatVoiceTests'`
+    - `bash -lc 'swift build --package-path ${PROJECT_ROOT:-$(cd "$(dirname "$0")/.." $HOME/path/to/workspace/x-hub-system$HOME/path/to/workspace/x-hub-system pwd)}/x-terminal --scratch-path /tmp/xterminal_build_slice_20260320_008'`
+    - `bash -lc 'swift test --package-path ${PROJECT_ROOT:-$(cd "$(dirname "$0")/.." $HOME/path/to/workspace/x-hub-system$HOME/path/to/workspace/x-hub-system pwd)}/x-terminal --scratch-path /tmp/xterminal_build_slice_20260320_008 --filter SupervisorHeartbeatVoiceTests'`
 
 - `SLICE-20260320-009`
   - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
@@ -870,7 +870,7 @@
     - `x-terminal/Sources/UI/Supervisor/SupervisorHeartbeatPopover.swift`
     - `x-terminal/Sources/Supervisor/SupervisorViewInteractionCoordinator.swift`
     - `x-terminal/Tests/SupervisorHeartbeatPresentationTests.swift`
-    - `bash -lc 'swift test --package-path /Users/andrew.xie/Documents/AX/x-hub-system/x-terminal --scratch-path /tmp/xterminal_test_slice_20260320_009c --filter SupervisorHeartbeatPresentationTests -j 1'`
+    - `bash -lc 'swift test --package-path ${PROJECT_ROOT:-$(cd "$(dirname "$0")/.." $HOME/path/to/workspace/x-hub-system$HOME/path/to/workspace/x-hub-system pwd)}/x-terminal --scratch-path /tmp/xterminal_test_slice_20260320_009c --filter SupervisorHeartbeatPresentationTests -j 1'`
 
 - `SLICE-20260320-010`
   - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
@@ -1536,7 +1536,7 @@
   - follow_up_2026_03_23_d: `继续把“新目录拿到手之后怎么安全接进来”做实：新增 `generate_lpr_w3_03_sample1_candidate_registration_packet.js`，把 exact path 归一化成 fail-closed import/register packet，直接输出 proposed catalog entry payload、target catalog paths、现有 exact-dir 注册冲突、以及 `registration_packet -> shortlist -> validation` 命令链；同时把这份 packet 接到 status/handoff、acceptance workflow、runbook、README，明确保持“不自动写外部 catalog，必须 validator PASS 后才允许手工注册”的口径。`
   - follow_up_2026_03_23_e: `继续把“PASS 之后到底怎么安全落 catalog/state”做实：新增 `generate_lpr_w3_03_sample1_candidate_catalog_patch_plan.js`，按 runtime base 分组实际检查 `models_catalog.json + models_state.json` 的真实 shape，输出 fail-closed 的 pair-safe manual patch plan（root updatedAt、append/update 动作、shape-preserving/runtime-safe payload preview、manual review fields）；同时把 compact `catalog_patch_plan_summary` 回接到 registration packet、status/handoff、require-real、operator recovery、runbook、README，明确“选一个 runtime base，并把 catalog/state 成对保持一致，禁止跨 base 混改”的规则。`
   - follow_up_2026_03_23_f: `已把 `--wide-common-user-roots` 收口成正式 shortlist/acceptance/registration/handoff/operator workflow 口径，并补 `refresh_lpr_w3_03_sample1_candidate_bundle.js` 作为一键编排 helper：现在可按 fail-closed 顺序统一刷新 `shortlist -> validation -> registration -> handoff -> acceptance -> require-real`，同时实际重建 `sample1 shortlist / wide shortlist / validation / registration / handoff / require-real / operator recovery / boundary / oss readiness` artifacts；真实机器结论仍诚实保持不变：当前唯一 in-scope embedding 候选仍是 `Qwen3-Embedding-0.6B-4bit-DWQ`，blocker 继续是 `unsupported_quantization_config`。`
-  - follow_up_2026_03_23_g: `继续补 discovery 默认真相：sample1 probe/shortlist 的 default scan roots 新增 `~/models`，因为当前机器真实存在 `/Users/andrew.xie/models/qwen3-7b-4bit` 这类 home-local 模型目录；刷新后 shortlist 已把它纳入 machine-readable searched record，并正确标成 `operator_asserted_only + not_native_loadable`，避免“目录完全没被搜到”和“目录被搜到但不符合 sample1 contract”混在一起。`
+  - follow_up_2026_03_23_g: `继续补 discovery 默认真相：sample1 probe/shortlist 的 default scan roots 新增 `~/models`，因为当前机器真实存在 `$HOME/models/qwen3-7b-4bit` 这类 home-local 模型目录；刷新后 shortlist 已把它纳入 machine-readable searched record，并正确标成 `operator_asserted_only + not_native_loadable`，避免“目录完全没被搜到”和“目录被搜到但不符合 sample1 contract”混在一起。`
   - follow_up_2026_03_23_h: `继续把“已经搜过哪里、还差什么”压成单出口真相：`generate_lpr_w4_09_c_product_exit_packet.js` 现在会把 sample1 acceptance 的 `current_machine_state + filtered_out_examples` 直接镜像到 `operator_handoff.require_real_focus` 顶层，`lpr_w3_03_require_real_status.js` / `generate_lpr_w3_03_a_require_real_evidence.js` 也改为优先吃 shortlist 的 `scan_roots`，所以这台机器实际跑过 `--wide-common-user-roots` 之后，`Documents / Downloads / Desktop` 已搜索但仍无新 native embedding candidate 的事实，已经能从 handoff / require-real / product-exit 一路直接读到。`
   - follow_up_2026_03_23_i: `继续把 helper 路线也收成正式 recovery truth：新增 `generate_lpr_w3_03_sample1_helper_local_service_recovery.js`，把 `lpr_w3_03_d_helper_bridge_probe.v1.json` 收成 fail-closed secondary-route recovery packet，直接导出 `enableLocalService=false`、ready verdict、required ready signals、以及“LM Studio -> Settings -> Developer -> Local Service”这类下一步动作；同时把它接入 `refresh_lpr_w3_03_sample1_candidate_bundle.js`、sample1 handoff、require-real、`xhub_local_service_operator_recovery_report`、以及 `lpr_w4_09_c_product_exit_packet`，所以当前机器上“helper 已安装但 local service 关闭，下一步应先启用 local service 再重跑 probe”的事实，也已经能从单出口机读到。`
   - follow_up_2026_03_23_j: `继续把 helper blocker 真相压到 release 面：`generate_hub_r1_release_oss_boundary_report.js` 和 `generate_oss_release_readiness_report.py` 现在也会透传 `machine_decision.require_real_focus_helper_local_service_recovery_present`、`require_real_focus.helper_local_service_recovery`、`checked_sources.scan_roots`、以及 `search_recovery.wide_shortlist_search_command`；fixture/test 已补齐并刷新真实 `boundary / oss readiness / product exit` artifacts，所以 release surface 现在也能直接读到“helper route 仍是 NO_GO、Documents/Downloads/Desktop 已搜过、下一步先启用 local service 再重跑”的 machine-readable 真相。`
@@ -14359,7 +14359,7 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 3) DoD
 - [x] `successful_import_rows >= 30`（实测 `34`）
 - [x] `matched_latency_rows >= 30`（实测 `34`）
-- [x] `source_db_path` 指向真实运行库（`/Users/andrew.xie/Library/Containers/com.rel.flowhub/Data/RELFlowHub/hub_grpc/hub.sqlite3`）
+- [x] `source_db_path` 指向真实运行库（`${HUB_DB_PATH:-$HOME/Library/Containers/com.rel.flowhub/Data/RELFlowHub/hub_grpc/hub.sqlite3}`）
 - [x] 每 5 条样本已落盘 batch probe（`5/10/15/20/25/30`）
 - [x] 依赖未满足维持 fail-closed（未写 `closed` / 未执行 `verified_handoff`）
 - [ ] `SKC-W2-05` gate 转 `SKC-G1/G3/G4:PASS`

@@ -129,7 +129,7 @@ final class RemoteProviderClientTests: XCTestCase {
         model = "gpt-5.4"
         model_reasoning_effort = "xhigh"
 
-        [projects."/Users/andrew.xie/Documents/AX"]
+        [projects."$HOME/x-hub-system"]
         trust_level = "trusted"
         """
 
