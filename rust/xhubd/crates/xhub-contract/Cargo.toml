@@ -1,0 +1,15 @@
+[package]
+name = "xhub-contract"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+prost = "0.13"
+tonic = { version = "0.12", features = ["transport"] }
+
+[build-dependencies]
+tonic-build = "0.12"
+
+[lib]
+path = "src/lib.rs"

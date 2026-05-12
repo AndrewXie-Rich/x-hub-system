@@ -1,0 +1,11 @@
+[package]
+name = "xhub-skills"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+serde_json = "1"

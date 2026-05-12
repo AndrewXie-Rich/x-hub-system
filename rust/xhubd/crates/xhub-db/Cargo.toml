@@ -1,0 +1,11 @@
+[package]
+name = "xhub-db"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+rusqlite = "0.37"
+
+[lib]
+path = "src/lib.rs"

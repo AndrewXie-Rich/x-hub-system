@@ -1,0 +1,15 @@
+[package]
+name = "xhub-scheduler"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+xhub-core = { path = "../xhub-core" }
+rusqlite = "0.37"
+
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+xhub-db = { path = "../xhub-db" }

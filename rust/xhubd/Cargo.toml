@@ -1,0 +1,18 @@
+[workspace]
+members = [
+  "crates/xhubd",
+  "crates/xhub-core",
+  "crates/xhub-contract",
+  "crates/xhub-db",
+  "crates/xhub-scheduler",
+  "crates/xhub-policy",
+  "crates/xhub-memory",
+  "crates/xhub-skills",
+  "crates/xhub-provider",
+  "crates/xhub-runtime",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"

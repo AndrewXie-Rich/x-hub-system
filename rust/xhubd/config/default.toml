@@ -1,0 +1,27 @@
+[server]
+host = "127.0.0.1"
+http_port = 50151
+grpc_port = 50152
+mode = "shadow"
+
+[paths]
+db_path = "data/hub.sqlite3"
+runtime_base_dir = ""
+proto_path = "assets/proto/hub_protocol_v1.proto"
+canonical_proto_path = "../../x-hub-system/protocol/hub_protocol_v1.proto"
+
+[scheduler]
+global_concurrency = 6
+per_scope_concurrency = 2
+queue_limit = 128
+queue_timeout_ms = 20000
+
+[policy]
+audit_level = "metadata_only"
+fail_closed = true
+
+[memory]
+default_project_mode = "project_code"
+default_supervisor_mode = "assistant_personal"
+secret_remote_mode = "deny"
+

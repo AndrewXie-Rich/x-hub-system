@@ -1,0 +1,19 @@
+{
+  "schema_version": "xhub.rust_hub.daemon_profile.v1",
+  "profile": "lan",
+  "host": "0.0.0.0",
+  "port": 50151,
+  "allow_lan": true,
+  "public_host": "REPLACE_WITH_LAN_IP",
+  "db_path": "data/hub.sqlite3",
+  "runtime_base_dir": "runtime",
+  "memory_dir": "data/memory",
+  "skills_dir": "skills",
+  "access_key_file": "secrets/xhubd_lan_access_key",
+  "run_dir": "run",
+  "log_dir": "logs",
+  "pid_file": "run/xhubd.pid",
+  "launchd_label": "com.ax.xhubd.lan",
+  "launchd_plist_path": "run/com.ax.xhubd.lan.plist",
+  "wait_ms": 10000
+}
