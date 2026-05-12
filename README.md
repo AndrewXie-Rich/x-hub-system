@@ -547,6 +547,34 @@ The goal is to keep behavior bounded by persistent memory-backed rules and then 
 
 ## Quick Start
 
+### Clone Or Download
+
+For most developers and readers, use HTTPS:
+
+```bash
+git clone https://github.com/AndrewXie-Rich/x-hub-system.git
+cd x-hub-system
+```
+
+Maintainers or long-term contributors who already have a GitHub SSH key can use SSH:
+
+```bash
+git clone git@github.com:AndrewXie-Rich/x-hub-system.git
+cd x-hub-system
+```
+
+To download without Git, use GitHub's **Code -> Download ZIP** button on:
+
+```text
+https://github.com/AndrewXie-Rich/x-hub-system
+```
+
+After cloning, confirm the repository is clean before changing files:
+
+```bash
+git status --short
+```
+
 ### Build The Hub App
 
 ```bash
