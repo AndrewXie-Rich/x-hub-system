@@ -547,6 +547,31 @@ The goal is to keep behavior bounded by persistent memory-backed rules and then 
 
 ## Quick Start
 
+### Download A Packaged Build
+
+For normal users, use the packaged macOS builds from GitHub Releases instead of cloning the source tree:
+
+```text
+https://github.com/AndrewXie-Rich/x-hub-system/releases
+```
+
+Recommended download:
+
+```text
+XHub-System-<version>-macos-arm64.dmg
+```
+
+That combined DMG contains both `X-Hub.app` and `X-Terminal.app`. Install both apps into Applications, launch `X-Hub` first, then launch and pair `X-Terminal`.
+
+Advanced users can use the separate app packages when they only need one side of the system:
+
+```text
+X-Hub-<version>-macos-arm64.dmg
+X-Terminal-<version>-macos-arm64.dmg
+```
+
+DMG files are release artifacts. They are uploaded to GitHub Releases and are intentionally not committed to this repository.
+
 ### Clone Or Download
 
 For most developers and readers, use HTTPS:
@@ -581,11 +606,39 @@ git status --short
 x-hub/tools/build_hub_app.command
 ```
 
+To create the Hub DMG locally after building the app:
+
+```bash
+x-hub/tools/build_hub_dmg.command
+```
+
 ### Build The X-Terminal App
 
 ```bash
 bash x-terminal/tools/build_xterminal_app.command
 ```
+
+To create the X-Terminal DMG locally after building the app:
+
+```bash
+bash x-terminal/tools/build_xterminal_dmg.command
+```
+
+### Build GitHub Release Assets
+
+Maintainers can build the combined and separate macOS DMGs with one command:
+
+```bash
+XHUB_RELEASE_VERSION=v0.1.0-alpha.1 scripts/package_macos_release.command
+```
+
+The output is written under:
+
+```text
+build/release/<version>/
+```
+
+Upload the generated DMGs and `SHA256SUMS.txt` to the matching GitHub Release. Do not commit those generated files.
 
 ### Launch The Built X-Hub App
 

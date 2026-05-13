@@ -121,7 +121,38 @@ git tag -a v0.1.0-alpha -m "v0.1.0-alpha"
 git push origin v0.1.0-alpha
 ```
 
-## 6) Rollback
+## 6) macOS Release Assets
+
+Public users should download packaged builds from GitHub Releases. The repository should keep source, scripts, docs, and tests only; generated app bundles and DMGs stay out of Git.
+
+Recommended assets for a macOS release:
+
+```text
+XHub-System-<version>-macos-arm64.dmg
+X-Hub-<version>-macos-arm64.dmg
+X-Terminal-<version>-macos-arm64.dmg
+SHA256SUMS.txt
+```
+
+The combined `XHub-System` DMG is the primary user-facing package because Hub and X-Terminal are designed to be installed and paired together. The separate Hub and X-Terminal DMGs are useful for maintainers, advanced users, and partial-update testing.
+
+Build release assets from the repository root:
+
+```bash
+XHUB_RELEASE_VERSION=v0.1.0-alpha.1 scripts/package_macos_release.command
+```
+
+The script writes assets to:
+
+```text
+build/release/<version>/
+```
+
+Upload those files to the matching GitHub Release. Do not commit `build/`, `.app`, or `.dmg` outputs.
+
+If the apps are not signed with a Developer ID and notarized, mark the GitHub Release as a prerelease and state the signing status clearly in the release notes.
+
+## 7) Rollback
 
 Rollback must be documented in release notes and include:
 - last known good tag
@@ -135,7 +166,7 @@ Minimal rollback example:
 git checkout <last_known_good_tag>
 ```
 
-## 7) Post-Release
+## 8) Post-Release
 
 - Announce release summary.
 - Track first external feedback via issues.

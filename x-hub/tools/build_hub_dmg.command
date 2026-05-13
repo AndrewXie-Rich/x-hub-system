@@ -14,11 +14,14 @@ if [ ! -d "$APP_PATH" ]; then
   exit 1
 fi
 
-VER=$(plutil -extract CFBundleShortVersionString raw "$PLIST_SRC" 2>/dev/null || echo "0.0")
+VER="${XHUB_DMG_VERSION:-}"
+if [ -z "$VER" ]; then
+  VER=$(plutil -extract CFBundleShortVersionString raw "$PLIST_SRC" 2>/dev/null || echo "0.0")
+fi
 VER=${VER:-0.0}
 
-OUT_DMG="$ROOT_DIR/build/X-Hub v${VER}.dmg"
-VOLNAME="X-Hub v${VER}"
+OUT_DMG="${XHUB_DMG_OUTPUT:-$ROOT_DIR/build/X-Hub v${VER}.dmg}"
+VOLNAME="${XHUB_DMG_VOLUME_NAME:-X-Hub v${VER}}"
 
 STAGE="$ROOT_DIR/build/dmg_stage"
 rm -rf "$STAGE" 2>/dev/null || true
