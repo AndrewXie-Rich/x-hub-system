@@ -1,5 +1,7 @@
 import Foundation
 
+let xtTrustedAutomationLocalApprovalRequiredDenyCode = "trusted_automation_local_approval_required"
+
 enum XTToolAuthorizationDisposition: String, Equatable {
     case allow
     case ask
@@ -71,6 +73,28 @@ struct XTToolAuthorizationDecision: Equatable {
             runtimePolicyDecision: nil,
             runtimeEffectiveSurface: nil,
             deviceGateDecision: nil
+        )
+    }
+
+    static func askTrustedAutomationProjectApproval(
+        _ decision: XTDeviceAutomationGateDecision,
+        tool: ToolName,
+        gateTool: ToolName
+    ) -> XTToolAuthorizationDecision {
+        let requiredGroup = decision.requiredDeviceToolGroup.trimmingCharacters(in: .whitespacesAndNewlines)
+        let reason = requiredGroup.isEmpty
+            ? "project_trusted_automation_approval_required"
+            : "project_trusted_automation_approval_required;required_device_tool_group=\(requiredGroup)"
+        return XTToolAuthorizationDecision(
+            disposition: .ask,
+            risk: .alwaysConfirm,
+            denyCode: xtTrustedAutomationLocalApprovalRequiredDenyCode,
+            detail: xtDeviceAutomationGateDeniedDetail(tool: tool, gateTool: gateTool, decision: decision),
+            policySource: "trusted_automation_device_gate",
+            policyReason: reason,
+            runtimePolicyDecision: nil,
+            runtimeEffectiveSurface: nil,
+            deviceGateDecision: decision
         )
     }
 
@@ -189,6 +213,9 @@ func xtToolAuthorizationDecision(
                 permissionReadiness: permissionReadiness
             )
             guard decision.allowed else {
+                if xtTrustedAutomationProjectApprovalCanRepair(decision) {
+                    return .askTrustedAutomationProjectApproval(decision, tool: call.tool, gateTool: gateTool)
+                }
                 return .denyDevice(decision, tool: call.tool, gateTool: gateTool)
             }
         }
@@ -367,6 +394,33 @@ func xtDeviceAutomationGateDeniedDetail(
         return "device.ui.step requires \(requiredToken): \(decision.detail)"
     }
     return decision.detail
+}
+
+func xtTrustedAutomationRequiredDeviceToolGroups(for calls: [ToolCall]) -> [String] {
+    var seen = Set<String>()
+    var ordered: [String] = []
+    for call in calls {
+        for gateTool in xtToolAuthorizationDeviceGateTools(for: call.tool) {
+            guard let group = DeviceAutomationTools.requiredDeviceToolGroup(for: gateTool) else { continue }
+            guard seen.insert(group).inserted else { continue }
+            ordered.append(group)
+        }
+    }
+    return ordered
+}
+
+func xtTrustedAutomationProjectApprovalCanRepair(_ decision: XTDeviceAutomationGateDecision) -> Bool {
+    guard let code = decision.rejectCode else { return false }
+    switch code {
+    case .trustedAutomationModeOff,
+         .trustedAutomationProjectNotBound,
+         .trustedAutomationWorkspaceMismatch,
+         .trustedAutomationSurfaceNotEnabled,
+         .deviceAutomationToolNotArmed:
+        return true
+    default:
+        return false
+    }
 }
 
 private func xtToolAuthorizationDeviceGateTools(for tool: ToolName) -> [ToolName] {

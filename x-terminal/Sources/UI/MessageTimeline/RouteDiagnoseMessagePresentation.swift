@@ -58,8 +58,22 @@ enum RouteDiagnoseMessagePresentation {
     }
 
     static func matches(content: String) -> Bool {
-        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.hasPrefix(coderHeading) || trimmed.hasPrefix(localizedCoderHeading)
+        if content.hasPrefix(coderHeading) || content.hasPrefix(localizedCoderHeading) {
+            return true
+        }
+        guard let first = content.first,
+              isWhitespaceOrNewline(first),
+              let firstNonWhitespace = content.firstIndex(where: { !isWhitespaceOrNewline($0) }) else {
+            return false
+        }
+        let trimmedPrefix = content[firstNonWhitespace...]
+        return trimmedPrefix.hasPrefix(coderHeading) || trimmedPrefix.hasPrefix(localizedCoderHeading)
+    }
+
+    private static func isWhitespaceOrNewline(_ character: Character) -> Bool {
+        character.unicodeScalars.allSatisfy {
+            CharacterSet.whitespacesAndNewlines.contains($0)
+        }
     }
 
     static func recommendation(

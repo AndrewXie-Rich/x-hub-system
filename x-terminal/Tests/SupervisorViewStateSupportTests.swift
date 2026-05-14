@@ -6,6 +6,25 @@ import Testing
 struct SupervisorViewStateSupportTests {
 
     @Test
+    func lightweightHeaderControlContextAvoidsDashboardBundleWork() {
+        let manager = SupervisorManager.makeForTesting()
+        let appModel = AppModel()
+
+        let context = SupervisorViewStateSupport.lightweightHeaderControlContext(
+            appModel: appModel,
+            supervisor: manager,
+            showHeartbeatFeed: false,
+            showSignalCenter: false
+        )
+
+        #expect(context.signalCenterOverview == nil)
+        #expect(context.isHeartbeatFeedVisible == false)
+        #expect(context.isSignalCenterVisible == false)
+        #expect(context.pendingHubGrantCount == 0)
+        #expect(context.pendingSkillApprovalCount == 0)
+    }
+
+    @Test
     func selectedAutomationLastLaunchRefFallsBackToPersistedCheckpointTruth() throws {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()

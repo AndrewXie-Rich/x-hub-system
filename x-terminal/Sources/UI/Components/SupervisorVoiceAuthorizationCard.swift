@@ -2,7 +2,7 @@ import Foundation
 import SwiftUI
 
 struct SupervisorVoiceAuthorizationCard: View {
-    @ObservedObject var supervisorManager: SupervisorManager
+    let supervisorManager: SupervisorManager
 
     @State private var transcriptDraft: String = ""
     @State private var verifyInFlight = false

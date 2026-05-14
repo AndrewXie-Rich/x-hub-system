@@ -1,0 +1,12 @@
+{
+  "schema_version": "xhub.skill_manifest.v1",
+  "id": "rust-authority-healthcheck",
+  "name": "Rust Authority Healthcheck",
+  "version": "1.0.0",
+  "description": "Built-in Rust Hub healthcheck skill used to verify governed skills execution authority.",
+  "capabilities": ["health"],
+  "execution": {
+    "kind": "builtin",
+    "name": "healthcheck"
+  }
+}

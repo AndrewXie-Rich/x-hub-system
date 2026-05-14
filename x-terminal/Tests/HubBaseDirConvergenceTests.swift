@@ -99,7 +99,7 @@ struct HubBaseDirConvergenceTests {
     }
 
     @Test
-    func baseDirUsesFreshRuntimeHeartbeatWhenHubStatusHeartbeatIsStale() throws {
+    func baseDirUsesFreshAuthoritativeRuntimeStatusWhenHubStatusHeartbeatIsStale() throws {
         let tempRoot = try makeTempDir(prefix: "hub_base_dir_runtime_heartbeat")
         defer { try? FileManager.default.removeItem(at: tempRoot) }
 
@@ -114,7 +114,7 @@ struct HubBaseDirConvergenceTests {
             encoding: .utf8
         )
         try writeStaleHubStatus(to: liveCandidate)
-        try writeFreshRuntimeHeartbeat(to: liveCandidate)
+        try writeFreshAuthoritativeRuntimeStatus(to: liveCandidate)
 
         try withAXHubStateDir(stateDir) {
             HubPaths.clearPinnedBaseDirOverride()
@@ -132,14 +132,14 @@ struct HubBaseDirConvergenceTests {
     }
 
     @Test
-    func connectAcceptsFreshRuntimeHeartbeatWhenHubStatusHeartbeatIsStale() throws {
+    func connectAcceptsFreshAuthoritativeRuntimeStatusWhenHubStatusHeartbeatIsStale() throws {
         let tempRoot = try makeTempDir(prefix: "hub_connector_runtime_heartbeat")
         defer { try? FileManager.default.removeItem(at: tempRoot) }
 
         let liveBaseDir = tempRoot.appendingPathComponent("RELFlowHub", isDirectory: true)
         try FileManager.default.createDirectory(at: liveBaseDir, withIntermediateDirectories: true)
         try writeStaleHubStatus(to: liveBaseDir)
-        try writeFreshRuntimeHeartbeat(to: liveBaseDir)
+        try writeFreshAuthoritativeRuntimeStatus(to: liveBaseDir)
 
         let defaults = UserDefaults.standard
         let previousValue = defaults.object(forKey: hubBaseDirDefaultsKey)
@@ -159,6 +159,69 @@ struct HubBaseDirConvergenceTests {
         let result = HubConnector.connect(ttl: 0.1)
         #expect(result.ok == true)
         #expect(result.baseDir?.standardizedFileURL == liveBaseDir.standardizedFileURL)
+    }
+
+    @Test
+    func baseDirIgnoresHeartbeatOnlyRuntimeStatusWhenRemotePairingStateExists() throws {
+        let tempRoot = try makeTempDir(prefix: "hub_base_dir_runtime_heartbeat_only")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let stateDir = tempRoot.appendingPathComponent("axhub", isDirectory: true)
+        let heartbeatOnlyCandidate = tempRoot.appendingPathComponent("RELFlowHub", isDirectory: true)
+        let canonicalFallback = tempRoot.appendingPathComponent("group.rel.flowhub", isDirectory: true)
+        try FileManager.default.createDirectory(at: stateDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: heartbeatOnlyCandidate, withIntermediateDirectories: true)
+        try "AXHUB_HUB_HOST='17.81.11.116'\n".write(
+            to: stateDir.appendingPathComponent("pairing.env"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try writeStaleHubStatus(to: heartbeatOnlyCandidate)
+        try writeFreshHeartbeatOnlyRuntimeStatus(to: heartbeatOnlyCandidate)
+
+        try withAXHubStateDir(stateDir) {
+            HubPaths.clearPinnedBaseDirOverride()
+            HubPaths.setBaseDirOverride(nil)
+            HubPaths.setCandidateBaseDirsOverrideForTesting([heartbeatOnlyCandidate])
+            HubPaths.setDefaultGroupBaseDirOverrideForTesting(canonicalFallback)
+            defer {
+                HubPaths.setCandidateBaseDirsOverrideForTesting(nil)
+                HubPaths.setDefaultGroupBaseDirOverrideForTesting(nil)
+                HubPaths.setBaseDirOverride(nil)
+            }
+
+            #expect(HubPaths.baseDir().standardizedFileURL == canonicalFallback.standardizedFileURL)
+        }
+    }
+
+    @Test
+    func connectRejectsHeartbeatOnlyRuntimeStatusWhenHubStatusHeartbeatIsStale() throws {
+        let tempRoot = try makeTempDir(prefix: "hub_connector_runtime_heartbeat_only")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let liveBaseDir = tempRoot.appendingPathComponent("RELFlowHub", isDirectory: true)
+        try FileManager.default.createDirectory(at: liveBaseDir, withIntermediateDirectories: true)
+        try writeStaleHubStatus(to: liveBaseDir)
+        try writeFreshHeartbeatOnlyRuntimeStatus(to: liveBaseDir)
+
+        let defaults = UserDefaults.standard
+        let previousValue = defaults.object(forKey: hubBaseDirDefaultsKey)
+        defer {
+            if let previousValue {
+                defaults.set(previousValue, forKey: hubBaseDirDefaultsKey)
+            } else {
+                defaults.removeObject(forKey: hubBaseDirDefaultsKey)
+            }
+            HubPaths.setBaseDirOverride(nil)
+            HubPaths.setCandidateBaseDirsOverrideForTesting(nil)
+        }
+
+        HubPaths.setBaseDirOverride(nil)
+        HubPaths.setCandidateBaseDirsOverrideForTesting([liveBaseDir])
+
+        let result = HubConnector.connect(ttl: 0.1)
+        #expect(result.ok == false)
+        #expect(result.error == "hub_not_running")
     }
 
     private func makeTempDir(prefix: String) throws -> URL {
@@ -202,12 +265,47 @@ struct HubBaseDirConvergenceTests {
         )
     }
 
-    private func writeFreshRuntimeHeartbeat(to baseDir: URL) throws {
+    private func writeFreshAuthoritativeRuntimeStatus(to baseDir: URL) throws {
+        let now = Date().timeIntervalSince1970
+        let payload = """
+        {
+          "schema_version": "xhub.local_runtime_status.v2",
+          "pid": 9041,
+          "updatedAt": \(now),
+          "mlxOk": true,
+          "runtimeVersion": "2026-03-14-mlx-instance-identity-v1",
+          "loadedInstanceCount": 0,
+          "providers": {
+            "mlx": {
+              "provider": "mlx",
+              "ok": true,
+              "reasonCode": "ready",
+              "runtimeVersion": "2026-03-14-mlx-instance-identity-v1",
+              "availableTaskKinds": ["text_generate"],
+              "loadedModels": [],
+              "deviceBackend": "mps",
+              "updatedAt": \(now),
+              "loadedModelCount": 0
+            }
+          }
+        }
+        """
+        try payload.write(
+            to: baseDir.appendingPathComponent("ai_runtime_status.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
+    private func writeFreshHeartbeatOnlyRuntimeStatus(to baseDir: URL) throws {
         let now = Date().timeIntervalSince1970
         let payload = """
         {
           "pid": 9041,
-          "updatedAt": \(now)
+          "updatedAt": \(now),
+          "mlxOk": true,
+          "runtimeVersion": "2026-02-11-runtime-stop-v1",
+          "loadedModelCount": 0
         }
         """
         try payload.write(

@@ -3264,15 +3264,16 @@ struct SupervisorHeartbeatVoiceTests {
             queuePendingCount: 0,
             permissionPendingCount: 0,
             focusActionURL: focusActionURL,
-            governedReviewProjectMemoryStatusLine: "• 记忆供给：Project AI 最近一轮 memory truth 来自 latest coder usage，effective depth=deep；heartbeat digest 已在 Project AI working set 中。",
-            governedReviewProjectMemoryMetadataText: "latest coder usage · depth=deep · digest已进project"
+            governedReviewProjectMemoryStatusLine: "• 记忆供给：Project AI 最近一轮 memory truth 来自 latest coder usage，effective depth=deep；触发原因：带着 review guidance 跟进执行（review_guidance_follow_up）；heartbeat digest 已在 Project AI working set 中。",
+            governedReviewProjectMemoryMetadataText: "latest coder usage · depth=deep · trigger=带着 review guidance 跟进执行 · digest已进project"
         )
 
         #expect(presentation.title.contains("治理审查已排队"))
         #expect(presentation.body.contains("治理审查："))
         #expect(presentation.body.contains("记忆供给：Project AI 最近一轮 memory truth 来自 latest coder usage"))
+        #expect(presentation.body.contains("触发原因：带着 review guidance 跟进执行（review_guidance_follow_up）"))
         #expect(presentation.body.contains("heartbeat digest 已在 Project AI working set 中"))
-        #expect(presentation.body.contains("为什么重要：这次治理判断已对齐到 Project AI 最近一轮 latest coder usage memory truth"))
+        #expect(presentation.body.contains("这次治理判断已对齐到 Project AI 最近一轮 latest coder usage memory truth"))
         #expect(presentation.body.contains("系统下一步：打开项目并查看这次治理审查为何被排队。"))
         #expect(presentation.body.contains("不再额外重复灌入同一份 heartbeat digest"))
     }
@@ -3855,6 +3856,51 @@ event_loop_tick=42 dedupe_key=heartbeat:grant_pending
         #expect(presentation.body.contains("切网或换环境后可能断开"))
         #expect(presentation.body.contains("点开这条提醒会直接进入 Hub 配对"))
         #expect(presentation.body.contains("正式异网入口"))
+    }
+
+    @Test
+    func voiceCallEntryPreflightCarriesProviderKeySourceRefInRepairAction() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.setVoiceReadinessSnapshotForTesting(
+            makeVoiceReadinessSnapshot(
+                overallState: .diagnosticRequired,
+                overallSummary: "Hub model route is blocked by a provider key import source failure",
+                checks: [
+                    makeVoiceReadinessCheck(
+                        kind: .modelRouteReadiness,
+                        state: .diagnosticRequired,
+                        reasonCode: "provider_key_import_failed",
+                        headline: "Model route is blocked by provider key import",
+                        summary: "Hub cannot build the model route until the provider key import source is repaired.",
+                        nextStep: "Open Hub Provider Keys and repair the broken import source.",
+                        repairEntry: .hubProviderKeys,
+                        detailLines: [
+                            "provider_key_import_source_issue_1=Codex auth import failed.",
+                            "provider_key_import_source_issue_1_kind=codex_auth_json",
+                            "provider_key_import_source_issue_1_state=sync_failed",
+                            "provider_key_import_source_issue_1_ref=/Users/test/.codex/auth19.json",
+                            "provider_key_import_source_issue_1_name=auth19.json"
+                        ]
+                    )
+                ]
+            )
+        )
+
+        let started = await manager.startHandsFreeVoiceConversation()
+
+        #expect(started == false)
+
+        let actionURL = try #require(manager.voiceCallEntryPreflight?.actionURL)
+        let url = try #require(URL(string: actionURL))
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+
+        #expect(components.scheme == "relflowhub")
+        #expect(components.host == "settings")
+        #expect(components.path == "/provider-keys")
+        #expect(
+            components.queryItems?.first(where: { $0.name == "source_ref" })?.value
+                == "/Users/test/.codex/auth19.json"
+        )
     }
 
     @Test
@@ -4538,7 +4584,8 @@ event_loop_tick=42 dedupe_key=heartbeat:grant_pending
         headline: String,
         summary: String,
         nextStep: String,
-        repairEntry: UITroubleshootDestination = .xtDiagnostics
+        repairEntry: UITroubleshootDestination = .xtDiagnostics,
+        detailLines: [String] = []
     ) -> VoiceReadinessCheck {
         VoiceReadinessCheck(
             kind: kind,
@@ -4548,7 +4595,7 @@ event_loop_tick=42 dedupe_key=heartbeat:grant_pending
             summary: summary,
             nextStep: nextStep,
             repairEntry: repairEntry,
-            detailLines: []
+            detailLines: detailLines
         )
     }
 

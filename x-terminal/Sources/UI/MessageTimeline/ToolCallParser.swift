@@ -2,9 +2,17 @@ import Foundation
 
 /// Tool Call 解析器，从 Assistant 消息中提取结构化的 tool calls
 enum ToolCallParser {
+    private static let toolCallsMarker = "tool_calls"
+    private static let boundedSearchByteThreshold = 16_384
+    private static let boundedSearchCharacterLimit = 8_192
 
     /// 从消息内容中解析 tool calls 和文本
     static func parse(_ content: String) -> ParsedContent {
+        guard !content.isEmpty else { return .empty }
+        guard mightContainToolCalls(content) else {
+            return .plainText(content)
+        }
+
         var parts: [ParsedPart] = []
 
         // 尝试解析 JSON 格式的 tool_calls
@@ -20,12 +28,21 @@ enum ToolCallParser {
             }
         } else {
             // 没有 tool calls，纯文本
-            if !content.isEmpty {
-                parts.append(.text(content))
-            }
+            parts.append(.text(content))
         }
 
         return ParsedContent(parts: parts)
+    }
+
+    static func mightContainToolCalls(_ content: String) -> Bool {
+        guard content.utf8.count > boundedSearchByteThreshold else {
+            return content.contains(toolCallsMarker)
+        }
+
+        if content.prefix(boundedSearchCharacterLimit).contains(toolCallsMarker) {
+            return true
+        }
+        return content.suffix(boundedSearchCharacterLimit).contains(toolCallsMarker)
     }
 
     /// 从内容中提取 tool calls
@@ -93,6 +110,12 @@ enum ToolCallParser {
 /// 解析后的内容
 struct ParsedContent {
     let parts: [ParsedPart]
+
+    static let empty = ParsedContent(parts: [])
+
+    static func plainText(_ content: String) -> ParsedContent {
+        content.isEmpty ? .empty : ParsedContent(parts: [.text(content)])
+    }
 
     var isEmpty: Bool {
         parts.isEmpty

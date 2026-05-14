@@ -50,8 +50,8 @@ struct SupervisorModelRoutePolicy: Codable, Equatable, Sendable {
 
     static let defaultRoleRoutes: [RoleRoute] = [
         RoleRoute(
-            role: .planner,
-            taskTags: SupervisorTaskRole.planner.canonicalTaskTags,
+            role: .supervisor,
+            taskTags: SupervisorTaskRole.supervisor.canonicalTaskTags,
             preferredModelClasses: [.localReasoner, .paidPlanner],
             fallbackOrder: [.localReasoner, .paidGeneral],
             grantPolicy: .lowRiskOK
@@ -67,20 +67,6 @@ struct SupervisorModelRoutePolicy: Codable, Equatable, Sendable {
             role: .reviewer,
             taskTags: SupervisorTaskRole.reviewer.canonicalTaskTags,
             preferredModelClasses: [.paidReviewer, .localReasoner],
-            fallbackOrder: [.localReasoner, .paidGeneral],
-            grantPolicy: .projectPolicyRequired
-        ),
-        RoleRoute(
-            role: .doc,
-            taskTags: SupervisorTaskRole.doc.canonicalTaskTags,
-            preferredModelClasses: [.localWriter, .paidWriter],
-            fallbackOrder: [.localReasoner, .paidGeneral],
-            grantPolicy: .lowRiskOK
-        ),
-        RoleRoute(
-            role: .ops,
-            taskTags: SupervisorTaskRole.ops.canonicalTaskTags,
-            preferredModelClasses: [.localReasoner, .paidOps],
             fallbackOrder: [.localReasoner, .paidGeneral],
             grantPolicy: .projectPolicyRequired
         ),
@@ -143,8 +129,8 @@ struct SupervisorModelRoutePolicy: Codable, Equatable, Sendable {
     private static func failClosedRoute(for role: SupervisorTaskRole) -> RoleRoute {
         defaultRoleRoutes.first(where: { $0.role == role })
             ?? RoleRoute(
-                role: .planner,
-                taskTags: SupervisorTaskRole.planner.canonicalTaskTags,
+                role: .supervisor,
+                taskTags: SupervisorTaskRole.supervisor.canonicalTaskTags,
                 preferredModelClasses: [.localReasoner, .paidPlanner],
                 fallbackOrder: [.localReasoner, .paidGeneral],
                 grantPolicy: .lowRiskOK

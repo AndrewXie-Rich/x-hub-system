@@ -48,7 +48,7 @@ struct SupervisorMemoryWorkingSetWindowTests {
                 remoteUnavailableReasonCode: nil
             )
         }
-        defer { HubIPCClient.resetMemoryContextResolutionOverrideForTesting() }
+        defer { HubIPCClient.installHubRouteDecisionOverrideForTesting(nil) }
         manager.messages = makeConversation(turns: 10)
 
         let localMemory = await manager.buildSupervisorLocalMemoryV1ForTesting("继续推进当前项目")
@@ -246,6 +246,51 @@ struct SupervisorMemoryWorkingSetWindowTests {
         #expect(localMemory.contains("minimum_pack: portfolio_brief, focused_project_anchor_pack, delta_feed"))
         #expect(localMemory.contains("[DIALOGUE_WINDOW]"))
         #expect(!localMemory.contains("[PORTFOLIO_BRIEF]"))
+        #expect(!localMemory.contains("[FOCUSED_PROJECT_ANCHOR_PACK]"))
+        #expect(!localMemory.contains("[DELTA_FEED]"))
+        #expect(!localMemory.contains("[EVIDENCE_PACK]"))
+    }
+
+    @Test
+    func ambientSelectedProjectDoesNotForceHeavyProjectMemoryIntoPureChat() async throws {
+        let manager = makeSupervisorManager()
+        let root = try makeProjectRoot(named: "supervisor-pure-chat-suppression")
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let (appModel, cleanup) = makeIsolatedAppModel(
+            registry: registry(with: [project]),
+            selectedProjectId: project.projectId
+        )
+        defer { cleanup() }
+        manager.setAppModel(appModel)
+        manager.cancelSupervisorMemoryRefreshForTesting()
+        HubIPCClient.installHubRouteDecisionOverrideForTesting {
+            HubRouteDecision(
+                mode: .auto,
+                hasRemoteProfile: false,
+                preferRemote: false,
+                allowFileFallback: true,
+                requiresRemote: false,
+                remoteUnavailableReasonCode: nil
+            )
+        }
+        defer { HubIPCClient.resetMemoryContextResolutionOverrideForTesting() }
+
+        let localMemory = await manager.buildSupervisorLocalMemoryV1ForTesting(
+            "详细说说这套 A/S Tier 机制怎么做，有什么创新点和优势？"
+        )
+        let snapshot = await manager.buildSupervisorMemoryAssemblySnapshotForTesting(
+            "详细说说这套 A/S Tier 机制怎么做，有什么创新点和优势？"
+        )
+
+        #expect(snapshot?.assemblyPurpose == XTSupervisorMemoryAssemblyPurpose.conversation.rawValue)
+        #expect(snapshot?.focusedProjectId == nil)
+        #expect(snapshot?.continuityDrillDownLines.contains("project_memory_binding_strength=none") == true)
+        #expect(snapshot?.continuityDrillDownLines.contains("project_memory_suppressed_for_pure_chat=true") == true)
+        #expect(
+            snapshot?.continuityDrillDownLines.contains(
+                "suppression_reason=ambient_project_selection_without_project_truth_need"
+            ) == true
+        )
         #expect(!localMemory.contains("[FOCUSED_PROJECT_ANCHOR_PACK]"))
         #expect(!localMemory.contains("[DELTA_FEED]"))
         #expect(!localMemory.contains("[EVIDENCE_PACK]"))
@@ -715,11 +760,21 @@ struct SupervisorMemoryWorkingSetWindowTests {
         #expect(localMemory.contains("heartbeat_current_state: Verify is blocked on route instability"))
         #expect(localMemory.contains("heartbeat_project_memory_source: latest_coder_usage"))
         #expect(localMemory.contains("heartbeat_project_memory_resolution: trigger=review_guidance_follow_up effective_depth=deep ceiling=m3_deep_dive ceiling_hit=false"))
+        #expect(
+            localMemory.contains(
+                "heartbeat_project_memory_trigger: 带着 review guidance 跟进执行（review_guidance_follow_up）"
+            )
+        )
         #expect(localMemory.contains("heartbeat_project_memory_actual: serving_objects=recent_project_dialogue, project_anchor_pack, workflow_summary"))
         #expect(localMemory.contains("heartbeat_project_memory_digest_in_project_ai: present=true visibility=shown reason_codes=project_memory_attention, recovery_decision_active"))
         #expect(localMemory.contains("[heartbeat_digest]"))
         #expect(localMemory.contains("project_memory_source: latest_coder_usage"))
         #expect(localMemory.contains("project_memory_resolution: trigger=review_guidance_follow_up effective_depth=deep ceiling=m3_deep_dive ceiling_hit=false"))
+        #expect(
+            localMemory.contains(
+                "project_memory_trigger: 带着 review guidance 跟进执行（review_guidance_follow_up）"
+            )
+        )
         #expect(localMemory.contains("project_memory_actual: serving_objects=recent_project_dialogue, project_anchor_pack, workflow_summary"))
         #expect(localMemory.contains("project_memory_digest_in_project_ai: present=true visibility=shown reason_codes=project_memory_attention, recovery_decision_active"))
         #expect(localMemory.contains("what_changed: 验证连续多次停在 route 健康问题。"))

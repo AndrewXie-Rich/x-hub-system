@@ -1,7 +1,8 @@
 import SwiftUI
 
 struct XTSkillGovernanceSurfaceView: View {
-    @EnvironmentObject private var appModel: AppModel
+    @Environment(\.xtAppModelReference) private var appModelReference
+    @EnvironmentObject private var skillLibraryStore: XTSkillLibraryStore
 
     let items: [AXSkillGovernanceSurfaceEntry]
     var title: String = "技能治理明细（Governance surface）"
@@ -14,7 +15,7 @@ struct XTSkillGovernanceSurfaceView: View {
                     header
                     overviewBanner
 
-                    if let statusLine = normalizedText(appModel.skillGovernanceActionStatusLine) {
+                    if let statusLine = normalizedText(skillLibrarySnapshot.skillGovernanceActionStatusLine) {
                         actionFeedbackBanner(statusLine)
                     }
 
@@ -35,6 +36,17 @@ struct XTSkillGovernanceSurfaceView: View {
     private var displayItems: [AXSkillGovernanceSurfaceEntry] {
         guard let maxItems else { return items }
         return Array(items.prefix(maxItems))
+    }
+
+    private var appModel: AppModel {
+        guard let appModelReference else {
+            preconditionFailure("XTSkillGovernanceSurfaceView requires xtAppModelReference")
+        }
+        return appModelReference
+    }
+
+    private var skillLibrarySnapshot: XTSkillLibrarySnapshot {
+        skillLibraryStore.snapshot
     }
 
     private var hiddenItemCount: Int {

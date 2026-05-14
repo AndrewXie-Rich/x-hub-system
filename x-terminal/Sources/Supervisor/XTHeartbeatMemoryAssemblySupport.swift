@@ -76,6 +76,12 @@ enum XTHeartbeatMemoryAssemblySupport {
             "open_anomalies: \(joined(record.openAnomalyTypes.map(\.rawValue)))",
             "next_review: kind=\(record.nextReviewKind?.rawValue ?? "none") due=\(record.nextReviewDue) at_ms=\(max(Int64(0), record.nextReviewDueAtMs))"
         ]
+        if let triggerLine = projectMemoryTriggerLine(
+            prefix: "project_memory_trigger",
+            raw: artifact.rawPayload.projectMemoryContext?.effectiveResolution?.trigger
+        ) {
+            lines.insert(triggerLine, at: 3)
+        }
         if let recoveryDecision = record.recoveryDecision {
             lines.append(
                 "recovery: action=\(recoveryDecision.action.rawValue) urgency=\(recoveryDecision.urgency.rawValue) reason=\(normalized(recoveryDecision.reasonCode, fallback: "none"))"
@@ -201,6 +207,12 @@ enum XTHeartbeatMemoryAssemblySupport {
             lines.append(
                 "heartbeat_project_memory_resolution: trigger=\(normalized(effectiveResolution.trigger, fallback: "none")) effective_depth=\(normalized(effectiveResolution.effectiveDepth, fallback: "none")) ceiling=\(normalized(effectiveResolution.ceilingFromTier, fallback: "none")) ceiling_hit=\(effectiveResolution.ceilingHit)"
             )
+            if let triggerLine = projectMemoryTriggerLine(
+                prefix: "heartbeat_project_memory_trigger",
+                raw: effectiveResolution.trigger
+            ) {
+                lines.append(triggerLine)
+            }
             lines.append(
                 "heartbeat_project_memory_actual: serving_objects=\(joined(effectiveResolution.selectedServingObjects)) planes=\(joined(effectiveResolution.selectedPlanes)) slots=\(joined(effectiveResolution.selectedSlots))"
             )
@@ -237,6 +249,22 @@ enum XTHeartbeatMemoryAssemblySupport {
             return "project_memory_actual: none"
         }
         return "project_memory_actual: serving_objects=\(joined(effectiveResolution.selectedServingObjects)) planes=\(joined(effectiveResolution.selectedPlanes)) slots=\(joined(effectiveResolution.selectedSlots))"
+    }
+
+    private static func projectMemoryTriggerLine(
+        prefix: String,
+        raw: String?
+    ) -> String? {
+        guard let detailLine = XTProjectMemoryTriggerPresentation.detailLine(
+            prefix: prefix,
+            raw: raw
+        ) else {
+            return nil
+        }
+        guard let separator = detailLine.firstIndex(of: "=") else { return detailLine }
+        let key = detailLine[..<separator]
+        let value = detailLine[detailLine.index(after: separator)...]
+        return "\(key): \(value)"
     }
 
     private static func projectMemoryDigestLine(

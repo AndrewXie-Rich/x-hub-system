@@ -82,32 +82,34 @@ For normal users, use packaged macOS builds from GitHub Releases:
 https://github.com/AndrewXie-Rich/x-hub-system/releases
 ```
 
-Recommended package:
+Current Rust preview package:
 
 ```text
-XHub-System-<version>-macos-arm64.dmg
+XHub-System-Rust-<version>-macos-arm64.dmg
 ```
 
-That combined DMG contains both `X-Hub.app` and `X-Terminal.app`.
+That combined package contains the Rust Hub runtime/daemon package and the X-Terminal runtime package with the Rust `xtd` sidecar.
 
 Install flow:
 
-1. Drag both apps to Applications.
-2. Launch `X-Hub` first.
-3. Launch `X-Terminal`.
-4. Pair X-Terminal with X-Hub.
+1. Open the combined Rust preview DMG or ZIP.
+2. Start Rust Hub with `bash Rust-Hub/tools/xhubd_daemon.command start`.
+3. Check Rust Hub readiness with `bash Rust-Hub/tools/xhubd_daemon.command ready`.
+4. Launch X-Terminal with `bash X-Terminal-Runtime/RUN_XT.command`.
 5. Confirm model route, bridge, and readiness status before relying on automation.
 
 Advanced users can install one side at a time:
 
 ```text
-X-Hub-<version>-macos-arm64.dmg
-X-Terminal-<version>-macos-arm64.dmg
+XHub-Rust-Hub-<version>-macos-arm64.zip
+X-Terminal-RustXT-<version>-macos-arm64.zip
 ```
 
 If no packaged release is available yet, build from source using the steps below.
 
-DMG files are release artifacts. They are uploaded to GitHub Releases and are intentionally not committed to this repository. If a release is unsigned or not notarized, the GitHub Release notes should say so explicitly.
+Release artifacts are uploaded to GitHub Releases and are intentionally not committed to this repository. If a release is unsigned or not notarized, the GitHub Release notes should say so explicitly.
+
+Legacy note: `XHub-System-v0.1.0-alpha.1-macos-arm64.dmg` was built from the older Swift/Node Hub app path. For the Rust refactor preview, use the `XHub-System-Rust-*` assets and the matching source tag.
 
 ## Requirements
 
@@ -138,28 +140,30 @@ git clone git@github.com:AndrewXie-Rich/x-hub-system.git
 cd x-hub-system
 ```
 
-Build the Hub app:
+Build the Rust Hub daemon/runtime:
 
 ```bash
-x-hub/tools/build_hub_app.command
+bash rust/xhubd/tools/build_rust_hub.command --release
 ```
 
-Build the X-Terminal app:
+Build the X-Terminal app and Rust `xtd` sidecar:
 
 ```bash
-bash x-terminal/tools/build_xterminal_app.command
+bash x-terminal/tools/build_xt_with_rust_sidecar.command
 ```
 
-Launch the built apps:
+Run the Rust Hub and launch X-Terminal:
 
 ```bash
-open build/X-Hub.app
+bash rust/xhubd/tools/xhubd_daemon.command start
+bash rust/xhubd/tools/xhubd_daemon.command ready
 open build/X-Terminal.app
 ```
 
 Developer source-run entrypoints:
 
 ```bash
+bash rust/xhubd/tools/run_rust_hub.command serve
 bash x-hub/tools/run_xhub_from_source.command
 bash x-terminal/tools/run_xterminal_from_source.command
 ```
@@ -172,10 +176,10 @@ bash scripts/run_xhub_doctor_from_source.command all --workspace-root /path/to/w
 
 ## Build Release Assets
 
-Maintainers can build the combined and separate macOS DMGs with one command:
+Maintainers can build the Rust preview release assets with one command:
 
 ```bash
-XHUB_RELEASE_VERSION=v0.1.0-alpha.1 scripts/package_macos_release.command
+XHUB_RELEASE_VERSION=v0.1.0-alpha.2-rust-preview scripts/package_rust_preview_release.command
 ```
 
 The output is written under:
@@ -187,9 +191,10 @@ build/release/<version>/
 Expected assets:
 
 ```text
-XHub-System-<version>-macos-arm64.dmg
-X-Hub-<version>-macos-arm64.dmg
-X-Terminal-<version>-macos-arm64.dmg
+XHub-System-Rust-<version>-macos-arm64.dmg
+XHub-System-Rust-<version>-macos-arm64.zip
+XHub-Rust-Hub-<version>-macos-arm64.zip
+X-Terminal-RustXT-<version>-macos-arm64.zip
 SHA256SUMS.txt
 ```
 

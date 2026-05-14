@@ -365,6 +365,47 @@ func xtTrustedAutomationDefaultDeviceToolGroups() -> [String] {
     ]
 }
 
+func xtTrustedAutomationNormalizeDeviceID(_ raw: String) -> String {
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard !trimmed.isEmpty else { return "" }
+
+    var out = ""
+    var lastWasSeparator = false
+    for scalar in trimmed.unicodeScalars {
+        let isDigit = scalar.value >= 48 && scalar.value <= 57
+        let isLowercaseASCII = scalar.value >= 97 && scalar.value <= 122
+        let isSafeSeparator = scalar == "-" || scalar == "_"
+        if isDigit || isLowercaseASCII || isSafeSeparator {
+            out.append(String(scalar))
+            lastWasSeparator = isSafeSeparator
+        } else if !lastWasSeparator {
+            out.append("-")
+            lastWasSeparator = true
+        }
+    }
+
+    let cleaned = out.trimmingCharacters(in: CharacterSet(charactersIn: "-_"))
+    guard !cleaned.isEmpty else { return "" }
+    return String(cleaned.prefix(48))
+}
+
+func xtTrustedAutomationSuggestedDeviceID(existing candidates: [String] = []) -> String {
+    let fallbacks = [
+        ProcessInfo.processInfo.hostName,
+        ProcessInfo.processInfo.environment["HOSTNAME"] ?? "",
+        "xt_local_device"
+    ]
+
+    for candidate in candidates + fallbacks {
+        let normalized = xtTrustedAutomationNormalizeDeviceID(candidate)
+        if !normalized.isEmpty {
+            return normalized
+        }
+    }
+
+    return "xt_local_device"
+}
+
 func xtTrustedAutomationWorkspaceHash(forProjectRoot root: URL) -> String {
     let normalized = root.standardizedFileURL.path
     let digest = SHA256.hash(data: Data(normalized.utf8))

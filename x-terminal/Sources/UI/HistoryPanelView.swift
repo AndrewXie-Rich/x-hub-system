@@ -3,7 +3,10 @@ import AppKit
 import UserNotifications
 
 struct HistoryPanelView: View {
-    @EnvironmentObject private var appModel: AppModel
+    let ctx: AXProjectContext
+    let session: ChatSessionModel
+    @StateObject private var chatStatusStore = XTChatStatusStore()
+    @State private var historyMessages: [AXChatMessage] = []
     @State private var selectedMessage: AXChatMessage?
     @State private var showInsertOptions: Bool = false
     
@@ -36,6 +39,18 @@ struct HistoryPanelView: View {
             }
         }
         .frame(minWidth: 300, maxWidth: 400)
+        .onAppear {
+            bindAndRefreshHistory()
+        }
+        .onChange(of: ctx.root.path) { _ in
+            bindAndRefreshHistory()
+        }
+        .onChange(of: sessionIdentity) { _ in
+            bindAndRefreshHistory()
+        }
+        .onChange(of: chatStatusStore.snapshot.messageCount) { _ in
+            refreshHistoryMessages()
+        }
     }
     
     private var header: some View {
@@ -52,11 +67,26 @@ struct HistoryPanelView: View {
     }
     
     private var messages: [AXChatMessage] {
-        guard let ctx = appModel.projectContext else {
-            return []
+        historyMessages
+    }
+
+    private var sessionIdentity: ObjectIdentifier {
+        ObjectIdentifier(session)
+    }
+
+    private func bindAndRefreshHistory() {
+        chatStatusStore.bind(to: session)
+        session.ensureLoaded(ctx: ctx, limit: 200)
+        refreshHistoryMessages()
+    }
+
+    private func refreshHistoryMessages() {
+        historyMessages = session.messages
+        if let selectedMessage,
+           !historyMessages.contains(where: { $0.id == selectedMessage.id }) {
+            self.selectedMessage = nil
+            showInsertOptions = false
         }
-        let session = appModel.session(for: ctx)
-        return session.messages
     }
     
     private func copyToClipboard(_ message: AXChatMessage) {
@@ -134,6 +164,25 @@ struct HistoryPanelView: View {
     }
 }
 
+enum MessageHistoryRowPresentation {
+    static let defaultPreviewCharacterLimit = 420
+
+    static func previewContent(
+        for content: String,
+        characterLimit: Int = defaultPreviewCharacterLimit
+    ) -> String {
+        let limit = max(1, characterLimit)
+        guard let endIndex = content.index(
+            content.startIndex,
+            offsetBy: limit,
+            limitedBy: content.endIndex
+        ), endIndex < content.endIndex else {
+            return content
+        }
+        return String(content[..<endIndex]) + "\n..."
+    }
+}
+
 struct MessageRow: View {
     let message: AXChatMessage
     let isSelected: Bool
@@ -146,7 +195,7 @@ struct MessageRow: View {
             roleIndicator
             
             VStack(alignment: .leading, spacing: 4) {
-                Text(message.content)
+                Text(MessageHistoryRowPresentation.previewContent(for: message.content))
                     .font(.body)
                     .textSelection(.enabled)
                     .lineLimit(3)

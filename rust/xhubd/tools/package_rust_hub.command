@@ -14,7 +14,7 @@ cargo build --release -p xhubd
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 DIST_DIR="$ROOT_DIR/dist/rust-hub-$STAMP"
-mkdir -p "$DIST_DIR/bin" "$DIST_DIR/config" "$DIST_DIR/assets/proto" "$DIST_DIR/migrations" "$DIST_DIR/tools" "$DIST_DIR/docs"
+mkdir -p "$DIST_DIR/bin" "$DIST_DIR/config" "$DIST_DIR/assets/proto" "$DIST_DIR/migrations" "$DIST_DIR/tools" "$DIST_DIR/docs" "$DIST_DIR/skills"
 
 cp "$ROOT_DIR/target/release/xhubd" "$DIST_DIR/bin/xhubd"
 cp "$ROOT_DIR/README.md" "$DIST_DIR/README.md"
@@ -23,6 +23,7 @@ cp "$ROOT_DIR"/config/daemon_profile*.json "$DIST_DIR/config/"
 cp "$ROOT_DIR/assets/proto/hub_protocol_v1.proto" "$DIST_DIR/assets/proto/hub_protocol_v1.proto"
 cp "$ROOT_DIR"/migrations/*.sql "$DIST_DIR/migrations/"
 cp "$ROOT_DIR"/docs/*.md "$DIST_DIR/docs/"
+cp -R "$ROOT_DIR"/skills/. "$DIST_DIR/skills/"
 cp "$ROOT_DIR/tools/run_packaged_rust_hub.command" "$DIST_DIR/tools/run_rust_hub.command"
 cp "$ROOT_DIR/tools/xhubd_daemon.js" "$DIST_DIR/tools/xhubd_daemon.js"
 cp "$ROOT_DIR/tools/xhubd_daemon.command" "$DIST_DIR/tools/xhubd_daemon.command"
@@ -33,12 +34,21 @@ cp "$ROOT_DIR/tools/daemon_watchdog.command" "$DIST_DIR/tools/daemon_watchdog.co
 cp "$ROOT_DIR/tools/cross_network_readiness_gate.command" "$DIST_DIR/tools/cross_network_readiness_gate.command"
 cp "$ROOT_DIR/tools/cross_network_installed_gate.command" "$DIST_DIR/tools/cross_network_installed_gate.command"
 cp "$ROOT_DIR/tools/cross_network_install_plan.command" "$DIST_DIR/tools/cross_network_install_plan.command"
+cp "$ROOT_DIR/tools/cross_network_pairing_export.command" "$DIST_DIR/tools/cross_network_pairing_export.command"
+cp "$ROOT_DIR/tools/cross_network_domain_activation_plan.js" "$DIST_DIR/tools/cross_network_domain_activation_plan.js"
+cp "$ROOT_DIR/tools/cross_network_domain_activation_plan.command" "$DIST_DIR/tools/cross_network_domain_activation_plan.command"
+cp "$ROOT_DIR/tools/cross_network_domain_smoke.js" "$DIST_DIR/tools/cross_network_domain_smoke.js"
+cp "$ROOT_DIR/tools/cross_network_domain_smoke.command" "$DIST_DIR/tools/cross_network_domain_smoke.command"
 cp "$ROOT_DIR/tools/lan_access_key_launchd_smoke.js" "$DIST_DIR/tools/lan_access_key_launchd_smoke.js"
 cp "$ROOT_DIR/tools/lan_access_key_launchd_smoke.command" "$DIST_DIR/tools/lan_access_key_launchd_smoke.command"
 cp "$ROOT_DIR/tools/memory_retrieval_shadow_smoke.js" "$DIST_DIR/tools/memory_retrieval_shadow_smoke.js"
 cp "$ROOT_DIR/tools/memory_retrieval_shadow_smoke.command" "$DIST_DIR/tools/memory_retrieval_shadow_smoke.command"
 cp "$ROOT_DIR/tools/memory_retrieval_http_smoke.js" "$DIST_DIR/tools/memory_retrieval_http_smoke.js"
 cp "$ROOT_DIR/tools/memory_retrieval_http_smoke.command" "$DIST_DIR/tools/memory_retrieval_http_smoke.command"
+cp "$ROOT_DIR/tools/memory_skills_production_smoke.js" "$DIST_DIR/tools/memory_skills_production_smoke.js"
+cp "$ROOT_DIR/tools/memory_skills_production_smoke.command" "$DIST_DIR/tools/memory_skills_production_smoke.command"
+cp "$ROOT_DIR/tools/memory_skills_live_smoke.js" "$DIST_DIR/tools/memory_skills_live_smoke.js"
+cp "$ROOT_DIR/tools/memory_skills_live_smoke.command" "$DIST_DIR/tools/memory_skills_live_smoke.command"
 cp "$ROOT_DIR/tools/skills_catalog_shadow_smoke.js" "$DIST_DIR/tools/skills_catalog_shadow_smoke.js"
 cp "$ROOT_DIR/tools/skills_catalog_shadow_smoke.command" "$DIST_DIR/tools/skills_catalog_shadow_smoke.command"
 cp "$ROOT_DIR/tools/skills_catalog_http_smoke.js" "$DIST_DIR/tools/skills_catalog_http_smoke.js"
@@ -167,12 +177,21 @@ chmod +x "$DIST_DIR/tools/run_rust_hub.command" \
   "$DIST_DIR/tools/cross_network_readiness_gate.command" \
   "$DIST_DIR/tools/cross_network_installed_gate.command" \
   "$DIST_DIR/tools/cross_network_install_plan.command" \
+  "$DIST_DIR/tools/cross_network_pairing_export.command" \
+  "$DIST_DIR/tools/cross_network_domain_activation_plan.js" \
+  "$DIST_DIR/tools/cross_network_domain_activation_plan.command" \
+  "$DIST_DIR/tools/cross_network_domain_smoke.js" \
+  "$DIST_DIR/tools/cross_network_domain_smoke.command" \
   "$DIST_DIR/tools/lan_access_key_launchd_smoke.js" \
   "$DIST_DIR/tools/lan_access_key_launchd_smoke.command" \
   "$DIST_DIR/tools/memory_retrieval_shadow_smoke.js" \
   "$DIST_DIR/tools/memory_retrieval_shadow_smoke.command" \
   "$DIST_DIR/tools/memory_retrieval_http_smoke.js" \
   "$DIST_DIR/tools/memory_retrieval_http_smoke.command" \
+  "$DIST_DIR/tools/memory_skills_production_smoke.js" \
+  "$DIST_DIR/tools/memory_skills_production_smoke.command" \
+  "$DIST_DIR/tools/memory_skills_live_smoke.js" \
+  "$DIST_DIR/tools/memory_skills_live_smoke.command" \
   "$DIST_DIR/tools/skills_catalog_shadow_smoke.js" \
   "$DIST_DIR/tools/skills_catalog_shadow_smoke.command" \
   "$DIST_DIR/tools/skills_catalog_http_smoke.js" \

@@ -569,6 +569,9 @@ fn handle_client(mut stream: TcpStream, state: &HubState) -> Result<(), String> 
             "/provider/readiness" => provider_readiness_http_json(config, query),
             "/memory/search" => memory_search_http_json(state, query),
             "/memory/retrieve" => memory_retrieve_http_json(state, query, request.body.as_str()),
+            "/memory/write" | "/memory/append" => {
+                memory_write_http_json(config, request.body.as_str())
+            }
             "/memory/readiness" | "/memory/status" => memory_readiness_http_json(state, query),
             "/evidence/ledger" | "/evidence/list" => evidence_ledger_http_json(config, query),
             "/evidence/write" => evidence_write_http_json(config, request.body.as_str()),
@@ -597,6 +600,9 @@ fn handle_client(mut stream: TcpStream, state: &HubState) -> Result<(), String> 
                 skills_audit_prune_http_json(config, query, request.body.as_str())
             }
             "/skills/preflight" => skills_preflight_http_json(config, query, request.body.as_str()),
+            "/skills/execute" | "/skills/run" => {
+                skills_execute_http_json(config, query, request.body.as_str())
+            }
             "/model/inventory" => model_inventory_http_json(config, query),
             "/model/route" => model_route_http_json(config, query, request.body.as_str()),
             "/model/compare" => model_compare_http_json(config, query, request.body.as_str()),
@@ -886,6 +892,9 @@ fn http_access_key_required_for_request(
         return false;
     }
     if config.http_access_key_required {
+        return true;
+    }
+    if cross_network_public_endpoint_enabled() {
         return true;
     }
     let peer_is_loopback = peer_addr
@@ -1255,6 +1264,44 @@ fn memory_retrieve_http_json(state: &HubState, _query: &str, body: &str) -> (&'s
             "400 Bad Request",
             format!(
                 "{{\"ok\":false,\"error\":\"memory_retrieve_failed\",\"message\":\"{}\"}}\n",
+                json_escape(&err)
+            ),
+        ),
+    }
+}
+
+fn memory_write_http_json(config: &HubConfig, body: &str) -> (&'static str, String) {
+    let parsed = if body.trim().is_empty() {
+        Value::Object(Default::default())
+    } else {
+        match serde_json::from_str::<Value>(body) {
+            Ok(value) => value,
+            Err(err) => {
+                return (
+                    "400 Bad Request",
+                    format!(
+                    "{{\"ok\":false,\"error\":\"invalid_memory_write_json\",\"message\":\"{}\"}}\n",
+                    json_escape(&err.to_string())
+                ),
+                )
+            }
+        }
+    };
+    match memory_bridge::write_json_from_value(config, &parsed) {
+        Ok(body) => {
+            let status = if body.contains("\"status\":\"denied\"") {
+                "403 Forbidden"
+            } else if body.contains("\"status\":\"error\"") {
+                "500 Internal Server Error"
+            } else {
+                "200 OK"
+            };
+            (status, format!("{body}\n"))
+        }
+        Err(err) => (
+            "400 Bad Request",
+            format!(
+                "{{\"ok\":false,\"error\":\"memory_write_failed\",\"message\":\"{}\"}}\n",
                 json_escape(&err)
             ),
         ),
@@ -1881,6 +1928,45 @@ fn skills_preflight_http_json(
             "400 Bad Request",
             format!(
                 "{{\"ok\":false,\"error\":\"skills_preflight_failed\",\"message\":\"{}\"}}\n",
+                json_escape(&err)
+            ),
+        ),
+    }
+}
+
+fn skills_execute_http_json(config: &HubConfig, query: &str, body: &str) -> (&'static str, String) {
+    let mut parsed = if body.trim().is_empty() {
+        Value::Object(Default::default())
+    } else {
+        match serde_json::from_str::<Value>(body) {
+            Ok(value) => value,
+            Err(err) => {
+                return (
+                    "400 Bad Request",
+                    format!(
+                        "{{\"ok\":false,\"error\":\"invalid_skills_execute_json\",\"message\":\"{}\"}}\n",
+                        json_escape(&err.to_string())
+                    ),
+                )
+            }
+        }
+    };
+    merge_skills_preflight_query(&mut parsed, query);
+    match skills_bridge::execute_json_from_value(config, parsed) {
+        Ok(body) => {
+            let status = if body.contains("\"status\":\"denied\"") {
+                "403 Forbidden"
+            } else if body.contains("\"status\":\"error\"") {
+                "500 Internal Server Error"
+            } else {
+                "200 OK"
+            };
+            (status, format!("{body}\n"))
+        }
+        Err(err) => (
+            "400 Bad Request",
+            format!(
+                "{{\"ok\":false,\"error\":\"skills_execute_failed\",\"message\":\"{}\"}}\n",
                 json_escape(&err)
             ),
         ),
@@ -3255,6 +3341,23 @@ fn is_loopback_host(host: &str) -> bool {
     normalized == "localhost" || normalized == "::1" || normalized.starts_with("127.")
 }
 
+fn is_wildcard_host(host: &str) -> bool {
+    let normalized = host
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase();
+    normalized == "0.0.0.0" || normalized == "::" || normalized == "*"
+}
+
+fn env_string(key: &str) -> String {
+    env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default()
+}
+
 fn env_bool(key: &str, fallback: bool) -> bool {
     match env::var(key) {
         Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
@@ -3289,6 +3392,55 @@ fn env_path_or_default(key: &str, fallback: PathBuf) -> PathBuf {
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .unwrap_or(fallback)
+}
+
+fn cross_network_public_endpoint_enabled() -> bool {
+    env_bool("XHUB_RUST_CROSS_NETWORK_PUBLIC_ENDPOINT", false)
+        || env_bool("XHUB_RUST_HUB_PUBLIC_ENDPOINT", false)
+}
+
+fn public_base_url_host(public_base_url: &str) -> Option<String> {
+    let value = public_base_url.trim();
+    let after_scheme = value
+        .strip_prefix("https://")
+        .or_else(|| value.strip_prefix("http://"))?;
+    if after_scheme.is_empty() || after_scheme.contains(char::is_whitespace) {
+        return None;
+    }
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .trim();
+    if authority.is_empty() || authority.contains('@') {
+        return None;
+    }
+    if let Some(rest) = authority.strip_prefix('[') {
+        return rest
+            .split(']')
+            .next()
+            .map(|host| host.trim().to_string())
+            .filter(|host| !host.is_empty());
+    }
+    authority
+        .split(':')
+        .next()
+        .map(|host| host.trim().to_string())
+        .filter(|host| !host.is_empty())
+}
+
+fn public_base_url_ready(public_base_url: &str) -> bool {
+    let value = public_base_url.trim();
+    if value.is_empty() || value.to_ascii_lowercase().contains("replace_with") {
+        return false;
+    }
+    if !(value.starts_with("https://") || value.starts_with("http://")) {
+        return false;
+    }
+    let Some(host) = public_base_url_host(value) else {
+        return false;
+    };
+    !is_loopback_host(host.as_str()) && !is_wildcard_host(host.as_str())
 }
 
 fn readiness_json_cached(state: &HubState) -> String {
@@ -3407,12 +3559,23 @@ fn readiness_json(
     let loopback_bind = is_loopback_host(&config.host);
     let lan_allowed = env_bool("XHUB_RUST_HUB_ALLOW_LAN", false);
     let bind_policy_ok = loopback_bind || lan_allowed;
+    let public_base_url = env_string("XHUB_RUST_HUB_PUBLIC_BASE_URL");
+    let public_endpoint_enabled = cross_network_public_endpoint_enabled();
+    let public_base_url_ready = public_base_url_ready(public_base_url.as_str());
     let http_access_key_configured = config.http_access_key.is_some();
-    let http_access_key_required = config.http_access_key_required || !loopback_bind;
+    let http_access_key_required =
+        config.http_access_key_required || !loopback_bind || public_endpoint_enabled;
     let http_access_key_ok = !http_access_key_required || http_access_key_configured;
     let network_ok = bind_policy_ok && http_access_key_ok;
+    let public_endpoint_ready = public_endpoint_enabled
+        && public_base_url_ready
+        && http_access_key_required
+        && http_access_key_ok;
+    let cross_network_ready = network_ok && (!loopback_bind || public_endpoint_ready);
     let memory_plan = RetrievalPlan::project_default();
     let skill_boundary = SkillBoundary::default();
+    let memory_writer_authority = memory_bridge::memory_writer_authority_enabled();
+    let skills_execution_authority = skills_bridge::skills_execution_authority_enabled();
     let ready = proto_ok
         && canonical_proto_ok
         && db_parent_ok
@@ -3456,6 +3619,10 @@ fn readiness_json(
             "port": config.http_port,
             "loopback_bind": loopback_bind,
             "cross_network_bind": !loopback_bind,
+            "cross_network_public_endpoint": public_endpoint_enabled,
+            "public_base_url": public_base_url,
+            "public_base_url_ready": public_base_url_ready,
+            "public_endpoint_ready": public_endpoint_ready,
             "lan_allowed": lan_allowed,
             "bind_policy_ok": bind_policy_ok,
             "http_access_key_required": http_access_key_required,
@@ -3501,9 +3668,11 @@ fn readiness_json(
             "include_project_capsule": memory_plan.include_project_capsule,
             "include_personal_capsule": memory_plan.include_personal_capsule,
             "fail_closed": memory_plan.fail_closed,
-            "authority": "shadow_plan",
-            "canonical_writer_in_rust": false,
+            "authority": if memory_writer_authority { "canonical_writer" } else { "shadow_plan" },
+            "canonical_writer_in_rust": memory_writer_authority,
             "retrieval_shadow_http": true,
+            "write_http": true,
+            "write_result_schema": xhub_memory::MEMORY_WRITE_RESULT_SCHEMA,
             "retrieval_result_schema": xhub_memory::MEMORY_RETRIEVAL_RESULT_SCHEMA,
         },
         "skills": {
@@ -3513,13 +3682,14 @@ fn readiness_json(
             "accepted_skill_count": skills_catalog.accepted_count(),
             "blocked_skill_count": skills_catalog.blocked_count(),
             "issue_count": skills_catalog.issues.len(),
-            "authority": format!("{:?}", skill_boundary.authority),
+            "authority": if skills_execution_authority { "RustExecutionAuthority".to_string() } else { format!("{:?}", skill_boundary.authority) },
             "hub_executes_third_party_code": skill_boundary.hub_executes_third_party_code,
             "requires_pin_or_grant": skill_boundary.requires_pin_or_grant,
-            "execution_policy": "policy_gate_only",
-            "execution_authority_in_rust": false,
+            "execution_policy": if skills_execution_authority { "preflight_policy_execute" } else { "policy_gate_only" },
+            "execution_authority_in_rust": skills_execution_authority,
             "catalog_shadow_http": true,
             "preflight_shadow_http": true,
+            "execute_http": true,
             "audit_shadow_http": true,
             "policy_revoke_http": true,
             "policy_events_http": true,
@@ -3546,6 +3716,8 @@ fn readiness_json(
             "http_metrics_recent_window": true,
             "http_io_timeouts": true,
             "memory_retrieval_http": true,
+            "memory_write_http": true,
+            "memory_writer_authority_in_rust": memory_writer_authority,
             "xt_classic_hub_compat_preflight_http": true,
             "xt_classic_hub_grpc_probe_http": true,
             "xt_classic_hub_compat_authority": "preflight_only",
@@ -3572,12 +3744,16 @@ fn readiness_json(
             "skills_catalog_cache_http": env_u128_in_range("XHUB_RUST_SKILLS_CATALOG_CACHE_TTL_MS", 500, 0, 10_000) > 0,
             "skills_catalog_http": true,
             "skills_preflight_http": true,
+            "skills_execute_http": true,
+            "skills_execution_authority_in_rust": skills_execution_authority,
             "skills_audit_http": true,
             "skills_policy_revoke_http": true,
             "skills_policy_events_http": true,
             "skills_policy_events_prune_http": true,
             "skills_policy_store_readiness_http": true,
-            "cross_network_ready": network_ok && !loopback_bind,
+            "cross_network_ready": cross_network_ready,
+            "cross_network_public_endpoint": public_endpoint_enabled,
+            "domain_public_endpoint_ready": public_endpoint_ready,
             "cross_network_auth_gate": true,
         },
         "checks": [
@@ -3797,6 +3973,22 @@ mod tests {
         assert!(
             http_access_key_failure(&request(vec![]), &config, Some(peer), "/health").is_none()
         );
+    }
+
+    #[test]
+    fn public_base_url_readiness_rejects_loopback_and_placeholders() {
+        assert!(!public_base_url_ready(""));
+        assert!(!public_base_url_ready("https://replace_with_domain"));
+        assert!(!public_base_url_ready("http://127.0.0.1:50151"));
+        assert!(!public_base_url_ready("https://localhost"));
+        assert!(!public_base_url_ready("https://0.0.0.0:50151"));
+    }
+
+    #[test]
+    fn public_base_url_readiness_accepts_domain_and_lan_hosts() {
+        assert!(public_base_url_ready("https://hub.example.com"));
+        assert!(public_base_url_ready("https://hub.example.com/xhub"));
+        assert!(public_base_url_ready("http://192.168.1.20:50151"));
     }
 
     #[test]

@@ -2,7 +2,7 @@ import SwiftUI
 
 struct SupervisorCockpitSummarySection: View {
     let primarySignalPresentation: SupervisorPrimarySignalPresentation?
-    @ObservedObject var supervisorManager: SupervisorManager
+    let supervisorManager: SupervisorManager
     @ObservedObject var orchestrator: SupervisorOrchestrator
     @ObservedObject var monitor: ExecutionMonitor
     let onPrimarySignalAction: (SupervisorSignalCenterOverviewAction) -> Void

@@ -1159,7 +1159,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             return .grantRequired
         case .permissionDenied:
             return .permissionDenied
-        case .modelNotReady, .connectorScopeBlocked, .paidModelAccessBlocked:
+        case .modelNotReady, .connectorScopeBlocked, .paidModelAccessBlocked, .externalTerminalAccessBlocked:
             return .diagnosticRequired
         default:
             return .blockedWaitingUpstream
@@ -1192,6 +1192,8 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             return ("open_model_route_readiness", "检查付费模型")
         case .connectorScopeBlocked:
             return ("open_hub_recovery", "检查 Hub Recovery")
+        case .externalTerminalAccessBlocked:
+            return ("open_external_terminal_access", "检查外部访问")
         case .pairingRepairRequired, .multipleHubsAmbiguous, .hubPortConflict, .hubUnreachable:
             return ("pair_hub", "检查 Hub")
         case .none:

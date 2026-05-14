@@ -3,6 +3,7 @@ import Testing
 @testable import XTerminal
 
 @MainActor
+@Suite(.serialized)
 struct ChatSessionModelDirectReplyTests {
     @Test
     func modelRouteQuestionUsesLocalProjectExecutionRecord() throws {
@@ -1708,6 +1709,152 @@ verdict=watch
     }
 
     @Test
+    func continueForwardRequestUsesImmediateExecutionFailureMessage() {
+        let session = ChatSessionModel()
+        let message = session.planningContractFailureMessageForTesting(
+            userText: "坦克大战，你往下面推进吧",
+            modelOutput: #"{"project":"坦克大战","plan":["inspect files","keep moving"]}"#
+        )
+
+        #expect(message.contains("没有进入可执行工具协议"))
+        #expect(!message.contains("不符合工具协议的计划对象"))
+    }
+
+    @Test
+    func continueQuestionDoesNotTriggerImmediateExecutionFailureMessage() {
+        let session = ChatSessionModel()
+        let message = session.planningContractFailureMessageForTesting(
+            userText: "你可以继续吗",
+            modelOutput: #"{"project":"坦克大战","plan":["inspect files","keep moving"]}"#
+        )
+
+        #expect(message.contains("不符合工具协议的计划对象"))
+        #expect(!message.contains("没有进入可执行工具协议"))
+    }
+
+    @Test
+    func projectCoderPlanTurnDoesNotStreamTransientAssistantText() {
+        let session = ChatSessionModel()
+
+        #expect(session.projectCoderVisibleStreamModeForTesting(stage: "chat_plan") == "none")
+    }
+
+    @Test
+    func projectCoderFinalizeOnlyTurnDoesNotStreamTransientAssistantText() {
+        let session = ChatSessionModel()
+
+        #expect(session.projectCoderVisibleStreamModeForTesting(stage: "chat_finalize_only") == "none")
+    }
+
+    @Test
+    func singleLineRequestFailureAssistantTextStaysOnOneLine() {
+        let session = ChatSessionModel()
+        let text = session.requestFailureAssistantTextForTesting("AI failed: bridge_timeout")
+
+        #expect(text == "请求失败：AI failed: bridge_timeout")
+        #expect(!text.contains("\n\n"))
+    }
+
+    @Test
+    func multilineRequestFailureAssistantTextKeepsExpandedLayout() {
+        let session = ChatSessionModel()
+        let text = session.requestFailureAssistantTextForTesting(
+            """
+            AI failed: bridge_timeout
+            retry_after=5
+            """
+        )
+
+        #expect(text == "请求失败：\n\nAI failed: bridge_timeout\nretry_after=5")
+    }
+
+    @Test
+    func finalizeTurnPreservesRenderedAssistantDraftBeforeAppendingCanonicalOutcome() throws {
+        let root = try makeProjectRoot(named: "project-finalize-draft-preserve")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        let session = ChatSessionModel()
+        session.messages = [
+            AXChatMessage(role: .user, content: "继续推进"),
+            AXChatMessage(role: .assistant, tag: "glm-5v-turbo", content: "毛毛，我现在就开始写代码，先创建三个核心文件。")
+        ]
+
+        session.finalizeTurnForTesting(
+            ctx: ctx,
+            userText: "继续推进",
+            assistantText: "❌ Project AI 本轮返回了不符合工具协议的计划对象，已按 fail-closed 中止，不把原始 JSON 直接当作回复。",
+            assistantIndex: 1
+        )
+
+        #expect(session.messages.count == 3)
+        #expect(session.messages[1].content == "毛毛，我现在就开始写代码，先创建三个核心文件。")
+        #expect(session.messages[2].content.contains("fail-closed"))
+    }
+
+    @Test
+    func requestFailureAppendsAfterRenderedAssistantDraftInsteadOfOverwritingIt() {
+        let session = ChatSessionModel()
+        session.messages = [
+            AXChatMessage(role: .user, content: "开始写代码"),
+            AXChatMessage(role: .assistant, tag: "glm-5v-turbo", content: "毛毛，我已经接手这一步，马上开始落代码。")
+        ]
+
+        session.materializeRequestFailureAssistantTextForTesting(
+            "AI failed: bridge_timeout",
+            assistantIndex: 1
+        )
+
+        #expect(session.messages.count == 3)
+        #expect(session.messages[1].content == "毛毛，我已经接手这一步，马上开始落代码。")
+        #expect(session.messages[2].content == "请求失败：AI failed: bridge_timeout")
+    }
+
+    @Test
+    func structuredToolFailuresProduceReadableAssistantOutcomeLines() {
+        let session = ChatSessionModel()
+        let lines = session.assistantToolOutcomeLinesForTesting(
+            toolResults: [
+                ToolResult(
+                    id: "list_dir_denied",
+                    tool: .list_dir,
+                    ok: false,
+                    output: ToolExecutor.structuredOutput(
+                        summary: [
+                            "tool": .string(ToolName.list_dir.rawValue),
+                            "ok": .bool(false),
+                            "deny_code": .string("path_outside_governed_read_roots"),
+                            "policy_source": .string("governed_path_scope"),
+                            "policy_reason": .string("project_root_only")
+                        ],
+                        body: "list_dir is outside the governed readable roots for this project"
+                    )
+                ),
+                ToolResult(
+                    id: "read_file_missing",
+                    tool: .read_file,
+                    ok: false,
+                    output: ToolExecutor.structuredOutput(
+                        summary: [
+                            "tool": .string(ToolName.read_file.rawValue),
+                            "ok": .bool(false),
+                            "reason": .string("No such file or directory")
+                        ],
+                        body: "No such file or directory"
+                    )
+                )
+            ]
+        )
+
+        #expect(lines.count == 2)
+        #expect(lines[0] == "目标目录超出当前项目允许范围，无法读取。")
+        #expect(lines[1] == "目标文件不存在，读取失败。")
+        #expect(!lines.joined(separator: "\n").contains("{"))
+    }
+
+    @Test
     func secretVaultBrowserFillSuccessProducesAssistantOutcomeLine() {
         let session = ChatSessionModel()
         let lines = session.assistantToolOutcomeLinesForTesting(
@@ -2691,6 +2838,72 @@ verdict=watch
     }
 
     @Test
+    func approvePendingToolRecoversPersistedFlowWhenLiveFlowWasLost() async throws {
+        let root = try makeProjectRoot(named: "pending-tool-approval-recover-lost-flow")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        AXPendingActionsStore.clearAll(for: ctx)
+
+        let requestID = "recover-run-command"
+        let call = ToolCall(
+            id: requestID,
+            tool: .run_command,
+            args: [
+                "command": .string("printf recovered"),
+                "timeout_sec": .number(5)
+            ]
+        )
+        let seed = ChatSessionModel()
+        seed.persistPendingToolApprovalForTesting(
+            ctx: ctx,
+            calls: [call],
+            reason: "tools",
+            userText: "继续验证"
+        )
+
+        ChatSessionModel.installToolExecutionOverrideForTesting { toolCall, _ in
+            guard toolCall.id == requestID else { return nil }
+            return ToolResult(
+                id: toolCall.id,
+                tool: toolCall.tool,
+                ok: true,
+                output: "recovered"
+            )
+        }
+        defer { ChatSessionModel.resetToolExecutionOverrideForTesting() }
+        ChatSessionModel.installApprovedPendingToolFinalizeOverrideForTesting {
+            "recovered pending approval completed"
+        }
+        defer { ChatSessionModel.resetApprovedPendingToolFinalizeOverrideForTesting() }
+
+        let restored = ChatSessionModel()
+        restored.ensureLoaded(ctx: ctx)
+        #expect(restored.pendingToolCalls.map(\.id) == [requestID])
+
+        restored.clearPendingFlowForTesting(keepPendingToolCalls: true)
+        restored.approvePendingTool(
+            requestID: requestID,
+            router: LLMRouter(settingsStore: SettingsStore())
+        )
+
+        try await waitUntil(timeoutMs: 5_000) {
+            AXPendingActionsStore.pendingToolApproval(for: ctx) == nil &&
+                restored.pendingToolCalls.isEmpty &&
+                restored.isSending == false
+        }
+
+        let rawLog = (try? String(
+            contentsOf: ctx.xterminalDir.appendingPathComponent("raw_log.jsonl"),
+            encoding: .utf8
+        )) ?? ""
+        #expect(rawLog.contains("\"pending_tool_approval_recovery\""))
+        #expect(rawLog.contains("\"pending_tool_approval_decision\""))
+        #expect(restored.messages.contains(where: { $0.content.contains("recovered pending approval completed") }))
+    }
+
+    @Test
     func importContinuationApplyToDraftKeepsUserDraftAndClearsContinuation() throws {
         let root = try makeProjectRoot(named: "attachment-import-continuation-apply")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -2822,6 +3035,72 @@ verdict=watch
         #expect(session.importContinuation == nil)
     }
 
+    @Test
+    func sendWithCurrentAttachmentReferenceReadsAttachmentBeforePlanning() async throws {
+        let root = try makeProjectRoot(named: "attachment-reference-reads-before-planning")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        let externalRoot = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "xt_chat_external_reference_\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: externalRoot) }
+        try FileManager.default.createDirectory(at: externalRoot, withIntermediateDirectories: true)
+
+        let externalFile = externalRoot.appendingPathComponent("Worker.swift")
+        try Data("struct Worker { func run() {} }".utf8).write(to: externalFile, options: .atomic)
+
+        let session = ChatSessionModel()
+        session.ensureLoaded(ctx: ctx)
+        session.handleDroppedFiles([externalFile], ctx: ctx)
+        session.draft = "这个文件是干什么的？"
+
+        let recorder = ChatSessionModelDirectReplyToolCallRecorder()
+        ChatSessionModel.installToolExecutionOverrideForTesting { call, _ in
+            await recorder.append(call)
+
+            guard call.tool == .read_file else { return nil }
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: true,
+                output: "struct Worker { func run() {} }"
+            )
+        }
+        ChatSessionModel.installLLMGenerateOverrideForTesting { _, prompt, _ in
+            #expect(prompt.contains("id=attachment_read_1 tool=read_file ok=true"))
+            #expect(prompt.contains("struct Worker { func run() {} }"))
+            return #"{"final":"这是一个 Swift 源文件，定义了 Worker 类型。"}"#
+        }
+        defer {
+            ChatSessionModel.resetToolExecutionOverrideForTesting()
+            ChatSessionModel.resetLLMGenerateOverrideForTesting()
+        }
+
+        session.send(
+            ctx: ctx,
+            memory: nil,
+            config: AXProjectConfig.default(forProjectRoot: root),
+            router: LLMRouter(settingsStore: SettingsStore())
+        )
+
+        try await waitUntil(timeoutMs: 2_000) {
+            session.isSending == false && session.messages.last?.role == .assistant
+        }
+
+        let userTurn = try #require(session.messages.first(where: { $0.role == .user }))
+        #expect(userTurn.content == "这个文件是干什么的？")
+        #expect(userTurn.attachments.first?.path == externalFile.path)
+        #expect(session.messages.last?.content.contains("Swift 源文件") == true)
+
+        let calls = await recorder.snapshot()
+        #expect(calls.first?.tool == .read_file)
+        #expect(calls.first?.args["path"] == .string(externalFile.path))
+    }
+
     private func makeProjectRoot(named name: String) throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "xt_chat_direct_reply_\(name)_\(UUID().uuidString)",
@@ -2922,5 +3201,17 @@ verdict=watch
         }
         Issue.record("condition not met within \(timeoutMs) ms")
         throw CancellationError()
+    }
+}
+
+private actor ChatSessionModelDirectReplyToolCallRecorder {
+    private var calls: [ToolCall] = []
+
+    func append(_ call: ToolCall) {
+        calls.append(call)
+    }
+
+    func snapshot() -> [ToolCall] {
+        calls
     }
 }

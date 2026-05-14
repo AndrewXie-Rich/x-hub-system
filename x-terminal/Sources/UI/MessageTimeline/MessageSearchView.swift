@@ -212,16 +212,21 @@ struct MessageFilterPicker: View {
 /// 带搜索和过滤的消息时间线
 struct EnhancedMessageTimelineView: View {
     let ctx: AXProjectContext
-    @ObservedObject var session: ChatSessionModel
+    let session: ChatSessionModel
 
     @State private var isSearching = false
     @State private var searchText = ""
     @State private var filter = MessageFilter()
     @State private var showFilterPicker = false
+    @StateObject private var chatStatusStore = XTChatStatusStore()
+    @StateObject private var timelineSessionStore = XTMessageTimelineSessionStore(
+        minimumUpdateIntervalNanoseconds: 50_000_000
+    )
+    @State private var timelineMessages: [AXChatMessage] = []
     @Namespace private var bottomID
 
     private var filteredMessages: [AXChatMessage] {
-        session.messages.filter { message in
+        timelineMessages.filter { message in
             filter.matches(message)
         }
     }
@@ -303,7 +308,7 @@ struct EnhancedMessageTimelineView: View {
                         }
 
                         // 加载指示器
-                        if session.isSending {
+                        if chatStatusSnapshot.isSending {
                             ThinkingIndicator()
                                 .transition(.opacity)
                         }
@@ -316,14 +321,18 @@ struct EnhancedMessageTimelineView: View {
                     .padding(20)
                     .padding(.bottom, 120)
                 }
-                .onChange(of: session.messages.count) { _ in
+                .onChange(of: timelineSessionSnapshot.tailSignature.messageCount) { _ in
+                    refreshTimelineMessages()
                     if filter.type == .all && searchText.isEmpty {
                         withAnimation(.easeOut(duration: 0.3)) {
                             proxy.scrollTo(bottomID, anchor: .bottom)
                         }
                     }
                 }
-                .onChange(of: session.isSending) { sending in
+                .onChange(of: timelineSessionSnapshot.tailSignature) { _ in
+                    refreshTimelineMessages()
+                }
+                .onChange(of: chatStatusSnapshot.isSending) { sending in
                     if sending && filter.type == .all && searchText.isEmpty {
                         withAnimation(.easeOut(duration: 0.3)) {
                             proxy.scrollTo(bottomID, anchor: .bottom)
@@ -333,6 +342,53 @@ struct EnhancedMessageTimelineView: View {
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .onAppear {
+            bindSessionProjectionStores()
+            session.ensureLoaded(ctx: ctx, limit: 200)
+            refreshTimelineMessages()
+        }
+        .onChange(of: ctx.root.path) { _ in
+            bindSessionProjectionStores()
+            session.ensureLoaded(ctx: ctx, limit: 200)
+            refreshTimelineMessages()
+        }
+        .onChange(of: sessionIdentity) { _ in
+            bindSessionProjectionStores()
+            session.ensureLoaded(ctx: ctx, limit: 200)
+            refreshTimelineMessages()
+        }
+    }
+
+    private var sessionIdentity: ObjectIdentifier {
+        ObjectIdentifier(session)
+    }
+
+    private var chatStatusSnapshot: XTChatStatusSnapshot {
+        if chatStatusStore.isBound(to: session) {
+            return chatStatusStore.snapshot
+        }
+        return XTChatStatusSnapshot(
+            messageCount: session.messages.count,
+            isSending: session.isSending,
+            lastError: session.lastError,
+            pendingToolCalls: session.pendingToolCalls
+        )
+    }
+
+    private var timelineSessionSnapshot: XTMessageTimelineSessionSnapshot {
+        if timelineSessionStore.isBound(to: session) {
+            return timelineSessionStore.snapshot
+        }
+        return XTMessageTimelineSessionSnapshot.make(from: session)
+    }
+
+    private func bindSessionProjectionStores() {
+        chatStatusStore.bind(to: session)
+        timelineSessionStore.bind(to: session)
+    }
+
+    private func refreshTimelineMessages() {
+        timelineMessages = session.messages
     }
 }
 

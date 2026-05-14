@@ -832,6 +832,10 @@ enum XTDoctorSupervisorSafePointTimelinePresentation {
             lines.append(summaryLine("状态来源", liveStateSourceText(liveStateSource)))
         }
 
+        if let latestGuidanceLine = latestGuidanceLine(projection) {
+            lines.append(summaryLine("最近 Guidance", latestGuidanceLine))
+        }
+
         if projection.pendingGuidanceAvailable {
             var pendingParts: [String] = []
             if let injectionId = normalizedMeaningfulValue(projection.pendingGuidanceInjectionId) {
@@ -846,9 +850,19 @@ enum XTDoctorSupervisorSafePointTimelinePresentation {
             if let safePointPolicy = normalizedMeaningfulValue(projection.pendingGuidanceSafePointPolicy) {
                 pendingParts.append("safe point \(safePointPolicyText(safePointPolicy))")
             }
+            if let applyState = normalizedMeaningfulValue(projection.pendingGuidanceApplyState) {
+                pendingParts.append("apply \(applyStateText(applyState))")
+            }
+            if let lifecycle = normalizedMeaningfulValue(projection.pendingGuidanceLifecycle) {
+                pendingParts.append("lifecycle \(lifecycle)")
+            }
             lines.append(summaryLine("待投递 Guidance", pendingParts.joined(separator: " · ")))
         } else {
             lines.append(summaryLine("待投递 Guidance", "当前没有待确认 guidance"))
+        }
+
+        if let applyChainLine = applyChainLine(projection) {
+            lines.append(summaryLine("Apply State", applyChainLine))
         }
 
         if projection.flowStep != nil
@@ -951,12 +965,65 @@ enum XTDoctorSupervisorSafePointTimelinePresentation {
         }
     }
 
+    private static func applyStateText(_ raw: String) -> String {
+        switch normalizedToken(raw) {
+        case SupervisorGuidanceApplyState.queued.rawValue:
+            return "queued"
+        case SupervisorGuidanceApplyState.injected.rawValue:
+            return "injected"
+        case SupervisorGuidanceApplyState.ackPending.rawValue:
+            return "ack_pending"
+        case SupervisorGuidanceApplyState.acked.rawValue:
+            return "acked"
+        case SupervisorGuidanceApplyState.deferred.rawValue:
+            return "deferred"
+        case SupervisorGuidanceApplyState.superseded.rawValue:
+            return "superseded"
+        default:
+            return displayToken(raw)
+        }
+    }
+
+    private static func applyStateSummaryText(_ raw: String) -> String {
+        switch normalizedToken(raw) {
+        case SupervisorGuidanceApplyState.queued.rawValue:
+            return "还在 guidance queue，等待 safe point"
+        case SupervisorGuidanceApplyState.injected.rawValue:
+            return "已注入 prompt，但不要求 ack"
+        case SupervisorGuidanceApplyState.ackPending.rawValue:
+            return "已注入 prompt，等待 Project AI ack"
+        case SupervisorGuidanceApplyState.acked.rawValue:
+            return "这条 guidance 已完成 ack"
+        case SupervisorGuidanceApplyState.deferred.rawValue:
+            return "这条 guidance 已暂缓，等待后续 safe point"
+        case SupervisorGuidanceApplyState.superseded.rawValue:
+            return "这条 guidance 已被更新 guidance 覆盖"
+        default:
+            return displayToken(raw)
+        }
+    }
+
     private static func executionGateText(_ raw: String) -> String {
         switch normalizedToken(raw) {
         case "final_only_until_ack":
             return "final only until ack"
         case "normal":
             return "normal"
+        default:
+            return displayToken(raw)
+        }
+    }
+
+    private static func ackStatusText(_ raw: String) -> String {
+        switch normalizedToken(raw) {
+        case "pending":
+            return "待确认"
+        case "accepted":
+            return "已接受"
+        case "deferred":
+            return "已暂缓"
+        case "rejected":
+            return "已拒绝"
         default:
             return displayToken(raw)
         }
@@ -1004,6 +1071,46 @@ enum XTDoctorSupervisorSafePointTimelinePresentation {
             return "立即"
         default:
             return displayToken(raw)
+        }
+    }
+
+    private static func latestGuidanceLine(
+        _ projection: XTUnifiedDoctorSupervisorSafePointTimelineProjection
+    ) -> String? {
+        var parts: [String] = []
+        if let injectionId = normalizedMeaningfulValue(projection.latestGuidanceInjectionId) {
+            parts.append("injection \(injectionId)")
+        }
+        if let ackStatus = normalizedMeaningfulValue(projection.latestGuidanceAckStatus) {
+            parts.append("ack \(ackStatusText(ackStatus))")
+        }
+        if let applyState = normalizedMeaningfulValue(projection.latestGuidanceApplyState) {
+            parts.append("apply \(applyStateText(applyState))")
+        }
+        if let lifecycle = normalizedMeaningfulValue(projection.latestGuidanceLifecycle) {
+            parts.append("lifecycle \(lifecycle)")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private static func applyChainLine(
+        _ projection: XTUnifiedDoctorSupervisorSafePointTimelineProjection
+    ) -> String? {
+        let latest = normalizedMeaningfulValue(projection.latestGuidanceApplyState)
+        let pending = normalizedMeaningfulValue(projection.pendingGuidanceApplyState)
+
+        switch (latest, pending) {
+        case let (latest?, pending?)
+            where latest != pending
+                || normalizedMeaningfulValue(projection.latestGuidanceInjectionId)
+                    != normalizedMeaningfulValue(projection.pendingGuidanceInjectionId):
+            return "latest \(applyStateSummaryText(latest)) -> pending \(applyStateSummaryText(pending))"
+        case let (_, pending?):
+            return "pending \(applyStateSummaryText(pending))"
+        case let (latest?, nil):
+            return "latest \(applyStateSummaryText(latest))"
+        case (nil, nil):
+            return nil
         }
     }
 }

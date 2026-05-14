@@ -32,4 +32,26 @@ struct HubAIClientErrorPresentationTests {
         #expect(description.contains("Remote model access token is expired"))
         #expect(description.contains("Remote Models / Models & Paid Access"))
     }
+
+    @Test
+    func remoteHTML504BadJSONGetsFriendlyGuidance() {
+        let error = HubAIError.responseDoneNotOk(
+            HubAIResponseFailureContext(
+                reason: """
+                bad_json:<!DOCTYPE html>
+                <html lang="en-US">
+                <head><title>picfix.pro | 504: Gateway time-out</title></head>
+                <body><h1>Gateway time-out</h1><span>Error code 504</span></body>
+                </html>
+                """,
+                deviceName: "Andrew Mac",
+                modelId: "openai/gpt-5.4"
+            )
+        )
+
+        let description = error.errorDescription ?? ""
+        #expect(description.contains("HTML 504 Gateway Time-out page"))
+        #expect(description.contains("Remote Models"))
+        #expect(!description.contains("<!DOCTYPE html>"))
+    }
 }

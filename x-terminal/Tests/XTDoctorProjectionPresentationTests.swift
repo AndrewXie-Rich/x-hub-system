@@ -5,6 +5,93 @@ import Testing
 @Suite(.serialized)
 struct XTDoctorProjectionPresentationTests {
     @Test
+    func providerKeySelectionSummaryExplainsSelectedSkippedAndRetryWindow() {
+        let summary = try? #require(
+            XTProviderKeySelectionPresentation.summary(
+                decision: ProviderKeySelectionDecision(
+                    requestedProvider: "openai",
+                    requestedModelId: "openai/gpt-5.4",
+                    strategy: "fill-first",
+                    selectionScope: "openai::openai:api.openai.com:chat_completions",
+                    selectedAccountKey: "openai:primary",
+                    fallbackReasonCode: "",
+                    candidates: [
+                        ProviderKeyCandidateDecision(
+                            accountKey: "openai:primary",
+                            provider: "openai",
+                            poolID: "openai:api.openai.com:chat_completions",
+                            wireAPI: "chat_completions",
+                            availability: .ready,
+                            score: 1200,
+                            selected: true,
+                            reasonCode: "selected_by_scheduler",
+                            retryAtMs: 0
+                        ),
+                        ProviderKeyCandidateDecision(
+                            accountKey: "openai:cooldown",
+                            provider: "openai",
+                            poolID: "openai:api.openai.com:chat_completions",
+                            wireAPI: "chat_completions",
+                            availability: .cooldown(reasonCode: "provider_timeout", retryAtMs: 120_000),
+                            score: -.greatestFiniteMagnitude,
+                            selected: false,
+                            reasonCode: "provider_timeout",
+                            retryAtMs: 120_000
+                        ),
+                        ProviderKeyCandidateDecision(
+                            accountKey: "openai:stale",
+                            provider: "openai",
+                            poolID: "openai:api.openai.com:chat_completions",
+                            wireAPI: "chat_completions",
+                            availability: .stale(reasonCode: "runtime_stale"),
+                            score: -.greatestFiniteMagnitude,
+                            selected: false,
+                            reasonCode: "runtime_stale",
+                            retryAtMs: 0
+                        )
+                    ]
+                ),
+                modelId: "openai/gpt-5.4",
+                now: Date(timeIntervalSince1970: 0)
+            )
+        )
+
+        #expect(summary?.title == "远端 Key 调度")
+        #expect(summary?.lines.contains("当前选中：openai:primary · chat_completions · 同池调度") == true)
+        #expect(summary?.lines.contains("调度策略：fill-first（优先填满当前健康 key）") == true)
+        #expect(summary?.lines.contains("跳过 openai:cooldown：Provider 请求超时；预计 2 分钟后再试") == true)
+        #expect(summary?.lines.contains("跳过 openai:stale：运行时心跳已过期；等待 Hub 刷新运行时") == true)
+        #expect(summary?.lines.contains("预计下次可用：openai:cooldown · 预计 2 分钟后再试") == true)
+    }
+
+    @Test
+    func providerKeySelectionSummaryShowsPendingStateWhenNoDecisionHasBeenObserved() {
+        let summary = try? #require(
+            XTProviderKeySelectionPresentation.summary(
+                decision: nil,
+                modelId: "openai/gpt-5.4",
+                now: Date(timeIntervalSince1970: 0)
+            )
+        )
+
+        #expect(summary?.title == "远端 Key 调度")
+        #expect(summary?.lines.contains("当前选中：最近还没有这类模型的 key 调度记录") == true)
+        #expect(summary?.lines.contains(where: { $0.contains("先让这个远端模型实际跑一轮") }) == true)
+    }
+
+    @Test
+    func providerKeySelectionPresentationCanExtractRequestedModelFromDoctorLines() {
+        let requested = XTProviderKeySelectionPresentation.requestedModelID(
+            fromDoctorDetailLines: [
+                "recent_route_events_24h=1",
+                "route_event_1=project=Alpha role=coder path=hub_downgraded_to_local requested=openai/gpt-5.4 actual=qwen3-14b-mlx reason=downgrade_to_local provider=Hub"
+            ]
+        )
+
+        #expect(requested == "openai/gpt-5.4")
+    }
+
+    @Test
     func routeTruthSummaryMakesPartialProjectionBoundaryExplicit() {
         let summary = XTDoctorRouteTruthPresentation.summary(
             projection: AXModelRouteTruthProjection(
@@ -278,11 +365,17 @@ struct XTDoctorProjectionPresentationTests {
         let projection = try #require(
             XTUnifiedDoctorSupervisorSafePointTimelineProjection.from(
                 detailLines: [
+                    "supervisor_safe_point_latest_guidance_injection_id=guidance-next-tool",
+                    "supervisor_safe_point_latest_guidance_ack_status=pending",
+                    "supervisor_safe_point_latest_guidance_apply_state=queued",
+                    "supervisor_safe_point_latest_guidance_lifecycle=active",
                     "supervisor_safe_point_pending_guidance_available=true",
                     "supervisor_safe_point_pending_guidance_injection_id=guidance-next-tool",
                     "supervisor_safe_point_pending_guidance_delivery_mode=priority_insert",
                     "supervisor_safe_point_pending_guidance_intervention_mode=suggest_next_safe_point",
                     "supervisor_safe_point_pending_guidance_safe_point_policy=next_tool_boundary",
+                    "supervisor_safe_point_pending_guidance_apply_state=queued",
+                    "supervisor_safe_point_pending_guidance_lifecycle=active",
                     "supervisor_safe_point_live_state_source=pending_tool_approval",
                     "supervisor_safe_point_flow_step=1",
                     "supervisor_safe_point_tool_results_count=1",
@@ -296,7 +389,7 @@ struct XTDoctorProjectionPresentationTests {
                     "supervisor_safe_point_should_pause_tool_batch_after_boundary=true",
                     "supervisor_safe_point_delivery_state=deliverable_now",
                     "supervisor_safe_point_execution_gate=normal",
-                    "Safe Point：pending guidance 当前可立即投递 · execution_gate=normal · pause_after_tool_boundary"
+                    "Safe Point：pending guidance 当前可立即投递 · apply_state=queued · execution_gate=normal · pause_after_tool_boundary"
                 ]
             )
         )
@@ -306,12 +399,38 @@ struct XTDoctorProjectionPresentationTests {
 
         #expect(summary.title == "Supervisor Safe Point")
         #expect(summary.lines.contains("状态来源：当前根据 pending tool approval 恢复 live safe-point state"))
-        #expect(summary.lines.contains("待投递 Guidance：injection guidance-next-tool · 投递 优先插入 · 介入 安全点建议 · safe point 下一个工具边界"))
+        #expect(summary.lines.contains("最近 Guidance：injection guidance-next-tool · ack 待确认 · apply queued · lifecycle active"))
+        #expect(summary.lines.contains("待投递 Guidance：injection guidance-next-tool · 投递 优先插入 · 介入 安全点建议 · safe point 下一个工具边界 · apply queued · lifecycle active"))
+        #expect(summary.lines.contains("Apply State：pending 还在 guidance queue，等待 safe point"))
         #expect(summary.lines.contains("当前执行位置：step 1 · tool 结果 1 · verify 0 · 非 finalize-only · checkpoint 未到"))
         #expect(summary.lines.contains("投递姿态：当前 prompt 还不可见 · 当前可投递 · 工具边界后应暂停剩余 batch"))
         #expect(summary.lines.contains("当前判定：当前已经到达 safe point，可以立刻把 guidance 投递给 Project AI"))
         #expect(summary.lines.contains("执行闸门：normal"))
-        #expect(summary.lines.contains("结论：pending guidance 当前可立即投递 · execution_gate=normal · pause_after_tool_boundary"))
+        #expect(summary.lines.contains("结论：pending guidance 当前可立即投递 · apply_state=queued · execution_gate=normal · pause_after_tool_boundary"))
+    }
+
+    @Test
+    func supervisorSafePointTimelineSummaryCanDescribeLatestGuidanceAfterAckWithoutPendingDelivery() throws {
+        let projection = try #require(
+            XTUnifiedDoctorSupervisorSafePointTimelineProjection.from(
+                detailLines: [
+                    "supervisor_safe_point_latest_guidance_injection_id=guidance-acked",
+                    "supervisor_safe_point_latest_guidance_ack_status=accepted",
+                    "supervisor_safe_point_latest_guidance_apply_state=acked",
+                    "supervisor_safe_point_latest_guidance_lifecycle=settled",
+                    "supervisor_safe_point_pending_guidance_available=false",
+                    "Safe Point：当前没有待投递 guidance · latest_apply_state=acked"
+                ]
+            )
+        )
+        let summary = XTDoctorSupervisorSafePointTimelinePresentation.summary(
+            projection: projection
+        )
+
+        #expect(summary.lines.contains("最近 Guidance：injection guidance-acked · ack 已接受 · apply acked · lifecycle settled"))
+        #expect(summary.lines.contains("待投递 Guidance：当前没有待确认 guidance"))
+        #expect(summary.lines.contains("Apply State：latest 这条 guidance 已完成 ack"))
+        #expect(summary.lines.contains("结论：当前没有待投递 guidance · latest_apply_state=acked"))
     }
 
     @Test

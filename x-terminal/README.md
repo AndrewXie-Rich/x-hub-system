@@ -102,6 +102,18 @@ cd x-terminal
 swift build
 ```
 
+Build the release-style X-Terminal app bundle plus the Rust `xtd` sidecar:
+
+```bash
+bash x-terminal/tools/build_xt_with_rust_sidecar.command
+```
+
+Package X-Terminal and the Rust sidecar into a ZIP:
+
+```bash
+bash x-terminal/tools/package_xt_runtime.command
+```
+
 Export the normalized XT doctor bundle from the latest saved unified doctor report:
 
 ```bash
@@ -130,9 +142,13 @@ When XT has role-aware Project AI memory policy truth to project, the XT-native 
 
 When XT has heartbeat-governed review truth to project, the exported generic doctor bundle also includes a structured `heartbeat_governance_snapshot` under `session_runtime_readiness`. Read it as review explainability only: it keeps `latest_quality_band`, `open_anomaly_types`, the cadence triple, and `next_review_due` machine-readable, but it does not override normal chat memory, project memory routing, or policy truth.
 
+When XT has observed a real remote provider-key routing decision for the requested model, the XT-native `model_route_readiness` section now also carries a structured `providerKeySelectionProjection`, and the normalized generic bundle mirrors it as `provider_key_selection_snapshot`. Treat it as remote key-routing explainability only: it keeps `requestedProvider / requestedModelId / selectedAccountKey / candidates` machine-readable so doctor/report/troubleshoot can replay selected-key, skipped-key, and retry-window truth without re-running scheduler logic locally.
+
+When XT needs one stable route-context envelope instead of per-surface fallback parsing, the XT-native `model_route_readiness` section now also carries `providerKeyRouteContextProjection`, and the normalized generic bundle mirrors it as `provider_key_route_context_snapshot`. Treat it as route-context explainability only: it keeps `modelId / pool / decision / importContextLines / importIssues` machine-readable so doctor, export, settings, and troubleshoot can all read the same selected-key plus import-blocker truth without reverse-parsing raw `detail_lines`. XT troubleshoot should treat this route-context bundle as the primary provider-key input; older split troubleshoot arguments remain compatibility-only wrappers and must not grow new semantics. XT should also prefer Hub RPC-backed refresh/cache for this surface; any fallback read from `hub_provider_keys.json` is compatibility-only cold-start recovery, not the primary truth path.
+
 When XT can compute the current project's effective skill capability truth, the XT-native `skills_compatibility_readiness` section now also carries a structured `skillDoctorTruthProjection`, and the normalized generic bundle mirrors it as `skill_doctor_truth_snapshot`. Treat this as doctor/readiness explainability only: it keeps the `effectiveProfileSnapshot`, `ready / grant_required / local_approval_required / blocked` skill counts, and representative blocked-or-pending skills machine-readable, but it does not itself grant execution authority or bypass Supervisor preflight.
 
-The repo-level `scripts/ci/xhub_doctor_source_gate.sh` summary keeps `source_badge / status_line` for that project-context summary as well, and now also emits `heartbeat_governance_support` with `latest_quality_band / open_anomaly_types / review_pulse_effective_seconds / next_review_kind / next_review_due` plus `durable_candidate_mirror_support` with `status / target / attempted / local_store_role`, so release evidence can reuse the XT explainability snapshot without dropping back to raw `detail_lines`.
+The repo-level `scripts/ci/xhub_doctor_source_gate.sh` summary keeps `source_badge / status_line` for that project-context summary as well, and now also emits `heartbeat_governance_support` with `latest_quality_band / open_anomaly_types / review_pulse_effective_seconds / next_review_kind / next_review_due`, `provider_key_selection_support` with `requested_provider / requested_model_id / selected_account_key / next_retry_at_ms`, plus `durable_candidate_mirror_support` with `status / target / attempted / local_store_role`, so release evidence can reuse the XT explainability snapshot without dropping back to raw `detail_lines`.
 
 When XT has role-aware Supervisor review-memory truth to project, the XT-native `session_runtime_readiness` section now also carries first-class `supervisorMemoryPolicyProjection` and `supervisorMemoryAssemblyResolutionProjection`, and the normalized generic bundle mirrors them as `supervisor_memory_policy` and `supervisor_memory_assembly_resolution`. Treat them as review explainability only: they keep configured/recommended/effective Recent Raw Context and Review Memory Depth, the S-tier review-memory ceiling, and the final selected/excluded assembly objects machine-readable, but they do not grant extra repo/browser/device authority and do not replace Hub policy or clamp surfaces.
 

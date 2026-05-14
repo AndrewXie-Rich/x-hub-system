@@ -157,7 +157,7 @@ enum AXProjectSkillActivityStore {
             return [:]
         }
         return dispatchesByRequestID(
-            latestItemsByRequestID: snapshot.latestByRequestID.mapValues(\.item),
+            events: snapshot.events,
             toolCalls: toolCalls
         )
     }
@@ -167,24 +167,78 @@ enum AXProjectSkillActivityStore {
         toolCalls: [ToolCall]
     ) -> [String: XTProjectMappedSkillDispatch] {
         guard !toolCalls.isEmpty else { return [:] }
-        let latestItems = latestEventsByRequestID(from: raw).mapValues(\.item)
         return dispatchesByRequestID(
-            latestItemsByRequestID: latestItems,
+            events: parsedEvents(from: raw),
             toolCalls: toolCalls
         )
     }
 
+    static func latestMatchingActivity(
+        ctx: AXProjectContext,
+        toolCall: ToolCall
+    ) -> ProjectSkillActivityItem? {
+        guard let snapshot = recentTailSnapshot(ctx: ctx) else {
+            return nil
+        }
+        return latestMatchingEvent(
+            events: snapshot.events,
+            toolCall: toolCall
+        )?.item
+    }
+
+    static func activityItem(
+        _ item: ProjectSkillActivityItem,
+        matches toolCall: ToolCall
+    ) -> Bool {
+        let requestID = item.requestID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard requestID == toolCall.id.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            return false
+        }
+
+        let itemTool = item.toolName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !itemTool.isEmpty, itemTool != toolCall.tool.rawValue {
+            return false
+        }
+
+        if !item.toolArgs.isEmpty, item.toolArgs != toolCall.args {
+            return false
+        }
+
+        return true
+    }
+
     private static func dispatchesByRequestID(
-        latestItemsByRequestID latestItems: [String: ProjectSkillActivityItem],
+        events: [AXProjectSkillActivityEvent],
         toolCalls: [ToolCall]
     ) -> [String: XTProjectMappedSkillDispatch] {
         var out: [String: XTProjectMappedSkillDispatch] = [:]
         for call in toolCalls {
-            guard let item = latestItems[call.id] else { continue }
+            guard let item = latestMatchingEvent(
+                events: events,
+                toolCall: call
+            )?.item else { continue }
             guard let dispatch = dispatch(for: item, toolCall: call) else { continue }
             out[call.id] = dispatch
         }
         return out
+    }
+
+    private static func latestMatchingEvent(
+        events: [AXProjectSkillActivityEvent],
+        toolCall: ToolCall
+    ) -> AXProjectSkillActivityEvent? {
+        var latest: AXProjectSkillActivityEvent?
+        for event in events where activityItem(event.item, matches: toolCall) {
+            guard let current = latest else {
+                latest = event
+                continue
+            }
+            if event.item.createdAt > current.item.createdAt
+                || (event.item.createdAt == current.item.createdAt && event.lineIndex > current.lineIndex) {
+                latest = event
+            }
+        }
+        return latest
     }
 
     static func dispatch(

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 @testable import XTerminal
@@ -132,6 +133,340 @@ struct ToolExecutorSkillsAndSummarizeTests {
         let summary = try #require(toolSummaryObject(result.output))
         #expect(jsonString(summary["reason"]) == "official_skill_review_blocked")
         #expect(toolBody(result.output).contains("Hub 已自动审查该官方技能包"))
+    }
+
+    @Test
+    func genericSkillRunnerRoutesThroughHubGateAndExecutesPackageEntrypoint() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "generic-skill-runner-approved")
+        defer { fixture.cleanup() }
+        let package = try SkillRunnerPackageFixture(skillID: "echo-skill")
+        defer { package.cleanup() }
+
+        let projectID = AXProjectRegistryStore.projectId(forRoot: fixture.root)
+        let registry = try skillRunnerRegistrySnapshot(
+            projectID: projectID,
+            projectName: "Generic Runner Project",
+            skillID: "echo-skill",
+            packageSHA256: package.packageSHA256
+        )
+        let routing = XTProjectSkillRouter.map(
+            call: GovernedSkillCall(
+                id: "generic-runner-approved-1",
+                skill_id: "echo-skill",
+                payload: ["input": .string("runner input")]
+            ),
+            projectId: projectID,
+            projectName: "Generic Runner Project",
+            registrySnapshot: registry,
+            projectRoot: fixture.root,
+            config: .default(forProjectRoot: fixture.root)
+        )
+
+        let mapped: XTProjectMappedSkillDispatch
+        switch routing {
+        case .success(let dispatch):
+            mapped = dispatch
+        case .failure(let failure):
+            Issue.record("unexpected skill runner mapping failure: \(failure.reasonCode)")
+            throw failure
+        }
+
+        #expect(mapped.toolCall.tool == .skillsExecuteRunner)
+        #expect(mapped.toolCall.args["skill_id"]?.stringValue == "echo-skill")
+        #expect(mapped.toolCall.args["package_sha256"]?.stringValue == package.packageSHA256)
+        #expect(mapped.toolCall.args["input"]?.stringValue == "runner input")
+
+        let gate = SkillRunnerGateCapture(mode: .approve)
+        installSkillRunnerOverrides(package: package, gate: gate)
+        defer { resetSkillRunnerOverrides() }
+
+        let result = try await ToolExecutor.execute(call: mapped.toolCall, projectRoot: fixture.root)
+
+        #expect(result.ok)
+        let summary = try #require(toolSummaryObject(result.output))
+        #expect(jsonString(summary["tool"]) == ToolName.skillsExecuteRunner.rawValue)
+        #expect(jsonString(summary["skill_id"]) == "echo-skill")
+        #expect(jsonString(summary["package_sha256"]) == package.packageSHA256)
+        #expect(jsonString(summary["hub_gate_tool_name"]) == ToolName.skillsExecuteRunner.rawValue)
+        #expect(jsonNumber(summary["exit_code"]) == 0)
+        #expect(toolBody(result.output).contains("XT generic runner package executed"))
+
+        let gateRequest = try #require(await gate.lastRequest())
+        #expect(gateRequest.projectId == projectID)
+        #expect(gateRequest.skillId == "echo-skill")
+        #expect(gateRequest.packageSHA256 == package.packageSHA256)
+        #expect(gateRequest.toolName == ToolName.skillsExecuteRunner.rawValue)
+        #expect(gateRequest.execArgv == [
+            "xt-skill-runner",
+            "--skill-id",
+            "echo-skill",
+            "--package-sha256",
+            package.packageSHA256,
+        ])
+        #expect(gateRequest.toolArgsHash.count == 64)
+    }
+
+    @Test
+    func genericSkillRunnerIgnoresCallerSuppliedHubToolNameOverride() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "generic-skill-runner-canonical-tool")
+        defer { fixture.cleanup() }
+        let package = try SkillRunnerPackageFixture(skillID: "canonical-tool-skill")
+        defer { package.cleanup() }
+
+        let gate = SkillRunnerGateCapture(mode: .approve)
+        installSkillRunnerOverrides(package: package, gate: gate)
+        defer { resetSkillRunnerOverrides() }
+
+        let result = try await ToolExecutor.execute(
+            call: ToolCall(
+                id: "generic-runner-canonical-tool-1",
+                tool: .skillsExecuteRunner,
+                args: [
+                    "skill_id": .string("canonical-tool-skill"),
+                    "package_sha256": .string(package.packageSHA256),
+                    "hub_tool_name": .string("process.start"),
+                    "input": .string("runner input")
+                ]
+            ),
+            projectRoot: fixture.root
+        )
+
+        #expect(result.ok)
+        let summary = try #require(toolSummaryObject(result.output))
+        #expect(jsonString(summary["hub_gate_tool_name"]) == ToolName.skillsExecuteRunner.rawValue)
+        let gateRequest = try #require(await gate.lastRequest())
+        #expect(gateRequest.toolName == ToolName.skillsExecuteRunner.rawValue)
+    }
+
+    @Test
+    func genericSkillRunnerFailsClosedWhenHubGateDenies() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "generic-skill-runner-denied")
+        defer { fixture.cleanup() }
+        let package = try SkillRunnerPackageFixture(skillID: "echo-skill")
+        defer { package.cleanup() }
+
+        let gate = SkillRunnerGateCapture(mode: .deny("revoked"))
+        installSkillRunnerOverrides(package: package, gate: gate)
+        defer { resetSkillRunnerOverrides() }
+
+        let result = try await ToolExecutor.execute(
+            call: ToolCall(
+                id: "generic-runner-denied-1",
+                tool: .skillsExecuteRunner,
+                args: [
+                    "skill_id": .string("echo-skill"),
+                    "package_sha256": .string(package.packageSHA256),
+                    "input": .string("runner input")
+                ]
+            ),
+            projectRoot: fixture.root
+        )
+
+        #expect(!result.ok)
+        let summary = try #require(toolSummaryObject(result.output))
+        #expect(jsonString(summary["reason"]) == "revoked")
+        #expect(jsonString(summary["hub_tool_name"]) == ToolName.skillsExecuteRunner.rawValue)
+        #expect(jsonString(summary["decision"]) == "deny")
+        #expect(toolBody(result.output) == "revoked")
+        #expect(!toolBody(result.output).contains("XT generic runner package executed"))
+        #expect(await gate.requestCount() == 1)
+    }
+
+    @Test
+    func genericSkillRunnerExecutesRealOfficialFindSkillsPackageArtifact() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "generic-skill-runner-official-find-skills")
+        defer { fixture.cleanup() }
+        let package = try OfficialSkillPackageFixture(skillID: "find-skills")
+
+        let gate = SkillRunnerGateCapture(mode: .approve)
+        installSkillRunnerOverrides(package: package, gate: gate)
+        defer { resetSkillRunnerOverrides() }
+
+        let result = try await ToolExecutor.execute(
+            call: ToolCall(
+                id: "generic-runner-official-find-skills-1",
+                tool: .skillsExecuteRunner,
+                args: [
+                    "skill_id": .string("find-skills"),
+                    "package_sha256": .string(package.packageSHA256),
+                    "input": .object(["query": .string("browser automation")])
+                ]
+            ),
+            projectRoot: fixture.root
+        )
+
+        #expect(result.ok)
+        let summary = try #require(toolSummaryObject(result.output))
+        #expect(jsonString(summary["skill_id"]) == "find-skills")
+        #expect(jsonString(summary["package_sha256"]) == package.packageSHA256)
+        #expect(jsonString(summary["entrypoint_command"]) == "cat")
+        #expect(toolBody(result.output).contains("# Find Skills"))
+        let gateRequest = try #require(await gate.lastRequest())
+        #expect(gateRequest.execArgv == [
+            "xt-skill-runner",
+            "--skill-id",
+            "find-skills",
+            "--package-sha256",
+            package.packageSHA256,
+        ])
+    }
+
+    @Test
+    func genericSkillRunnerPassesInputJSONToEntrypointStdin() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "generic-skill-runner-stdin")
+        defer { fixture.cleanup() }
+        let package = try SkillRunnerPackageFixture(skillID: "stdin-skill", stdinEntrypoint: true)
+        defer { package.cleanup() }
+
+        let gate = SkillRunnerGateCapture(mode: .approve)
+        installSkillRunnerOverrides(package: package, gate: gate)
+        defer { resetSkillRunnerOverrides() }
+
+        let result = try await ToolExecutor.execute(
+            call: ToolCall(
+                id: "generic-runner-stdin-1",
+                tool: .skillsExecuteRunner,
+                args: [
+                    "skill_id": .string("stdin-skill"),
+                    "package_sha256": .string(package.packageSHA256),
+                    "payload": .object(["message": .string("stdin runner input")])
+                ]
+            ),
+            projectRoot: fixture.root
+        )
+
+        #expect(result.ok)
+        #expect(toolBody(result.output).contains(#""message":"stdin runner input""#))
+    }
+
+    @Test
+    func genericSkillRunnerFailsClosedWhenInputExceedsBoundedContract() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "generic-skill-runner-large-input")
+        defer { fixture.cleanup() }
+        let package = try SkillRunnerPackageFixture(skillID: "large-input-skill", stdinEntrypoint: true)
+        defer { package.cleanup() }
+
+        let gate = SkillRunnerGateCapture(mode: .approve)
+        installSkillRunnerOverrides(package: package, gate: gate)
+        defer { resetSkillRunnerOverrides() }
+
+        let result = try await ToolExecutor.execute(
+            call: ToolCall(
+                id: "generic-runner-large-input-1",
+                tool: .skillsExecuteRunner,
+                args: [
+                    "skill_id": .string("large-input-skill"),
+                    "package_sha256": .string(package.packageSHA256),
+                    "input": .string(String(repeating: "x", count: 70 * 1024))
+                ]
+            ),
+            projectRoot: fixture.root
+        )
+
+        #expect(!result.ok)
+        let summary = try #require(toolSummaryObject(result.output))
+        #expect(jsonString(summary["reason"]) == "skill_runner_input_too_large")
+        #expect(await gate.requestCount() == 0)
+    }
+
+    @Test
+    func genericSkillRunnerTruncatesOversizedEntrypointOutput() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "generic-skill-runner-large-output")
+        defer { fixture.cleanup() }
+        let package = try SkillRunnerPackageFixture(
+            skillID: "large-output-skill",
+            skillText: String(repeating: "x", count: 600 * 1024)
+        )
+        defer { package.cleanup() }
+
+        let gate = SkillRunnerGateCapture(mode: .approve)
+        installSkillRunnerOverrides(package: package, gate: gate)
+        defer { resetSkillRunnerOverrides() }
+
+        let result = try await ToolExecutor.execute(
+            call: ToolCall(
+                id: "generic-runner-large-output-1",
+                tool: .skillsExecuteRunner,
+                args: [
+                    "skill_id": .string("large-output-skill"),
+                    "package_sha256": .string(package.packageSHA256)
+                ]
+            ),
+            projectRoot: fixture.root
+        )
+
+        #expect(result.ok)
+        let summary = try #require(toolSummaryObject(result.output))
+        #expect(jsonBool(summary["output_truncated"]) == true)
+        #expect(toolBody(result.output).contains("[output truncated at"))
+    }
+
+    @Test
+    func genericSkillRunnerDoesNotInheritHostEnvironment() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "generic-skill-runner-minimal-env")
+        defer { fixture.cleanup() }
+        let package = try SkillRunnerPackageFixture(
+            skillID: "minimal-env-skill",
+            command: "env",
+            args: []
+        )
+        defer { package.cleanup() }
+
+        let gate = SkillRunnerGateCapture(mode: .approve)
+        installSkillRunnerOverrides(package: package, gate: gate)
+        defer { resetSkillRunnerOverrides() }
+
+        let result = try await ToolExecutor.execute(
+            call: ToolCall(
+                id: "generic-runner-minimal-env-1",
+                tool: .skillsExecuteRunner,
+                args: [
+                    "skill_id": .string("minimal-env-skill"),
+                    "package_sha256": .string(package.packageSHA256)
+                ]
+            ),
+            projectRoot: fixture.root
+        )
+
+        #expect(result.ok)
+        let body = toolBody(result.output)
+        #expect(body.contains("XHUB_SKILL_ID=minimal-env-skill"))
+        #expect(!body.contains("HOME="))
+        #expect(!body.contains("HUB_CLIENT_TOKEN="))
+    }
+
+    @Test
+    func genericSkillRunnerRejectsNodeEntrypointOutsidePackageRootBeforeGate() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "generic-skill-runner-node-escape")
+        defer { fixture.cleanup() }
+        let package = try SkillRunnerPackageFixture(
+            skillID: "node-escape-skill",
+            runtime: "node",
+            command: "/tmp/outside-package.js",
+            args: []
+        )
+        defer { package.cleanup() }
+
+        let gate = SkillRunnerGateCapture(mode: .approve)
+        installSkillRunnerOverrides(package: package, gate: gate)
+        defer { resetSkillRunnerOverrides() }
+
+        let result = try await ToolExecutor.execute(
+            call: ToolCall(
+                id: "generic-runner-node-escape-1",
+                tool: .skillsExecuteRunner,
+                args: [
+                    "skill_id": .string("node-escape-skill"),
+                    "package_sha256": .string(package.packageSHA256)
+                ]
+            ),
+            projectRoot: fixture.root
+        )
+
+        #expect(!result.ok)
+        let summary = try #require(toolSummaryObject(result.output))
+        #expect(jsonString(summary["reason"]) == "invalid_entrypoint")
+        #expect(await gate.requestCount() == 0)
     }
 
     @Test
@@ -973,6 +1308,330 @@ struct ToolExecutorSkillsAndSummarizeTests {
         """#
         try index.write(to: storeDir.appendingPathComponent("skills_store_index.json"), atomically: true, encoding: .utf8)
     }
+}
+
+private enum SkillRunnerGateMode {
+    case approve
+    case deny(String)
+}
+
+private actor SkillRunnerGateCapture {
+    private let mode: SkillRunnerGateMode
+    private var requests: [HubIPCClient.SkillRunnerGateRequestPayload] = []
+
+    init(mode: SkillRunnerGateMode) {
+        self.mode = mode
+    }
+
+    func evaluate(_ request: HubIPCClient.SkillRunnerGateRequestPayload) -> HubIPCClient.SkillRunnerGateResult {
+        requests.append(request)
+        switch mode {
+        case .approve:
+            return HubIPCClient.SkillRunnerGateResult(
+                ok: true,
+                source: "hub_runtime_grpc",
+                skillId: request.skillId,
+                packageSHA256: request.packageSHA256,
+                toolName: request.toolName,
+                decision: "approve",
+                toolRequestId: "tool-request-1",
+                grantId: "grant-1",
+                executionId: "execution-1",
+                denyCode: nil,
+                resultJSON: #"{"ok":true}"#,
+                executedAtMs: 1_710_000_000_001
+            )
+        case .deny(let code):
+            return HubIPCClient.SkillRunnerGateResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                skillId: request.skillId,
+                packageSHA256: request.packageSHA256,
+                toolName: request.toolName,
+                decision: "deny",
+                toolRequestId: "tool-request-1",
+                grantId: "",
+                executionId: "",
+                denyCode: code,
+                resultJSON: #"{"ok":false}"#,
+                executedAtMs: 1_710_000_000_001
+            )
+        }
+    }
+
+    func lastRequest() -> HubIPCClient.SkillRunnerGateRequestPayload? {
+        requests.last
+    }
+
+    func requestCount() -> Int {
+        requests.count
+    }
+}
+
+private struct SkillRunnerPackageFixture {
+    let root: URL
+    let packageData: Data
+    let packageSHA256: String
+    let manifestJSON: String
+
+    init(
+        skillID: String,
+        skillText: String = "XT generic runner package executed\n",
+        stdinEntrypoint: Bool = false,
+        runtime: String = "text",
+        command: String = "cat",
+        args: [String]? = nil
+    ) throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xterminal-skill-runner-package-\(UUID().uuidString)", isDirectory: true)
+        let packageRoot = root.appendingPathComponent("package", isDirectory: true)
+        let archiveURL = root.appendingPathComponent("skill.tgz")
+        try FileManager.default.createDirectory(at: packageRoot, withIntermediateDirectories: true)
+
+        let manifestJSON = Self.manifestJSON(
+            skillID: skillID,
+            stdinEntrypoint: stdinEntrypoint,
+            runtime: runtime,
+            command: command,
+            args: args
+        )
+        try manifestJSON.write(
+            to: packageRoot.appendingPathComponent("skill.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try skillText.write(
+            to: packageRoot.appendingPathComponent("SKILL.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let archive = try ProcessCapture.run(
+            "/usr/bin/tar",
+            ["-czf", archiveURL.path, "-C", packageRoot.path, "."],
+            cwd: nil,
+            timeoutSec: 20
+        )
+        guard archive.exitCode == 0 else {
+            throw NSError(
+                domain: "xterminal.tests.skill_runner",
+                code: Int(archive.exitCode),
+                userInfo: [NSLocalizedDescriptionKey: archive.combined]
+            )
+        }
+
+        let packageData = try Data(contentsOf: archiveURL)
+        self.root = root
+        self.packageData = packageData
+        self.packageSHA256 = skillRunnerTestSHA256Hex(packageData)
+        self.manifestJSON = manifestJSON
+    }
+
+    func cleanup() {
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    private static func manifestJSON(
+        skillID: String,
+        stdinEntrypoint: Bool,
+        runtime: String,
+        command: String,
+        args: [String]?
+    ) -> String {
+        let resolvedArgs = args ?? (stdinEntrypoint ? [] : ["SKILL.md"])
+        let argsData = (try? JSONEncoder().encode(resolvedArgs)) ?? Data("[]".utf8)
+        let argsJSON = String(data: argsData, encoding: .utf8) ?? "[]"
+        return #"""
+        {
+          "schema_version": "xhub.skill_manifest.v1",
+          "skill_id": "\#(skillID)",
+          "name": "Echo Skill",
+          "version": "1.0.0",
+          "description": "Fixture package for XT generic runner E2E.",
+          "capabilities_required": ["repo.read"],
+          "risk_level": "low",
+          "requires_grant": false,
+          "side_effect_class": "read_only",
+          "entrypoint": {
+            "runtime": "\#(runtime)",
+            "command": "\#(command)",
+            "args": \#(argsJSON)
+          },
+          "governed_dispatch": {
+            "tool": "skills.execute.runner",
+            "fixed_args": {},
+            "passthrough_args": ["input", "payload", "timeout_sec"],
+            "arg_aliases": {},
+            "required_any": [],
+            "exactly_one_of": []
+          }
+        }
+        """#
+    }
+}
+
+private struct OfficialSkillPackageFixture {
+    let packageData: Data
+    let packageSHA256: String
+    let manifestJSON: String
+
+    init(skillID: String) throws {
+        let testsDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let repoRoot = testsDir.deletingLastPathComponent().deletingLastPathComponent()
+        let distRoot = repoRoot
+            .appendingPathComponent("official-agent-skills", isDirectory: true)
+            .appendingPathComponent("dist", isDirectory: true)
+        let indexData = try Data(contentsOf: distRoot.appendingPathComponent("index.json"))
+        guard let root = try JSONSerialization.jsonObject(with: indexData) as? [String: Any],
+              let skills = root["skills"] as? [[String: Any]],
+              let row = skills.first(where: { ($0["skill_id"] as? String) == skillID }),
+              let packageSHA256 = row["package_sha256"] as? String,
+              let packagePath = row["package_path"] as? String,
+              let manifestPath = row["manifest_path"] as? String else {
+            throw NSError(
+                domain: "xterminal.tests.skill_runner",
+                code: 404,
+                userInfo: [NSLocalizedDescriptionKey: "official skill artifact not found: \(skillID)"]
+            )
+        }
+
+        let packageData = try Data(contentsOf: distRoot.appendingPathComponent(packagePath))
+        let computedSHA256 = skillRunnerTestSHA256Hex(packageData)
+        guard computedSHA256 == packageSHA256 else {
+            throw NSError(
+                domain: "xterminal.tests.skill_runner",
+                code: 409,
+                userInfo: [NSLocalizedDescriptionKey: "official package hash mismatch: \(skillID)"]
+            )
+        }
+
+        self.packageData = packageData
+        self.packageSHA256 = packageSHA256
+        self.manifestJSON = try String(
+            contentsOf: distRoot.appendingPathComponent(manifestPath),
+            encoding: .utf8
+        )
+    }
+}
+
+private func installSkillRunnerOverrides(
+    package: SkillRunnerPackageFixture,
+    gate: SkillRunnerGateCapture
+) {
+    installSkillRunnerOverrides(
+        packageSHA256: package.packageSHA256,
+        manifestJSON: package.manifestJSON,
+        packageData: package.packageData,
+        gate: gate
+    )
+}
+
+private func installSkillRunnerOverrides(
+    package: OfficialSkillPackageFixture,
+    gate: SkillRunnerGateCapture
+) {
+    installSkillRunnerOverrides(
+        packageSHA256: package.packageSHA256,
+        manifestJSON: package.manifestJSON,
+        packageData: package.packageData,
+        gate: gate
+    )
+}
+
+private func installSkillRunnerOverrides(
+    packageSHA256 expectedPackageSHA256: String,
+    manifestJSON: String,
+    packageData: Data,
+    gate: SkillRunnerGateCapture
+) {
+    HubIPCClient.installSkillManifestOverrideForTesting { packageSHA256 in
+        #expect(packageSHA256 == expectedPackageSHA256)
+        return HubIPCClient.SkillManifestResult(
+            ok: true,
+            source: "hub_runtime_grpc",
+            packageSHA256: packageSHA256,
+            manifestJSON: manifestJSON,
+            reasonCode: nil
+        )
+    }
+    HubIPCClient.installSkillPackageDownloadOverrideForTesting { packageSHA256 in
+        #expect(packageSHA256 == expectedPackageSHA256)
+        return HubIPCClient.SkillPackageDownloadResult(
+            ok: true,
+            source: "hub_runtime_grpc",
+            packageSHA256: packageSHA256,
+            data: packageData,
+            reasonCode: nil
+        )
+    }
+    HubIPCClient.installSkillRunnerGateOverrideForTesting { request in
+        await gate.evaluate(request)
+    }
+}
+
+private func resetSkillRunnerOverrides() {
+    HubIPCClient.resetSkillManifestOverrideForTesting()
+    HubIPCClient.resetSkillPackageDownloadOverrideForTesting()
+    HubIPCClient.resetSkillRunnerGateOverrideForTesting()
+}
+
+private func skillRunnerRegistrySnapshot(
+    projectID: String,
+    projectName: String,
+    skillID: String,
+    packageSHA256: String
+) throws -> SupervisorSkillRegistrySnapshot {
+    let data = Data(
+        #"""
+        {
+          "schema_version": "xt.supervisor_skill_registry_view.v1",
+          "project_id": "\#(projectID)",
+          "project_name": "\#(projectName)",
+          "updated_at_ms": 1710000000000,
+          "memory_source": "hub_runtime_grpc_resolved_skills_snapshot",
+          "audit_ref": "audit-skill-runner-e2e",
+          "items": [
+            {
+              "skill_id": "\#(skillID)",
+              "display_name": "Echo Skill",
+              "description": "Fixture package for XT generic runner E2E.",
+              "intent_families": ["echo"],
+              "capability_families": ["repo.read"],
+              "capability_profiles": ["repo.read"],
+              "grant_floor": "none",
+              "approval_floor": "none",
+              "package_sha256": "\#(packageSHA256)",
+              "publisher_id": "xhub.official",
+              "source_id": "builtin:catalog",
+              "official_package": true,
+              "capabilities_required": ["repo.read"],
+              "governed_dispatch": {
+                "tool": "skills.execute.runner",
+                "fixed_args": {},
+                "passthrough_args": ["input", "payload", "timeout_sec"],
+                "arg_aliases": {},
+                "required_any": [],
+                "exactly_one_of": []
+              },
+              "input_schema_ref": "schema://echo-skill.input",
+              "output_schema_ref": "schema://echo-skill.output",
+              "side_effect_class": "read_only",
+              "risk_level": "low",
+              "requires_grant": false,
+              "policy_scope": "project",
+              "timeout_ms": 30000,
+              "max_retries": 0,
+              "available": true
+            }
+          ]
+        }
+        """#.utf8
+    )
+    return try JSONDecoder().decode(SupervisorSkillRegistrySnapshot.self, from: data)
+}
+
+private func skillRunnerTestSHA256Hex(_ data: Data) -> String {
+    SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
 }
 
 private func makeSupervisorVoiceSkillResult(

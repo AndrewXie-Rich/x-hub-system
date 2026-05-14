@@ -9,20 +9,7 @@ final class LLMRouter: ObservableObject {
     }
 
     nonisolated func taskType(for role: AXRole) -> String {
-        switch role {
-        case .coder:
-            return "assist"
-        case .coarse:
-            return "x_terminal_coarse"
-        case .refine:
-            return "x_terminal_refine"
-        case .reviewer:
-            return "review"
-        case .advisor:
-            return "advisor"
-        case .supervisor:
-            return "supervisor"
-        }
+        role.primaryRole.rawValue
     }
 
     func provider(for role: AXRole) -> LLMProvider {
@@ -34,8 +21,18 @@ final class LLMRouter: ObservableObject {
         if let cfg = projectConfig, let mid = cfg.modelOverride(for: role) {
             return mid
         }
-        let a = settingsStore.settings.assignment(for: role)
-        let mid = (a.model ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let route = settingsStore.settings.modelRoute(for: role)
+        let mid = (route.primaryModelId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return mid.isEmpty ? nil : mid
+    }
+
+    func paidBackupModelIdForHub(for role: AXRole) -> String? {
+        let route = settingsStore.settings.modelRoute(for: role)
+        let mid = (route.paidBackupModelId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return mid.isEmpty ? nil : mid
+    }
+
+    func localFallbackMode(for role: AXRole) -> LocalModelFallbackMode {
+        settingsStore.settings.modelRoute(for: role).localFallbackMode
     }
 }

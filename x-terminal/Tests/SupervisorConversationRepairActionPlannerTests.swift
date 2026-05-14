@@ -28,6 +28,18 @@ struct SupervisorConversationRepairActionPlannerTests {
     }
 
     @Test
+    func xtExternalTerminalsMapsToDedicatedSettingsSection() {
+        let plan = SupervisorConversationRepairActionPlanner.plan(for: .xtExternalTerminals)
+
+        #expect(
+            plan == SupervisorConversationRepairActionPlan(
+                buttonTitle: "打开非 XT Terminal 访问",
+                action: .openXTSettings(sectionId: "external_terminals")
+            )
+        )
+    }
+
+    @Test
     func systemPermissionsMapsToVoiceCapturePrivacyAction() {
         let plan = SupervisorConversationRepairActionPlanner.plan(for: .systemPermissions)
 
@@ -89,6 +101,18 @@ struct SupervisorConversationRepairActionPlannerTests {
             plan == SupervisorConversationRepairActionPlan(
                 buttonTitle: "打开 Hub 模型与付费访问",
                 action: .openHubSetup(sectionId: "choose_model")
+            )
+        )
+    }
+
+    @Test
+    func hubProviderKeysMapsToDedicatedHubProviderKeysAction() {
+        let plan = SupervisorConversationRepairActionPlanner.plan(for: .hubProviderKeys)
+
+        #expect(
+            plan == SupervisorConversationRepairActionPlan(
+                buttonTitle: "打开 Hub Provider Keys",
+                action: .openHubProviderKeys
             )
         )
     }

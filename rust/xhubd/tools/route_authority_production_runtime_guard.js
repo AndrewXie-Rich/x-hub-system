@@ -8,8 +8,10 @@ const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(SCRIPT_DIR, '..');
 const REPORT_DIR = path.join(ROOT_DIR, 'reports');
 const NODE_PROCESS_MARKERS = ['hub_grpc_server/src/server.js', 'relflowhub_node'];
+const CUTOVER_GATE_KEY = 'XHUB_ENABLE_RUST_AUTHORITY_CUTOVER';
 
 const PROVIDER_MODEL_PRODUCTION_KEYS = [
+  CUTOVER_GATE_KEY,
   'XHUB_RUST_HUB_ROOT',
   'XHUB_RUST_PROVIDER_ROUTE_PRODUCTION_AUTHORITY',
   'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_PRODUCTION',
@@ -43,8 +45,7 @@ const SCHEDULER_AUTHORITY_KEYS = [
   'XHUB_RUST_SCHEDULER_AUTHORITY_HTTP_BASE_URL',
 ];
 
-const UNRELATED_PRODUCTION_KEYS = [
-  'XHUB_RUST_XT_FILE_IPC_PRODUCTION_CUTOVER',
+const MEMORY_SKILLS_PRODUCTION_KEYS = [
   'XHUB_RUST_MEMORY_WRITER_AUTHORITY',
   'XHUB_RUST_MEMORY_WRITE_AUTHORITY',
   'XHUB_RUST_MEMORY_PRODUCTION_AUTHORITY',
@@ -52,6 +53,11 @@ const UNRELATED_PRODUCTION_KEYS = [
   'XHUB_RUST_SKILLS_PRODUCTION_EXECUTION',
   'XHUB_RUST_SKILLS_EXECUTION_PRODUCTION',
   'XHUB_RUST_SKILLS_RUNNER_PRODUCTION_AUTHORITY',
+];
+
+const UNRELATED_PRODUCTION_KEYS = [
+  'XHUB_RUST_XT_FILE_IPC_PRODUCTION_CUTOVER',
+  ...MEMORY_SKILLS_PRODUCTION_KEYS,
 ];
 
 const READ_KEYS = [
@@ -67,6 +73,8 @@ function parseArgs(argv) {
     writeReport: true,
     requireSchedulerAuthority: true,
     allowXtFileIpcProduction: true,
+    allowMemorySkillsProduction: false,
+    requireMemorySkillsProduction: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -88,6 +96,13 @@ function parseArgs(argv) {
         break;
       case '--fail-on-xt-file-ipc-production':
         out.allowXtFileIpcProduction = false;
+        break;
+      case '--allow-memory-skills-production':
+        out.allowMemorySkillsProduction = true;
+        break;
+      case '--require-memory-skills-production':
+        out.allowMemorySkillsProduction = true;
+        out.requireMemorySkillsProduction = true;
         break;
       case '--no-report':
         out.writeReport = false;
@@ -116,6 +131,8 @@ function usage() {
     '  --skip-scheduler-check           Do not require scheduler authority env',
     '  --allow-xt-file-ipc-production   Do not fail when XT file IPC live key is present (default)',
     '  --fail-on-xt-file-ipc-production Fail when XT file IPC live key is present',
+    '  --allow-memory-skills-production Do not fail when Rust memory/skills authority keys are present',
+    '  --require-memory-skills-production Require Rust memory/skills authority keys in launchctl session',
     '  --no-report                      Print only; do not write reports/',
     '  --self-test                      Validate reducer logic',
   ].join('\n');
@@ -123,6 +140,7 @@ function usage() {
 
 function providerModelExpected(config) {
   return {
+    [CUTOVER_GATE_KEY]: '1',
     XHUB_RUST_HUB_ROOT: config.rustHubRoot,
     XHUB_RUST_PROVIDER_ROUTE_PRODUCTION_AUTHORITY: '1',
     XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_PRODUCTION: '1',
@@ -157,6 +175,10 @@ function schedulerExpected(config) {
     XHUB_RUST_SCHEDULER_AUTHORITY_HTTP: '1',
     XHUB_RUST_SCHEDULER_AUTHORITY_HTTP_BASE_URL: config.httpBaseUrl,
   };
+}
+
+function memorySkillsExpected() {
+  return Object.fromEntries(MEMORY_SKILLS_PRODUCTION_KEYS.map((key) => [key, '1']));
 }
 
 function readLaunchctlSession() {
@@ -231,6 +253,7 @@ function inferredUnrelatedProductionKeys(keys, config) {
     if (PROVIDER_MODEL_PRODUCTION_KEYS.includes(key)) return false;
     if (SCHEDULER_AUTHORITY_KEYS.includes(key)) return false;
     if (config.allowXtFileIpcProduction && key === 'XHUB_RUST_XT_FILE_IPC_PRODUCTION_CUTOVER') return false;
+    if (config.allowMemorySkillsProduction && MEMORY_SKILLS_PRODUCTION_KEYS.includes(key)) return false;
     if (UNRELATED_PRODUCTION_KEYS.includes(key)) return true;
     if (/XT_FILE_IPC/.test(key)) return /(PRODUCTION|CUTOVER)/.test(key);
     return /(MEMORY|SKILL).*(AUTHOR|PRODUCTION|EXEC|WRITE|CUTOVER)/.test(key);
@@ -255,6 +278,7 @@ function compare(values, expectedValues) {
 function presentKeys(values, keys, config) {
   return keys.filter((key) => {
     if (config.allowXtFileIpcProduction && key === 'XHUB_RUST_XT_FILE_IPC_PRODUCTION_CUTOVER') return false;
+    if (config.allowMemorySkillsProduction && MEMORY_SKILLS_PRODUCTION_KEYS.includes(key)) return false;
     return String(values?.[key] || '') !== '';
   });
 }
@@ -262,6 +286,7 @@ function presentKeys(values, keys, config) {
 function collect(config) {
   const providerModel = providerModelExpected(config);
   const scheduler = schedulerExpected(config);
+  const memorySkills = memorySkillsExpected(config);
   const launchctlValues = readLaunchctlSession();
   const node = findNodeProcess();
   const nodeValues = node.pid ? parseProcessEnv(node.command) : {};
@@ -272,6 +297,7 @@ function collect(config) {
     nodeProviderModel: node.pid ? compare(nodeValues, providerModel) : { present: [], missing: Object.keys(providerModel), mismatched: [] },
     launchctlScheduler: compare(launchctlValues, scheduler),
     nodeScheduler: node.pid ? compare(nodeValues, scheduler) : { present: [], missing: Object.keys(scheduler), mismatched: [] },
+    launchctlMemorySkills: compare(launchctlValues, memorySkills),
     launchctlUnrelatedProductionKeys: presentKeys(launchctlValues, UNRELATED_PRODUCTION_KEYS, config),
     nodeUnrelatedProductionKeys: [
       ...new Set([
@@ -294,6 +320,7 @@ function reduce(collected, config) {
   if (!compareOk(collected.nodeProviderModel)) issues.push('xhub_node_process_needs_relaunch_for_provider_model_production_env');
   if (config.requireSchedulerAuthority && !compareOk(collected.launchctlScheduler)) issues.push('launchctl_scheduler_authority_env_not_applied');
   if (config.requireSchedulerAuthority && !compareOk(collected.nodeScheduler)) issues.push('xhub_node_scheduler_authority_env_missing');
+  if (config.requireMemorySkillsProduction && !compareOk(collected.launchctlMemorySkills)) issues.push('launchctl_memory_skills_production_env_not_applied');
   if (collected.launchctlUnrelatedProductionKeys.length) issues.push('launchctl_unrelated_production_env_present');
   if (collected.nodeUnrelatedProductionKeys.length) issues.push('xhub_node_unrelated_production_env_present');
   return {
@@ -315,14 +342,20 @@ function reduce(collected, config) {
     running_node_scheduler_env_present: collected.nodeScheduler.present,
     running_node_scheduler_env_missing: collected.nodeScheduler.missing,
     running_node_scheduler_env_mismatched: collected.nodeScheduler.mismatched,
+    memory_skills_production_allowed: config.allowMemorySkillsProduction,
+    memory_skills_production_required: config.requireMemorySkillsProduction,
+    launchctl_memory_skills_production_session_applied: compareOk(collected.launchctlMemorySkills),
+    launchctl_memory_skills_env_present: collected.launchctlMemorySkills.present,
+    launchctl_memory_skills_env_missing: collected.launchctlMemorySkills.missing,
+    launchctl_memory_skills_env_mismatched: collected.launchctlMemorySkills.mismatched,
     unrelated_production_keys_checked: UNRELATED_PRODUCTION_KEYS,
     launchctl_unrelated_production_keys_present: collected.launchctlUnrelatedProductionKeys,
     running_node_unrelated_production_keys_present: collected.nodeUnrelatedProductionKeys,
     production_authority_change: false,
     provider_route_authority_target: true,
     model_route_authority_target: true,
-    memory_writer_authority_target: false,
-    skills_execution_authority_target: false,
+    memory_writer_authority_target: config.allowMemorySkillsProduction === true,
+    skills_execution_authority_target: config.allowMemorySkillsProduction === true,
     ui_product_change: false,
     secret_leak: false,
     issues,
@@ -340,15 +373,19 @@ function runSelfTest() {
     httpBaseUrl: 'http://127.0.0.1:50151',
     requireSchedulerAuthority: true,
     allowXtFileIpcProduction: true,
+    allowMemorySkillsProduction: false,
+    requireMemorySkillsProduction: false,
   };
   const providerModel = Object.keys(providerModelExpected(config));
   const scheduler = Object.keys(schedulerExpected(config));
+  const memorySkills = Object.keys(memorySkillsExpected(config));
   const ok = reduce({
     launchctlProviderModel: { present: providerModel, missing: [], mismatched: [] },
     node: { pid: 123 },
     nodeProviderModel: { present: providerModel, missing: [], mismatched: [] },
     launchctlScheduler: { present: scheduler, missing: [], mismatched: [] },
     nodeScheduler: { present: scheduler, missing: [], mismatched: [] },
+    launchctlMemorySkills: { present: [], missing: memorySkills, mismatched: [] },
     launchctlUnrelatedProductionKeys: [],
     nodeUnrelatedProductionKeys: [],
   }, config);
@@ -359,6 +396,7 @@ function runSelfTest() {
     nodeProviderModel: { present: providerModel, missing: [], mismatched: ['XHUB_RUST_MODEL_ROUTE_AUTHORITY_FALLBACK_ON_ERROR'] },
     launchctlScheduler: { present: scheduler, missing: [], mismatched: [] },
     nodeScheduler: { present: scheduler, missing: [], mismatched: [] },
+    launchctlMemorySkills: { present: [], missing: memorySkills, mismatched: [] },
     launchctlUnrelatedProductionKeys: [],
     nodeUnrelatedProductionKeys: [],
   }, config);
@@ -371,11 +409,25 @@ function runSelfTest() {
     nodeProviderModel: { present: providerModel, missing: [], mismatched: [] },
     launchctlScheduler: { present: scheduler, missing: [], mismatched: [] },
     nodeScheduler: { present: scheduler, missing: [], mismatched: [] },
+    launchctlMemorySkills: { present: [], missing: memorySkills, mismatched: [] },
     launchctlUnrelatedProductionKeys: [],
     nodeUnrelatedProductionKeys: ['XHUB_RUST_XT_FILE_IPC_PRODUCTION_CUTOVER'],
   }, { ...config, allowXtFileIpcProduction: false });
   if (unrelated.ok || !unrelated.issues.includes('xhub_node_unrelated_production_env_present')) {
     throw new Error('expected unrelated production env to fail closed');
+  }
+  const requiredMemorySkills = reduce({
+    launchctlProviderModel: { present: providerModel, missing: [], mismatched: [] },
+    node: { pid: 123 },
+    nodeProviderModel: { present: providerModel, missing: [], mismatched: [] },
+    launchctlScheduler: { present: scheduler, missing: [], mismatched: [] },
+    nodeScheduler: { present: scheduler, missing: [], mismatched: [] },
+    launchctlMemorySkills: { present: memorySkills, missing: [], mismatched: [] },
+    launchctlUnrelatedProductionKeys: [],
+    nodeUnrelatedProductionKeys: [],
+  }, { ...config, allowMemorySkillsProduction: true, requireMemorySkillsProduction: true });
+  if (!requiredMemorySkills.ok || requiredMemorySkills.memory_writer_authority_target !== true) {
+    throw new Error('expected explicit memory/skills authority allow-list to pass');
   }
 }
 

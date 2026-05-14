@@ -40,7 +40,7 @@ enum SupervisorGuidanceTextPresentation {
         if normalized.isEmpty {
             return capped(normalizedDisplayText(stripped), maxChars: maxChars)
         }
-        return capped(normalized, maxChars: maxChars)
+        return capped(userFacingSummaryText(normalized), maxChars: maxChars)
     }
 
     static func normalizedText(
@@ -105,6 +105,18 @@ enum SupervisorGuidanceTextPresentation {
         }
 
         return stripped
+    }
+
+    private static func userFacingSummaryText(_ text: String) -> String {
+        let trimmed = normalizedDisplayText(text)
+        guard !trimmed.isEmpty else { return "" }
+        let lowered = trimmed.lowercased()
+        if lowered.contains("serving contract") ||
+            trimmed.contains("Supervisor 实际注入") ||
+            (lowered.contains("strategic memory") && trimmed.contains("供给不足")) {
+            return "记忆装配未通过运行时校验"
+        }
+        return trimmed
     }
 
     private static func parsedFields(

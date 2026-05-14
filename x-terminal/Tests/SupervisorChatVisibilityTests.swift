@@ -273,6 +273,32 @@ struct SupervisorChatVisibilityTests {
     }
 
     @Test
+    func completingUserTurnPreservesDistinctStreamingDraftAndAppendsCanonicalReply() {
+        let manager = SupervisorManager.makeForTesting()
+        let placeholderID = manager.prepareConversationStreamingAssistantMessageForTesting(
+            id: "streaming-preserve"
+        )
+        if let index = manager.messages.firstIndex(where: { $0.id == placeholderID }) {
+            manager.messages[index].content = "毛毛，我已经接上上下文，马上开始处理这一步。"
+        }
+
+        manager.completeSupervisorAssistantTurnForTesting(
+            userMessage: "继续往下推进",
+            responseText: "请求失败：AI failed: bridge_timeout",
+            triggerSource: "user_turn"
+        )
+
+        #expect(manager.messages.count == 2)
+        #expect(manager.messages[0].id == placeholderID)
+        #expect(manager.messages[0].content == "毛毛，我已经接上上下文，马上开始处理这一步。")
+        #expect(manager.messages[1].content == "请求失败：AI failed: bridge_timeout")
+        #expect(manager.chatTimelineMessages.map(\.content) == [
+            "毛毛，我已经接上上下文，马上开始处理这一步。",
+            "请求失败：AI failed: bridge_timeout"
+        ])
+    }
+
+    @Test
     func conversationStreamingPlaceholderUsesPreflightStageBeforeFirstToken() {
         let manager = SupervisorManager.makeForTesting()
         let placeholderID = manager.prepareConversationStreamingAssistantMessageForTesting(

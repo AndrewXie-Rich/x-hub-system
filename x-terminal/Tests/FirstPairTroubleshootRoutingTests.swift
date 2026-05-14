@@ -15,6 +15,9 @@ struct FirstPairTroubleshootRoutingTests {
 
     @Test
     func stalePairingFailuresMapToPairingRepairIssue() {
+        #expect(UITroubleshootKnowledgeBase.issue(forFailureCode: "invite_token_invalid") == .pairingRepairRequired)
+        #expect(UITroubleshootKnowledgeBase.issue(forFailureCode: "unauthenticated") == .pairingRepairRequired)
+        #expect(UITroubleshootKnowledgeBase.issue(forFailureCode: "certificate_required") == .pairingRepairRequired)
         #expect(UITroubleshootKnowledgeBase.issue(forFailureCode: "hub_instance_mismatch") == .pairingRepairRequired)
         #expect(UITroubleshootKnowledgeBase.issue(forFailureCode: "pairing_profile_epoch_stale") == .pairingRepairRequired)
         #expect(UITroubleshootKnowledgeBase.issue(forFailureCode: "route_pack_outdated") == .pairingRepairRequired)
@@ -43,6 +46,14 @@ struct FirstPairTroubleshootRoutingTests {
 
     @Test
     func stalePairingRepairContextUsesSpecificCopy() {
+        let inviteContext = AppModel.automaticFirstPairRepairContext(for: "invite_token_invalid")
+        #expect(inviteContext.title == "清理失效配对资料后重新连接")
+        #expect(inviteContext.detail.contains("invite / unauthenticated / certificate"))
+
+        let certificateContext = AppModel.automaticFirstPairRepairContext(for: "certificate_required")
+        #expect(certificateContext.title == "清理失效配对资料后重新连接")
+        #expect(certificateContext.detail.contains("新 token / 证书"))
+
         let mismatchContext = AppModel.automaticFirstPairRepairContext(for: "hub_instance_mismatch")
         #expect(mismatchContext.title == "清掉旧 Hub 档案后重新配对")
         #expect(mismatchContext.detail.contains("不是同一台主机"))

@@ -44,6 +44,64 @@ struct SupervisorMemoryBoardSection: View {
                     .lineLimit(3)
             }
 
+            if let controlPlanePreview = presentation.controlPlanePreview {
+                toneCard(
+                    iconName: controlPlanePreview.iconName,
+                    tone: controlPlanePreview.tone,
+                    title: controlPlanePreview.title
+                ) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(controlPlanePreview.statusLine)
+                            .font(.caption)
+                            .foregroundStyle(.primary)
+
+                        if !controlPlanePreview.policyLines.isEmpty {
+                            VStack(alignment: .leading, spacing: 4) {
+                                ForEach(Array(controlPlanePreview.policyLines.enumerated()), id: \.offset) { _, line in
+                                    Text(line)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                        }
+
+                        if !controlPlanePreview.detailLines.isEmpty {
+                            Divider()
+                            VStack(alignment: .leading, spacing: 4) {
+                                ForEach(Array(controlPlanePreview.detailLines.enumerated()), id: \.offset) { _, line in
+                                    Text(line)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let assemblyDiff = presentation.assemblyDiff {
+                toneCard(
+                    iconName: assemblyDiff.iconName,
+                    tone: assemblyDiff.tone,
+                    title: assemblyDiff.title
+                ) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(assemblyDiff.statusLine)
+                            .font(.caption)
+                            .foregroundStyle(.primary)
+
+                        ForEach(Array(assemblyDiff.detailLines.enumerated()), id: \.offset) { _, line in
+                            Text(line)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+            }
+
             if !presentation.continuityDrillDownLines.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(Array(presentation.continuityDrillDownLines.enumerated()), id: \.offset) { _, line in

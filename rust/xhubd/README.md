@@ -15,6 +15,9 @@ Current slice:
 - `xhubd serve` short-TTL `/ready` cache for high-frequency UI/bridge polling.
 - `xhubd serve` nonblocking `/ready` cache refresh with a 5 second default TTL
   for post-cutover stutter reduction under live polling.
+- `xhubd serve` explicit-cutover XT live status repair that writes stale or
+  missing Rust-owned `hub_status.json` evidence back to disk instead of serving
+  a fresh memory-only overlay.
 - `xhubd serve` short-TTL memory snapshot and skills catalog caches for
   read-only HTTP paths.
 - `xhubd serve` global HTTP in-flight backpressure guard for business routes.
@@ -25,6 +28,11 @@ Current slice:
 - `tools/ops_soak_runner.command` long-running warm-daemon soak runner for
   stutter, cache, latency, HTTP metrics, memory, skills, and UI compatibility
   regression evidence.
+- `tools/production_live_stability_session.command --adopt` can attach the
+  current package's state to a long stability session discovered in an older
+  package root, avoiding duplicate sessions during post-cutover updates.
+- `tools/production_live_stability_session.command --adopt-checkpoint-loop`
+  does the same for the rolling checkpoint sidecar.
 - `tools/daemon_ops_report.command` non-mutating daemon ops report for
   health/readiness/launchd/http-metrics/redacted-log evidence. It can
   optionally include isolated XT file IPC run-once smoke evidence with
@@ -152,10 +160,14 @@ Current slice:
   plans without executing them.
 - `tools/active_root_upgrade_plan.js` non-mutating update plan that compares
   the current launchctl/Node `XHUB_RUST_HUB_ROOT` with a source or package
-  target root and prints apply, validation, and rollback commands.
+  target root, detects existing provider/model production authority, and prints
+  apply, validation, and rollback commands without downgrading production route
+  env back to prep.
 - `tools/active_root_upgrade_apply.js` dry-run-by-default active-root upgrade
   orchestrator with explicit `--apply`, `--relaunch-xhub`, and `--validate`
-  gates for smoother package updates.
+  gates for smoother package updates. When provider/model production authority
+  is already active it skips route prep apply/install and validates with the
+  production runtime guard instead.
 - `tools/node_hub_authority_live_runner.js` real Node Hub process + gRPC
   `HubAI.Generate` authority smoke with shared Node/Rust SQLite state.
 - `tools/provider_route_smoke.command` source/package smoke for Rust provider
@@ -378,6 +390,12 @@ Current slice:
   write lock, unique temp files, and nonblocking request-path live repair.
 - `docs/RHM_109_XT_LIVE_STARTUP_NONBLOCKING_STATUS.md` startup nonblocking live
   status overlay and lower Group Container write pressure.
+- `docs/RHM_117_XT_LIVE_STATUS_ON_DEMAND_DISK_REPAIR.md` explicit-cutover
+  request-path disk repair for stale or missing Rust-owned live status.
+- `docs/RHM_118_PRODUCTION_STABILITY_SESSION_ADOPTION.md` package-root
+  adoption for already-running production stability sessions.
+- `docs/RHM_120_ROLLING_CHECKPOINT_SIDECAR_ADOPTION.md` package-root adoption
+  for already-running rolling checkpoint sidecars.
 - `docs/RHM_058_CROSS_NETWORK_READINESS_GATE.md` LAN/cross-device readiness
   gate contract.
 - `docs/RHM_062_CROSS_NETWORK_INSTALLED_GATE.md` strict installed-state LAN
@@ -415,92 +433,92 @@ Current slice:
 Run:
 
 ```bash
-bash "rust/xhubd/tools/build_rust_hub.command"
-bash "rust/xhubd/tools/run_rust_hub.command" migrate
-bash "rust/xhubd/tools/run_rust_hub.command" doctor
-bash "rust/xhubd/tools/run_rust_hub.command" scheduler-smoke
-bash "rust/xhubd/tools/run_rust_hub.command" scheduler claim --request-id req-1 --scope-key project:demo --idempotency-key req-1 --lease-owner node-authority-worker
-bash "rust/xhubd/tools/run_rust_hub.command" scheduler status --include-queue-items
-bash "rust/xhubd/tools/run_rust_hub.command" scheduler lease-shadow-report --limit 20
-bash "rust/xhubd/tools/run_rust_hub.command" scheduler cutover-readiness
-bash "rust/xhubd/tools/provider_route_smoke.command" --model-id gpt-4o
-bash "rust/xhubd/tools/provider_route_shadow_compare_smoke.command" --model-id gpt-4o
-bash "rust/xhubd/tools/model_inventory_shadow_compare_smoke.command"
-bash "rust/xhubd/tools/model_inventory_http_bridge_smoke.command"
-bash "rust/xhubd/tools/model_inventory_shadow_compare_runner.command" --runs 3 --min-compare-reports 3 --expect-ready --expect-zero-mismatch
-bash "rust/xhubd/tools/model_inventory_shadow_compare_runner.command" --use-existing-runtime --runtime-base-dir "/path/to/runtime_base_dir" --runs 10 --min-compare-reports 10 --expect-ready --expect-zero-mismatch
-bash "rust/xhubd/tools/model_route_http_smoke.command" --timeout-ms 30000
-bash "rust/xhubd/tools/model_route_generate_candidate_runner.command" --runs 2 --concurrency 1 --expect-ready --min-candidate-audits 2 --timeout-ms 45000
-bash "rust/xhubd/tools/model_route_local_candidate_runner.command" --runs 2 --concurrency 1 --expect-ready --min-candidate-audits 2 --timeout-ms 45000
-bash "rust/xhubd/tools/model_route_candidate_evidence_runner.command" --remote-runs 1 --local-runs 1 --concurrency 1 --expect-ready --timeout-ms 45000
-bash "rust/xhubd/tools/model_route_authority_plan_runner.command" --remote-runs 1 --local-runs 1 --concurrency 1 --expect-ready --timeout-ms 45000
-bash "rust/xhubd/tools/model_route_prep_trial_runner.command" --remote-runs 1 --local-runs 1 --concurrency 1 --expect-ready --timeout-ms 45000
-node "./x-hub/grpc-server/hub_grpc_server/src/rust_model_route_authority_bridge.test.js"
-node "./x-hub/grpc-server/hub_grpc_server/src/rust_provider_route_authority_generate_hook.test.js"
-bash "rust/xhubd/tools/provider_route_shadow_compare_runner.command" --runs 10 --expect-ready --expect-zero-mismatch
-bash "rust/xhubd/tools/provider_route_generate_observe_runner.command" --runs 1 --concurrency 1 --enable-candidate-audit --expect-candidate-ready --min-candidate-audits 1 --max-generate-ms 3000
-bash "rust/xhubd/tools/provider_route_cutover_readiness_runner.command" --shadow-runs 3 --candidate-runs 3 --expect-ready
-bash "rust/xhubd/tools/provider_route_authority_plan_runner.command" --shadow-runs 3 --candidate-runs 3 --expect-ready
-bash "rust/xhubd/tools/run_rust_hub.command" provider reports --limit 20
-bash "rust/xhubd/tools/run_rust_hub.command" provider readiness
-bash "rust/xhubd/tools/run_rust_hub.command" model inventory
-bash "rust/xhubd/tools/run_rust_hub.command" model route --task-type summarize --required-capability text.summarize --model-id auto
-bash "rust/xhubd/tools/run_rust_hub.command" model readiness --min-compare-reports 0 --max-mismatches 0
-bash "rust/xhubd/tools/run_rust_hub.command" memory readiness
-bash "rust/xhubd/tools/memory_retrieval_shadow_smoke.command"
-bash "rust/xhubd/tools/memory_retrieval_http_smoke.command"
-bash "rust/xhubd/tools/run_rust_hub.command" skills readiness
-bash "rust/xhubd/tools/run_rust_hub.command" skills pin --scope-key project:demo --skill-id memory-core --actor operator
-bash "rust/xhubd/tools/run_rust_hub.command" skills grant --scope-key project:demo --skill-id memory-core --capability memory --actor operator
-bash "rust/xhubd/tools/run_rust_hub.command" skills preflight --scope-key project:demo --skill-id memory-core --requested-capabilities memory
-bash "rust/xhubd/tools/skills_catalog_shadow_smoke.command"
-bash "rust/xhubd/tools/skills_catalog_http_smoke.command"
-bash "rust/xhubd/tools/ui_compatibility_no_product_ui_change_gate.command"
-bash "rust/xhubd/tools/ops_readiness_gate.command" --cycles 3 --interval-ms 250 --timeout-ms 30000 --max-endpoint-ms 2000 --max-cycle-ms 5000
-bash "rust/xhubd/tools/ops_soak_runner.command" --cycles 5 --interval-ms 100 --timeout-ms 30000 --max-endpoint-ms 2000 --max-cycle-ms 5000
-node "rust/xhubd/tools/node_scheduler_shadow_compare.js" --self-test
-node "rust/xhubd/tools/node_hub_shadow_compare_smoke.js" --runs 3 --interval-ms 250 --timeout-ms 15000 --expect-zero-mismatch
-node "rust/xhubd/tools/node_hub_shadow_compare_runner.js" --no-start --duration-ms 1000 --report-interval-ms 500 --expect-zero-mismatch
-node "rust/xhubd/tools/scheduler_cutover_readiness_runner.js" --runs 3 --expect-ready --expect-zero-mismatch
-node "rust/xhubd/tools/scheduler_authority_runner.js" --runs 1 --timeout-ms 45000
-node "rust/xhubd/tools/scheduler_authority_runner.js" --runs 1 --concurrency 3 --bridge-response-delay-ms 3000 --timeout-ms 70000 --expect-queued
-node "rust/xhubd/tools/scheduler_authority_runner.js" --scenario queued-cancel --bridge-response-delay-ms 3000 --timeout-ms 70000
-node "rust/xhubd/tools/scheduler_authority_runner.js" --scenario queued-timeout --timeout-ms 70000
-node "rust/xhubd/tools/node_hub_authority_live_runner.js" --runs 1 --timeout-ms 45000
-node "rust/xhubd/tools/node_hub_authority_live_runner.js" --runs 3 --concurrency 3 --bridge-response-delay-ms 2500 --timeout-ms 90000 --expect-queued
-node "rust/xhubd/tools/node_hub_authority_live_runner.js" --scenario queued-cancel --timeout-ms 70000
-node "rust/xhubd/tools/node_hub_authority_live_runner.js" --scenario queued-timeout --timeout-ms 70000
-bash "rust/xhubd/tools/run_rust_hub.command" serve
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/build_rust_hub.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" migrate
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" doctor
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" scheduler-smoke
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" scheduler claim --request-id req-1 --scope-key project:demo --idempotency-key req-1 --lease-owner node-authority-worker
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" scheduler status --include-queue-items
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" scheduler lease-shadow-report --limit 20
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" scheduler cutover-readiness
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/provider_route_smoke.command" --model-id gpt-4o
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/provider_route_shadow_compare_smoke.command" --model-id gpt-4o
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/model_inventory_shadow_compare_smoke.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/model_inventory_http_bridge_smoke.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/model_inventory_shadow_compare_runner.command" --runs 3 --min-compare-reports 3 --expect-ready --expect-zero-mismatch
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/model_inventory_shadow_compare_runner.command" --use-existing-runtime --runtime-base-dir "/path/to/runtime_base_dir" --runs 10 --min-compare-reports 10 --expect-ready --expect-zero-mismatch
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/model_route_http_smoke.command" --timeout-ms 30000
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/model_route_generate_candidate_runner.command" --runs 2 --concurrency 1 --expect-ready --min-candidate-audits 2 --timeout-ms 45000
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/model_route_local_candidate_runner.command" --runs 2 --concurrency 1 --expect-ready --min-candidate-audits 2 --timeout-ms 45000
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/model_route_candidate_evidence_runner.command" --remote-runs 1 --local-runs 1 --concurrency 1 --expect-ready --timeout-ms 45000
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/model_route_authority_plan_runner.command" --remote-runs 1 --local-runs 1 --concurrency 1 --expect-ready --timeout-ms 45000
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/model_route_prep_trial_runner.command" --remote-runs 1 --local-runs 1 --concurrency 1 --expect-ready --timeout-ms 45000
+node "/Users/andrew.xie/Documents/AX/x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_model_route_authority_bridge.test.js"
+node "/Users/andrew.xie/Documents/AX/x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_provider_route_authority_generate_hook.test.js"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/provider_route_shadow_compare_runner.command" --runs 10 --expect-ready --expect-zero-mismatch
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/provider_route_generate_observe_runner.command" --runs 1 --concurrency 1 --enable-candidate-audit --expect-candidate-ready --min-candidate-audits 1 --max-generate-ms 3000
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/provider_route_cutover_readiness_runner.command" --shadow-runs 3 --candidate-runs 3 --expect-ready
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/provider_route_authority_plan_runner.command" --shadow-runs 3 --candidate-runs 3 --expect-ready
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" provider reports --limit 20
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" provider readiness
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" model inventory
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" model route --task-type summarize --required-capability text.summarize --model-id auto
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" model readiness --min-compare-reports 0 --max-mismatches 0
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" memory readiness
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/memory_retrieval_shadow_smoke.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/memory_retrieval_http_smoke.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" skills readiness
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" skills pin --scope-key project:demo --skill-id memory-core --actor operator
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" skills grant --scope-key project:demo --skill-id memory-core --capability memory --actor operator
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" skills preflight --scope-key project:demo --skill-id memory-core --requested-capabilities memory
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/skills_catalog_shadow_smoke.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/skills_catalog_http_smoke.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/ui_compatibility_no_product_ui_change_gate.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/ops_readiness_gate.command" --cycles 3 --interval-ms 250 --timeout-ms 30000 --max-endpoint-ms 2000 --max-cycle-ms 5000
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/ops_soak_runner.command" --cycles 5 --interval-ms 100 --timeout-ms 30000 --max-endpoint-ms 2000 --max-cycle-ms 5000
+node "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/node_scheduler_shadow_compare.js" --self-test
+node "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/node_hub_shadow_compare_smoke.js" --runs 3 --interval-ms 250 --timeout-ms 15000 --expect-zero-mismatch
+node "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/node_hub_shadow_compare_runner.js" --no-start --duration-ms 1000 --report-interval-ms 500 --expect-zero-mismatch
+node "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/scheduler_cutover_readiness_runner.js" --runs 3 --expect-ready --expect-zero-mismatch
+node "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/scheduler_authority_runner.js" --runs 1 --timeout-ms 45000
+node "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/scheduler_authority_runner.js" --runs 1 --concurrency 3 --bridge-response-delay-ms 3000 --timeout-ms 70000 --expect-queued
+node "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/scheduler_authority_runner.js" --scenario queued-cancel --bridge-response-delay-ms 3000 --timeout-ms 70000
+node "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/scheduler_authority_runner.js" --scenario queued-timeout --timeout-ms 70000
+node "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/node_hub_authority_live_runner.js" --runs 1 --timeout-ms 45000
+node "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/node_hub_authority_live_runner.js" --runs 3 --concurrency 3 --bridge-response-delay-ms 2500 --timeout-ms 90000 --expect-queued
+node "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/node_hub_authority_live_runner.js" --scenario queued-cancel --timeout-ms 70000
+node "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/node_hub_authority_live_runner.js" --scenario queued-timeout --timeout-ms 70000
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" serve
 ```
 
 Warm daemon manager:
 
 ```bash
-bash "rust/xhubd/tools/xhubd_daemon.command" start
-bash "rust/xhubd/tools/xhubd_daemon.command" health
-bash "rust/xhubd/tools/xhubd_daemon.command" ready
-bash "rust/xhubd/tools/xhubd_daemon.command" profile
-bash "rust/xhubd/tools/xhubd_daemon.command" launchd-plist
-bash "rust/xhubd/tools/xhubd_daemon.command" launchd-install --replace-running
-bash "rust/xhubd/tools/xhubd_daemon.command" launchd-status
-bash "rust/xhubd/tools/xhubd_daemon.command" launchd-uninstall
-bash "rust/xhubd/tools/xhubd_daemon.command" ops-report --require-ready --max-log-bytes 4096
-bash "rust/xhubd/tools/daemon_ops_report.command" --require-ready --max-log-bytes 4096
-bash "rust/xhubd/tools/daemon_maintenance.command" --max-log-bytes 10485760 --keep-report-files 100 --max-report-age-days 30
-bash "rust/xhubd/tools/daemon_ops_gate.command" --max-slow-requests 0 --maintenance-max-log-bytes 10485760 --keep-report-files 100 --max-report-age-days 30
-bash "rust/xhubd/tools/daemon_watchdog.command" --max-slow-requests 0 --maintenance-max-log-bytes 10485760 --keep-report-files 100 --max-report-age-days 30
-bash "rust/xhubd/tools/xhubd_daemon.command" watchdog-plist
-bash "rust/xhubd/tools/xhubd_daemon.command" watchdog-install --dry-run
-bash "rust/xhubd/tools/xhubd_daemon.command" watchdog-status
-bash "rust/xhubd/tools/xhubd_daemon.command" watchdog-uninstall --dry-run
-bash "rust/xhubd/tools/xhubd_daemon.command" access-key-init --profile lan
-bash "rust/xhubd/tools/lan_access_key_launchd_smoke.command"
-bash "rust/xhubd/tools/memory_retrieval_shadow_smoke.command"
-bash "rust/xhubd/tools/memory_retrieval_http_smoke.command"
-bash "rust/xhubd/tools/skills_catalog_shadow_smoke.command"
-bash "rust/xhubd/tools/skills_catalog_http_smoke.command"
-bash "rust/xhubd/tools/xhubd_daemon.command" env
-bash "rust/xhubd/tools/xhubd_daemon.command" stop
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/xhubd_daemon.command" start
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/xhubd_daemon.command" health
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/xhubd_daemon.command" ready
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/xhubd_daemon.command" profile
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/xhubd_daemon.command" launchd-plist
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/xhubd_daemon.command" launchd-install --replace-running
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/xhubd_daemon.command" launchd-status
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/xhubd_daemon.command" launchd-uninstall
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/xhubd_daemon.command" ops-report --require-ready --max-log-bytes 4096
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/daemon_ops_report.command" --require-ready --max-log-bytes 4096
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/daemon_maintenance.command" --max-log-bytes 10485760 --keep-report-files 100 --max-report-age-days 30
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/daemon_ops_gate.command" --max-slow-requests 0 --maintenance-max-log-bytes 10485760 --keep-report-files 100 --max-report-age-days 30
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/daemon_watchdog.command" --max-slow-requests 0 --maintenance-max-log-bytes 10485760 --keep-report-files 100 --max-report-age-days 30
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/xhubd_daemon.command" watchdog-plist
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/xhubd_daemon.command" watchdog-install --dry-run
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/xhubd_daemon.command" watchdog-status
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/xhubd_daemon.command" watchdog-uninstall --dry-run
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/xhubd_daemon.command" access-key-init --profile lan
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/lan_access_key_launchd_smoke.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/memory_retrieval_shadow_smoke.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/memory_retrieval_http_smoke.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/skills_catalog_shadow_smoke.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/skills_catalog_http_smoke.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/xhubd_daemon.command" env
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/xhubd_daemon.command" stop
 ```
 
 `xhubd_daemon.command` starts `xhubd serve` in the background, waits for
@@ -612,13 +630,13 @@ file-IPC, and explicit production-cutover gates before writing `hub_status.json`
 LAN / cross-device profile:
 
 ```bash
-bash "rust/xhubd/tools/xhubd_daemon.command" access-key-init --profile lan
-bash "rust/xhubd/tools/xhubd_daemon.command" start --profile lan --public-host <LAN-IP>
-bash "rust/xhubd/tools/xhubd_daemon.command" ready --profile lan --public-host <LAN-IP>
-bash "rust/xhubd/tools/lan_access_key_launchd_smoke.command"
-bash "rust/xhubd/tools/cross_network_readiness_gate.command" --profile lan --public-host <LAN-IP>
-bash "rust/xhubd/tools/cross_network_installed_gate.command" --profile lan --public-host <LAN-IP>
-bash "rust/xhubd/tools/cross_network_install_plan.command" --profile lan --public-host <LAN-IP>
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/xhubd_daemon.command" access-key-init --profile lan
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/xhubd_daemon.command" start --profile lan --public-host <LAN-IP>
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/xhubd_daemon.command" ready --profile lan --public-host <LAN-IP>
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/lan_access_key_launchd_smoke.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/cross_network_readiness_gate.command" --profile lan --public-host <LAN-IP>
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/cross_network_installed_gate.command" --profile lan --public-host <LAN-IP>
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/cross_network_install_plan.command" --profile lan --public-host <LAN-IP>
 ```
 
 Default `local` profile binds `127.0.0.1`. Non-loopback bind is rejected unless
@@ -643,13 +661,36 @@ LaunchAgent are actually loaded.
 `cross_network_install_plan.command` prints the exact install, validation, and
 rollback commands without executing them.
 
+Domain / tunnel profile:
+
+```bash
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/cross_network_domain_activation_plan.command" --public-base-url https://hub.your-domain.com --access-key-file secrets/xhubd_domain_access_key --require-memory-skills-production
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/xhubd_daemon.command" access-key-init --profile domain --public-base-url https://hub.example.com --public-endpoint
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/cross_network_readiness_gate.command" --profile domain --public-base-url https://hub.example.com --public-endpoint
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/cross_network_pairing_export.command" --profile domain --public-base-url https://hub.example.com --public-endpoint
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/cross_network_domain_smoke.command" --public-base-url https://hub.example.com --access-key-file secrets/xhubd_domain_access_key
+```
+
+Use the domain profile for Cloudflare Tunnel, Tailscale, Headscale, or a VPS
+reverse tunnel. The daemon may still bind `127.0.0.1`, but
+`--public-endpoint` forces HTTP access-key auth and lets `/ready` report
+cross-network readiness once the public URL and key file are configured.
+`cross_network_domain_activation_plan.command` is the safest starting point for
+the real cutover: it rejects placeholder domains, prints the exact access-key,
+launchd, watchdog, pairing, smoke, and rollback commands, and does not mutate
+state by itself.
+`cross_network_pairing_export.command` writes a `0600` XT pairing bundle that
+contains the access key; the command output never prints the key. The domain
+smoke must reject unauthenticated `/ready` and pass authenticated `/ready`
+before XT should use the domain outside the first LAN setup.
+
 Memory retrieval shadow path:
 
 ```bash
-bash "rust/xhubd/tools/run_rust_hub.command" memory readiness
-bash "rust/xhubd/tools/run_rust_hub.command" memory search --query "governed retrieval" --max-results 5
-bash "rust/xhubd/tools/memory_retrieval_shadow_smoke.command"
-bash "rust/xhubd/tools/memory_retrieval_http_smoke.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" memory readiness
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" memory search --query "governed retrieval" --max-results 5
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/memory_retrieval_shadow_smoke.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/memory_retrieval_http_smoke.command"
 ```
 
 Rust memory retrieval is read-only and shadow-only. It scans supported local
@@ -665,21 +706,21 @@ still belongs to the existing Writer + Gate path.
 Skills catalog policy gate:
 
 ```bash
-bash "rust/xhubd/tools/run_rust_hub.command" skills readiness
-bash "rust/xhubd/tools/run_rust_hub.command" skills catalog
-bash "rust/xhubd/tools/run_rust_hub.command" skills pin --scope-key project:demo --skill-id memory-core --actor operator
-bash "rust/xhubd/tools/run_rust_hub.command" skills grant --scope-key project:demo --skill-id memory-core --capability memory --actor operator
-bash "rust/xhubd/tools/run_rust_hub.command" skills policy --scope-key project:demo --skill-id memory-core
-bash "rust/xhubd/tools/run_rust_hub.command" skills preflight --scope-key project:demo --skill-id memory-core --requested-capabilities memory
-bash "rust/xhubd/tools/run_rust_hub.command" skills policy-events --scope-key project:demo --skill-id memory-core --limit 20
-bash "rust/xhubd/tools/run_rust_hub.command" skills policy-events-prune --max-rows 10000
-bash "rust/xhubd/tools/run_rust_hub.command" skills policy-readiness --max-preflight-audit-rows 100000 --max-policy-event-rows 100000
-bash "rust/xhubd/tools/run_rust_hub.command" skills audit --scope-key project:demo --skill-id memory-core --limit 20
-bash "rust/xhubd/tools/run_rust_hub.command" skills audit-prune --max-rows 10000
-bash "rust/xhubd/tools/run_rust_hub.command" skills revoke-grant --scope-key project:demo --skill-id memory-core --capability memory --actor operator
-bash "rust/xhubd/tools/run_rust_hub.command" skills unpin --scope-key project:demo --skill-id memory-core --actor operator
-bash "rust/xhubd/tools/skills_catalog_shadow_smoke.command"
-bash "rust/xhubd/tools/skills_catalog_http_smoke.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" skills readiness
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" skills catalog
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" skills pin --scope-key project:demo --skill-id memory-core --actor operator
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" skills grant --scope-key project:demo --skill-id memory-core --capability memory --actor operator
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" skills policy --scope-key project:demo --skill-id memory-core
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" skills preflight --scope-key project:demo --skill-id memory-core --requested-capabilities memory
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" skills policy-events --scope-key project:demo --skill-id memory-core --limit 20
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" skills policy-events-prune --max-rows 10000
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" skills policy-readiness --max-preflight-audit-rows 100000 --max-policy-event-rows 100000
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" skills audit --scope-key project:demo --skill-id memory-core --limit 20
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" skills audit-prune --max-rows 10000
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" skills revoke-grant --scope-key project:demo --skill-id memory-core --capability memory --actor operator
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" skills unpin --scope-key project:demo --skill-id memory-core --actor operator
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/skills_catalog_shadow_smoke.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/skills_catalog_http_smoke.command"
 ```
 
 Rust skills support is catalog/readiness/preflight policy only. It scans
@@ -718,7 +759,7 @@ export XHUB_RUST_SCHEDULER_STATUS_HTTP=1
 export XHUB_RUST_SCHEDULER_STATUS_HTTP_BASE_URL=http://127.0.0.1:50151
 export XHUB_RUST_SCHEDULER_STATUS_HTTP_TIMEOUT_MS=750
 export XHUB_RUST_SCHEDULER_STATUS_HTTP_FALLBACK_TO_CLI=1
-export XHUB_RUST_HUB_ROOT="rust/xhubd"
+export XHUB_RUST_HUB_ROOT="/Users/andrew.xie/Documents/AX/rust/rust hub"
 ```
 
 With `STATUS_REQUIRE_READY=1`, Node Hub only answers
@@ -736,13 +777,13 @@ still enabled by default.
 HTTP status bridge smoke:
 
 ```bash
-bash "rust/xhubd/tools/scheduler_status_http_bridge_smoke.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/scheduler_status_http_bridge_smoke.command"
 ```
 
 HTTP lease-shadow bridge smoke:
 
 ```bash
-bash "rust/xhubd/tools/scheduler_lease_shadow_http_bridge_smoke.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/scheduler_lease_shadow_http_bridge_smoke.command"
 ```
 
 Optional Node Hub scheduler authority bridge:
@@ -756,7 +797,7 @@ export XHUB_RUST_SCHEDULER_AUTHORITY_HTTP_TIMEOUT_MS=750
 export XHUB_RUST_SCHEDULER_AUTHORITY_HTTP_FALLBACK_TO_CLI=1
 export XHUB_RUST_SCHEDULER_STATUS_READ=1
 export XHUB_RUST_SCHEDULER_STATUS_REQUIRE_READY=1
-export XHUB_RUST_HUB_ROOT="rust/xhubd"
+export XHUB_RUST_HUB_ROOT="/Users/andrew.xie/Documents/AX/rust/rust hub"
 ```
 
 With authority enabled, Node Hub tries Rust `scheduler claim` before its
@@ -769,15 +810,15 @@ first and fall back to CLI by default.
 Authority-path verification without external network calls:
 
 ```bash
-bash "rust/xhubd/tools/scheduler_authority_http_bridge_smoke.command"
-bash "rust/xhubd/tools/scheduler_authority_runner.command" --runs 1 --timeout-ms 45000
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/scheduler_authority_http_bridge_smoke.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/scheduler_authority_runner.command" --runs 1 --timeout-ms 45000
 ```
 
 Scheduler-only production authority cutover plan:
 
 ```bash
-bash "rust/xhubd/tools/scheduler_production_authority_plan.command"
-bash "rust/xhubd/tools/scheduler_production_authority_plan.command" --run-gates --expect-ready
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/scheduler_production_authority_plan.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/scheduler_production_authority_plan.command" --run-gates --expect-ready
 ```
 
 This emits `xhub.scheduler_production_authority_plan.v1` with the Node Hub env
@@ -794,9 +835,9 @@ execution authority.
 Scheduler-only production authority apply/rollback:
 
 ```bash
-bash "rust/xhubd/tools/scheduler_production_authority_apply.command" --status
-bash "rust/xhubd/tools/scheduler_production_authority_apply.command" --apply --restart-dock-agent
-bash "rust/xhubd/tools/scheduler_production_authority_apply.command" --rollback --restart-dock-agent
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/scheduler_production_authority_apply.command" --status
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/scheduler_production_authority_apply.command" --apply --restart-dock-agent
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/scheduler_production_authority_apply.command" --rollback --restart-dock-agent
 ```
 
 The apply command backs up the Dock Agent LaunchAgent plist and records prior
@@ -806,9 +847,9 @@ scheduler authority env keys.
 Single-app X-Hub production authority session env:
 
 ```bash
-bash "rust/xhubd/tools/scheduler_production_authority_session.command" --status
-bash "rust/xhubd/tools/scheduler_production_authority_session.command" --apply --open-xhub
-bash "rust/xhubd/tools/scheduler_production_authority_session.command" --rollback
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/scheduler_production_authority_session.command" --status
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/scheduler_production_authority_session.command" --apply --open-xhub
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/scheduler_production_authority_session.command" --rollback
 ```
 
 Use this path when X-Hub is built in single-app Bridge mode and the standalone
@@ -817,9 +858,9 @@ Dock Agent LaunchAgent is absent.
 Persistent single-app session env at login:
 
 ```bash
-bash "rust/xhubd/tools/scheduler_production_authority_session_launchd.command" --status
-bash "rust/xhubd/tools/scheduler_production_authority_session_launchd.command" --install
-bash "rust/xhubd/tools/scheduler_production_authority_session_launchd.command" --uninstall
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/scheduler_production_authority_session_launchd.command" --status
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/scheduler_production_authority_session_launchd.command" --install
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/scheduler_production_authority_session_launchd.command" --uninstall
 ```
 
 This LaunchAgent only reapplies scheduler authority env and does not open or
@@ -828,7 +869,7 @@ modify the X-Hub UI.
 Scheduler production authority guard:
 
 ```bash
-bash "rust/xhubd/tools/scheduler_production_authority_guard.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/scheduler_production_authority_guard.command"
 ```
 
 Use this after daemon restart, X-Hub restart, login, or package update. It
@@ -838,7 +879,7 @@ request budget, and no-product-UI-change gate.
 Provider/model route authority cutover guard:
 
 ```bash
-bash "rust/xhubd/tools/route_authority_cutover_guard.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/route_authority_cutover_guard.command"
 ```
 
 This is a non-mutating readiness gate. It keeps provider/model authority off
@@ -854,16 +895,16 @@ model prep/candidate evidence cannot be mistaken for production authority.
 For a fast local sanity run:
 
 ```bash
-bash "rust/xhubd/tools/route_authority_cutover_guard.command" --provider-shadow-runs 1 --provider-candidate-runs 1 --provider-min-compare-reports 1 --model-remote-runs 1 --model-local-runs 1 --max-generate-ms 5000 --no-report
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/route_authority_cutover_guard.command" --provider-shadow-runs 1 --provider-candidate-runs 1 --provider-min-compare-reports 1 --model-remote-runs 1 --model-local-runs 1 --max-generate-ms 5000 --no-report
 ```
 
 Provider/model route prep session env:
 
 ```bash
-bash "rust/xhubd/tools/route_authority_prep_session.command" --status
-bash "rust/xhubd/tools/route_authority_prep_session.command" --apply
-bash "rust/xhubd/tools/route_authority_prep_session.command" --clear-production-env
-bash "rust/xhubd/tools/route_authority_prep_session.command" --rollback
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/route_authority_prep_session.command" --status
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/route_authority_prep_session.command" --apply
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/route_authority_prep_session.command" --clear-production-env
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/route_authority_prep_session.command" --rollback
 ```
 
 This only applies prep/candidate gates for newly launched X-Hub/Node
@@ -875,7 +916,7 @@ prep-only environment.
 Provider/model route prep runtime guard:
 
 ```bash
-bash "rust/xhubd/tools/route_authority_prep_runtime_guard.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/route_authority_prep_runtime_guard.command"
 ```
 
 Use this after launching or relaunching X-Hub. If it reports
@@ -887,7 +928,7 @@ process.
 Provider/model route prep sustained guard:
 
 ```bash
-bash "rust/xhubd/tools/route_authority_prep_sustained_guard.command" --cycles 3 --interval-ms 500
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/route_authority_prep_sustained_guard.command" --cycles 3 --interval-ms 500
 ```
 
 This repeats runtime env, provider/model route readiness, and daemon
@@ -904,9 +945,9 @@ includes `daemon_recent_slow_routes` so the offending endpoint is visible.
 Persistent provider/model route prep env at login:
 
 ```bash
-bash "rust/xhubd/tools/route_authority_prep_session_launchd.command" --status
-bash "rust/xhubd/tools/route_authority_prep_session_launchd.command" --install
-bash "rust/xhubd/tools/route_authority_prep_session_launchd.command" --uninstall
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/route_authority_prep_session_launchd.command" --status
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/route_authority_prep_session_launchd.command" --install
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/route_authority_prep_session_launchd.command" --uninstall
 ```
 
 This only reapplies prep/candidate env. It does not open X-Hub or enable
@@ -915,7 +956,7 @@ provider/model production authority.
 Provider/model route production cutover blocker:
 
 ```bash
-bash "rust/xhubd/tools/route_authority_production_cutover_blocker.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/route_authority_production_cutover_blocker.command"
 ```
 
 This confirms provider/model production authority remains blocked until the
@@ -924,12 +965,12 @@ secret-redaction checks, UI compatibility, and manual approval all pass. The
 companion session tool is:
 
 ```bash
-bash "rust/xhubd/tools/route_authority_production_session.command" --status
-bash "rust/xhubd/tools/route_authority_prep_sustained_guard.command" --cycles 3 --interval-ms 500 --max-slow-requests 0
-bash "rust/xhubd/tools/route_authority_production_session.command" --apply --dry-run --confirm-provider-model-production-authority --prep-sustained-report "/path/to/route_authority_prep_sustained_guard_*.json"
-bash "rust/xhubd/tools/route_authority_production_session.command" --apply --confirm-provider-model-production-authority --prep-sustained-report "/path/to/route_authority_prep_sustained_guard_*.json"
-bash "rust/xhubd/tools/route_authority_production_runtime_guard.command"
-bash "rust/xhubd/tools/route_authority_production_session.command" --rollback
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/route_authority_production_session.command" --status
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/route_authority_prep_sustained_guard.command" --cycles 3 --interval-ms 500 --max-slow-requests 0
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/route_authority_production_session.command" --apply --dry-run --confirm-provider-model-production-authority --prep-sustained-report "/path/to/route_authority_prep_sustained_guard_*.json"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/route_authority_production_session.command" --apply --confirm-provider-model-production-authority --prep-sustained-report "/path/to/route_authority_prep_sustained_guard_*.json"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/route_authority_production_runtime_guard.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/route_authority_production_session.command" --rollback
 ```
 
 The production session apply path fails closed unless the explicit confirmation
@@ -958,7 +999,7 @@ guard, UI compatibility gate, and process sanity checks into one read-only live
 stability gate:
 
 ```bash
-bash "rust/xhubd/tools/production_live_stability_gate.command" --duration-ms 120000 --interval-ms 2000 --max-status-age-ms 5000 --max-slow-requests 0
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/production_live_stability_gate.command" --duration-ms 120000 --interval-ms 2000 --max-status-age-ms 5000 --max-slow-requests 0
 ```
 
 For overnight validation, increase `--duration-ms` to `28800000` for 8 hours or
@@ -972,16 +1013,27 @@ When `--rust-hub-root` is omitted, it uses the live
 Detached long-run session:
 
 ```bash
-bash "rust/xhubd/tools/production_live_stability_session.command" --start --duration-ms 28800000
-bash "rust/xhubd/tools/production_live_stability_session.command" --status
-bash "rust/xhubd/tools/production_live_stability_session.command" --checkpoint --duration-ms 10000
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/production_live_stability_session.command" --start --duration-ms 28800000
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/production_live_stability_session.command" --status
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/production_live_stability_session.command" --supervision-status
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/production_live_stability_session.command" --checkpoint --duration-ms 10000
 ```
 
 The session runner stores its state in
 `reports/production_live_stability/session_state.json` and writes stdout/stderr
 to `logs/production_live_stability_session_*.log`. `--checkpoint` performs a
 short immediate gate while the long session continues, and `--status` can
-discover a running session started from another package root.
+discover a running session started from another package root. Status output is
+read-only and also reports the active gate process tree, the heartbeat soak
+child when present, report-file metadata, and a bounded live `hub_status.json`
+freshness sample so a long run can be diagnosed without interrupting it.
+When a freshly packaged root has not adopted state yet, explicit
+`--http-base-url` and `--live-base-dir` values are still preserved in status
+output, so package migration and recovery checks do not fall back to the wrong
+live base dir.
+`--supervision-status` combines the long session and rolling checkpoint sidecar
+into one read-only payload with compact `supervision_ready`, live heartbeat,
+latest checkpoint, slow-request delta, and authority-drift fields.
 The gate also records cumulative HTTP slow-request delta across the run, so a
 transient slow `/ready` or `/xt/classic-hub-compat` sample cannot disappear just
 because it aged out of the bounded recent metrics window.
@@ -989,18 +1041,20 @@ because it aged out of the bounded recent metrics window.
 Active Rust Hub root upgrade plan:
 
 ```bash
-bash "rust/xhubd/tools/active_root_upgrade_plan.command" --target-root "rust/xhubd/dist/rust-hub-YYYYMMDDTHHMMSSZ"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/active_root_upgrade_plan.command" --target-root "/Users/andrew.xie/Documents/AX/rust/rust hub/dist/rust-hub-YYYYMMDDTHHMMSSZ"
 ```
 
 This is non-mutating. It compares the target package/source root against the
-current launchctl and running X-Hub Node root, then prints the exact scheduler
-authority, provider/model prep, validation, and rollback commands needed to
-align a new package cleanly.
+current launchctl and running X-Hub Node root. If provider/model production
+authority is already active, it prints scheduler/root commands only and skips
+route prep commands so a package update does not overwrite production fallback
+or cutover keys. Validation switches to the production runtime guard and
+requires memory/skills production when those keys are detected.
 
 Active Rust Hub root upgrade apply:
 
 ```bash
-bash "rust/xhubd/tools/active_root_upgrade_apply.command" --target-root "rust/xhubd/dist/rust-hub-YYYYMMDDTHHMMSSZ"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/active_root_upgrade_apply.command" --target-root "/Users/andrew.xie/Documents/AX/rust/rust hub/dist/rust-hub-YYYYMMDDTHHMMSSZ"
 ```
 
 Default mode is dry-run. Add `--apply` to update launchctl/session and
@@ -1010,8 +1064,12 @@ post-apply guards. After relaunch, the tool waits for X-Hub Node to report the
 target root before validation; tune this with `--relaunch-wait-ms` and
 `--relaunch-poll-ms`. If macOS is still closing the previous app instance, it
 retries one more `open` and waits again; tune that with
-`--relaunch-retry-wait-ms`. This does not enable provider/model production
-authority.
+`--relaunch-retry-wait-ms`. In provider/model production mode, the apply path
+skips `route_authority_prep_session` and validates with
+`route_authority_production_runtime_guard`. Use `--force-route-prep` only for
+legacy prep sessions where intentionally returning to prep is acceptable.
+This does not newly enable production authority; it preserves the authority
+state that is already active while moving the package root.
 
 The runner creates temporary Node/Rust DBs and a fake Bridge IPC responder,
 then invokes the real Node `HubAI.Generate` handler. A healthy run returns
@@ -1038,7 +1096,7 @@ Optional Node Hub provider route shadow compare:
 
 ```bash
 export XHUB_RUST_PROVIDER_ROUTE_SHADOW_COMPARE=1
-export XHUB_RUST_HUB_ROOT="rust/xhubd"
+export XHUB_RUST_HUB_ROOT="/Users/andrew.xie/Documents/AX/rust/rust hub"
 ```
 
 This keeps Node as provider-routing authority and compares Rust route decisions
@@ -1051,11 +1109,11 @@ can be inspected with `xhubd provider reports` or gated with
 Validation without external network calls:
 
 ```bash
-bash "rust/xhubd/tools/provider_route_http_smoke.command"
-bash "rust/xhubd/tools/provider_route_http_bridge_smoke.command"
-bash "rust/xhubd/tools/provider_route_http_shadow_compare_smoke.command"
-bash "rust/xhubd/tools/provider_route_shadow_compare_smoke.command" --model-id gpt-4o
-bash "rust/xhubd/tools/provider_route_shadow_compare_runner.command" --runs 10 --expect-ready --expect-zero-mismatch
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/provider_route_http_smoke.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/provider_route_http_bridge_smoke.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/provider_route_http_shadow_compare_smoke.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/provider_route_shadow_compare_smoke.command" --model-id gpt-4o
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/provider_route_shadow_compare_runner.command" --runs 10 --expect-ready --expect-zero-mismatch
 ```
 
 `provider_route_http_smoke.command` starts a temporary `xhubd serve` process and
@@ -1128,7 +1186,7 @@ fail-closed instead of silently changing provider accounts.
 Generate hot-path observe validation:
 
 ```bash
-bash "rust/xhubd/tools/provider_route_generate_observe_runner.command" --runs 5 --concurrency 1 --max-generate-ms 3000
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/provider_route_generate_observe_runner.command" --runs 5 --concurrency 1 --max-generate-ms 3000
 ```
 
 Provider route candidate audit is a separate default-off evidence channel:
@@ -1157,7 +1215,7 @@ gates still sample fresh Rust route decisions.
 Candidate-audit smoke validation:
 
 ```bash
-bash "rust/xhubd/tools/provider_route_generate_observe_runner.command" --runs 3 --concurrency 1 --enable-candidate-audit --expect-candidate-ready --min-candidate-audits 3 --observe-throttle-ms 0 --observe-max-in-flight 2 --max-generate-ms 3000
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/provider_route_generate_observe_runner.command" --runs 3 --concurrency 1 --enable-candidate-audit --expect-candidate-ready --min-candidate-audits 3 --observe-throttle-ms 0 --observe-max-in-flight 2 --max-generate-ms 3000
 ```
 
 The runner emits `candidate_readiness` with schema
@@ -1168,7 +1226,7 @@ count, suspected secret leakage, and Generate latency.
 Combined provider cutover readiness:
 
 ```bash
-bash "rust/xhubd/tools/provider_route_cutover_readiness_runner.command" --shadow-runs 3 --candidate-runs 3 --expect-ready
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/provider_route_cutover_readiness_runner.command" --shadow-runs 3 --candidate-runs 3 --expect-ready
 ```
 
 This emits `readiness` with schema
@@ -1181,7 +1239,7 @@ provider routing switch is performed.
 Provider authority dry-run plan:
 
 ```bash
-bash "rust/xhubd/tools/provider_route_authority_plan_runner.command" --shadow-runs 3 --candidate-runs 3 --expect-ready
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/provider_route_authority_plan_runner.command" --shadow-runs 3 --candidate-runs 3 --expect-ready
 ```
 
 This emits `plan` with schema
@@ -1208,6 +1266,8 @@ Shadow HTTP endpoints:
 - `GET /memory/readiness`
 - `GET /memory/search`
 - `POST /memory/retrieve`
+- `POST /memory/write`
+- `POST /skills/execute`
 
 For non-loopback clients, every endpoint except `/health` is protected by the
 Rust HTTP access-key gate. Localhost bridges remain unchanged unless
@@ -1231,9 +1291,12 @@ opening or statting the Group Container status file during live cutover. Long
 filesystem writes are followed by an immediate
 fresh-timestamp retry. Readiness and compat
 diagnostics use raw Rust-owned live status summaries after cutover. The live
-heartbeat soak verifier reads the status file through a bounded child process,
-so verifier-side Group Container stalls are reported instead of hanging the
-gate. Validate it with:
+heartbeat soak verifier discovers the configured live base dir from
+`/xt/classic-hub-compat` unless `--live-base-dir` is supplied, then reads the
+status file through a bounded child process. That avoids false failures when an
+old Group Container status exists but the current live base dir is
+`/Users/andrew.xie/RELFlowHub`, and verifier-side filesystem stalls are
+reported instead of hanging the gate. Validate it with:
 
 ```bash
 bash tools/xt_file_ipc_live_heartbeat_soak.command --duration-ms 30000 --interval-ms 2000 --max-status-age-ms 5000
@@ -1247,9 +1310,58 @@ verifying shadow safety after live cutover.
 The production-compatible gRPC surface starts in Phase 1 of
 `docs/RUST_HUB_EXECUTION_PLAN.md`.
 
-Rust Hub is still side-by-side for memory writer and skills execution. The XT
-classic `hub_status.json` compatibility writer can be live only after explicit
-cutover and rollback gates pass.
+Rust Hub now has explicit production-capable memory writer and skills execution
+surfaces. They stay fail-closed unless the dedicated memory writer and skills
+execution authority variables are all enabled. The XT classic `hub_status.json`
+compatibility writer can be live only after explicit cutover and rollback gates
+pass.
+
+`RHM-123` hardens ordinary X-Hub.app restarts after production cutover. The
+non-UI Node sidecar launcher now preserves launchd-provided provider/model and
+scheduler production authority keys, preserves the live `XHUB_RUST_HUB_ROOT`,
+and removes memory writer / skills execution authority keys from the Node
+environment. This keeps provider/model and scheduler production authority stable
+across app relaunches without changing SwiftUI product surfaces.
+
+`RHM-124` refreshes live post-cutover supervision without changing the active
+root. The current production root stays on the already applied package while a
+new 8h live stability session and 4h rolling checkpoint sidecar monitor status
+freshness, authority drift, recent slow-request deltas, UI compatibility, and
+secret leakage. The first rolling checkpoint passed with memory writer and
+skills execution authority still blocked.
+
+`RHM-125` adds the production-gated Rust memory writer and governed skills
+execution surface. `POST /memory/write` writes canonical JSON memory entries
+only when all memory writer authority gates are set. `POST /skills/execute`
+runs only after durable pin/grant preflight and audit, with built-in healthcheck
+support and restricted process execution. The production smoke verifies writes,
+retrieval, execution, secret denial, and no `detail_json` leakage.
+
+`RHM-126` makes that migration live-cutover ready. The launchd manager now
+passes explicit memory/skills authority keys into the Rust daemon, syncs the
+built-in `rust-authority-healthcheck` skill, and ops/watchdog/stability gates
+accept the change only with `--allow-memory-skills-production` or require it
+with `--require-memory-skills-production`.
+
+`RHM-127` converges the live active root to the final package-store Rust Hub
+root after memory/skills cutover. Both launchctl `XHUB_RUST_HUB_ROOT` and the
+`current` package symlink point at `rust-hub-20260513T072202Z`, X-Hub has been
+relaunched so Node inherits that root, and the package-store long stability
+session plus rolling checkpoint sidecar are supervising the live daemon with
+Rust memory writer and skills execution required.
+
+`RHM-128` adds the domain/tunnel cross-network path. `--public-base-url` and
+`--public-endpoint` let a localhost-bound daemon sit behind Cloudflare Tunnel,
+Tailscale, Headscale, or a VPS reverse tunnel while still forcing access-key
+auth for operational APIs. The pairing export writes a private XT pairing
+bundle, and the domain smoke verifies unauthorized rejection plus authenticated
+readiness before XT uses the domain away from the first LAN setup.
+
+`RHM-129` adds the domain activation plan. It keeps live local mode unchanged
+until a real HTTPS domain/tunnel is supplied, then prints the exact commands to
+initialize the key, update the existing local daemon label into public-endpoint
+mode, install the watchdog, export the XT pairing bundle, smoke the public URL,
+and roll back to local mode.
 
 Bridge command details: `docs/SCHEDULER_BRIDGE_CLI.md`.
 Provider route command details: `docs/PROVIDER_ROUTE_CLI.md`.

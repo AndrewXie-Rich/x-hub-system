@@ -48,6 +48,13 @@ enum XTGuardrailMessagePresentation {
             )
         }
 
+        if cleanedDenyCode == xtTrustedAutomationLocalApprovalRequiredDenyCode {
+            return XTGuardrailMessage(
+                summary: "运行\(cleanedToolLabel)\(targetSuffix)前，需要先批准为当前项目启用可信设备自动化。",
+                nextStep: "批准后会绑定当前设备并开启所需设备能力；如果 macOS 系统权限缺失，会继续提示打开系统设置。"
+            )
+        }
+
         return XTGuardrailMessage(
             summary: "运行\(cleanedToolLabel)\(targetSuffix)前，还需要先通过本地审批。",
             nextStep: "先在 X-Terminal 里批准，让受治理工具继续执行。"
@@ -937,6 +944,8 @@ enum XTGuardrailMessagePresentation {
             return "搜索技能"
         case .skills_pin:
             return "更新技能可用性"
+        case .skillsExecuteRunner:
+            return "执行技能 Runner"
         case .summarize:
             return "总结内容"
         case .supervisorVoicePlayback:

@@ -110,15 +110,18 @@ actor HubRemoteMemorySnapshotCache {
             entries[key] = nil
             return nil
         }
+        let invalidationReason = lastInvalidationReasons.removeValue(forKey: key)
         let entry = Entry(
             snapshot: snapshot,
             storedAt: now,
             expiresAt: now.addingTimeInterval(ttlSeconds),
             posture: posture,
-            lastInvalidationReason: lastInvalidationReasons[key]
+            lastInvalidationReason: nil
         )
         entries[key] = entry
-        return metadata(for: key, entry: entry, now: now)
+        var metadata = metadata(for: key, entry: entry, now: now)
+        metadata.invalidationReason = invalidationReason
+        return metadata
     }
 
     func invalidate(

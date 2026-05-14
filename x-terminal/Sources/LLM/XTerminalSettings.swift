@@ -24,6 +24,85 @@ struct RoleProviderAssignment: Codable, Equatable {
     var model: String?
 }
 
+enum LocalModelFallbackMode: String, Codable, CaseIterable, Equatable, Identifiable {
+    case automatic
+    case specific
+    case disabled
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .automatic:
+            return "自动本地兜底"
+        case .specific:
+            return "指定本地模型"
+        case .disabled:
+            return "关闭本地兜底"
+        }
+    }
+}
+
+struct RoleModelRoutePreference: Codable, Equatable {
+    var role: AXRole
+    var primaryModelId: String?
+    var paidBackupModelId: String?
+    var localFallbackMode: LocalModelFallbackMode
+    var localFallbackModelId: String?
+
+    init(
+        role: AXRole,
+        primaryModelId: String? = nil,
+        paidBackupModelId: String? = nil,
+        localFallbackMode: LocalModelFallbackMode = .automatic,
+        localFallbackModelId: String? = nil
+    ) {
+        self.role = role.primaryRole
+        self.primaryModelId = Self.normalizedModelId(primaryModelId)
+        self.paidBackupModelId = Self.normalizedModelId(paidBackupModelId)
+        self.localFallbackMode = localFallbackMode
+        self.localFallbackModelId = Self.normalizedModelId(localFallbackModelId)
+    }
+
+    func settingPrimaryModel(_ modelId: String?) -> RoleModelRoutePreference {
+        RoleModelRoutePreference(
+            role: role,
+            primaryModelId: modelId,
+            paidBackupModelId: paidBackupModelId,
+            localFallbackMode: localFallbackMode,
+            localFallbackModelId: localFallbackModelId
+        )
+    }
+
+    func settingPaidBackupModel(_ modelId: String?) -> RoleModelRoutePreference {
+        RoleModelRoutePreference(
+            role: role,
+            primaryModelId: primaryModelId,
+            paidBackupModelId: modelId,
+            localFallbackMode: localFallbackMode,
+            localFallbackModelId: localFallbackModelId
+        )
+    }
+
+    func settingLocalFallback(
+        mode: LocalModelFallbackMode,
+        modelId: String? = nil
+    ) -> RoleModelRoutePreference {
+        RoleModelRoutePreference(
+            role: role,
+            primaryModelId: primaryModelId,
+            paidBackupModelId: paidBackupModelId,
+            localFallbackMode: mode,
+            localFallbackModelId: modelId
+        )
+    }
+
+    private static func normalizedModelId(_ raw: String?) -> String? {
+        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
 struct OpenAICompatibleConfig: Codable, Equatable {
     var baseURL: String
     var model: String
@@ -81,6 +160,7 @@ struct XTerminalSettings: Codable, Equatable {
 
     // Role -> provider selection.
     var assignments: [RoleProviderAssignment]
+    var roleModelRoutes: [RoleModelRoutePreference]
 
     // Provider configs.
     var openAICompatible: OpenAICompatibleConfig
@@ -101,6 +181,7 @@ struct XTerminalSettings: Codable, Equatable {
     init(
         schemaVersion: Int,
         assignments: [RoleProviderAssignment],
+        roleModelRoutes: [RoleModelRoutePreference] = [],
         openAICompatible: OpenAICompatibleConfig,
         anthropic: AnthropicConfig,
         gemini: GeminiConfig,
@@ -118,6 +199,10 @@ struct XTerminalSettings: Codable, Equatable {
     ) {
         self.schemaVersion = schemaVersion
         self.assignments = Self.assignmentsEnsuringAllRoles(assignments)
+        self.roleModelRoutes = Self.roleModelRoutesEnsuringAllRoles(
+            roleModelRoutes,
+            assignments: self.assignments
+        )
         self.openAICompatible = openAICompatible
         self.anthropic = anthropic
         self.gemini = gemini
@@ -146,6 +231,10 @@ struct XTerminalSettings: Codable, Equatable {
         schemaVersion = (try? c.decode(Int.self, forKey: .schemaVersion)) ?? Self.currentSchemaVersion
         assignments = Self.assignmentsEnsuringAllRoles(
             (try? c.decode([RoleProviderAssignment].self, forKey: .assignments)) ?? []
+        )
+        roleModelRoutes = Self.roleModelRoutesEnsuringAllRoles(
+            (try? c.decode([RoleModelRoutePreference].self, forKey: .roleModelRoutes)) ?? [],
+            assignments: assignments
         )
         openAICompatible = (try? c.decode(OpenAICompatibleConfig.self, forKey: .openAICompatible)) ?? OpenAICompatibleConfig(baseURL: "https://api.openai.com/", model: "gpt-4o-mini")
         anthropic = (try? c.decode(AnthropicConfig.self, forKey: .anthropic)) ?? AnthropicConfig(baseURL: "https://api.anthropic.com/", model: "claude-3-5-sonnet-latest")
@@ -196,6 +285,7 @@ struct XTerminalSettings: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case schemaVersion
         case assignments
+        case roleModelRoutes
         case openAICompatible
         case anthropic
         case gemini
@@ -217,10 +307,7 @@ struct XTerminalSettings: Codable, Equatable {
             schemaVersion: currentSchemaVersion,
             assignments: [
                 RoleProviderAssignment(role: .coder, providerKind: .hub, model: nil),
-                RoleProviderAssignment(role: .coarse, providerKind: .hub, model: nil),
-                RoleProviderAssignment(role: .refine, providerKind: .hub, model: nil),
                 RoleProviderAssignment(role: .reviewer, providerKind: .hub, model: nil),
-                RoleProviderAssignment(role: .advisor, providerKind: .hub, model: nil),
                 RoleProviderAssignment(role: .supervisor, providerKind: .hub, model: nil),
             ],
             openAICompatible: OpenAICompatibleConfig(baseURL: "https://api.openai.com/", model: "gpt-4o-mini"),
@@ -243,19 +330,68 @@ struct XTerminalSettings: Codable, Equatable {
     }
 
     func assignment(for role: AXRole) -> RoleProviderAssignment {
-        assignments.first(where: { $0.role == role }) ?? RoleProviderAssignment(role: role, providerKind: .hub, model: nil)
+        let primaryRole = role.primaryRole
+        let stored = assignments.first(where: { $0.role == primaryRole })
+            ?? RoleProviderAssignment(role: primaryRole, providerKind: .hub, model: nil)
+        let routePrimary = roleModelRoutes.first(where: { $0.role == primaryRole })?
+            .primaryModelId
+        return RoleProviderAssignment(
+            role: primaryRole,
+            providerKind: .hub,
+            model: routePrimary ?? stored.model
+        )
+    }
+
+    func modelRoute(for role: AXRole) -> RoleModelRoutePreference {
+        let primaryRole = role.primaryRole
+        if let route = roleModelRoutes.first(where: { $0.role == primaryRole }) {
+            return route
+        }
+        return RoleModelRoutePreference(
+            role: primaryRole,
+            primaryModelId: assignment(for: primaryRole).model
+        )
     }
 
     func setting(role: AXRole, providerKind: ProviderKind, model: String?) -> XTerminalSettings {
         var s = self
         s.schemaVersion = Self.currentSchemaVersion
         var arr = s.assignments
-        if let idx = arr.firstIndex(where: { $0.role == role }) {
-            arr[idx] = RoleProviderAssignment(role: role, providerKind: providerKind, model: model)
+        let primaryRole = role.primaryRole
+        if let idx = arr.firstIndex(where: { $0.role == primaryRole }) {
+            arr[idx] = RoleProviderAssignment(role: primaryRole, providerKind: providerKind, model: model)
         } else {
-            arr.append(RoleProviderAssignment(role: role, providerKind: providerKind, model: model))
+            arr.append(RoleProviderAssignment(role: primaryRole, providerKind: providerKind, model: model))
         }
         s.assignments = arr
+        s.roleModelRoutes = Self.upsertingRoleModelRoute(
+            s.roleModelRoutes,
+            route: s.modelRoute(for: primaryRole).settingPrimaryModel(model)
+        )
+        return s
+    }
+
+    func settingRolePrimaryModel(role: AXRole, modelId: String?) -> XTerminalSettings {
+        setting(role: role, providerKind: .hub, model: modelId)
+    }
+
+    func settingRolePaidBackupModel(role: AXRole, modelId: String?) -> XTerminalSettings {
+        var s = self
+        s.schemaVersion = Self.currentSchemaVersion
+        let route = s.modelRoute(for: role).settingPaidBackupModel(modelId)
+        s.roleModelRoutes = Self.upsertingRoleModelRoute(s.roleModelRoutes, route: route)
+        return s
+    }
+
+    func settingRoleLocalFallback(
+        role: AXRole,
+        mode: LocalModelFallbackMode,
+        modelId: String? = nil
+    ) -> XTerminalSettings {
+        var s = self
+        s.schemaVersion = Self.currentSchemaVersion
+        let route = s.modelRoute(for: role).settingLocalFallback(mode: mode, modelId: modelId)
+        s.roleModelRoutes = Self.upsertingRoleModelRoute(s.roleModelRoutes, route: route)
         return s
     }
 
@@ -273,6 +409,7 @@ struct XTerminalSettings: Codable, Equatable {
         return XTerminalSettings(
             schemaVersion: Self.currentSchemaVersion,
             assignments: assignments,
+            roleModelRoutes: roleModelRoutes,
             openAICompatible: openAICompatible,
             anthropic: anthropic,
             gemini: gemini,
@@ -306,6 +443,7 @@ struct XTerminalSettings: Codable, Equatable {
         return XTerminalSettings(
             schemaVersion: Self.currentSchemaVersion,
             assignments: assignments,
+            roleModelRoutes: roleModelRoutes,
             openAICompatible: openAICompatible,
             anthropic: anthropic,
             gemini: gemini,
@@ -331,6 +469,7 @@ struct XTerminalSettings: Codable, Equatable {
         return XTerminalSettings(
             schemaVersion: Self.currentSchemaVersion,
             assignments: assignments,
+            roleModelRoutes: roleModelRoutes,
             openAICompatible: openAICompatible,
             anthropic: anthropic,
             gemini: gemini,
@@ -356,6 +495,7 @@ struct XTerminalSettings: Codable, Equatable {
         return XTerminalSettings(
             schemaVersion: Self.currentSchemaVersion,
             assignments: assignments,
+            roleModelRoutes: roleModelRoutes,
             openAICompatible: openAICompatible,
             anthropic: anthropic,
             gemini: gemini,
@@ -377,6 +517,7 @@ struct XTerminalSettings: Codable, Equatable {
         XTerminalSettings(
             schemaVersion: Self.currentSchemaVersion,
             assignments: assignments,
+            roleModelRoutes: roleModelRoutes,
             openAICompatible: openAICompatible,
             anthropic: anthropic,
             gemini: gemini,
@@ -398,6 +539,7 @@ struct XTerminalSettings: Codable, Equatable {
         XTerminalSettings(
             schemaVersion: Self.currentSchemaVersion,
             assignments: assignments,
+            roleModelRoutes: roleModelRoutes,
             openAICompatible: openAICompatible,
             anthropic: anthropic,
             gemini: gemini,
@@ -421,6 +563,7 @@ struct XTerminalSettings: Codable, Equatable {
         XTerminalSettings(
             schemaVersion: Self.currentSchemaVersion,
             assignments: assignments,
+            roleModelRoutes: roleModelRoutes,
             openAICompatible: openAICompatible,
             anthropic: anthropic,
             gemini: gemini,
@@ -444,6 +587,7 @@ struct XTerminalSettings: Codable, Equatable {
         XTerminalSettings(
             schemaVersion: Self.currentSchemaVersion,
             assignments: assignments,
+            roleModelRoutes: roleModelRoutes,
             openAICompatible: openAICompatible,
             anthropic: anthropic,
             gemini: gemini,
@@ -467,6 +611,7 @@ struct XTerminalSettings: Codable, Equatable {
         XTerminalSettings(
             schemaVersion: Self.currentSchemaVersion,
             assignments: assignments,
+            roleModelRoutes: roleModelRoutes,
             openAICompatible: openAICompatible,
             anthropic: anthropic,
             gemini: gemini,
@@ -488,6 +633,7 @@ struct XTerminalSettings: Codable, Equatable {
         XTerminalSettings(
             schemaVersion: Self.currentSchemaVersion,
             assignments: assignments,
+            roleModelRoutes: roleModelRoutes,
             openAICompatible: openAICompatible,
             anthropic: anthropic,
             gemini: gemini,
@@ -509,6 +655,7 @@ struct XTerminalSettings: Codable, Equatable {
         XTerminalSettings(
             schemaVersion: Self.currentSchemaVersion,
             assignments: assignments,
+            roleModelRoutes: roleModelRoutes,
             openAICompatible: openAICompatible,
             anthropic: anthropic,
             gemini: gemini,
@@ -530,6 +677,7 @@ struct XTerminalSettings: Codable, Equatable {
         XTerminalSettings(
             schemaVersion: Self.currentSchemaVersion,
             assignments: assignments,
+            roleModelRoutes: roleModelRoutes,
             openAICompatible: openAICompatible,
             anthropic: anthropic,
             gemini: gemini,
@@ -556,11 +704,83 @@ struct XTerminalSettings: Codable, Equatable {
     private static func assignmentsEnsuringAllRoles(
         _ assignments: [RoleProviderAssignment]
     ) -> [RoleProviderAssignment] {
-        var output = assignments
-        for role in AXRole.allCases where !output.contains(where: { $0.role == role }) {
-            output.append(RoleProviderAssignment(role: role, providerKind: .hub, model: nil))
+        var merged: [AXRole: (assignment: RoleProviderAssignment, sourceRole: AXRole)] = [:]
+        for assignment in assignments {
+            let primaryRole = assignment.role.primaryRole
+            let normalized = RoleProviderAssignment(
+                role: primaryRole,
+                providerKind: assignment.providerKind,
+                model: assignment.model
+            )
+            let candidatePriority = assignment.role.isPrimaryVisibleRole ? 2 : 1
+            let existingPriority = merged[primaryRole].map { $0.sourceRole.isPrimaryVisibleRole ? 2 : 1 } ?? 0
+            if candidatePriority >= existingPriority {
+                merged[primaryRole] = (normalized, assignment.role)
+            }
+        }
+
+        var output: [RoleProviderAssignment] = []
+        for role in AXRole.allCases {
+            if let existing = merged[role]?.assignment {
+                output.append(existing)
+            } else {
+                output.append(RoleProviderAssignment(role: role, providerKind: .hub, model: nil))
+            }
         }
         return output
+    }
+
+    private static func roleModelRoutesEnsuringAllRoles(
+        _ routes: [RoleModelRoutePreference],
+        assignments: [RoleProviderAssignment]
+    ) -> [RoleModelRoutePreference] {
+        var merged: [AXRole: RoleModelRoutePreference] = [:]
+        for route in routes {
+            merged[route.role.primaryRole] = RoleModelRoutePreference(
+                role: route.role.primaryRole,
+                primaryModelId: route.primaryModelId,
+                paidBackupModelId: route.paidBackupModelId,
+                localFallbackMode: route.localFallbackMode,
+                localFallbackModelId: route.localFallbackModelId
+            )
+        }
+
+        for assignment in assignments {
+            let role = assignment.role.primaryRole
+            let existing = merged[role]
+            let primary = existing?.primaryModelId ?? assignment.model
+            merged[role] = RoleModelRoutePreference(
+                role: role,
+                primaryModelId: primary,
+                paidBackupModelId: existing?.paidBackupModelId,
+                localFallbackMode: existing?.localFallbackMode ?? .automatic,
+                localFallbackModelId: existing?.localFallbackModelId
+            )
+        }
+
+        return AXRole.allCases.map { role in
+            merged[role] ?? RoleModelRoutePreference(role: role)
+        }
+    }
+
+    private static func upsertingRoleModelRoute(
+        _ routes: [RoleModelRoutePreference],
+        route: RoleModelRoutePreference
+    ) -> [RoleModelRoutePreference] {
+        var out = roleModelRoutesEnsuringAllRoles(routes, assignments: [])
+        let normalizedRoute = RoleModelRoutePreference(
+            role: route.role.primaryRole,
+            primaryModelId: route.primaryModelId,
+            paidBackupModelId: route.paidBackupModelId,
+            localFallbackMode: route.localFallbackMode,
+            localFallbackModelId: route.localFallbackModelId
+        )
+        if let idx = out.firstIndex(where: { $0.role == normalizedRoute.role }) {
+            out[idx] = normalizedRoute
+        } else {
+            out.append(normalizedRoute)
+        }
+        return roleModelRoutesEnsuringAllRoles(out, assignments: [])
     }
 
     private static func defaultSupervisorWorkMode(

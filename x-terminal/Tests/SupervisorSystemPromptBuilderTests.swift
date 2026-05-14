@@ -61,6 +61,12 @@ struct SupervisorSystemPromptBuilderTests {
         #expect(prompt.contains("Configured work mode: guided_progress"))
         #expect(prompt.contains("## Privacy Mode"))
         #expect(prompt.contains("Configured privacy mode: balanced"))
+        #expect(prompt.contains("## Supervisor / Coder Authority Boundary"))
+        #expect(prompt.contains("A-Tier is the project Coder execution authority."))
+        #expect(prompt.contains("S-Tier is Supervisor intervention depth."))
+        #expect(prompt.contains("Do not treat your own lack of a direct file/shell channel"))
+        #expect(prompt.contains("route it through governed project execution: CREATE_JOB, UPSERT_PLAN, CALL_SKILL, CALL_GLOBAL_SKILL, or the governed project Coder dispatch"))
+        #expect(prompt.contains("do not ask the user to copy the same text into Workbench / Coder"))
         #expect(prompt.contains("## Conversation Style"))
         #expect(prompt.contains("Never invent runtime restrictions."))
         #expect(prompt.contains("For build requests such as making a game, app, tool, or feature"))
@@ -413,7 +419,9 @@ struct SupervisorSystemPromptBuilderTests {
                 routingReasons: [
                     "explicit_project_mention:亮亮",
                     "project_planning_language"
-                ]
+                ],
+                projectMemoryBindingStrength: .strong,
+                projectMemoryBindingReason: "project_truth_required"
             ),
             preferredSupervisorModelId: "openai/gpt-5.3-codex",
             supervisorModelRouteSummary: "route-summary",
@@ -437,7 +445,45 @@ struct SupervisorSystemPromptBuilderTests {
         #expect(prompt.contains("Primary memory domain: project_memory"))
         #expect(prompt.contains("Focused project: 亮亮"))
         #expect(prompt.contains("Routing reasons: explicit_project_mention:亮亮 | project_planning_language"))
+        #expect(prompt.contains("Project memory binding: strong"))
         #expect(prompt.contains("Answer from project memory first."))
+    }
+
+    @Test
+    func routingHintWarnsWhenProjectReferenceDoesNotRequireProjectTruth() {
+        let params = SupervisorSystemPromptParamsBuilder.build(
+            identity: .default(),
+            turnRoutingDecision: SupervisorTurnRoutingDecision(
+                mode: .personalFirst,
+                focusedProjectId: nil,
+                focusedProjectName: nil,
+                focusedPersonName: nil,
+                focusedCommitmentId: nil,
+                confidence: 0.76,
+                routingReasons: ["current_project_pointer:亮亮"],
+                projectMemoryBindingStrength: .weak,
+                projectMemoryBindingReason: "project_reference_without_truth_need"
+            ),
+            preferredSupervisorModelId: "openai/gpt-5.3-codex",
+            supervisorModelRouteSummary: "route-summary",
+            memorySource: "memory_v1",
+            projectCount: 1,
+            userMessage: "这个项目的治理文案应该怎么讲更清楚？",
+            memoryV1: "memory-line",
+            promptMode: .full,
+            extraSystemPrompt: nil,
+            now: Date(timeIntervalSince1970: 1_773_196_800),
+            timeZone: TimeZone(identifier: "Asia/Shanghai") ?? .current,
+            locale: Locale(identifier: "en_US_POSIX"),
+            hubConnected: true,
+            hubRemoteConnected: true
+        )
+
+        let prompt = SupervisorSystemPromptBuilder().build(params)
+
+        #expect(prompt.contains("Project memory binding: weak"))
+        #expect(prompt.contains("Project memory binding reason: project_reference_without_truth_need"))
+        #expect(prompt.contains("A project reference alone is not enough to load the focused project pack."))
     }
 
     @Test

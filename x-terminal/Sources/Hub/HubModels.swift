@@ -489,6 +489,31 @@ struct AIRuntimeStatus: Equatable {
         return "已加载实例 \(count) 个"
     }
 
+    var hasAuthoritativeRuntimeState: Bool {
+        if let schemaVersion,
+           !schemaVersion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return true
+        }
+        if let localRuntimeEntryVersion,
+           !localRuntimeEntryVersion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return true
+        }
+        if !providerIDs.isEmpty || !readyProviderIDs.isEmpty {
+            return true
+        }
+        if !providerPacks.isEmpty || !providers.isEmpty {
+            return true
+        }
+        if loadedInstanceCount != nil || !loadedInstances.isEmpty {
+            return true
+        }
+        return false
+    }
+
+    var isHeartbeatOnlyRuntimeState: Bool {
+        !hasAuthoritativeRuntimeState
+    }
+
     func providerReadinessDetailLines(ttl: Double = 3.0) -> [String] {
         var detailLines: [String] = []
         if let stateCode = providerReadinessStateCode(ttl: ttl) {
@@ -1961,6 +1986,38 @@ struct ModelStateSnapshot: Codable, Equatable {
     }
 }
 
+struct HubAIRequestProviderKey: Codable, Equatable, Sendable {
+    var accountKey: String
+    var provider: String
+    var apiKey: String
+    var baseUrl: String
+    var proxyUrl: String
+    var authType: String
+    var refreshToken: String = ""
+    var accountId: String = ""
+    var oauthSourceKey: String = ""
+    var authIndex: Int = 0
+    var sourceType: String = ""
+    var sourceRef: String = ""
+    var customHeaders: [String: String]
+
+    enum CodingKeys: String, CodingKey {
+        case accountKey = "account_key"
+        case provider
+        case apiKey = "api_key"
+        case baseUrl = "base_url"
+        case proxyUrl = "proxy_url"
+        case authType = "auth_type"
+        case refreshToken = "refresh_token"
+        case accountId = "account_id"
+        case oauthSourceKey = "oauth_source_key"
+        case authIndex = "auth_index"
+        case sourceType = "source_type"
+        case sourceRef = "source_ref"
+        case customHeaders = "custom_headers"
+    }
+}
+
 struct HubAIRequest: Codable {
     var type: String = "generate"
     var req_id: String
@@ -1974,6 +2031,23 @@ struct HubAIRequest: Codable {
     var top_p: Double
     var created_at: Double
     var auto_load: Bool
+    var provider_key: HubAIRequestProviderKey?
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case req_id
+        case app_id
+        case task_type
+        case preferred_model_id
+        case model_id
+        case prompt
+        case max_tokens
+        case temperature
+        case top_p
+        case created_at
+        case auto_load
+        case provider_key
+    }
 }
 
 struct HubAIResponseEvent: Codable {
@@ -2111,6 +2185,27 @@ struct HubAIResponseEvent: Codable {
         HubMemoryPromptProjectionSnapshot(metadataValue: raw?["memory_prompt_projection"])
     }
 
+    var providerKeyAccountKeyFromMetadata: String? {
+        metadataString("provider_key_account_key")
+            ?? metadataString("provider_account_key")
+    }
+
+    var providerKeyProviderFromMetadata: String? {
+        metadataString("provider_key_provider")
+    }
+
+    var providerKeyUsageTokensFromMetadata: Int64? {
+        metadataInt64("provider_key_tokens_used")
+    }
+
+    var providerKeyUsageCostFromMetadata: Double? {
+        metadataDouble("provider_key_cost_usd")
+    }
+
+    var providerKeyErrorCodeFromMetadata: String? {
+        metadataString("provider_key_error_code")
+    }
+
     private func metadataString(_ key: String) -> String? {
         raw?[key]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -2129,6 +2224,28 @@ struct HubAIResponseEvent: Codable {
             default:
                 return nil
             }
+        default:
+            return nil
+        }
+    }
+
+    private func metadataInt64(_ key: String) -> Int64? {
+        switch raw?[key] {
+        case .number(let value):
+            return Int64(value)
+        case .string(let value):
+            return Int64(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        default:
+            return nil
+        }
+    }
+
+    private func metadataDouble(_ key: String) -> Double? {
+        switch raw?[key] {
+        case .number(let value):
+            return value
+        case .string(let value):
+            return Double(value.trimmingCharacters(in: .whitespacesAndNewlines))
         default:
             return nil
         }

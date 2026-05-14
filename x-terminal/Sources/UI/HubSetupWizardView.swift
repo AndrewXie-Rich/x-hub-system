@@ -239,8 +239,9 @@ enum UIFirstRunJourneyPlanner {
         let badge = ValidatedScopePresentation.validatedMainlineOnly
         let connected = state.localConnected || state.remoteConnected
         let hasModel = state.configuredModelRoles > 0
-        let failureIssue = UITroubleshootKnowledgeBase.issue(forFailureCode: state.failureCode) ?? state.runtime.primaryIssue
+        let failureIssue = issue(for: state)
         let pairingContext = pairingContext(for: state)
+        let externalTerminalAccessProjection = externalTerminalAccessProjection(for: state)
         let connectedRouteSummary = connectedRouteSummary(for: state)
         let machineStatusRef = [
             "local_connected=\(state.localConnected)",
@@ -403,6 +404,27 @@ enum UIFirstRunJourneyPlanner {
                     "diagnostic_entrypoint=remote_export_gate"
                 ], runtime: state.runtime)
             )
+        } else if failureIssue == .externalTerminalAccessBlocked {
+            let keyLabel = externalTerminalAccessProjection?.primaryBlockedKey.map {
+                $0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? $0.accessKeyID
+                    : $0.name
+            } ?? "当前 access key"
+            let recoverySummary = externalTerminalAccessProjection?.primaryBlockedKey?.recoverySummary
+                ?? "预计恢复：不会自动恢复；需要轮换或新签发后重新导出 connect env"
+            primaryStatus = StatusExplanation(
+                state: .diagnosticRequired,
+                headline: "非 XT Terminal access key 受阻，先处理外部 terminal 访问",
+                whatHappened: "当前至少有一把给外部 terminal 使用的 Hub access key 已经进入 blocked 生命周期，继续沿用旧 token 不会被 Hub 放行。",
+                whyItHappened: "如果这里还显示成已就绪，你会误以为外部 terminal 可以直接复用当前连接，实际只会继续命中 fail-closed 的 expired / revoked / invalid 路径。",
+                userAction: "先到 XT 设置 → 非 XT Terminal 访问处理 \(keyLabel)。\(recoverySummary)",
+                machineStatusRef: machineStatusRef,
+                hardLine: "受阻的外部 terminal access key 修好前，不把它当可用",
+                highlights: mergedHighlights([
+                    "repair_entry=XT 设置 → 非 XT Terminal 访问",
+                    "diagnostic_entrypoint=external_terminal_access"
+                ], runtime: state.runtime)
+            )
         } else if state.runtime.replayBlocked {
             primaryStatus = StatusExplanation(
                 state: .diagnosticRequired,
@@ -511,7 +533,8 @@ enum UIFirstRunJourneyPlanner {
                     failureIssue: failureIssue,
                     failureCode: state.failureCode,
                     runtime: state.runtime,
-                    pairingContext: pairingContext
+                    pairingContext: pairingContext,
+                    externalTerminalAccessProjection: externalTerminalAccessProjection
                 ),
                 systemImage: "checkmark.shield",
                 style: .diagnostic
@@ -525,7 +548,9 @@ enum UIFirstRunJourneyPlanner {
             resolveGrantState = .grantRequired
         } else if failureIssue == .permissionDenied {
             resolveGrantState = .permissionDenied
-        } else if failureIssue == .modelNotReady || failureIssue == .connectorScopeBlocked {
+        } else if failureIssue == .modelNotReady
+            || failureIssue == .connectorScopeBlocked
+            || failureIssue == .externalTerminalAccessBlocked {
             resolveGrantState = .diagnosticRequired
         } else if state.runtime.failClosedLaunchCount > 0 {
             resolveGrantState = .diagnosticRequired
@@ -597,6 +622,8 @@ enum UIFirstRunJourneyPlanner {
                 state: resolveGrantState,
                 repairEntry: failureIssue == .permissionDenied
                     ? .systemPermissions
+                    : failureIssue == .externalTerminalAccessBlocked
+                    ? .xtExternalTerminals
                     : failureIssue == .modelNotReady
                     ? .xtChooseModel
                     : failureIssue == .connectorScopeBlocked
@@ -678,7 +705,8 @@ enum UIFirstRunJourneyPlanner {
         failureIssue: UITroubleshootIssue?,
         failureCode: String = "",
         runtime: UIFailClosedRuntimeSnapshot,
-        pairingContext: UITroubleshootPairingContext? = nil
+        pairingContext: UITroubleshootPairingContext? = nil,
+        externalTerminalAccessProjection: XTUnifiedDoctorExternalTerminalAccessProjection? = nil
     ) -> String {
         if let subtitle = localNetworkRepairSubtitle(failureCode: failureCode) {
             return subtitle
@@ -687,11 +715,13 @@ enum UIFirstRunJourneyPlanner {
             || failureIssue == .multipleHubsAmbiguous
             || failureIssue == .hubPortConflict
             || failureIssue == .hubUnreachable
-            || failureIssue == .connectorScopeBlocked {
+            || failureIssue == .connectorScopeBlocked
+            || failureIssue == .externalTerminalAccessBlocked {
             return UITroubleshootKnowledgeBase.repairEntryDetail(
                 for: failureIssue,
                 runtime: runtime,
-                pairingContext: pairingContext
+                pairingContext: pairingContext,
+                externalTerminalAccessProjection: externalTerminalAccessProjection
             )
         }
         if !runtime.nextDirectedAction.isEmpty {
@@ -782,6 +812,19 @@ enum UIFirstRunJourneyPlanner {
         )
     }
 
+    fileprivate static func issue(for state: HubSetupWizardState) -> UITroubleshootIssue? {
+        UITroubleshootKnowledgeBase.issue(forFailureCode: state.failureCode)
+            ?? state.runtime.primaryIssue
+            ?? state.doctor.currentFailureIssue
+            ?? externalTerminalAccessProjection(for: state)?.primaryIssue
+    }
+
+    fileprivate static func externalTerminalAccessProjection(
+        for state: HubSetupWizardState
+    ) -> XTUnifiedDoctorExternalTerminalAccessProjection? {
+        state.doctor.section(.externalTerminalAccessReadiness)?.externalTerminalAccessProjection
+    }
+
     fileprivate static func connectedRouteSummary(for state: HubSetupWizardState) -> String? {
         guard state.localConnected || state.remoteConnected else { return nil }
         let summary = state.doctor.pairedRouteSetSnapshot?.summaryLine
@@ -851,8 +894,10 @@ enum UIFirstRunJourneyPlanner {
 }
 
 struct HubSetupWizardView: View {
-    @EnvironmentObject private var appModel: AppModel
-    @StateObject private var supervisorManager = SupervisorManager.shared
+    @Environment(\.xtAppModelReference) private var appModelReference
+    @EnvironmentObject private var settingsCenterStore: XTSettingsCenterStore
+    @EnvironmentObject private var navigationFocusStore: XTNavigationFocusStore
+    private let supervisorManager = SupervisorManager.shared
     @StateObject private var modelManager = HubModelManager.shared
     @State private var activeFocusRequest: XTHubSetupFocusRequest?
     @State private var connectionToolsExpanded = false
@@ -881,20 +926,20 @@ struct HubSetupWizardView: View {
                 processHubSetupFocusRequest(proxy)
                 appModel.maybeAutoFillHubSetupPathAndPorts(force: false)
                 modelManager.setAppModel(appModel)
-                if appModel.hubInteractive {
+                if settingsSnapshot.hubInteractive {
                     Task {
                         await modelManager.fetchModels()
                     }
                 }
             }
-            .onChange(of: appModel.hubInteractive) { connected in
+            .onChange(of: settingsSnapshot.hubInteractive) { connected in
                 if connected {
                     Task {
                         await modelManager.fetchModels()
                     }
                 }
             }
-            .onChange(of: appModel.hubSetupFocusRequest?.nonce) { _ in
+            .onChange(of: navigationFocusSnapshot.hubSetupFocusRequest?.nonce) { _ in
                 processHubSetupFocusRequest(proxy)
             }
         }
@@ -1038,18 +1083,24 @@ struct HubSetupWizardView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                stepRow(title: "发现", subtitle: "发现 Hub（局域网优先）", state: appModel.hubSetupDiscoverState)
-                stepRow(title: "配对", subtitle: "配对 + 凭据下发", state: appModel.hubSetupBootstrapState)
-                stepRow(title: "连接", subtitle: "建立连接并启用自动重连", state: appModel.hubSetupConnectState)
+                stepRow(title: "发现", subtitle: "发现 Hub（局域网优先）", state: settingsSnapshot.hubSetupDiscoverState)
+                stepRow(title: "配对", subtitle: "配对 + 凭据下发", state: settingsSnapshot.hubSetupBootstrapState)
+                stepRow(title: "连接", subtitle: "建立连接并启用自动重连", state: settingsSnapshot.hubSetupConnectState)
 
-                if !appModel.hubPortAutoDetectMessage.isEmpty {
-                    Text(appModel.hubPortAutoDetectMessage)
+                if !settingsSnapshot.hubPortAutoDetectMessage.isEmpty {
+                    Text(settingsSnapshot.hubPortAutoDetectMessage)
                         .font(UIThemeTokens.monoFont())
                         .foregroundStyle(.secondary)
                 }
-                HubDiscoveryCandidatesView(appModel: appModel)
-                if !appModel.hubRemoteSummary.isEmpty {
-                    Text("摘要：\(appModel.hubRemoteSummary)")
+                HubDiscoveryCandidatesView(
+                    candidates: settingsSnapshot.hubDiscoveredCandidates,
+                    selectionDisabled: settingsSnapshot.hubPortAutoDetectRunning || settingsSnapshot.hubRemoteLinking,
+                    onSelect: { candidate in
+                        appModel.selectDiscoveredHubCandidate(candidate)
+                    }
+                )
+                if !settingsSnapshot.hubRemoteSummary.isEmpty {
+                    Text("摘要：\(settingsSnapshot.hubRemoteSummary)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -1061,17 +1112,17 @@ struct HubSetupWizardView: View {
                             .foregroundStyle(.secondary)
 
                         HStack(spacing: 10) {
-                            Button(appModel.hubPortAutoDetectRunning ? "探测中..." : "自动探测") {
+                            Button(settingsSnapshot.hubPortAutoDetectRunning ? "探测中..." : "自动探测") {
                                 appModel.maybeAutoFillHubSetupPathAndPorts(force: true)
                             }
                             .buttonStyle(.bordered)
-                            .disabled(appModel.hubRemoteLinking)
+                            .disabled(settingsSnapshot.hubRemoteLinking)
 
-                            Button(appModel.hubRemoteLinking ? "重置中..." : "清除配对后重连") {
+                            Button(settingsSnapshot.hubRemoteLinking ? "重置中..." : "清除配对后重连") {
                                 appModel.resetPairingStateAndOneClickSetup()
                             }
                             .buttonStyle(.bordered)
-                            .disabled(appModel.hubRemoteLinking || appModel.hubPortAutoDetectRunning)
+                            .disabled(settingsSnapshot.hubRemoteLinking || settingsSnapshot.hubPortAutoDetectRunning)
                         }
 
                         Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
@@ -1148,7 +1199,7 @@ struct HubSetupWizardView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 XTUnifiedDoctorSummaryView(report: doctorReport)
-                if !appModel.officialSkillChannelSummaryLine.isEmpty {
+                if !settingsSnapshot.skillsCompatibilitySnapshot.officialChannelSummaryLine.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
                             Text("官方技能通道")
@@ -1157,24 +1208,24 @@ struct HubSetupWizardView: View {
                                 appModel.recheckOfficialSkills(reason: "hub_setup_verify_readiness_manual")
                             }
                             .buttonStyle(.borderless)
-                            Text(appModel.officialSkillChannelSummaryLine)
+                            Text(settingsSnapshot.skillsCompatibilitySnapshot.officialChannelSummaryLine)
                                 .font(UIThemeTokens.monoFont())
                                 .foregroundStyle(officialSkillChannelStatusColor)
                                 .textSelection(.enabled)
                         }
-                        if !appModel.officialSkillChannelDetailLine.isEmpty {
-                            Text(appModel.officialSkillChannelDetailLine)
+                        if !settingsSnapshot.skillsCompatibilitySnapshot.officialChannelDetailLine.isEmpty {
+                            Text(settingsSnapshot.skillsCompatibilitySnapshot.officialChannelDetailLine)
                                 .font(UIThemeTokens.monoFont())
                                 .foregroundStyle(.secondary)
                                 .textSelection(.enabled)
                         }
-                        if !appModel.officialSkillChannelTopBlockersLine.isEmpty {
-                            if !appModel.officialSkillChannelTopBlockerSummaries.isEmpty {
+                        if !settingsSnapshot.skillsCompatibilitySnapshot.officialChannelTopBlockersLine.isEmpty {
+                            if !settingsSnapshot.skillsCompatibilitySnapshot.officialPackageLifecycleTopBlockerSummaries.isEmpty {
                                 XTOfficialSkillsBlockerListView(
-                                    items: appModel.officialSkillChannelTopBlockerSummaries
+                                    items: settingsSnapshot.skillsCompatibilitySnapshot.officialPackageLifecycleTopBlockerSummaries
                                 )
                             } else {
-                                Text(appModel.officialSkillChannelTopBlockersLine)
+                                Text(settingsSnapshot.skillsCompatibilitySnapshot.officialChannelTopBlockersLine)
                                     .font(.caption.weight(.semibold))
                                     .foregroundStyle(.orange)
                                     .textSelection(.enabled)
@@ -1182,14 +1233,14 @@ struct HubSetupWizardView: View {
                         }
                     }
                 }
-                if !appModel.skillsCompatibilitySnapshot.builtinGovernedSkills.isEmpty {
+                if !settingsSnapshot.skillsCompatibilitySnapshot.builtinGovernedSkills.isEmpty {
                     XTBuiltinGovernedSkillsListView(
-                        items: appModel.skillsCompatibilitySnapshot.builtinGovernedSkills
+                        items: settingsSnapshot.skillsCompatibilitySnapshot.builtinGovernedSkills
                     )
                 }
-                if !appModel.skillsCompatibilitySnapshot.governanceSurfaceEntries.isEmpty {
+                if !settingsSnapshot.skillsCompatibilitySnapshot.governanceSurfaceEntries.isEmpty {
                     XTSkillGovernanceSurfaceView(
-                        items: appModel.skillsCompatibilitySnapshot.governanceSurfaceEntries,
+                        items: settingsSnapshot.skillsCompatibilitySnapshot.governanceSurfaceEntries,
                         title: "技能治理核对（Governance surface）",
                         maxItems: 4
                     )
@@ -1210,16 +1261,16 @@ struct HubSetupWizardView: View {
                     Text("当前优先排障：\(issue.title)")
                         .font(.subheadline.weight(.semibold))
                 }
-                if !appModel.hubSetupFailureCode.isEmpty {
-                    Text("失败原因码：\(appModel.hubSetupFailureCode)")
+                if !settingsSnapshot.hubSetupFailureCode.isEmpty {
+                    Text("失败原因码：\(settingsSnapshot.hubSetupFailureCode)")
                         .font(UIThemeTokens.monoFont())
                         .foregroundStyle(.red)
-                    if let hint = failureHint(for: appModel.hubSetupFailureCode) {
+                    if let hint = failureHint(for: settingsSnapshot.hubSetupFailureCode) {
                         Text(hint)
                             .font(.caption)
                             .foregroundStyle(UIThemeTokens.color(for: .grantRequired))
                     }
-                    if shouldOfferLocalNetworkRepair(for: appModel.hubSetupFailureCode) {
+                    if shouldOfferLocalNetworkRepair(for: settingsSnapshot.hubSetupFailureCode) {
                         HStack(spacing: 8) {
                             Button(XTSystemSettingsLinks.buttonLabel(for: .localNetwork)) {
                                 XTSystemSettingsLinks.openPrivacy(.localNetwork)
@@ -1271,7 +1322,7 @@ struct HubSetupWizardView: View {
                                     .font(.caption.weight(.semibold))
                                     .foregroundStyle(.secondary)
                                 Spacer(minLength: 8)
-                                if appModel.selectedProjectId != nil {
+                                if settingsSnapshot.selectedProjectId != nil {
                                     Button("查看路由") {
                                         openCurrentProjectRouteDiagnose()
                                     }
@@ -1280,7 +1331,7 @@ struct HubSetupWizardView: View {
                                     .help("切回当前项目聊天，并自动展开 route diagnose。")
                                 }
                                 if reminderStatus.quietingCurrentIssue,
-                                   let projectId = appModel.selectedProjectId {
+                                   let projectId = settingsSnapshot.selectedProjectId {
                                     Button("恢复提醒") {
                                         supervisorManager.clearRouteAttentionReminderState(projectId: projectId)
                                     }
@@ -1311,9 +1362,11 @@ struct HubSetupWizardView: View {
                 TroubleshootPanel(
                     title: "高频问题 3 步修复",
                     issues: UITroubleshootIssue.highFrequencyIssues,
-                    paidAccessSnapshot: appModel.hubRemotePaidAccessSnapshot,
-                    internetHost: appModel.hubInternetHost,
-                    pairingContext: troubleshootPairingContext
+                    paidAccessSnapshot: settingsSnapshot.hubRemotePaidAccessSnapshot,
+                    internetHost: settingsSnapshot.hubInternetHost,
+                    pairingContext: troubleshootPairingContext,
+                    providerKeyRouteContext: modelRouteProviderKeyContext,
+                    externalTerminalAccessProjection: externalTerminalAccessDoctorProjection
                 )
             }
             .padding(8)
@@ -1327,7 +1380,7 @@ struct HubSetupWizardView: View {
                     XTFocusContextCard(context: context)
                 }
                 ScrollView {
-                    Text(appModel.hubRemoteLog.isEmpty ? "还没有日志。" : appModel.hubRemoteLog)
+                    Text(settingsSnapshot.hubRemoteLog.isEmpty ? "还没有日志。" : settingsSnapshot.hubRemoteLog)
                         .font(UIThemeTokens.monoFont())
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1345,38 +1398,44 @@ struct HubSetupWizardView: View {
         UIFirstRunJourneyPlanner.plan(for: wizardState)
     }
 
+    private var appModel: AppModel {
+        guard let appModelReference else {
+            preconditionFailure("HubSetupWizardView requires xtAppModelReference")
+        }
+        return appModelReference
+    }
+
+    private var settingsSnapshot: XTSettingsCenterSnapshot {
+        settingsCenterStore.snapshot
+    }
+
+    private var navigationFocusSnapshot: XTNavigationFocusSnapshot {
+        navigationFocusStore.snapshot
+    }
+
     private var wizardState: HubSetupWizardState {
         HubSetupWizardState(
-            localConnected: appModel.hubConnected,
-            remoteConnected: appModel.hubRemoteConnected,
-            linking: appModel.hubRemoteLinking,
+            localConnected: settingsSnapshot.hubConnected,
+            remoteConnected: settingsSnapshot.hubRemoteConnected,
+            linking: settingsSnapshot.hubRemoteLinking,
             configuredModelRoles: configuredModelRoles,
             totalModelRoles: AXRole.allCases.count,
-            failureCode: appModel.hubSetupFailureCode,
+            failureCode: settingsSnapshot.hubSetupFailureCode,
             runtime: runtimeSnapshot,
             doctor: doctorReport
         )
     }
 
     private var doctorReport: XTUnifiedDoctorReport {
-        appModel.unifiedDoctorReport
+        settingsSnapshot.unifiedDoctorReport
     }
 
     private var runtimeSnapshot: UIFailClosedRuntimeSnapshot {
-        guard let orchestrator = appModel.legacySupervisorRuntimeContextIfLoaded?.orchestrator else {
-            return .empty
-        }
-        return UIFailClosedRuntimeSnapshot.capture(
-            policy: orchestrator.oneShotAutonomyPolicy,
-            freeze: orchestrator.latestDeliveryScopeFreeze,
-            launchDecisions: Array(orchestrator.laneLaunchDecisions.values),
-            directedUnblockBatons: orchestrator.executionMonitor.directedUnblockBatons,
-            replayReport: orchestrator.latestReplayHarnessReport
-        )
+        settingsSnapshot.runtimeSnapshot
     }
 
     private var officialSkillChannelStatusColor: Color {
-        switch appModel.skillsCompatibilitySnapshot.officialChannelStatus.trimmingCharacters(in: .whitespacesAndNewlines) {
+        switch settingsSnapshot.skillsCompatibilitySnapshot.officialChannelStatus.trimmingCharacters(in: .whitespacesAndNewlines) {
         case "healthy":
             return UIThemeTokens.color(for: .ready)
         case "stale":
@@ -1389,13 +1448,11 @@ struct HubSetupWizardView: View {
     }
 
     private var routeRepairLogLines: [String] {
-        guard let ctx = appModel.projectContext else { return [] }
-        return AXRouteRepairLogStore.userFacingSummaryLines(for: ctx, limit: 5)
+        settingsSnapshot.routeRepairLogLines
     }
 
     private var routeRepairLogDigest: AXRouteRepairLogDigest {
-        guard let ctx = appModel.projectContext else { return .empty }
-        return AXRouteRepairLogStore.digest(for: ctx, limit: 50)
+        settingsSnapshot.routeRepairLogDigest
     }
 
     private var chooseModelIssues: [HubGlobalRoleModelIssue] {
@@ -1404,7 +1461,7 @@ struct HubSetupWizardView: View {
             AXRole.allCases.compactMap { role in
                 HubModelSelectionAdvisor.globalAssignmentIssue(
                     for: role,
-                    configuredModelId: appModel.settingsStore.settings.assignment(for: role).model,
+                    configuredModelId: settingsSnapshot.settings.assignment(for: role).model,
                     snapshot: snapshot
                 )
             }
@@ -1413,14 +1470,11 @@ struct HubSetupWizardView: View {
     }
 
     private var visibleModelSnapshot: ModelStateSnapshot {
-        modelManager.visibleSnapshot(fallback: appModel.modelsState)
+        modelManager.visibleSnapshot(fallback: settingsSnapshot.modelsState)
     }
 
     private var currentProjectRouteReminderStatus: SupervisorManager.RouteAttentionReminderStatus? {
-        guard let projectId = appModel.selectedProjectId,
-              projectId != AXProjectRegistry.globalHomeId,
-              let project = appModel.registry.project(for: projectId),
-              let watchItem = AXRouteRepairLogStore.watchItems(for: [project], limit: 1).first else {
+        guard let watchItem = settingsSnapshot.currentProjectRouteWatchItem else {
             return nil
         }
         return supervisorManager.routeAttentionReminderStatus(for: watchItem)
@@ -1428,13 +1482,13 @@ struct HubSetupWizardView: View {
 
     private var configuredModelRoles: Int {
         AXRole.allCases.filter { role in
-            let model = appModel.settingsStore.settings.assignment(for: role).model ?? ""
+            let model = settingsSnapshot.settings.assignment(for: role).model ?? ""
             return !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }.count
     }
 
     private func configuredGlobalModelID(for role: AXRole) -> String? {
-        let modelID = appModel.settingsStore.settings.assignment(for: role).model?
+        let modelID = settingsSnapshot.settings.assignment(for: role).model?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return modelID.isEmpty ? nil : modelID
     }
@@ -1448,14 +1502,33 @@ struct HubSetupWizardView: View {
         case "open_repair_entry":
             let issue = journeyPlan.currentFailureIssue
             if issue == .modelNotReady {
+                if let primaryImportIssue = primaryModelRouteProviderKeyImportIssue,
+                   appModel.openRELFlowHubProviderKeysSettings(sourceRef: primaryImportIssue.sourceRef) {
+                    return
+                }
                 openSupervisorModelSettings(
                     role: .coder,
                     title: UITroubleshootKnowledgeBase.repairEntryTitle(for: issue),
                     detail: UIFirstRunJourneyPlanner.reviewSubtitle(
                         failureIssue: issue,
-                        failureCode: appModel.hubSetupFailureCode,
+                        failureCode: settingsSnapshot.hubSetupFailureCode,
                         runtime: runtimeSnapshot,
-                        pairingContext: troubleshootPairingContext
+                        pairingContext: troubleshootPairingContext,
+                        externalTerminalAccessProjection: externalTerminalAccessDoctorProjection
+                    )
+                )
+                return
+            }
+            if issue == .externalTerminalAccessBlocked {
+                appModel.requestSettingsFocus(
+                    sectionId: "external_terminals",
+                    title: UITroubleshootKnowledgeBase.repairEntryTitle(for: issue),
+                    detail: UIFirstRunJourneyPlanner.reviewSubtitle(
+                        failureIssue: issue,
+                        failureCode: settingsSnapshot.hubSetupFailureCode,
+                        runtime: runtimeSnapshot,
+                        pairingContext: troubleshootPairingContext,
+                        externalTerminalAccessProjection: externalTerminalAccessDoctorProjection
                     )
                 )
                 return
@@ -1470,9 +1543,10 @@ struct HubSetupWizardView: View {
             let title = UITroubleshootKnowledgeBase.repairEntryTitle(for: issue)
             let detail = UIFirstRunJourneyPlanner.reviewSubtitle(
                 failureIssue: issue,
-                failureCode: appModel.hubSetupFailureCode,
+                failureCode: settingsSnapshot.hubSetupFailureCode,
                 runtime: runtimeSnapshot,
-                pairingContext: troubleshootPairingContext
+                pairingContext: troubleshootPairingContext,
+                externalTerminalAccessProjection: externalTerminalAccessDoctorProjection
             )
             appModel.requestHubSetupFocus(
                 sectionId: targetSection,
@@ -1512,7 +1586,7 @@ struct HubSetupWizardView: View {
                 )
             )
         default:
-            if appModel.hubRemoteLinking || appModel.hubInteractive {
+            if settingsSnapshot.hubRemoteLinking || settingsSnapshot.hubInteractive {
                 appModel.requestHubSetupFocus(
                     sectionId: "pair_progress",
                     title: "查看连接进度",
@@ -1551,9 +1625,9 @@ struct HubSetupWizardView: View {
     }
 
     private var progressValue: Double {
-        stepScore(appModel.hubSetupDiscoverState)
-            + stepScore(appModel.hubSetupBootstrapState)
-            + stepScore(appModel.hubSetupConnectState)
+        stepScore(settingsSnapshot.hubSetupDiscoverState)
+            + stepScore(settingsSnapshot.hubSetupBootstrapState)
+            + stepScore(settingsSnapshot.hubSetupConnectState)
     }
 
     private func stepScore(_ state: HubSetupStepState) -> Double {
@@ -1654,7 +1728,7 @@ struct HubSetupWizardView: View {
     }
 
     private func openCurrentProjectRouteDiagnose() {
-        guard let projectId = appModel.selectedProjectId,
+        guard let projectId = settingsSnapshot.selectedProjectId,
               projectId != AXProjectRegistry.globalHomeId else { return }
         appModel.selectProject(projectId)
         appModel.setPane(.chat, for: projectId)
@@ -1681,23 +1755,23 @@ struct HubSetupWizardView: View {
 
     private var inviteStatusPresentation: HubInviteStatusPresentation? {
         HubInviteStatusPlanner.build(
-            inviteAlias: appModel.hubInviteAlias,
-            internetHost: appModel.hubInternetHost,
-            pairingPort: appModel.hubPairingPort,
-            grpcPort: appModel.hubGrpcPort,
-            inviteToken: appModel.hubInviteToken,
-            hubInstanceID: appModel.hubInviteInstanceID,
-            connected: appModel.hubInteractive,
-            linking: appModel.hubRemoteLinking,
-            failureCode: appModel.hubSetupFailureCode
+            inviteAlias: settingsSnapshot.hubInviteAlias,
+            internetHost: settingsSnapshot.hubInternetHost,
+            pairingPort: settingsSnapshot.hubPairingPort,
+            grpcPort: settingsSnapshot.hubGrpcPort,
+            inviteToken: settingsSnapshot.hubInviteToken,
+            hubInstanceID: settingsSnapshot.hubInviteInstanceID,
+            connected: settingsSnapshot.hubInteractive,
+            linking: settingsSnapshot.hubRemoteLinking,
+            failureCode: settingsSnapshot.hubSetupFailureCode
         )
     }
 
     private var pairProgressHintText: String {
-        if UITroubleshootKnowledgeBase.isInviteTokenFailure(appModel.hubSetupFailureCode) {
+        if UITroubleshootKnowledgeBase.isInviteTokenFailure(settingsSnapshot.hubSetupFailureCode) {
             return "当前先修复邀请令牌，再继续连接。"
         }
-        if !appModel.hubInviteToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if !settingsSnapshot.hubInviteToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return "正式首配参数已载入，通常可直接一键连接。"
         }
         if hasStableFormalEntry {
@@ -1708,20 +1782,20 @@ struct HubSetupWizardView: View {
 
     private var formalEntryGuidancePresentation: HubRemoteAccessGuidancePresentation {
         HubRemoteAccessGuidanceBuilder.formalEntry(
-            internetHost: appModel.hubInternetHost
+            internetHost: settingsSnapshot.hubInternetHost
         )
     }
 
     private var inviteTokenGuidancePresentation: HubRemoteAccessGuidancePresentation {
         HubRemoteAccessGuidanceBuilder.inviteToken(
-            internetHost: appModel.hubInternetHost,
-            inviteToken: appModel.hubInviteToken
+            internetHost: settingsSnapshot.hubInternetHost,
+            inviteToken: settingsSnapshot.hubInviteToken
         )
     }
 
     private var hasStableFormalEntry: Bool {
         if case .stableNamed = XTHubRemoteAccessHostClassification
-            .classify(appModel.hubInternetHost).kind {
+            .classify(settingsSnapshot.hubInternetHost).kind {
             return true
         }
         return false
@@ -1729,7 +1803,7 @@ struct HubSetupWizardView: View {
 
     private var pairingPortBinding: Binding<Int> {
         Binding(
-            get: { appModel.hubPairingPort },
+            get: { settingsSnapshot.hubPairingPort },
             set: { value in
                 appModel.setHubPairingPortFromUser(value)
             }
@@ -1738,7 +1812,7 @@ struct HubSetupWizardView: View {
 
     private var grpcPortBinding: Binding<Int> {
         Binding(
-            get: { appModel.hubGrpcPort },
+            get: { settingsSnapshot.hubGrpcPort },
             set: { value in
                 appModel.setHubGrpcPortFromUser(value)
             }
@@ -1747,7 +1821,7 @@ struct HubSetupWizardView: View {
 
     private var internetHostBinding: Binding<String> {
         Binding(
-            get: { appModel.hubInternetHost },
+            get: { settingsSnapshot.hubInternetHost },
             set: { value in
                 appModel.setHubInternetHostFromUser(value)
             }
@@ -1756,7 +1830,7 @@ struct HubSetupWizardView: View {
 
     private var inviteTokenBinding: Binding<String> {
         Binding(
-            get: { appModel.hubInviteToken },
+            get: { settingsSnapshot.hubInviteToken },
             set: { value in
                 appModel.hubInviteToken = value
                 appModel.saveHubRemotePrefsNow()
@@ -1766,7 +1840,7 @@ struct HubSetupWizardView: View {
 
     private var axhubctlPathBinding: Binding<String> {
         Binding(
-            get: { appModel.hubAxhubctlPath },
+            get: { settingsSnapshot.hubAxhubctlPath },
             set: { value in
                 appModel.hubAxhubctlPath = value
                 appModel.saveHubRemotePrefsNow()
@@ -1777,7 +1851,7 @@ struct HubSetupWizardView: View {
     private func failureHint(for rawCode: String) -> String? {
         if shouldOfferLocalNetworkRepair(for: rawCode) {
             if let launchStatus = XTHubLaunchStatusStore.load(
-                baseDir: appModel.hubBaseDir ?? HubPaths.baseDir()
+                baseDir: settingsSnapshot.hubBaseDir ?? HubPaths.baseDir()
             ),
                launchStatus.blocksPaidOrWebCapabilities {
                 let rootCause = launchStatus.rootCauseErrorCode.isEmpty
@@ -1790,7 +1864,7 @@ struct HubSetupWizardView: View {
         if let issue = UITroubleshootKnowledgeBase.issue(forFailureCode: rawCode) {
             return UITroubleshootKnowledgeBase.guide(
                 for: issue,
-                internetHost: appModel.hubInternetHost,
+                internetHost: settingsSnapshot.hubInternetHost,
                 pairingContext: troubleshootPairingContext
             ).steps.first?.instruction
         }
@@ -1810,8 +1884,22 @@ struct HubSetupWizardView: View {
         )
     }
 
+    private var modelRouteProviderKeyContext: XTProviderKeyRouteContext {
+        XTProviderKeyRouteContextPresentation.context(
+            section: doctorReport.section(.modelRouteReadiness)
+        )
+    }
+
+    private var externalTerminalAccessDoctorProjection: XTUnifiedDoctorExternalTerminalAccessProjection? {
+        doctorReport.section(.externalTerminalAccessReadiness)?.externalTerminalAccessProjection
+    }
+
+    private var primaryModelRouteProviderKeyImportIssue: XTProviderKeyImportIssueContext? {
+        modelRouteProviderKeyContext.primaryImportIssue
+    }
+
     private func processHubSetupFocusRequest(_ proxy: ScrollViewProxy) {
-        guard let request = appModel.hubSetupFocusRequest else { return }
+        guard let request = navigationFocusSnapshot.hubSetupFocusRequest else { return }
         activeFocusRequest = request
         if request.sectionId == "pair_progress" {
             connectionToolsExpanded = true
@@ -1844,7 +1932,7 @@ struct HubSetupWizardView: View {
 
     @ViewBuilder
     private var officialSkillsRecheckStatus: some View {
-        let statusLine = appModel.officialSkillsRecheckStatusLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        let statusLine = settingsSnapshot.officialSkillsRecheckStatusLine.trimmingCharacters(in: .whitespacesAndNewlines)
         if !statusLine.isEmpty {
             Text(statusLine)
                 .font(UIThemeTokens.monoFont())

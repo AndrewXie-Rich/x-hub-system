@@ -1221,20 +1221,28 @@ struct ToolExecutorDeviceAutomationToolsTests {
     }
 
     @Test
-    func deviceBrowserControlFailsClosedWhenAutomationPermissionMissing() async throws {
+    func deviceBrowserControlOpenURLWorksWithTrustedBindingEvenWhenAutomationPermissionMissing() async throws {
         try await Self.gate.run {
-            let fixture = ToolExecutorProjectFixture(name: "device-browser-deny")
+            let fixture = ToolExecutorProjectFixture(name: "device-browser-open-url-no-automation")
             defer { fixture.cleanup() }
 
+            let probe = BrowserOpenProbe()
             AXTrustedAutomationPermissionOwnerReadiness.installCurrentProviderForTesting {
                 makePermissionReadiness(
                     accessibility: .granted,
                     automation: .missing,
                     screenRecording: .missing,
-                    auditRef: "audit-browser-missing"
+                    auditRef: "audit-browser-open-url-no-automation"
                 )
             }
-            defer { AXTrustedAutomationPermissionOwnerReadiness.resetCurrentProviderForTesting() }
+            DeviceAutomationTools.installBrowserOpenProviderForTesting { url in
+                probe.record(url)
+                return true
+            }
+            defer {
+                AXTrustedAutomationPermissionOwnerReadiness.resetCurrentProviderForTesting()
+                DeviceAutomationTools.resetBrowserOpenProviderForTesting()
+            }
 
             let ctx = AXProjectContext(root: fixture.root)
             var cfg = try AXProjectStore.loadOrCreateConfig(for: ctx)
@@ -1256,10 +1264,14 @@ struct ToolExecutorDeviceAutomationToolsTests {
                 projectRoot: fixture.root
             )
 
-            #expect(!result.ok)
+            #expect(result.ok)
             let summary = toolSummaryObject(result.output)
-            #expect(jsonString(summary?["deny_code"]) == XTDeviceAutomationRejectCode.systemPermissionMissing.rawValue)
+            #expect(jsonString(summary?["action"]) == "open")
+            #expect(jsonString(summary?["url"]) == "https://example.com")
+            #expect(jsonString(summary?["device_tool_group"]) == "device.browser.control")
             #expect(jsonString(summary?["trusted_automation_state"]) == AXTrustedAutomationProjectState.armed.rawValue)
+            #expect(jsonString(summary?["browser_runtime_transport"]) == "system_default_browser_bridge")
+            #expect(probe.first() == "https://example.com")
         }
     }
 

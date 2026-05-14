@@ -44,6 +44,7 @@ enum ToolName: String, Codable, CaseIterable, Sendable {
     case bridge_status
     case skills_search = "skills.search"
     case skills_pin = "skills.pin"
+    case skillsExecuteRunner = "skills.execute.runner"
     case summarize
     case supervisorVoicePlayback = "supervisor.voice.playback"
     case run_local_task
@@ -194,6 +195,7 @@ enum ToolPolicy {
                 .bridge_status,
                 .skills_search,
                 .skills_pin,
+                .skillsExecuteRunner,
                 .summarize,
                 .supervisorVoicePlayback,
                 .run_local_task,
@@ -225,6 +227,7 @@ enum ToolPolicy {
                 .bridge_status,
                 .skills_search,
                 .skills_pin,
+                .skillsExecuteRunner,
                 .summarize,
                 .supervisorVoicePlayback,
                 .run_local_task,
@@ -261,6 +264,7 @@ enum ToolPolicy {
                 .bridge_status,
                 .skills_search,
                 .skills_pin,
+                .skillsExecuteRunner,
                 .summarize,
                 .supervisorVoicePlayback,
                 .run_local_task,
@@ -398,6 +402,8 @@ enum ToolPolicy {
             return "- skills.search {query, source_filter?, project_id?, limit?}"
         case .skills_pin:
             return "- skills.pin {skill_id, package_sha256, scope?, project_id?, note?}"
+        case .skillsExecuteRunner:
+            return "- skills.execute.runner {skill_id, package_sha256, input?|payload?, timeout_sec?} // downloads the Hub package, checks Hub runner gate, then executes manifest entrypoint"
         case .summarize:
             return "- summarize {url?|path?|text|content|value, focus?, format?, max_chars?, grant_id?, timeout_sec?, max_bytes?}"
         case .supervisorVoicePlayback:
@@ -433,6 +439,7 @@ enum ToolPolicy {
                     .bridge_status,
                     .skills_search,
                     .summarize,
+                    .skillsExecuteRunner,
                     .supervisorVoicePlayback,
                     .run_local_task,
                 ])
@@ -450,6 +457,7 @@ enum ToolPolicy {
                     .session_compact,
                     .project_snapshot,
                     .run_local_task,
+                    .skillsExecuteRunner,
                 ])
             case "group:git":
                 out.formUnion([.git_status, .git_diff, .git_commit, .git_push, .git_apply_check, .git_apply])
@@ -506,6 +514,8 @@ enum ToolPolicy {
             return .safe
         case .skills_search, .skills_pin, .summarize, .supervisorVoicePlayback, .run_local_task:
             return .safe
+        case .skillsExecuteRunner:
+            return .needsConfirm
         case .web_fetch, .web_search, .browser_read:
             // Network approvals are handled in Hub; avoid local confirmations.
             return .safe

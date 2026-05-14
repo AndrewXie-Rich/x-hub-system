@@ -564,6 +564,80 @@ struct AXSkillsCompatibilityTests {
     }
 
     @Test
+    func skillExecutionReadinessRefreshesWhenLocalRuntimeInputsChange() throws {
+        let fixture = SkillsCompatibilityFixture()
+        defer { fixture.cleanup() }
+
+        let projectRoot = fixture.root.appendingPathComponent("local-vision-runtime-refresh", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectRoot, withIntermediateDirectories: true)
+        try writeLocalAISkillStore(
+            hubBaseDir: fixture.hubBaseDir,
+            projectID: fixture.projectID,
+            skillID: "local-vision-reader",
+            capabilitiesRequired: ["ai.vision.local"]
+        )
+
+        var readiness = AXSkillsLibrary.skillExecutionReadiness(
+            skillId: "local-vision-reader",
+            projectId: fixture.projectID,
+            projectName: fixture.projectName,
+            projectRoot: projectRoot,
+            config: .default(forProjectRoot: projectRoot),
+            hubBaseDir: fixture.hubBaseDir
+        )
+
+        #expect(readiness.executionReadiness == XTSkillExecutionReadinessState.runtimeUnavailable.rawValue)
+
+        Thread.sleep(forTimeInterval: 0.02)
+        try writeLocalModelStateSnapshot(
+            baseDir: fixture.hubBaseDir,
+            models: [
+                HubModel(
+                    id: "qwen2-vl-ocr",
+                    name: "Qwen2 VL OCR",
+                    backend: "mlx",
+                    quant: "4bit",
+                    contextLength: 8192,
+                    paramsB: 7.0,
+                    state: .available,
+                    modelPath: "/models/qwen2-vl-ocr",
+                    taskKinds: ["vision_understand", "ocr"]
+                )
+            ]
+        )
+
+        readiness = AXSkillsLibrary.skillExecutionReadiness(
+            skillId: "local-vision-reader",
+            projectId: fixture.projectID,
+            projectName: fixture.projectName,
+            projectRoot: projectRoot,
+            config: .default(forProjectRoot: projectRoot),
+            hubBaseDir: fixture.hubBaseDir
+        )
+
+        #expect(readiness.executionReadiness == XTSkillExecutionReadinessState.ready.rawValue)
+        #expect(readiness.runnableNow)
+
+        Thread.sleep(forTimeInterval: 0.02)
+        try writeHubLaunchStatusSnapshot(
+            baseDir: fixture.hubBaseDir,
+            blockedCapabilities: ["ai.vision.local"]
+        )
+
+        readiness = AXSkillsLibrary.skillExecutionReadiness(
+            skillId: "local-vision-reader",
+            projectId: fixture.projectID,
+            projectName: fixture.projectName,
+            projectRoot: projectRoot,
+            config: .default(forProjectRoot: projectRoot),
+            hubBaseDir: fixture.hubBaseDir
+        )
+
+        #expect(readiness.executionReadiness == XTSkillExecutionReadinessState.runtimeUnavailable.rawValue)
+        #expect(readiness.reasonCode.contains("local_vision_runtime"))
+    }
+
+    @Test
     func skillExecutionReadinessHonorsLaunchStatusBlockForLocalEmbeddingRuntime() throws {
         let fixture = SkillsCompatibilityFixture()
         defer { fixture.cleanup() }
@@ -1333,6 +1407,399 @@ struct AXSkillsCompatibilityTests {
         #expect(mapped.toolCall.args["task_kind"]?.stringValue == "vision_understand")
         #expect(mapped.toolCall.args["preferred_model_id"]?.stringValue == "qwen2-vl-instruct")
         #expect(mapped.toolCall.args["image_path"]?.stringValue == "/tmp/diagram.png")
+    }
+
+    @Test
+    func projectSkillRouterAutoInjectsPreferredSpeechToTextBindingWhenWrapperOmitsModelArgs() throws {
+        let fixture = SkillsCompatibilityFixture()
+        defer { fixture.cleanup() }
+
+        try writeLocalModelStateSnapshot(
+            baseDir: fixture.hubBaseDir,
+            models: [
+                HubModel(
+                    id: "hf-whisper-tiny",
+                    name: "hf-whisper-tiny",
+                    backend: "transformers",
+                    quant: "",
+                    contextLength: 448,
+                    paramsB: 0.1,
+                    roles: nil,
+                    state: .available,
+                    memoryBytes: nil,
+                    tokensPerSec: nil,
+                    modelPath: "/models/hf-whisper-tiny",
+                    note: nil,
+                    taskKinds: ["speech_to_text"],
+                    inputModalities: ["audio"],
+                    outputModalities: ["text", "segments"],
+                    offlineReady: true
+                )
+            ]
+        )
+
+        HubPaths.setPinnedBaseDirOverride(fixture.hubBaseDir)
+        defer { HubPaths.clearPinnedBaseDirOverride() }
+
+        var transcribeSkill = makeRouterRegistryItem(
+            skillId: "local-transcribe",
+            packageSHA256: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            policyScope: "project",
+            officialPackage: true,
+            capabilityFamilies: ["ai.audio.local"],
+            capabilityProfiles: [XTSkillCapabilityProfileID.observeOnly.rawValue]
+        )
+        transcribeSkill.intentFamilies = ["ai.audio.local"]
+        transcribeSkill.capabilitiesRequired = ["ai.audio.local"]
+        transcribeSkill.governedDispatch = SupervisorGovernedSkillDispatch(
+            tool: ToolName.run_local_task.rawValue,
+            fixedArgs: [
+                "task_kind": .string("speech_to_text")
+            ],
+            passthroughArgs: ["audio_path", "language"],
+            argAliases: [:],
+            requiredAny: [["audio_path"]],
+            exactlyOneOf: []
+        )
+
+        let snapshot = SupervisorSkillRegistrySnapshot(
+            schemaVersion: SupervisorSkillRegistrySnapshot.currentSchemaVersion,
+            projectId: fixture.projectID,
+            projectName: fixture.projectName,
+            updatedAtMs: 1,
+            memorySource: "test",
+            items: [transcribeSkill],
+            auditRef: "audit-router-local-transcribe"
+        )
+
+        let result = XTProjectSkillRouter.map(
+            call: GovernedSkillCall(
+                id: "skill-local-transcribe-1",
+                skill_id: "local-transcribe",
+                payload: [
+                    "audio_path": .string("/tmp/demo.wav"),
+                    "language": .string("en"),
+                ]
+            ),
+            projectId: fixture.projectID,
+            projectName: fixture.projectName,
+            registrySnapshot: snapshot
+        )
+
+        let mapped: XTProjectMappedSkillDispatch
+        switch result {
+        case .success(let dispatch):
+            mapped = dispatch
+        case .failure(let failure):
+            Issue.record("unexpected failure: \(failure.reasonCode)")
+            throw failure
+        }
+
+        #expect(mapped.toolCall.tool == .run_local_task)
+        #expect(mapped.toolCall.args["task_kind"]?.stringValue == "speech_to_text")
+        #expect(mapped.toolCall.args["preferred_model_id"]?.stringValue == "hf-whisper-tiny")
+        #expect(mapped.toolCall.args["audio_path"]?.stringValue == "/tmp/demo.wav")
+        #expect(mapped.toolCall.args["language"]?.stringValue == "en")
+    }
+
+    @Test
+    func projectSkillRouterAutoInjectsPreferredEmbeddingBindingWhenWrapperOmitsModelArgs() throws {
+        let fixture = SkillsCompatibilityFixture()
+        defer { fixture.cleanup() }
+
+        try writeLocalModelStateSnapshot(
+            baseDir: fixture.hubBaseDir,
+            models: [
+                HubModel(
+                    id: "hf-all-minilm-l6-v2",
+                    name: "hf-all-minilm-l6-v2",
+                    backend: "transformers",
+                    quant: "",
+                    contextLength: 512,
+                    paramsB: 0.1,
+                    roles: nil,
+                    state: .available,
+                    memoryBytes: nil,
+                    tokensPerSec: nil,
+                    modelPath: "/models/hf-all-minilm-l6-v2",
+                    note: nil,
+                    taskKinds: ["embedding"],
+                    inputModalities: ["text"],
+                    outputModalities: ["embedding"],
+                    offlineReady: true
+                )
+            ]
+        )
+
+        HubPaths.setPinnedBaseDirOverride(fixture.hubBaseDir)
+        defer { HubPaths.clearPinnedBaseDirOverride() }
+
+        var embeddingSkill = makeRouterRegistryItem(
+            skillId: "local-embeddings",
+            packageSHA256: "abababababababababababababababababababababababababababababababab",
+            policyScope: "project",
+            officialPackage: true,
+            capabilityFamilies: ["ai.embed.local"],
+            capabilityProfiles: [XTSkillCapabilityProfileID.observeOnly.rawValue]
+        )
+        embeddingSkill.intentFamilies = ["ai.embed.local"]
+        embeddingSkill.capabilitiesRequired = ["ai.embed.local"]
+        embeddingSkill.governedDispatch = SupervisorGovernedSkillDispatch(
+            tool: ToolName.run_local_task.rawValue,
+            fixedArgs: [
+                "task_kind": .string("embedding")
+            ],
+            passthroughArgs: ["text", "query", "texts"],
+            argAliases: [:],
+            requiredAny: [["text", "query", "texts"]],
+            exactlyOneOf: []
+        )
+
+        let snapshot = SupervisorSkillRegistrySnapshot(
+            schemaVersion: SupervisorSkillRegistrySnapshot.currentSchemaVersion,
+            projectId: fixture.projectID,
+            projectName: fixture.projectName,
+            updatedAtMs: 1,
+            memorySource: "test",
+            items: [embeddingSkill],
+            auditRef: "audit-router-local-embeddings"
+        )
+
+        let result = XTProjectSkillRouter.map(
+            call: GovernedSkillCall(
+                id: "skill-local-embeddings-1",
+                skill_id: "local-embeddings",
+                payload: [
+                    "text": .string("hello current hub embedding path")
+                ]
+            ),
+            projectId: fixture.projectID,
+            projectName: fixture.projectName,
+            registrySnapshot: snapshot
+        )
+
+        let mapped: XTProjectMappedSkillDispatch
+        switch result {
+        case .success(let dispatch):
+            mapped = dispatch
+        case .failure(let failure):
+            Issue.record("unexpected failure: \(failure.reasonCode)")
+            throw failure
+        }
+
+        #expect(mapped.toolCall.tool == .run_local_task)
+        #expect(mapped.toolCall.args["task_kind"]?.stringValue == "embedding")
+        #expect(mapped.toolCall.args["preferred_model_id"]?.stringValue == "hf-all-minilm-l6-v2")
+        #expect(mapped.toolCall.args["text"]?.stringValue == "hello current hub embedding path")
+    }
+
+    @Test
+    func localTranscribeBuiltinWrapperExecutesEndToEndAgainstHubStateTruth() async throws {
+        let fixture = SkillsCompatibilityFixture()
+        defer { fixture.cleanup() }
+
+        let projectRoot = fixture.root.appendingPathComponent("xt-local-transcribe-e2e", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectRoot, withIntermediateDirectories: true)
+        try writeLocalModelStateSnapshot(
+            baseDir: fixture.hubBaseDir,
+            models: [
+                HubModel(
+                    id: "hf-whisper-tiny",
+                    name: "HF Whisper Tiny",
+                    backend: "transformers",
+                    quant: "",
+                    contextLength: 448,
+                    paramsB: 0.1,
+                    state: .available,
+                    modelPath: "/models/hf-whisper-tiny",
+                    taskKinds: ["speech_to_text"],
+                    inputModalities: ["audio"],
+                    outputModalities: ["text", "segments"],
+                    offlineReady: true
+                )
+            ]
+        )
+
+        HubPaths.setPinnedBaseDirOverride(fixture.hubBaseDir)
+        defer { HubPaths.clearPinnedBaseDirOverride() }
+
+        let snapshot = try #require(
+            AXSkillsLibrary.supervisorSkillRegistrySnapshot(
+                projectId: fixture.projectID,
+                projectName: fixture.projectName,
+                hubBaseDir: fixture.hubBaseDir
+            )
+        )
+        #expect(snapshot.items.contains(where: { $0.skillId == "local-transcribe" }))
+
+        let routing = XTProjectSkillRouter.map(
+            call: GovernedSkillCall(
+                id: "skill-local-transcribe-e2e-1",
+                skill_id: "local-transcribe",
+                payload: [
+                    "audio_path": .string("/tmp/e2e-demo.wav"),
+                    "language": .string("en"),
+                ]
+            ),
+            projectId: fixture.projectID,
+            projectName: fixture.projectName,
+            registrySnapshot: snapshot,
+            projectRoot: projectRoot
+        )
+
+        let mapped: XTProjectMappedSkillDispatch
+        switch routing {
+        case .success(let dispatch):
+            mapped = dispatch
+        case .failure(let failure):
+            Issue.record("unexpected failure: \(failure.reasonCode)")
+            throw failure
+        }
+
+        #expect(mapped.toolCall.tool == .run_local_task)
+        #expect(mapped.toolCall.args["task_kind"]?.stringValue == "speech_to_text")
+        #expect(mapped.toolCall.args["preferred_model_id"]?.stringValue == "hf-whisper-tiny")
+
+        HubIPCClient.installLocalTaskExecutionOverrideForTesting { payload, timeoutSec in
+            #expect(payload.taskKind == "speech_to_text")
+            #expect(payload.modelId == "hf-whisper-tiny")
+            #expect(payload.parameters["audio_path"]?.stringValue == "/tmp/e2e-demo.wav")
+            #expect(payload.parameters["language"]?.stringValue == "en")
+            #expect(timeoutSec == 45.0)
+            return HubIPCClient.LocalTaskResult(
+                ok: true,
+                source: "local_ipc",
+                runtimeSource: "local_runtime_command",
+                provider: "transformers",
+                modelId: payload.modelId,
+                taskKind: payload.taskKind,
+                reasonCode: "transcription_completed",
+                payload: [
+                    "text": .string("whisper wrapper e2e transcript"),
+                ]
+            )
+        }
+        defer { HubIPCClient.resetLocalTaskExecutionOverrideForTesting() }
+
+        let result = try await ToolExecutor.execute(
+            call: mapped.toolCall,
+            projectRoot: projectRoot
+        )
+
+        #expect(result.ok)
+        let summary = try #require(toolSummaryObject(result.output))
+        #expect(jsonString(summary["task_kind"]) == "speech_to_text")
+        #expect(jsonString(summary["model_id"]) == "hf-whisper-tiny")
+        #expect(jsonString(summary["requested_model_id"]) == "hf-whisper-tiny")
+        #expect(jsonString(summary["preferred_model_id"]) == "hf-whisper-tiny")
+        #expect(jsonString(summary["model_resolution"]) == "preferred_model_exact")
+        #expect(jsonString(summary["provider"]) == "transformers")
+        #expect(toolBody(result.output).contains("whisper wrapper e2e transcript"))
+    }
+
+    @Test
+    func localEmbeddingsBuiltinWrapperExecutesEndToEndAgainstHubStateTruth() async throws {
+        let fixture = SkillsCompatibilityFixture()
+        defer { fixture.cleanup() }
+
+        let projectRoot = fixture.root.appendingPathComponent("xt-local-embeddings-e2e", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectRoot, withIntermediateDirectories: true)
+        try writeLocalModelStateSnapshot(
+            baseDir: fixture.hubBaseDir,
+            models: [
+                HubModel(
+                    id: "hf-all-minilm-l6-v2",
+                    name: "HF all-MiniLM-L6-v2",
+                    backend: "transformers",
+                    quant: "",
+                    contextLength: 512,
+                    paramsB: 0.1,
+                    state: .available,
+                    modelPath: "/models/hf-all-minilm-l6-v2",
+                    taskKinds: ["embedding"],
+                    inputModalities: ["text"],
+                    outputModalities: ["embedding"],
+                    offlineReady: true
+                )
+            ]
+        )
+
+        HubPaths.setPinnedBaseDirOverride(fixture.hubBaseDir)
+        defer { HubPaths.clearPinnedBaseDirOverride() }
+
+        let snapshot = try #require(
+            AXSkillsLibrary.supervisorSkillRegistrySnapshot(
+                projectId: fixture.projectID,
+                projectName: fixture.projectName,
+                hubBaseDir: fixture.hubBaseDir
+            )
+        )
+        #expect(snapshot.items.contains(where: { $0.skillId == "local-embeddings" }))
+
+        let routing = XTProjectSkillRouter.map(
+            call: GovernedSkillCall(
+                id: "skill-local-embeddings-e2e-1",
+                skill_id: "local-embeddings",
+                payload: [
+                    "text": .string("embed this through the real XT wrapper path")
+                ]
+            ),
+            projectId: fixture.projectID,
+            projectName: fixture.projectName,
+            registrySnapshot: snapshot,
+            projectRoot: projectRoot
+        )
+
+        let mapped: XTProjectMappedSkillDispatch
+        switch routing {
+        case .success(let dispatch):
+            mapped = dispatch
+        case .failure(let failure):
+            Issue.record("unexpected failure: \(failure.reasonCode)")
+            throw failure
+        }
+
+        #expect(mapped.toolCall.tool == .run_local_task)
+        #expect(mapped.toolCall.args["task_kind"]?.stringValue == "embedding")
+        #expect(mapped.toolCall.args["preferred_model_id"]?.stringValue == "hf-all-minilm-l6-v2")
+
+        HubIPCClient.installLocalTaskExecutionOverrideForTesting { payload, timeoutSec in
+            #expect(payload.taskKind == "embedding")
+            #expect(payload.modelId == "hf-all-minilm-l6-v2")
+            #expect(payload.parameters["text"]?.stringValue == "embed this through the real XT wrapper path")
+            #expect(timeoutSec == 15.0)
+            return HubIPCClient.LocalTaskResult(
+                ok: true,
+                source: "local_ipc",
+                runtimeSource: "local_runtime_command",
+                provider: "transformers",
+                modelId: payload.modelId,
+                taskKind: payload.taskKind,
+                reasonCode: "embedding_completed",
+                payload: [
+                    "vectorCount": .number(1),
+                    "dims": .number(384),
+                ]
+            )
+        }
+        defer { HubIPCClient.resetLocalTaskExecutionOverrideForTesting() }
+
+        let result = try await ToolExecutor.execute(
+            call: mapped.toolCall,
+            projectRoot: projectRoot
+        )
+
+        #expect(result.ok)
+        let summary = try #require(toolSummaryObject(result.output))
+        #expect(jsonString(summary["task_kind"]) == "embedding")
+        #expect(jsonString(summary["model_id"]) == "hf-all-minilm-l6-v2")
+        #expect(jsonString(summary["requested_model_id"]) == "hf-all-minilm-l6-v2")
+        #expect(jsonString(summary["preferred_model_id"]) == "hf-all-minilm-l6-v2")
+        #expect(jsonString(summary["model_resolution"]) == "preferred_model_exact")
+        #expect(jsonString(summary["provider"]) == "transformers")
+        #expect(jsonNumber(summary["vector_count"]) == 1.0)
+        #expect(jsonNumber(summary["dims"]) == 384.0)
+        #expect(toolBody(result.output).contains("vector_count=1 dims=384"))
     }
 
     @Test

@@ -5,7 +5,7 @@ struct ProjectGovernanceCapabilityBoundary: Equatable, Sendable {
     let summary: String
 }
 
-struct ProjectGovernancePresentation {
+struct ProjectGovernancePresentation: Equatable {
     var executionTier: AXProjectExecutionTier
     var effectiveExecutionTier: AXProjectExecutionTier?
     var supervisorInterventionTier: AXProjectSupervisorInterventionTier

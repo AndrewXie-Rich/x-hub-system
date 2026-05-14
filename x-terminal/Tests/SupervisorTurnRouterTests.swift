@@ -57,6 +57,7 @@ struct SupervisorTurnRouterTests {
         #expect(decision.focusedProjectId == project.projectId)
         #expect(decision.focusedProjectName == project.displayName)
         #expect(decision.routingReasons.contains("explicit_project_mention:亮亮"))
+        #expect(decision.projectMemoryBindingStrength == .strong)
     }
 
     @Test
@@ -149,6 +150,41 @@ struct SupervisorTurnRouterTests {
         #expect(decision.mode == .projectFirst)
         #expect(decision.focusedProjectId == project.projectId)
         #expect(decision.routingReasons.contains("current_project_pointer:亮亮"))
+        #expect(decision.projectMemoryBindingStrength == .strong)
+    }
+
+    @Test
+    func doesNotRouteProjectFirstForPointerWithoutTruthNeed() {
+        let project = makeProject(id: "proj-liangliang", name: "亮亮")
+        let decision = SupervisorTurnRouter.route(
+            SupervisorTurnRoutingInput(
+                userMessage: "这个项目的治理文案应该怎么讲更清楚？",
+                projects: [project],
+                currentProjectId: project.projectId
+            )
+        )
+
+        #expect(decision.mode == .personalFirst)
+        #expect(decision.focusedProjectId == nil)
+        #expect(decision.routingReasons.contains("current_project_pointer:亮亮"))
+        #expect(decision.projectMemoryBindingStrength == .weak)
+        #expect(decision.projectMemoryBindingReason == "project_reference_without_truth_need")
+    }
+
+    @Test
+    func keepsMetaDiscussionInPersonalFirstEvenWhenProjectReviewWordsAppear() {
+        let decision = SupervisorTurnRouter.route(
+            SupervisorTurnRoutingInput(
+                userMessage: "A-Tier 和 S-Tier 这套 project review 计划的机制怎么讲更清楚？",
+                projects: [
+                    makeProject(id: "proj-liangliang", name: "亮亮")
+                ]
+            )
+        )
+
+        #expect(decision.mode == .personalFirst)
+        #expect(decision.focusedProjectId == nil)
+        #expect(decision.projectMemoryBindingStrength == .none)
     }
 
     @Test

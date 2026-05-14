@@ -2,10 +2,18 @@ import SwiftUI
 import Foundation
 
 struct XTSkillLibrarySheet: View {
-    @EnvironmentObject private var appModel: AppModel
+    let embedded: Bool
+
+    @Environment(\.xtAppModelReference) private var appModelReference
+    @EnvironmentObject private var skillLibraryStore: XTSkillLibraryStore
     @Environment(\.dismiss) private var dismiss
 
     @State private var query: String = ""
+    @State private var localSkillSectionsCache: [LocalSkillSection] = []
+
+    init(embedded: Bool = false) {
+        self.embedded = embedded
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -14,10 +22,10 @@ struct XTSkillLibrarySheet: View {
             TextField("搜索 skill 名称、scope、摘要", text: $query)
                 .textFieldStyle(.roundedBorder)
 
-            if !appModel.lastImportedAgentSkillStatusLine.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text(appModel.lastImportedAgentSkillStatusLine)
+            if !skillLibrarySnapshot.lastImportedAgentSkillStatusLine.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(skillLibrarySnapshot.lastImportedAgentSkillStatusLine)
                     .font(UIThemeTokens.monoFont())
-                    .foregroundStyle(appModel.agentSkillImportBusy ? .orange : .secondary)
+                    .foregroundStyle(skillLibrarySnapshot.agentSkillImportBusy ? .orange : .secondary)
                     .textSelection(.enabled)
             }
 
@@ -25,14 +33,14 @@ struct XTSkillLibrarySheet: View {
                 VStack(alignment: .leading, spacing: 18) {
                     localSkillsSection
 
-                    if !appModel.skillsCompatibilitySnapshot.governanceSurfaceEntries.isEmpty {
+                    if !skillsCompatibilitySnapshot.governanceSurfaceEntries.isEmpty {
                         XTSkillGovernanceSurfaceView(
                             items: filteredGovernanceEntries,
                             title: "当前 governed skills 真相"
                         )
                     }
 
-                    if !appModel.skillsCompatibilitySnapshot.builtinGovernedSkills.isEmpty {
+                    if !skillsCompatibilitySnapshot.builtinGovernedSkills.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("XT 内建 skills 只读")
                                 .font(.caption.weight(.semibold))
@@ -53,6 +61,12 @@ struct XTSkillLibrarySheet: View {
         }
         .padding(16)
         .frame(minWidth: 760, idealWidth: 860, maxWidth: 940, minHeight: 520, idealHeight: 700)
+        .onAppear {
+            refreshLocalSkillSections()
+        }
+        .onChange(of: skillLibrarySnapshot) { _ in
+            refreshLocalSkillSections()
+        }
     }
 
     private var header: some View {
@@ -81,19 +95,21 @@ struct XTSkillLibrarySheet: View {
                 Button("Review Import") {
                     appModel.reviewLastImportedSkill()
                 }
-                .disabled(!appModel.canReviewLastImportedAgentSkill)
+                .disabled(!skillLibrarySnapshot.canReviewLastImportedAgentSkill)
 
                 Button("Enable Import") {
                     appModel.enableLastImportedSkill()
                 }
-                .disabled(!appModel.canEnableLastImportedAgentSkill)
+                .disabled(!skillLibrarySnapshot.canEnableLastImportedAgentSkill)
 
                 Button("Open Index") {
                     appModel.openCurrentSkillsIndex()
                 }
 
-                Button("Close") {
-                    dismiss()
+                if !embedded {
+                    Button("Close") {
+                        dismiss()
+                    }
                 }
             }
         }
@@ -166,6 +182,7 @@ struct XTSkillLibrarySheet: View {
                         } else {
                             Button("Create skill.json") {
                                 appModel.createLocalSkillManifest(at: entry.folderURL)
+                                refreshLocalSkillSections()
                             }
                             .buttonStyle(.borderless)
                         }
@@ -179,11 +196,13 @@ struct XTSkillLibrarySheet: View {
                     HStack(spacing: 8) {
                         Button("Rename Folder") {
                             appModel.renameLocalSkill(at: entry.folderURL)
+                            refreshLocalSkillSections()
                         }
                         .buttonStyle(.borderless)
 
                         Button("Duplicate") {
                             appModel.duplicateLocalSkill(at: entry.folderURL)
+                            refreshLocalSkillSections()
                         }
                         .buttonStyle(.borderless)
 
@@ -197,6 +216,7 @@ struct XTSkillLibrarySheet: View {
 
                         Button("Remove") {
                             appModel.removeLocalSkill(at: entry.folderURL)
+                            refreshLocalSkillSections()
                         }
                         .buttonStyle(.borderless)
                         .foregroundStyle(.red)
@@ -236,7 +256,7 @@ struct XTSkillLibrarySheet: View {
     }
 
     private var filteredLocalSections: [LocalSkillSection] {
-        localSkillSections
+        localSkillSectionsCache
             .map { section in
                 LocalSkillSection(
                     id: section.id,
@@ -247,7 +267,11 @@ struct XTSkillLibrarySheet: View {
             .filter { !$0.entries.isEmpty }
     }
 
-    private var localSkillSections: [LocalSkillSection] {
+    private func refreshLocalSkillSections() {
+        localSkillSectionsCache = loadLocalSkillSections()
+    }
+
+    private func loadLocalSkillSections() -> [LocalSkillSection] {
         guard let skillsDir = AXSkillsLibrary.resolveSkillsDirectory() else { return [] }
 
         var sections: [LocalSkillSection] = []
@@ -284,9 +308,9 @@ struct XTSkillLibrarySheet: View {
     }
 
     private func currentProjectSkillSection(skillsDir: URL) -> LocalSkillSection? {
-        guard let projectId = appModel.selectedProjectId,
+        guard let projectId = skillLibrarySnapshot.selectedProjectId,
               projectId != AXProjectRegistry.globalHomeId else { return nil }
-        let projectName = appModel.registry.projects.first(where: { $0.projectId == projectId })?.displayName
+        let projectName = skillLibrarySnapshot.selectedProjectName
         guard let projectRoot = existingProjectSkillsDir(
             projectId: projectId,
             projectName: projectName,
@@ -455,7 +479,7 @@ struct XTSkillLibrarySheet: View {
         let canonicalSkillID = AXSkillsLibrary.canonicalSupervisorSkillID(skillID)
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
-        let match = appModel.skillsCompatibilitySnapshot.installedSkills.first { item in
+        let match = skillsCompatibilitySnapshot.installedSkills.first { item in
             AXSkillsLibrary.canonicalSupervisorSkillID(item.skillID)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .lowercased() == canonicalSkillID
@@ -476,7 +500,7 @@ struct XTSkillLibrarySheet: View {
             issues.append("skill.json is missing skill_id.")
         }
 
-        let matchingWarnings = appModel.skillsCompatibilitySnapshot.conflictWarnings.filter { warning in
+        let matchingWarnings = skillsCompatibilitySnapshot.conflictWarnings.filter { warning in
             warningMatchesLocalSkill(
                 warning,
                 canonicalSkillID: canonicalSkillID,
@@ -650,8 +674,8 @@ struct XTSkillLibrarySheet: View {
 
     private var filteredBuiltinSkills: [AXBuiltinGovernedSkillSummary] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !needle.isEmpty else { return appModel.skillsCompatibilitySnapshot.builtinGovernedSkills }
-        return appModel.skillsCompatibilitySnapshot.builtinGovernedSkills.filter { item in
+        guard !needle.isEmpty else { return skillsCompatibilitySnapshot.builtinGovernedSkills }
+        return skillsCompatibilitySnapshot.builtinGovernedSkills.filter { item in
             item.skillID.lowercased().contains(needle)
                 || item.displayName.lowercased().contains(needle)
                 || item.summary.lowercased().contains(needle)
@@ -660,14 +684,29 @@ struct XTSkillLibrarySheet: View {
 
     private var filteredGovernanceEntries: [AXSkillGovernanceSurfaceEntry] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !needle.isEmpty else { return appModel.skillsCompatibilitySnapshot.governanceSurfaceEntries }
-        return appModel.skillsCompatibilitySnapshot.governanceSurfaceEntries.filter { item in
+        guard !needle.isEmpty else { return skillsCompatibilitySnapshot.governanceSurfaceEntries }
+        return skillsCompatibilitySnapshot.governanceSurfaceEntries.filter { item in
             item.skillID.lowercased().contains(needle)
                 || item.name.lowercased().contains(needle)
                 || item.note.lowercased().contains(needle)
                 || item.whyNotRunnable.lowercased().contains(needle)
                 || item.installHint.lowercased().contains(needle)
         }
+    }
+
+    private var appModel: AppModel {
+        guard let appModelReference else {
+            preconditionFailure("XTSkillLibrarySheet requires xtAppModelReference")
+        }
+        return appModelReference
+    }
+
+    private var skillLibrarySnapshot: XTSkillLibrarySnapshot {
+        skillLibraryStore.snapshot
+    }
+
+    private var skillsCompatibilitySnapshot: AXSkillsDoctorSnapshot {
+        skillLibrarySnapshot.skillsSnapshot
     }
 }
 

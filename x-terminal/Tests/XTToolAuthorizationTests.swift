@@ -249,8 +249,8 @@ struct XTToolAuthorizationTests {
             projectRoot: fixture.root
         )
 
-        #expect(decision.disposition == .deny)
-        #expect(decision.denyCode == XTDeviceAutomationRejectCode.trustedAutomationModeOff.rawValue)
+        #expect(decision.disposition == .ask)
+        #expect(decision.denyCode == xtTrustedAutomationLocalApprovalRequiredDenyCode)
         #expect(decision.policySource == "trusted_automation_device_gate")
         #expect(decision.runtimePolicyDecision == nil)
         let summary = xtToolAuthorizationDeniedSummary(
@@ -259,7 +259,7 @@ struct XTToolAuthorizationTests {
             config: config,
             decision: decision
         )
-        #expect(jsonString(summary["deny_code"]) == XTDeviceAutomationRejectCode.trustedAutomationModeOff.rawValue)
+        #expect(jsonString(summary["deny_code"]) == xtTrustedAutomationLocalApprovalRequiredDenyCode)
         #expect(jsonString(summary["trusted_automation_state"]) == AXTrustedAutomationProjectState.off.rawValue)
     }
 
@@ -300,10 +300,11 @@ struct XTToolAuthorizationTests {
                 projectRoot: fixture.root
             )
 
-            #expect(decision.disposition == .deny)
-            #expect(decision.denyCode == XTDeviceAutomationRejectCode.deviceAutomationToolNotArmed.rawValue)
+            #expect(decision.disposition == .ask)
+            #expect(decision.denyCode == xtTrustedAutomationLocalApprovalRequiredDenyCode)
             #expect(decision.policySource == "trusted_automation_device_gate")
-            #expect(decision.policyReason == "required_device_tool_group=device.ui.act")
+            #expect(decision.policyReason.contains("required_device_tool_group=device.ui.act"))
+            #expect(decision.deviceGateDecision?.rejectCode == .deviceAutomationToolNotArmed)
             #expect(decision.detail.contains("device.ui.step requires device.ui.act"))
         }
     }
@@ -402,6 +403,86 @@ struct XTToolAuthorizationTests {
             #expect(decision.policySource == "project_governed_auto_approval")
             #expect(decision.policyReason == "governed_device_authority")
         }
+    }
+
+    @Test
+    func systemPermissionMissingStillDeniesAfterProjectBindingIsReady() async {
+        await Self.permissionGate.run {
+            let fixture = ToolExecutorProjectFixture(name: "tool-authorization-device-browser-system-permission")
+            defer { fixture.cleanup() }
+
+            AXTrustedAutomationPermissionOwnerReadiness.installCurrentProviderForTesting {
+                makeToolAuthorizationPermissionReadiness(
+                    accessibility: .granted,
+                    automation: .missing,
+                    screenRecording: .missing,
+                    auditRef: "audit-tool-authorization-device-browser-system-permission"
+                )
+            }
+            defer { AXTrustedAutomationPermissionOwnerReadiness.resetCurrentProviderForTesting() }
+
+            let config = AXProjectConfig
+                .default(forProjectRoot: fixture.root)
+                .settingTrustedAutomationBinding(
+                    mode: .trustedAutomation,
+                    deviceId: "device_xt_001",
+                    deviceToolGroups: ["device.browser.control"],
+                    workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
+                )
+                .settingRuntimeSurfacePolicy(
+                    mode: .trustedOpenClawMode,
+                    updatedAt: Date()
+                )
+
+            let decision = await xtToolAuthorizationDecision(
+                call: ToolCall(
+                    tool: .deviceBrowserControl,
+                    args: [
+                        "action": .string("open_url"),
+                        "url": .string("https://example.com")
+                    ]
+                ),
+                config: config,
+                projectRoot: fixture.root
+            )
+
+            #expect(decision.disposition == .deny)
+            #expect(decision.denyCode == XTDeviceAutomationRejectCode.systemPermissionMissing.rawValue)
+            #expect(decision.deviceGateDecision?.rejectCode == .systemPermissionMissing)
+        }
+    }
+
+    @Test @MainActor
+    func approvedDeviceToolConfigBindsProjectAndArmsRequiredBrowserGroup() throws {
+        let fixture = ToolExecutorProjectFixture(name: "tool-authorization-device-browser-approval-repair")
+        defer { fixture.cleanup() }
+
+        let ctx = AXProjectContext(root: fixture.root)
+        try ctx.ensureDirs()
+        let session = ChatSessionModel()
+        let call = ToolCall(
+            tool: .deviceBrowserControl,
+            args: [
+                "action": .string("open_url"),
+                "url": .string("https://example.com")
+            ]
+        )
+
+        let updated = session.trustedAutomationConfigForApprovedDeviceToolsForTesting(
+            calls: [call],
+            ctx: ctx,
+            config: .default(forProjectRoot: fixture.root)
+        )
+
+        #expect(updated.automationMode == .trustedAutomation)
+        #expect(!updated.trustedAutomationDeviceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        #expect(updated.workspaceBindingHash == xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root))
+        #expect(updated.toolAllow.contains("group:device_automation"))
+        #expect(updated.deviceToolGroups == ["device.browser.control"])
+
+        let saved = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        #expect(saved.automationMode == .trustedAutomation)
+        #expect(saved.deviceToolGroups == ["device.browser.control"])
     }
 
     @Test

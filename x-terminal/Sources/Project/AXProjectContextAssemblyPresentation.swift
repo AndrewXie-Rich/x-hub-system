@@ -1137,39 +1137,7 @@ struct AXProjectContextAssemblyPresentation: Codable, Equatable, Sendable {
     }
 
     private static func projectMemoryResolutionTriggerSummary(_ raw: String) -> String {
-        let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        let label: String
-        switch normalized {
-        case "manual_full_scan_request":
-            label = "用户要求完整扫描项目上下文"
-        case "manual_review_request":
-            label = "用户要求先做 review / plan 梳理"
-        case "resume_from_checkpoint":
-            label = "本轮按 checkpoint continuity 接续"
-        case "restart_recovery":
-            label = "恢复链需要重新接续当前 run"
-        case "retry_execution":
-            label = "自动重试链继续上次执行"
-        case "persistent_blocker":
-            label = "当前存在结构化 blocker"
-        case "verification_gap":
-            label = "验证状态需要优先处理"
-        case "review_guidance_follow_up":
-            label = "带着 review guidance 跟进执行"
-        case "guided_execution":
-            label = "带着 Supervisor guidance 执行"
-        case "execution_step_follow_up":
-            label = "沿当前执行步骤继续"
-        case "evidence_backed_execution":
-            label = "基于最新执行证据继续"
-        case "normal_reply", "normal_execution":
-            label = "普通项目回复"
-        case "config_only_baseline":
-            label = "仅配置基线"
-        default:
-            label = XTMemorySourceTruthPresentation.humanizeToken(normalized)
-        }
-        return "\(label)（\(normalized)）"
+        XTProjectMemoryTriggerPresentation.annotated(raw)
     }
 
     private static func configOnlyStatusLine(

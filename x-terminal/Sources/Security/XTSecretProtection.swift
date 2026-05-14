@@ -20,6 +20,11 @@ enum XTSecretProtection {
             replacement: "[private omitted]"
         ),
         rule(
+            signal: "private_tag",
+            pattern: #"(?i)</?private\b[^>]*>"#,
+            replacement: "[private omitted]"
+        ),
+        rule(
             signal: "private_key_block",
             pattern: #"(?is)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----"#,
             replacement: "[redacted_private_key]"
@@ -115,7 +120,7 @@ enum XTSecretProtection {
         let dedupedSignals = orderedUnique(signals)
         let finalText = normalizedSanitized.trimmingCharacters(in: .whitespacesAndNewlines)
         let protectedText = finalText.isEmpty ? "[protected_secret_input]" : finalText
-        let shouldProtect = !dedupedSignals.isEmpty || protectedText != trimmed
+        let shouldProtect = !dedupedSignals.isEmpty
 
         return XTSecretProtectionAnalysis(
             shouldProtect: shouldProtect,
@@ -129,15 +134,21 @@ enum XTSecretProtection {
             ? "sensitive_input_detected"
             : analysis.signals.joined(separator: ", ")
         return """
-检测到敏感凭据输入，已按保护模式处理。
+检测到敏感凭据输入，已进入可恢复保护模式。
 
 - 原文未写入本地 recent/raw_log/memory
 - 原文未镜像到 Hub 会话
 - 原文未发送给模型
 
-当前测试版请不要把密码、API key、cookie、token 直接发在聊天框里。
-下一步应通过后续的 Hub Secret Vault / secure capture 绑定后，再让我代你登录或调用。
+用户或 Supervisor 可批准脱敏文本继续；如果需要使用真实凭据，必须先通过 Hub Secret Vault / secure capture 绑定。
+批准脱敏继续：回复 `approve_sanitized_continue`。
 
+status=awaiting_authorization
+approval_required=true
+approval_actor=user_or_supervisor
+execution_readiness=local_approval_required
+approval_effect=sanitized_continue_only
+deny_code=sensitive_input_detected
 reason=\(hint)
 """
     }

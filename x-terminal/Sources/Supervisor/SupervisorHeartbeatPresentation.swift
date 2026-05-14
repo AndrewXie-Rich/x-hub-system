@@ -301,6 +301,107 @@ enum SupervisorHeartbeatPresentation {
         }
     }
 
+    static func lightweightHeaderSummary(
+        entries: [SupervisorManager.HeartbeatFeedEntry],
+        sampleLimit: Int = 4,
+        timeZone: TimeZone = .current,
+        locale: Locale = .current,
+        historicalProjectBoundaryRepairStatusLine: String = "",
+        now: Date = Date()
+    ) -> (
+        overview: SupervisorHeartbeatOverviewPresentation?,
+        highestPriority: SupervisorHeartbeatPriority?
+    ) {
+        let sampledEntries = Array(
+            mergedEntries(
+                entries: entries,
+                historicalProjectBoundaryRepairStatusLine: historicalProjectBoundaryRepairStatusLine,
+                doctorPresentation: nil,
+                now: now
+            )
+            .prefix(max(1, sampleLimit))
+        )
+        guard !sampledEntries.isEmpty else {
+            return (overview: nil, highestPriority: nil)
+        }
+
+        var highestPriority: SupervisorHeartbeatPriority?
+        var visibleCandidates: [(
+            index: Int,
+            entry: SupervisorManager.HeartbeatFeedEntry,
+            summary: EntrySummary,
+            focusDescriptor: FocusDescriptor
+        )] = []
+
+        for (index, entry) in sampledEntries.enumerated() {
+            let focusDescriptor = focusDescriptor(for: entry.focusActionURL)
+            let summary = summarize(entry: entry, focusDescriptor: focusDescriptor)
+            if let current = highestPriority {
+                if summary.priority.rawValue < current.rawValue {
+                    highestPriority = summary.priority
+                }
+            } else {
+                highestPriority = summary.priority
+            }
+
+            if heartbeatDigestVisibility(
+                entry: entry,
+                summary: summary,
+                focusDescriptor: focusDescriptor
+            ) == .userFacing {
+                visibleCandidates.append((
+                    index: index,
+                    entry: entry,
+                    summary: summary,
+                    focusDescriptor: focusDescriptor
+                ))
+            }
+        }
+
+        guard let top = visibleCandidates.sorted(by: { lhs, rhs in
+            if lhs.summary.priority.rawValue != rhs.summary.priority.rawValue {
+                return lhs.summary.priority.rawValue < rhs.summary.priority.rawValue
+            }
+            return lhs.index < rhs.index
+        }).first else {
+            return (overview: nil, highestPriority: highestPriority)
+        }
+
+        let focusAction = nonEmpty(top.entry.focusActionURL).map {
+            SupervisorHeartbeatActionDescriptor(
+                action: .openFocus($0),
+                label: top.focusDescriptor.actionLabel,
+                style: top.summary.priority.actionStyle,
+                tone: top.summary.headlineTone,
+                isEnabled: true
+            )
+        }
+        let detailText = firstMeaningfulLine(top.summary.detailLines)
+            ?? userFacingContentPreview(
+                top.entry.content,
+                fallbackHeadline: top.summary.headlineText
+            )
+        let remainingCount = max(0, visibleCandidates.count - 1)
+        var metadataParts = [
+            reasonText(for: top.entry.reason),
+            timeText(top.entry.createdAt, timeZone: timeZone, locale: locale)
+        ]
+        if remainingCount > 0 {
+            metadataParts.append("另有 \(remainingCount) 条更新")
+        }
+
+        let overview = SupervisorHeartbeatOverviewPresentation(
+            priority: top.summary.priority,
+            priorityText: top.summary.priority.label,
+            priorityTone: top.summary.priority.tone,
+            headlineText: top.summary.headlineText,
+            detailText: detailText,
+            metadataText: metadataParts.joined(separator: " · "),
+            focusAction: focusAction
+        )
+        return (overview: overview, highestPriority: highestPriority)
+    }
+
     static func userFacingReasonText(for rawReason: String) -> String {
         reasonText(for: rawReason)
     }

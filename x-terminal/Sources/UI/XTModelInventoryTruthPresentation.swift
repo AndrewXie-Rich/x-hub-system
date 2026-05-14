@@ -322,7 +322,10 @@ struct XTModelInventoryTruthPresentation: Equatable, Sendable {
     }
 
     private static func loadRuntimeStatus(baseDir: URL) -> AIRuntimeStatus? {
-        AIRuntimeStatus.load(from: baseDir.appendingPathComponent("ai_runtime_status.json"))
+        guard let status = AIRuntimeStatus.load(from: baseDir.appendingPathComponent("ai_runtime_status.json")) else {
+            return nil
+        }
+        return status.hasAuthoritativeRuntimeState ? status : nil
     }
 }
 

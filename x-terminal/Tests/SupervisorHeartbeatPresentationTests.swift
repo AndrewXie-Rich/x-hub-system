@@ -51,6 +51,45 @@ struct SupervisorHeartbeatPresentationTests {
     }
 
     @Test
+    func lightweightHeaderSummaryMatchesFullOverviewForRecentEntries() throws {
+        let focusActionURL = try #require(
+            XTDeepLinkURLBuilder.projectURL(
+                projectId: "project-governance",
+                pane: .chat,
+                governanceDestination: .executionTier
+            )?.absoluteString
+        )
+        let entries = [
+            heartbeat(
+                id: "hb-governance",
+                createdAt: 1_000,
+                changed: true,
+                content: governanceHeartbeatContent(),
+                focusActionURL: focusActionURL
+            ),
+            heartbeat(
+                id: "hb-stable",
+                createdAt: 2_000,
+                changed: false,
+                focusActionURL: nil
+            )
+        ]
+        let fullPresentation = SupervisorHeartbeatPresentation.map(
+            entries: entries,
+            timeZone: TimeZone(secondsFromGMT: 0)!,
+            locale: Locale(identifier: "en_GB_POSIX")
+        )
+        let summary = SupervisorHeartbeatPresentation.lightweightHeaderSummary(
+            entries: entries,
+            timeZone: TimeZone(secondsFromGMT: 0)!,
+            locale: Locale(identifier: "en_GB_POSIX")
+        )
+
+        #expect(summary.highestPriority == .immediate)
+        #expect(summary.overview == fullPresentation.overview)
+    }
+
+    @Test
     func mapHighlightsGovernanceRepairHeartbeat() throws {
         let focusActionURL = try #require(
             XTDeepLinkURLBuilder.projectURL(

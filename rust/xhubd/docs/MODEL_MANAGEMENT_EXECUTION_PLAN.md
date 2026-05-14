@@ -2,8 +2,8 @@
 
 Status: active-proposed
 Updated: 2026-04-29
-Target root: `rust/xhubd`
-Source plan: `./docs/memory-new/xhub-remote-paid-and-local-model-management-execution-plan-v1.md`
+Target root: `/Users/andrew.xie/Documents/AX/rust/rust hub`
+Source plan: `/Users/andrew.xie/Documents/AX/x-hub-system/docs/memory-new/xhub-remote-paid-and-local-model-management-execution-plan-v1.md`
 
 ## 0. Purpose
 
@@ -484,7 +484,7 @@ Files:
 - `x-terminal/Sources/UI/XTModelInventoryTruthPresentation.swift`
 - `x-terminal/Tests/XTRustModelInventoryProjectionTests.swift`
 - `x-terminal/Tests/Fixtures/RustModelInventory/*.json`
-- `rust/xhubd/docs/RHM_010_XT_MODEL_INVENTORY_FIELDS.md`
+- `rust hub/docs/RHM_010_XT_MODEL_INVENTORY_FIELDS.md`
 - Rust Hub docs and fixtures
 
 Tasks:

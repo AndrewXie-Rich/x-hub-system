@@ -47,6 +47,23 @@ struct SupervisorMemoryAfterTurnPresentation: Equatable {
     var detailLines: [String]
 }
 
+struct SupervisorMemoryControlPlanePreviewPresentation: Equatable {
+    var iconName: String
+    var tone: SupervisorHeaderControlTone
+    var title: String
+    var statusLine: String
+    var policyLines: [String]
+    var detailLines: [String]
+}
+
+struct SupervisorMemoryAssemblyDiffPresentation: Equatable {
+    var iconName: String
+    var tone: SupervisorHeaderControlTone
+    var title: String
+    var statusLine: String
+    var detailLines: [String]
+}
+
 struct SupervisorTurnMemoryExplainabilityPresentation: Equatable {
     var iconName: String
     var tone: SupervisorHeaderControlTone
@@ -72,6 +89,8 @@ struct SupervisorMemoryBoardPresentation: Equatable {
     var continuityStatusLine: String
     var continuityDetailLine: String?
     var continuityDrillDownLines: [String]
+    var controlPlanePreview: SupervisorMemoryControlPlanePreviewPresentation?
+    var assemblyDiff: SupervisorMemoryAssemblyDiffPresentation?
     var turnExplainability: SupervisorTurnMemoryExplainabilityPresentation?
     var modelRoute: SupervisorTaskRouteExplainabilityPresentation?
     var afterTurn: SupervisorMemoryAfterTurnPresentation?
@@ -109,6 +128,7 @@ enum SupervisorMemoryBoardPresentationMapper {
         afterTurnSummary: SupervisorManager.SupervisorAfterTurnDerivedSummary?,
         pendingFollowUpQuestion: String,
         assemblySnapshot: SupervisorMemoryAssemblySnapshot?,
+        previousAssemblySnapshot: SupervisorMemoryAssemblySnapshot? = nil,
         skillRegistryStatusLine: String,
         skillRegistrySnapshot: SupervisorSkillRegistrySnapshot?,
         turnRoutingDecision: SupervisorTurnRoutingDecision? = nil,
@@ -158,6 +178,11 @@ enum SupervisorMemoryBoardPresentationMapper {
             continuityStatusLine: continuitySummaryLine,
             continuityDetailLine: continuitySummaryDetailLine,
             continuityDrillDownLines: continuityDrillDownDetailLines,
+            controlPlanePreview: controlPlanePreviewPresentation(snapshot: assemblySnapshot),
+            assemblyDiff: assemblyDiffPresentation(
+                current: assemblySnapshot,
+                previous: previousAssemblySnapshot
+            ),
             turnExplainability: turnExplainabilityPresentation(
                 decision: turnRoutingDecision,
                 assembly: turnContextAssembly,
@@ -320,6 +345,144 @@ enum SupervisorMemoryBoardPresentationMapper {
         )
     }
 
+    static func controlPlanePreviewPresentation(
+        snapshot: SupervisorMemoryAssemblySnapshot?
+    ) -> SupervisorMemoryControlPlanePreviewPresentation? {
+        guard let snapshot else { return nil }
+
+        let resolution = snapshot.actualizedMemoryAssemblyResolution
+        let requiresProjectTruth = resolution?.requiresProjectTruth
+        let bindingStrength = resolution?.memoryBindingStrength
+        let pureChatSuppressed = resolution?.projectMemorySuppressedForPureChat == true
+
+        let statusLine = controlPlanePreviewStatusLine(
+            snapshot: snapshot,
+            bindingStrength: bindingStrength,
+            requiresProjectTruth: requiresProjectTruth,
+            pureChatSuppressed: pureChatSuppressed
+        )
+        let policyLines = [
+            snapshot.recentRawContextPolicyHumanLine,
+            snapshot.reviewMemoryDepthHumanLine
+        ].compactMap(nonEmpty)
+        let detailLines = [
+            snapshot.memoryBindingStrengthHumanLine,
+            snapshot.projectMemorySuppressionHumanLine,
+            snapshot.actualizedSelectedServingObjectHumanLine,
+            snapshot.actualizedExcludedBlockHumanLine
+        ].compactMap(nonEmpty)
+
+        guard !statusLine.isEmpty || !policyLines.isEmpty || !detailLines.isEmpty else {
+            return nil
+        }
+
+        return SupervisorMemoryControlPlanePreviewPresentation(
+            iconName: "slider.horizontal.3",
+            tone: controlPlanePreviewTone(
+                snapshot: snapshot,
+                pureChatSuppressed: pureChatSuppressed,
+                requiresProjectTruth: requiresProjectTruth
+            ),
+            title: "Memory Control Plane",
+            statusLine: statusLine.isEmpty ? "当前轮控制面已展开" : statusLine,
+            policyLines: policyLines,
+            detailLines: detailLines
+        )
+    }
+
+    static func assemblyDiffPresentation(
+        current: SupervisorMemoryAssemblySnapshot?,
+        previous: SupervisorMemoryAssemblySnapshot?
+    ) -> SupervisorMemoryAssemblyDiffPresentation? {
+        guard let current, let previous else { return nil }
+
+        let currentSelected = current.actualizedSelectedServingObjectLabels
+        let previousSelected = previous.actualizedSelectedServingObjectLabels
+        let addedSelected = orderedHumanDiff(currentSelected, removing: previousSelected)
+        let removedSelected = orderedHumanDiff(previousSelected, removing: currentSelected)
+
+        let currentExcluded = current.actualizedExcludedBlockLabels
+        let previousExcluded = previous.actualizedExcludedBlockLabels
+        let addedExcluded = orderedHumanDiff(currentExcluded, removing: previousExcluded)
+        let removedExcluded = orderedHumanDiff(previousExcluded, removing: currentExcluded)
+
+        let currentPurpose = assemblyPurposeLabel(current.assemblyPurpose)
+        let previousPurpose = assemblyPurposeLabel(previous.assemblyPurpose)
+        let currentBinding = controlPlaneBindingStrengthLabel(
+            current.actualizedMemoryAssemblyResolution?.memoryBindingStrength
+        )
+        let previousBinding = controlPlaneBindingStrengthLabel(
+            previous.actualizedMemoryAssemblyResolution?.memoryBindingStrength
+        )
+        let currentSuppressed = current.actualizedMemoryAssemblyResolution?.projectMemorySuppressedForPureChat == true
+        let previousSuppressed = previous.actualizedMemoryAssemblyResolution?.projectMemorySuppressedForPureChat == true
+        let currentSuppressionReason = controlPlaneSuppressionReasonLabel(
+            current.actualizedMemoryAssemblyResolution?.suppressionReason
+        )
+        let previousSuppressionReason = controlPlaneSuppressionReasonLabel(
+            previous.actualizedMemoryAssemblyResolution?.suppressionReason
+        )
+
+        var detailLines: [String] = []
+        if currentPurpose != previousPurpose {
+            detailLines.append("Assembly Purpose：\(previousPurpose) -> \(currentPurpose)")
+        }
+        if currentBinding != previousBinding {
+            detailLines.append("Project Memory Binding：\(previousBinding) -> \(currentBinding)")
+        }
+        if currentSuppressed != previousSuppressed || currentSuppressionReason != previousSuppressionReason {
+            detailLines.append(
+                "Project Memory Suppression：\(suppressionStateLabel(previousSuppressed, reason: previousSuppressionReason)) -> \(suppressionStateLabel(currentSuppressed, reason: currentSuppressionReason))"
+            )
+        }
+        if !addedSelected.isEmpty {
+            detailLines.append("新增带入：\(addedSelected.joined(separator: "、"))")
+        }
+        if !removedSelected.isEmpty {
+            detailLines.append("移除带入：\(removedSelected.joined(separator: "、"))")
+        }
+        if !addedExcluded.isEmpty {
+            detailLines.append("新增缺口：\(addedExcluded.joined(separator: "、"))")
+        }
+        if !removedExcluded.isEmpty {
+            detailLines.append("不再缺口：\(removedExcluded.joined(separator: "、"))")
+        }
+
+        guard !detailLines.isEmpty else { return nil }
+
+        var statusParts: [String] = []
+        if !addedSelected.isEmpty || !removedSelected.isEmpty {
+            statusParts.append("带入对象 +\(addedSelected.count) / -\(removedSelected.count)")
+        }
+        if !addedExcluded.isEmpty || !removedExcluded.isEmpty {
+            statusParts.append("缺口变更 \(addedExcluded.count + removedExcluded.count)")
+        }
+        if currentPurpose != previousPurpose {
+            statusParts.append("purpose 更新")
+        }
+        if currentBinding != previousBinding {
+            statusParts.append("绑定重算")
+        }
+        if currentSuppressed != previousSuppressed {
+            statusParts.append(currentSuppressed ? "纯聊天抑制开启" : "纯聊天抑制解除")
+        }
+
+        return SupervisorMemoryAssemblyDiffPresentation(
+            iconName: "arrow.left.arrow.right.circle",
+            tone: assemblyDiffTone(
+                addedExcluded: addedExcluded,
+                removedExcluded: removedExcluded,
+                currentSuppressed: currentSuppressed,
+                previousSuppressed: previousSuppressed
+            ),
+            title: "对象级 Diff",
+            statusLine: statusParts.isEmpty
+                ? "相比上一轮，本轮装配对象已重算"
+                : statusParts.joined(separator: " · "),
+            detailLines: detailLines
+        )
+    }
+
     static func turnExplainabilityPresentation(
         decision: SupervisorTurnRoutingDecision?,
         assembly: SupervisorTurnContextAssemblyResult?,
@@ -336,6 +499,7 @@ enum SupervisorMemoryBoardPresentationMapper {
         var detailLines: [String] = [
             "主要参考：\(memoryDomainLabel(primaryDomain))",
             "辅助参考：\(supportingDomains.isEmpty ? "（无）" : supportingDomains.map(memoryDomainLabel).joined(separator: "、"))",
+            "项目绑定强度：\(projectMemoryBindingStrengthLabel(decision?.projectMemoryBindingStrength ?? .none))",
             "预计写回：\(writebackSummaryLabel(writebackSummary))"
         ]
 
@@ -595,6 +759,132 @@ enum SupervisorMemoryBoardPresentationMapper {
         return parts.joined(separator: " · ")
     }
 
+    private static func controlPlanePreviewStatusLine(
+        snapshot: SupervisorMemoryAssemblySnapshot,
+        bindingStrength: String?,
+        requiresProjectTruth: Bool?,
+        pureChatSuppressed: Bool
+    ) -> String {
+        var parts: [String] = []
+
+        let purpose = assemblyPurposeLabel(snapshot.assemblyPurpose)
+        if !purpose.isEmpty {
+            parts.append(purpose)
+        }
+
+        let binding = controlPlaneBindingStrengthLabel(bindingStrength)
+        if !binding.isEmpty {
+            parts.append("绑定 \(binding)")
+        }
+        if let requiresProjectTruth {
+            parts.append(requiresProjectTruth ? "需要 project truth" : "无需 project truth")
+        }
+        if pureChatSuppressed {
+            parts.append("pure chat light pack")
+        }
+        if parts.isEmpty {
+            parts.append("configured / recommended / effective 已解算")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private static func controlPlanePreviewTone(
+        snapshot: SupervisorMemoryAssemblySnapshot,
+        pureChatSuppressed: Bool,
+        requiresProjectTruth: Bool?
+    ) -> SupervisorHeaderControlTone {
+        if pureChatSuppressed { return .success }
+        if snapshot.reviewMemoryCeilingHit { return .warning }
+        if requiresProjectTruth == true { return .accent }
+        return .neutral
+    }
+
+    private static func assemblyDiffTone(
+        addedExcluded: [String],
+        removedExcluded: [String],
+        currentSuppressed: Bool,
+        previousSuppressed: Bool
+    ) -> SupervisorHeaderControlTone {
+        if currentSuppressed && !previousSuppressed {
+            return .success
+        }
+        if !addedExcluded.isEmpty {
+            return .warning
+        }
+        if !removedExcluded.isEmpty {
+            return .success
+        }
+        return .accent
+    }
+
+    private static func orderedHumanDiff(
+        _ values: [String],
+        removing baseline: [String]
+    ) -> [String] {
+        let baselineSet = Set(baseline)
+        return values.filter { !baselineSet.contains($0) }
+    }
+
+    private static func assemblyPurposeLabel(_ raw: String) -> String {
+        let normalized = normalizedScalar(raw)
+        guard !normalized.isEmpty else { return "Unspecified" }
+        if let purpose = XTSupervisorMemoryAssemblyPurpose(rawValue: normalized) {
+            return purpose.displayName
+        }
+        return normalized
+    }
+
+    private static func controlPlaneBindingStrengthLabel(_ raw: String?) -> String {
+        let normalized = nonEmpty(raw) ?? ""
+        switch normalized {
+        case SupervisorProjectMemoryBindingStrength.none.rawValue:
+            return "None"
+        case SupervisorProjectMemoryBindingStrength.weak.rawValue:
+            return "Weak"
+        case SupervisorProjectMemoryBindingStrength.strong.rawValue:
+            return "Strong"
+        case "":
+            return ""
+        default:
+            return normalized
+        }
+    }
+
+    private static func controlPlaneSuppressionReasonLabel(_ raw: String?) -> String {
+        let normalized = nonEmpty(raw) ?? ""
+        switch normalized {
+        case "project_reference_without_truth_need":
+            return "project reference without truth need"
+        case "ambient_project_selection_without_project_truth_need":
+            return "ambient selected project suppressed for pure chat"
+        case "":
+            return ""
+        default:
+            return normalized
+        }
+    }
+
+    private static func suppressionStateLabel(_ suppressed: Bool, reason: String) -> String {
+        guard suppressed else { return "off" }
+        if reason.isEmpty {
+            return "on"
+        }
+        return "on (\(reason))"
+    }
+
+    private static func projectMemoryBindingStrengthLabel(
+        _ strength: SupervisorProjectMemoryBindingStrength
+    ) -> String {
+        switch strength {
+        case .none:
+            return "无"
+        case .weak:
+            return "弱"
+        case .strong:
+            return "强"
+        }
+    }
+
     private static func writebackStatusLine(
         _ writeback: SupervisorAfterTurnWritebackClassification?
     ) -> String {
@@ -669,16 +959,12 @@ enum SupervisorMemoryBoardPresentationMapper {
 
     private static func taskRouteIconName(_ role: SupervisorTaskRole) -> String {
         switch role {
-        case .planner:
+        case .supervisor:
             return "list.clipboard.fill"
         case .coder:
             return "curlybraces.square.fill"
         case .reviewer:
             return "checkmark.shield.fill"
-        case .doc:
-            return "doc.text.fill"
-        case .ops:
-            return "bolt.horizontal.circle.fill"
         }
     }
 
@@ -1059,16 +1345,12 @@ enum SupervisorMemoryBoardPresentationMapper {
 
     private static func taskRoleLabel(_ role: SupervisorTaskRole) -> String {
         switch role {
-        case .planner:
-            return "规划 / 策略"
+        case .supervisor:
+            return "监督 / 策略"
         case .coder:
             return "编码 / 实现"
         case .reviewer:
             return "评审 / 回归"
-        case .doc:
-            return "文档 / 说明"
-        case .ops:
-            return "运维 / 执行"
         }
     }
 

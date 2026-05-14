@@ -4,6 +4,7 @@ enum SupervisorConversationRepairAction: Equatable {
     case openXTSettings(sectionId: String)
     case openSupervisorControlCenter(sheet: SupervisorManager.SupervisorWindowSheet)
     case openHubSetup(sectionId: String)
+    case openHubProviderKeys
     case openSystemPrivacy(target: XTSystemSettingsPrivacyTarget)
     case focusSupervisor
 }
@@ -34,6 +35,11 @@ enum SupervisorConversationRepairActionPlanner {
                 buttonTitle: "打开 XT Diagnostics",
                 action: .openXTSettings(sectionId: "diagnostics")
             )
+        case .xtExternalTerminals:
+            return SupervisorConversationRepairActionPlan(
+                buttonTitle: "打开非 XT Terminal 访问",
+                action: .openXTSettings(sectionId: "external_terminals")
+            )
         case .hubPairing:
             return SupervisorConversationRepairActionPlan(
                 buttonTitle: "打开连接进度",
@@ -43,6 +49,11 @@ enum SupervisorConversationRepairActionPlanner {
             return SupervisorConversationRepairActionPlan(
                 buttonTitle: "打开 Hub 网络连接",
                 action: .openHubSetup(sectionId: "pair_progress")
+            )
+        case .hubProviderKeys:
+            return SupervisorConversationRepairActionPlan(
+                buttonTitle: "打开 Hub Provider Keys",
+                action: .openHubProviderKeys
             )
         case .hubModels:
             return SupervisorConversationRepairActionPlan(

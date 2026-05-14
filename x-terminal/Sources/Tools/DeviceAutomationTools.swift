@@ -182,7 +182,8 @@ enum DeviceAutomationTools {
         for tool: ToolName,
         projectRoot: URL,
         config: AXProjectConfig,
-        permissionReadiness: AXTrustedAutomationPermissionOwnerReadiness
+        permissionReadiness: AXTrustedAutomationPermissionOwnerReadiness,
+        requiredPermissionKeysOverride: [AXTrustedAutomationPermissionKey]? = nil
     ) -> XTDeviceAutomationGateDecision {
         let status = config.trustedAutomationStatus(
             forProjectRoot: projectRoot,
@@ -246,9 +247,10 @@ enum DeviceAutomationTools {
             )
         }
 
-        let requiredPermissions = AXTrustedAutomationPermissionOwnerReadiness.requiredPermissionKeys(
-            forDeviceToolGroups: [requiredGroup]
-        )
+        let requiredPermissions = requiredPermissionKeysOverride
+            ?? AXTrustedAutomationPermissionOwnerReadiness.requiredPermissions(
+                forDeviceToolGroups: [requiredGroup]
+            )
         if let missingPermission = requiredPermissions.first(where: { permissionReadiness.permissionStatus(for: $0) != .granted }) {
             return rejected(
                 code: .systemPermissionMissing,

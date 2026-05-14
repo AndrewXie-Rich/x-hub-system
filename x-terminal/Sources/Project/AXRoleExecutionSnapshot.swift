@@ -295,8 +295,9 @@ enum AXRoleExecutionSnapshots {
         remoteRetryReasonCode: String = "",
         source: String
     ) -> AXRoleExecutionSnapshot {
-        AXRoleExecutionSnapshot(
-            role: role,
+        let primaryRole = role.primaryRole
+        return AXRoleExecutionSnapshot(
+            role: primaryRole,
             updatedAt: max(0, updatedAt),
             stage: normalize(stage),
             requestedModelId: normalize(requestedModelId),
@@ -366,22 +367,16 @@ enum AXRoleExecutionSnapshots {
     private static func inferredRole(from obj: [String: Any]) -> AXRole? {
         if let raw = text(obj["role"]),
            let role = AXRole(rawValue: raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) {
-            return role
+            return role.primaryRole
         }
 
         let stage = (text(obj["stage"]) ?? text(obj["task_type"]) ?? "").lowercased()
         switch stage {
-        case "chat_plan", "assist", "chat_plan_failed":
+        case "chat_plan", "assist", "chat_plan_failed", "coder", "x_terminal_coarse", "x_terminal_refine":
             return .coder
-        case "x_terminal_coarse":
-            return .coarse
-        case "x_terminal_refine":
-            return .refine
-        case "review":
+        case "review", "reviewer":
             return .reviewer
-        case "advisor":
-            return .advisor
-        case "supervisor":
+        case "advisor", "supervisor":
             return .supervisor
         default:
             return nil

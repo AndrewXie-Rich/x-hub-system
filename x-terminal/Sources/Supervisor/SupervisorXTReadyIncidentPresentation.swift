@@ -932,49 +932,12 @@ enum SupervisorXTReadyIncidentPresentationMapper {
         ]
             .filter { !$0.isEmpty }
             .joined(separator: "\n")
-        let title = diagnosis.headline.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedTitle = title.isEmpty ? nil : title
-        let resolvedDetail = detail.isEmpty ? nil : detail
-
-        switch destination {
-        case .xtPairHub:
-            return XTDeepLinkURLBuilder.settingsURL(
-                sectionId: "pair_hub",
-                title: resolvedTitle,
-                detail: resolvedDetail
-            )?.absoluteString
-        case .xtChooseModel:
-            return XTDeepLinkURLBuilder.supervisorModelSettingsURL(
-                title: resolvedTitle,
-                detail: resolvedDetail
-            )?.absoluteString
-        case .xtDiagnostics:
-            return XTDeepLinkURLBuilder.settingsURL(
-                sectionId: "diagnostics",
-                title: resolvedTitle,
-                detail: resolvedDetail
-            )?.absoluteString
-        case .hubPairing, .hubLAN:
-            return XTDeepLinkURLBuilder.hubSetupURL(
-                sectionId: "pair_progress",
-                title: resolvedTitle,
-                detail: resolvedDetail
-            )?.absoluteString
-        case .hubModels:
-            return XTDeepLinkURLBuilder.hubSetupURL(
-                sectionId: "choose_model",
-                title: resolvedTitle,
-                detail: resolvedDetail
-            )?.absoluteString
-        case .hubGrants, .hubSecurity, .hubDiagnostics:
-            return XTDeepLinkURLBuilder.hubSetupURL(
-                sectionId: "troubleshoot",
-                title: resolvedTitle,
-                detail: resolvedDetail
-            )?.absoluteString
-        case .systemPermissions, .homeSupervisor:
-            return XTDeepLinkURLBuilder.supervisorSettingsURL()?.absoluteString
-        }
+        return SupervisorManager.troubleshootActionURL(
+            repairEntry: destination,
+            headline: diagnosis.headline,
+            detail: detail,
+            detailLines: diagnosis.detailLines
+        )
     }
 
     private static func localizedExportStatus(_ raw: String) -> String {

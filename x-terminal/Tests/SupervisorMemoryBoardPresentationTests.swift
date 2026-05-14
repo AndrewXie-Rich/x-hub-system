@@ -1105,4 +1105,247 @@ struct SupervisorMemoryBoardPresentationTests {
             }
         )
     }
+
+    @Test
+    func controlPlanePreviewSurfacesConfiguredRecommendedEffectiveTriplesAndPureChatSuppression() throws {
+        let snapshot = SupervisorMemoryAssemblySnapshot(
+            source: "hub",
+            resolutionSource: "hub_memory",
+            updatedAt: 1,
+            assemblyPurpose: XTSupervisorMemoryAssemblyPurpose.conversation.rawValue,
+            reviewLevelHint: SupervisorReviewLevel.r1Pulse.rawValue,
+            requestedProfile: XTMemoryServingProfile.m1Execute.rawValue,
+            profileFloor: XTMemoryServingProfile.m1Execute.rawValue,
+            resolvedProfile: XTMemoryServingProfile.m1Execute.rawValue,
+            attemptedProfiles: [XTMemoryServingProfile.m1Execute.rawValue],
+            progressiveUpgradeCount: 0,
+            configuredRawWindowProfile: XTSupervisorRecentRawContextProfile.autoMax.rawValue,
+            recommendedRawWindowProfile: XTSupervisorRecentRawContextProfile.standard12Pairs.rawValue,
+            effectiveRawWindowProfile: XTSupervisorRecentRawContextProfile.standard12Pairs.rawValue,
+            configuredReviewMemoryDepth: XTSupervisorReviewMemoryDepthProfile.auto.rawValue,
+            recommendedReviewMemoryDepth: XTSupervisorReviewMemoryDepthProfile.compact.rawValue,
+            effectiveReviewMemoryDepth: XTSupervisorReviewMemoryDepthProfile.compact.rawValue,
+            sTierReviewMemoryCeiling: XTMemoryServingProfile.m4FullScan.rawValue,
+            reviewMemoryCeilingHit: false,
+            selectedSections: ["dialogue_window"],
+            omittedSections: [],
+            servingObjectContract: [
+                "dialogue_window",
+                "focused_project_anchor_pack",
+                "delta_feed",
+                "evidence_pack"
+            ],
+            contextRefsSelected: 0,
+            contextRefsOmitted: 0,
+            evidenceItemsSelected: 0,
+            evidenceItemsOmitted: 0,
+            budgetTotalTokens: 640,
+            usedTotalTokens: 220,
+            truncatedLayers: [],
+            freshness: "fresh",
+            cacheHit: false,
+            denyCode: nil,
+            downgradeCode: nil,
+            reasonCode: nil,
+            compressionPolicy: "balanced",
+            memoryAssemblyResolution: XTMemoryAssemblyResolution(
+                role: .supervisor,
+                dominantMode: SupervisorTurnMode.personalFirst.rawValue,
+                trigger: "user_turn",
+                configuredDepth: XTSupervisorReviewMemoryDepthProfile.auto.rawValue,
+                recommendedDepth: XTSupervisorReviewMemoryDepthProfile.compact.rawValue,
+                effectiveDepth: XTSupervisorReviewMemoryDepthProfile.compact.rawValue,
+                ceilingFromTier: XTMemoryServingProfile.m4FullScan.rawValue,
+                ceilingHit: false,
+                selectedSlots: ["recent_raw_dialogue_window"],
+                selectedPlanes: ["continuity_lane"],
+                selectedServingObjects: ["recent_raw_dialogue_window"],
+                excludedBlocks: ["focused_project_anchor_pack", "delta_feed", "evidence_pack"],
+                memoryBindingStrength: SupervisorProjectMemoryBindingStrength.none.rawValue,
+                requiresProjectTruth: false,
+                projectMemorySuppressedForPureChat: true,
+                suppressionReason: "ambient_project_selection_without_project_truth_need"
+            )
+        )
+
+        let presentation = SupervisorMemoryBoardPresentationMapper.map(
+            statusLine: "memory=hub",
+            memorySource: "hub",
+            replyExecutionMode: "remote_model",
+            requestedModelId: "openai/gpt-5.4",
+            actualModelId: "openai/gpt-5.4",
+            failureReasonCode: "",
+            readiness: .init(ready: true, statusLine: "ready", issues: []),
+            rawAssemblyStatusLine: "assembly ok",
+            afterTurnSummary: nil,
+            pendingFollowUpQuestion: "",
+            assemblySnapshot: snapshot,
+            skillRegistryStatusLine: "skills=none",
+            skillRegistrySnapshot: nil,
+            digests: [],
+            preview: ""
+        )
+
+        let preview = try #require(presentation.controlPlanePreview)
+        #expect(preview.tone == .success)
+        #expect(preview.statusLine.contains("Conversation"))
+        #expect(preview.statusLine.contains("无需 project truth"))
+        #expect(preview.statusLine.contains("pure chat light pack"))
+        #expect(preview.policyLines.contains("Recent Raw Context：configured Auto Max · recommended Standard · effective Standard"))
+        #expect(preview.policyLines.contains("Review Memory Depth：configured Auto · recommended Compact · effective Compact · ceiling m4_full_scan"))
+        #expect(preview.detailLines.contains("Project Memory Binding：None · project truth not required"))
+        #expect(preview.detailLines.contains("Project Memory Suppression：pure chat light pack applied · ambient selected project was suppressed because the turn stays in pure chat"))
+        #expect(preview.detailLines.contains("实际带入：最近对话"))
+        #expect(preview.detailLines.contains("本轮缺口：当前项目摘要、最近增量、执行证据"))
+    }
+
+    @Test
+    func assemblyDiffPreviewShowsServingObjectAndBindingChangesAgainstPreviousSnapshot() throws {
+        let previous = SupervisorMemoryAssemblySnapshot(
+            source: "hub",
+            resolutionSource: "hub_memory",
+            updatedAt: 1,
+            assemblyPurpose: XTSupervisorMemoryAssemblyPurpose.governanceReview.rawValue,
+            reviewLevelHint: SupervisorReviewLevel.r2Strategic.rawValue,
+            requestedProfile: XTMemoryServingProfile.m2PlanReview.rawValue,
+            profileFloor: XTMemoryServingProfile.m2PlanReview.rawValue,
+            resolvedProfile: XTMemoryServingProfile.m2PlanReview.rawValue,
+            attemptedProfiles: [XTMemoryServingProfile.m2PlanReview.rawValue],
+            progressiveUpgradeCount: 0,
+            selectedSections: ["dialogue_window", "focused_project_anchor_pack", "delta_feed"],
+            omittedSections: [],
+            servingObjectContract: [
+                "dialogue_window",
+                "focused_project_anchor_pack",
+                "delta_feed",
+                "evidence_pack"
+            ],
+            contextRefsSelected: 0,
+            contextRefsOmitted: 0,
+            evidenceItemsSelected: 0,
+            evidenceItemsOmitted: 0,
+            budgetTotalTokens: 900,
+            usedTotalTokens: 420,
+            truncatedLayers: [],
+            freshness: "fresh",
+            cacheHit: false,
+            denyCode: nil,
+            downgradeCode: nil,
+            reasonCode: nil,
+            compressionPolicy: "balanced",
+            memoryAssemblyResolution: XTMemoryAssemblyResolution(
+                role: .supervisor,
+                dominantMode: SupervisorTurnMode.projectFirst.rawValue,
+                trigger: "heartbeat_no_progress_review",
+                configuredDepth: XTSupervisorReviewMemoryDepthProfile.planReview.rawValue,
+                recommendedDepth: XTSupervisorReviewMemoryDepthProfile.planReview.rawValue,
+                effectiveDepth: XTSupervisorReviewMemoryDepthProfile.planReview.rawValue,
+                ceilingFromTier: XTMemoryServingProfile.m2PlanReview.rawValue,
+                ceilingHit: false,
+                selectedSlots: [
+                    "recent_raw_dialogue_window",
+                    "focused_project_anchor_pack",
+                    "delta_feed"
+                ],
+                selectedPlanes: ["continuity_lane", "project_plane"],
+                selectedServingObjects: [
+                    "recent_raw_dialogue_window",
+                    "focused_project_anchor_pack",
+                    "delta_feed"
+                ],
+                excludedBlocks: ["evidence_pack"],
+                memoryBindingStrength: SupervisorProjectMemoryBindingStrength.strong.rawValue,
+                requiresProjectTruth: true,
+                projectMemorySuppressedForPureChat: false
+            )
+        )
+
+        let current = SupervisorMemoryAssemblySnapshot(
+            source: "hub",
+            resolutionSource: "hub_memory",
+            updatedAt: 2,
+            assemblyPurpose: XTSupervisorMemoryAssemblyPurpose.conversation.rawValue,
+            reviewLevelHint: SupervisorReviewLevel.r1Pulse.rawValue,
+            requestedProfile: XTMemoryServingProfile.m1Execute.rawValue,
+            profileFloor: XTMemoryServingProfile.m1Execute.rawValue,
+            resolvedProfile: XTMemoryServingProfile.m1Execute.rawValue,
+            attemptedProfiles: [XTMemoryServingProfile.m1Execute.rawValue],
+            progressiveUpgradeCount: 0,
+            selectedSections: ["dialogue_window"],
+            omittedSections: [],
+            servingObjectContract: [
+                "dialogue_window",
+                "focused_project_anchor_pack",
+                "delta_feed",
+                "evidence_pack"
+            ],
+            contextRefsSelected: 0,
+            contextRefsOmitted: 0,
+            evidenceItemsSelected: 0,
+            evidenceItemsOmitted: 0,
+            budgetTotalTokens: 640,
+            usedTotalTokens: 200,
+            truncatedLayers: [],
+            freshness: "fresh",
+            cacheHit: false,
+            denyCode: nil,
+            downgradeCode: nil,
+            reasonCode: nil,
+            compressionPolicy: "balanced",
+            memoryAssemblyResolution: XTMemoryAssemblyResolution(
+                role: .supervisor,
+                dominantMode: SupervisorTurnMode.personalFirst.rawValue,
+                trigger: "user_turn",
+                configuredDepth: XTSupervisorReviewMemoryDepthProfile.compact.rawValue,
+                recommendedDepth: XTSupervisorReviewMemoryDepthProfile.compact.rawValue,
+                effectiveDepth: XTSupervisorReviewMemoryDepthProfile.compact.rawValue,
+                ceilingFromTier: XTMemoryServingProfile.m4FullScan.rawValue,
+                ceilingHit: false,
+                selectedSlots: ["recent_raw_dialogue_window"],
+                selectedPlanes: ["continuity_lane"],
+                selectedServingObjects: ["recent_raw_dialogue_window"],
+                excludedBlocks: [
+                    "focused_project_anchor_pack",
+                    "delta_feed",
+                    "evidence_pack"
+                ],
+                memoryBindingStrength: SupervisorProjectMemoryBindingStrength.none.rawValue,
+                requiresProjectTruth: false,
+                projectMemorySuppressedForPureChat: true,
+                suppressionReason: "ambient_project_selection_without_project_truth_need"
+            )
+        )
+
+        let presentation = SupervisorMemoryBoardPresentationMapper.map(
+            statusLine: "memory=hub",
+            memorySource: "hub",
+            replyExecutionMode: "remote_model",
+            requestedModelId: "openai/gpt-5.4",
+            actualModelId: "openai/gpt-5.4",
+            failureReasonCode: "",
+            readiness: .init(ready: true, statusLine: "ready", issues: []),
+            rawAssemblyStatusLine: "assembly ok",
+            afterTurnSummary: nil,
+            pendingFollowUpQuestion: "",
+            assemblySnapshot: current,
+            previousAssemblySnapshot: previous,
+            skillRegistryStatusLine: "skills=none",
+            skillRegistrySnapshot: nil,
+            digests: [],
+            preview: ""
+        )
+
+        let diff = try #require(presentation.assemblyDiff)
+        #expect(diff.tone == .success)
+        #expect(diff.statusLine.contains("带入对象 +0 / -2"))
+        #expect(diff.statusLine.contains("缺口变更 2"))
+        #expect(diff.statusLine.contains("purpose 更新"))
+        #expect(diff.statusLine.contains("绑定重算"))
+        #expect(diff.statusLine.contains("纯聊天抑制开启"))
+        #expect(diff.detailLines.contains("Assembly Purpose：Governance Review -> Conversation"))
+        #expect(diff.detailLines.contains("Project Memory Binding：Strong -> None"))
+        #expect(diff.detailLines.contains("Project Memory Suppression：off -> on (ambient selected project suppressed for pure chat)"))
+        #expect(diff.detailLines.contains("移除带入：当前项目摘要、最近增量"))
+        #expect(diff.detailLines.contains("新增缺口：当前项目摘要、最近增量"))
+    }
 }

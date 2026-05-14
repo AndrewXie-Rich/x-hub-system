@@ -33,14 +33,14 @@ Enable:
 
 ```bash
 export XHUB_RUST_SCHEDULER_SHADOW_COMPARE=1
-export XHUB_RUST_HUB_ROOT="rust/xhubd"
+export XHUB_RUST_HUB_ROOT="/Users/andrew.xie/Documents/AX/rust/rust hub"
 ```
 
 Optional overrides:
 
 ```bash
-export XHUB_RUST_HUB_RUNNER="rust/xhubd/tools/run_rust_hub.command"
-export XHUB_RUST_SCHEDULER_SHADOW_COMPARE_SCRIPT="rust/xhubd/tools/node_scheduler_shadow_compare.js"
+export XHUB_RUST_HUB_RUNNER="/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command"
+export XHUB_RUST_SCHEDULER_SHADOW_COMPARE_SCRIPT="/Users/andrew.xie/Documents/AX/rust/rust hub/tools/node_scheduler_shadow_compare.js"
 export XHUB_RUST_SCHEDULER_SHADOW_COMPARE_THROTTLE_MS=5000
 export XHUB_RUST_SCHEDULER_SHADOW_COMPARE_TIMEOUT_MS=5000
 export XHUB_RUST_SCHEDULER_SHADOW_COMPARE_VERBOSE=1
@@ -58,13 +58,13 @@ Enable:
 
 ```bash
 export XHUB_RUST_SCHEDULER_STATUS_READ=1
-export XHUB_RUST_HUB_ROOT="rust/xhubd"
+export XHUB_RUST_HUB_ROOT="/Users/andrew.xie/Documents/AX/rust/rust hub"
 ```
 
 Optional overrides:
 
 ```bash
-export XHUB_RUST_HUB_RUNNER="rust/xhubd/tools/run_rust_hub.command"
+export XHUB_RUST_HUB_RUNNER="/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command"
 export XHUB_RUST_SCHEDULER_STATUS_REQUIRE_READY=1
 export XHUB_RUST_SCHEDULER_STATUS_TIMEOUT_MS=5000
 export XHUB_RUST_SCHEDULER_STATUS_HTTP=1
@@ -106,7 +106,7 @@ Validation:
 ```bash
 node x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_scheduler_bridge.test.js
 node x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_scheduler_shadow_compare_service_hook.test.js
-bash "rust/xhubd/tools/scheduler_status_http_bridge_smoke.command"
+bash "rust/rust hub/tools/scheduler_status_http_bridge_smoke.command"
 ```
 
 ## Provider Route Shadow Compare
@@ -131,14 +131,14 @@ Enable:
 
 ```bash
 export XHUB_RUST_PROVIDER_ROUTE_SHADOW_COMPARE=1
-export XHUB_RUST_HUB_ROOT="rust/xhubd"
+export XHUB_RUST_HUB_ROOT="/Users/andrew.xie/Documents/AX/rust/rust hub"
 ```
 
 Optional overrides:
 
 ```bash
-export XHUB_RUST_HUB_RUNNER="rust/xhubd/tools/run_rust_hub.command"
-export XHUB_RUST_PROVIDER_ROUTE_RUNNER="rust/xhubd/tools/run_rust_hub.command"
+export XHUB_RUST_HUB_RUNNER="/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command"
+export XHUB_RUST_PROVIDER_ROUTE_RUNNER="/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command"
 export XHUB_RUST_PROVIDER_ROUTE_SHADOW_COMPARE_THROTTLE_MS=1000
 export XHUB_RUST_PROVIDER_ROUTE_SHADOW_COMPARE_TIMEOUT_MS=5000
 export XHUB_RUST_PROVIDER_ROUTE_SHADOW_COMPARE_MAX_IN_FLIGHT=2
@@ -170,10 +170,10 @@ Validation:
 ```bash
 node x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_provider_route_shadow_compare.test.js
 node x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_provider_route_shadow_compare_service_hook.test.js
-bash "rust/xhubd/tools/provider_route_smoke.command" --model-id gpt-4o
-bash "rust/xhubd/tools/provider_route_http_shadow_compare_smoke.command"
-bash "rust/xhubd/tools/provider_route_shadow_compare_smoke.command" --model-id gpt-4o
-bash "rust/xhubd/tools/provider_route_shadow_compare_runner.command" --runs 10 --expect-ready --expect-zero-mismatch
+bash "rust/rust hub/tools/provider_route_smoke.command" --model-id gpt-4o
+bash "rust/rust hub/tools/provider_route_http_shadow_compare_smoke.command"
+bash "rust/rust hub/tools/provider_route_shadow_compare_smoke.command" --model-id gpt-4o
+bash "rust/rust hub/tools/provider_route_shadow_compare_runner.command" --runs 10 --expect-ready --expect-zero-mismatch
 ```
 
 The sustained runner verifies the read-only provider authority prep bridge once
@@ -259,8 +259,8 @@ Validation:
 ```bash
 node x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_provider_route_authority_bridge.test.js
 node x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_provider_route_authority_generate_hook.test.js
-bash "rust/xhubd/tools/provider_route_generate_observe_runner.command" --runs 5 --concurrency 1 --max-generate-ms 3000
-bash "rust/xhubd/tools/provider_route_generate_observe_runner.command" --runs 3 --concurrency 1 --enable-candidate-audit --expect-candidate-ready --min-candidate-audits 3 --observe-throttle-ms 0 --observe-max-in-flight 2 --max-generate-ms 3000
+bash "rust/rust hub/tools/provider_route_generate_observe_runner.command" --runs 5 --concurrency 1 --max-generate-ms 3000
+bash "rust/rust hub/tools/provider_route_generate_observe_runner.command" --runs 3 --concurrency 1 --enable-candidate-audit --expect-candidate-ready --min-candidate-audits 3 --observe-throttle-ms 0 --observe-max-in-flight 2 --max-generate-ms 3000
 ```
 
 The candidate-audit runner emits `candidate_readiness` with schema
@@ -273,7 +273,7 @@ no suspected provider secret leakage, and Generate latency under
 Combined provider route cutover readiness:
 
 ```bash
-bash "rust/xhubd/tools/provider_route_cutover_readiness_runner.command" --shadow-runs 3 --candidate-runs 3 --expect-ready
+bash "rust/rust hub/tools/provider_route_cutover_readiness_runner.command" --shadow-runs 3 --candidate-runs 3 --expect-ready
 ```
 
 This emits `xhub.provider_route_cutover_readiness.v1` and combines provider
@@ -285,7 +285,7 @@ evidence-only; it does not enable provider routing authority in the Node Hub.
 Provider authority dry-run plan:
 
 ```bash
-bash "rust/xhubd/tools/provider_route_authority_plan_runner.command" --shadow-runs 3 --candidate-runs 3 --expect-ready
+bash "rust/rust hub/tools/provider_route_authority_plan_runner.command" --shadow-runs 3 --candidate-runs 3 --expect-ready
 ```
 
 This emits `xhub.provider_route_authority_dry_run_plan.v1`. It lists the env
@@ -303,26 +303,26 @@ node x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_provider_route_shad
 node x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_provider_route_shadow_compare_service_hook.test.js
 node x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_provider_route_authority_generate_hook.test.js
 node x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_provider_route_authority_bridge.test.js
-bash "rust/xhubd/tools/provider_route_generate_observe_runner.command" --runs 5 --concurrency 1 --max-generate-ms 3000
-bash "rust/xhubd/tools/provider_route_generate_observe_runner.command" --runs 3 --concurrency 1 --enable-candidate-audit --expect-candidate-ready --min-candidate-audits 3 --observe-throttle-ms 0 --observe-max-in-flight 2 --max-generate-ms 3000
+bash "rust/rust hub/tools/provider_route_generate_observe_runner.command" --runs 5 --concurrency 1 --max-generate-ms 3000
+bash "rust/rust hub/tools/provider_route_generate_observe_runner.command" --runs 3 --concurrency 1 --enable-candidate-audit --expect-candidate-ready --min-candidate-audits 3 --observe-throttle-ms 0 --observe-max-in-flight 2 --max-generate-ms 3000
 node x-hub-system/x-hub/grpc-server/hub_grpc_server/src/supervisor_control_plane_service_api.test.js
 ```
 
 Rust Hub validation:
 
 ```bash
-node "rust/xhubd/tools/node_scheduler_shadow_compare.js" --self-test
-bash "rust/xhubd/tools/run_rust_hub.command" scheduler compare \
+node "rust/rust hub/tools/node_scheduler_shadow_compare.js" --self-test
+bash "rust/rust hub/tools/run_rust_hub.command" scheduler compare \
   --node-in-flight-total 0 \
   --node-queue-depth 0 \
   --node-oldest-queued-ms 0
-bash "rust/xhubd/tools/run_rust_hub.command" scheduler reports --limit 20
+bash "rust/rust hub/tools/run_rust_hub.command" scheduler reports --limit 20
 ```
 
 One-shot smoke using the real Node Hub service handler:
 
 ```bash
-node "rust/xhubd/tools/node_hub_shadow_compare_smoke.js" --timeout-ms 15000
+node "rust/rust hub/tools/node_hub_shadow_compare_smoke.js" --timeout-ms 15000
 ```
 
 The smoke creates a temporary Node Hub DB/runtime dir, enables
@@ -333,7 +333,7 @@ summary.
 Continuous evidence collection:
 
 ```bash
-node "rust/xhubd/tools/node_hub_shadow_compare_smoke.js" \
+node "rust/rust hub/tools/node_hub_shadow_compare_smoke.js" \
   --runs 50 \
   --interval-ms 1000 \
   --timeout-ms 15000 \
@@ -350,7 +350,7 @@ Use the runner when you want Node Hub to run normally with the opt-in Rust
 shadow compare hook enabled, while Rust Hub reports are printed periodically:
 
 ```bash
-node "rust/xhubd/tools/node_hub_shadow_compare_runner.js" \
+node "rust/rust hub/tools/node_hub_shadow_compare_runner.js" \
   --duration-ms 60000 \
   --report-interval-ms 5000 \
   --hub-host 127.0.0.1 \
@@ -369,7 +369,7 @@ compare reports appear when real or smoke traffic calls
 Monitor only, without starting Node Hub:
 
 ```bash
-node "rust/xhubd/tools/node_hub_shadow_compare_runner.js" \
+node "rust/rust hub/tools/node_hub_shadow_compare_runner.js" \
   --no-start \
   --duration-ms 1000 \
   --report-interval-ms 500 \
@@ -393,13 +393,13 @@ Enable:
 
 ```bash
 export XHUB_RUST_SCHEDULER_LEASE_SHADOW=1
-export XHUB_RUST_HUB_ROOT="rust/xhubd"
+export XHUB_RUST_HUB_ROOT="/Users/andrew.xie/Documents/AX/rust/rust hub"
 ```
 
 Optional overrides:
 
 ```bash
-export XHUB_RUST_HUB_RUNNER="rust/xhubd/tools/run_rust_hub.command"
+export XHUB_RUST_HUB_RUNNER="/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command"
 export XHUB_RUST_SCHEDULER_LEASE_SHADOW_TIMEOUT_MS=5000
 export XHUB_RUST_SCHEDULER_LEASE_SHADOW_OWNER=node-hub-paid-ai-shadow
 export XHUB_RUST_SCHEDULER_LEASE_SHADOW_DURATION_MS=300000
@@ -430,8 +430,8 @@ Validation:
 
 ```bash
 node x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_scheduler_lease_shadow_bridge.test.js
-bash "rust/xhubd/tools/scheduler_lease_shadow_http_bridge_smoke.command"
-bash "rust/xhubd/tools/run_rust_hub.command" scheduler lease-shadow-report --limit 20
+bash "rust/rust hub/tools/scheduler_lease_shadow_http_bridge_smoke.command"
+bash "rust/rust hub/tools/run_rust_hub.command" scheduler lease-shadow-report --limit 20
 ```
 
 Healthy output has `stale_active=0`, `orphaned_leases=0`, and terminal mirrored
@@ -441,7 +441,7 @@ runs in `completed`, `failed`, or `canceled` rather than long-lived `queued` or
 Cutover readiness gate:
 
 ```bash
-bash "rust/xhubd/tools/run_rust_hub.command" scheduler cutover-readiness
+bash "rust/rust hub/tools/run_rust_hub.command" scheduler cutover-readiness
 ```
 
 The readiness gate combines scheduler compare evidence and lease shadow
@@ -452,7 +452,7 @@ permission signal.
 Automated evidence collection:
 
 ```bash
-node "rust/xhubd/tools/scheduler_cutover_readiness_runner.js" \
+node "rust/rust hub/tools/scheduler_cutover_readiness_runner.js" \
   --runs 3 \
   --expect-ready \
   --expect-zero-mismatch
@@ -472,7 +472,7 @@ before enabling any Rust scheduler write authority from Node.
 Report inspection:
 
 ```bash
-bash "rust/xhubd/tools/run_rust_hub.command" scheduler reports --limit 50
+bash "rust/rust hub/tools/run_rust_hub.command" scheduler reports --limit 50
 ```
 
 ## Authority Bridge
@@ -489,7 +489,7 @@ export XHUB_RUST_SCHEDULER_AUTHORITY=1
 export XHUB_RUST_SCHEDULER_AUTHORITY_REQUIRE_READY=1
 export XHUB_RUST_SCHEDULER_STATUS_READ=1
 export XHUB_RUST_SCHEDULER_STATUS_REQUIRE_READY=1
-export XHUB_RUST_HUB_ROOT="rust/xhubd"
+export XHUB_RUST_HUB_ROOT="/Users/andrew.xie/Documents/AX/rust/rust hub"
 ```
 
 Optional overrides:
@@ -530,15 +530,15 @@ Validation:
 
 ```bash
 node x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_scheduler_authority_bridge.test.js
-bash "rust/xhubd/tools/scheduler_authority_http_bridge_smoke.command"
-bash "rust/xhubd/tools/scheduler_authority_runner.command" --runs 1 --timeout-ms 45000
-bash "rust/xhubd/tools/scheduler_authority_runner.command" --runs 1 --concurrency 3 --bridge-response-delay-ms 3000 --timeout-ms 70000 --expect-queued
-bash "rust/xhubd/tools/scheduler_authority_runner.command" --scenario queued-cancel --bridge-response-delay-ms 3000 --timeout-ms 70000
-bash "rust/xhubd/tools/scheduler_authority_runner.command" --scenario queued-timeout --timeout-ms 70000
-bash "rust/xhubd/tools/node_hub_authority_live_runner.command" --runs 1 --timeout-ms 45000
-bash "rust/xhubd/tools/node_hub_authority_live_runner.command" --runs 3 --concurrency 3 --bridge-response-delay-ms 2500 --timeout-ms 90000 --expect-queued
-bash "rust/xhubd/tools/node_hub_authority_live_runner.command" --scenario queued-cancel --timeout-ms 70000
-bash "rust/xhubd/tools/node_hub_authority_live_runner.command" --scenario queued-timeout --timeout-ms 70000
+bash "rust/rust hub/tools/scheduler_authority_http_bridge_smoke.command"
+bash "rust/rust hub/tools/scheduler_authority_runner.command" --runs 1 --timeout-ms 45000
+bash "rust/rust hub/tools/scheduler_authority_runner.command" --runs 1 --concurrency 3 --bridge-response-delay-ms 3000 --timeout-ms 70000 --expect-queued
+bash "rust/rust hub/tools/scheduler_authority_runner.command" --scenario queued-cancel --bridge-response-delay-ms 3000 --timeout-ms 70000
+bash "rust/rust hub/tools/scheduler_authority_runner.command" --scenario queued-timeout --timeout-ms 70000
+bash "rust/rust hub/tools/node_hub_authority_live_runner.command" --runs 1 --timeout-ms 45000
+bash "rust/rust hub/tools/node_hub_authority_live_runner.command" --runs 3 --concurrency 3 --bridge-response-delay-ms 2500 --timeout-ms 90000 --expect-queued
+bash "rust/rust hub/tools/node_hub_authority_live_runner.command" --scenario queued-cancel --timeout-ms 70000
+bash "rust/rust hub/tools/node_hub_authority_live_runner.command" --scenario queued-timeout --timeout-ms 70000
 ```
 
 The authority runner creates temporary Node and Rust databases, writes a fake

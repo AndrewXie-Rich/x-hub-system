@@ -223,6 +223,60 @@ struct SupervisorGuidanceInjectionStoreTests {
         #expect(SupervisorGuidanceInjectionStore.lifecycleSummary(for: stored, nowMs: 500) == "expired")
     }
 
+    @Test
+    func applyStateMovesFromQueuedToAckPendingWhenGuidanceBecomesPromptVisible() {
+        let record = makeGuidance(
+            injectionId: "guidance-apply-state",
+            injectedAtMs: 100,
+            ackRequired: true,
+            ackStatus: .pending
+        )
+
+        #expect(
+            SupervisorGuidanceInjectionStore.applyState(
+                for: record,
+                nowMs: 200
+            ) == .queued
+        )
+        #expect(
+            SupervisorGuidanceInjectionStore.applyState(
+                for: record,
+                nowMs: 200,
+                promptVisibleGuidanceInjectionId: record.injectionId
+            ) == .ackPending
+        )
+    }
+
+    @Test
+    func applyStateCanMarkOlderGuidanceAsSupersededByNewerAcceptedGuidance() {
+        let older = makeGuidance(
+            injectionId: "guidance-older",
+            injectedAtMs: 100,
+            ackRequired: true,
+            ackStatus: .pending
+        )
+        let newer = makeGuidance(
+            injectionId: "guidance-newer",
+            injectedAtMs: 200,
+            ackRequired: true,
+            ackStatus: .accepted
+        )
+
+        #expect(
+            SupervisorGuidanceInjectionStore.applyState(
+                for: older,
+                nowMs: 300,
+                supersededByNewerGuidance: true
+            ) == .superseded
+        )
+        #expect(
+            SupervisorGuidanceInjectionStore.applyState(
+                for: newer,
+                nowMs: 300
+            ) == .acked
+        )
+    }
+
     private func makeProjectRoot(named name: String) throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(name)-\(UUID().uuidString)", isDirectory: true)

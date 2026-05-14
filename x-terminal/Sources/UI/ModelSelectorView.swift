@@ -5,7 +5,8 @@ struct ModelSelectorView: View {
     let config: AXProjectConfig?
     var focusContext: XTSectionFocusContext? = nil
 
-    @EnvironmentObject private var appModel: AppModel
+    @Environment(\.xtAppModelReference) private var appModelReference
+    @EnvironmentObject private var modelSettingsStore: XTModelSettingsStore
     @StateObject private var modelManager = HubModelManager.shared
     @StateObject private var updateFeedback = XTTransientUpdateFeedbackState()
     @State private var showPopover: Bool = false
@@ -110,7 +111,7 @@ struct ModelSelectorView: View {
                 Divider()
             }
 
-            if appModel.hubInteractive {
+            if modelSettingsSnapshot.hubInteractive {
                 HubModelPickerPopover(
                     title: XTL10n.ModelSelector.pickerTitle(language: interfaceLanguage),
                     selectedModelId: explicitModelId,
@@ -144,16 +145,28 @@ struct ModelSelectorView: View {
         .frame(width: 420)
     }
 
+    private var appModel: AppModel {
+        guard let appModelReference else {
+            preconditionFailure("ModelSelectorView requires xtAppModelReference")
+        }
+        return appModelReference
+    }
+
+    private var modelSettingsSnapshot: XTModelSettingsSnapshot {
+        modelSettingsStore.snapshot
+    }
+
     private var effectiveConfig: AXProjectConfig? {
         guard let effectiveProjectContext else {
-            return appModel.projectConfig ?? config
+            return modelSettingsSnapshot.selectedProjectConfig ?? config
         }
-        if appModel.projectContext?.root.standardizedFileURL == effectiveProjectContext.root.standardizedFileURL,
-           let current = appModel.projectConfig {
+        if modelSettingsSnapshot.selectedProjectContext?.root.standardizedFileURL == effectiveProjectContext.root.standardizedFileURL,
+           let current = modelSettingsSnapshot.selectedProjectConfig {
             return current
         }
-        return (try? AXProjectStore.loadOrCreateConfig(for: effectiveProjectContext))
-            ?? config
+        return XTProjectUIPresentationReadCache.projectConfig(for: effectiveProjectContext) {
+            (try? AXProjectStore.loadOrCreateConfig(for: effectiveProjectContext))
+        } ?? config
             ?? .default(forProjectRoot: effectiveProjectContext.root)
     }
 
@@ -163,12 +176,12 @@ struct ModelSelectorView: View {
     }
 
     private var inheritedModelId: String? {
-        let raw = appModel.settingsStore.settings.assignment(for: .coder).model?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let raw = modelSettingsSnapshot.settings.assignment(for: .coder).model?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return raw.isEmpty ? nil : raw
     }
 
     private var interfaceLanguage: XTInterfaceLanguage {
-        appModel.settingsStore.settings.interfaceLanguage
+        modelSettingsSnapshot.interfaceLanguage
     }
 
     private var routingSelectionState: HubModelRoutingSelectionState {
@@ -197,7 +210,7 @@ struct ModelSelectorView: View {
     }
 
     private var effectiveProjectContext: AXProjectContext? {
-        projectContext ?? appModel.projectContext ?? appModel.projectRoot.map { AXProjectContext(root: $0) }
+        projectContext ?? modelSettingsSnapshot.selectedProjectContext
     }
 
     private var currentProjectID: String? {
@@ -207,11 +220,10 @@ struct ModelSelectorView: View {
     private var currentProjectName: String? {
         guard let effectiveProjectContext else { return nil }
         let projectID = AXProjectRegistryStore.projectId(forRoot: effectiveProjectContext.root)
-        return appModel.registry.project(for: projectID)?.displayName
-            ?? AXProjectRegistryStore.displayName(
-                forRoot: effectiveProjectContext.root,
-                registry: appModel.registry
-            )
+        if projectID == modelSettingsSnapshot.selectedProjectId {
+            return modelSettingsSnapshot.selectedProjectName
+        }
+        return effectiveProjectContext.root.lastPathComponent
     }
 
     private var currentProjectRouteTruthTitle: String {
@@ -224,15 +236,20 @@ struct ModelSelectorView: View {
 
     private var currentProjectRouteTruth: HubModelRoutingSupplementaryPresentation? {
         guard let effectiveProjectContext else { return nil }
-        let snapshot = AXRoleExecutionSnapshots.latestSnapshots(for: effectiveProjectContext)[.coder]
-            ?? .empty(role: .coder, source: "model_selector")
+        let snapshot = XTProjectUIPresentationReadCache.roleExecutionSnapshot(
+            for: effectiveProjectContext,
+            role: .coder
+        ) {
+            AXRoleExecutionSnapshots.latestSnapshots(for: effectiveProjectContext)[.coder]
+                ?? .empty(role: .coder, source: "model_selector")
+        }
         return HubModelRoutingTruthBuilder.build(
             surface: .projectRoleSettings,
             role: .coder,
             selectedProjectID: currentProjectID,
             selectedProjectName: currentProjectName,
             projectConfig: effectiveConfig,
-            settings: appModel.settingsStore.settings,
+            settings: modelSettingsSnapshot.settings,
             snapshot: snapshot,
             transportMode: HubAIClient.transportMode().rawValue,
             language: interfaceLanguage
@@ -262,7 +279,7 @@ struct ModelSelectorView: View {
             role: .coder,
             ctx: effectiveProjectContext,
             snapshot: modelInventorySnapshot,
-            paidAccessSnapshot: appModel.hubRemotePaidAccessSnapshot,
+            paidAccessSnapshot: modelSettingsSnapshot.remotePaidAccessSnapshot,
             language: interfaceLanguage
         ),
            let recommendedModelId = guidance.recommendedModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -334,7 +351,7 @@ struct ModelSelectorView: View {
             role: .coder,
             ctx: effectiveProjectContext,
             snapshot: modelInventorySnapshot,
-            paidAccessSnapshot: appModel.hubRemotePaidAccessSnapshot,
+            paidAccessSnapshot: modelSettingsSnapshot.remotePaidAccessSnapshot,
             language: interfaceLanguage
         ) {
             return appendingGrpcRouteInterpretationWarning(
@@ -422,8 +439,13 @@ struct ModelSelectorView: View {
         guard let effectiveProjectContext else {
             return .empty(role: .coder, source: "model_selector")
         }
-        return AXRoleExecutionSnapshots.latestSnapshots(for: effectiveProjectContext)[.coder]
-            ?? .empty(role: .coder, source: "model_selector")
+        return XTProjectUIPresentationReadCache.roleExecutionSnapshot(
+            for: effectiveProjectContext,
+            role: .coder
+        ) {
+            AXRoleExecutionSnapshots.latestSnapshots(for: effectiveProjectContext)[.coder]
+                ?? .empty(role: .coder, source: "model_selector")
+        }
     }
 
     private func appendingGrpcRouteInterpretationWarning(
@@ -441,13 +463,13 @@ struct ModelSelectorView: View {
     }
 
     private var modelInventorySnapshot: ModelStateSnapshot {
-        modelManager.visibleSnapshot(fallback: appModel.modelsState)
+        modelManager.visibleSnapshot(fallback: modelSettingsSnapshot.modelsState)
     }
 
     private var modelInventoryTruth: XTModelInventoryTruthPresentation {
         XTModelInventoryTruthPresentation.build(
             snapshot: modelInventorySnapshot,
-            hubBaseDir: appModel.hubBaseDir ?? HubPaths.baseDir()
+            hubBaseDir: modelSettingsSnapshot.hubBaseDir ?? HubPaths.baseDir()
         )
     }
 

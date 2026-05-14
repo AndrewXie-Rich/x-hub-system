@@ -1,40 +1,64 @@
 import Foundation
 
 enum SupervisorTaskRole: String, Codable, CaseIterable, Sendable {
-    case planner
+    case supervisor
     case coder
     case reviewer
-    case doc
-    case ops
 
     var canonicalTaskTags: [String] {
         switch self {
-        case .planner:
-            return ["scope_freeze", "spec_capsule", "decision_blocker"]
+        case .supervisor:
+            return [
+                "scope_freeze",
+                "spec_capsule",
+                "decision_blocker",
+                "docs",
+                "release_notes",
+                "spec_freeze_writeup",
+                "runbook",
+                "rollout",
+                "runtime_probe",
+                "operator_action"
+            ]
         case .coder:
             return ["codegen", "refactor", "runtime_fix"]
         case .reviewer:
             return ["review", "regression", "gate_review"]
-        case .doc:
-            return ["docs", "release_notes", "spec_freeze_writeup"]
-        case .ops:
-            return ["runbook", "rollout", "runtime_probe", "operator_action"]
         }
     }
 
     var preferredConfigRoles: [AXRole] {
         switch self {
-        case .planner:
-            return [.advisor, .supervisor]
+        case .supervisor:
+            return [.supervisor]
         case .coder:
-            return [.coder, .refine, .coarse]
+            return [.coder]
         case .reviewer:
-            return [.reviewer, .advisor]
-        case .doc:
-            return [.refine, .advisor, .reviewer]
-        case .ops:
-            return [.supervisor, .advisor, .reviewer]
+            return [.reviewer]
         }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = (try? container.decode(String.self))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+
+        switch rawValue {
+        case Self.supervisor.rawValue, "planner", "doc", "ops":
+            self = .supervisor
+        case Self.coder.rawValue:
+            self = .coder
+        case Self.reviewer.rawValue:
+            self = .reviewer
+        default:
+            self = .supervisor
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
     }
 }
 
@@ -74,6 +98,19 @@ enum SupervisorTaskSideEffect: String, Codable, CaseIterable, Sendable {
 
     var hasOperationalSideEffect: Bool {
         self != .none
+    }
+
+    var requiresSupervisorRoute: Bool {
+        switch self {
+        case .externalWrite, .irreversible:
+            return true
+        case .none, .localMutation, .externalRead:
+            return false
+        }
+    }
+
+    var requiresCoderRoute: Bool {
+        self == .localMutation
     }
 }
 

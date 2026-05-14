@@ -34,7 +34,7 @@ extension SupervisorViewRuntimePresentationSupport {
         let latestUIReviewByProjectID: [String: XTUIReviewPresentation] = .init(
             uniqueKeysWithValues: uiReviewScanProjectIDs.compactMap { projectID in
                 guard let ctx = appModel.projectContext(for: projectID),
-                      let review = XTUIReviewPresentation.loadLatestBrowserPage(for: ctx) else {
+                      let review = SupervisorUIReviewPresentationCache.loadLatestBrowserPage(for: ctx) else {
                     return nil
                 }
                 return (projectID, review)
@@ -181,8 +181,15 @@ extension SupervisorViewRuntimePresentationSupport {
         let projectEntry = appModel.registry.project(for: snapshot.projectId)
         let governed = projectEntry.map { appModel.governedAuthorityPresentation(for: $0) }
         let templatePreview = projectEntry.map { appModel.governanceTemplatePreview(for: $0) }
+        let governancePresentation = projectEntry.map { project in
+            SupervisorProjectGovernancePresentationCache.presentation(projectId: project.projectId) {
+                ProjectGovernancePresentation(
+                    resolved: appModel.resolvedProjectGovernance(for: project)
+                )
+            }
+        }
         let latestUIReview = appModel.projectContext(for: snapshot.projectId).flatMap {
-            XTUIReviewPresentation.loadLatestBrowserPage(for: $0)
+            SupervisorUIReviewPresentationCache.loadLatestBrowserPage(for: $0)
         }
         let governanceCard = snapshot.capsule ?? SupervisorPortfolioProjectCard(
             projectId: snapshot.projectId,
@@ -206,6 +213,7 @@ extension SupervisorViewRuntimePresentationSupport {
             allowedScopes: allowedScopes,
             selectedScope: selectedScope,
             governanceTags: governanceTags,
+            governancePresentation: governancePresentation,
             runtimeSummary: templatePreview?.runtimeSummary,
             latestUIReview: latestUIReview,
             governanceNowMs: Int64((Date().timeIntervalSince1970 * 1000.0).rounded())
@@ -244,13 +252,30 @@ extension SupervisorViewRuntimePresentationSupport {
         let projectEntry = appModel.registry.project(for: card.projectId)
         let governed = projectEntry.map { appModel.governedAuthorityPresentation(for: $0) }
         let templatePreview = projectEntry.map { appModel.governanceTemplatePreview(for: $0) }
+        let governancePresentation = projectEntry.map { project in
+            SupervisorProjectGovernancePresentationCache.presentation(projectId: project.projectId) {
+                ProjectGovernancePresentation(
+                    resolved: appModel.resolvedProjectGovernance(for: project)
+                )
+            }
+        }
+        let projectContextCompactSummary = appModel.projectContext(for: card.projectId).flatMap { projectContext in
+            SupervisorProjectContextCompactSummaryCache.compactSummary(for: projectContext) {
+                AXProjectContextAssemblyDiagnosticsStore.doctorSummary(
+                    for: projectContext,
+                    config: appModel.projectConfigSnapshot(for: projectContext)
+                ).compactSummary
+            }
+        }
         return SupervisorPortfolioProjectRowPresentationMapper.map(
             card: card,
             actionabilityItems: actionabilityItems,
             isSelected: isSelected,
             governed: governed,
             templatePreview: templatePreview,
-            latestUIReview: latestUIReview
+            latestUIReview: latestUIReview,
+            governancePresentation: governancePresentation,
+            projectContextCompactSummary: projectContextCompactSummary
         )
     }
 
@@ -389,9 +414,13 @@ extension SupervisorViewRuntimePresentationSupport {
         supervisor: SupervisorManager,
         appModel: AppModel
     ) -> (projectLabel: String?, readiness: XTProjectMemoryAssemblyReadiness?) {
-        let advisory = appModel.doctorProjectMemoryAdvisory(
+        let advisory = SupervisorProjectMemoryDoctorAdvisoryCache.load(
             preferredProjectId: supervisor.supervisorMemoryAssemblySnapshot?.focusedProjectId
-        )
+        ) {
+            appModel.doctorProjectMemoryAdvisory(
+                preferredProjectId: supervisor.supervisorMemoryAssemblySnapshot?.focusedProjectId
+            )
+        }
         return (advisory.projectLabel, advisory.readiness)
     }
 
@@ -436,5 +465,178 @@ extension SupervisorViewRuntimePresentationSupport {
 
     private nonisolated static func normalizedScalar(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+@MainActor
+private enum SupervisorUIReviewPresentationCache {
+    private struct Entry {
+        let loadedAt: Date
+        let presentation: XTUIReviewPresentation?
+    }
+
+    private static let maxAgeSeconds: TimeInterval = 2.0
+    private static let maxEntries = 64
+    private static var entries: [String: Entry] = [:]
+
+    static func loadLatestBrowserPage(
+        for ctx: AXProjectContext,
+        now: Date = Date()
+    ) -> XTUIReviewPresentation? {
+        let key = cacheKey(for: ctx)
+        if let entry = entries[key],
+           now.timeIntervalSince(entry.loadedAt) < maxAgeSeconds {
+            return entry.presentation
+        }
+
+        let presentation = XTUIReviewPresentation.loadLatestBrowserPage(for: ctx)
+        entries[key] = Entry(loadedAt: now, presentation: presentation)
+        trimIfNeeded()
+        return presentation
+    }
+
+    private static func cacheKey(for ctx: AXProjectContext) -> String {
+        ctx.root.standardizedFileURL.path
+    }
+
+    private static func trimIfNeeded() {
+        guard entries.count > maxEntries else { return }
+        let overflow = entries.count - maxEntries
+        let staleKeys = entries
+            .sorted { $0.value.loadedAt < $1.value.loadedAt }
+            .prefix(overflow)
+            .map(\.key)
+        for key in staleKeys {
+            entries.removeValue(forKey: key)
+        }
+    }
+}
+
+@MainActor
+private enum SupervisorProjectMemoryDoctorAdvisoryCache {
+    private struct Entry {
+        let loadedAt: Date
+        let advisory: AppModel.DoctorProjectMemoryAdvisory
+    }
+
+    private static let maxAgeSeconds: TimeInterval = 2.0
+    private static let maxEntries = 32
+    private static var entries: [String: Entry] = [:]
+
+    static func load(
+        preferredProjectId: String?,
+        now: Date = Date(),
+        loader: () -> AppModel.DoctorProjectMemoryAdvisory
+    ) -> AppModel.DoctorProjectMemoryAdvisory {
+        let key = cacheKey(preferredProjectId)
+        if let entry = entries[key],
+           now.timeIntervalSince(entry.loadedAt) < maxAgeSeconds {
+            return entry.advisory
+        }
+
+        let advisory = loader()
+        entries[key] = Entry(loadedAt: now, advisory: advisory)
+        trimIfNeeded()
+        return advisory
+    }
+
+    private static func cacheKey(_ preferredProjectId: String?) -> String {
+        let normalized = preferredProjectId?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized?.isEmpty == false ? normalized! : "(current)"
+    }
+
+    private static func trimIfNeeded() {
+        guard entries.count > maxEntries else { return }
+        let overflow = entries.count - maxEntries
+        let staleKeys = entries
+            .sorted { $0.value.loadedAt < $1.value.loadedAt }
+            .prefix(overflow)
+            .map(\.key)
+        for key in staleKeys {
+            entries.removeValue(forKey: key)
+        }
+    }
+}
+
+@MainActor
+private enum SupervisorProjectGovernancePresentationCache {
+    private struct Entry {
+        let loadedAt: Date
+        let presentation: ProjectGovernancePresentation
+    }
+
+    private static let maxAgeSeconds: TimeInterval = 2.0
+    private static let maxEntries = 64
+    private static var entries: [String: Entry] = [:]
+
+    static func presentation(
+        projectId: String,
+        now: Date = Date(),
+        loader: () -> ProjectGovernancePresentation
+    ) -> ProjectGovernancePresentation {
+        let key = projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let entry = entries[key],
+           now.timeIntervalSince(entry.loadedAt) < maxAgeSeconds {
+            return entry.presentation
+        }
+
+        let presentation = loader()
+        entries[key] = Entry(loadedAt: now, presentation: presentation)
+        trimIfNeeded()
+        return presentation
+    }
+
+    private static func trimIfNeeded() {
+        guard entries.count > maxEntries else { return }
+        let overflow = entries.count - maxEntries
+        let staleKeys = entries
+            .sorted { $0.value.loadedAt < $1.value.loadedAt }
+            .prefix(overflow)
+            .map(\.key)
+        for key in staleKeys {
+            entries.removeValue(forKey: key)
+        }
+    }
+}
+
+@MainActor
+private enum SupervisorProjectContextCompactSummaryCache {
+    private struct Entry {
+        let loadedAt: Date
+        let summary: AXProjectContextAssemblyCompactSummary?
+    }
+
+    private static let maxAgeSeconds: TimeInterval = 2.0
+    private static let maxEntries = 64
+    private static var entries: [String: Entry] = [:]
+
+    static func compactSummary(
+        for ctx: AXProjectContext,
+        now: Date = Date(),
+        loader: () -> AXProjectContextAssemblyCompactSummary?
+    ) -> AXProjectContextAssemblyCompactSummary? {
+        let key = ctx.root.standardizedFileURL.path
+        if let entry = entries[key],
+           now.timeIntervalSince(entry.loadedAt) < maxAgeSeconds {
+            return entry.summary
+        }
+
+        let summary = loader()
+        entries[key] = Entry(loadedAt: now, summary: summary)
+        trimIfNeeded()
+        return summary
+    }
+
+    private static func trimIfNeeded() {
+        guard entries.count > maxEntries else { return }
+        let overflow = entries.count - maxEntries
+        let staleKeys = entries
+            .sorted { $0.value.loadedAt < $1.value.loadedAt }
+            .prefix(overflow)
+            .map(\.key)
+        for key in staleKeys {
+            entries.removeValue(forKey: key)
+        }
     }
 }

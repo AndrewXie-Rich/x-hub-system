@@ -119,7 +119,7 @@ struct AXSkillsRemoteRegistryTests {
     }
 
     @Test
-    func projectRouterMapsExpiredPersistedRemoteSnapshotWhenActiveCacheIsCold() async throws {
+    func projectRouterRejectsExpiredPersistedRemoteSnapshotWhenActiveCacheIsCold() async throws {
         let fixture = try RemoteSkillFixture(skillID: "summarize")
         defer { fixture.cleanup() }
 
@@ -167,6 +167,15 @@ struct AXSkillsRemoteRegistryTests {
         )
         #expect(expiredSnapshot.items.contains(where: { $0.skillId == "summarize" }))
         #expect(XTResolvedSkillsCacheStore.activeSnapshot(for: fixture.context) == nil)
+        #expect(
+            AXSkillsLibrary.persistedRemoteResolvedSkillsCacheSnapshot(
+                projectId: fixture.projectID,
+                projectName: fixture.projectName,
+                projectRoot: fixture.projectRoot,
+                hubBaseDir: fixture.hubBaseDir,
+                nowMs: expiredSnapshot.expiresAtMs + 1
+            ) == nil
+        )
 
         let routing = await fixture.withoutAXHubStateDir {
             XTProjectSkillRouter.map(
@@ -183,18 +192,14 @@ struct AXSkillsRemoteRegistryTests {
             )
         }
 
-        let mapped: XTProjectMappedSkillDispatch
         switch routing {
         case .success(let dispatch):
-            mapped = dispatch
+            Issue.record("unexpected stale cache dispatch: \(dispatch.skillId)")
+            throw XTProjectSkillMappingFailure(reasonCode: "unexpected_stale_cache_dispatch")
         case .failure(let failure):
-            Issue.record("unexpected failure: \(failure.reasonCode)")
-            throw failure
+            #expect(failure.reasonCode == "skill_not_registered")
         }
 
-        #expect(mapped.skillId == "summarize")
-        #expect(mapped.toolCall.tool == .summarize)
-        #expect(mapped.toolCall.args["text"]?.stringValue == "expired persisted remote registry")
         #expect(XTResolvedSkillsCacheStore.activeSnapshot(for: fixture.context) == nil)
     }
 
@@ -666,6 +671,136 @@ struct AXSkillsRemoteRegistryTests {
 
         let active = try #require(XTResolvedSkillsCacheStore.activeSnapshot(for: fixture.context))
         #expect(active.items.contains(where: { $0.skillId == "summarize" }))
+    }
+
+    @MainActor
+    @Test
+    func supervisorRemoteGenericRunnerDispatchInjectsHubPackageBinding() async throws {
+        let fixture = try RemoteSkillFixture(skillID: "echo-skill")
+        defer { fixture.cleanup() }
+
+        try fixture.writeRemoteHubEnv()
+        HubPaths.setPinnedBaseDirOverride(fixture.hubBaseDir)
+        defer { HubPaths.clearPinnedBaseDirOverride() }
+        let manifestJSON = remoteSkillRunnerManifestJSON(skillID: "echo-skill")
+        let packageSHA256 = fixture.packageSHA256
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000.0)
+
+        HubIPCClient.installResolvedSkillsOverrideForTesting { projectId in
+            #expect(projectId == fixture.projectID)
+            return HubIPCClient.ResolvedSkillsResult(
+                ok: true,
+                source: "hub_runtime_grpc",
+                skills: [
+                    fixture.remoteResolvedSkillEntry(
+                        skillID: "echo-skill",
+                        name: "Echo Skill",
+                        description: "Generic runner fixture skill.",
+                        capabilitiesRequired: ["repo.read"],
+                        packageSHA256: packageSHA256,
+                        riskLevel: "low"
+                    )
+                ],
+                reasonCode: nil
+            )
+        }
+        HubIPCClient.installSkillManifestOverrideForTesting { requestedPackageSHA256 in
+            #expect(requestedPackageSHA256 == packageSHA256)
+            return HubIPCClient.SkillManifestResult(
+                ok: true,
+                source: "hub_runtime_grpc",
+                packageSHA256: requestedPackageSHA256,
+                manifestJSON: manifestJSON,
+                reasonCode: nil
+            )
+        }
+        defer {
+            HubIPCClient.resetResolvedSkillsOverrideForTesting()
+            HubIPCClient.resetSkillManifestOverrideForTesting()
+        }
+
+        let snapshot = try #require(
+            await fixture.withAXHubStateDir {
+                await XTResolvedSkillsCacheStore.refreshFromHubIfPossible(
+                    projectId: fixture.projectID,
+                    projectName: fixture.projectName,
+                    context: fixture.context,
+                    hubBaseDir: fixture.hubBaseDir,
+                    ttlMs: 120_000,
+                    nowMs: nowMs,
+                    force: true
+                )
+            }
+        )
+        let item = try #require(snapshot.items.first(where: { $0.skillId == "echo-skill" }))
+        #expect(item.governedDispatch?.tool == ToolName.skillsExecuteRunner.rawValue)
+        #expect(item.packageSHA256 == packageSHA256)
+
+        let manager = SupervisorManager.makeForTesting()
+        manager.setSupervisorToolExecutorOverrideForTesting { call, _ in
+            #expect(call.tool == .skillsExecuteRunner)
+            #expect(call.args["skill_id"]?.stringValue == "echo-skill")
+            #expect(call.args["package_sha256"]?.stringValue == packageSHA256)
+            #expect(call.args["input"]?.stringValue == "from supervisor")
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: true,
+                output: "runner dispatch completed"
+            )
+        }
+
+        let project = makeProjectEntry(root: fixture.projectRoot, displayName: fixture.projectName)
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"\#(fixture.projectName)","goal":"通用 runner 调度","priority":"normal"}[/CREATE_JOB]"#,
+            userMessage: "请创建任务"
+        )
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [UPSERT_PLAN]{"project_ref":"\#(fixture.projectName)","job_id":"\#(job.jobId)","plan_id":"plan-remote-runner-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"执行通用 runner","kind":"call_skill","status":"pending","skill_id":"echo-skill"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划"
+        )
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [CALL_SKILL]{"project_ref":"\#(fixture.projectName)","job_id":"\#(job.jobId)","step_id":"step-001","skill_id":"echo-skill","payload":{"input":"from supervisor"}}[/CALL_SKILL]
+            """#,
+            userMessage: "请执行 echo skill"
+        )
+        await manager.waitForSupervisorSkillDispatchForTesting()
+
+        manager.refreshPendingSupervisorSkillApprovalsNow()
+        let pendingRecord = try #require(SupervisorProjectSkillCallStore.load(for: ctx).calls.first)
+        #expect(pendingRecord.status == .awaitingAuthorization)
+        #expect(pendingRecord.toolName == ToolName.skillsExecuteRunner.rawValue)
+        #expect(
+            pendingRecord.readiness?.executionReadiness
+                == XTSkillExecutionReadinessState.localApprovalRequired.rawValue
+        )
+
+        let approval = try #require(
+            manager.pendingSupervisorSkillApprovals.first(where: { $0.requestId == pendingRecord.requestId })
+        )
+        #expect(approval.tool == .skillsExecuteRunner)
+        manager.approvePendingSupervisorSkillApproval(approval)
+        await manager.waitForSupervisorSkillDispatchForTesting()
+
+        let record = try #require(
+            SupervisorProjectSkillCallStore.load(for: ctx).calls.first(where: { $0.requestId == pendingRecord.requestId })
+        )
+        #expect(record.status == .completed)
+        #expect(record.toolName == ToolName.skillsExecuteRunner.rawValue)
+        #expect(record.resultSummary.contains("runner dispatch completed"))
+        #expect(record.denyCode.isEmpty)
     }
 
     @MainActor
@@ -1843,6 +1978,35 @@ private func makeProjectEntry(root: URL, displayName: String) -> AXProjectEntry 
         lastSummaryAt: nil,
         lastEventAt: Date().timeIntervalSince1970
     )
+}
+
+private func remoteSkillRunnerManifestJSON(skillID: String) -> String {
+    #"""
+    {
+      "schema_version": "xhub.skill_manifest.v1",
+      "skill_id": "\#(skillID)",
+      "name": "Echo Skill",
+      "version": "1.0.0",
+      "description": "Generic runner fixture skill.",
+      "capabilities_required": ["repo.read"],
+      "risk_level": "low",
+      "requires_grant": false,
+      "side_effect_class": "read_only",
+      "entrypoint": {
+        "runtime": "text",
+        "command": "cat",
+        "args": ["SKILL.md"]
+      },
+      "governed_dispatch": {
+        "tool": "skills.execute.runner",
+        "fixed_args": {},
+        "passthrough_args": ["input", "payload", "timeout_sec"],
+        "arg_aliases": {},
+        "required_any": [],
+        "exactly_one_of": []
+      }
+    }
+    """#
 }
 
 private func waitUntil(

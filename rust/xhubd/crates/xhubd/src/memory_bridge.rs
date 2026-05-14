@@ -6,7 +6,8 @@ use serde_json::{json, Value};
 use xhub_core::HubConfig;
 use xhub_memory::{
     readiness_from_snapshot, retrieve_memory, retrieve_memory_from_snapshot, scan_memory_snapshot,
-    MemoryIndexSnapshot, MemoryMode, MemoryRetrievalRequest, MEMORY_RETRIEVAL_RESULT_SCHEMA,
+    write_memory_entry, MemoryIndexSnapshot, MemoryMode, MemoryRetrievalRequest,
+    MemoryWriteRequest, MEMORY_RETRIEVAL_RESULT_SCHEMA, MEMORY_WRITE_RESULT_SCHEMA,
     RUST_MEMORY_SHADOW_SOURCE,
 };
 
@@ -25,6 +26,7 @@ fn dispatch(config: &HubConfig, args: &[String]) -> Result<String, String> {
     }
     match command {
         "retrieve" | "search" => retrieve_json(config, FlagArgs::parse(&args[1..])?),
+        "write" | "append" => write_json(config, FlagArgs::parse(&args[1..])?),
         "readiness" | "status" => readiness_json(config, FlagArgs::parse(&args[1..])?),
         other => Err(format!("unknown memory command: {other}")),
     }
@@ -71,6 +73,74 @@ pub fn retrieve_json_from_request_with_snapshot(
 ) -> Result<String, String> {
     let out = retrieve_memory_from_snapshot(request, snapshot);
     serde_json::to_string(&out).map_err(|err| format!("memory retrieve serialize failed: {err}"))
+}
+
+fn write_json(config: &HubConfig, flags: FlagArgs) -> Result<String, String> {
+    let memory_dir = flags
+        .optional("memory-dir")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| memory_dir_from_env(config));
+    let mut request = MemoryWriteRequest::with_defaults(memory_dir);
+    request.request_id = flags.optional("request-id").unwrap_or_default();
+    request.scope = flags
+        .optional("scope")
+        .unwrap_or_else(|| "current_project".to_string());
+    request.mode = MemoryMode::from_str(
+        flags
+            .optional("mode")
+            .unwrap_or_else(|| "project_code".to_string())
+            .as_str(),
+    );
+    request.project_id = flags.optional("project-id").unwrap_or_default();
+    request.source_kind = flags
+        .optional("source-kind")
+        .unwrap_or_else(|| "project_capsule".to_string());
+    request.title = flags.optional("title").unwrap_or_default();
+    request.text = flags.optional("text").unwrap_or_default();
+    request.tags = flags.optional_list("tags");
+    request.audit_ref = flags.optional("audit-ref").unwrap_or_default();
+    request.actor = flags
+        .optional("actor")
+        .unwrap_or_else(|| "rust_hub_operator".to_string());
+    write_json_from_request(request)
+}
+
+pub fn write_json_from_value(config: &HubConfig, body: &Value) -> Result<String, String> {
+    let memory_dir = value_string(&body, "memory_dir")
+        .or_else(|| value_string(&body, "memoryDir"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| memory_dir_from_env(config));
+    let mut request = MemoryWriteRequest::with_defaults(memory_dir);
+    request.request_id = value_string(&body, "request_id")
+        .or_else(|| value_string(&body, "requestId"))
+        .unwrap_or_default();
+    request.scope = value_string(&body, "scope").unwrap_or_else(|| "current_project".to_string());
+    request.mode = MemoryMode::from_str(
+        value_string(&body, "mode")
+            .unwrap_or_else(|| "project_code".to_string())
+            .as_str(),
+    );
+    request.project_id = value_string(&body, "project_id")
+        .or_else(|| value_string(&body, "projectId"))
+        .unwrap_or_default();
+    request.source_kind = value_string(&body, "source_kind")
+        .or_else(|| value_string(&body, "sourceKind"))
+        .unwrap_or_else(|| "project_capsule".to_string());
+    request.title = value_string(&body, "title").unwrap_or_default();
+    request.text = value_string(&body, "text")
+        .or_else(|| value_string(&body, "content"))
+        .unwrap_or_default();
+    request.tags = value_string_list(&body, "tags").unwrap_or_default();
+    request.audit_ref = value_string(&body, "audit_ref")
+        .or_else(|| value_string(&body, "auditRef"))
+        .unwrap_or_default();
+    request.actor = value_string(&body, "actor").unwrap_or_else(|| "rust_hub".to_string());
+    write_json_from_request(request)
+}
+
+pub fn write_json_from_request(request: MemoryWriteRequest) -> Result<String, String> {
+    let out = write_memory_entry(request, memory_writer_authority_enabled());
+    serde_json::to_string(&out).map_err(|err| format!("memory write serialize failed: {err}"))
 }
 
 pub fn retrieve_request_from_value(config: &HubConfig, body: &Value) -> MemoryRetrievalRequest {
@@ -130,7 +200,8 @@ pub fn readiness_json_from_dir(memory_dir: PathBuf) -> Result<String, String> {
 }
 
 pub fn readiness_json_from_snapshot(snapshot: &MemoryIndexSnapshot) -> Result<String, String> {
-    let status = readiness_from_snapshot(snapshot);
+    let mut status = readiness_from_snapshot(snapshot);
+    status.writer_authority_in_rust = memory_writer_authority_enabled();
     Ok(json!({
         "schema_version": SCHEMA_VERSION,
         "ok": true,
@@ -148,11 +219,12 @@ pub fn help_json() -> String {
     json!({
         "schema_version": SCHEMA_VERSION,
         "ok": true,
-        "commands": ["retrieve", "search", "readiness"],
+        "commands": ["retrieve", "search", "write", "readiness"],
         "retrieval_result_schema": MEMORY_RETRIEVAL_RESULT_SCHEMA,
+        "write_result_schema": MEMORY_WRITE_RESULT_SCHEMA,
         "source": RUST_MEMORY_SHADOW_SOURCE,
-        "authority": "shadow_read_only",
-        "writer_authority_in_rust": false,
+        "authority": if memory_writer_authority_enabled() { "canonical_writer" } else { "shadow_read_only" },
+        "writer_authority_in_rust": memory_writer_authority_enabled(),
         "retrieve_flags": [
             "--memory-dir",
             "--query",
@@ -164,9 +236,27 @@ pub fn help_json() -> String {
             "--requested-kinds",
             "--max-results",
             "--max-snippet-chars"
+        ],
+        "write_flags": [
+            "--memory-dir",
+            "--title",
+            "--text",
+            "--scope",
+            "--mode",
+            "--source-kind",
+            "--tags",
+            "--request-id",
+            "--audit-ref",
+            "--actor"
         ]
     })
     .to_string()
+}
+
+pub fn memory_writer_authority_enabled() -> bool {
+    env_bool("XHUB_RUST_MEMORY_WRITER_AUTHORITY", false)
+        && env_bool("XHUB_RUST_MEMORY_WRITE_AUTHORITY", false)
+        && env_bool("XHUB_RUST_MEMORY_PRODUCTION_AUTHORITY", false)
 }
 
 pub fn memory_dir_from_env(config: &HubConfig) -> PathBuf {
@@ -214,6 +304,16 @@ fn split_list(input: &str) -> Vec<String> {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .collect()
+}
+
+fn env_bool(key: &str, fallback: bool) -> bool {
+    match env::var(key) {
+        Ok(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => fallback,
+    }
 }
 
 #[derive(Debug, Clone, Default)]

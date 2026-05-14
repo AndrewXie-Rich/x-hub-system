@@ -11,11 +11,73 @@ const STATE_FILE = path.join(SESSION_DIR, 'session_state.json');
 const CHECKPOINT_LOOP_STATE_FILE = path.join(SESSION_DIR, 'checkpoint_loop_state.json');
 const DEFAULT_HTTP_BASE_URL = 'http://127.0.0.1:50151';
 const DEFAULT_LIVE_BASE_DIR = path.join(process.env.HOME || '', 'Library', 'Group Containers', 'group.rel.flowhub');
+let ACTIVE_CONFIG = null;
+const STATUS_READER_SCRIPT = `
+const fs = require('node:fs');
+const path = require('node:path');
+const [baseDirRaw, nowRaw] = process.argv.slice(1);
+const baseDir = path.resolve(String(baseDirRaw || ''));
+const nowMs = Number(nowRaw || Date.now());
+const statusPath = path.join(baseDir, 'hub_status.json');
+const ipcPath = path.join(baseDir, 'ipc_events');
+let stat = null;
+let body = null;
+let parseOk = false;
+let readError = '';
+try {
+  if (fs.existsSync(statusPath)) {
+    stat = fs.statSync(statusPath);
+    try {
+      body = JSON.parse(fs.readFileSync(statusPath, 'utf8'));
+      parseOk = true;
+    } catch (error) {
+      readError = String(error && error.message || error);
+    }
+  }
+} catch (error) {
+  readError = String(error && error.message || error);
+}
+const updatedAtMs = Number(body && body.updatedAt || 0) > 0 ? Math.round(Number(body.updatedAt) * 1000) : 0;
+const ageMs = updatedAtMs > 0 ? Math.max(0, nowMs - updatedAtMs) : Number.MAX_SAFE_INTEGER;
+const out = {
+  base_dir: baseDir,
+  status_path: statusPath,
+  status_exists: Boolean(stat),
+  status_size_bytes: stat ? stat.size : 0,
+  status_mtime_ms: stat ? Math.round(stat.mtimeMs) : 0,
+  status_mtime_age_ms: stat ? Math.max(0, nowMs - Math.round(stat.mtimeMs)) : Number.MAX_SAFE_INTEGER,
+  status_json_parse_ok: parseOk,
+  status_read_timeout: false,
+  status_read_error: readError,
+  updated_at_ms: updatedAtMs,
+  age_ms: ageMs,
+  pid: Number(body && body.pid || 0),
+  ipc_mode: String(body && body.ipcMode || ''),
+  ipc_path: String(body && body.ipcPath || ''),
+  base_dir_from_status: String(body && body.baseDir || ''),
+  ai_ready: Boolean(body && body.aiReady),
+  loaded_model_count: Number(body && body.loadedModelCount || 0),
+  rust_hub_authority: String(body && body.rustHub && body.rustHub.authority || ''),
+  rust_hub_schema_version: String(body && body.rustHub && body.rustHub.schema_version || ''),
+  expected_ipc_path: ipcPath,
+  ipc_path_exists: fs.existsSync(ipcPath),
+};
+process.stdout.write(JSON.stringify(out));
+`;
 
 function parseIntInRange(value, fallback, min, max) {
   const parsed = Number.parseInt(String(value ?? ''), 10);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(min, Math.min(max, parsed));
+}
+
+function firstNumber(fallback, ...values) {
+  for (const value of values) {
+    if (value === undefined || value === null || value === '') continue;
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallback;
 }
 
 function utcStamp() {
@@ -35,6 +97,8 @@ function parseArgs(argv) {
     checkpointDurationMs: 10000,
     checkpointLoopIntervalMs: 15 * 60 * 1000,
     maxCheckpoints: 0,
+    allowMemorySkillsProduction: false,
+    requireMemorySkillsProduction: false,
     reportPath: '',
     logPath: '',
     replace: false,
@@ -53,11 +117,20 @@ function parseArgs(argv) {
       case '--stop':
         out.mode = 'stop';
         break;
+      case '--adopt':
+        out.mode = 'adopt';
+        break;
+      case '--supervision-status':
+        out.mode = 'supervisionStatus';
+        break;
       case '--checkpoint':
         out.mode = 'checkpoint';
         break;
       case '--start-checkpoint-loop':
         out.mode = 'startCheckpointLoop';
+        break;
+      case '--adopt-checkpoint-loop':
+        out.mode = 'adoptCheckpointLoop';
         break;
       case '--checkpoint-loop-worker':
         out.mode = 'checkpointLoopWorker';
@@ -109,6 +182,13 @@ function parseArgs(argv) {
         out.maxCheckpoints = parseIntInRange(next, out.maxCheckpoints, 0, 100000);
         i += 1;
         break;
+      case '--allow-memory-skills-production':
+        out.allowMemorySkillsProduction = true;
+        break;
+      case '--require-memory-skills-production':
+        out.allowMemorySkillsProduction = true;
+        out.requireMemorySkillsProduction = true;
+        break;
       case '--report-path':
         out.reportPath = path.resolve(String(next || '').trim());
         i += 1;
@@ -139,8 +219,11 @@ function usage() {
     '  --start                       Start a detached live stability gate session',
     '  --status                      Inspect the last/active stability session (default)',
     '  --stop                        Send SIGTERM to the active stability session',
+    '  --adopt                       Write local state for an active session found in another package root',
+    '  --supervision-status          Inspect the long session and rolling sidecar together',
     '  --checkpoint                  Run an immediate short stability checkpoint while a long session runs',
     '  --start-checkpoint-loop        Start a detached rolling checkpoint sidecar',
+    '  --adopt-checkpoint-loop        Write local state for an active sidecar found in another package root',
     '  --checkpoint-loop-status       Inspect the rolling checkpoint sidecar',
     '  --stop-checkpoint-loop         Send SIGTERM to the rolling checkpoint sidecar',
     '  --duration-ms <ms>             Default 28800000 (8h), max 86400000 (24h)',
@@ -151,12 +234,20 @@ function usage() {
     '  --checkpoint-duration-ms <ms>  Rolling sidecar checkpoint duration, default 10000',
     '  --checkpoint-interval-ms <ms>  Rolling sidecar interval, default 900000',
     '  --max-checkpoints <n>          Optional sidecar checkpoint count cap, default 0',
+    '  --allow-memory-skills-production Permit explicit Rust memory writer and skills execution authority',
+    '  --require-memory-skills-production Require both Rust memory writer and skills execution authority',
     '  --http-base-url <u>            Default http://127.0.0.1:50151',
     '  --live-base-dir <p>            Default ~/Library/Group Containers/group.rel.flowhub',
     '  --report-path <p>              Override top-level gate report path',
     '  --log-path <p>                 Override session stdout/stderr log path',
     '  --replace                      Stop an existing active session before start',
   ].join('\n');
+}
+
+function memorySkillsGateArgs(config) {
+  if (config.requireMemorySkillsProduction) return ['--require-memory-skills-production'];
+  if (config.allowMemorySkillsProduction) return ['--allow-memory-skills-production'];
+  return [];
 }
 
 function parseJsonObject(stdout) {
@@ -180,6 +271,32 @@ function readJsonFile(filePath) {
   }
 }
 
+function fileSummary(filePath, now = Date.now()) {
+  const out = {
+    path: String(filePath || ''),
+    exists: false,
+    is_file: false,
+    size_bytes: 0,
+    mtime_ms: 0,
+    mtime_iso: '',
+    age_ms: Number.MAX_SAFE_INTEGER,
+    error: '',
+  };
+  if (!out.path) return out;
+  try {
+    const stat = fs.statSync(out.path);
+    out.exists = true;
+    out.is_file = stat.isFile();
+    out.size_bytes = stat.size;
+    out.mtime_ms = Math.round(stat.mtimeMs);
+    out.mtime_iso = new Date(out.mtime_ms).toISOString();
+    out.age_ms = Math.max(0, now - out.mtime_ms);
+  } catch (error) {
+    out.error = String(error?.message || error);
+  }
+  return out;
+}
+
 function writeState(state) {
   ensureDir(path.dirname(STATE_FILE));
   fs.writeFileSync(STATE_FILE, `${JSON.stringify(state, null, 2)}\n`);
@@ -196,8 +313,8 @@ function isPidRunning(pid) {
   try {
     process.kill(value, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    return error?.code === 'EPERM';
   }
 }
 
@@ -210,6 +327,21 @@ function extractFlagValue(command, flag) {
   const rest = String(command || '').slice(valueStart);
   const nextFlag = rest.search(/ --[A-Za-z0-9-]+(?:\s|$)/);
   return (nextFlag >= 0 ? rest.slice(0, nextFlag) : rest).trim();
+}
+
+function scriptPathFromCommand(command, scriptName) {
+  const marker = `${path.sep}tools${path.sep}${scriptName}`;
+  const text = String(command || '');
+  const end = text.indexOf(marker);
+  if (end < 0) return '';
+  const before = text.slice(0, end);
+  const start = before.lastIndexOf(` ${path.sep}`);
+  return text.slice(start >= 0 ? start + 1 : 0, end + marker.length).trim();
+}
+
+function rootDirFromScriptCommand(command, scriptName) {
+  const scriptPath = scriptPathFromCommand(command, scriptName);
+  return scriptPath ? path.dirname(path.dirname(scriptPath)) : '';
 }
 
 function discoverRunningGateProcess() {
@@ -246,6 +378,7 @@ function discoverRunningGateProcess() {
   return {
     pid: chosen.pid,
     command: chosen.command,
+    root_dir: rootDirFromScriptCommand(chosen.command, 'production_live_stability_gate.js'),
     started_at_iso: startedAtIso,
     expected_end_at_iso: expectedEndAtIso,
     report_path: extractFlagValue(chosen.command, '--report-path'),
@@ -254,6 +387,107 @@ function discoverRunningGateProcess() {
     duration_ms: durationMs,
     interval_ms: Number(extractFlagValue(chosen.command, '--interval-ms') || 0),
     max_status_age_ms: Number(extractFlagValue(chosen.command, '--max-status-age-ms') || 0),
+    status_read_timeout_ms: Number(extractFlagValue(chosen.command, '--status-read-timeout-ms') || 0),
+    max_slow_requests: Number(extractFlagValue(chosen.command, '--max-slow-requests') || 0),
+  };
+}
+
+function discoverRunningChildProcess(parentPid, scriptName) {
+  const pid = Number(parentPid || 0);
+  if (!Number.isInteger(pid) || pid <= 1) return null;
+  let rows = [];
+  try {
+    rows = execFileSync('ps', ['ax', '-o', 'pid=,ppid=,command='], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 8 * 1024 * 1024,
+    }).split('\n').map((line) => line.trim()).filter(Boolean);
+  } catch {
+    return null;
+  }
+  const candidates = rows
+    .map((line) => {
+      const match = line.match(/^(\d+)\s+(\d+)\s+([\s\S]*)$/);
+      if (!match) return null;
+      return { pid: Number(match[1]), ppid: Number(match[2]), command: match[3] };
+    })
+    .filter(Boolean)
+    .filter((item) => item.ppid === pid)
+    .filter((item) => item.command.includes(scriptName))
+    .filter((item) => isPidRunning(item.pid));
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => b.pid - a.pid);
+  const chosen = candidates[0];
+  const startedAtIso = processStartIso(chosen.pid);
+  const durationMs = Number(extractFlagValue(chosen.command, '--duration-ms') || 0);
+  const startedAtMs = Date.parse(startedAtIso) || 0;
+  return {
+    pid: chosen.pid,
+    ppid: chosen.ppid,
+    running: true,
+    command: chosen.command,
+    root_dir: rootDirFromScriptCommand(chosen.command, scriptName),
+    started_at_iso: startedAtIso,
+    expected_end_at_iso: startedAtMs > 0 && durationMs > 0 ? new Date(startedAtMs + durationMs).toISOString() : '',
+    report_path: extractFlagValue(chosen.command, '--report-path'),
+    http_base_url: extractFlagValue(chosen.command, '--http-base-url'),
+    live_base_dir: extractFlagValue(chosen.command, '--live-base-dir'),
+    duration_ms: durationMs,
+    interval_ms: Number(extractFlagValue(chosen.command, '--interval-ms') || 0),
+    max_status_age_ms: Number(extractFlagValue(chosen.command, '--max-status-age-ms') || 0),
+    status_read_timeout_ms: Number(extractFlagValue(chosen.command, '--status-read-timeout-ms') || 0),
+  };
+}
+
+function discoverRunningCheckpointLoopProcess() {
+  let rows = [];
+  try {
+    rows = execFileSync('ps', ['ax', '-o', 'pid=,command='], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 8 * 1024 * 1024,
+    }).split('\n').map((line) => line.trim()).filter(Boolean);
+  } catch {
+    return null;
+  }
+  const candidates = rows
+    .map((line) => {
+      const match = line.match(/^(\d+)\s+([\s\S]*)$/);
+      if (!match) return null;
+      return { pid: Number(match[1]), command: match[2] };
+    })
+    .filter(Boolean)
+    .filter((item) => item.pid !== process.pid)
+    .filter((item) => item.command.includes('production_live_stability_session.js'))
+    .filter((item) => item.command.includes('--checkpoint-loop-worker'))
+    .filter((item) => isPidRunning(item.pid));
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => b.pid - a.pid);
+  const chosen = candidates[0];
+  const startedAtIso = processStartIso(chosen.pid);
+  const durationMs = Number(extractFlagValue(chosen.command, '--duration-ms') || 0);
+  const startedAtMs = Date.parse(startedAtIso) || 0;
+  const expectedEndAtIso = startedAtMs > 0 && durationMs > 0
+    ? new Date(startedAtMs + durationMs).toISOString()
+    : '';
+  return {
+    pid: chosen.pid,
+    command: chosen.command,
+    root_dir: rootDirFromScriptCommand(chosen.command, 'production_live_stability_session.js'),
+    started_at_iso: startedAtIso,
+    expected_end_at_iso: expectedEndAtIso,
+    report_path: extractFlagValue(chosen.command, '--report-path'),
+    log_path: extractFlagValue(chosen.command, '--log-path'),
+    http_base_url: extractFlagValue(chosen.command, '--http-base-url'),
+    live_base_dir: extractFlagValue(chosen.command, '--live-base-dir'),
+    duration_ms: durationMs,
+    interval_ms: Number(extractFlagValue(chosen.command, '--interval-ms') || 0),
+    max_status_age_ms: Number(extractFlagValue(chosen.command, '--max-status-age-ms') || 0),
+    status_read_timeout_ms: Number(extractFlagValue(chosen.command, '--status-read-timeout-ms') || 0),
+    max_slow_requests: Number(extractFlagValue(chosen.command, '--max-slow-requests') || 0),
+    checkpoint_duration_ms: Number(extractFlagValue(chosen.command, '--checkpoint-duration-ms') || 0),
+    checkpoint_interval_ms: Number(extractFlagValue(chosen.command, '--checkpoint-interval-ms') || 0),
+    max_checkpoints: Number(extractFlagValue(chosen.command, '--max-checkpoints') || 0),
   };
 }
 
@@ -271,6 +505,59 @@ function processStartIso(pid) {
   }
 }
 
+function readLiveStatusSummary(liveBaseDir, timeoutMs, maxStatusAgeMs, now = Date.now()) {
+  const baseDir = String(liveBaseDir || '').trim();
+  if (!baseDir) {
+    return {
+      ok: false,
+      skipped: true,
+      reason: 'live_base_dir_missing',
+      fresh: false,
+      age_budget_ms: Number(maxStatusAgeMs || 0),
+    };
+  }
+  const result = spawnSync(process.execPath, ['-e', STATUS_READER_SCRIPT, baseDir, String(now)], {
+    encoding: 'utf8',
+    timeout: Math.max(100, Number(timeoutMs || 3000)),
+    maxBuffer: 1024 * 1024,
+  });
+  if (result.error || result.status !== 0) {
+    const timedOut = result.error?.code === 'ETIMEDOUT' || Boolean(result.signal);
+    return {
+      ok: false,
+      skipped: false,
+      fresh: false,
+      age_budget_ms: Number(maxStatusAgeMs || 0),
+      status_read_timeout: timedOut,
+      status_read_error: String(result.error?.message || result.stderr || `status=${result.status}`),
+    };
+  }
+  try {
+    const summary = JSON.parse(result.stdout);
+    const ageBudgetMs = Number(maxStatusAgeMs || 0);
+    const ageMs = Number.isFinite(Number(summary.age_ms)) ? Number(summary.age_ms) : Number.MAX_SAFE_INTEGER;
+    const fresh = ageBudgetMs > 0 && ageMs <= ageBudgetMs;
+    return {
+      ok: summary.status_exists === true && summary.status_json_parse_ok === true,
+      skipped: false,
+      fresh,
+      age_budget_ms: ageBudgetMs,
+      ipc_path_matches_expected: String(summary.ipc_path || '') === String(summary.expected_ipc_path || ''),
+      base_dir_matches_expected: String(summary.base_dir_from_status || '') === String(summary.base_dir || ''),
+      ...summary,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      skipped: false,
+      fresh: false,
+      age_budget_ms: Number(maxStatusAgeMs || 0),
+      status_read_timeout: false,
+      status_read_error: String(error?.message || error),
+    };
+  }
+}
+
 function summarizeReport(report) {
   if (!report || typeof report !== 'object') return null;
   return {
@@ -280,6 +567,8 @@ function summarizeReport(report) {
     provider_model_production_authority_effective_now: report.provider_model_production_authority_effective_now === true,
     scheduler_authority_effective_now: report.scheduler_authority_effective_now === true,
     xt_file_ipc_production_surface_ready: report.xt_file_ipc_production_surface_ready === true,
+    memory_skills_production_allowed: report.memory_skills_production_allowed === true,
+    memory_skills_production_required: report.memory_skills_production_required === true,
     memory_writer_authority_in_rust: report.memory_writer_authority_in_rust === true,
     skills_execution_authority_in_rust: report.skills_execution_authority_in_rust === true,
     ui_product_change: report.ui_product_change === true,
@@ -321,11 +610,14 @@ function summarizeLoopReport(report) {
     skills_execution_authority_in_rust: report.skills_execution_authority_in_rust === true,
     ui_product_change: report.ui_product_change === true,
     secret_leak: report.secret_leak === true,
+    memory_skills_production_allowed: report.memory_skills_production_allowed === true,
+    memory_skills_production_required: report.memory_skills_production_required === true,
     issue_count: Array.isArray(report.issues) ? report.issues.length : 0,
   };
 }
 
 function statusPayload(extra = {}) {
+  const activeConfig = ACTIVE_CONFIG || {};
   const state = readJsonFile(STATE_FILE);
   const stateRunning = isPidRunning(state?.pid);
   const discovered = stateRunning ? null : discoverRunningGateProcess();
@@ -345,6 +637,20 @@ function statusPayload(extra = {}) {
   const expectedEndAtMs = Date.parse(expectedEndAtIso) || 0;
   const elapsedMs = startedAtMs > 0 ? Math.max(0, now - startedAtMs) : 0;
   const remainingMs = running && expectedEndAtMs > 0 ? Math.max(0, expectedEndAtMs - now) : 0;
+  const activeRootDir = stateMatchesEffectiveProcess
+    ? String(state?.root_dir || '')
+    : String(discovered?.root_dir || state?.root_dir || '');
+  const adoptedFromRootDir = String(state?.adopted_from_root_dir || (!stateMatchesEffectiveProcess ? discovered?.root_dir || '' : ''));
+  const effectiveHttpBaseUrl = String((stateRunning ? state?.http_base_url : discovered?.http_base_url) || state?.http_base_url || activeConfig.httpBaseUrl || DEFAULT_HTTP_BASE_URL);
+  const effectiveLiveBaseDir = String((stateRunning ? state?.live_base_dir : discovered?.live_base_dir) || state?.live_base_dir || activeConfig.liveBaseDir || DEFAULT_LIVE_BASE_DIR);
+  const effectiveMaxStatusAgeMs = firstNumber(0, stateRunning ? state?.max_status_age_ms : discovered?.max_status_age_ms, state?.max_status_age_ms, activeConfig.maxStatusAgeMs);
+  const effectiveStatusReadTimeoutMs = firstNumber(3000, stateRunning ? state?.status_read_timeout_ms : discovered?.status_read_timeout_ms, state?.status_read_timeout_ms, activeConfig.statusReadTimeoutMs);
+  const activeHeartbeatChild = running ? discoverRunningChildProcess(effectivePid, 'xt_file_ipc_live_heartbeat_soak.js') : null;
+  const activeReportFile = fileSummary(effectiveReportPath, now);
+  const heartbeatReportFile = fileSummary(activeHeartbeatChild?.report_path || '', now);
+  const liveStatusSample = running
+    ? readLiveStatusSummary(effectiveLiveBaseDir, effectiveStatusReadTimeoutMs, effectiveMaxStatusAgeMs, now)
+    : null;
   return {
     ok: true,
     schema_version: 'xhub.rust_hub.production_live_stability_session.v1',
@@ -361,15 +667,43 @@ function statusPayload(extra = {}) {
     expected_end_at_iso: expectedEndAtIso,
     elapsed_ms: elapsedMs,
     remaining_ms: remainingMs,
-    duration_ms: Number((stateRunning ? state?.duration_ms : discovered?.duration_ms) || state?.duration_ms || 0),
-    interval_ms: Number((stateRunning ? state?.interval_ms : discovered?.interval_ms) || state?.interval_ms || 0),
-    max_status_age_ms: Number((stateRunning ? state?.max_status_age_ms : discovered?.max_status_age_ms) || state?.max_status_age_ms || 0),
+    duration_ms: firstNumber(0, stateRunning ? state?.duration_ms : discovered?.duration_ms, state?.duration_ms),
+    interval_ms: firstNumber(0, stateRunning ? state?.interval_ms : discovered?.interval_ms, state?.interval_ms),
+    max_status_age_ms: firstNumber(0, stateRunning ? state?.max_status_age_ms : discovered?.max_status_age_ms, state?.max_status_age_ms),
+    status_read_timeout_ms: firstNumber(0, stateRunning ? state?.status_read_timeout_ms : discovered?.status_read_timeout_ms, state?.status_read_timeout_ms),
+    max_slow_requests: firstNumber(0, stateRunning ? state?.max_slow_requests : discovered?.max_slow_requests, state?.max_slow_requests),
+    http_base_url: effectiveHttpBaseUrl,
+    live_base_dir: effectiveLiveBaseDir,
+    current_root_dir: ROOT_DIR,
+    active_root_dir: activeRootDir,
+    adopted_from_root_dir: adoptedFromRootDir,
+    active_process_original_root_dir: adoptedFromRootDir || activeRootDir,
+    active_session_root_matches_current_package: activeRootDir ? activeRootDir === ROOT_DIR : false,
     report_path: effectiveReportPath,
     report_exists: Boolean(report),
+    active_report_file: activeReportFile,
     report_summary: reportSummary,
+    active_process_tree: {
+      gate_pid: effectivePid,
+      gate_running: running,
+      heartbeat_child_observed: Boolean(activeHeartbeatChild),
+      heartbeat_child_pid: Number(activeHeartbeatChild?.pid || 0),
+      heartbeat_child_running: activeHeartbeatChild?.running === true,
+      heartbeat_child_report_path: String(activeHeartbeatChild?.report_path || ''),
+    },
+    active_heartbeat_child: activeHeartbeatChild,
+    active_heartbeat_report_file: heartbeatReportFile,
+    active_live_status_sample: liveStatusSample,
+    active_live_status_fresh: liveStatusSample?.fresh === true,
     log_path: stateMatchesEffectiveProcess ? String(state?.log_path || '') : '',
     log_exists: stateMatchesEffectiveProcess && state?.log_path ? fs.existsSync(state.log_path) : false,
     production_authority_change: false,
+    memory_skills_production_allowed: reportSummary?.memory_skills_production_allowed === true
+      || state?.memory_skills_production_allowed === true
+      || activeConfig.allowMemorySkillsProduction === true,
+    memory_skills_production_required: reportSummary?.memory_skills_production_required === true
+      || state?.memory_skills_production_required === true
+      || activeConfig.requireMemorySkillsProduction === true,
     memory_writer_authority_in_rust: reportSummary?.memory_writer_authority_in_rust === true,
     skills_execution_authority_in_rust: reportSummary?.skills_execution_authority_in_rust === true,
     ui_product_change: reportSummary?.ui_product_change === true,
@@ -378,14 +712,146 @@ function statusPayload(extra = {}) {
   };
 }
 
+function stateFromDiscovered(discovered, reason = 'adopted_from_process_scan') {
+  return {
+    schema_version: 'xhub.rust_hub.production_live_stability_session_state.v1',
+    pid: Number(discovered?.pid || 0),
+    started_at_iso: String(discovered?.started_at_iso || ''),
+    expected_end_at_iso: String(discovered?.expected_end_at_iso || ''),
+    root_dir: ROOT_DIR,
+    adopted_from_root_dir: String(discovered?.root_dir || ''),
+    adopted_at_iso: new Date().toISOString(),
+    adopt_reason: reason,
+    report_path: String(discovered?.report_path || ''),
+    log_path: '',
+    http_base_url: String(discovered?.http_base_url || DEFAULT_HTTP_BASE_URL),
+    live_base_dir: String(discovered?.live_base_dir || DEFAULT_LIVE_BASE_DIR),
+    duration_ms: Number(discovered?.duration_ms || 0),
+    interval_ms: Number(discovered?.interval_ms || 0),
+    max_status_age_ms: Number(discovered?.max_status_age_ms || 0),
+    status_read_timeout_ms: Number(discovered?.status_read_timeout_ms || 0),
+    max_slow_requests: Number(discovered?.max_slow_requests || 0),
+    command: 'discovered-process',
+    args: [],
+    discovered_command: String(discovered?.command || ''),
+    production_authority_change: false,
+  };
+}
+
+function adoptActiveSession() {
+  const state = readJsonFile(STATE_FILE);
+  if (state?.pid && isPidRunning(state.pid)) {
+    return {
+      ...statusPayload({ command: 'adopt' }),
+      adopted: false,
+      reason: 'local_state_already_tracks_running_session',
+    };
+  }
+  const discovered = discoverRunningGateProcess();
+  if (!discovered?.pid || !isPidRunning(discovered.pid)) {
+    return {
+      ...statusPayload({ command: 'adopt' }),
+      ok: false,
+      adopted: false,
+      reason: 'no_active_session_to_adopt',
+      issues: ['no_active_production_live_stability_session_found'],
+    };
+  }
+  writeState(stateFromDiscovered(discovered));
+  return {
+    ...statusPayload({ command: 'adopt' }),
+    adopted: true,
+    adopted_pid: Number(discovered.pid),
+    adopted_from_root_dir: String(discovered.root_dir || ''),
+  };
+}
+
+function supervisionStatusPayload(extra = {}) {
+  const session = statusPayload();
+  const checkpointLoop = checkpointLoopStatusPayload();
+  const latestCheckpoint = checkpointLoop.report_summary?.latest_checkpoint || null;
+  const issues = [];
+  const warnings = [];
+
+  if (session.running !== true) issues.push('production_live_stability_session_not_running');
+  if (session.active_live_status_fresh !== true) issues.push('live_hub_status_not_fresh');
+  if (session.active_process_tree?.heartbeat_child_running !== true) {
+    warnings.push('heartbeat_child_not_observed');
+  }
+  if (checkpointLoop.running !== true) issues.push('production_checkpoint_loop_not_running');
+  if (checkpointLoop.report_summary && checkpointLoop.report_summary.ok !== true) {
+    issues.push('production_checkpoint_loop_report_not_ok');
+  }
+  if (latestCheckpoint && latestCheckpoint.ok !== true) issues.push('latest_checkpoint_not_ok');
+  const memorySkillsAllowed = session.memory_skills_production_allowed === true
+    || checkpointLoop.memory_skills_production_allowed === true;
+  const memorySkillsRequired = session.memory_skills_production_required === true
+    || checkpointLoop.memory_skills_production_required === true;
+  const memoryWriterAuthority = session.memory_writer_authority_in_rust === true || checkpointLoop.memory_writer_authority_in_rust === true;
+  const skillsExecutionAuthority = session.skills_execution_authority_in_rust === true || checkpointLoop.skills_execution_authority_in_rust === true;
+  if (memoryWriterAuthority && !memorySkillsAllowed) {
+    issues.push('memory_writer_authority_in_rust');
+  }
+  if (skillsExecutionAuthority && !memorySkillsAllowed) {
+    issues.push('skills_execution_authority_in_rust');
+  }
+  if (memorySkillsRequired && !memoryWriterAuthority) issues.push('memory_writer_authority_not_active');
+  if (memorySkillsRequired && !skillsExecutionAuthority) issues.push('skills_execution_authority_not_active');
+  if (session.ui_product_change === true || checkpointLoop.ui_product_change === true) issues.push('ui_product_change');
+  if (session.secret_leak === true || checkpointLoop.secret_leak === true) issues.push('secret_leak');
+
+  return {
+    ok: true,
+    schema_version: 'xhub.rust_hub.production_live_stability_supervision_status.v1',
+    command: 'supervision-status',
+    generated_at_iso: new Date().toISOString(),
+    supervision_ready: issues.length === 0,
+    issues,
+    warnings,
+    long_session_running: session.running === true,
+    long_session_pid: Number(session.pid || 0),
+    long_session_remaining_ms: Number(session.remaining_ms || 0),
+    live_status_fresh: session.active_live_status_fresh === true,
+    heartbeat_child_running: session.active_process_tree?.heartbeat_child_running === true,
+    checkpoint_loop_running: checkpointLoop.running === true,
+    checkpoint_loop_pid: Number(checkpointLoop.pid || 0),
+    checkpoint_loop_next_checkpoint_at_iso: String(checkpointLoop.next_checkpoint_at_iso || ''),
+    checkpoint_loop_next_checkpoint_remaining_ms: Number(checkpointLoop.next_checkpoint_remaining_ms || 0),
+    latest_checkpoint_ok: latestCheckpoint ? latestCheckpoint.ok === true : null,
+    latest_checkpoint_started_at_iso: String(latestCheckpoint?.started_at_iso || ''),
+    latest_checkpoint_report_path: String(latestCheckpoint?.report_path || ''),
+    slow_request_delta_budget_ok: latestCheckpoint ? latestCheckpoint.slow_request_delta_budget_ok === true : null,
+    production_authority_change: false,
+    memory_skills_production_allowed: memorySkillsAllowed,
+    memory_skills_production_required: memorySkillsRequired,
+    memory_writer_authority_in_rust: memoryWriterAuthority,
+    skills_execution_authority_in_rust: skillsExecutionAuthority,
+    ui_product_change: session.ui_product_change === true || checkpointLoop.ui_product_change === true,
+    secret_leak: session.secret_leak === true || checkpointLoop.secret_leak === true,
+    session,
+    checkpoint_loop: checkpointLoop,
+    ...extra,
+  };
+}
+
 function stopActive(reason = 'stop_requested') {
   const state = readJsonFile(STATE_FILE);
-  if (!state?.pid || !isPidRunning(state.pid)) {
+  if (state?.pid && isPidRunning(state.pid)) {
+    process.kill(Number(state.pid), 'SIGTERM');
+    writeState({ ...state, stop_requested_at_iso: new Date().toISOString(), stop_reason: reason });
+    return { stopped: true, pid: Number(state.pid), reason };
+  }
+  const discovered = discoverRunningGateProcess();
+  if (!discovered?.pid || !isPidRunning(discovered.pid)) {
     return { stopped: false, reason: 'no_active_session' };
   }
-  process.kill(Number(state.pid), 'SIGTERM');
-  writeState({ ...state, stop_requested_at_iso: new Date().toISOString(), stop_reason: reason });
-  return { stopped: true, pid: Number(state.pid), reason };
+  process.kill(Number(discovered.pid), 'SIGTERM');
+  writeState({
+    ...stateFromDiscovered(discovered, 'stop_discovered_session'),
+    stop_requested_at_iso: new Date().toISOString(),
+    stop_reason: reason,
+  });
+  return { stopped: true, pid: Number(discovered.pid), reason, discovered_by_process_scan: true };
 }
 
 function startSession(config) {
@@ -401,6 +867,24 @@ function startSession(config) {
       };
     }
     stopActive('replace_requested');
+  }
+  const discovered = discoverRunningGateProcess();
+  if (discovered?.pid && isPidRunning(discovered.pid)) {
+    if (!config.replace) {
+      return {
+        ...statusPayload(),
+        ok: false,
+        command: 'start',
+        started: false,
+        issues: ['production_live_stability_session_already_running_in_another_package_root'],
+      };
+    }
+    process.kill(Number(discovered.pid), 'SIGTERM');
+    writeState({
+      ...stateFromDiscovered(discovered, 'replace_discovered_session'),
+      stop_requested_at_iso: new Date().toISOString(),
+      stop_reason: 'replace_requested',
+    });
   }
   ensureDir(SESSION_DIR);
   ensureDir(path.join(ROOT_DIR, 'logs'));
@@ -420,6 +904,7 @@ function startSession(config) {
     '--status-read-timeout-ms', String(config.statusReadTimeoutMs),
     '--max-slow-requests', String(config.maxSlowRequests),
     '--report-path', reportPath,
+    ...memorySkillsGateArgs(config),
   ];
   const fd = fs.openSync(logPath, 'a');
   const child = spawn(process.execPath, args, {
@@ -447,6 +932,8 @@ function startSession(config) {
     max_status_age_ms: config.maxStatusAgeMs,
     status_read_timeout_ms: config.statusReadTimeoutMs,
     max_slow_requests: config.maxSlowRequests,
+    memory_skills_production_allowed: config.allowMemorySkillsProduction === true,
+    memory_skills_production_required: config.requireMemorySkillsProduction === true,
     command: process.execPath,
     args,
     production_authority_change: false,
@@ -474,6 +961,7 @@ function runCheckpoint(config) {
     '--status-read-timeout-ms', String(config.statusReadTimeoutMs),
     '--max-slow-requests', String(config.maxSlowRequests),
     '--report-path', reportPath,
+    ...memorySkillsGateArgs(config),
   ];
   const startedAtMs = Date.now();
   const result = spawnSync(process.execPath, args, {
@@ -516,6 +1004,8 @@ function runCheckpoint(config) {
     error: result.error ? String(result.error.message || result.error) : String(result.stderr || '').trim(),
     parse_error: parseError,
     production_authority_change: false,
+    memory_skills_production_allowed: summary?.memory_skills_production_allowed === true,
+    memory_skills_production_required: summary?.memory_skills_production_required === true,
     memory_writer_authority_in_rust: summary?.memory_writer_authority_in_rust === true,
     skills_execution_authority_in_rust: summary?.skills_execution_authority_in_rust === true,
     ui_product_change: summary?.ui_product_change === true,
@@ -535,13 +1025,19 @@ async function sleepUntil(targetMs, shouldStop) {
 
 function checkpointLoopStatusPayload(extra = {}) {
   const state = readJsonFile(CHECKPOINT_LOOP_STATE_FILE);
-  const running = isPidRunning(state?.pid);
-  const reportPath = String(state?.report_path || '');
+  const stateRunning = isPidRunning(state?.pid);
+  const discovered = stateRunning ? null : discoverRunningCheckpointLoopProcess();
+  const running = stateRunning || Boolean(discovered);
+  const effectivePid = stateRunning ? Number(state?.pid || 0) : Number(discovered?.pid || state?.pid || 0);
+  const stateMatchesEffectiveProcess = Boolean(state?.pid) && Number(state.pid) === effectivePid;
+  const reportPath = stateRunning
+    ? String(state?.report_path || '')
+    : String(discovered?.report_path || state?.report_path || '');
   const report = readJsonFile(reportPath);
   const reportSummary = summarizeLoopReport(report);
   const now = Date.now();
-  const startedAtIso = String(state?.started_at_iso || '');
-  const expectedEndAtIso = String(state?.expected_end_at_iso || '');
+  const startedAtIso = stateMatchesEffectiveProcess ? String(state?.started_at_iso || '') : String(discovered?.started_at_iso || '');
+  const expectedEndAtIso = stateMatchesEffectiveProcess ? String(state?.expected_end_at_iso || '') : String(discovered?.expected_end_at_iso || '');
   const startedAtMs = Date.parse(startedAtIso) || 0;
   const expectedEndAtMs = Date.parse(expectedEndAtIso) || 0;
   const elapsedMs = startedAtMs > 0 ? Math.max(0, now - startedAtMs) : 0;
@@ -551,6 +1047,10 @@ function checkpointLoopStatusPayload(extra = {}) {
   const completed = Boolean(state?.pid) && !running && report?.completed === true;
   const stopped = Boolean(state?.stop_requested_at_iso) || report?.stop_requested === true;
   const incomplete = Boolean(state?.pid) && !running && Boolean(report) && report?.completed !== true;
+  const activeRootDir = stateMatchesEffectiveProcess
+    ? String(state?.root_dir || '')
+    : String(discovered?.root_dir || state?.root_dir || '');
+  const adoptedFromRootDir = String(state?.adopted_from_root_dir || (!stateMatchesEffectiveProcess ? discovered?.root_dir || '' : ''));
   return {
     ok: true,
     schema_version: 'xhub.rust_hub.production_live_stability_checkpoint_loop_status.v1',
@@ -559,19 +1059,29 @@ function checkpointLoopStatusPayload(extra = {}) {
     state_file: CHECKPOINT_LOOP_STATE_FILE,
     state_exists: Boolean(state),
     running,
+    running_discovered_by_process_scan: !stateRunning && Boolean(discovered),
     completed,
     completed_ok: completed ? report?.ok === true : false,
     incomplete,
     stopped,
-    pid: Number(state?.pid || 0),
+    pid: effectivePid,
     started_at_iso: startedAtIso,
     expected_end_at_iso: expectedEndAtIso,
     elapsed_ms: elapsedMs,
     remaining_ms: remainingMs,
-    duration_ms: Number(state?.duration_ms || 0),
-    checkpoint_duration_ms: Number(state?.checkpoint_duration_ms || 0),
-    checkpoint_interval_ms: Number(state?.checkpoint_interval_ms || 0),
-    max_checkpoints: Number(state?.max_checkpoints || 0),
+    duration_ms: firstNumber(0, stateRunning ? state?.duration_ms : discovered?.duration_ms, state?.duration_ms),
+    interval_ms: firstNumber(0, stateRunning ? state?.interval_ms : discovered?.interval_ms, state?.interval_ms),
+    max_status_age_ms: firstNumber(0, stateRunning ? state?.max_status_age_ms : discovered?.max_status_age_ms, state?.max_status_age_ms),
+    status_read_timeout_ms: firstNumber(0, stateRunning ? state?.status_read_timeout_ms : discovered?.status_read_timeout_ms, state?.status_read_timeout_ms),
+    max_slow_requests: firstNumber(0, stateRunning ? state?.max_slow_requests : discovered?.max_slow_requests, state?.max_slow_requests),
+    checkpoint_duration_ms: firstNumber(0, stateRunning ? state?.checkpoint_duration_ms : discovered?.checkpoint_duration_ms, state?.checkpoint_duration_ms),
+    checkpoint_interval_ms: firstNumber(0, stateRunning ? state?.checkpoint_interval_ms : discovered?.checkpoint_interval_ms, state?.checkpoint_interval_ms),
+    max_checkpoints: firstNumber(0, stateRunning ? state?.max_checkpoints : discovered?.max_checkpoints, state?.max_checkpoints),
+    current_root_dir: ROOT_DIR,
+    active_root_dir: activeRootDir,
+    adopted_from_root_dir: adoptedFromRootDir,
+    active_process_original_root_dir: adoptedFromRootDir || activeRootDir,
+    active_sidecar_root_matches_current_package: activeRootDir ? activeRootDir === ROOT_DIR : false,
     next_checkpoint_at_iso: nextCheckpointAtIso,
     next_checkpoint_remaining_ms: running && nextCheckpointAtMs > 0 ? Math.max(0, nextCheckpointAtMs - now) : 0,
     report_path: reportPath,
@@ -580,6 +1090,12 @@ function checkpointLoopStatusPayload(extra = {}) {
     log_path: String(state?.log_path || ''),
     log_exists: state?.log_path ? fs.existsSync(state.log_path) : false,
     production_authority_change: false,
+    memory_skills_production_allowed: reportSummary?.memory_skills_production_allowed === true
+      || state?.memory_skills_production_allowed === true
+      || ACTIVE_CONFIG?.allowMemorySkillsProduction === true,
+    memory_skills_production_required: reportSummary?.memory_skills_production_required === true
+      || state?.memory_skills_production_required === true
+      || ACTIVE_CONFIG?.requireMemorySkillsProduction === true,
     memory_writer_authority_in_rust: reportSummary?.memory_writer_authority_in_rust === true,
     skills_execution_authority_in_rust: reportSummary?.skills_execution_authority_in_rust === true,
     ui_product_change: reportSummary?.ui_product_change === true,
@@ -588,14 +1104,81 @@ function checkpointLoopStatusPayload(extra = {}) {
   };
 }
 
+function checkpointLoopStateFromDiscovered(discovered, reason = 'adopted_from_process_scan') {
+  return {
+    schema_version: 'xhub.rust_hub.production_live_stability_checkpoint_loop_state.v1',
+    pid: Number(discovered?.pid || 0),
+    started_at_iso: String(discovered?.started_at_iso || ''),
+    expected_end_at_iso: String(discovered?.expected_end_at_iso || ''),
+    root_dir: ROOT_DIR,
+    adopted_from_root_dir: String(discovered?.root_dir || ''),
+    adopted_at_iso: new Date().toISOString(),
+    adopt_reason: reason,
+    report_path: String(discovered?.report_path || ''),
+    log_path: String(discovered?.log_path || ''),
+    http_base_url: String(discovered?.http_base_url || DEFAULT_HTTP_BASE_URL),
+    live_base_dir: String(discovered?.live_base_dir || DEFAULT_LIVE_BASE_DIR),
+    duration_ms: Number(discovered?.duration_ms || 0),
+    interval_ms: Number(discovered?.interval_ms || 0),
+    max_status_age_ms: Number(discovered?.max_status_age_ms || 0),
+    status_read_timeout_ms: Number(discovered?.status_read_timeout_ms || 0),
+    max_slow_requests: Number(discovered?.max_slow_requests || 0),
+    checkpoint_duration_ms: Number(discovered?.checkpoint_duration_ms || 0),
+    checkpoint_interval_ms: Number(discovered?.checkpoint_interval_ms || 0),
+    max_checkpoints: Number(discovered?.max_checkpoints || 0),
+    command: 'discovered-process',
+    args: [],
+    discovered_command: String(discovered?.command || ''),
+    production_authority_change: false,
+  };
+}
+
+function adoptCheckpointLoop() {
+  const state = readJsonFile(CHECKPOINT_LOOP_STATE_FILE);
+  if (state?.pid && isPidRunning(state.pid)) {
+    return {
+      ...checkpointLoopStatusPayload({ command: 'adopt-checkpoint-loop' }),
+      adopted: false,
+      reason: 'local_state_already_tracks_running_checkpoint_loop',
+    };
+  }
+  const discovered = discoverRunningCheckpointLoopProcess();
+  if (!discovered?.pid || !isPidRunning(discovered.pid)) {
+    return {
+      ...checkpointLoopStatusPayload({ command: 'adopt-checkpoint-loop' }),
+      ok: false,
+      adopted: false,
+      reason: 'no_active_checkpoint_loop_to_adopt',
+      issues: ['no_active_production_live_stability_checkpoint_loop_found'],
+    };
+  }
+  writeCheckpointLoopState(checkpointLoopStateFromDiscovered(discovered));
+  return {
+    ...checkpointLoopStatusPayload({ command: 'adopt-checkpoint-loop' }),
+    adopted: true,
+    adopted_pid: Number(discovered.pid),
+    adopted_from_root_dir: String(discovered.root_dir || ''),
+  };
+}
+
 function stopCheckpointLoop(reason = 'stop_requested') {
   const state = readJsonFile(CHECKPOINT_LOOP_STATE_FILE);
-  if (!state?.pid || !isPidRunning(state.pid)) {
+  if (state?.pid && isPidRunning(state.pid)) {
+    process.kill(Number(state.pid), 'SIGTERM');
+    writeCheckpointLoopState({ ...state, stop_requested_at_iso: new Date().toISOString(), stop_reason: reason });
+    return { stopped: true, pid: Number(state.pid), reason };
+  }
+  const discovered = discoverRunningCheckpointLoopProcess();
+  if (!discovered?.pid || !isPidRunning(discovered.pid)) {
     return { stopped: false, reason: 'no_active_checkpoint_loop' };
   }
-  process.kill(Number(state.pid), 'SIGTERM');
-  writeCheckpointLoopState({ ...state, stop_requested_at_iso: new Date().toISOString(), stop_reason: reason });
-  return { stopped: true, pid: Number(state.pid), reason };
+  process.kill(Number(discovered.pid), 'SIGTERM');
+  writeCheckpointLoopState({
+    ...checkpointLoopStateFromDiscovered(discovered, 'stop_discovered_checkpoint_loop'),
+    stop_requested_at_iso: new Date().toISOString(),
+    stop_reason: reason,
+  });
+  return { stopped: true, pid: Number(discovered.pid), reason, discovered_by_process_scan: true };
 }
 
 function startCheckpointLoop(config) {
@@ -611,6 +1194,24 @@ function startCheckpointLoop(config) {
       };
     }
     stopCheckpointLoop('replace_requested');
+  }
+  const discovered = discoverRunningCheckpointLoopProcess();
+  if (discovered?.pid && isPidRunning(discovered.pid)) {
+    if (!config.replace) {
+      return {
+        ...checkpointLoopStatusPayload(),
+        ok: false,
+        command: 'start-checkpoint-loop',
+        started: false,
+        issues: ['production_live_stability_checkpoint_loop_already_running_in_another_package_root'],
+      };
+    }
+    process.kill(Number(discovered.pid), 'SIGTERM');
+    writeCheckpointLoopState({
+      ...checkpointLoopStateFromDiscovered(discovered, 'replace_discovered_checkpoint_loop'),
+      stop_requested_at_iso: new Date().toISOString(),
+      stop_reason: 'replace_requested',
+    });
   }
   ensureDir(SESSION_DIR);
   ensureDir(path.join(ROOT_DIR, 'logs'));
@@ -635,6 +1236,7 @@ function startCheckpointLoop(config) {
     '--max-checkpoints', String(config.maxCheckpoints),
     '--report-path', reportPath,
     '--log-path', logPath,
+    ...memorySkillsGateArgs(config),
   ];
   const fd = fs.openSync(logPath, 'a');
   const child = spawn(process.execPath, args, {
@@ -665,6 +1267,8 @@ function startCheckpointLoop(config) {
     checkpoint_duration_ms: config.checkpointDurationMs,
     checkpoint_interval_ms: config.checkpointLoopIntervalMs,
     max_checkpoints: config.maxCheckpoints,
+    memory_skills_production_allowed: config.allowMemorySkillsProduction === true,
+    memory_skills_production_required: config.requireMemorySkillsProduction === true,
     command: process.execPath,
     args,
     production_authority_change: false,
@@ -705,6 +1309,8 @@ function checkpointLoopReportBase(config, startedAtMs, checkpoints, issues, comp
     latest_checkpoint: latest,
     checkpoints,
     production_authority_change: false,
+    memory_skills_production_allowed: config.allowMemorySkillsProduction === true,
+    memory_skills_production_required: config.requireMemorySkillsProduction === true,
     memory_writer_authority_in_rust: checkpoints.some((item) => item.memory_writer_authority_in_rust === true),
     skills_execution_authority_in_rust: checkpoints.some((item) => item.skills_execution_authority_in_rust === true),
     ui_product_change: checkpoints.some((item) => item.ui_product_change === true),
@@ -854,6 +1460,7 @@ async function runCheckpointLoop(config) {
 
 async function main() {
   const config = parseArgs(process.argv.slice(2));
+  ACTIVE_CONFIG = config;
   if (config.help) {
     process.stdout.write(`${usage()}\n`);
     return;
@@ -868,6 +1475,16 @@ async function main() {
     const stopped = stopActive();
     const payload = statusPayload({ command: 'stop', ...stopped });
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+    return;
+  }
+  if (config.mode === 'adopt') {
+    const payload = adoptActiveSession();
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+    if (!payload.ok) process.exit(2);
+    return;
+  }
+  if (config.mode === 'supervisionStatus') {
+    process.stdout.write(`${JSON.stringify(supervisionStatusPayload(), null, 2)}\n`);
     return;
   }
   if (config.mode === 'checkpoint') {
@@ -886,6 +1503,12 @@ async function main() {
     const stopped = stopCheckpointLoop();
     const payload = checkpointLoopStatusPayload({ command: 'stop-checkpoint-loop', ...stopped });
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+    return;
+  }
+  if (config.mode === 'adoptCheckpointLoop') {
+    const payload = adoptCheckpointLoop();
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+    if (!payload.ok) process.exit(2);
     return;
   }
   if (config.mode === 'checkpointLoopStatus') {

@@ -301,12 +301,41 @@ struct XTRoleAwareMemoryPolicyTests {
         )
 
         #expect(policy.assemblyPurpose == .conversation)
+        #expect(policy.recommendedSupervisorRecentRawContextProfile == .standard12Pairs)
+        #expect(policy.effectiveSupervisorRecentRawContextProfile == .standard12Pairs)
         #expect(policy.recommendedReviewMemoryDepth == .compact)
         #expect(policy.effectiveReviewMemoryDepth == .compact)
         #expect(policy.purposeScopedReviewMemoryCap == .m1Execute)
         #expect(policy.purposeCapApplied == true)
         #expect(policy.effectiveServingProfile == .m1Execute)
         #expect(policy.ceilingHit == false)
+    }
+
+    @Test
+    func supervisorWeakProjectBindingFallsBackToConversationAndExplainsSuppression() {
+        let policy = XTRoleAwareMemoryPolicyResolver.resolveSupervisor(
+            configuredSupervisorRecentRawContextProfile: .standard12Pairs,
+            configuredReviewMemoryDepth: .fullScan,
+            reviewLevelHint: .r2Strategic,
+            dominantMode: .projectFirst,
+            focusedProjectSelected: false,
+            userMessage: "这个项目的治理文案应该怎么讲更清楚？",
+            reviewMemoryCeiling: .m4FullScan,
+            privacyMode: .defaultMode,
+            projectMemoryBindingStrength: .weak,
+            projectMemorySuppressedForPureChat: true,
+            suppressionReason: "project_reference_without_truth_need"
+        )
+
+        #expect(policy.assemblyPurpose == .conversation)
+        #expect(policy.recommendedReviewMemoryDepth == .compact)
+        #expect(policy.effectiveReviewMemoryDepth == .compact)
+        #expect(policy.effectiveServingProfile == .m1Execute)
+        #expect(policy.resolution.memoryBindingStrength == SupervisorProjectMemoryBindingStrength.weak.rawValue)
+        #expect(policy.resolution.requiresProjectTruth == false)
+        #expect(policy.resolution.projectMemorySuppressedForPureChat == true)
+        #expect(policy.resolution.suppressionReason == "project_reference_without_truth_need")
+        #expect(!policy.resolution.selectedServingObjects.contains("focused_project_anchor_pack"))
     }
 
     @Test

@@ -155,20 +155,13 @@ enum HubPaths {
 
     private static func runtimeHeartbeatIsFresh(in baseDir: URL, ttl: Double) -> Bool {
         let runtimeStatusURL = baseDir.appendingPathComponent("ai_runtime_status.json")
-        let now = Date().timeIntervalSince1970
-
-        if let data = try? Data(contentsOf: runtimeStatusURL),
-           let heartbeat = try? JSONDecoder().decode(HubRuntimeStatusHeartbeat.self, from: data),
-           let updatedAt = heartbeat.updatedAt,
-           now - updatedAt < ttl {
-            return true
-        }
-
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: runtimeStatusURL.path),
-              let modifiedAt = attributes[.modificationDate] as? Date else {
+        guard let status = AIRuntimeStatus.load(from: runtimeStatusURL) else {
             return false
         }
-        return now - modifiedAt.timeIntervalSince1970 < ttl
+        guard status.hasAuthoritativeRuntimeState else {
+            return false
+        }
+        return status.isAlive(ttl: ttl)
     }
 
     private static func syntheticLiveHubStatus(
@@ -180,24 +173,35 @@ enum HubPaths {
         let modelsStateURL = baseDir.appendingPathComponent("models_state.json")
         let now = Date().timeIntervalSince1970
 
+        let runtimeStatus = AIRuntimeStatus.load(from: runtimeStatusURL)
         var runtimeHeartbeat: HubRuntimeStatusHeartbeat?
-        if let data = try? Data(contentsOf: runtimeStatusURL) {
+        if runtimeStatus == nil,
+           let data = try? Data(contentsOf: runtimeStatusURL) {
             runtimeHeartbeat = try? JSONDecoder().decode(HubRuntimeStatusHeartbeat.self, from: data)
         }
 
         let runtimeModifiedAt = fileModificationDate(for: runtimeStatusURL)
         let modelsModifiedAt = fileModificationDate(for: modelsStateURL)
+        let resolvedUpdatedAt = max(
+            existingStatus?.updatedAt ?? 0,
+            runtimeStatus?.updatedAt ?? 0,
+            runtimeHeartbeat?.updatedAt ?? 0,
+            runtimeModifiedAt.timeIntervalSince1970,
+            modelsModifiedAt.timeIntervalSince1970
+        )
 
         return HubStatus(
-            pid: runtimeHeartbeat?.pid ?? existingStatus?.pid,
+            pid: Int32(runtimeStatus?.pid ?? 0) > 0
+                ? Int32(runtimeStatus?.pid ?? 0)
+                : (runtimeHeartbeat?.pid ?? existingStatus?.pid),
             startedAt: existingStatus?.startedAt,
-            updatedAt: max(now, runtimeModifiedAt.timeIntervalSince1970),
+            updatedAt: resolvedUpdatedAt > 0 ? resolvedUpdatedAt : now,
             ipcMode: existingStatus?.ipcMode ?? "file",
             ipcPath: existingStatus?.ipcPath ?? baseDir.appendingPathComponent("ipc_events", isDirectory: true).path,
             baseDir: baseDir.path,
             protocolVersion: existingStatus?.protocolVersion,
             aiReady: existingStatus?.aiReady ?? true,
-            loadedModelCount: existingStatus?.loadedModelCount,
+            loadedModelCount: runtimeStatus?.loadedModelCount ?? existingStatus?.loadedModelCount,
             modelsUpdatedAt: max(existingStatus?.modelsUpdatedAt ?? 0, modelsModifiedAt.timeIntervalSince1970)
         )
     }

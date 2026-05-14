@@ -19,7 +19,7 @@ function resolveXHubSystemRoot() {
   const candidates = [
     path.resolve(ROOT_DIR, '..', '..', 'x-hub-system'),
     path.resolve(ROOT_DIR, '..', '..', '..', '..', 'x-hub-system'),
-    '.',
+    '/Users/andrew.xie/Documents/AX/x-hub-system',
   ];
   for (const candidate of candidates) {
     if (fs.existsSync(path.join(candidate, 'x-hub', 'grpc-server', 'hub_grpc_server', 'src', 'rust_scheduler_authority_bridge.js'))) {

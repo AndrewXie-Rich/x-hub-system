@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 enum ToolSandboxMode: String, CaseIterable {
@@ -1023,6 +1024,9 @@ Please switch to Terminal mode (Chat/Terminal toggle) and run it there:
 
         case .skills_pin:
             return await executeSkillsPin(call: call, projectRoot: projectRoot)
+
+        case .skillsExecuteRunner:
+            return await executeSkillRunner(call: call, projectRoot: projectRoot)
 
         case .summarize:
             return try await executeSummarize(call: call, projectRoot: projectRoot)
@@ -3024,11 +3028,16 @@ VERIFY
         let permissionReadiness = await MainActor.run {
             AXTrustedAutomationPermissionOwnerReadiness.current()
         }
+        let rawAction = (optStrArg(call, "action") ?? "open_url")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let requestedAction = XTBrowserRuntimeRequestedAction.parse(rawAction)
         let decision = DeviceAutomationTools.evaluateGate(
             for: call.tool,
             projectRoot: projectRoot,
             config: config,
-            permissionReadiness: permissionReadiness
+            permissionReadiness: permissionReadiness,
+            requiredPermissionKeysOverride: requestedAction.flatMap(browserControlRequiredPermissions)
         )
         guard decision.allowed else {
             return deniedDeviceAutomationResult(call: call, projectRoot: projectRoot, decision: decision)
@@ -3053,10 +3062,7 @@ VERIFY
             )
         }
 
-        let rawAction = (optStrArg(call, "action") ?? "open_url")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        guard let requestedAction = XTBrowserRuntimeRequestedAction.parse(rawAction) else {
+        guard let requestedAction else {
             return deviceBrowserControlFailure(
                 call: call,
                 projectRoot: projectRoot,
@@ -3941,6 +3947,17 @@ lease_id=\(resolved.leaseId ?? "")
             return nil
         }
         return url
+    }
+
+    private static func browserControlRequiredPermissions(
+        for action: XTBrowserRuntimeRequestedAction
+    ) -> [AXTrustedAutomationPermissionKey]? {
+        switch action {
+        case .open, .navigate, .snapshot, .extract:
+            return []
+        case .click, .typeText, .upload:
+            return nil
+        }
     }
 
     private static func browserSecretFillRequest(
@@ -4842,6 +4859,635 @@ return jsResult
             return "Hub 已自动审查该官方技能包，但当前 official_skills doctor 结果还不是 ready，暂不能启用。"
         default:
             return reasonCode.isEmpty ? "skills_pin_failed" : reasonCode
+        }
+    }
+
+    private struct SkillRunnerEntrypoint {
+        var runtime: String
+        var command: String
+        var args: [String]
+    }
+
+    private struct SkillRunnerProcessResult {
+        var exitCode: Int32
+        var output: String
+        var truncated: Bool
+    }
+
+    private static let skillRunnerReservedArgKeys: Set<String> = [
+        "skill_id",
+        "skill",
+        "package_sha256",
+        "skill_package_sha256",
+        "sha256",
+        "hub_tool_name",
+        "risk_tier",
+        "required_grant_scope",
+        "timeout_sec",
+        "package_dir",
+        "payload",
+        "input",
+    ]
+    private static let skillRunnerMaxInputBytes = 64 * 1024
+    private static let skillRunnerMaxOutputBytes = 512 * 1024
+    private static let skillRunnerMaxPackageBytes = 50 * 1024 * 1024
+
+    private static func executeSkillRunner(call: ToolCall, projectRoot: URL) async -> ToolResult {
+        let skillId = firstNonEmptyString(
+            optStrArg(call, "skill_id"),
+            optStrArg(call, "skill")
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        let packageSHA256 = firstNonEmptyString(
+            optStrArg(call, "package_sha256"),
+            optStrArg(call, "skill_package_sha256"),
+            optStrArg(call, "sha256")
+        ).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !skillId.isEmpty else {
+            return skillRunnerDeniedResult(call: call, skillId: "", packageSHA256: packageSHA256, reason: "missing_skill_id")
+        }
+        guard isValidSHA256(packageSHA256) else {
+            return skillRunnerDeniedResult(call: call, skillId: skillId, packageSHA256: packageSHA256, reason: "missing_package_sha256")
+        }
+
+        let manifestResult = await HubIPCClient.getSkillManifest(packageSHA256: packageSHA256)
+        guard manifestResult.ok else {
+            return skillRunnerDeniedResult(
+                call: call,
+                skillId: skillId,
+                packageSHA256: packageSHA256,
+                reason: manifestResult.reasonCode ?? "skill_manifest_unavailable",
+                extra: ["source": .string(manifestResult.source)]
+            )
+        }
+        let manifestObject = jsonObject(from: manifestResult.manifestJSON)
+        let manifestSkillId = jsonStringValue(manifestObject?["skill_id"]) ?? skillId
+        guard manifestSkillId == skillId else {
+            return skillRunnerDeniedResult(
+                call: call,
+                skillId: skillId,
+                packageSHA256: packageSHA256,
+                reason: "skill_package_mismatch",
+                extra: ["manifest_skill_id": .string(manifestSkillId)]
+            )
+        }
+        guard let entrypoint = parseSkillRunnerEntrypoint(manifestObject) else {
+            return skillRunnerDeniedResult(call: call, skillId: skillId, packageSHA256: packageSHA256, reason: "invalid_manifest")
+        }
+
+        let packageResult = await HubIPCClient.downloadSkillPackage(packageSHA256: packageSHA256)
+        guard packageResult.ok, !packageResult.data.isEmpty else {
+            return skillRunnerDeniedResult(
+                call: call,
+                skillId: skillId,
+                packageSHA256: packageSHA256,
+                reason: packageResult.reasonCode ?? "skill_package_download_failed",
+                extra: ["source": .string(packageResult.source)]
+            )
+        }
+        guard packageResult.data.count <= skillRunnerMaxPackageBytes else {
+            return skillRunnerDeniedResult(
+                call: call,
+                skillId: skillId,
+                packageSHA256: packageSHA256,
+                reason: "skill_package_too_large",
+                extra: ["package_limit_bytes": .number(Double(skillRunnerMaxPackageBytes))]
+            )
+        }
+        let computedSHA = sha256Hex(packageResult.data)
+        guard computedSHA == packageSHA256 else {
+            return skillRunnerDeniedResult(
+                call: call,
+                skillId: skillId,
+                packageSHA256: packageSHA256,
+                reason: "hash_mismatch",
+                extra: ["computed_package_sha256": .string(computedSHA)]
+            )
+        }
+
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xt-skill-runner-\(UUID().uuidString)", isDirectory: true)
+        let packageURL = tempRoot.appendingPathComponent("skill.tgz")
+        let extractURL = tempRoot.appendingPathComponent("package", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: extractURL, withIntermediateDirectories: true)
+            try packageResult.data.write(to: packageURL, options: [.atomic])
+            try validateSkillRunnerArchive(packageURL: packageURL)
+            let extract = try ProcessCapture.run(
+                "/usr/bin/tar",
+                ["-xzf", packageURL.path, "-C", extractURL.path],
+                cwd: nil,
+                timeoutSec: 20.0
+            )
+            guard extract.exitCode == 0 else {
+                try? FileManager.default.removeItem(at: tempRoot)
+                return skillRunnerDeniedResult(
+                    call: call,
+                    skillId: skillId,
+                    packageSHA256: packageSHA256,
+                    reason: "package_extract_failed",
+                    extra: ["detail": .string(extract.combined)]
+                )
+            }
+            try validateSkillRunnerExtractedPackageRoot(extractURL)
+        } catch {
+            try? FileManager.default.removeItem(at: tempRoot)
+            return skillRunnerDeniedResult(
+                call: call,
+                skillId: skillId,
+                packageSHA256: packageSHA256,
+                reason: "package_extract_failed",
+                extra: ["detail": .string(String(describing: error))]
+            )
+        }
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let execArgv: [String]
+        do {
+            execArgv = try skillRunnerExecArgv(entrypoint: entrypoint, packageRoot: extractURL)
+        } catch {
+            return skillRunnerDeniedResult(
+                call: call,
+                skillId: skillId,
+                packageSHA256: packageSHA256,
+                reason: "invalid_entrypoint",
+                extra: ["detail": .string(String(describing: error))]
+            )
+        }
+        let gateExecArgv = skillRunnerGateExecArgv(
+            skillId: skillId,
+            packageSHA256: packageSHA256
+        )
+
+        let hubToolName = ToolName.skillsExecuteRunner.rawValue
+        let riskTier = firstNonEmptyString(
+            optStrArg(call, "risk_tier"),
+            jsonStringValue(manifestObject?["risk_level"]),
+            "medium"
+        )
+        let requiresGrant = jsonBoolValue(manifestObject?["requires_grant"]) ?? false
+        let requiredGrantScope = firstNonEmptyString(
+            optStrArg(call, "required_grant_scope"),
+            requiresGrant ? "privileged" : "readonly"
+        )
+        let inputJSON = skillRunnerInputJSONString(call: call)
+        guard Data(inputJSON.utf8).count <= skillRunnerMaxInputBytes else {
+            return skillRunnerDeniedResult(
+                call: call,
+                skillId: skillId,
+                packageSHA256: packageSHA256,
+                reason: "skill_runner_input_too_large"
+            )
+        }
+        let toolArgsHash = sha256Hex(stableSkillRunnerGateBinding(
+            skillId: skillId,
+            packageSHA256: packageSHA256,
+            inputJSON: inputJSON
+        ))
+        let gate = await HubIPCClient.evaluateSkillRunnerGate(
+            HubIPCClient.SkillRunnerGateRequestPayload(
+                requestId: call.id,
+                projectId: AXProjectRegistryStore.projectId(forRoot: projectRoot),
+                skillId: skillId,
+                packageSHA256: packageSHA256,
+                toolName: hubToolName,
+                toolArgsHash: toolArgsHash,
+                riskTier: riskTier,
+                requiredGrantScope: requiredGrantScope,
+                execArgv: gateExecArgv,
+                execCwd: extractURL.path
+            )
+        )
+        guard gate.ok else {
+            return skillRunnerDeniedResult(
+                call: call,
+                skillId: skillId,
+                packageSHA256: packageSHA256,
+                reason: gate.denyCode ?? "skill_runner_gate_denied",
+                extra: [
+                    "source": .string(gate.source),
+                    "hub_tool_name": .string(gate.toolName),
+                    "decision": .string(gate.decision),
+                    "tool_request_id": gate.toolRequestId.isEmpty ? .null : .string(gate.toolRequestId),
+                ]
+            )
+        }
+        let gateDecision = gate.decision.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard gate.skillId.trimmingCharacters(in: .whitespacesAndNewlines) == skillId,
+              gate.packageSHA256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == packageSHA256,
+              gate.toolName.trimmingCharacters(in: .whitespacesAndNewlines) == hubToolName,
+              gateDecision == "approve" else {
+            return skillRunnerDeniedResult(
+                call: call,
+                skillId: skillId,
+                packageSHA256: packageSHA256,
+                reason: "skill_runner_gate_binding_mismatch",
+                extra: [
+                    "source": .string(gate.source),
+                    "gate_skill_id": gate.skillId.isEmpty ? .null : .string(gate.skillId),
+                    "gate_package_sha256": gate.packageSHA256.isEmpty ? .null : .string(gate.packageSHA256),
+                    "gate_tool_name": gate.toolName.isEmpty ? .null : .string(gate.toolName),
+                    "gate_decision": gate.decision.isEmpty ? .null : .string(gate.decision),
+                ]
+            )
+        }
+
+        let timeoutSec = max(1.0, min(300.0, optDoubleArg(call, "timeout_sec") ?? 30.0))
+        do {
+            let result = try runSkillRunnerProcess(
+                execArgv[0],
+                Array(execArgv.dropFirst()),
+                cwd: extractURL,
+                stdin: Data(inputJSON.utf8),
+                timeoutSec: timeoutSec,
+                env: [
+                    "XHUB_SKILL_ID": skillId,
+                    "XHUB_SKILL_PACKAGE_SHA256": packageSHA256,
+                    "XHUB_SKILL_INPUT_JSON": inputJSON,
+                ]
+            )
+            var summary: [String: JSONValue] = [
+                "tool": .string(call.tool.rawValue),
+                "ok": .bool(result.exitCode == 0),
+                "skill_id": .string(skillId),
+                "package_sha256": .string(packageSHA256),
+                "hub_gate_source": .string(gate.source),
+                "hub_gate_tool_name": .string(gate.toolName),
+                "hub_gate_execution_id": gate.executionId.isEmpty ? .null : .string(gate.executionId),
+                "entrypoint_runtime": .string(entrypoint.runtime),
+                "entrypoint_command": .string(entrypoint.command),
+                "exit_code": .number(Double(result.exitCode)),
+            ]
+            if let denyCode = gate.denyCode, !denyCode.isEmpty {
+                summary["hub_gate_deny_code"] = .string(denyCode)
+            }
+            if result.truncated {
+                summary["output_truncated"] = .bool(true)
+                summary["output_limit_bytes"] = .number(Double(skillRunnerMaxOutputBytes))
+            }
+            let body = "exit: \(result.exitCode)\n" + (result.output.isEmpty ? "(no output)" : result.output)
+            return ToolResult(id: call.id, tool: call.tool, ok: result.exitCode == 0, output: structuredOutput(summary: summary, body: body))
+        } catch {
+            return skillRunnerDeniedResult(
+                call: call,
+                skillId: skillId,
+                packageSHA256: packageSHA256,
+                reason: "entrypoint_execution_failed",
+                extra: ["detail": .string(String(describing: error))]
+            )
+        }
+    }
+
+    private static func skillRunnerDeniedResult(
+        call: ToolCall,
+        skillId: String,
+        packageSHA256: String,
+        reason: String,
+        extra: [String: JSONValue] = [:]
+    ) -> ToolResult {
+        var summary = extra
+        summary["tool"] = .string(call.tool.rawValue)
+        summary["ok"] = .bool(false)
+        summary["skill_id"] = skillId.isEmpty ? .null : .string(skillId)
+        summary["package_sha256"] = packageSHA256.isEmpty ? .null : .string(packageSHA256)
+        summary["reason"] = .string(reason)
+        return ToolResult(id: call.id, tool: call.tool, ok: false, output: structuredOutput(summary: summary, body: reason))
+    }
+
+    private static func runSkillRunnerProcess(
+        _ exe: String,
+        _ args: [String],
+        cwd: URL,
+        stdin: Data,
+        timeoutSec: Double,
+        env: [String: String]
+    ) throws -> SkillRunnerProcessResult {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: exe)
+        process.arguments = args
+        process.currentDirectoryURL = cwd
+        process.environment = skillRunnerProcessEnvironment(overrides: env)
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        let stdinPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+        process.standardInput = stdinPipe
+
+        let lock = NSLock()
+        var output = Data()
+        var truncated = false
+
+        func appendOutput(_ data: Data) {
+            guard !data.isEmpty else { return }
+            lock.lock()
+            defer { lock.unlock() }
+            let remaining = max(0, skillRunnerMaxOutputBytes - output.count)
+            if remaining > 0 {
+                output.append(data.prefix(remaining))
+            }
+            if data.count > remaining || output.count >= skillRunnerMaxOutputBytes {
+                truncated = true
+            }
+        }
+
+        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+            appendOutput(handle.availableData)
+        }
+        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+            appendOutput(handle.availableData)
+        }
+
+        do {
+            try process.run()
+            stdinPipe.fileHandleForWriting.write(stdin)
+            try? stdinPipe.fileHandleForWriting.close()
+
+            let deadline = Date().addingTimeInterval(timeoutSec)
+            while process.isRunning {
+                if Date() > deadline {
+                    process.terminate()
+                    stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                    stderrPipe.fileHandleForReading.readabilityHandler = nil
+                    throw NSError(
+                        domain: "xterminal",
+                        code: 408,
+                        userInfo: [NSLocalizedDescriptionKey: "Process timeout"]
+                    )
+                }
+                Thread.sleep(forTimeInterval: 0.02)
+            }
+
+            stdoutPipe.fileHandleForReading.readabilityHandler = nil
+            stderrPipe.fileHandleForReading.readabilityHandler = nil
+            appendOutput((try? stdoutPipe.fileHandleForReading.readToEnd()) ?? Data())
+            appendOutput((try? stderrPipe.fileHandleForReading.readToEnd()) ?? Data())
+        } catch {
+            stdoutPipe.fileHandleForReading.readabilityHandler = nil
+            stderrPipe.fileHandleForReading.readabilityHandler = nil
+            try? stdinPipe.fileHandleForWriting.close()
+            throw error
+        }
+
+        lock.lock()
+        let captured = output
+        let wasTruncated = truncated
+        lock.unlock()
+
+        let text = String(decoding: captured, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return SkillRunnerProcessResult(
+            exitCode: process.terminationStatus,
+            output: wasTruncated
+                ? text + "\n\n[output truncated at \(skillRunnerMaxOutputBytes) bytes]"
+                : text,
+            truncated: wasTruncated
+        )
+    }
+
+    private static func skillRunnerProcessEnvironment(
+        overrides: [String: String]
+    ) -> [String: String] {
+        let host = ProcessInfo.processInfo.environment
+        var env: [String: String] = [
+            "PATH": host["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
+        ]
+        for key in ["LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR"] {
+            if let value = host[key], !value.isEmpty {
+                env[key] = value
+            }
+        }
+        for (key, value) in overrides {
+            env[key] = value
+        }
+        return env
+    }
+
+    private static func parseSkillRunnerEntrypoint(_ manifest: [String: Any]?) -> SkillRunnerEntrypoint? {
+        let entrypoint = manifest?["entrypoint"]
+        let entrypointObject = entrypoint as? [String: Any] ?? [:]
+        let runner = manifest?["runner"] as? [String: Any] ?? [:]
+        let command = firstNonEmptyString(
+            jsonStringValue(entrypointObject["command"]),
+            jsonStringValue(entrypointObject["exec"]),
+            jsonStringValue(manifest?["command"]),
+            jsonStringValue(manifest?["main"]),
+            jsonStringValue(runner["command"]),
+            jsonStringValue(entrypoint)
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !command.isEmpty else { return nil }
+        let runtime = firstNonEmptyString(
+            jsonStringValue(entrypointObject["runtime"]),
+            jsonStringValue(manifest?["runtime"]),
+            jsonStringValue(entrypointObject["type"]),
+            "node"
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        let args = stringArrayValue(
+            entrypointObject["args"],
+            fallback: stringArrayValue(entrypointObject["arguments"], fallback: stringArrayValue(manifest?["args"], fallback: []))
+        )
+        return SkillRunnerEntrypoint(runtime: runtime, command: command, args: args)
+    }
+
+    private static func skillRunnerExecArgv(
+        entrypoint: SkillRunnerEntrypoint,
+        packageRoot: URL
+    ) throws -> [String] {
+        let command = entrypoint.command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !command.isEmpty,
+              !command.contains("\u{0000}") else {
+            throw NSError(domain: "xterminal.skill_runner", code: 1, userInfo: [NSLocalizedDescriptionKey: "invalid command"])
+        }
+        let runtime = entrypoint.runtime.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !entrypoint.args.contains(where: { $0.contains("\u{0000}") }) else {
+            throw NSError(domain: "xterminal.skill_runner", code: 3, userInfo: [NSLocalizedDescriptionKey: "invalid entrypoint argument"])
+        }
+        let args = entrypoint.args
+        switch runtime {
+        case "node", "nodejs":
+            if command == "node" || command == "nodejs" {
+                guard let script = args.first,
+                      !script.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("-") else {
+                    throw NSError(domain: "xterminal.skill_runner", code: 4, userInfo: [NSLocalizedDescriptionKey: "node entrypoint requires a package script"])
+                }
+                let scriptPath = try skillRunnerPackageEntrypointPath(script, packageRoot: packageRoot)
+                return ["/usr/bin/env", command, scriptPath] + Array(args.dropFirst())
+            }
+            let scriptPath = try skillRunnerPackageEntrypointPath(command, packageRoot: packageRoot)
+            return ["/usr/bin/env", "node", scriptPath] + args
+        case "python", "python3":
+            if command == "python" || command == "python3" {
+                guard let script = args.first,
+                      !script.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("-") else {
+                    throw NSError(domain: "xterminal.skill_runner", code: 5, userInfo: [NSLocalizedDescriptionKey: "python entrypoint requires a package script"])
+                }
+                let scriptPath = try skillRunnerPackageEntrypointPath(script, packageRoot: packageRoot)
+                return ["/usr/bin/env", command, scriptPath] + Array(args.dropFirst())
+            }
+            let scriptPath = try skillRunnerPackageEntrypointPath(command, packageRoot: packageRoot)
+            return ["/usr/bin/env", "python3", scriptPath] + args
+        default:
+            if command.contains("/") {
+                let executable = URL(fileURLWithPath: command, relativeTo: packageRoot)
+                    .standardizedFileURL
+                let packageRootPath = packageRoot.standardizedFileURL.path
+                let packageRootPrefix = packageRootPath.hasSuffix("/") ? packageRootPath : packageRootPath + "/"
+                guard executable.path.hasPrefix(packageRootPrefix) else {
+                    throw NSError(domain: "xterminal.skill_runner", code: 2, userInfo: [NSLocalizedDescriptionKey: "entrypoint escapes package root"])
+                }
+                return [executable.path] + args
+            }
+            return ["/usr/bin/env", command] + args
+        }
+    }
+
+    private static func validateSkillRunnerArchive(packageURL: URL) throws {
+        let listed = try ProcessCapture.run(
+            "/usr/bin/tar",
+            ["-tzf", packageURL.path],
+            cwd: nil,
+            timeoutSec: 20.0
+        )
+        guard listed.exitCode == 0 else {
+            throw NSError(domain: "xterminal.skill_runner", code: 10, userInfo: [NSLocalizedDescriptionKey: "invalid tar archive"])
+        }
+        for rawLine in listed.stdout.split(separator: "\n", omittingEmptySubsequences: true) {
+            let entry = String(rawLine).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !entry.isEmpty else { continue }
+            if entry.hasPrefix("/") || entry.contains("\u{0000}") {
+                throw NSError(domain: "xterminal.skill_runner", code: 11, userInfo: [NSLocalizedDescriptionKey: "unsafe archive path"])
+            }
+            let parts = entry.split(separator: "/").map(String.init)
+            if parts.contains("..") {
+                throw NSError(domain: "xterminal.skill_runner", code: 12, userInfo: [NSLocalizedDescriptionKey: "unsafe archive traversal"])
+            }
+        }
+        let verbose = try ProcessCapture.run(
+            "/usr/bin/tar",
+            ["-tvzf", packageURL.path],
+            cwd: nil,
+            timeoutSec: 20.0
+        )
+        guard verbose.exitCode == 0 else {
+            throw NSError(domain: "xterminal.skill_runner", code: 13, userInfo: [NSLocalizedDescriptionKey: "invalid tar archive metadata"])
+        }
+        for rawLine in verbose.stdout.split(separator: "\n", omittingEmptySubsequences: true) {
+            let line = String(rawLine)
+            guard let first = line.first else { continue }
+            if first == "l" || first == "h" {
+                throw NSError(domain: "xterminal.skill_runner", code: 14, userInfo: [NSLocalizedDescriptionKey: "archive links are not allowed"])
+            }
+        }
+    }
+
+    private static func validateSkillRunnerExtractedPackageRoot(_ packageRoot: URL) throws {
+        let root = packageRoot.standardizedFileURL
+        let rootPath = root.path
+        let rootPrefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isSymbolicLinkKey],
+            options: [],
+            errorHandler: nil
+        ) else {
+            throw NSError(domain: "xterminal.skill_runner", code: 15, userInfo: [NSLocalizedDescriptionKey: "package enumeration failed"])
+        }
+        for case let url as URL in enumerator {
+            let path = url.standardizedFileURL.path
+            guard path == rootPath || path.hasPrefix(rootPrefix) else {
+                throw NSError(domain: "xterminal.skill_runner", code: 16, userInfo: [NSLocalizedDescriptionKey: "extracted package escapes root"])
+            }
+            let values = try? url.resourceValues(forKeys: [.isSymbolicLinkKey])
+            if values?.isSymbolicLink == true {
+                throw NSError(domain: "xterminal.skill_runner", code: 17, userInfo: [NSLocalizedDescriptionKey: "extracted package contains symlink"])
+            }
+        }
+    }
+
+    private static func skillRunnerPackageEntrypointPath(
+        _ rawPath: String,
+        packageRoot: URL
+    ) throws -> String {
+        let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              !trimmed.contains("\u{0000}"),
+              !trimmed.hasPrefix("-") else {
+            throw NSError(domain: "xterminal.skill_runner", code: 18, userInfo: [NSLocalizedDescriptionKey: "invalid package entrypoint path"])
+        }
+        let root = packageRoot.standardizedFileURL
+        let rootPath = root.path
+        let rootPrefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+        let candidate: URL
+        if trimmed.hasPrefix("/") {
+            candidate = URL(fileURLWithPath: trimmed).standardizedFileURL
+        } else {
+            candidate = URL(fileURLWithPath: trimmed, relativeTo: root).standardizedFileURL
+        }
+        guard candidate.path.hasPrefix(rootPrefix),
+              FileManager.default.fileExists(atPath: candidate.path) else {
+            throw NSError(domain: "xterminal.skill_runner", code: 19, userInfo: [NSLocalizedDescriptionKey: "entrypoint escapes package root"])
+        }
+        return candidate.path
+    }
+
+    private static func skillRunnerInputJSONString(call: ToolCall) -> String {
+        let value: JSONValue
+        if let payload = call.args["payload"] {
+            value = payload
+        } else if let input = call.args["input"] {
+            value = input
+        } else {
+            value = .object(
+                call.args.filter { key, _ in
+                    !skillRunnerReservedArgKeys.contains(key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+                }
+            )
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(value),
+              let text = String(data: data, encoding: .utf8) else {
+            return "{}"
+        }
+        return text
+    }
+
+    private static func stableSkillRunnerGateBinding(
+        skillId: String,
+        packageSHA256: String,
+        inputJSON: String
+    ) -> String {
+        [
+            "skill_id=\(skillId)",
+            "package_sha256=\(packageSHA256)",
+            "input=\(inputJSON)",
+        ].joined(separator: "\n")
+    }
+
+    private static func skillRunnerGateExecArgv(
+        skillId: String,
+        packageSHA256: String
+    ) -> [String] {
+        [
+            "xt-skill-runner",
+            "--skill-id",
+            skillId,
+            "--package-sha256",
+            packageSHA256,
+        ]
+    }
+
+    private static func sha256Hex(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func sha256Hex(_ text: String) -> String {
+        sha256Hex(Data(text.utf8))
+    }
+
+    private static func isValidSHA256(_ raw: String) -> Bool {
+        raw.count == 64 && raw.unicodeScalars.allSatisfy {
+            (48...57).contains($0.value) || (97...102).contains($0.value)
         }
     }
 
@@ -6250,6 +6896,38 @@ return jsResult
         }
     }
 
+    private static func jsonBoolValue(_ value: Any?) -> Bool? {
+        switch value {
+        case let bool as Bool:
+            return bool
+        case let number as NSNumber:
+            return number.boolValue
+        case let string as String:
+            switch string.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "true", "1", "yes", "on":
+                return true
+            case "false", "0", "no", "off":
+                return false
+            default:
+                return nil
+            }
+        default:
+            return nil
+        }
+    }
+
+    private static func stringArrayValue(_ value: Any?, fallback: [String]) -> [String] {
+        guard let value else { return fallback }
+        if let array = value as? [Any] {
+            let strings = array.compactMap { jsonStringValue($0) }
+            return strings.isEmpty ? fallback : strings
+        }
+        if let string = jsonStringValue(value) {
+            return [string]
+        }
+        return fallback
+    }
+
     private static func structuredHeaderBoundary(in text: String) -> String.Index? {
         guard let first = text.first, first == "{" || first == "[" else {
             return nil
@@ -6893,8 +7571,18 @@ UI step stage failed: \(stage)
 
     private static func requiresFreshMemoryRecheck(call: ToolCall, projectRoot: URL) -> Bool {
         switch call.tool {
-        case .delete_path, .move_path, .git_commit, .git_push, .git_apply, .pr_create, .ci_trigger, .process_start, .deviceUIAct, .deviceUIStep, .deviceBrowserControl, .deviceAppleScript:
+        case .delete_path, .move_path, .git_commit, .git_push, .git_apply, .pr_create, .ci_trigger, .process_start, .deviceUIAct, .deviceUIStep, .deviceAppleScript:
             return true
+        case .deviceBrowserControl:
+            guard let action = XTBrowserRuntimeRequestedAction.parse(optStrArg(call, "action") ?? "open_url") else {
+                return true
+            }
+            switch action {
+            case .open, .navigate, .snapshot, .extract:
+                return false
+            case .click, .typeText, .upload:
+                return true
+            }
         case .write_file:
             guard let path = optStrArg(call, "path") else { return false }
             let target = resolvedProjectPath(path, projectRoot: projectRoot)

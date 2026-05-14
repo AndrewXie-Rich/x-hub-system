@@ -30,6 +30,20 @@ Project route diagnose: coder
     }
 
     @Test
+    func matchesRouteDiagnoseMessageWithLeadingWhitespaceWithoutFullTrim() {
+        let message = AXChatMessage(
+            role: .assistant,
+            content: """
+
+              Project route diagnose: coder
+        当前配置：openai/gpt-5.4
+        """
+        )
+
+        #expect(RouteDiagnoseMessagePresentation.matches(message))
+    }
+
+    @Test
     func ignoresRegularAssistantMessage() {
         let message = AXChatMessage(
             role: .assistant,

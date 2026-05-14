@@ -10,7 +10,8 @@ import SwiftUI
 /// 以网格形式展示所有项目
 struct ProjectsGridView: View {
     @ObservedObject var projectsManager: MultiProjectManager
-    @EnvironmentObject private var appModel: AppModel
+    @Environment(\.xtAppModelReference) private var appModelReference
+    @EnvironmentObject private var navigationFocusStore: XTNavigationFocusStore
     @State private var selectedProject: ProjectModel?
     @State private var showProjectDetail = false
     @State private var projectDetailFocusSection: XTProjectDetailSection = .overview
@@ -42,13 +43,12 @@ struct ProjectsGridView: View {
                     initialFocusSection: projectDetailFocusSection,
                     initialFocusContext: projectDetailFocusContext
                 )
-                .environmentObject(appModel)
             }
         }
         .onAppear {
             processProjectDetailFocusRequest()
         }
-        .onChange(of: appModel.projectDetailFocusRequest?.nonce) { _ in
+        .onChange(of: projectDetailFocusRequest?.nonce) { _ in
             processProjectDetailFocusRequest()
         }
         .onChange(of: showProjectDetail) { presented in
@@ -60,7 +60,7 @@ struct ProjectsGridView: View {
     }
 
     private func processProjectDetailFocusRequest() {
-        guard let request = appModel.projectDetailFocusRequest else { return }
+        guard let request = projectDetailFocusRequest else { return }
         guard let project = resolveProject(for: request.projectId) else { return }
         projectDetailFocusSection = request.section
         projectDetailFocusContext = request.context
@@ -84,12 +84,24 @@ struct ProjectsGridView: View {
             $0.id.uuidString.lowercased() == normalizedProjectId.lowercased()
         })
     }
+
+    private var projectDetailFocusRequest: XTProjectDetailFocusRequest? {
+        navigationFocusStore.snapshot.projectDetailFocusRequest
+    }
+
+    private var appModel: AppModel {
+        guard let appModelReference else {
+            preconditionFailure("ProjectsGridView requires xtAppModelReference")
+        }
+        return appModelReference
+    }
 }
 
 /// 项目卡片
 struct ProjectCard: View {
     @ObservedObject var project: ProjectModel
-    @EnvironmentObject private var appModel: AppModel
+    @Environment(\.xtAppModelReference) private var appModelReference
+    @EnvironmentObject private var hubConnectionStore: XTHubConnectionStore
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -318,6 +330,27 @@ struct ProjectCard: View {
     }
 
     private var governancePresentation: ProjectGovernancePresentation {
+        guard let governanceProjectId else {
+            return ProjectGovernancePresentation(
+                executionTier: project.executionTier,
+                supervisorInterventionTier: project.supervisorInterventionTier,
+                reviewPolicyMode: project.reviewPolicyMode,
+                progressHeartbeatSeconds: project.progressHeartbeatSeconds,
+                reviewPulseSeconds: project.reviewPulseSeconds,
+                brainstormReviewSeconds: project.brainstormReviewSeconds,
+                eventDrivenReviewEnabled: project.eventDrivenReviewEnabled,
+                eventReviewTriggers: project.eventReviewTriggers,
+                compatSource: "multi_project_draft"
+            )
+        }
+        return XTProjectUIPresentationReadCache.governancePresentation(
+            projectId: governanceProjectId
+        ) {
+            resolvedGovernancePresentation()
+        }
+    }
+
+    private func resolvedGovernancePresentation() -> ProjectGovernancePresentation {
         if let resolved = appModel.resolvedProjectGovernance(for: project) {
             return ProjectGovernancePresentation(
                 resolved: resolved,
@@ -344,7 +377,9 @@ struct ProjectCard: View {
             return nil
         }
         let ctx = AXProjectContext(root: URL(fileURLWithPath: rootPath, isDirectory: true))
-        return AXSessionSummaryCapsulePresentation.load(for: ctx)
+        return XTProjectUIPresentationReadCache.sessionSummary(for: ctx) {
+            AXSessionSummaryCapsulePresentation.load(for: ctx)
+        }
     }
 
     private var coderExecutionContext: AXProjectContext? {
@@ -367,15 +402,20 @@ struct ProjectCard: View {
         guard let coderExecutionContext else {
             return .empty(role: .coder, source: "project_card")
         }
-        return AXRoleExecutionSnapshots.latestSnapshots(for: coderExecutionContext)[.coder]
-            ?? .empty(role: .coder, source: "project_card")
+        return XTProjectUIPresentationReadCache.roleExecutionSnapshot(
+            for: coderExecutionContext,
+            role: .coder
+        ) {
+            AXRoleExecutionSnapshots.latestSnapshots(for: coderExecutionContext)[.coder]
+                ?? .empty(role: .coder, source: "project_card")
+        }
     }
 
     private var coderExecutionStatusPresentation: ProjectCoderExecutionStatusPresentation {
         ProjectCoderExecutionStatusResolver.map(
             configuredModelId: configuredCoderModelId,
             snapshot: coderExecutionSnapshot,
-            hubConnected: appModel.hubInteractive,
+            hubConnected: hubConnectionStore.snapshot.interactive,
             governancePresentation: governancePresentation,
             governanceInterception: latestGovernanceInterception
         )
@@ -383,9 +423,17 @@ struct ProjectCard: View {
 
     private var latestGovernanceInterception: ProjectGovernanceInterceptionPresentation? {
         guard let coderExecutionContext else { return nil }
-        return ProjectGovernanceInterceptionPresentation.latest(
-            from: AXProjectSkillActivityStore.loadRecentActivities(ctx: coderExecutionContext, limit: 12)
-        )
+        return XTProjectUIPresentationReadCache.latestGovernanceInterception(
+            for: coderExecutionContext,
+            limit: 12
+        ) {
+            ProjectGovernanceInterceptionPresentation.latest(
+                from: AXProjectSkillActivityStore.loadRecentActivities(
+                    ctx: coderExecutionContext,
+                    limit: 12
+                )
+            )
+        }
     }
 
     private func openGovernance(_ destination: XTProjectGovernanceDestination) {
@@ -395,6 +443,13 @@ struct ProjectCard: View {
             destination: destination
         )
     }
+
+    private var appModel: AppModel {
+        guard let appModelReference else {
+            preconditionFailure("ProjectCard requires xtAppModelReference")
+        }
+        return appModelReference
+    }
 }
 
 // MARK: - Preview
@@ -402,8 +457,11 @@ struct ProjectCard: View {
 #if DEBUG
 struct ProjectsGridView_Previews: PreviewProvider {
     static var previews: some View {
-        ProjectsGridView(projectsManager: MultiProjectManager.preview)
-            .environmentObject(AppModel())
+        let appModel = AppModel()
+        return ProjectsGridView(projectsManager: MultiProjectManager.preview)
+            .environment(\.xtAppModelReference, appModel)
+            .environmentObject(appModel.hubConnectionStore)
+            .environmentObject(appModel.navigationFocusStore)
     }
 }
 

@@ -10,18 +10,21 @@ import SwiftUI
 /// Supervisor 状态栏
 /// 显示在窗口顶部，按需激活 Supervisor，避免启动期立刻拉起完整后台服务。
 struct SupervisorStatusBar: View {
-    @EnvironmentObject private var appModel: AppModel
+    @Environment(\.xtAppModelReference) private var appModelReference
+    @EnvironmentObject private var hubConnectionStore: XTHubConnectionStore
     @StateObject private var runtime = SupervisorStatusBarRuntime()
 
     var body: some View {
         Group {
             if let supervisorManager = runtime.supervisorManager {
-                SupervisorStatusBarActiveView(supervisorManager: supervisorManager)
-                    .environmentObject(appModel)
+                SupervisorStatusBarActiveView(
+                    supervisorManager: supervisorManager,
+                    configuredSupervisorModelId: configuredSupervisorModelId
+                )
             } else {
                 SupervisorStatusBarColdStartView(
                     configuredSupervisorModelId: configuredSupervisorModelId,
-                    hubInteractive: appModel.hubInteractive,
+                    hubInteractive: hubInteractive,
                     onOpenSupervisor: {
                         let manager = runtime.activate(with: appModel)
                         manager.requestSupervisorWindow(reason: "status_bar")
@@ -35,6 +38,17 @@ struct SupervisorStatusBar: View {
         let configured = appModel.settingsStore.settings.assignment(for: .supervisor).model?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return configured
+    }
+
+    private var hubInteractive: Bool {
+        hubConnectionStore.snapshot.interactive
+    }
+
+    private var appModel: AppModel {
+        guard let appModelReference else {
+            preconditionFailure("SupervisorStatusBar requires xtAppModelReference")
+        }
+        return appModelReference
     }
 }
 
@@ -120,8 +134,11 @@ private struct SupervisorStatusBarColdStartView: View {
 /// Supervisor 状态栏完整视图
 /// 仅在 Supervisor 已经初始化后显示完整状态，避免应用启动时立刻拉起后台服务。
 private struct SupervisorStatusBarActiveView: View {
-    @EnvironmentObject private var appModel: AppModel
-    @ObservedObject var supervisorManager: SupervisorManager
+    let supervisorManager: SupervisorManager
+    let configuredSupervisorModelId: String
+    @EnvironmentObject private var hubConnectionStore: XTHubConnectionStore
+    @EnvironmentObject private var globalHomeStore: XTGlobalHomeStore
+    @StateObject private var statusStore = XTSupervisorStatusBarStore()
 
     var body: some View {
         HStack(spacing: 16) {
@@ -142,16 +159,22 @@ private struct SupervisorStatusBarActiveView: View {
                 .foregroundColor(Color.secondary.opacity(0.2)),
             alignment: .bottom
         )
+        .onAppear {
+            statusStore.bind(to: supervisorManager)
+        }
+        .onChange(of: supervisorIdentity) { _ in
+            statusStore.bind(to: supervisorManager)
+        }
     }
 
     // MARK: - Subviews
 
     private var supervisorInfo: some View {
-        let snapshot = supervisorExecutionSnapshot
+        let snapshot = statusSnapshot.executionSnapshot
         let tooltip = ExecutionRoutePresentation.tooltip(
             configuredModelId: configuredSupervisorModelId,
             snapshot: snapshot,
-            paidAccessSnapshot: appModel.hubRemotePaidAccessSnapshot
+            paidAccessSnapshot: globalHomeStore.snapshot.remotePaidAccessSnapshot
         )
         let statusColor = supervisorStatusColor(snapshot: snapshot)
         let detailBadge = ExecutionRoutePresentation.detailBadge(
@@ -162,8 +185,7 @@ private struct SupervisorStatusBarActiveView: View {
             configuredModelId: configuredSupervisorModelId,
             snapshot: snapshot
         )
-        let pendingMemoryFollowUpQuestion = supervisorManager.supervisorPendingMemoryFactFollowUpQuestion
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let pendingMemoryFollowUpQuestion = statusSnapshot.pendingMemoryFollowUpQuestion
 
         return HStack(spacing: 8) {
             Image(systemName: "brain.head.profile")
@@ -221,47 +243,19 @@ private struct SupervisorStatusBarActiveView: View {
         }
     }
 
-    private var portfolioSnapshot: SupervisorPortfolioSnapshot {
-        supervisorManager.supervisorPortfolioSnapshot
-    }
-
-    private var actionabilitySnapshot: SupervisorPortfolioActionabilitySnapshot {
-        portfolioSnapshot.actionabilitySnapshot()
-    }
-
-    private var pendingWorkCount: Int {
-        let livePending = supervisorManager.frontstagePendingHubGrants.count +
-            supervisorManager.frontstagePendingSupervisorSkillApprovals.count +
-            supervisorManager.frontstageSupervisorCandidateReviews.count
-        return max(portfolioSnapshot.counts.awaitingAuthorization, livePending)
-    }
-
-    private var blockedCount: Int {
-        max(
-            portfolioSnapshot.counts.blocked,
-            actionabilitySnapshot.decisionBlockerProjectsCount
-        )
-    }
-
-    private var configuredSupervisorModelId: String {
-        let configured = appModel.settingsStore.settings.assignment(for: .supervisor).model?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return configured
-    }
-
-    private var supervisorExecutionSnapshot: AXRoleExecutionSnapshot {
-        ExecutionRoutePresentation.supervisorSnapshot(from: supervisorManager)
+    private var supervisorIdentity: ObjectIdentifier {
+        ObjectIdentifier(supervisorManager)
     }
 
     private func supervisorStatusText(snapshot: AXRoleExecutionSnapshot) -> String {
-        if snapshot.executionPath == "no_record" && !appModel.hubInteractive {
+        if snapshot.executionPath == "no_record" && !hubInteractive {
             return "Hub 关闭"
         }
         return ExecutionRoutePresentation.statusText(snapshot: snapshot)
     }
 
     private func supervisorStatusColor(snapshot: AXRoleExecutionSnapshot) -> Color {
-        if snapshot.executionPath == "no_record" && !appModel.hubInteractive {
+        if snapshot.executionPath == "no_record" && !hubInteractive {
             return .red
         }
         return ExecutionRoutePresentation.statusColor(snapshot: snapshot)
@@ -272,25 +266,25 @@ private struct SupervisorStatusBarActiveView: View {
             StatusBadge(
                 icon: "chart.bar",
                 label: "活跃",
-                count: portfolioSnapshot.counts.active,
-                total: portfolioSnapshot.projects.count,
+                count: statusSnapshot.activeProjectCount,
+                total: statusSnapshot.totalProjectCount,
                 color: .blue
             )
 
-            if pendingWorkCount > 0 {
+            if statusSnapshot.pendingWorkCount > 0 {
                 StatusBadge(
                     icon: "bolt",
                     label: "待处理",
-                    count: pendingWorkCount,
+                    count: statusSnapshot.pendingWorkCount,
                     color: .orange
                 )
             }
 
-            if blockedCount > 0 {
+            if statusSnapshot.blockedProjectCount > 0 {
                 StatusBadge(
                     icon: "exclamationmark.triangle",
                     label: "阻塞",
-                    count: blockedCount,
+                    count: statusSnapshot.blockedProjectCount,
                     color: .red
                 )
             }
@@ -298,7 +292,7 @@ private struct SupervisorStatusBarActiveView: View {
             StatusBadge(
                 icon: "checkmark.circle",
                 label: "完成",
-                count: portfolioSnapshot.counts.completed,
+                count: statusSnapshot.completedProjectCount,
                 color: .green
             )
         }
@@ -317,6 +311,14 @@ private struct SupervisorStatusBarActiveView: View {
             .buttonStyle(.plain)
             .help("打开 Supervisor 窗口 (⌘⇧S)")
         }
+    }
+
+    private var statusSnapshot: XTSupervisorStatusBarSnapshot {
+        statusStore.snapshot
+    }
+
+    private var hubInteractive: Bool {
+        hubConnectionStore.snapshot.interactive
     }
 }
 
@@ -350,8 +352,11 @@ struct StatusBadge: View {
 #if DEBUG
 struct SupervisorStatusBar_Previews: PreviewProvider {
     static var previews: some View {
+        let appModel = AppModel()
         SupervisorStatusBar()
-            .environmentObject(AppModel())
+            .environment(\.xtAppModelReference, appModel)
+            .environmentObject(appModel.hubConnectionStore)
+            .environmentObject(appModel.globalHomeStore)
             .frame(height: 40)
     }
 }

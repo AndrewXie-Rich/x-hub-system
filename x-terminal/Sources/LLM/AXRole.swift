@@ -10,8 +10,25 @@ enum AXRole: String, Codable, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    static let allCases: [AXRole] = [.supervisor, .coder, .reviewer]
+
     static let modelAssignmentHelpText =
-        "coder / coarse / refine / reviewer / advisor（也支持：开发者 / 粗编 / 精修 / 审查 / 顾问）"
+        "supervisor / coder / reviewer（也支持：主管 / 开发者 / 审查；旧别名 coarse / refine / advisor 仍兼容）"
+
+    var primaryRole: AXRole {
+        switch self {
+        case .supervisor, .advisor:
+            return .supervisor
+        case .coder, .coarse, .refine:
+            return .coder
+        case .reviewer:
+            return .reviewer
+        }
+    }
+
+    var isPrimaryVisibleRole: Bool {
+        Self.allCases.contains(self)
+    }
 
     static func resolveModelAssignmentToken(_ token: String) -> AXRole? {
         let normalized = token
@@ -21,25 +38,22 @@ enum AXRole: String, Codable, CaseIterable, Identifiable {
         guard !normalized.isEmpty else { return nil }
 
         if let exact = AXRole(rawValue: normalized) {
-            switch exact {
-            case .coder, .coarse, .refine, .reviewer, .advisor:
-                return exact
-            case .supervisor:
-                return nil
-            }
+            return exact.primaryRole
         }
 
         switch normalized {
+        case "supervisor", "主管", "监督", "总控":
+            return .supervisor
         case "developer", "dev", "开发者", "开发", "编程", "编码":
             return .coder
         case "draft", "粗编", "粗稿", "初稿":
-            return .coarse
+            return .coder
         case "refiner", "polish", "精编", "精修", "润色":
-            return .refine
+            return .coder
         case "review", "审查", "审阅", "评审":
             return .reviewer
-        case "顾问":
-            return .advisor
+        case "advisor", "顾问", "建议":
+            return .supervisor
         default:
             return nil
         }

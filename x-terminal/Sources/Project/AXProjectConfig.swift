@@ -123,16 +123,25 @@ struct AXProjectConfig: Codable, Equatable {
     }
 
     func modelOverride(for role: AXRole) -> String? {
-        let v = (roleModelOverrides[role.rawValue] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        return v.isEmpty ? nil : v
+        for key in Self.roleOverrideKeys(for: role.primaryRole) {
+            let value = (roleModelOverrides[key] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty {
+                return value
+            }
+        }
+        return nil
     }
 
     mutating func setModelOverride(role: AXRole, modelId: String?) {
+        let primaryRole = role.primaryRole
         let v = (modelId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        for key in Self.roleOverrideKeys(for: primaryRole) {
+            roleModelOverrides.removeValue(forKey: key)
+        }
         if v.isEmpty {
-            roleModelOverrides.removeValue(forKey: role.rawValue)
+            return
         } else {
-            roleModelOverrides[role.rawValue] = v
+            roleModelOverrides[primaryRole.rawValue] = v
         }
     }
 
@@ -153,6 +162,19 @@ struct AXProjectConfig: Codable, Equatable {
         }
 
         return ordered
+    }
+
+    private static func roleOverrideKeys(for role: AXRole) -> [String] {
+        switch role.primaryRole {
+        case .supervisor:
+            return [AXRole.supervisor.rawValue, AXRole.advisor.rawValue]
+        case .coder:
+            return [AXRole.coder.rawValue, AXRole.refine.rawValue, AXRole.coarse.rawValue]
+        case .reviewer:
+            return [AXRole.reviewer.rawValue]
+        case .coarse, .refine, .advisor:
+            return roleOverrideKeys(for: role.primaryRole)
+        }
     }
 
     func settingToolPolicy(profile: String? = nil, allow: [String]? = nil, deny: [String]? = nil) -> AXProjectConfig {

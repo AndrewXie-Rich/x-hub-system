@@ -51,6 +51,22 @@ effective_supervisor_tier=s3_strategic_coach
     }
 
     @Test
+    func summaryRedactsLowLevelStrategicMemoryDiagnostics() {
+        let text = """
+summary=当前 strategic memory 供给不足（Supervisor 实际注入超出 serving contract；Focused strategic review 缺少关键战略锚点），不适合直接做战略纠偏。
+"""
+
+        let summary = SupervisorGuidanceTextPresentation.summary(
+            text,
+            maxChars: 200
+        )
+
+        #expect(summary == "记忆装配未通过运行时校验")
+        #expect(!summary.contains("Supervisor 实际注入"))
+        #expect(!summary.contains("serving contract"))
+    }
+
+    @Test
     func actionDisplayTextHumanizesStructuredTokensForFrontstageSurfaces() {
         #expect(
             SupervisorGuidanceTextPresentation.actionDisplayText("open_candidate_review_board")

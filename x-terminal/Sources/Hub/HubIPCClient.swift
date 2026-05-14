@@ -25,6 +25,8 @@ enum HubIPCClient {
     private static var skillPinOverrideForTesting: (@Sendable (SkillPinRequestPayload) async -> SkillPinResult)?
     private static var resolvedSkillsOverrideForTesting: (@Sendable (String?) async -> ResolvedSkillsResult)?
     private static var skillManifestOverrideForTesting: (@Sendable (String) async -> SkillManifestResult)?
+    private static var skillPackageDownloadOverrideForTesting: (@Sendable (String) async -> SkillPackageDownloadResult)?
+    private static var skillRunnerGateOverrideForTesting: (@Sendable (SkillRunnerGateRequestPayload) async -> SkillRunnerGateResult)?
     private static var secretUseOverrideForTesting: (@Sendable (SecretUseRequestPayload) async -> SecretUseResult)?
     private static var secretRedeemOverrideForTesting: (@Sendable (SecretRedeemRequestPayload) async -> SecretRedeemResult)?
     private static var localTaskExecutionOverrideForTesting: (@Sendable (LocalTaskRequestPayload, Double) -> LocalTaskResult)?
@@ -530,6 +532,57 @@ enum HubIPCClient {
             case packageSHA256 = "package_sha256"
             case manifestJSON = "manifest_json"
             case reasonCode = "reason_code"
+        }
+    }
+
+    struct SkillPackageDownloadResult: Equatable, Sendable {
+        var ok: Bool
+        var source: String
+        var packageSHA256: String
+        var data: Data
+        var reasonCode: String?
+    }
+
+    struct SkillRunnerGateRequestPayload: Equatable, Sendable {
+        var requestId: String
+        var projectId: String?
+        var skillId: String
+        var packageSHA256: String
+        var toolName: String
+        var toolArgsHash: String
+        var riskTier: String
+        var requiredGrantScope: String
+        var execArgv: [String]
+        var execCwd: String
+    }
+
+    struct SkillRunnerGateResult: Codable, Equatable, Sendable {
+        var ok: Bool
+        var source: String
+        var skillId: String
+        var packageSHA256: String
+        var toolName: String
+        var decision: String
+        var toolRequestId: String
+        var grantId: String
+        var executionId: String
+        var denyCode: String?
+        var resultJSON: String
+        var executedAtMs: Int64
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case skillId = "skill_id"
+            case packageSHA256 = "package_sha256"
+            case toolName = "tool_name"
+            case decision
+            case toolRequestId = "tool_request_id"
+            case grantId = "grant_id"
+            case executionId = "execution_id"
+            case denyCode = "deny_code"
+            case resultJSON = "result_json"
+            case executedAtMs = "executed_at_ms"
         }
     }
 
@@ -6047,6 +6100,182 @@ enum HubIPCClient {
         )
     }
 
+    static func downloadSkillPackage(
+        packageSHA256: String
+    ) async -> SkillPackageDownloadResult {
+        let normalizedPackageSHA256 = packageSHA256
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !normalizedPackageSHA256.isEmpty else {
+            return SkillPackageDownloadResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                packageSHA256: "",
+                data: Data(),
+                reasonCode: "missing_package_sha256"
+            )
+        }
+
+        if let override = withTestingOverrideLock({ skillPackageDownloadOverrideForTesting }) {
+            return await override(normalizedPackageSHA256)
+        }
+
+        let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
+        if hasRemote {
+            let remote = await HubPairingCoordinator.shared.downloadRemoteSkillPackage(
+                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                packageSHA256: normalizedPackageSHA256
+            )
+            return SkillPackageDownloadResult(
+                ok: remote.ok,
+                source: remote.source,
+                packageSHA256: remote.packageSHA256,
+                data: remote.data,
+                reasonCode: remote.reasonCode
+            )
+        }
+
+        return SkillPackageDownloadResult(
+            ok: false,
+            source: "file_ipc",
+            packageSHA256: normalizedPackageSHA256,
+            data: Data(),
+            reasonCode: "skills_package_download_file_ipc_not_supported"
+        )
+    }
+
+    static func evaluateSkillRunnerGate(
+        _ request: SkillRunnerGateRequestPayload
+    ) async -> SkillRunnerGateResult {
+        let normalizedSkillId = request.skillId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedPackageSHA256 = request.packageSHA256
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let normalizedToolName = request.toolName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedRequestId = request.requestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedSkillId.isEmpty else {
+            return SkillRunnerGateResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                skillId: "",
+                packageSHA256: normalizedPackageSHA256,
+                toolName: normalizedToolName,
+                decision: "deny",
+                toolRequestId: "",
+                grantId: "",
+                executionId: "",
+                denyCode: "missing_skill_id",
+                resultJSON: "",
+                executedAtMs: 0
+            )
+        }
+        guard !normalizedPackageSHA256.isEmpty else {
+            return SkillRunnerGateResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                skillId: normalizedSkillId,
+                packageSHA256: "",
+                toolName: normalizedToolName,
+                decision: "deny",
+                toolRequestId: "",
+                grantId: "",
+                executionId: "",
+                denyCode: "missing_package_sha256",
+                resultJSON: "",
+                executedAtMs: 0
+            )
+        }
+        guard !normalizedToolName.isEmpty else {
+            return SkillRunnerGateResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                skillId: normalizedSkillId,
+                packageSHA256: normalizedPackageSHA256,
+                toolName: "",
+                decision: "deny",
+                toolRequestId: "",
+                grantId: "",
+                executionId: "",
+                denyCode: "missing_tool_name",
+                resultJSON: "",
+                executedAtMs: 0
+            )
+        }
+        guard !normalizedRequestId.isEmpty,
+              !request.toolArgsHash.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !request.execArgv.isEmpty,
+              !request.execCwd.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return SkillRunnerGateResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                skillId: normalizedSkillId,
+                packageSHA256: normalizedPackageSHA256,
+                toolName: normalizedToolName,
+                decision: "deny",
+                toolRequestId: "",
+                grantId: "",
+                executionId: "",
+                denyCode: "approval_binding_invalid",
+                resultJSON: "",
+                executedAtMs: 0
+            )
+        }
+
+        let normalizedRequest = SkillRunnerGateRequestPayload(
+            requestId: normalizedRequestId,
+            projectId: normalized(request.projectId),
+            skillId: normalizedSkillId,
+            packageSHA256: normalizedPackageSHA256,
+            toolName: normalizedToolName,
+            toolArgsHash: request.toolArgsHash.trimmingCharacters(in: .whitespacesAndNewlines),
+            riskTier: request.riskTier.trimmingCharacters(in: .whitespacesAndNewlines),
+            requiredGrantScope: request.requiredGrantScope.trimmingCharacters(in: .whitespacesAndNewlines),
+            execArgv: request.execArgv,
+            execCwd: request.execCwd.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+
+        if let override = withTestingOverrideLock({ skillRunnerGateOverrideForTesting }) {
+            return await override(normalizedRequest)
+        }
+
+        let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
+        if hasRemote {
+            let remote = await HubPairingCoordinator.shared.evaluateRemoteSkillRunnerGate(
+                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                request: normalizedRequest
+            )
+            return SkillRunnerGateResult(
+                ok: remote.ok,
+                source: remote.source,
+                skillId: remote.skillId,
+                packageSHA256: remote.packageSHA256,
+                toolName: remote.toolName,
+                decision: remote.decision,
+                toolRequestId: remote.toolRequestId,
+                grantId: remote.grantId,
+                executionId: remote.executionId,
+                denyCode: remote.denyCode,
+                resultJSON: remote.resultJSON,
+                executedAtMs: remote.executedAtMs
+            )
+        }
+
+        return SkillRunnerGateResult(
+            ok: false,
+            source: "file_ipc",
+            skillId: normalizedSkillId,
+            packageSHA256: normalizedPackageSHA256,
+            toolName: normalizedToolName,
+            decision: "deny",
+            toolRequestId: "",
+            grantId: "",
+            executionId: "",
+            denyCode: "skill_runner_gate_file_ipc_not_supported",
+            resultJSON: "",
+            executedAtMs: 0
+        )
+    }
+
     static func stageAgentImport(
         importManifestJSON: String,
         findingsJSON: String? = nil,
@@ -6803,7 +7032,7 @@ enum HubIPCClient {
             return nil
         }
 
-        if let snapshot = readLocalSecretVaultSnapshot(
+        if let snapshot = await requestSecretVaultSnapshotViaLocalIPC(
             scope: normalizedScope,
             namePrefix: normalizedNamePrefix,
             projectId: normalizedProjectId,
@@ -6812,7 +7041,7 @@ enum HubIPCClient {
             return snapshot
         }
 
-        return await requestSecretVaultSnapshotViaLocalIPC(
+        return readLocalSecretVaultSnapshot(
             scope: normalizedScope,
             namePrefix: normalizedNamePrefix,
             projectId: normalizedProjectId,
@@ -11147,6 +11376,22 @@ compression_policy: \(compressionPolicy)
         }
     }
 
+    static func installSkillPackageDownloadOverrideForTesting(
+        _ override: (@Sendable (String) async -> SkillPackageDownloadResult)?
+    ) {
+        withTestingOverrideLock {
+            skillPackageDownloadOverrideForTesting = override
+        }
+    }
+
+    static func installSkillRunnerGateOverrideForTesting(
+        _ override: (@Sendable (SkillRunnerGateRequestPayload) async -> SkillRunnerGateResult)?
+    ) {
+        withTestingOverrideLock {
+            skillRunnerGateOverrideForTesting = override
+        }
+    }
+
     static func installSecretVaultRedeemOverrideForTesting(
         _ override: (@Sendable (SecretRedeemRequestPayload) async -> SecretRedeemResult)?
     ) {
@@ -11449,6 +11694,18 @@ compression_policy: \(compressionPolicy)
     static func resetSkillManifestOverrideForTesting() {
         withTestingOverrideLock {
             skillManifestOverrideForTesting = nil
+        }
+    }
+
+    static func resetSkillPackageDownloadOverrideForTesting() {
+        withTestingOverrideLock {
+            skillPackageDownloadOverrideForTesting = nil
+        }
+    }
+
+    static func resetSkillRunnerGateOverrideForTesting() {
+        withTestingOverrideLock {
+            skillRunnerGateOverrideForTesting = nil
         }
     }
 }

@@ -7,9 +7,41 @@ import { fileURLToPath } from 'node:url';
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(SCRIPT_DIR, '..');
 const REPORT_DIR = path.join(ROOT_DIR, 'reports');
-const DEFAULT_APP = 'build/X-Hub.app';
+const DEFAULT_APP = '/Users/andrew.xie/Documents/AX/x-hub-system/build/X-Hub.app';
 const NODE_PROCESS_MARKERS = ['hub_grpc_server/src/server.js', 'relflowhub_node'];
 const ROOT_KEY = 'XHUB_RUST_HUB_ROOT';
+const PROVIDER_MODEL_PRODUCTION_KEYS = [
+  'XHUB_ENABLE_RUST_AUTHORITY_CUTOVER',
+  'XHUB_RUST_PROVIDER_ROUTE_PRODUCTION_AUTHORITY',
+  'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_PRODUCTION',
+  'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_CUTOVER',
+  'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_APPLY',
+  'XHUB_RUST_MODEL_ROUTE_PRODUCTION_AUTHORITY',
+  'XHUB_RUST_MODEL_ROUTE_AUTHORITY_PRODUCTION',
+  'XHUB_RUST_MODEL_ROUTE_AUTHORITY_CUTOVER',
+  'XHUB_RUST_MODEL_ROUTE_AUTHORITY_APPLY',
+];
+const MEMORY_SKILLS_PRODUCTION_KEYS = [
+  'XHUB_RUST_MEMORY_WRITER_AUTHORITY',
+  'XHUB_RUST_MEMORY_WRITE_AUTHORITY',
+  'XHUB_RUST_MEMORY_PRODUCTION_AUTHORITY',
+  'XHUB_RUST_SKILLS_EXECUTION_AUTHORITY',
+  'XHUB_RUST_SKILLS_PRODUCTION_EXECUTION',
+  'XHUB_RUST_SKILLS_EXECUTION_PRODUCTION',
+  'XHUB_RUST_SKILLS_RUNNER_PRODUCTION_AUTHORITY',
+];
+const ROUTE_PREP_KEYS = [
+  'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_PREP',
+  'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_FALLBACK_ON_ERROR',
+  'XHUB_RUST_MODEL_ROUTE_AUTHORITY_PREP',
+  'XHUB_RUST_MODEL_ROUTE_AUTHORITY_FALLBACK_ON_ERROR',
+];
+const AUTHORITY_READ_KEYS = [
+  ROOT_KEY,
+  ...PROVIDER_MODEL_PRODUCTION_KEYS,
+  ...MEMORY_SKILLS_PRODUCTION_KEYS,
+  ...ROUTE_PREP_KEYS,
+];
 
 function parseArgs(argv) {
   const out = {
@@ -22,6 +54,7 @@ function parseArgs(argv) {
     relaunchWaitMs: 30000,
     relaunchPollMs: 1000,
     relaunchRetryWaitMs: 15000,
+    forceRoutePrep: false,
     writeReport: true,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -62,6 +95,9 @@ function parseArgs(argv) {
         out.relaunchRetryWaitMs = parseIntInRange(next, out.relaunchRetryWaitMs, 0, 300000);
         i += 1;
         break;
+      case '--force-route-prep':
+        out.forceRoutePrep = true;
+        break;
       case '--no-report':
         out.writeReport = false;
         break;
@@ -99,6 +135,7 @@ function usage() {
     '  --relaunch-wait-ms <n> Wait for X-Hub Node root after relaunch, default 30000',
     '  --relaunch-poll-ms <n> Poll interval while waiting for relaunch, default 1000',
     '  --relaunch-retry-wait-ms <n> Retry open wait if Node is not ready, default 15000',
+    '  --force-route-prep    Force legacy route prep apply/install even if production is detected',
     '  --no-report           Print only; do not write reports/',
     '  --self-test           Validate reducer logic',
   ].join('\n');
@@ -116,24 +153,82 @@ function step(name, command, args, mutating) {
   return { name, command, args, mutating, shell: shellLine({ command, args }) };
 }
 
-function buildSteps(config) {
+function normalizeAuthority(authority) {
+  return {
+    providerModelProductionActive: Boolean(authority?.providerModelProductionActive),
+    memorySkillsProductionActive: Boolean(authority?.memorySkillsProductionActive),
+    routePrepActive: Boolean(authority?.routePrepActive),
+    provider_model_production_launchctl_keys: authority?.provider_model_production_launchctl_keys || [],
+    provider_model_production_node_keys: authority?.provider_model_production_node_keys || [],
+    memory_skills_production_launchctl_keys: authority?.memory_skills_production_launchctl_keys || [],
+    memory_skills_production_node_keys: authority?.memory_skills_production_node_keys || [],
+    route_prep_launchctl_keys: authority?.route_prep_launchctl_keys || [],
+    route_prep_node_keys: authority?.route_prep_node_keys || [],
+  };
+}
+
+function selectRouteAuthorityMode(config, authority) {
+  if (config.forceRoutePrep) return 'prep_forced';
+  if (authority.providerModelProductionActive) return 'production';
+  return 'prep';
+}
+
+function memorySkillsGuardArgs(authority) {
+  return authority.memorySkillsProductionActive
+    ? ['--require-memory-skills-production']
+    : ['--allow-memory-skills-production'];
+}
+
+function buildSteps(config, authorityInput = {}) {
   const targetRoot = path.resolve(config.targetRoot);
   const tools = path.join(targetRoot, 'tools');
   const common = ['--rust-hub-root', targetRoot, '--http-base-url', config.httpBaseUrl];
-  return {
-    targetRoot,
-    applySteps: [
-      step('scheduler_session_apply', path.join(tools, 'scheduler_production_authority_session.command'), ['--apply', ...common], true),
-      step('scheduler_session_launchd_install', path.join(tools, 'scheduler_production_authority_session_launchd.command'), ['--install', ...common], true),
+  const authority = normalizeAuthority(authorityInput);
+  const routeAuthorityMode = selectRouteAuthorityMode(config, authority);
+  const applySteps = [
+    step('scheduler_session_apply', path.join(tools, 'scheduler_production_authority_session.command'), ['--apply', ...common], true),
+    step('scheduler_session_launchd_install', path.join(tools, 'scheduler_production_authority_session_launchd.command'), ['--install', ...common], true),
+  ];
+  if (routeAuthorityMode !== 'production') {
+    applySteps.push(
       step('route_prep_session_apply', path.join(tools, 'route_authority_prep_session.command'), ['--apply', ...common], true),
       step('route_prep_session_launchd_install', path.join(tools, 'route_authority_prep_session_launchd.command'), ['--install', ...common], true),
-    ],
-    validationSteps: [
-      step('scheduler_authority_guard', path.join(tools, 'scheduler_production_authority_guard.command'), ['--rust-hub-root', targetRoot], false),
+    );
+  }
+  const validationSteps = [
+    step(
+      'scheduler_authority_guard',
+      path.join(tools, 'scheduler_production_authority_guard.command'),
+      ['--rust-hub-root', targetRoot, '--http-base-url', config.httpBaseUrl, ...memorySkillsGuardArgs(authority)],
+      false,
+    ),
+  ];
+  if (routeAuthorityMode === 'production') {
+    validationSteps.push(
+      step(
+        'route_production_runtime_guard',
+        path.join(tools, 'route_authority_production_runtime_guard.command'),
+        ['--rust-hub-root', targetRoot, '--http-base-url', config.httpBaseUrl, ...memorySkillsGuardArgs(authority)],
+        false,
+      ),
+    );
+  } else {
+    validationSteps.push(
       step('route_prep_runtime_guard', path.join(tools, 'route_authority_prep_runtime_guard.command'), ['--rust-hub-root', targetRoot], false),
       step('route_production_cutover_blocker', path.join(tools, 'route_authority_production_cutover_blocker.command'), ['--rust-hub-root', targetRoot], false),
-      step('ui_compatibility_gate', path.join(tools, 'ui_compatibility_no_product_ui_change_gate.command'), [], false),
-    ],
+    );
+  }
+  validationSteps.push(step('ui_compatibility_gate', path.join(tools, 'ui_compatibility_no_product_ui_change_gate.command'), [], false));
+  return {
+    targetRoot,
+    routeAuthorityMode,
+    routePrepApplySkipped: routeAuthorityMode === 'production',
+    routePrepApplySkipReason: routeAuthorityMode === 'production'
+      ? 'provider_model_production_authority_detected'
+      : '',
+    authority,
+    applySteps,
+    validationSteps,
   };
 }
 
@@ -243,14 +338,14 @@ function relaunchXhub(config, targetRoot) {
   return out;
 }
 
-function reduce(config, executed, targetIssues, relaunch) {
+function reduce(config, executed, targetIssues, relaunch, authority = {}) {
   const failed = executed.filter((item) => !item.ok);
   const issues = [...targetIssues];
   if (config.relaunchXhub && !config.apply) issues.push('relaunch_requires_apply');
   if (failed.length) issues.push('one_or_more_steps_failed');
   if (relaunch?.requested && relaunch.open_exit_code !== 0) issues.push('xhub_relaunch_failed');
   if (relaunch?.requested && !relaunch.node_ready) issues.push('xhub_node_root_not_ready_after_relaunch');
-  const steps = buildSteps(config);
+  const steps = buildSteps(config, authority);
   return {
     ok: issues.length === 0,
     schema_version: 'xhub.active_root_upgrade_apply.v1',
@@ -260,15 +355,22 @@ function reduce(config, executed, targetIssues, relaunch) {
     apply_requested: config.apply,
     relaunch_xhub_requested: config.relaunchXhub,
     validation_requested: config.validate,
+    route_authority_mode: steps.routeAuthorityMode,
+    provider_model_production_authority_detected: steps.authority.providerModelProductionActive,
+    memory_skills_production_authority_detected: steps.authority.memorySkillsProductionActive,
+    route_prep_authority_detected: steps.authority.routePrepActive,
+    route_prep_apply_skipped: steps.routePrepApplySkipped,
+    route_prep_apply_skip_reason: steps.routePrepApplySkipReason,
+    authority_detection: steps.authority,
     apply_steps: steps.applySteps.map((s) => ({ name: s.name, shell: s.shell })),
     validation_steps: steps.validationSteps.map((s) => ({ name: s.name, shell: s.shell })),
     executed_steps: executed,
     relaunch_xhub: relaunch || { requested: false },
     production_authority_change: false,
-    provider_route_authority_target: false,
-    model_route_authority_target: false,
-    memory_writer_authority_target: false,
-    skills_execution_authority_target: false,
+    provider_route_authority_target: steps.authority.providerModelProductionActive,
+    model_route_authority_target: steps.authority.providerModelProductionActive,
+    memory_writer_authority_target: steps.authority.memorySkillsProductionActive,
+    skills_execution_authority_target: steps.authority.memorySkillsProductionActive,
     ui_product_change: false,
     secret_leak: false,
     issues,
@@ -312,13 +414,13 @@ function findNodeProcess() {
       maxBuffer: 8 * 1024 * 1024,
     }).split('\n');
   } catch {
-    return { pid: 0, root: '' };
+    return { pid: 0, root: '', command: '' };
   }
   const candidates = rows
     .map((line) => line.trim())
     .filter((line) => NODE_PROCESS_MARKERS.every((marker) => line.includes(marker)))
     .filter((line) => !line.includes('active_root_upgrade_apply.js'));
-  if (candidates.length === 0) return { pid: 0, root: '' };
+  if (candidates.length === 0) return { pid: 0, root: '', command: '' };
   const parsed = candidates
     .map((line) => {
       const match = line.match(/^(\d+)\s+([\s\S]*)$/);
@@ -327,7 +429,7 @@ function findNodeProcess() {
     })
     .filter(Boolean)
     .sort((a, b) => b.pid - a.pid)[0];
-  return { pid: parsed.pid, root: extractEnvValue(parsed.command, ROOT_KEY) };
+  return { pid: parsed.pid, root: extractEnvValue(parsed.command, ROOT_KEY), command: parsed.command };
 }
 
 function extractEnvValue(text, key) {
@@ -350,6 +452,55 @@ function sleep(ms) {
   execFileSync('sleep', [seconds], { stdio: ['ignore', 'ignore', 'ignore'] });
 }
 
+function valueEnabled(value) {
+  return ['1', 'true', 'yes', 'on'].includes(String(value || '').trim().toLowerCase());
+}
+
+function readLaunchctlValue(key) {
+  try {
+    return execFileSync('launchctl', ['getenv', key], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+  } catch {
+    return '';
+  }
+}
+
+function readLaunchctlValues(keys) {
+  return Object.fromEntries(keys.map((key) => [key, readLaunchctlValue(key)]));
+}
+
+function enabledLaunchctlKeys(values, keys) {
+  return keys.filter((key) => valueEnabled(values[key]));
+}
+
+function enabledNodeKeys(command, keys) {
+  return keys.filter((key) => valueEnabled(extractEnvValue(command || '', key)));
+}
+
+function detectAuthority() {
+  const node = findNodeProcess();
+  const launchctlValues = readLaunchctlValues(AUTHORITY_READ_KEYS);
+  const providerLaunchctlKeys = enabledLaunchctlKeys(launchctlValues, PROVIDER_MODEL_PRODUCTION_KEYS);
+  const providerNodeKeys = enabledNodeKeys(node.command || '', PROVIDER_MODEL_PRODUCTION_KEYS);
+  const memoryLaunchctlKeys = enabledLaunchctlKeys(launchctlValues, MEMORY_SKILLS_PRODUCTION_KEYS);
+  const memoryNodeKeys = enabledNodeKeys(node.command || '', MEMORY_SKILLS_PRODUCTION_KEYS);
+  const prepLaunchctlKeys = enabledLaunchctlKeys(launchctlValues, ROUTE_PREP_KEYS);
+  const prepNodeKeys = enabledNodeKeys(node.command || '', ROUTE_PREP_KEYS);
+  return {
+    providerModelProductionActive: providerLaunchctlKeys.length > 0 || providerNodeKeys.length > 0,
+    memorySkillsProductionActive: memoryLaunchctlKeys.length > 0 || memoryNodeKeys.length > 0,
+    routePrepActive: prepLaunchctlKeys.length > 0 || prepNodeKeys.length > 0,
+    provider_model_production_launchctl_keys: providerLaunchctlKeys,
+    provider_model_production_node_keys: providerNodeKeys,
+    memory_skills_production_launchctl_keys: memoryLaunchctlKeys,
+    memory_skills_production_node_keys: memoryNodeKeys,
+    route_prep_launchctl_keys: prepLaunchctlKeys,
+    route_prep_node_keys: prepNodeKeys,
+  };
+}
+
 function reportPath() {
   const stamp = new Date().toISOString().replaceAll('-', '').replaceAll(':', '').replace(/\.\d{3}Z$/, 'Z');
   return path.join(REPORT_DIR, `active_root_upgrade_apply_${stamp}.json`);
@@ -357,12 +508,27 @@ function reportPath() {
 
 function runSelfTest() {
   const config = parseArgs(['--target-root', '/tmp/rust-hub-target']);
-  const steps = buildSteps(config);
+  const steps = buildSteps(config, {});
   if (steps.applySteps.length !== 4) throw new Error('expected four apply steps');
   if (steps.validationSteps.length !== 4) throw new Error('expected four validation steps');
-  const result = reduce(config, [], [], null);
+  const result = reduce(config, [], [], null, {});
   if (result.dry_run !== true) throw new Error('default must be dry-run');
   if (result.production_authority_change !== false) throw new Error('must not change provider/model production authority');
+  const productionAuthority = {
+    providerModelProductionActive: true,
+    memorySkillsProductionActive: true,
+    routePrepActive: false,
+  };
+  const productionSteps = buildSteps(config, productionAuthority);
+  if (productionSteps.routeAuthorityMode !== 'production') throw new Error('expected production route authority mode');
+  if (productionSteps.applySteps.some((item) => item.name.includes('route_prep'))) {
+    throw new Error('production active-root apply must not apply route prep env');
+  }
+  if (!productionSteps.validationSteps.some((item) => item.name === 'route_production_runtime_guard')) {
+    throw new Error('production active-root apply must validate production runtime authority');
+  }
+  const productionResult = reduce(config, [], [], null, productionAuthority);
+  if (productionResult.route_prep_apply_skipped !== true) throw new Error('expected route prep skip in production mode');
   const parsed = parseArgs(['--relaunch-wait-ms', '1', '--relaunch-poll-ms', '100', '--relaunch-retry-wait-ms', '2']);
   if (parsed.relaunchWaitMs !== 1) throw new Error('relaunch wait parser failed');
   if (parsed.relaunchPollMs !== 100) throw new Error('relaunch poll parser failed');
@@ -380,7 +546,8 @@ async function main() {
     process.stdout.write('active_root_upgrade_apply self-test ok\n');
     return;
   }
-  const steps = buildSteps(config);
+  const authority = detectAuthority();
+  const steps = buildSteps(config, authority);
   const targetIssues = validateTarget(steps.targetRoot);
   const executed = [];
   let relaunch = null;
@@ -391,7 +558,7 @@ async function main() {
       for (const s of steps.validationSteps) executed.push(runStep(s));
     }
   }
-  const result = reduce(config, executed, targetIssues, relaunch);
+  const result = reduce(config, executed, targetIssues, relaunch, authority);
   if (config.writeReport) {
     fs.mkdirSync(REPORT_DIR, { recursive: true });
     const pathOut = reportPath();

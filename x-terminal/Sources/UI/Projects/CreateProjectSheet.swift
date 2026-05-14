@@ -12,7 +12,10 @@ struct CreateProjectSheet: View {
     private static let unboundProjectSelection = "__unbound_project__"
 
     @Environment(\.dismiss) private var dismiss
-    @EnvironmentObject private var appModel: AppModel
+    @Environment(\.xtAppModelReference) private var appModelReference
+    @EnvironmentObject private var projectListStore: XTProjectListStore
+    @EnvironmentObject private var workSurfaceStore: XTWorkSurfaceStore
+    @EnvironmentObject private var settingsCenterStore: XTSettingsCenterStore
 
     private let availableModels = XTModelCatalog.projectCreationEntries
 
@@ -416,9 +419,9 @@ struct CreateProjectSheet: View {
                     brainstormReviewSeconds: brainstormReviewSeconds,
                     eventDrivenReviewEnabled: eventDrivenReviewEnabled,
                     eventReviewTriggers: eventReviewTriggers,
-                    configuredSupervisorRecentRawContextProfile: appModel.settingsStore.settings.supervisorRecentRawContextProfile,
-                    configuredSupervisorReviewMemoryDepth: appModel.settingsStore.settings.supervisorReviewMemoryDepthProfile,
-                    supervisorPrivacyMode: appModel.settingsStore.settings.supervisorPrivacyMode,
+                    configuredSupervisorRecentRawContextProfile: settingsSnapshot.supervisorRecentRawContextProfile,
+                    configuredSupervisorReviewMemoryDepth: settingsSnapshot.supervisorReviewMemoryDepthProfile,
+                    supervisorPrivacyMode: settingsSnapshot.supervisorPrivacyMode,
                     resolvedGovernance: draftResolvedGovernance,
                     governancePresentation: draftGovernancePresentation,
                     inlineMessage: governanceInlineMessage ?? "",
@@ -575,7 +578,7 @@ struct CreateProjectSheet: View {
     }
 
     private var bindableProjects: [AXProjectEntry] {
-        appModel.sortedProjects
+        projectListSnapshot.projects
     }
 
     private var selectedBoundProject: AXProjectEntry? {
@@ -628,7 +631,7 @@ struct CreateProjectSheet: View {
 
     private func ensureDefaultRegisteredProjectSelection() {
         guard selectedRegisteredProjectId == Self.unboundProjectSelection else { return }
-        guard let currentProjectId = appModel.selectedProjectId,
+        guard let currentProjectId = workSurfaceSnapshot.selectedProjectId,
               currentProjectId != AXProjectRegistry.globalHomeId,
               bindableProjects.contains(where: { $0.projectId == currentProjectId }) else {
             return
@@ -915,6 +918,25 @@ struct CreateProjectSheet: View {
     private func governanceCardAccent(_ tone: ProjectGovernanceComposerAccentTone) -> Color {
         tone.color
     }
+
+    private var projectListSnapshot: XTProjectListSnapshot {
+        projectListStore.snapshot
+    }
+
+    private var workSurfaceSnapshot: XTWorkSurfaceSnapshot {
+        workSurfaceStore.snapshot
+    }
+
+    private var settingsSnapshot: XTerminalSettings {
+        settingsCenterStore.snapshot.settings
+    }
+
+    private var appModel: AppModel {
+        guard let appModelReference else {
+            preconditionFailure("CreateProjectSheet requires xtAppModelReference")
+        }
+        return appModelReference
+    }
 }
 
 /// 模型选项卡片
@@ -983,8 +1005,12 @@ struct ModelOptionCard: View {
 #if DEBUG
 struct CreateProjectSheet_Previews: PreviewProvider {
     static var previews: some View {
+        let appModel = AppModel()
         CreateProjectSheet()
-            .environmentObject(AppModel())
+            .environment(\.xtAppModelReference, appModel)
+            .environmentObject(appModel.projectListStore)
+            .environmentObject(appModel.workSurfaceStore)
+            .environmentObject(appModel.settingsCenterStore)
     }
 }
 #endif

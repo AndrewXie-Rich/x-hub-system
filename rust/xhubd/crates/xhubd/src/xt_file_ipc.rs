@@ -3675,7 +3675,7 @@ mod tests {
 
     #[test]
     fn non_temp_base_dir_is_rejected_by_default() {
-        let base = PathBuf::from("/Users/example/Library/Group Containers/group.rel.flowhub");
+        let base = PathBuf::from("/Users/andrew.xie/Library/Group Containers/group.rel.flowhub");
         let input = XtFileIpcShadowInput {
             root_dir: PathBuf::from("/tmp/rust-hub"),
             now_ms: 100_000,

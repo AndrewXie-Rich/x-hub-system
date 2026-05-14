@@ -2,11 +2,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-# shellcheck source=../../scripts/lib/build_snapshot_retention.sh
-source "$ROOT_DIR/scripts/lib/build_snapshot_retention.sh"
-XT_DIR="$ROOT_DIR/x-terminal"
-OUT_DIR="$ROOT_DIR/build"
+XT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+WORKSPACE_ROOT="$(cd "$XT_DIR/.." && pwd)"
+ROOT_DIR="$XT_DIR"
+# shellcheck source=../scripts/lib/build_snapshot_retention.sh
+source "$XT_DIR/scripts/lib/build_snapshot_retention.sh"
+OUT_DIR="${XTERMINAL_BUILD_OUT_DIR:-$WORKSPACE_ROOT/build}"
 APP_DIR="$OUT_DIR/X-Terminal.app"
 BUILD_CONFIG="${XTERMINAL_SWIFT_BUILD_CONFIG:-release}"
 INSTALL_TARGET="${XTERMINAL_INSTALL_TARGET:-}"
@@ -182,7 +183,8 @@ fi
 
 AXHUBCTL_SRC=""
 for candidate in \
-  "$ROOT_DIR/x-hub/grpc-server/hub_grpc_server/assets/axhubctl"; do
+  "$WORKSPACE_ROOT/assets/axhubctl" \
+  "$XT_DIR/assets/axhubctl"; do
   if [ -f "$candidate" ]; then
     AXHUBCTL_SRC="$candidate"
     break
@@ -240,3 +242,4 @@ fi
 echo "Run hint: for end-user testing, launch the app from ~/Applications or /Applications instead of a repo checkout under Documents."
 echo "Calendar note: X-Terminal now owns the optional Calendar permission and local Supervisor meeting reminders."
 echo "Copy this app to another Mac, then open it directly."
+echo "Self-contained XT workspace: $WORKSPACE_ROOT"

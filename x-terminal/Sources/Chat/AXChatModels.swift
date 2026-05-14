@@ -6,6 +6,11 @@ enum AXChatRole: String, Codable {
     case tool
 }
 
+enum AXChatMessageSender: String, Codable {
+    case user
+    case supervisor
+}
+
 struct AXChatAttachment: Identifiable, Codable, Equatable, Sendable {
     var id: String
     var displayName: String
@@ -40,6 +45,7 @@ struct AXChatAttachment: Identifiable, Codable, Equatable, Sendable {
 struct AXChatMessage: Identifiable, Codable, Equatable {
     var id: String
     var role: AXChatRole
+    var sender: AXChatMessageSender?
     var tag: String?
     var content: String
     var createdAt: Double
@@ -47,6 +53,7 @@ struct AXChatMessage: Identifiable, Codable, Equatable {
 
     init(
         role: AXChatRole,
+        sender: AXChatMessageSender? = nil,
         tag: String? = nil,
         content: String,
         createdAt: Double = Date().timeIntervalSince1970,
@@ -54,6 +61,7 @@ struct AXChatMessage: Identifiable, Codable, Equatable {
     ) {
         self.id = UUID().uuidString
         self.role = role
+        self.sender = sender
         self.tag = tag
         self.content = content
         self.createdAt = createdAt
@@ -64,6 +72,7 @@ struct AXChatMessage: Identifiable, Codable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
         role = try container.decode(AXChatRole.self, forKey: .role)
+        sender = try container.decodeIfPresent(AXChatMessageSender.self, forKey: .sender)
         tag = try container.decodeIfPresent(String.self, forKey: .tag)
         content = try container.decode(String.self, forKey: .content)
         createdAt = try container.decode(Double.self, forKey: .createdAt)
@@ -73,9 +82,18 @@ struct AXChatMessage: Identifiable, Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case id
         case role
+        case sender
         case tag
         case content
         case createdAt
         case attachments
+    }
+}
+
+extension AXChatMessage {
+    var isSupervisorDispatch: Bool {
+        sender == .supervisor
+            || content.trimmingCharacters(in: .whitespacesAndNewlines)
+                .hasPrefix("来自 Supervisor 的项目执行派发。")
     }
 }

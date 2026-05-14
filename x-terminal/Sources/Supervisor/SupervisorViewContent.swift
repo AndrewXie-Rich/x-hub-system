@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct SupervisorViewContent: View {
@@ -52,8 +53,12 @@ struct SupervisorViewContent: View {
     let props: Props
     let bindings: Bindings
     let callbacks: Callbacks
+    @Environment(\.xtAppModelReference) private var appModelReference
+    @Environment(\.openWindow) private var openWindow
     @Environment(\.openURL) private var openURL
-    @EnvironmentObject private var appModel: AppModel
+    @EnvironmentObject private var hubConnectionStore: XTHubConnectionStore
+    @EnvironmentObject private var navigationFocusStore: XTNavigationFocusStore
+    @EnvironmentObject private var settingsCenterStore: XTSettingsCenterStore
 
     var body: some View {
         let bigTaskSceneHint = props.viewResources.detectedBigTaskCandidate.map {
@@ -68,7 +73,7 @@ struct SupervisorViewContent: View {
                 SupervisorHeaderSection(
                     supervisor: props.supervisor,
                     configuredModelId: props.viewResources.configuredSupervisorModelId,
-                    hubInteractive: appModel.hubInteractive,
+                    hubInteractive: hubConnectionSnapshot.interactive,
                     context: props.viewResources.headerControlContext,
                     isProcessing: props.supervisor.isProcessing,
                     processingStatusText: props.supervisor.processingStatusText,
@@ -77,6 +82,7 @@ struct SupervisorViewContent: View {
                     heartbeatIconScale: props.heartbeatIconScale,
                     onTriggerBigTask: callbacks.onTriggerBigTask,
                     onDismissBigTask: callbacks.onDismissBigTask,
+                    onVoiceCallAction: handleVoiceCallAction,
                     onAction: callbacks.onHeaderAction
                 )
 
@@ -88,7 +94,7 @@ struct SupervisorViewContent: View {
                             totalHeight: props.totalHeight
                         ),
                         entries: props.supervisor.heartbeatHistory,
-                        historicalProjectBoundaryRepairStatusLine: appModel.historicalProjectBoundaryRepairStatusLine,
+                        historicalProjectBoundaryRepairStatusLine: settingsCenterSnapshot.historicalProjectBoundaryRepairStatusLine,
                         doctorPresentation: props.dashboardPresentations.doctor,
                         onOpenFocus: openFocusURL
                     )
@@ -99,7 +105,7 @@ struct SupervisorViewContent: View {
                         maxHeight: SupervisorViewActionSupport.dashboardPanelMaxHeight(
                             totalHeight: props.totalHeight
                         ),
-                        focusRequestNonce: appModel.supervisorFocusRequest?.nonce,
+                        focusRequestNonce: navigationFocusSnapshot.supervisorFocusRequest?.nonce,
                         pendingHubGrants: props.supervisor.frontstagePendingHubGrants,
                         pendingSkillApprovals: props.supervisor.frontstagePendingSupervisorSkillApprovals,
                         recentSkillActivities: props.supervisor.frontstageRecentSupervisorSkillActivities,
@@ -139,7 +145,7 @@ struct SupervisorViewContent: View {
                         doctorPresentation: props.dashboardPresentations.doctor,
                         doctorSuggestionCards: SupervisorViewRuntimePresentationSupport.doctorSuggestionCards(
                             baseCards: props.supervisor.doctorSuggestionCards,
-                            historicalProjectBoundaryRepairStatusLine: appModel.historicalProjectBoundaryRepairStatusLine
+                            historicalProjectBoundaryRepairStatusLine: settingsCenterSnapshot.historicalProjectBoundaryRepairStatusLine
                         ),
                         canOpenCanonicalMemorySyncStatusFile: props.viewResources.canOpenCanonicalMemorySyncStatusFile,
                         onRefreshDoctor: { props.supervisor.refreshSupervisorDoctorReport() },
@@ -186,7 +192,6 @@ struct SupervisorViewContent: View {
                     embedded: true,
                     onClose: callbacks.onDismissWindowSheet
                 )
-                .environmentObject(appModel)
                 .frame(
                     maxWidth: min(980, max(680, props.totalWidth - 48)),
                     maxHeight: min(820, max(520, props.totalHeight - 56))
@@ -218,6 +223,93 @@ struct SupervisorViewContent: View {
         appModel.selectedProjectId = projectID
     }
 
+    private func handleVoiceCallAction() {
+        if props.supervisor.voiceCallModeActive {
+            props.supervisor.stopHandsFreeVoiceConversation()
+            return
+        }
+        if props.supervisor.voiceCallEntryPreflight?.blocksStart == true {
+            performVoiceRepairAction()
+            return
+        }
+        Task { @MainActor in
+            let started = await props.supervisor.startHandsFreeVoiceConversation()
+            if started {
+                callbacks.requestConversationFocus()
+                return
+            }
+            if props.supervisor.voiceCallEntryPreflight?.blocksStart == true {
+                performVoiceRepairAction()
+            }
+        }
+    }
+
+    private func performVoiceRepairAction() {
+        guard let preflight = props.supervisor.voiceCallEntryPreflight else { return }
+        guard let destination = preflight.repairDestination else {
+            openVoiceRepairURLFallback()
+            return
+        }
+
+        let detail: String? = {
+            let trimmed = preflight.detail.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }()
+        let plan = SupervisorConversationRepairActionPlanner.plan(for: destination)
+
+        switch plan.action {
+        case .openXTSettings(let sectionId):
+            appModel.requestSettingsFocus(
+                sectionId: sectionId,
+                title: preflight.headline,
+                detail: detail
+            )
+            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        case .openSupervisorControlCenter(let sheet):
+            if sheet == .modelSettings {
+                appModel.requestModelSettingsFocus(
+                    title: preflight.headline,
+                    detail: detail
+                )
+            }
+            props.supervisor.requestSupervisorWindow(
+                sheet: sheet,
+                reason: "voice_call_entry_repair",
+                focusConversation: false,
+                startConversation: false
+            )
+        case .openHubSetup(let sectionId):
+            appModel.requestHubSetupFocus(
+                sectionId: sectionId,
+                title: preflight.headline,
+                detail: detail
+            )
+            openWindow(id: "hub_setup")
+        case .openHubProviderKeys:
+            if !appModel.openRELFlowHubProviderKeysSettings() {
+                appModel.requestHubSetupFocus(
+                    sectionId: "troubleshoot",
+                    title: preflight.headline,
+                    detail: detail
+                )
+                openWindow(id: "hub_setup")
+            }
+        case .openSystemPrivacy(let target):
+            XTSystemSettingsLinks.openPrivacy(target)
+        case .focusSupervisor:
+            NSApp.activate(ignoringOtherApps: true)
+            callbacks.requestConversationFocus()
+        }
+    }
+
+    private func openVoiceRepairURLFallback() {
+        guard let raw = props.supervisor.voiceCallEntryPreflight?.actionURL,
+              let url = URL(string: raw) else {
+            return
+        }
+        openURL(url)
+    }
+
     private func openFocusURL(_ rawURL: String) {
         guard let url = URL(string: rawURL) else { return }
         openURL(url)
@@ -228,5 +320,24 @@ struct SupervisorViewContent: View {
         if !path.isEmpty {
             openURL(URL(fileURLWithPath: path))
         }
+    }
+
+    private var hubConnectionSnapshot: XTHubConnectionSnapshot {
+        hubConnectionStore.snapshot
+    }
+
+    private var navigationFocusSnapshot: XTNavigationFocusSnapshot {
+        navigationFocusStore.snapshot
+    }
+
+    private var settingsCenterSnapshot: XTSettingsCenterSnapshot {
+        settingsCenterStore.snapshot
+    }
+
+    private var appModel: AppModel {
+        guard let appModelReference else {
+            preconditionFailure("SupervisorViewContent requires xtAppModelReference")
+        }
+        return appModelReference
     }
 }

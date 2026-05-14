@@ -50,6 +50,25 @@ enum HubRouteStateMachine {
     }
 
     static func shouldFallbackToFile(afterRemoteReasonCode rawReason: String?) -> Bool {
+        let rawText = rawReason?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        let looksLikeHTMLPayload = rawText.contains("<!doctype html")
+            || rawText.contains("<html")
+            || rawText.contains("</html>")
+        let looksLikeHTMLServiceOutage = looksLikeHTMLPayload && (
+            rawText.contains("error code 504")
+            || rawText.contains("gateway time-out")
+            || rawText.contains("gateway timeout")
+            || rawText.contains("error code 503")
+            || rawText.contains("service unavailable")
+            || rawText.contains("error code 502")
+            || rawText.contains("bad gateway")
+        )
+        if looksLikeHTMLServiceOutage {
+            return true
+        }
+
         guard let token = normalizedReasonToken(rawReason) else { return false }
 
         if token == "hub_env_missing" || token == "grpc_route_unavailable" {

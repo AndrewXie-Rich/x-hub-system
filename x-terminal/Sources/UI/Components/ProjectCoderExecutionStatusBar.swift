@@ -422,66 +422,7 @@ struct ProjectCoderExecutionStatusBar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: style.showsSummaryText ? 6 : 0) {
-            HStack(spacing: 8) {
-                if style.showsLeadingIcon {
-                    Image(systemName: "chevron.left.forwardslash.chevron.right")
-                        .foregroundStyle(.secondary)
-                        .font(.system(size: 12, weight: .medium))
-                }
-
-                Text(presentation.titleText)
-                    .font(.caption.weight(.semibold))
-                    .lineLimit(1)
-                    .help(presentation.helpText)
-
-                Text(presentation.statusText)
-                    .font(.caption2.weight(.medium))
-                    .foregroundColor(presentation.tone.color)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(presentation.tone.color.opacity(0.12))
-                    .clipShape(Capsule())
-                    .help(presentation.helpText)
-
-                if let detailBadge = presentation.detailBadge {
-                    Text(detailBadge.text)
-                        .font(.caption2.weight(.medium))
-                        .foregroundColor(detailBadge.tone.color)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(detailBadge.tone.color.opacity(0.12))
-                        .clipShape(Capsule())
-                        .lineLimit(1)
-                        .help(presentation.helpText)
-                }
-
-                if let interpretationBadge = presentation.interpretationBadge {
-                    Text(interpretationBadge.text)
-                        .font(.caption2.weight(.medium))
-                        .foregroundColor(interpretationBadge.tone.color)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(interpretationBadge.tone.color.opacity(0.12))
-                        .clipShape(Capsule())
-                        .lineLimit(1)
-                        .help(presentation.helpText)
-                }
-
-                Spacer(minLength: 0)
-
-                if style.showsSummaryText,
-                   let actionTitle = actionTitle?
-                    .trimmingCharacters(in: .whitespacesAndNewlines),
-                   !actionTitle.isEmpty,
-                   let onAction {
-                    Button(actionTitle, action: onAction)
-                        .buttonStyle(.borderless)
-                        .controlSize(.small)
-                        .font(.caption2.weight(.medium))
-                        .disabled(actionDisabled)
-                        .help(actionHelpText ?? presentation.helpText)
-                }
-            }
+            statusLine
 
             if style.showsSummaryText,
                let summaryText = presentation.summaryText?
@@ -501,6 +442,93 @@ struct ProjectCoderExecutionStatusBar: View {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(Color(nsColor: .controlBackgroundColor).opacity(0.55))
             }
+        }
+    }
+
+    private var statusLine: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                titleCluster
+                badgeCluster
+                Spacer(minLength: 0)
+                actionButton
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                titleCluster
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 6) {
+                        badgeCluster
+                        actionButton
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        badgeCluster
+                        actionButton
+                    }
+                }
+            }
+        }
+    }
+
+    private var titleCluster: some View {
+        HStack(spacing: 8) {
+            if style.showsLeadingIcon {
+                Image(systemName: "chevron.left.forwardslash.chevron.right")
+                    .foregroundStyle(.secondary)
+                    .font(.system(size: 12, weight: .medium))
+            }
+
+            Text(presentation.titleText)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(presentation.helpText)
+        }
+    }
+
+    @ViewBuilder
+    private var badgeCluster: some View {
+        statusBadge(text: presentation.statusText, tone: presentation.tone)
+
+        if let detailBadge = presentation.detailBadge {
+            statusBadge(text: detailBadge.text, tone: detailBadge.tone)
+        }
+
+        if let interpretationBadge = presentation.interpretationBadge {
+            statusBadge(text: interpretationBadge.text, tone: interpretationBadge.tone)
+        }
+    }
+
+    private func statusBadge(
+        text: String,
+        tone: ProjectCoderExecutionStatusTone
+    ) -> some View {
+        Text(text)
+            .font(.caption2.weight(.medium))
+            .foregroundColor(tone.color)
+            .lineLimit(1)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(tone.color.opacity(0.12))
+            .clipShape(Capsule())
+            .help(presentation.helpText)
+    }
+
+    @ViewBuilder
+    private var actionButton: some View {
+        if style.showsSummaryText,
+           let actionTitle = actionTitle?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !actionTitle.isEmpty,
+           let onAction {
+            Button(actionTitle, action: onAction)
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .font(.caption2.weight(.medium))
+                .disabled(actionDisabled)
+                .help(actionHelpText ?? presentation.helpText)
+                .fixedSize()
         }
     }
 }

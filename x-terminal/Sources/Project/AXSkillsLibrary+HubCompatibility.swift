@@ -1131,6 +1131,33 @@ struct XTResolvedSkillsCacheSnapshot: Codable, Equatable, Sendable {
 }
 
 extension AXSkillsLibrary {
+    private struct CachedFileFingerprint: Equatable {
+        var exists: Bool
+        var size: UInt64
+        var modifiedAtNanos: UInt64
+
+        static let missing = CachedFileFingerprint(
+            exists: false,
+            size: 0,
+            modifiedAtNanos: 0
+        )
+    }
+
+    private struct CachedLocalModelStateSnapshot {
+        var fingerprint: CachedFileFingerprint
+        var snapshot: ModelStateSnapshot?
+    }
+
+    private struct CachedBlockedHubCapabilities {
+        var fingerprint: CachedFileFingerprint
+        var capabilities: Set<String>
+    }
+
+    private static let localModelStateSnapshotCacheLock = NSLock()
+    private static var localModelStateSnapshotCache: [String: CachedLocalModelStateSnapshot] = [:]
+    private static let blockedHubCapabilitiesCacheLock = NSLock()
+    private static var blockedHubCapabilitiesCache: [String: CachedBlockedHubCapabilities] = [:]
+
     static let defaultAgentBaselineSkills: [AXDefaultAgentBaselineSkill] = [
         AXDefaultAgentBaselineSkill(
             skillID: "find-skills",
@@ -2588,7 +2615,8 @@ extension AXSkillsLibrary {
         projectName: String? = nil,
         projectRoot: URL,
         config: AXProjectConfig? = nil,
-        hubBaseDir: URL? = nil
+        hubBaseDir: URL? = nil,
+        nowMs: Int64? = nil
     ) -> XTResolvedSkillsCacheSnapshot? {
         let normalizedProjectId = projectId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedProjectId.isEmpty else { return nil }
@@ -2602,6 +2630,10 @@ extension AXSkillsLibrary {
             return nil
         }
         guard snapshot.remoteStateDirPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+            return nil
+        }
+        let effectiveNowMs = nowMs ?? Int64(Date().timeIntervalSince1970 * 1000.0)
+        guard snapshot.expiresAtMs >= effectiveNowMs else {
             return nil
         }
 
@@ -4628,23 +4660,93 @@ extension AXSkillsLibrary {
         }
     }
 
+    private static func cachedFileFingerprint(
+        url: URL
+    ) -> CachedFileFingerprint {
+        let path = url.path
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: path) else {
+            return .missing
+        }
+
+        let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+        let modifiedAtNanos: UInt64
+        if let modifiedAt = attributes[.modificationDate] as? Date {
+            modifiedAtNanos = UInt64(
+                max(
+                    0,
+                    (modifiedAt.timeIntervalSince1970 * 1_000_000_000.0).rounded()
+                )
+            )
+        } else {
+            modifiedAtNanos = 0
+        }
+        return CachedFileFingerprint(
+            exists: true,
+            size: size,
+            modifiedAtNanos: modifiedAtNanos
+        )
+    }
+
     private static func loadLocalModelStateSnapshot(
         hubBaseDir: URL
     ) -> ModelStateSnapshot? {
         let url = hubBaseDir.appendingPathComponent("models_state.json")
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(ModelStateSnapshot.self, from: data)
+        let fingerprint = cachedFileFingerprint(url: url)
+        let cacheKey = url.standardizedFileURL.path
+
+        localModelStateSnapshotCacheLock.lock()
+        if let cached = localModelStateSnapshotCache[cacheKey],
+           cached.fingerprint == fingerprint {
+            localModelStateSnapshotCacheLock.unlock()
+            return cached.snapshot
+        }
+        localModelStateSnapshotCacheLock.unlock()
+
+        let snapshot: ModelStateSnapshot?
+        if fingerprint.exists,
+           let data = try? Data(contentsOf: url) {
+            snapshot = try? JSONDecoder().decode(ModelStateSnapshot.self, from: data)
+        } else {
+            snapshot = nil
+        }
+
+        localModelStateSnapshotCacheLock.lock()
+        localModelStateSnapshotCache[cacheKey] = CachedLocalModelStateSnapshot(
+            fingerprint: fingerprint,
+            snapshot: snapshot
+        )
+        localModelStateSnapshotCacheLock.unlock()
+        return snapshot
     }
 
     private static func blockedHubCapabilities(
         hubBaseDir: URL
     ) -> Set<String> {
-        let snapshot = XTHubLaunchStatusStore.load(baseDir: hubBaseDir)
-        return Set(
-            (snapshot?.blockedCapabilities ?? [])
+        let url = hubBaseDir.appendingPathComponent("hub_launch_status.json")
+        let fingerprint = cachedFileFingerprint(url: url)
+        let cacheKey = url.standardizedFileURL.path
+
+        blockedHubCapabilitiesCacheLock.lock()
+        if let cached = blockedHubCapabilitiesCache[cacheKey],
+           cached.fingerprint == fingerprint {
+            blockedHubCapabilitiesCacheLock.unlock()
+            return cached.capabilities
+        }
+        blockedHubCapabilitiesCacheLock.unlock()
+
+        let capabilities = Set(
+            (XTHubLaunchStatusStore.load(baseDir: hubBaseDir)?.blockedCapabilities ?? [])
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
                 .filter { !$0.isEmpty }
         )
+
+        blockedHubCapabilitiesCacheLock.lock()
+        blockedHubCapabilitiesCache[cacheKey] = CachedBlockedHubCapabilities(
+            fingerprint: fingerprint,
+            capabilities: capabilities
+        )
+        blockedHubCapabilitiesCacheLock.unlock()
+        return capabilities
     }
 
     private static func localAICapabilityForRuntimeSurface(

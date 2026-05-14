@@ -3,6 +3,14 @@ import Foundation
 private let pendingToolApprovalStub =
     "有待审批的工具操作（本页处理，或从首页打开对应项目）。"
 
+@MainActor
+final class ChatComposerState: ObservableObject {
+    @Published var draft: String = ""
+    @Published var draftAttachments: [AXChatAttachment] = []
+    @Published var importContinuation: AXChatImportContinuationSuggestion? = nil
+    @Published var autoRunTools: Bool = false
+}
+
 private func xtCompactJSONObject<T: Encodable>(_ value: T) -> Any? {
     let encoder = JSONEncoder()
     guard let data = try? encoder.encode(value) else { return nil }
@@ -26,19 +34,43 @@ private func xtDecodeJSONString<T: Decodable>(_ type: T.Type, from jsonString: S
     return try? JSONDecoder().decode(T.self, from: data)
 }
 
+enum ChatStreamingUIFlushCadence {
+    static let shortIntervalNanoseconds: UInt64 = 50_000_000
+    static let mediumIntervalNanoseconds: UInt64 = 100_000_000
+    static let longIntervalNanoseconds: UInt64 = 160_000_000
+    static let mediumByteThreshold = 12_000
+    static let longByteThreshold = 48_000
+
+    static func delayNanoseconds(forContentByteCount byteCount: Int) -> UInt64 {
+        if byteCount > longByteThreshold {
+            return longIntervalNanoseconds
+        }
+        if byteCount > mediumByteThreshold {
+            return mediumIntervalNanoseconds
+        }
+        return shortIntervalNanoseconds
+    }
+}
+
+private enum XTMessageContentBlankness {
+    private static let whitespaceAndNewlines = CharacterSet.whitespacesAndNewlines
+
+    static func isBlank(_ content: String) -> Bool {
+        content.unicodeScalars.allSatisfy { whitespaceAndNewlines.contains($0) }
+    }
+}
+
 @MainActor
 final class ChatSessionModel: ObservableObject {
     @Published var messages: [AXChatMessage] = []
-    @Published var draft: String = ""
-    @Published var draftAttachments: [AXChatAttachment] = []
-    @Published var importContinuation: AXChatImportContinuationSuggestion? = nil
     @Published var isSending: Bool = false
     @Published var lastError: String? = nil
 
     @Published var currentReqId: String? = nil
 
-    @Published var autoRunTools: Bool = false
     @Published var pendingToolCalls: [ToolCall] = []
+    @Published private(set) var messageTimelinePresentationVersion: Int = 0
+    let composer = ChatComposerState()
 
     private var pendingFlow: ToolFlowState? = nil
     private var activeRouter: LLMRouter? = nil
@@ -48,8 +80,15 @@ final class ChatSessionModel: ObservableObject {
     private var expandRecentOnceAfterLoad: Bool = false
     private var activeConfig: AXProjectConfig? = nil
     private var toolStreamStates: [String: ToolStreamState] = [:]
-    @Published private var assistantProgressLinesByMessageID: [String: [String]] = [:]
-    @Published private var assistantVisibleStreamingMessageIDs: Set<String> = []
+    private var assistantProgressLinesByMessageID: [String: [String]] = [:]
+    private var assistantVisibleStreamingMessageIDs: Set<String> = []
+    private var pendingAssistantStreamTextByMessageID: [String: String] = [:]
+    private var assistantStreamFlushTasksByMessageID: [String: Task<Void, Never>] = [:]
+    private var pendingToolStreamContentByMessageID: [String: String] = [:]
+    private var toolStreamFlushTasksByMessageID: [String: Task<Void, Never>] = [:]
+    private var pendingAssistantProgressLinesByMessageID: [String: [String]] = [:]
+    private var assistantProgressFlushTasksByMessageID: [String: Task<Void, Never>] = [:]
+    private var pendingProtectedInputApproval: ProtectedInputApprovalState? = nil
     private let sessionManager = AXSessionManager.shared
     private var boundSessionId: String? = nil
     private var currentRunId: String? = nil
@@ -73,15 +112,97 @@ final class ChatSessionModel: ObservableObject {
         var truncated: Bool
     }
 
+    private struct ProtectedInputApprovalState {
+        var sanitizedText: String
+        var attachments: [AXChatAttachment]
+    }
+
+    private struct TrustedAutomationApprovalRepairResult {
+        var config: AXProjectConfig
+        var didUpdate: Bool
+        var deviceID: String
+        var deviceToolGroups: [String]
+    }
+
     private let toolStreamMaxChars: Int = 12000
     private let assistantProgressMaxLines: Int = 8
     private let defaultRecentPromptTurns: Int = 8
     private let expandedRecentPromptTurns: Int = 16
     private let projectMemoryRetrievalMaxSnippets: Int = 3
     private let projectMemoryRetrievalMaxSnippetChars: Int = 360
+    private let assistantProgressFlushIntervalNanos: UInt64 = 100_000_000
+
+    var draft: String {
+        get { composer.draft }
+        set { composer.draft = newValue }
+    }
+
+    var draftAttachments: [AXChatAttachment] {
+        get { composer.draftAttachments }
+        set { composer.draftAttachments = newValue }
+    }
+
+    var importContinuation: AXChatImportContinuationSuggestion? {
+        get { composer.importContinuation }
+        set { composer.importContinuation = newValue }
+    }
+
+    var autoRunTools: Bool {
+        get { composer.autoRunTools }
+        set { composer.autoRunTools = newValue }
+    }
 
     private func currentEpochMs() -> Int64 {
         Int64((Date().timeIntervalSince1970 * 1000.0).rounded())
+    }
+
+    private func bumpMessageTimelinePresentationVersion() {
+        messageTimelinePresentationVersion &+= 1
+    }
+
+    private func consumeProtectedInputApprovalIfRequested(
+        userText: String,
+        attachments: [AXChatAttachment]
+    ) -> ProtectedInputApprovalState? {
+        guard attachments.isEmpty else { return nil }
+        guard let pendingProtectedInputApproval else { return nil }
+        guard isProtectedInputApprovalCommand(userText) else { return nil }
+        self.pendingProtectedInputApproval = nil
+        return pendingProtectedInputApproval
+    }
+
+    private func isProtectedInputApprovalCommand(_ raw: String) -> Bool {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let folded = trimmed.lowercased()
+        let exactCommands: Set<String> = [
+            "approve",
+            "approved",
+            "approve protected input",
+            "approve sensitive input",
+            "approve sanitized continue",
+            "approve_sanitized_continue",
+            "supervisor approve",
+            "批准",
+            "同意",
+            "继续执行",
+            "批准继续",
+            "批准脱敏继续",
+            "用户批准",
+            "supervisor批准"
+        ]
+        if exactCommands.contains(folded) || exactCommands.contains(trimmed) {
+            return true
+        }
+        if folded.contains("approve")
+            && (folded.contains("protected") || folded.contains("sensitive") || folded.contains("sanitized")) {
+            return true
+        }
+        if trimmed.contains("批准")
+            && (trimmed.contains("保护") || trimmed.contains("敏感") || trimmed.contains("脱敏") || trimmed.contains("继续")) {
+            return true
+        }
+        return false
     }
 
     private func normalizedUserPayload(
@@ -294,6 +415,7 @@ final class ChatSessionModel: ObservableObject {
         var memory: AXMemory?
         var config: AXProjectConfig?
         var userText: String
+        var userSender: AXChatMessageSender? = nil
         var currentTurnAttachments: [AXChatAttachment] = []
         var runStartedAtMs: Int64
         var step: Int
@@ -440,6 +562,9 @@ messages:
             var fields: [String: Any] = [
                 "role_aware_memory_mode": roleAwareMemoryMode,
                 "project_memory_resolution_trigger": projectMemoryResolutionTrigger,
+                "project_memory_resolution_trigger_label": XTProjectMemoryTriggerPresentation.annotated(
+                    projectMemoryResolutionTrigger
+                ),
                 "configured_recent_project_dialogue_profile": configuredRecentProjectDialogueProfile,
                 "recommended_recent_project_dialogue_profile": recommendedRecentProjectDialogueProfile,
                 "effective_recent_project_dialogue_profile": effectiveRecentProjectDialogueProfile,
@@ -788,12 +913,12 @@ messages:
         if assistantThinkingPresentation(for: last) != nil {
             return false
         }
-        return last.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return XTMessageContentBlankness.isBlank(last.content)
     }
 
     func assistantThinkingPresentation(for message: AXChatMessage) -> XTStreamingPlaceholderPresentation? {
         guard message.role == .assistant else { return nil }
-        guard message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        guard XTMessageContentBlankness.isBlank(message.content) else { return nil }
         guard !assistantVisibleStreamingMessageIDs.contains(message.id) else { return nil }
 
         let lines = assistantProgressLinesByMessageID[message.id] ?? []
@@ -823,11 +948,12 @@ messages:
     }
 
     func loadFromRawLog(ctx: AXProjectContext, limit: Int = 20) {
+        clearStreamingPresentationState()
         messages = []
         guard FileManager.default.fileExists(atPath: ctx.rawLogURL.path) else { return }
         guard let data = try? Data(contentsOf: ctx.rawLogURL), let s = String(data: data, encoding: .utf8) else { return }
 
-        var turns: [(Double, String, String, [AXChatAttachment])] = []
+        var turns: [(Double, String, String, AXChatMessageSender?, [AXChatAttachment])] = []
         for line in s.split(separator: "\n", omittingEmptySubsequences: true) {
             guard let ld = line.data(using: .utf8) else { continue }
             guard let obj = try? JSONSerialization.jsonObject(with: ld) as? [String: Any] else { continue }
@@ -835,6 +961,7 @@ messages:
             let ts = (obj["created_at"] as? Double) ?? 0
             let u = (obj["user"] as? String) ?? ""
             let a = (obj["assistant"] as? String) ?? ""
+            let userSender = AXChatMessageSender(rawValue: (obj["user_sender"] as? String) ?? "")
             let attachments: [AXChatAttachment]
             if let rawAttachments = obj["attachments"],
                JSONSerialization.isValidJSONObject(rawAttachments),
@@ -843,15 +970,16 @@ messages:
             } else {
                 attachments = []
             }
-            turns.append((ts, u, a, attachments))
+            turns.append((ts, u, a, userSender, attachments))
         }
         turns.sort { $0.0 < $1.0 }
         let tail = turns.suffix(max(0, limit))
-        for (ts, u, a, attachments) in tail {
+        for (ts, u, a, userSender, attachments) in tail {
             if !u.isEmpty {
                 messages.append(
                     AXChatMessage(
                         role: .user,
+                        sender: userSender ?? Self.inferredUserSender(for: u),
                         content: u,
                         createdAt: ts,
                         attachments: attachments
@@ -877,12 +1005,19 @@ messages:
         expandRecentOnceAfterLoad = true
         // Ensure recent_context exists for prompt assembly (especially for older projects).
         AXRecentContextStore.bootstrapFromRawLogIfNeeded(ctx: ctx, maxTurns: 12)
+        let resolvedConfig = resolvedToolRuntimeConfig(
+            ctx: ctx,
+            config: try? AXProjectStore.loadOrCreateConfig(for: ctx),
+            preauthorizationReason: "chat_session_load"
+        )
+        activeConfig = resolvedConfig
         loadFromRawLog(ctx: ctx, limit: limit)
         restorePendingToolApprovalIfAny(ctx: ctx)
         loadedRootPath = rootPath
     }
 
     private func resetSessionState() {
+        clearStreamingPresentationState()
         messages = []
         draft = ""
         draftAttachments = []
@@ -894,8 +1029,6 @@ messages:
         activeRouter = nil
         lastCoderProviderTag = ""
         activeConfig = nil
-        toolStreamStates = [:]
-        assistantProgressLinesByMessageID = [:]
         boundSessionId = nil
         currentRunId = nil
     }
@@ -1033,10 +1166,10 @@ messages:
 
         var activityByRequestID: [String: ProjectSkillActivityItem] = [:]
         for call in calls {
-            guard let item = AXProjectSkillActivityStore.loadEvents(
+            guard let item = AXProjectSkillActivityStore.latestMatchingActivity(
                 ctx: ctx,
-                requestID: call.id
-            ).last?.item else {
+                toolCall: call
+            ) else {
                 continue
             }
             activityByRequestID[call.id] = item
@@ -1163,14 +1296,22 @@ messages:
         AXPendingActionsStore.saveToolApproval(action, for: ctx)
     }
 
-    private func restorePendingToolApprovalIfAny(ctx: AXProjectContext) {
-        guard let pending = AXPendingActionsStore.pendingToolApproval(for: ctx) else { return }
-        guard let userText = pending.userText, !userText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        let stub = (pending.assistantStub ?? pendingToolApprovalStub)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    private struct RestoredPendingToolApproval {
+        var calls: [ToolCall]
+        var flow: ToolFlowState
+        var assistantStub: String
+    }
+
+    private func reconstructedPendingToolApproval(
+        ctx: AXProjectContext,
+        pending: AXPendingAction,
+        appendTranscriptTail: Bool
+    ) -> RestoredPendingToolApproval? {
+        guard let userText = pending.userText,
+              !userText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         let calls = pending.toolCalls ?? []
-        guard !calls.isEmpty else { return }
-        guard let state = pending.flow else { return }
+        guard !calls.isEmpty else { return nil }
+        guard let state = pending.flow else { return nil }
         let projectSkillDispatchesByCallID = projectSkillDispatchesForToolCalls(
             ctx: ctx,
             toolCalls: calls
@@ -1183,18 +1324,56 @@ messages:
             projectName: projectName,
             remoteStateDirPath: projectSkillDispatchesByCallID.values.compactMap(\.hubStateDirPath).first
         )
+        let refreshedStub = pendingToolApprovalAssistantStub(ctx: ctx, calls: calls)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let stub = refreshedStub.isEmpty
+            ? (pending.assistantStub ?? pendingToolApprovalStub).trimmingCharacters(in: .whitespacesAndNewlines)
+            : refreshedStub
+        let persistedStub = (pending.assistantStub ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !stub.isEmpty, stub != persistedStub {
+            var refreshedPending = pending
+            refreshedPending.assistantStub = stub
+            refreshedPending.toolCalls = calls
+            AXPendingActionsStore.saveToolApproval(refreshedPending, for: ctx)
+        }
 
-        // Reconstruct a synthetic tail so the transcript doesn't "lose" the user's last input.
-        messages.append(
-            AXChatMessage(
-                role: .user,
-                content: userText,
-                createdAt: pending.createdAt,
-                attachments: state.currentTurnAttachments
+        let assistantIndex: Int
+        if appendTranscriptTail || messages.isEmpty {
+            messages.append(
+                AXChatMessage(
+                    role: .user,
+                    sender: Self.inferredUserSender(for: userText),
+                    content: userText,
+                    createdAt: pending.createdAt,
+                    attachments: state.currentTurnAttachments
+                )
             )
-        )
-        let assistantIndex = messages.count
-        messages.append(AXChatMessage(role: .assistant, tag: lastCoderProviderTag.isEmpty ? nil : lastCoderProviderTag, content: stub, createdAt: pending.createdAt))
+            assistantIndex = messages.count
+            messages.append(
+                AXChatMessage(
+                    role: .assistant,
+                    tag: lastCoderProviderTag.isEmpty ? nil : lastCoderProviderTag,
+                    content: stub,
+                    createdAt: pending.createdAt
+                )
+            )
+        } else if let existingAssistantIndex = messages.lastIndex(where: { message in
+            guard message.role == .assistant else { return false }
+            let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            return content == stub || content == pendingToolApprovalStub || content.hasPrefix("有待审批的工具操作")
+        }) {
+            assistantIndex = existingAssistantIndex
+        } else {
+            assistantIndex = messages.count
+            messages.append(
+                AXChatMessage(
+                    role: .assistant,
+                    tag: lastCoderProviderTag.isEmpty ? nil : lastCoderProviderTag,
+                    content: stub,
+                    createdAt: pending.createdAt
+                )
+            )
+        }
 
         let mem = try? AXProjectStore.loadOrCreateMemory(for: ctx)
         let cfg = try? AXProjectStore.loadOrCreateConfig(for: ctx)
@@ -1203,6 +1382,7 @@ messages:
             memory: mem,
             config: cfg,
             userText: userText,
+            userSender: Self.inferredUserSender(for: userText),
             currentTurnAttachments: state.currentTurnAttachments,
             runStartedAtMs: state.runStartedAtMs,
             step: state.step,
@@ -1218,12 +1398,54 @@ messages:
             lastPromptVisibleGuidanceInjectionId: state.lastPromptVisibleGuidanceInjectionId,
             lastSafePointPauseInjectionId: state.lastSafePointPauseInjectionId
         )
+        return RestoredPendingToolApproval(calls: calls, flow: flow, assistantStub: stub)
+    }
 
-        pendingToolCalls = calls
-        pendingFlow = flow
+    private func restorePendingToolApprovalIfAny(ctx: AXProjectContext) {
+        guard let pending = AXPendingActionsStore.pendingToolApproval(for: ctx) else { return }
+        guard let restored = reconstructedPendingToolApproval(
+            ctx: ctx,
+            pending: pending,
+            appendTranscriptTail: true
+        ) else { return }
+
+        pendingToolCalls = restored.calls
+        pendingFlow = restored.flow
         isSending = false
         currentReqId = nil
-        recordAwaitingToolApproval(ctx: ctx, calls: calls, reason: "restored_pending_tool_approval")
+        recordAwaitingToolApproval(ctx: ctx, calls: restored.calls, reason: "restored_pending_tool_approval")
+    }
+
+    private func recoverPendingToolApprovalForApprovalIfNeeded() -> ToolFlowState? {
+        if let pendingFlow {
+            return pendingFlow
+        }
+        guard let ctx = currentProjectContextForLLM(),
+              let pending = AXPendingActionsStore.pendingToolApproval(for: ctx),
+              let restored = reconstructedPendingToolApproval(
+                ctx: ctx,
+                pending: pending,
+                appendTranscriptTail: false
+              ) else {
+            return nil
+        }
+        pendingToolCalls = restored.calls
+        pendingFlow = restored.flow
+        isSending = false
+        currentReqId = nil
+        AXProjectStore.appendRawLog(
+            [
+                "type": "pending_tool_approval_recovery",
+                "action": "recover_for_approval",
+                "project_id": AXProjectRegistryStore.projectId(forRoot: ctx.root),
+                "pending_action_id": pending.id,
+                "tool_call_count": restored.calls.count,
+                "timestamp_ms": currentEpochMs()
+            ],
+            for: ctx
+        )
+        recordAwaitingToolApproval(ctx: ctx, calls: restored.calls, reason: "recovered_pending_tool_approval_for_approval")
+        return restored.flow
     }
 
     private func truncateInline(_ s: String, max: Int) -> String {
@@ -1231,6 +1453,11 @@ messages:
         if t.count <= max { return t }
         let idx = t.index(t.startIndex, offsetBy: max)
         return String(t[..<idx]) + "\n\n[x-terminal] truncated"
+    }
+
+    private static func inferredUserSender(for text: String) -> AXChatMessageSender? {
+        text.trimmingCharacters(in: .whitespacesAndNewlines)
+            .hasPrefix("来自 Supervisor 的项目执行派发。") ? .supervisor : nil
     }
 
     private func safePointExecutionState(
@@ -1279,18 +1506,161 @@ messages:
         )
     }
 
-    func send(ctx: AXProjectContext, memory: AXMemory?, config: AXProjectConfig?, router: LLMRouter) {
+    private func trustedAutomationConfigForApprovedDeviceTools(
+        calls: [ToolCall],
+        ctx: AXProjectContext,
+        config: AXProjectConfig
+    ) -> TrustedAutomationApprovalRepairResult {
+        let requiredGroups = xtTrustedAutomationRequiredDeviceToolGroups(for: calls)
+        guard !requiredGroups.isEmpty else {
+            return TrustedAutomationApprovalRepairResult(
+                config: config,
+                didUpdate: false,
+                deviceID: config.trustedAutomationDeviceId,
+                deviceToolGroups: config.deviceToolGroups
+            )
+        }
+
+        let permissionReadiness = AXTrustedAutomationPermissionOwnerReadiness.current()
+        let status = config.trustedAutomationStatus(
+            forProjectRoot: ctx.root,
+            permissionReadiness: permissionReadiness,
+            requiredDeviceToolGroups: requiredGroups
+        )
+        guard trustedAutomationProjectApprovalShouldUpdate(status: status) else {
+            return TrustedAutomationApprovalRepairResult(
+                config: config,
+                didUpdate: false,
+                deviceID: status.boundDeviceID,
+                deviceToolGroups: status.armedDeviceToolGroups
+            )
+        }
+
+        let deviceID = trustedAutomationApprovalDeviceID(
+            config: config,
+            permissionReadiness: permissionReadiness
+        )
+        guard !deviceID.isEmpty else {
+            return TrustedAutomationApprovalRepairResult(
+                config: config,
+                didUpdate: false,
+                deviceID: "",
+                deviceToolGroups: status.armedDeviceToolGroups
+            )
+        }
+
+        let mergedGroups = xtNormalizedTrustedAutomationDeviceToolGroups(
+            config.deviceToolGroups + requiredGroups
+        )
+        let updated = config.settingTrustedAutomationBinding(
+            mode: .trustedAutomation,
+            deviceId: deviceID,
+            deviceToolGroups: mergedGroups,
+            workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: ctx.root)
+        )
+        activeConfig = updated
+        try? AXProjectStore.saveConfig(updated, for: ctx)
+        AXProjectStore.appendRawLog(
+            [
+                "type": "trusted_automation_local_approval",
+                "action": "arm_project_for_approved_device_tools",
+                "created_at": Date().timeIntervalSince1970,
+                "project_id": AXProjectRegistryStore.projectId(forRoot: ctx.root),
+                "device_id": deviceID,
+                "device_tool_groups": mergedGroups,
+                "approval_effect": "project_binding_updated",
+            ],
+            for: ctx
+        )
+        return TrustedAutomationApprovalRepairResult(
+            config: updated,
+            didUpdate: true,
+            deviceID: deviceID,
+            deviceToolGroups: mergedGroups
+        )
+    }
+
+    private func trustedAutomationProjectApprovalShouldUpdate(status: AXTrustedAutomationProjectStatus) -> Bool {
+        let projectLevelCodes: Set<String> = [
+            XTDeviceAutomationRejectCode.trustedAutomationModeOff.rawValue,
+            XTDeviceAutomationRejectCode.trustedAutomationProjectNotBound.rawValue,
+            XTDeviceAutomationRejectCode.trustedAutomationWorkspaceMismatch.rawValue,
+            XTDeviceAutomationRejectCode.trustedAutomationSurfaceNotEnabled.rawValue,
+            "trusted_automation_device_tool_groups_missing",
+        ]
+        if status.missingPrerequisites.contains(where: { projectLevelCodes.contains($0) }) {
+            return true
+        }
+        if status.missingPrerequisites.contains(where: {
+            $0.hasPrefix("trusted_automation_required_device_tool_group_missing:")
+        }) {
+            return true
+        }
+        return !status.missingRequiredDeviceToolGroups.isEmpty
+    }
+
+    private func trustedAutomationApprovalDeviceID(
+        config: AXProjectConfig,
+        permissionReadiness: AXTrustedAutomationPermissionOwnerReadiness
+    ) -> String {
+        xtTrustedAutomationPreauthorizationDeviceID(
+            config: config,
+            permissionReadiness: permissionReadiness
+        )
+    }
+
+    private func openMissingTrustedAutomationSettingsIfNeeded(
+        blockedCalls: [XTToolAuthorizationBlockedCall]
+    ) {
+        guard !ProcessInfo.processInfo.isRunningUnderAutomatedTests else { return }
+        let actions = blockedCalls
+            .filter { $0.decision.denyCode == XTDeviceAutomationRejectCode.systemPermissionMissing.rawValue }
+            .flatMap { blocked -> [String] in
+                guard let gate = blocked.decision.deviceGateDecision else { return [] }
+                return gate.permissionReadiness.suggestedOpenSettingsActions(
+                    forDeviceToolGroups: [gate.requiredDeviceToolGroup]
+                )
+            }
+        guard let action = actions.first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
+            return
+        }
+        XTSystemSettingsLinks.openPrivacyAction(action)
+    }
+
+    func send(
+        ctx: AXProjectContext,
+        memory: AXMemory?,
+        config: AXProjectConfig?,
+        router: LLMRouter,
+        sender: AXChatMessageSender? = nil
+    ) {
         activeRouter = router
-        activeConfig = config
+        let runtimeConfig = resolvedToolRuntimeConfig(
+            ctx: ctx,
+            config: config,
+            preauthorizationReason: "chat_send"
+        )
+        activeConfig = runtimeConfig
         lastCoderProviderTag = shortProviderTag(router.provider(for: .coder).displayName)
-        let currentTurnAttachments = draftAttachments
-        guard let userText = normalizedUserPayload(
+        var currentTurnAttachments = draftAttachments
+        guard var userText = normalizedUserPayload(
             draft: draft,
             attachments: currentTurnAttachments
         ) else {
             return
         }
-        let protectedInput = XTSecretProtection.analyzeUserInput(userText)
+        var skipSecretProtection = false
+        if let approvedProtectedInput = consumeProtectedInputApprovalIfRequested(
+            userText: userText,
+            attachments: currentTurnAttachments
+        ) {
+            userText = approvedProtectedInput.sanitizedText
+            currentTurnAttachments = approvedProtectedInput.attachments
+            skipSecretProtection = true
+        }
+        let protectedInput = skipSecretProtection
+            ? XTSecretProtectionAnalysis(shouldProtect: false, sanitizedText: userText, signals: [])
+            : XTSecretProtection.analyzeUserInput(userText)
         let userDisplayText = protectedInput.shouldProtect ? protectedInput.sanitizedText : userText
         let userTextForPersistence = protectedInput.shouldProtect ? protectedInput.sanitizedText : userText
 
@@ -1304,6 +1674,7 @@ messages:
         messages.append(
             AXChatMessage(
                 role: .user,
+                sender: sender,
                 content: userDisplayText,
                 createdAt: userCreatedAt,
                 attachments: currentTurnAttachments
@@ -1326,6 +1697,10 @@ messages:
         recordRunStart(ctx: ctx, userText: userTextForPersistence)
 
         if protectedInput.shouldProtect {
+            pendingProtectedInputApproval = ProtectedInputApprovalState(
+                sanitizedText: protectedInput.sanitizedText,
+                attachments: currentTurnAttachments
+            )
             if assistantIndex < messages.count {
                 messages[assistantIndex].tag = nil
             }
@@ -1342,7 +1717,7 @@ messages:
         if handleSlashCommand(
             text: userText,
             ctx: ctx,
-            config: config,
+            config: runtimeConfig,
             router: router,
             assistantIndex: assistantIndex
         ) {
@@ -1353,7 +1728,7 @@ messages:
             performDirectNetworkRequest(
                 ctx: ctx,
                 memory: memory,
-                config: config,
+                config: runtimeConfig,
                 userText: userText,
                 assistantIndex: assistantIndex,
                 seconds: nil
@@ -1364,7 +1739,7 @@ messages:
         if let directReply = directProjectReplyIfApplicable(
             userText: userText,
             ctx: ctx,
-            config: config,
+            config: runtimeConfig,
             router: router
         ) {
             if isProjectResumeQuestion(normalizedProjectDirectReplyQuestion(userText)) {
@@ -1385,8 +1760,9 @@ messages:
             let flow = ToolFlowState(
                 ctx: ctx,
                 memory: memory,
-                config: config,
+                config: runtimeConfig,
                 userText: userText,
+                userSender: sender,
                 currentTurnAttachments: currentTurnAttachments,
                 runStartedAtMs: currentEpochMs(),
                 step: 0,
@@ -1405,8 +1781,27 @@ messages:
     }
 
     func approvePendingTools(router: LLMRouter) {
-        guard let flow = pendingFlow else { return }
+        guard let flow = recoverPendingToolApprovalForApprovalIfNeeded() else {
+            lastError = pendingToolCalls.isEmpty
+                ? "当前没有待审批的工具请求。"
+                : "审批状态已过期，请刷新项目状态后重试。"
+            return
+        }
         let calls = pendingToolCalls
+        guard !calls.isEmpty else {
+            lastError = "当前没有待审批的工具请求。"
+            return
+        }
+        AXProjectStore.appendRawLog(
+            [
+                "type": "pending_tool_approval_decision",
+                "action": "approve_all",
+                "tool_call_count": calls.count,
+                "tool_call_ids": calls.map(\.id),
+                "timestamp_ms": currentEpochMs()
+            ],
+            for: flow.ctx
+        )
         pendingToolCalls = []
         pendingFlow = nil
         AXPendingActionsStore.clearToolApproval(for: flow.ctx)
@@ -1417,8 +1812,19 @@ messages:
         Task {
             var updated = flow
             let resolvedConfig = resolvedToolRuntimeConfig(ctx: flow.ctx, config: flow.config)
-            updated.config = resolvedConfig
-            activeConfig = resolvedConfig
+            let trustedAutomationRepair = trustedAutomationConfigForApprovedDeviceTools(
+                calls: calls,
+                ctx: flow.ctx,
+                config: resolvedConfig
+            )
+            if trustedAutomationRepair.didUpdate {
+                appendAssistantProgress(
+                    assistantIndex: updated.assistantIndex,
+                    line: "已为本项目启用可信设备自动化，正在继续检查系统权限。"
+                )
+            }
+            updated.config = trustedAutomationRepair.config
+            activeConfig = trustedAutomationRepair.config
             let projectSkillDispatchesByCallID = projectSkillDispatchesForToolCalls(
                 ctx: flow.ctx,
                 toolCalls: calls
@@ -1434,15 +1840,16 @@ messages:
 
             let plan = await xtApprovedToolExecutionPlan(
                 calls: calls,
-                config: resolvedConfig,
+                config: trustedAutomationRepair.config,
                 projectRoot: flow.ctx.root
             )
+            openMissingTrustedAutomationSettingsIfNeeded(blockedCalls: plan.blockedCalls)
             for blocked in plan.blockedCalls {
                 if let dispatch = projectSkillDispatchesByCallID[blocked.call.id] {
                     recordProjectSkillAuthorizationOutcome(
                         ctx: flow.ctx,
                         dispatch: dispatch,
-                        config: resolvedConfig,
+                        config: trustedAutomationRepair.config,
                         decision: blocked.decision
                     )
                 }
@@ -1450,7 +1857,7 @@ messages:
                     call: blocked.call,
                     ctx: flow.ctx,
                     flow: &updated,
-                    config: resolvedConfig,
+                    config: trustedAutomationRepair.config,
                     decision: blocked.decision
                 )
             }
@@ -1491,11 +1898,29 @@ messages:
             approvePendingTools(router: router)
             return
         }
-        guard let flow = pendingFlow else { return }
+        guard let flow = recoverPendingToolApprovalForApprovalIfNeeded() else {
+            lastError = pendingToolCalls.isEmpty
+                ? "当前没有待审批的工具请求。"
+                : "审批状态已过期，请刷新项目状态后重试。"
+            return
+        }
 
         let approvedCalls = pendingToolCalls.filter { $0.id == normalizedRequestID }
-        guard !approvedCalls.isEmpty else { return }
+        guard !approvedCalls.isEmpty else {
+            lastError = "找不到这条待审批工具请求，请刷新项目状态后重试。"
+            return
+        }
         let remainingCalls = pendingToolCalls.filter { $0.id != normalizedRequestID }
+        AXProjectStore.appendRawLog(
+            [
+                "type": "pending_tool_approval_decision",
+                "action": "approve_one",
+                "tool_request_id": normalizedRequestID,
+                "remaining_tool_call_count": remainingCalls.count,
+                "timestamp_ms": currentEpochMs()
+            ],
+            for: flow.ctx
+        )
 
         pendingToolCalls = remainingCalls
         pendingFlow = remainingCalls.isEmpty ? nil : flow
@@ -1506,8 +1931,19 @@ messages:
         Task {
             var updated = flow
             let resolvedConfig = resolvedToolRuntimeConfig(ctx: flow.ctx, config: flow.config)
-            updated.config = resolvedConfig
-            activeConfig = resolvedConfig
+            let trustedAutomationRepair = trustedAutomationConfigForApprovedDeviceTools(
+                calls: approvedCalls,
+                ctx: flow.ctx,
+                config: resolvedConfig
+            )
+            if trustedAutomationRepair.didUpdate {
+                appendAssistantProgress(
+                    assistantIndex: updated.assistantIndex,
+                    line: "已为本项目启用可信设备自动化，正在继续检查系统权限。"
+                )
+            }
+            updated.config = trustedAutomationRepair.config
+            activeConfig = trustedAutomationRepair.config
 
             let projectSkillDispatchesByCallID = projectSkillDispatchesForToolCalls(
                 ctx: flow.ctx,
@@ -1524,15 +1960,16 @@ messages:
 
             let plan = await xtApprovedToolExecutionPlan(
                 calls: approvedCalls,
-                config: resolvedConfig,
+                config: trustedAutomationRepair.config,
                 projectRoot: flow.ctx.root
             )
+            openMissingTrustedAutomationSettingsIfNeeded(blockedCalls: plan.blockedCalls)
             for blocked in plan.blockedCalls {
                 if let dispatch = projectSkillDispatchesByCallID[blocked.call.id] {
                     recordProjectSkillAuthorizationOutcome(
                         ctx: flow.ctx,
                         dispatch: dispatch,
-                        config: resolvedConfig,
+                        config: trustedAutomationRepair.config,
                         decision: blocked.decision
                     )
                 }
@@ -1540,7 +1977,7 @@ messages:
                     call: blocked.call,
                     ctx: flow.ctx,
                     flow: &updated,
-                    config: resolvedConfig,
+                    config: trustedAutomationRepair.config,
                     decision: blocked.decision
                 )
             }
@@ -1968,6 +2405,15 @@ messages:
                     pendingSupervisorGuidancePauseBeforeToolExecution(for: flow) != nil
 
                 if !shouldPrioritizePromptForPendingGuidance,
+                   shouldBootstrapCurrentAttachmentInspection(flow: flow) {
+                    let attachmentCalls = currentAttachmentInspectionBootstrapCalls(flow: flow)
+                    if !attachmentCalls.isEmpty {
+                        flow = await executeTools(flow: flow, toolCalls: attachmentCalls)
+                        continue
+                    }
+                }
+
+                if !shouldPrioritizePromptForPendingGuidance,
                    shouldBootstrapImmediateExecution(flow: flow) {
                     let bootstrapCalls = immediateExecutionBootstrapCalls(
                         config: flow.config,
@@ -2004,7 +2450,7 @@ messages:
                         ctx: ctx,
                         config: flow.config,
                         assistantIndexForStreaming: assistantIndex,
-                        visibleStreamMode: .finalOrPlainText,
+                        visibleStreamMode: projectCoderVisibleStreamMode(for: "chat_finalize_only"),
                         extraUsageFields: finalizeOnlyUsageFields
                     )
                     if let strictFailure {
@@ -2196,7 +2642,7 @@ messages:
                     ctx: ctx,
                     config: flow.config,
                     assistantIndexForStreaming: assistantIndex,
-                    visibleStreamMode: .finalOrPlainText,
+                    visibleStreamMode: projectCoderVisibleStreamMode(for: "chat_plan"),
                     extraUsageFields: planningUsageFields
                 )
                 appendAssistantProgress(assistantIndex: assistantIndex, line: "我在整理这一步的执行方案。")
@@ -2700,14 +3146,19 @@ messages:
             }
             recordRunFailure(ctx: ctx, message: msg)
             lastError = msg
-            if let idx = messages.indices.last,
-               messages[idx].role == .assistant,
-               messages[idx].content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                messages[idx].content = "请求失败：\n\n\(msg)"
-            }
+            materializeRequestFailureAssistantText(msg, assistantIndex: initial.assistantIndex)
             isSending = false
             currentReqId = nil
         }
+    }
+
+    private func requestFailureAssistantText(_ message: String) -> String {
+        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "请求失败。" }
+        if trimmed.contains("\n") {
+            return "请求失败：\n\n\(trimmed)"
+        }
+        return "请求失败：\(trimmed)"
     }
 
     private func handleSlashCommand(
@@ -2840,6 +3291,7 @@ messages:
             return true
         case "clear":
             writeSessionSummaryCapsuleIfPossible(ctx: ctx, reason: "session_reset")
+            clearStreamingPresentationState()
             messages.removeAll()
             isSending = false
             currentReqId = nil
@@ -2944,7 +3396,7 @@ messages:
         snapshot overrideSnapshot: ModelStateSnapshot? = nil
     ) -> String {
         guard args.count >= 2 else {
-            return "用法：/rolemodel <coder|coarse|refine|reviewer|advisor> <model_id|auto>"
+            return "用法：/rolemodel <supervisor|coder|reviewer> <model_id|auto>"
         }
 
         guard let role = roleFromSlashToken(args[0]) else {
@@ -3373,7 +3825,9 @@ Hub 传输模式：
             return "已尝试打开“\(trustedAutomationPermissionDisplayName(permissionKey.rawValue))”设置。\n\n" + slashTrustedAutomationDoctorText(config: cfg, ctx: ctx)
         case "arm", "bind", "on", "enable":
             let deviceId = args.dropFirst().joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
-            let resolvedDeviceId = deviceId.isEmpty ? currentDeviceId : deviceId
+            let resolvedDeviceId = deviceId.isEmpty
+                ? xtTrustedAutomationSuggestedDeviceID(existing: [currentDeviceId])
+                : xtTrustedAutomationNormalizeDeviceID(deviceId)
             guard !resolvedDeviceId.isEmpty else {
                 return slashTrustedAutomationUsageText()
             }
@@ -3460,7 +3914,7 @@ Trusted Automation 自检：
 命令：
 - /trusted-automation status
 - /trusted-automation doctor
-- /trusted-automation arm <paired_device_id>
+- /trusted-automation arm [paired_device_id]
 - /trusted-automation off
 - /trusted-automation open <accessibility|automation|screen_recording|full_disk_access|input_monitoring|system>
 """
@@ -4005,8 +4459,21 @@ Memory 使用方式：
 """
     }
 
-    private func resolvedToolRuntimeConfig(ctx: AXProjectContext, config: AXProjectConfig?) -> AXProjectConfig {
-        config ?? (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: ctx.root)
+    private func resolvedToolRuntimeConfig(
+        ctx: AXProjectContext,
+        config: AXProjectConfig?,
+        preauthorizationReason: String = "tool_runtime_config"
+    ) -> AXProjectConfig {
+        let resolved = config ?? (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: ctx.root)
+        let preauthorization = xtPersistTrustedAutomationPreauthorizationIfNeeded(
+            ctx: ctx,
+            config: resolved,
+            reason: preauthorizationReason
+        )
+        if preauthorization.didUpdate {
+            activeConfig = preauthorization.config
+        }
+        return preauthorization.config
     }
 
     private func appendBlockedToolResult(
@@ -6140,7 +6607,7 @@ Memory 使用方式：
 - /models                 查看 Hub 当前已加载模型
 - /model <id>             设置当前项目的 coder 模型
 - /model auto             清除 coder 项目级覆盖
-- /rolemodel <role> <id>  设置某个角色模型（role: coder/coarse/refine/reviewer/advisor）
+- /rolemodel <role> <id>  设置某个角色模型（role: supervisor/coder/reviewer；旧别名 coarse/refine/advisor 仍兼容）
 - /rolemodel <role> auto  清除角色覆盖
 - /network 30m            申请联网（也可用 need network 30m）
 - /clear                  清空当前页面聊天记录（不删除项目文件）
@@ -6177,6 +6644,21 @@ Memory 使用方式：
         if blockerTokens.contains(where: { normalized.contains($0) }) {
             return false
         }
+        let continuationQuestionTokens = [
+            "怎么继续",
+            "如何继续",
+            "继续吗",
+            "能继续吗",
+            "可以继续吗",
+            "你可以继续吗",
+            "你能继续吗",
+            "can you continue",
+            "should we continue",
+            "how do we continue"
+        ]
+        if continuationQuestionTokens.contains(where: { normalized.contains($0) }) {
+            return false
+        }
 
         let intentTokens = [
             "开始编写",
@@ -6192,6 +6674,24 @@ Memory 使用方式：
             "build it",
             "write the code"
         ]
+        let continuationTokens = [
+            "继续",
+            "继续推进",
+            "往下面推进",
+            "往下推进",
+            "接着做",
+            "继续做",
+            "往下做",
+            "继续写",
+            "接着写",
+            "继续实现",
+            "继续开发",
+            "继续下去",
+            "go ahead",
+            "keep going",
+            "continue working",
+            "continue coding"
+        ]
         let workTokens = [
             "代码",
             "功能",
@@ -6203,6 +6703,13 @@ Memory 使用方式：
             "implementation",
             "project"
         ]
+        let hasContinuationIntent = continuationTokens.contains(where: { normalized.contains($0) })
+        if hasContinuationIntent {
+            if normalized.contains("?") || normalized.contains("？") {
+                return false
+            }
+            return true
+        }
         let hasIntent = intentTokens.contains(where: { normalized.contains($0) })
         let hasWorkTarget = workTokens.contains(where: { normalized.contains($0) })
         return hasIntent && hasWorkTarget
@@ -6212,6 +6719,60 @@ Memory 使用方式：
         guard flow.step == 1 else { return false }
         guard flow.toolResults.isEmpty else { return false }
         return isImmediateProjectExecutionIntent(normalizedProjectDirectReplyQuestion(flow.userText))
+    }
+
+    private func shouldBootstrapCurrentAttachmentInspection(flow: ToolFlowState) -> Bool {
+        guard flow.step == 1 else { return false }
+        guard flow.toolResults.isEmpty else { return false }
+        guard !flow.currentTurnAttachments.isEmpty else { return false }
+        let normalized = normalizedProjectDirectReplyQuestion(flow.userText)
+        guard !normalized.isEmpty else { return true }
+        let attachmentReferenceTokens = [
+            "这个文件",
+            "这个文档",
+            "这个附件",
+            "这份文件",
+            "这份文档",
+            "附件",
+            "拖进来",
+            "刚拖",
+            "发给你",
+            "this file",
+            "this attachment",
+            "attached file",
+            "attachment",
+            "what is this",
+            "what does this"
+        ]
+        return attachmentReferenceTokens.contains { normalized.contains($0) }
+    }
+
+    private func currentAttachmentInspectionBootstrapCalls(flow: ToolFlowState) -> [ToolCall] {
+        let allowedTools = effectiveToolPolicy(config: flow.config).allowed
+        var calls: [ToolCall] = []
+        for attachment in flow.currentTurnAttachments.prefix(3) {
+            switch attachment.kind {
+            case .file:
+                guard allowedTools.contains(.read_file) else { continue }
+                calls.append(
+                    ToolCall(
+                        id: "attachment_read_\(calls.count + 1)",
+                        tool: .read_file,
+                        args: ["path": .string(attachment.toolPath)]
+                    )
+                )
+            case .directory:
+                guard allowedTools.contains(.list_dir) else { continue }
+                calls.append(
+                    ToolCall(
+                        id: "attachment_list_\(calls.count + 1)",
+                        tool: .list_dir,
+                        args: ["path": .string(attachment.toolPath)]
+                    )
+                )
+            }
+        }
+        return calls
     }
 
     private func immediateExecutionBootstrapCalls(config: AXProjectConfig?, projectRoot: URL) -> [ToolCall] {
@@ -7282,6 +7843,42 @@ XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端 pa
         planningContractFailureMessage(userText: userText, modelOutput: modelOutput)
     }
 
+    func requestFailureAssistantTextForTesting(_ message: String) -> String {
+        requestFailureAssistantText(message)
+    }
+
+    func finalizeTurnForTesting(
+        ctx: AXProjectContext,
+        userText: String,
+        assistantText: String,
+        assistantIndex: Int,
+        attachments: [AXChatAttachment] = []
+    ) {
+        finalizeTurn(
+            ctx: ctx,
+            userText: userText,
+            assistantText: assistantText,
+            assistantIndex: assistantIndex,
+            attachments: attachments
+        )
+    }
+
+    func materializeRequestFailureAssistantTextForTesting(
+        _ message: String,
+        assistantIndex: Int
+    ) {
+        materializeRequestFailureAssistantText(message, assistantIndex: assistantIndex)
+    }
+
+    func projectCoderVisibleStreamModeForTesting(stage: String) -> String {
+        switch projectCoderVisibleStreamMode(for: stage) {
+        case .none:
+            return "none"
+        case .finalOrPlainText:
+            return "final_or_plain_text"
+        }
+    }
+
     func recentPromptTurnLimitForTesting(
         userText: String,
         expandRecentOnceAfterLoad overrideExpandOnceAfterLoad: Bool = false
@@ -7781,6 +8378,15 @@ XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端 pa
         )
     }
 
+    func clearPendingFlowForTesting(keepPendingToolCalls: Bool = true) {
+        pendingFlow = nil
+        if !keepPendingToolCalls {
+            pendingToolCalls = []
+        }
+        isSending = false
+        currentReqId = nil
+    }
+
     func assistantToolOutcomeLinesForTesting(toolResults: [ToolResult]) -> [String] {
         assistantToolOutcomeLines(toolResults: toolResults)
     }
@@ -7790,6 +8396,9 @@ XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端 pa
         messageID: String,
         visibleStreaming: Bool = false
     ) {
+        cancelPendingAssistantProgressFlush(messageID: messageID)
+        let previousLines = assistantProgressLinesByMessageID[messageID]
+        let wasVisibleStreaming = assistantVisibleStreamingMessageIDs.contains(messageID)
         let normalized = lines
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
@@ -7803,12 +8412,27 @@ XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端 pa
         } else {
             assistantVisibleStreamingMessageIDs.remove(messageID)
         }
+        if previousLines != assistantProgressLinesByMessageID[messageID]
+            || wasVisibleStreaming != assistantVisibleStreamingMessageIDs.contains(messageID) {
+            bumpMessageTimelinePresentationVersion()
+        }
     }
 
     func assistantThinkingPresentationForTesting(
         _ message: AXChatMessage
     ) -> XTStreamingPlaceholderPresentation? {
         assistantThinkingPresentation(for: message)
+    }
+
+    func appendAssistantProgressLineForTesting(
+        messageIndex: Int,
+        line: String
+    ) {
+        appendAssistantProgress(assistantIndex: messageIndex, line: line)
+    }
+
+    func flushAssistantProgressForTesting(messageID: String) {
+        flushPendingAssistantProgress(messageID: messageID)
     }
 
     func toolHistoryForPromptForTesting(toolResults: [ToolResult]) -> String {
@@ -7841,6 +8465,18 @@ XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端 pa
             dispatch: dispatch,
             config: config
         )
+    }
+
+    func trustedAutomationConfigForApprovedDeviceToolsForTesting(
+        calls: [ToolCall],
+        ctx: AXProjectContext,
+        config: AXProjectConfig
+    ) -> AXProjectConfig {
+        trustedAutomationConfigForApprovedDeviceTools(
+            calls: calls,
+            ctx: ctx,
+            config: config
+        ).config
     }
 
     func mappedProjectSkillToolCallsForTesting(
@@ -8091,6 +8727,7 @@ XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端 pa
             topP: 0.95,
             taskType: router.taskType(for: role),
             preferredModelId: routeDecision.preferredModelId,
+            remoteBackupModelId: router.paidBackupModelIdForHub(for: role),
             projectId: projectId,
             sessionId: currentSessionIdForLLM(),
             transportOverride: effectiveTransportOverride,
@@ -8243,10 +8880,10 @@ XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端 pa
 
         var out: [String: ProjectSkillActivityItem] = [:]
         for call in pendingToolCalls {
-            guard let latest = AXProjectSkillActivityStore.loadEvents(
+            guard let latest = AXProjectSkillActivityStore.latestMatchingActivity(
                 ctx: ctx,
-                requestID: call.id
-            ).last?.item else {
+                toolCall: call
+            ) else {
                 continue
             }
             out[call.id] = latest
@@ -8511,11 +9148,13 @@ XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端 pa
             st.display = String(st.display.suffix(toolStreamMaxChars))
             st.truncated = true
         }
-        updateMessage(id: id, content: streamContent(for: st))
         toolStreamStates[id] = st
+        pendingToolStreamContentByMessageID[id] = streamContent(for: st)
+        scheduleToolStreamFlush(messageID: id)
     }
 
     private func finishToolStream(id: String, result: ToolResult) {
+        cancelPendingToolStreamFlush(messageID: id)
         let header = "[tool:\(result.tool.rawValue)] ok=\(result.ok)"
         let body = truncateOutput(result.output)
         updateMessage(id: id, content: header + "\n" + body)
@@ -8523,6 +9162,7 @@ XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端 pa
     }
 
     private func finishToolStreamWithError(id: String, error: String) {
+        cancelPendingToolStreamFlush(messageID: id)
         let header = "[tool:run_command] ok=false"
         updateMessage(id: id, content: header + "\n" + error)
         toolStreamStates[id] = nil
@@ -8530,6 +9170,7 @@ XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端 pa
 
     private func updateMessage(id: String, content: String) {
         guard let idx = messages.firstIndex(where: { $0.id == id }) else { return }
+        guard messages[idx].content != content else { return }
         messages[idx].content = content
     }
 
@@ -8540,19 +9181,27 @@ XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端 pa
 
         let messageID = messages[assistantIndex].id
         guard !assistantVisibleStreamingMessageIDs.contains(messageID) else { return }
-        var lines = assistantProgressLinesByMessageID[messageID] ?? []
+        var lines = pendingAssistantProgressLinesByMessageID[messageID]
+            ?? assistantProgressLinesByMessageID[messageID]
+            ?? []
         if lines.last != trimmed {
             lines.append(trimmed)
         }
         if lines.count > assistantProgressMaxLines {
             lines = Array(lines.suffix(assistantProgressMaxLines))
         }
-        assistantProgressLinesByMessageID[messageID] = lines
+        if assistantProgressLinesByMessageID[messageID] == nil,
+           pendingAssistantProgressLinesByMessageID[messageID] == nil {
+            applyAssistantProgressLines(lines, messageID: messageID)
+            return
+        }
+        pendingAssistantProgressLinesByMessageID[messageID] = lines
+        scheduleAssistantProgressFlush(messageID: messageID)
     }
 
     private func clearAssistantProgress(assistantIndex: Int) {
         guard assistantIndex < messages.count else { return }
-        assistantProgressLinesByMessageID[messages[assistantIndex].id] = nil
+        clearAssistantProgress(messageID: messages[assistantIndex].id)
     }
 
     private func streamVisibleAssistantText(assistantIndex: Int, content: String) {
@@ -8561,10 +9210,165 @@ XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端 pa
         let normalized = content.replacingOccurrences(of: "\r\n", with: "\n")
         guard !normalized.isEmpty else { return }
 
+        let hadProgressLines = assistantProgressLinesByMessageID[messageID] != nil
+        let wasVisibleStreaming = assistantVisibleStreamingMessageIDs.contains(messageID)
         assistantProgressLinesByMessageID[messageID] = nil
+        cancelPendingAssistantProgressFlush(messageID: messageID)
         assistantVisibleStreamingMessageIDs.insert(messageID)
-        if messages[assistantIndex].content != normalized {
-            messages[assistantIndex].content = normalized
+        if hadProgressLines || !wasVisibleStreaming {
+            bumpMessageTimelinePresentationVersion()
+        }
+        pendingAssistantStreamTextByMessageID[messageID] = normalized
+        scheduleAssistantStreamFlush(messageID: messageID)
+    }
+
+    private func scheduleAssistantProgressFlush(messageID: String) {
+        guard assistantProgressFlushTasksByMessageID[messageID] == nil else { return }
+        let delay = assistantProgressFlushIntervalNanos
+        assistantProgressFlushTasksByMessageID[messageID] = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: delay)
+            } catch {
+                return
+            }
+            self?.flushPendingAssistantProgress(messageID: messageID)
+        }
+    }
+
+    private func flushPendingAssistantProgress(messageID: String) {
+        assistantProgressFlushTasksByMessageID[messageID] = nil
+        guard let lines = pendingAssistantProgressLinesByMessageID.removeValue(forKey: messageID) else {
+            return
+        }
+        XTPerformanceTrace.event(
+            "chat_progress_flush",
+            "lines=\(lines.count)"
+        )
+        applyAssistantProgressLines(lines, messageID: messageID)
+    }
+
+    private func applyAssistantProgressLines(
+        _ lines: [String],
+        messageID: String
+    ) {
+        let normalized = lines
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        if normalized.isEmpty {
+            if assistantProgressLinesByMessageID.removeValue(forKey: messageID) != nil {
+                bumpMessageTimelinePresentationVersion()
+            }
+            return
+        }
+        guard assistantProgressLinesByMessageID[messageID] != normalized else { return }
+        assistantProgressLinesByMessageID[messageID] = normalized
+        bumpMessageTimelinePresentationVersion()
+    }
+
+    private func clearAssistantProgress(messageID: String) {
+        cancelPendingAssistantProgressFlush(messageID: messageID)
+        if assistantProgressLinesByMessageID.removeValue(forKey: messageID) != nil {
+            bumpMessageTimelinePresentationVersion()
+        }
+    }
+
+    private func cancelPendingAssistantProgressFlush(messageID: String) {
+        assistantProgressFlushTasksByMessageID[messageID]?.cancel()
+        assistantProgressFlushTasksByMessageID[messageID] = nil
+        pendingAssistantProgressLinesByMessageID[messageID] = nil
+    }
+
+    private func scheduleAssistantStreamFlush(messageID: String) {
+        guard assistantStreamFlushTasksByMessageID[messageID] == nil else { return }
+        let byteCount = pendingAssistantStreamTextByMessageID[messageID]?.utf8.count ?? 0
+        let delay = ChatStreamingUIFlushCadence.delayNanoseconds(
+            forContentByteCount: byteCount
+        )
+        assistantStreamFlushTasksByMessageID[messageID] = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: delay)
+            } catch {
+                return
+            }
+            self?.flushPendingAssistantStreamText(messageID: messageID)
+        }
+    }
+
+    private func flushPendingAssistantStreamText(messageID: String) {
+        assistantStreamFlushTasksByMessageID[messageID] = nil
+        guard let normalized = pendingAssistantStreamTextByMessageID.removeValue(forKey: messageID) else {
+            return
+        }
+        XTPerformanceTrace.event(
+            "chat_stream_flush",
+            "kind=assistant bytes=\(normalized.utf8.count)"
+        )
+        updateMessage(id: messageID, content: normalized)
+    }
+
+    private func cancelPendingAssistantStreamFlush(messageID: String) {
+        assistantStreamFlushTasksByMessageID[messageID]?.cancel()
+        assistantStreamFlushTasksByMessageID[messageID] = nil
+        pendingAssistantStreamTextByMessageID[messageID] = nil
+    }
+
+    private func scheduleToolStreamFlush(messageID: String) {
+        guard toolStreamFlushTasksByMessageID[messageID] == nil else { return }
+        let byteCount = pendingToolStreamContentByMessageID[messageID]?.utf8.count ?? 0
+        let delay = ChatStreamingUIFlushCadence.delayNanoseconds(
+            forContentByteCount: byteCount
+        )
+        toolStreamFlushTasksByMessageID[messageID] = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: delay)
+            } catch {
+                return
+            }
+            self?.flushPendingToolStreamContent(messageID: messageID)
+        }
+    }
+
+    private func flushPendingToolStreamContent(messageID: String) {
+        toolStreamFlushTasksByMessageID[messageID] = nil
+        guard let content = pendingToolStreamContentByMessageID.removeValue(forKey: messageID) else {
+            return
+        }
+        XTPerformanceTrace.event(
+            "chat_stream_flush",
+            "kind=tool bytes=\(content.utf8.count)"
+        )
+        updateMessage(id: messageID, content: content)
+    }
+
+    private func cancelPendingToolStreamFlush(messageID: String) {
+        toolStreamFlushTasksByMessageID[messageID]?.cancel()
+        toolStreamFlushTasksByMessageID[messageID] = nil
+        pendingToolStreamContentByMessageID[messageID] = nil
+    }
+
+    private func clearStreamingPresentationState() {
+        for task in assistantStreamFlushTasksByMessageID.values {
+            task.cancel()
+        }
+        for task in toolStreamFlushTasksByMessageID.values {
+            task.cancel()
+        }
+        for task in assistantProgressFlushTasksByMessageID.values {
+            task.cancel()
+        }
+        assistantStreamFlushTasksByMessageID = [:]
+        toolStreamFlushTasksByMessageID = [:]
+        assistantProgressFlushTasksByMessageID = [:]
+        pendingAssistantStreamTextByMessageID = [:]
+        pendingToolStreamContentByMessageID = [:]
+        pendingAssistantProgressLinesByMessageID = [:]
+        toolStreamStates = [:]
+        let shouldBumpPresentationVersion = !assistantProgressLinesByMessageID.isEmpty
+            || !assistantVisibleStreamingMessageIDs.isEmpty
+        assistantProgressLinesByMessageID = [:]
+        assistantVisibleStreamingMessageIDs = []
+        if shouldBumpPresentationVersion {
+            bumpMessageTimelinePresentationVersion()
         }
     }
 
@@ -8676,6 +9480,8 @@ XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端 pa
             return "我在查询技能目录。"
         case .skills_pin:
             return "我在固定技能依赖。"
+        case .skillsExecuteRunner:
+            return "我在通过 Hub 审批链执行技能 Runner。"
         case .summarize:
             return "我在整理内容摘要。"
         case .supervisorVoicePlayback:
@@ -8876,9 +9682,14 @@ XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端 pa
         )
         for call in toolCalls {
             guard let dispatch = dispatchesByCallID[call.id] else { continue }
-            let readiness = projectSkillExecutionReadiness(
+            let readiness = trustedAutomationLocalApprovalReadinessIfNeeded(
+                projectSkillExecutionReadiness(
+                    ctx: ctx,
+                    dispatch: dispatch,
+                    config: config
+                ),
+                call: call,
                 ctx: ctx,
-                dispatch: dispatch,
                 config: config
             )
             let deltaApproval = XTSkillCapabilityProfileSupport.deltaApproval(
@@ -8918,6 +9729,46 @@ XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端 pa
                 for: ctx
             )
         }
+    }
+
+    private func trustedAutomationLocalApprovalReadinessIfNeeded(
+        _ readiness: XTSkillExecutionReadiness?,
+        call: ToolCall,
+        ctx: AXProjectContext,
+        config: AXProjectConfig
+    ) -> XTSkillExecutionReadiness? {
+        guard var updated = readiness else { return nil }
+        let requiredGroups = xtTrustedAutomationRequiredDeviceToolGroups(for: [call])
+        guard !requiredGroups.isEmpty else { return readiness }
+
+        let permissionReadiness = AXTrustedAutomationPermissionOwnerReadiness.current()
+        let status = config.trustedAutomationStatus(
+            forProjectRoot: ctx.root,
+            permissionReadiness: permissionReadiness,
+            requiredDeviceToolGroups: requiredGroups
+        )
+        guard trustedAutomationProjectApprovalShouldUpdate(status: status) else {
+            return readiness
+        }
+
+        updated.executionReadiness = XTSkillExecutionReadinessState.localApprovalRequired.rawValue
+        updated.runnableNow = false
+        updated.denyCode = xtTrustedAutomationLocalApprovalRequiredDenyCode
+        updated.reasonCode = "local approval will bind the current trusted automation device and enable requested device tool groups"
+        updated.stateLabel = XTSkillCapabilityProfileSupport.readinessLabel(
+            XTSkillExecutionReadinessState.localApprovalRequired.rawValue
+        )
+        if updated.approvalFloor.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || updated.approvalFloor == XTSkillApprovalFloor.none.rawValue {
+            updated.approvalFloor = XTSkillApprovalFloor.localApproval.rawValue
+        }
+        updated.requiredRuntimeSurfaces = XTSkillCapabilityProfileSupport.normalizedStrings(
+            updated.requiredRuntimeSurfaces + ["trusted_device_runtime"]
+        )
+        updated.unblockActions = XTSkillCapabilityProfileSupport.normalizedUnblockActions(
+            updated.unblockActions + ["request_local_approval", "open_trusted_automation_doctor"]
+        )
+        return updated
     }
 
     private func recordProjectSkillExecutionResult(
@@ -9329,15 +10180,111 @@ Original output:
 """
     }
 
+    // Governed project turns can repair or fail-close a draft tool-contract response.
+    // Keep the progress rail visible, but avoid streaming unstable assistant text that
+    // would immediately be replaced by the canonical runtime outcome.
+    private func projectCoderVisibleStreamMode(for stage: String) -> VisibleLLMStreamMode {
+        switch stage {
+        case "chat_plan", "chat_finalize_only":
+            return .none
+        default:
+            return .none
+        }
+    }
+
+    private func shouldPreserveAssistantDraftMessage(
+        at assistantIndex: Int,
+        replacingWith assistantText: String
+    ) -> Bool {
+        guard messages.indices.contains(assistantIndex),
+              messages[assistantIndex].role == .assistant else {
+            return false
+        }
+
+        let existing = messages[assistantIndex].content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let replacement = assistantText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !existing.isEmpty,
+              !replacement.isEmpty,
+              existing != replacement else {
+            return false
+        }
+
+        if existing == pendingToolApprovalStub {
+            return false
+        }
+        if existing == "请求失败。" || existing.hasPrefix("请求失败：") {
+            return false
+        }
+        return true
+    }
+
+    private func preparedAssistantIndexForFinalization(
+        assistantIndex: Int,
+        assistantText: String
+    ) -> Int {
+        guard messages.indices.contains(assistantIndex),
+              messages[assistantIndex].role == .assistant else {
+            messages.append(
+                AXChatMessage(
+                    role: .assistant,
+                    tag: lastCoderProviderTag,
+                    content: ""
+                )
+            )
+            return messages.count - 1
+        }
+
+        let messageID = messages[assistantIndex].id
+        let shouldPreserve = shouldPreserveAssistantDraftMessage(
+            at: assistantIndex,
+            replacingWith: assistantText
+        )
+        cancelPendingAssistantStreamFlush(messageID: messageID)
+        clearAssistantProgress(assistantIndex: assistantIndex)
+        if assistantVisibleStreamingMessageIDs.remove(messageID) != nil {
+            bumpMessageTimelinePresentationVersion()
+        }
+
+        guard shouldPreserve else { return assistantIndex }
+
+        messages.append(
+            AXChatMessage(
+                role: .assistant,
+                tag: messages[assistantIndex].tag,
+                content: ""
+            )
+        )
+        return messages.count - 1
+    }
+
+    private func materializeRequestFailureAssistantText(
+        _ message: String,
+        assistantIndex: Int
+    ) {
+        let failureText = requestFailureAssistantText(message)
+        let finalAssistantIndex = preparedAssistantIndexForFinalization(
+            assistantIndex: assistantIndex,
+            assistantText: failureText
+        )
+        if messages.indices.contains(finalAssistantIndex) {
+            messages[finalAssistantIndex].content = failureText
+        }
+    }
+
     private func finalizeTurn(
         ctx: AXProjectContext,
         userText: String,
         assistantText: String,
         assistantIndex: Int,
         attachments: [AXChatAttachment] = [],
-        userTextForMirror: String? = nil
+        userTextForMirror: String? = nil,
+        userSender: AXChatMessageSender? = nil
     ) {
-        let messageID = assistantIndex < messages.count ? messages[assistantIndex].id : nil
+        let resolvedUserSender = userSender
+            ?? (assistantIndex > 0 && messages.indices.contains(assistantIndex - 1)
+                ? messages[assistantIndex - 1].sender
+                : nil)
+            ?? Self.inferredUserSender(for: userText)
         let inferredAttachments: [AXChatAttachment] = {
             guard attachments.isEmpty,
                   assistantIndex > 0,
@@ -9347,12 +10294,12 @@ Original output:
             }
             return messages[assistantIndex - 1].attachments
         }()
-        clearAssistantProgress(assistantIndex: assistantIndex)
-        if let messageID {
-            assistantVisibleStreamingMessageIDs.remove(messageID)
-        }
-        if assistantIndex < messages.count {
-            messages[assistantIndex].content = assistantText
+        let finalAssistantIndex = preparedAssistantIndexForFinalization(
+            assistantIndex: assistantIndex,
+            assistantText: assistantText
+        )
+        if finalAssistantIndex < messages.count {
+            messages[finalAssistantIndex].content = assistantText
         }
 
         let createdAt = Date().timeIntervalSince1970
@@ -9375,6 +10322,9 @@ Original output:
             if let encodedAttachments = xtCompactJSONObject(inferredAttachments),
                inferredAttachments.isEmpty == false {
                 row["attachments"] = encodedAttachments
+            }
+            if let resolvedUserSender {
+                row["user_sender"] = resolvedUserSender.rawValue
             }
             return row
         }()
@@ -9416,13 +10366,12 @@ Original output:
         assistantIndex: Int,
         runSummary: String
     ) {
-        let messageID = assistantIndex < messages.count ? messages[assistantIndex].id : nil
-        clearAssistantProgress(assistantIndex: assistantIndex)
-        if let messageID {
-            assistantVisibleStreamingMessageIDs.remove(messageID)
-        }
-        if assistantIndex < messages.count {
-            messages[assistantIndex].content = assistantText
+        let finalAssistantIndex = preparedAssistantIndexForFinalization(
+            assistantIndex: assistantIndex,
+            assistantText: assistantText
+        )
+        if finalAssistantIndex < messages.count {
+            messages[finalAssistantIndex].content = assistantText
         }
 
         AXRecentContextStore.removeTrailingMessage(ctx: ctx, role: "user", text: userText)
@@ -9443,7 +10392,8 @@ Original output:
             userText: flow.userText,
             assistantText: merged,
             assistantIndex: flow.assistantIndex,
-            attachments: flow.currentTurnAttachments
+            attachments: flow.currentTurnAttachments,
+            userSender: flow.userSender
         )
     }
 
@@ -9565,6 +10515,7 @@ Original output:
              .search,
              .skills_search,
              .skills_pin,
+             .skillsExecuteRunner,
              .summarize,
              .run_command,
              .process_start,
@@ -9611,10 +10562,25 @@ Original output:
         case .run_command:
             return detail.isEmpty ? "命令执行失败。" : "命令执行失败：\(detail)"
         case .read_file:
+            if lower.contains("governed readable roots")
+                || lower.contains("path_outside_governed_read_roots")
+                || lower.contains("project root") {
+                return "目标文件超出当前项目允许范围，无法读取。"
+            }
             if lower.contains("no such file") {
                 return "目标文件不存在，读取失败。"
             }
             return detail.isEmpty ? "文件读取失败。" : "文件读取失败：\(detail)"
+        case .list_dir:
+            if lower.contains("governed readable roots")
+                || lower.contains("path_outside_governed_read_roots")
+                || lower.contains("project root") {
+                return "目标目录超出当前项目允许范围，无法读取。"
+            }
+            if lower.contains("permission denied") {
+                return "目录读取被拒绝，当前路径不可读。"
+            }
+            return detail.isEmpty ? "目录读取失败。" : "目录读取失败：\(detail)"
         case .write_file:
             if lower.contains("permission denied") {
                 return "文件写入被拒绝，当前路径不可写。"
@@ -9670,12 +10636,63 @@ Original output:
     }
 
     private func normalizedAssistantToolDiagnostic(_ raw: String) -> String {
+        let parsed = ToolExecutor.parseStructuredToolOutput(raw)
+        let body = parsed.summary == nil ? raw : parsed.body
+        return normalizedAssistantToolDiagnosticText(
+            summary: parsed.summary,
+            body: body
+        )
+    }
+
+    private func normalizedAssistantToolDiagnosticText(
+        summary: JSONValue?,
+        body: String
+    ) -> String {
+        let trimmedBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedBody.isEmpty {
+            let normalized = normalizedAssistantToolDiagnosticLine(trimmedBody)
+            if !normalized.isEmpty {
+                return normalized
+            }
+        }
+
+        guard case .object(let object)? = summary else { return "" }
+        let candidates = [
+            jsonStringValue(object["detail"]),
+            jsonStringValue(object["message"]),
+            jsonStringValue(object["error"]),
+            jsonStringValue(object["reason"]),
+            jsonStringValue(object["policy_reason"]),
+            jsonStringValue(object["deny_code"]),
+            jsonStringValue(object["target_path"]).map { "path=\($0)" }
+        ]
+        for candidate in candidates {
+            let normalized = normalizedAssistantToolDiagnosticLine(candidate ?? "")
+            if !normalized.isEmpty {
+                return normalized
+            }
+        }
+        return ""
+    }
+
+    private func normalizedAssistantToolDiagnosticLine(_ raw: String) -> String {
         let lines = raw
             .split(separator: "\n", omittingEmptySubsequences: true)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
 
-        guard let firstLine = lines.first else { return "" }
+        let preferredLine = lines.first(where: { line in
+            let lower = line.lowercased()
+            if line == "{" || line == "[" || line == "}" || line == "]" {
+                return false
+            }
+            if lower.hasPrefix("sandbox:") || lower.hasPrefix("exit: ") {
+                return false
+            }
+            return true
+        }) ?? lines.first
+
+        guard let firstLine = preferredLine else { return "" }
 
         var cleaned = firstLine
         if cleaned.lowercased().hasPrefix("fatal:") {
@@ -9853,6 +10870,8 @@ Instructions:
             safePointState: safePointState
         )
         let memoryV1 = memoryInfo.text
+        let promptConfig = config ?? activeConfig ?? AXProjectConfig.default(forProjectRoot: ctx.root)
+        let promptGovernance = resolvedProjectPromptGovernance(ctx: ctx, config: promptConfig)
         let toolPolicy = effectiveToolPolicy(config: config)
         let allowedTools = toolPolicy.allowed
         let toolList: String = {
@@ -9860,6 +10879,10 @@ Instructions:
             if items.isEmpty { return "(none)" }
             return items.joined(separator: "\n")
         }()
+        let aTierToolRoutingGuidance = projectATierToolRoutingGuidance(
+            config: promptConfig,
+            governance: promptGovernance
+        )
         let networkAllowed = allowedTools.contains(.need_network) && (allowedTools.contains(.web_fetch) || allowedTools.contains(.web_search) || allowedTools.contains(.browser_read))
         let networkingGuidance: String = {
             if networkAllowed {
@@ -9925,6 +10948,13 @@ You are X-Terminal.
 Context:
 - Project root: \(ctx.root.path)
 
+Role boundary:
+- This is the Workbench / Coder chat for the current project, not the Supervisor chat.
+- Your execution authority comes from the current A-Tier, tool policy, available tools, grants, and runtime readiness shown in this prompt.
+- Use available tools when they are allowed; do not repeat stale memory that says a tool is blocked if the current Tool policy says it is available.
+- If the user asks for portfolio supervision, S-Tier policy, project governance tuning, cross-project scheduling, or strategic review, explain that it belongs in the left sidebar Supervisor surface or Project Settings. Do not pretend to be Supervisor.
+- If Supervisor guidance is injected below, follow it as the governing contract for this project turn.
+
 Memory v1 (5-layer, compact):
 \(memoryV1)
 
@@ -9942,6 +10972,8 @@ Tool policy:
 - allow=\(toolPolicy.allowTokens.isEmpty ? "(none)" : toolPolicy.allowTokens.joined(separator: ","))
 - deny=\(toolPolicy.denyTokens.isEmpty ? "(none)" : toolPolicy.denyTokens.joined(separator: ","))
 - Tools outside this allowlist will be rejected by runtime.
+
+\(aTierToolRoutingGuidance)
 
 Supervisor guidance (IMPORTANT):
 - If Memory v1 contains [pending_supervisor_guidance], treat it as active governed guidance for this project.
@@ -9961,6 +10993,7 @@ Supervisor guidance (IMPORTANT):
 - Use `rejected` only with a concrete reason tied to goal, constraints, or evidence.
 
 Patch-first workflow (IMPORTANT):
+- Treat "Available tools" and "Tool policy" above as current runtime truth. If older project memory says `write_file` is blocked but `write_file` is currently available, that memory is stale; use `write_file` for new project files instead of asking the user to create files manually.
 - Prefer producing a unified diff and using git_apply_check + git_apply for edits.
 - Avoid write_file for modifying existing files when the project is a git repo.
 - For new files, you may use write_file (still requires confirmation).
@@ -10699,6 +11732,7 @@ User request:
             "a_tier_memory_ceiling: \(memoryPolicy.aTierMemoryCeiling.rawValue)",
             "project_memory_ceiling_hit: \(memoryPolicy.ceilingHit)",
             "project_memory_resolution_trigger: \(memoryPolicy.trigger)",
+            "project_memory_resolution_trigger_label: \(XTProjectMemoryTriggerPresentation.annotated(memoryPolicy.trigger))",
             "workflow_present: \(workflowSnapshot != nil)",
             "execution_evidence_present: \(executionEvidencePresent)",
             "review_guidance_present: \(reviewGuidancePresent)",
@@ -10963,6 +11997,40 @@ evidence_goal: recent_project_truth
         )
     }
 
+    private func projectATierToolRoutingGuidance(
+        config: AXProjectConfig,
+        governance: AXProjectResolvedGovernanceState
+    ) -> String {
+        let configuredTier = governance.configuredBundle.executionTier
+        let effectiveTier = governance.effectiveBundle.executionTier
+        let trustedStatus = governance.trustedAutomationStatus
+        let trustedBindingReady = trustedStatus.trustedAutomationReady
+        let permissionOwnerReady = trustedStatus.permissionOwnerReady
+        let configuredText = configuredTier.localizedDisplayLabel
+        let effectiveText = effectiveTier.localizedDisplayLabel
+        let runtimeMode = governance.effectiveRuntimeSurface.effectiveMode.displayName
+        let surfaces = governance.effectiveRuntimeSurface.allowedSurfaceLabels.isEmpty
+            ? "(none)"
+            : governance.effectiveRuntimeSurface.allowedSurfaceLabels.joined(separator: ", ")
+        let missing = trustedStatus.missingPrerequisites.isEmpty
+            ? "(none)"
+            : trustedStatus.missingPrerequisites.joined(separator: ",")
+        let configuredRawTier = config.executionTier.rawValue
+
+        return """
+A-Tier routing guard (IMPORTANT):
+- configured=\(configuredText) effective=\(effectiveText) config_raw=\(configuredRawTier) runtime_surface=\(runtimeMode) surfaces=\(surfaces)
+- A2 Repo Auto means repo/file/build/test work only. It may create or edit project files and run verification, but must not use browser/device/connector/extension tools.
+- A3 Deliver Auto adds continuous delivery and closeout, but still must not use browser/device/connector/extension tools.
+- A4 Agent is the only Coder tier that may use governed browser/device/connector surfaces, and only when runtime readiness, grants, TTL, allowlist, and audit gates pass.
+- trusted_binding_ready=\(trustedBindingReady) permission_owner_ready=\(permissionOwnerReady) state=\(trustedStatus.state.rawValue) missing=\(missing)
+- For pure file/repo requests such as creating files, editing code, scaffolding an app, running build/test, or updating local project material, use repo/file tools. Do NOT call `guarded-automation`, `agent-browser`, or `device.browser.control`.
+- Do not open a browser or navigate to a search site as a prerequisite for file creation or local coding work. Browser/device tools are only appropriate when the user explicitly asks for browser/device/UI/web interaction or the current plan has a concrete browser verification step.
+- If the user asks to open or preview a local app URL, A4 should try `device.browser.control` with `action=open_url` instead of refusing in prose. Opening/navigating a URL and read-only `snapshot`/`extract` are low-risk browser runtime actions once the A4 trusted binding is armed; they may still return a precise tool error, but do not self-declare them impossible before attempting.
+- Click/type/upload/OS UI actions are interactive device actions. Under A4 they require full permission-owner readiness and may still require approval.
+"""
+    }
+
     private func projectSkillRoutingPromptGuidance(
         snapshot: SupervisorSkillRegistrySnapshot?
     ) -> String {
@@ -10992,6 +12060,7 @@ Skills registry:
 Skills registry (IMPORTANT):
 - This project currently has \(snapshot.items.count) governed skill(s) available.
 - When a matching installed skill exists, prefer `skill_calls` over raw `tool_calls`.
+- Do not choose browser/device governed skills for repo-only or file-only work; local repo/file tools are the correct route for creating, editing, building, and testing project files.
 - If `skills_registry` source is `xt_builtin_skill_registry` or an item says `scope=xt_builtin`, that still counts as a valid governed registry. Do not fall back to plain chat just because Hub package index is degraded.
 \(sourceGuidance.isEmpty ? "" : "\(sourceGuidance)\n")- Use each skills_registry item's risk, grant, caps, dispatch, variant, routing, and payload hints to shape `payload` and choose a stable `skill_id`.
 - Treat `routing: prefers_builtin=...` and `routing: entrypoints=...` as skill-family metadata. Wrapper ids, entrypoint ids, and builtin ids may describe one governed execution family.
@@ -11023,6 +12092,7 @@ Response rules (STRICT):
 - `skill_calls` and `tool_calls` are both allowed. Prefer `skill_calls` when the work matches an installed governed skill in `skills_registry`.
 - Only use `skill_id` values that appear in the current project's `skills_registry` snapshot.
 - If `skills_registry` shows `source=xt_builtin_skill_registry` or a listed item with `scope=xt_builtin`, those builtin `skill_id`s are still valid for `skill_calls`.
+- Do not route repo-only or file-only work through browser/device skills. Use file/repo tools for create/edit/build/test tasks.
 - Treat `routing: prefers_builtin=...` and `routing: entrypoints=...` as skill-family metadata when choosing `skill_id`.
 - If the user explicitly names a registered wrapper or entrypoint skill, keep that exact registered `skill_id` when it matches the request.
 - If the user asks only for a capability and the family marks a preferred builtin, choose the preferred builtin instead of an arbitrary sibling wrapper.

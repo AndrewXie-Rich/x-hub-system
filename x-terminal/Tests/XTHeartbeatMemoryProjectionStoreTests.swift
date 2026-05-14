@@ -459,6 +459,11 @@ struct XTHeartbeatMemoryProjectionStoreTests {
         #expect(artifact.observationFacts.contains("heartbeat_project_memory_source=latest_coder_usage"))
         #expect(artifact.observationFacts.contains(where: { $0.contains("heartbeat_project_memory_policy_context_depth=") && $0.contains("effective:deep") }))
         #expect(artifact.observationFacts.contains("heartbeat_project_memory_actual_resolution trigger=review_guidance_follow_up effective_depth=deep ceiling=m3_deep_dive ceiling_hit=false"))
+        #expect(
+            artifact.observationFacts.contains(
+                "heartbeat_project_memory_actual_trigger_label=带着 review guidance 跟进执行（review_guidance_follow_up）"
+            )
+        )
         #expect(artifact.observationFacts.contains(where: { $0.contains("heartbeat_project_memory_actual_selection") && $0.contains("workflow_summary") }))
         #expect(artifact.observationFacts.contains("heartbeat_project_memory_heartbeat_digest_present=true"))
         #expect(artifact.observationFacts.contains("heartbeat_project_memory_heartbeat_digest_visibility=shown"))
@@ -480,6 +485,11 @@ struct XTHeartbeatMemoryProjectionStoreTests {
         #expect(rawLog.contains("\"project_memory_diagnostics_source\":\"latest_coder_usage\""))
         #expect(rawLog.contains("\"project_memory_effective_depth\":\"deep\""))
         #expect(rawLog.contains("\"project_memory_resolution_trigger\":\"review_guidance_follow_up\""))
+        #expect(
+            rawLog.contains(
+                "\"project_memory_resolution_trigger_label\":\"带着 review guidance 跟进执行（review_guidance_follow_up）\""
+            )
+        )
         #expect(rawLog.contains("\"project_memory_selected_serving_objects\":[\"recent_project_dialogue\",\"project_anchor_pack\",\"workflow_summary\"]"))
         #expect(rawLog.contains("\"project_memory_heartbeat_digest_present\":true"))
     }

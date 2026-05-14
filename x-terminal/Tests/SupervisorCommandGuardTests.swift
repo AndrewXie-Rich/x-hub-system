@@ -547,6 +547,9 @@ struct SupervisorCommandGuardTests {
         #expect(plan.steps[1].title.contains("游戏骨架"))
         #expect(plan.steps[2].title.contains("核心玩法"))
 
+        let config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        #expect(config.toolProfile == ToolProfile.coding.rawValue)
+
         #expect(manager.messages.contains(where: { $0.content.contains("第一版工单挂给 Project AI") }))
     }
 
@@ -2428,8 +2431,10 @@ struct SupervisorCommandGuardTests {
         let ctx = AXProjectContext(root: root)
         let snapshot = SupervisorReviewNoteStore.load(for: ctx)
         let note = try #require(snapshot.notes.first)
-        #expect(note.summary.contains("当前 strategic memory 供给不足"))
-        #expect(note.summary.contains("不适合直接做战略纠偏"))
+        #expect(note.summary.contains("战略判断所需背景还不完整"))
+        #expect(note.summary.contains("先补齐关键背景再纠偏"))
+        #expect(!note.summary.contains("Supervisor 实际注入"))
+        #expect(!note.summary.contains("serving contract"))
         #expect(note.recommendedActions.contains(where: { $0.contains("先补齐长期目标和完成标准、关键决策原因、当前卡点与已试动作、以及可作为依据的日志或结果") }))
         #expect(note.recommendedActions.contains(where: { $0.contains("先把当前项目的深度记忆拉到至少 m3") }))
         #expect(note.recommendedActions.contains(where: { $0.contains("先补你认可的日志、回执、实验结果这些依据") }))
@@ -11082,11 +11087,46 @@ struct SupervisorCommandGuardTests {
             )
         )
 
-        #expect(rendered.contains("《亮亮》当前项目背景还不够完整"))
-        #expect(rendered.contains("我们一项一项补"))
+        #expect(rendered.contains("《亮亮》要做战略纠偏前，还要先补一条项目背景"))
+        #expect(rendered.contains("先补：长期目标和完成标准"))
         #expect(rendered.contains("长期目标和完成标准分别是什么"))
-        #expect(rendered.contains("你可以直接说：目标是……，完成标准是……"))
-        #expect(rendered.contains("后面我还会继续补：关键决策和原因"))
+        #expect(rendered.contains("直接说：目标是……，完成标准是……"))
+        #expect(!rendered.contains("当前缺口"))
+        #expect(!rendered.contains("serving contract"))
+    }
+
+    @Test
+    func diagnosticOnlyStrategicReviewBlockDoesNotAskForProjectFacts() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-underfed-runtime-diagnostic")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "坦克大战")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+        manager.setSupervisorMemoryAssemblySnapshotForTesting(
+            makeSupervisorMemoryAssemblySnapshot(
+                projectID: project.projectId,
+                omittedSections: [],
+                servingObjectContract: ["focused_project_anchor_pack"]
+            )
+        )
+
+        let rendered = try #require(
+            manager.directSupervisorActionIfApplicableForTesting(
+                "审查坦克大战项目的上下文记忆，直接做战略纠偏"
+            )
+        )
+
+        #expect(rendered.contains("《坦克大战》的战略纠偏先暂停"))
+        #expect(rendered.contains("记忆装配还没通过运行时校验"))
+        #expect(rendered.contains("不是让你补项目背景"))
+        #expect(rendered.contains("Doctor"))
+        #expect(!rendered.contains("长期目标和完成标准"))
+        #expect(!rendered.contains("Supervisor 实际注入"))
+        #expect(!rendered.contains("serving contract"))
     }
 
     @Test
@@ -11124,8 +11164,9 @@ struct SupervisorCommandGuardTests {
             )
         )
 
-        #expect(rendered.contains("先告诉我你要纠偏哪个项目"))
-        #expect(rendered.contains("长期目标和完成标准分别是什么"))
+        #expect(rendered.contains("要做战略纠偏前，先锁定项目并补一条项目背景"))
+        #expect(rendered.contains("先告诉我项目名"))
+        #expect(rendered.contains("长期目标和完成标准"))
         #expect(rendered.contains("某某项目，目标是……，完成标准是……"))
     }
 
@@ -11161,7 +11202,7 @@ struct SupervisorCommandGuardTests {
                 "先审查亮亮项目的上下文记忆，再决定要不要纠偏"
             )
         )
-        #expect(followUp.contains("我先不直接做战略纠偏"))
+        #expect(followUp.contains("要做战略纠偏前，还要先补一条项目背景"))
 
         let patchReply = try #require(
             manager.directSupervisorActionIfApplicableForTesting(
@@ -11210,7 +11251,7 @@ struct SupervisorCommandGuardTests {
                 "审查亮亮项目的上下文记忆，直接做战略纠偏"
             )
         )
-        #expect(followUp.contains("我们一项一项补"))
+        #expect(followUp.contains("先补：长期目标和完成标准"))
 
         let casual = manager.directSupervisorActionIfApplicableForTesting(
             "不用当成项目回答，你对这套系统有什么建议，详细说说"
@@ -11257,8 +11298,8 @@ struct SupervisorCommandGuardTests {
             manager.directSupervisorActionIfApplicableForTesting("继续")
         )
 
-        #expect(reprompt.contains("我们一项一项补"))
-        #expect(reprompt.contains("长期目标和完成标准分别是什么"))
+        #expect(reprompt.contains("还在等这项背景：长期目标和完成标准"))
+        #expect(reprompt.contains("直接说：目标是……，完成标准是……"))
     }
 
     @Test
@@ -11295,7 +11336,7 @@ struct SupervisorCommandGuardTests {
                 "审查亮亮项目的上下文记忆，再决定要不要纠偏"
             )
         )
-        #expect(followUp.contains("《亮亮》当前项目背景还不够完整"))
+        #expect(followUp.contains("《亮亮》要做战略纠偏前，还要先补一条项目背景"))
 
         let goalReply = try #require(
             manager.directSupervisorActionIfApplicableForTesting(
@@ -11370,7 +11411,7 @@ struct SupervisorCommandGuardTests {
                 "审查亮亮项目的上下文记忆，直接做战略纠偏"
             )
         )
-        #expect(prompt.contains("我们一项一项补"))
+        #expect(prompt.contains("先补：长期目标和完成标准"))
 
         let mixedFacts = "目标是让 supervisor 用耳机持续汇报项目，完成标准是能一句话授权；我们决定先走 Hub 通道，原因是权限和审计统一；现在卡在 voice wake 误触发太多，已经试过调阈值，下一步是先把唤醒日志打通；证据是 staging smoke 已稳定通过 12 次"
 
@@ -11748,6 +11789,49 @@ attention_steps:
         #expect(!rendered.contains("effective_supervisor_tier"))
         #expect(!rendered.contains("actions="))
         #expect(!rendered.contains("收到，我会按《Release Runtime》这条指导继续推进"))
+    }
+
+    @Test
+    func naturalLanguageGuidanceAckSuppressesStrategicMemoryDiagnosticSummary() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-natural-guidance-memory-diagnostic")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "坦克大战")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-natural-memory-diagnostic-ack-1",
+                reviewId: "review-natural-memory-diagnostic-ack-1",
+                projectId: project.projectId,
+                targetRole: .coder,
+                deliveryMode: .replanRequest,
+                interventionMode: .replanNextSafePoint,
+                safePointPolicy: .nextStepBoundary,
+                guidanceText: "summary=当前 strategic memory 供给不足（Supervisor 实际注入超出 serving contract；Focused strategic review 缺少关键战略锚点），不适合直接做战略纠偏。",
+                ackStatus: .pending,
+                ackRequired: true,
+                ackNote: "",
+                injectedAtMs: 1_773_386_325_000,
+                ackUpdatedAtMs: 0,
+                auditRef: "audit-guidance-natural-memory-diagnostic-ack-1"
+            ),
+            for: ctx
+        )
+
+        let rendered = try #require(
+            manager.directSupervisorActionIfApplicableForTesting("这个方案可以，就按这个方向处理")
+        )
+
+        #expect(rendered == "收到，《坦克大战》这条指导我先按这个方向处理。")
+        #expect(!rendered.contains("strategic memory"))
+        #expect(!rendered.contains("Supervisor 实际注入"))
+        #expect(!rendered.contains("serving contract"))
     }
 
     @Test
@@ -14048,6 +14132,96 @@ attention_steps:
     }
 
     @Test
+    func explicitCodingInstructionDispatchesToProjectCoderChatAndMarksLaunchRun() async throws {
+        ChatSessionModel.resetLLMGenerateOverrideForTesting()
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-coder-dispatch")
+        defer {
+            ChatSessionModel.resetLLMGenerateOverrideForTesting()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let project = makeProjectEntry(root: root, displayName: "坦克大战")
+        let appModel = AppModel.makeForTesting()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        appModel.hubConnected = true
+        manager.setAppModel(appModel)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"坦克大战","goal":"推进坦克大战最小可运行骨架","priority":"high","current_owner":"coder"}[/CREATE_JOB]"#,
+            userMessage: "给坦克大战建一个执行任务"
+        )
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [UPSERT_PLAN]{"project_ref":"坦克大战","job_id":"\#(job.jobId)","plan_id":"plan-tank-bootstrap","current_owner":"coder","steps":[{"step_id":"step-001","title":"锁定默认方案与验收口径","kind":"write_memory","status":"completed"},{"step_id":"step-002","title":"搭建最小可运行骨架","kind":"launch_run","status":"pending","current_owner":"coder","depends_on":["step-001"]},{"step_id":"step-003","title":"回写结果","kind":"write_memory","status":"pending","current_owner":"coder","depends_on":["step-002"]}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "写入坦克大战执行计划"
+        )
+
+        ChatSessionModel.installLLMGenerateOverrideForTesting { role, prompt, _ in
+            #expect(role == .coder)
+            #expect(prompt.contains("来自 Supervisor 的项目执行派发"))
+            #expect(prompt.contains("index.html"))
+            #expect(prompt.contains("style.css"))
+            #expect(prompt.contains("main.js"))
+            #expect(prompt.contains("不要要求用户手动复制文件内容"))
+            return #"{"final":"Coder 已接收 Supervisor 派发。"}"#
+        }
+
+        let rendered = try #require(
+            manager.directSupervisorActionIfApplicableForTesting(
+                "先建 index.html、style.css、main.js，做最小可运行骨架，不先扩功能。"
+            )
+        )
+
+        #expect(rendered.contains("已把这条执行指令派发给《坦克大战》的 Coder"))
+        #expect(rendered.contains("Supervisor 已经把指令送进项目 Coder 执行轮"))
+        #expect(rendered.contains("launch_run"))
+
+        let plan = try #require(SupervisorProjectPlanStore.load(for: ctx).plans.first)
+        let launchRun = try #require(plan.steps.first(where: { $0.stepId == "step-002" }))
+        #expect(launchRun.status == .running)
+        #expect(launchRun.detail.contains("project Coder chat"))
+
+        let session = try #require(appModel.sessionForProjectId(project.projectId))
+        for _ in 0..<80 {
+            if !session.isSending {
+                break
+            }
+            try await Task.sleep(nanoseconds: 25_000_000)
+        }
+        #expect(session.isSending == false)
+        let dispatchMessages = session.messages.filter {
+            $0.role == .user && $0.content.contains("来自 Supervisor 的项目执行派发")
+        }
+        #expect(dispatchMessages.count == 1)
+        let dispatchMessage = try #require(dispatchMessages.first)
+        #expect(dispatchMessage.sender == .supervisor)
+        #expect(dispatchMessage.isSupervisorDispatch)
+        #expect(session.messages.count >= 2)
+
+        let messageCountAfterFirstDispatch = session.messages.count
+        let duplicateRendered = manager.directSupervisorActionIfApplicableForTesting(
+            "先建 index.html、style.css、main.js，做最小可运行骨架，不先扩功能。"
+        )
+        #expect(duplicateRendered == "")
+        #expect(session.messages.count == messageCountAfterFirstDispatch)
+
+        let reloadedSession = ChatSessionModel()
+        reloadedSession.loadFromRawLog(ctx: ctx, limit: 20)
+        let reloadedDispatch = try #require(
+            reloadedSession.messages.first {
+                $0.role == .user && $0.content.contains("来自 Supervisor 的项目执行派发")
+            }
+        )
+        #expect(reloadedDispatch.sender == .supervisor)
+        #expect(reloadedDispatch.isSupervisorDispatch)
+    }
+
+    @Test
     func continueIntentDoesNotBootstrapWithoutFocusedProject() throws {
         let manager = SupervisorManager.makeForTesting()
         let alphaRoot = try makeProjectRoot(named: "supervisor-continue-no-focus-alpha")
@@ -15260,7 +15434,8 @@ private func makeSupervisorMemoryAssemblySnapshot(
     contextRefsSelected: Int = 2,
     evidenceItemsSelected: Int = 2,
     omittedSections: [String] = [],
-    truncatedLayers: [String] = []
+    truncatedLayers: [String] = [],
+    servingObjectContract: [String] = []
 ) -> SupervisorMemoryAssemblySnapshot {
     SupervisorMemoryAssemblySnapshot(
         source: "unit_test",
@@ -15283,6 +15458,7 @@ private func makeSupervisorMemoryAssemblySnapshot(
             "evidence_pack",
         ],
         omittedSections: omittedSections,
+        servingObjectContract: servingObjectContract,
         contextRefsSelected: contextRefsSelected,
         contextRefsOmitted: max(0, 2 - contextRefsSelected),
         evidenceItemsSelected: evidenceItemsSelected,

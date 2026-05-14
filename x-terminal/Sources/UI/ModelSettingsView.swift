@@ -1,9 +1,21 @@
 import SwiftUI
 
+private enum RoleRoutePickerKind: Equatable {
+    case primary
+    case paidBackup
+}
+
+private struct RoleRoutePickerTarget: Equatable {
+    var role: AXRole
+    var kind: RoleRoutePickerKind
+}
+
 struct ModelSettingsView: View {
     let standaloneWindow: Bool
 
-    @EnvironmentObject private var appModel: AppModel
+    @Environment(\.xtAppModelReference) private var appModelReference
+    @EnvironmentObject private var modelSettingsStore: XTModelSettingsStore
+    @EnvironmentObject private var navigationFocusStore: XTNavigationFocusStore
     @Environment(\.dismiss) private var dismiss
     @StateObject private var modelManager = HubModelManager.shared
     @StateObject private var supervisorManager = SupervisorManager.shared
@@ -13,13 +25,19 @@ struct ModelSettingsView: View {
     @State private var activeFocusRequest: XTModelSettingsFocusRequest?
     @State private var roleModelChangeNotice: XTSettingsChangeNotice?
     @State private var visibleModelInventory = XTVisibleHubModelInventory.empty
+    @State private var roleRoutePickerTarget: RoleRoutePickerTarget?
+    @State private var providerKeySelectionSummary: XTDoctorProjectionSummary?
+    @State private var rustHubReadinessPresentation = RustHubReadinessPresentation.loading()
+    @State private var rustHubReadinessRefreshID = 0
+    @State private var rustHubModelRouteDiagnosticsPresentation = RustHubModelRouteDiagnosticsPresentation.loading()
+    @State private var rustHubModelRouteDiagnosticsRefreshID = 0
 
     init(standaloneWindow: Bool = false) {
         self.standaloneWindow = standaloneWindow
     }
 
     private var interfaceLanguage: XTInterfaceLanguage {
-        appModel.settingsStore.settings.interfaceLanguage
+        modelSettingsSnapshot.interfaceLanguage
     }
     
     var body: some View {
@@ -62,73 +80,172 @@ struct ModelSettingsView: View {
         .onChange(of: modelInventorySnapshot) { _ in
             syncVisibleModelInventory()
         }
-        .onChange(of: appModel.modelSettingsFocusRequest?.nonce) { _ in
+        .onChange(of: navigationFocusSnapshot.modelSettingsFocusRequest?.nonce) { _ in
             processModelSettingsFocusRequest()
         }
         .onDisappear {
             resetRoleModelFeedback()
         }
+        .task(id: providerKeySelectionTaskID) {
+            await refreshProviderKeySelectionSummary()
+        }
+        .task(id: rustHubReadinessTaskID) {
+            await refreshRustHubReadiness()
+        }
+        .task(id: rustHubModelRouteDiagnosticsTaskID) {
+            await refreshRustHubModelRouteDiagnostics()
+        }
     }
     
     private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(XTL10n.text(
-                    interfaceLanguage,
-                    zhHans: "AI 模型设置",
-                    en: "AI Model Settings"
-                ))
-                    .font(.title2)
-                Spacer()
-                
-                Button(XTL10n.text(
-                    interfaceLanguage,
-                    zhHans: "刷新模型列表",
-                    en: "Refresh Models"
-                )) {
-                    Task {
-                        await modelManager.fetchModels()
-                    }
-                }
-                .buttonStyle(.bordered)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(XTL10n.text(
+                        interfaceLanguage,
+                        zhHans: "AI 模型设置",
+                        en: "AI Model Settings"
+                    ))
+                        .font(.title2.weight(.semibold))
 
-                if standaloneWindow {
+                    Text(XTL10n.text(
+                        interfaceLanguage,
+                        zhHans: "统一配置全局角色模型；项目级覆盖在 Supervisor 设置里处理。",
+                        en: "Configure global role models here; project-level overrides stay in Supervisor Settings."
+                    ))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .layoutPriority(1)
+
+                Spacer(minLength: 12)
+
+                HStack(spacing: 8) {
                     Button(XTL10n.text(
                         interfaceLanguage,
-                        zhHans: "关闭",
-                        en: "Close"
+                        zhHans: "刷新模型列表",
+                        en: "Refresh Models"
                     )) {
-                        dismiss()
+                        rustHubReadinessRefreshID += 1
+                        rustHubModelRouteDiagnosticsRefreshID += 1
+                        Task {
+                            await modelManager.fetchModels()
+                        }
                     }
                     .buttonStyle(.bordered)
-                }
-            }
-            
-            Text(XTL10n.text(
-                interfaceLanguage,
-                zhHans: "Supervisor 和 Coding 的 AI 都来自于 X-Hub。如果 X-Hub 有默认设置，X-Terminal 没有设置就用 Hub 默认设置。如果没有，可以在 X-Terminal 选择使用哪个模型作为 Supervisor，哪个模型作为主要编程角色。Supervisor 也可以建议或自己指派每个 project 的编程模型。",
-                en: "Supervisor and coding roles both run on X-Hub. If Hub already has a default, X-Terminal will inherit it unless you pin a model here. Otherwise you can choose which model should act as Supervisor and which model should handle the main coding role. Supervisor can also recommend or assign project-specific coding models."
-            ))
-                .font(.body)
-                .foregroundStyle(.secondary)
 
-            Text(XTL10n.text(
-                interfaceLanguage,
-                zhHans: "本页展示的是 Hub 当前返回给 XT 的真实可用模型视图，不是 XT 本地猜测。若某个 paired Terminal 需要独立的本地加载配置覆盖，例如 `ctx / ttl / par / id`，请到 Hub 的 Pairing / Edit Device 里设置每设备 local model override。",
-                en: "This page shows the true runnable model view currently returned by Hub to XT, not a local guess inside XT. If a paired terminal needs its own local load override such as `ctx / ttl / par / id`, configure the per-device local model override in Hub Pairing / Edit Device."
-            ))
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                    if standaloneWindow {
+                        Button(XTL10n.text(
+                            interfaceLanguage,
+                            zhHans: "关闭",
+                            en: "Close"
+                        )) {
+                            dismiss()
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+                .fixedSize()
+            }
+
+            modelSettingsStatusPills
+            modelSettingsIntroBlock
 
             if let context = activeFocusRequest?.context {
                 XTFocusContextCard(context: context)
             }
         }
     }
+
+    private var modelSettingsStatusPills: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                modelSettingsStatusPillContent
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                modelSettingsStatusPillContent
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var modelSettingsStatusPillContent: some View {
+        XTCompactStatusPill(
+            iconName: modelSettingsSnapshot.hubInteractive ? "link.circle.fill" : "link.circle",
+            text: modelSettingsSnapshot.hubInteractive
+                ? XTL10n.text(interfaceLanguage, zhHans: "Hub 已连接", en: "Hub connected")
+                : XTL10n.text(interfaceLanguage, zhHans: "Hub 未连接", en: "Hub offline"),
+            tint: modelSettingsSnapshot.hubInteractive
+                ? UIThemeTokens.color(for: .ready)
+                : UIThemeTokens.color(for: .blockedWaitingUpstream)
+        )
+
+        XTCompactStatusPill(
+            iconName: rustHubReadinessIconName,
+            text: rustHubReadinessCompactText,
+            tint: rustHubReadinessTint(rustHubReadinessPresentation.tone)
+        )
+
+        XTCompactStatusPill(
+            iconName: "rectangle.stack.badge.person.crop",
+            text: XTL10n.text(
+                interfaceLanguage,
+                zhHans: "角色 \(configuredHubRoleCount)/\(AXRole.allCases.count)",
+                en: "Roles \(configuredHubRoleCount)/\(AXRole.allCases.count)"
+            ),
+            tint: configuredHubRoleCount == AXRole.allCases.count
+                ? UIThemeTokens.color(for: .ready)
+                : UIThemeTokens.color(for: .inProgress),
+            monospaced: true
+        )
+
+        XTCompactStatusPill(
+            iconName: "shippingbox",
+            text: XTL10n.text(
+                interfaceLanguage,
+                zhHans: "\(sortedAvailableHubModels.count) 个可用模型",
+                en: "\(sortedAvailableHubModels.count) runnable models"
+            ),
+            tint: sortedAvailableHubModels.isEmpty
+                ? UIThemeTokens.color(for: .diagnosticRequired)
+                : UIThemeTokens.color(for: .ready),
+            monospaced: true
+        )
+    }
+
+    private var modelSettingsIntroBlock: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(XTL10n.text(
+                interfaceLanguage,
+                zhHans: "Supervisor 与 Coding 角色都走 X-Hub。未固定模型时，XT 继承 Hub 默认或自动路由；需要明确路由时，在这里为角色绑定模型。",
+                en: "Supervisor and coding roles run through X-Hub. When no model is pinned, XT inherits the Hub default or automatic routing; pin a role here only when you need an explicit route."
+            ))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text(XTL10n.text(
+                interfaceLanguage,
+                zhHans: "这里展示 Hub 返回的真实可执行模型视图。每设备 local model override 仍在 Hub Pairing / Edit Device 配置。",
+                en: "This page shows the runnable model view returned by Hub. Per-device local model overrides still live in Hub Pairing / Edit Device."
+            ))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(UIThemeTokens.secondaryCardBackground)
+        )
+    }
     
     private var modelSelectionArea: some View {
         VStack(alignment: .leading, spacing: 20) {
-            roleSelector
+            roleRouteOverview
             
             Divider()
             
@@ -137,7 +254,7 @@ struct ModelSettingsView: View {
     }
 
     private func processModelSettingsFocusRequest() {
-        guard let request = appModel.modelSettingsFocusRequest else { return }
+        guard let request = navigationFocusSnapshot.modelSettingsFocusRequest else { return }
         activeFocusRequest = request
         if let role = request.role {
             selectedRole = role
@@ -154,6 +271,210 @@ struct ModelSettingsView: View {
                 activeFocusRequest = nil
             }
         }
+    }
+
+    private var roleRouteOverview: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(XTL10n.text(
+                        interfaceLanguage,
+                        zhHans: "角色模型路由",
+                        en: "Role Model Routes"
+                    ))
+                        .font(.headline)
+                    Text(XTL10n.text(
+                        interfaceLanguage,
+                        zhHans: "每个角色按「主模型 → 备用付费模型 → 本地兜底」执行；备用模型可以留空。",
+                        en: "Each role runs primary → paid backup → local fallback. Backup can stay empty."
+                    ))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 12)
+
+                Button {
+                    rustHubReadinessRefreshID += 1
+                    rustHubModelRouteDiagnosticsRefreshID += 1
+                    Task {
+                        await modelManager.fetchModels()
+                    }
+                } label: {
+                    Label(XTL10n.text(interfaceLanguage, zhHans: "刷新", en: "Refresh"), systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 250), spacing: 12)],
+                alignment: .leading,
+                spacing: 12
+            ) {
+                ForEach(AXRole.allCases) { role in
+                    roleRouteCard(role)
+                }
+            }
+        }
+    }
+
+    private func roleRouteCard(_ role: AXRole) -> some View {
+        let route = modelSettingsSnapshot.settings.modelRoute(for: role)
+        let isSelected = selectedRole == role
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                roleIcon(role)
+                    .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                Text(role.displayName(in: interfaceLanguage))
+                    .font(.subheadline.weight(.semibold))
+                Spacer(minLength: 8)
+                Text(isSelected ? "当前" : "详情")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                selectedRole = role
+                showRoleModelPicker = false
+                resetRoleModelFeedback()
+            }
+
+            roleRouteLine(
+                title: "主",
+                value: modelDisplayLabel(route.primaryModelId),
+                help: "主模型不可用时，会尝试备用付费模型。",
+                actionTitle: "选择"
+            ) {
+                selectedRole = role
+                roleRoutePickerTarget = RoleRoutePickerTarget(role: role, kind: .primary)
+            }
+            .popover(
+                isPresented: roleRoutePickerBinding(role: role, kind: .primary),
+                arrowEdge: .bottom
+            ) {
+                roleRouteModelPicker(role: role, kind: .primary)
+            }
+
+            roleRouteLine(
+                title: "备",
+                value: modelDisplayLabel(route.paidBackupModelId, emptyLabel: "无备用"),
+                help: "备用付费模型可为空；主模型失败后优先尝试它，再考虑本地兜底。",
+                actionTitle: route.paidBackupModelId == nil ? "选择" : "修改"
+            ) {
+                selectedRole = role
+                roleRoutePickerTarget = RoleRoutePickerTarget(role: role, kind: .paidBackup)
+            }
+            .popover(
+                isPresented: roleRoutePickerBinding(role: role, kind: .paidBackup),
+                arrowEdge: .bottom
+            ) {
+                roleRouteModelPicker(role: role, kind: .paidBackup)
+            }
+
+            HStack(spacing: 8) {
+                Text("本地")
+                    .font(.caption2.monospaced().weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28, alignment: .leading)
+                Text(effectiveLocalFallbackDisplayName(route))
+                    .font(.caption)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                if route.localFallbackMode != .automatic || route.localFallbackModelId != nil {
+                    Button("恢复自动") {
+                        modelManager.setLocalFallbackMode(for: role, mode: .automatic)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                } else {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(UIThemeTokens.color(for: .ready))
+                        .help("本地兜底当前使用自动策略")
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(isSelected ? Color.accentColor.opacity(0.09) : Color(NSColor.controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(isSelected ? Color.accentColor.opacity(0.35) : Color.secondary.opacity(0.12), lineWidth: 1)
+        )
+    }
+
+    private func roleRouteLine(
+        title: String,
+        value: String,
+        help: String,
+        actionTitle: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 8) {
+            Text(title)
+                .font(.caption2.monospaced().weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 28, alignment: .leading)
+            Text(value)
+                .font(.caption)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(help)
+            Spacer(minLength: 8)
+            Button(actionTitle, action: action)
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+        }
+    }
+
+    private func roleRouteModelPicker(
+        role: AXRole,
+        kind: RoleRoutePickerKind
+    ) -> some View {
+        let route = modelSettingsSnapshot.settings.modelRoute(for: role)
+        let selectedModelId = kind == .primary ? route.primaryModelId : route.paidBackupModelId
+        let models = kind == .primary ? sortedAvailableHubModels : paidBackupSelectableModels
+
+        return HubModelPickerPopover(
+            title: kind == .primary
+                ? "为 \(role.displayName(in: interfaceLanguage)) 选择主模型"
+                : "为 \(role.displayName(in: interfaceLanguage)) 选择备用付费模型",
+            selectedModelId: selectedModelId,
+            inheritedModelId: nil,
+            inheritedModelPresentation: nil,
+            models: models,
+            language: interfaceLanguage,
+            automaticTitle: kind == .primary ? "使用 Hub 默认设置" : "不使用备用模型",
+            automaticSelectedBadge: kind == .primary ? "当前默认" : "当前无备用",
+            automaticRestoreBadge: kind == .primary ? "恢复默认" : "清空备用",
+            inheritedModelLabel: "Hub 默认",
+            automaticDescription: kind == .primary
+                ? "未固定主模型时，XT 使用 Hub 默认/自动路由。"
+                : "备用模型为空时，主模型失败后直接进入本地兜底策略。"
+        ) { modelId in
+            updateRoleRouteModelSelection(role: role, kind: kind, modelId: modelId)
+            roleRoutePickerTarget = nil
+        }
+        .frame(width: 460, height: 420)
+    }
+
+    private func roleRoutePickerBinding(
+        role: AXRole,
+        kind: RoleRoutePickerKind
+    ) -> Binding<Bool> {
+        Binding(
+            get: { roleRoutePickerTarget == RoleRoutePickerTarget(role: role, kind: kind) },
+            set: { presented in
+                if !presented, roleRoutePickerTarget == RoleRoutePickerTarget(role: role, kind: kind) {
+                    roleRoutePickerTarget = nil
+                }
+            }
+        )
     }
     
     private var roleSelector: some View {
@@ -226,7 +547,15 @@ struct ModelSettingsView: View {
             ))
                 .font(.headline)
 
+            roleRoutePreferenceCard
+
             routeTruthCard
+
+            rustHubModelRouteDiagnosticsCard
+
+            if let providerKeySelectionSummary {
+                providerKeySelectionCard(summary: providerKeySelectionSummary)
+            }
 
             if shouldShowRemotePaidAccessCard {
                 remotePaidAccessCard
@@ -281,7 +610,7 @@ struct ModelSettingsView: View {
                     sourceIdentityLine: currentRoleSelectedHubModel?.remoteSourceIdentityLine(language: interfaceLanguage),
                     sourceBadges: currentRoleSelectedHubModel?.routingSourceBadges(language: interfaceLanguage) ?? [],
                     supplementary: routeTruthPresentation.pickerTruth,
-                    disabled: !appModel.hubInteractive || sortedAvailableHubModels.isEmpty,
+                    disabled: !modelSettingsSnapshot.hubInteractive || sortedAvailableHubModels.isEmpty,
                     automaticRouteLabel: XTL10n.Common.automaticRouting.resolve(interfaceLanguage)
                 ) {
                     showRoleModelPicker = true
@@ -431,6 +760,66 @@ struct ModelSettingsView: View {
         )
     }
 
+    private var roleRoutePreferenceCard: some View {
+        let route = modelSettingsSnapshot.settings.modelRoute(for: selectedRole)
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("当前路由链")
+                    .font(.subheadline.weight(.semibold))
+                Spacer(minLength: 8)
+                Text("primary > backup > local")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    routeStepPill(title: "主", value: modelDisplayLabel(route.primaryModelId), tint: .accentColor)
+                    routeStepPill(title: "备", value: modelDisplayLabel(route.paidBackupModelId, emptyLabel: "无备用"), tint: route.paidBackupModelId == nil ? .secondary : .orange)
+                    routeStepPill(title: "本地", value: effectiveLocalFallbackDisplayName(route), tint: .green)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    routeStepPill(title: "主", value: modelDisplayLabel(route.primaryModelId), tint: .accentColor)
+                    routeStepPill(title: "备", value: modelDisplayLabel(route.paidBackupModelId, emptyLabel: "无备用"), tint: route.paidBackupModelId == nil ? .secondary : .orange)
+                    routeStepPill(title: "本地", value: effectiveLocalFallbackDisplayName(route), tint: .green)
+                }
+            }
+
+            Text("主模型失败、额度不足、授权过期或远端降级到本地时，XT 会优先尝试备用付费模型；备用为空时直接进入本地兜底策略。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color(NSColor.controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
+        )
+    }
+
+    private func routeStepPill(title: String, value: String, tint: Color) -> some View {
+        HStack(spacing: 6) {
+            Text(title)
+                .font(.caption2.monospaced().weight(.semibold))
+                .foregroundStyle(tint)
+            Text(value)
+                .font(.caption)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(tint.opacity(0.10))
+        .clipShape(Capsule())
+    }
+
     private var remotePaidAccessCard: some View {
         let projection = remotePaidAccessProjection
 
@@ -477,6 +866,46 @@ struct ModelSettingsView: View {
         .overlay(
             RoundedRectangle(cornerRadius: 10)
                 .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
+        )
+    }
+
+    private var rustHubModelRouteDiagnosticsCard: some View {
+        let presentation = rustHubModelRouteDiagnosticsPresentation
+        let tint = rustHubModelRouteDiagnosticsTint(presentation.tone)
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(presentation.title)
+                    .font(.subheadline.weight(.semibold))
+
+                Spacer(minLength: 8)
+
+                Text(presentation.badgeText)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(tint)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(tint.opacity(0.10))
+                    .clipShape(Capsule())
+            }
+
+            ForEach(presentation.lines, id: \.self) { line in
+                Text(line)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color(NSColor.controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(tint.opacity(0.18), lineWidth: 1)
         )
     }
     
@@ -596,13 +1025,56 @@ struct ModelSettingsView: View {
     }
 
     private var currentRoleModelId: String? {
-        let raw = (modelManager.getPreferredModel(for: selectedRole) ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = modelSettingsSnapshot.settings.modelRoute(for: selectedRole)
+            .primaryModelId?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return raw.isEmpty ? nil : raw
+    }
+
+    private var currentRolePaidBackupModelId: String? {
+        let raw = modelSettingsSnapshot.settings.modelRoute(for: selectedRole)
+            .paidBackupModelId?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return raw.isEmpty ? nil : raw
+    }
+
+    private var configuredHubRoleCount: Int {
+        AXRole.allCases.filter { role in
+            modelSettingsSnapshot.settings.modelRoute(for: role)
+                .primaryModelId?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty == false
+        }.count
     }
 
     private var sortedAvailableHubModels: [HubModel] {
         visibleModelInventory.sortedModels
+    }
+
+    private var paidBackupSelectableModels: [HubModel] {
+        sortedAvailableHubModels.filter { model in
+            model.isSelectableForInteractiveRouting && !model.isLocalModel
+        }
+    }
+
+    private func modelDisplayLabel(_ modelId: String?, emptyLabel: String = "Hub 自动") -> String {
+        let trimmed = modelId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else {
+            return emptyLabel
+        }
+        if let presentation = visibleModelInventory.presentation(for: trimmed) {
+            return presentation.displayName
+        }
+        return trimmed
+    }
+
+    private func effectiveLocalFallbackDisplayName(_ route: RoleModelRoutePreference) -> String {
+        if route.localFallbackMode == .specific,
+           let localModelId = route.localFallbackModelId,
+           localModelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            return modelDisplayLabel(localModelId)
+        }
+        return LocalModelFallbackMode.automatic.displayName
     }
 
     private var routingSelectionState: HubModelRoutingSelectionState {
@@ -636,23 +1108,23 @@ struct ModelSettingsView: View {
     }
 
     private var modelInventorySnapshot: ModelStateSnapshot {
-        modelManager.visibleSnapshot(fallback: appModel.modelsState)
+        modelManager.visibleSnapshot(fallback: modelSettingsSnapshot.modelsState)
     }
 
     private var modelInventoryTruth: XTModelInventoryTruthPresentation {
         XTModelInventoryTruthPresentation.build(
             snapshot: modelInventorySnapshot,
-            hubBaseDir: appModel.hubBaseDir ?? HubPaths.baseDir()
+            hubBaseDir: modelSettingsSnapshot.hubBaseDir ?? HubPaths.baseDir()
         )
     }
 
     private var remotePaidAccessProjection: XTUnifiedDoctorRemotePaidAccessProjection? {
-        appModel.hubRemotePaidAccessSnapshot.map(XTUnifiedDoctorRemotePaidAccessProjection.init)
+        modelSettingsSnapshot.remotePaidAccessSnapshot.map(XTUnifiedDoctorRemotePaidAccessProjection.init)
     }
 
     private var shouldShowRemotePaidAccessCard: Bool {
-        appModel.hubRemoteConnected
-            || appModel.hubRemoteRoute != .none
+        modelSettingsSnapshot.hubRemoteConnected
+            || modelSettingsSnapshot.hubRemoteRoute != .none
             || remotePaidAccessProjection != nil
     }
 
@@ -688,25 +1160,19 @@ struct ModelSettingsView: View {
     }
 
     private var selectedScopedProjectID: String? {
-        guard let projectID = appModel.selectedProjectId,
-              projectID != AXProjectRegistry.globalHomeId else {
-            return nil
-        }
-        return projectID
+        modelSettingsSnapshot.selectedProjectId
     }
 
     private var selectedScopedProjectName: String? {
-        guard let selectedScopedProjectID else { return nil }
-        return appModel.registry.project(for: selectedScopedProjectID)?.displayName
+        modelSettingsSnapshot.selectedProjectName
     }
 
     private var selectedScopedProjectContext: AXProjectContext? {
-        selectedScopedProjectID.flatMap(appModel.projectContext(for:))
+        modelSettingsSnapshot.selectedProjectContext
     }
 
     private var selectedScopedProjectConfig: AXProjectConfig? {
-        guard let selectedScopedProjectContext else { return nil }
-        return appModel.projectConfigSnapshot(for: selectedScopedProjectContext)
+        modelSettingsSnapshot.selectedProjectConfig
     }
 
     private var selectedRoleExecutionSnapshot: AXRoleExecutionSnapshot {
@@ -718,8 +1184,13 @@ struct ModelSettingsView: View {
             return .empty(role: selectedRole, source: "model_settings")
         }
 
-        return AXRoleExecutionSnapshots.latestSnapshots(for: projectContext)[selectedRole]
-            ?? .empty(role: selectedRole, source: "model_settings")
+        return XTProjectUIPresentationReadCache.roleExecutionSnapshot(
+            for: projectContext,
+            role: selectedRole
+        ) {
+            AXRoleExecutionSnapshots.latestSnapshots(for: projectContext)[selectedRole]
+                ?? .empty(role: selectedRole, source: "model_settings")
+        }
     }
 
     private var routeTruthPresentation: ModelSettingsRouteTruthPresentation {
@@ -739,11 +1210,76 @@ struct ModelSettingsView: View {
             selectedProjectName: selectedScopedProjectName,
             projectConfig: selectedScopedProjectConfig,
             projectRuntimeReadiness: projectRuntimeReadiness,
-            settings: appModel.settingsStore.settings,
+            settings: modelSettingsSnapshot.settings,
             snapshot: selectedRoleExecutionSnapshot,
             transportMode: HubAIClient.transportMode().rawValue,
             language: interfaceLanguage
         )
+    }
+
+    private var providerKeySelectionTaskID: String {
+        [
+            selectedRole.rawValue,
+            providerKeySelectionModelID ?? "none",
+            String(selectedRoleExecutionSnapshot.updatedAt),
+            selectedRoleExecutionSnapshot.executionPath,
+            String(modelSettingsSnapshot.unifiedDoctorGeneratedAtMs)
+        ].joined(separator: "::")
+    }
+
+    private var rustHubModelRouteDiagnosticsTaskID: String {
+        [
+            interfaceLanguage.rawValue,
+            String(rustHubModelRouteDiagnosticsRefreshID)
+        ].joined(separator: "::")
+    }
+
+    private var rustHubReadinessTaskID: String {
+        [
+            interfaceLanguage.rawValue,
+            String(rustHubReadinessRefreshID)
+        ].joined(separator: "::")
+    }
+
+    private var rustHubReadinessCompactText: String {
+        switch rustHubReadinessPresentation.tone {
+        case .ready:
+            return XTL10n.text(interfaceLanguage, zhHans: "Rust Hub shadow ready", en: "Rust Hub shadow ready")
+        case .warning:
+            return XTL10n.text(interfaceLanguage, zhHans: "Rust Hub 需核对", en: "Rust Hub review")
+        case .unavailable:
+            return XTL10n.text(interfaceLanguage, zhHans: "Rust Hub shadow off", en: "Rust Hub shadow off")
+        }
+    }
+
+    private var rustHubReadinessIconName: String {
+        switch rustHubReadinessPresentation.tone {
+        case .ready:
+            return "server.rack"
+        case .warning:
+            return "exclamationmark.triangle"
+        case .unavailable:
+            return "server.rack"
+        }
+    }
+
+    private var providerKeySelectionModelID: String? {
+        let configured = currentRoleModelId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !configured.isEmpty {
+            return configured
+        }
+
+        let requested = selectedRoleExecutionSnapshot.requestedModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !requested.isEmpty {
+            return requested
+        }
+
+        let actual = selectedRoleExecutionSnapshot.actualModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !actual.isEmpty {
+            return actual
+        }
+
+        return nil
     }
 
     private func syncVisibleModelInventory() {
@@ -757,6 +1293,163 @@ struct ModelSettingsView: View {
         roleModelChangeNotice = nil
     }
 
+    private func refreshProviderKeySelectionSummary() async {
+        guard let modelId = providerKeySelectionModelID else {
+            await MainActor.run {
+                providerKeySelectionSummary = nil
+            }
+            return
+        }
+
+        if !shouldShowProviderKeySelection(for: modelId) {
+            await MainActor.run {
+                providerKeySelectionSummary = nil
+            }
+            return
+        }
+
+        let decision = await ProviderKeyManager.shared.resolveProviderKeyDecision(forModelId: modelId)
+        let importSnapshot = await HubProviderKeyImportSnapshotStore.refreshFromHub()
+        let summary = XTProviderKeyRouteContextPresentation.summary(
+            decision: decision,
+            modelId: modelId,
+            importSnapshot: importSnapshot
+                ?? HubProviderKeyImportSnapshotStore.load(allowCompatibilityFallback: true),
+            doctorSection: modelSettingsSnapshot.modelRouteReadinessSection,
+            language: interfaceLanguage
+        )
+        await MainActor.run {
+            providerKeySelectionSummary = summary
+        }
+    }
+
+    private func refreshRustHubReadiness() async {
+        let language = interfaceLanguage
+        await MainActor.run {
+            rustHubReadinessPresentation = .loading(language: language)
+        }
+
+        let result = await RustHubReadinessClient.fetchReadiness()
+        let presentation: RustHubReadinessPresentation
+        if let snapshot = result.snapshot, result.ok {
+            presentation = RustHubReadinessPresentation.build(
+                snapshot: snapshot,
+                language: language
+            )
+        } else {
+            presentation = RustHubReadinessPresentation.unavailable(
+                message: result.errorMessage,
+                language: language
+            )
+        }
+
+        await MainActor.run {
+            rustHubReadinessPresentation = presentation
+        }
+    }
+
+    private func refreshRustHubModelRouteDiagnostics() async {
+        let language = interfaceLanguage
+        await MainActor.run {
+            rustHubModelRouteDiagnosticsPresentation = .loading(language: language)
+        }
+
+        let result = await RustHubModelRouteDiagnosticsClient.fetchDiagnostics(limit: 1)
+        let presentation: RustHubModelRouteDiagnosticsPresentation
+        if let snapshot = result.snapshot, result.ok {
+            presentation = RustHubModelRouteDiagnosticsPresentation.build(
+                snapshot: snapshot,
+                language: language
+            )
+        } else {
+            presentation = RustHubModelRouteDiagnosticsPresentation.unavailable(
+                message: result.errorMessage,
+                language: language
+            )
+        }
+
+        await MainActor.run {
+            rustHubModelRouteDiagnosticsPresentation = presentation
+        }
+    }
+
+    private func shouldShowProviderKeySelection(for modelId: String) -> Bool {
+        if let model = visibleModelInventory.model(for: modelId) {
+            return model.backend.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "mlx"
+        }
+        return !ProviderKeySelectionSupport.inferProvider(fromModelId: modelId).isEmpty
+            && !modelId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().contains("mlx")
+    }
+
+    private func rustHubReadinessTint(
+        _ tone: RustHubReadinessPresentation.Tone
+    ) -> Color {
+        switch tone {
+        case .ready:
+            return .green
+        case .warning:
+            return .orange
+        case .unavailable:
+            return .secondary
+        }
+    }
+
+    private func rustHubModelRouteDiagnosticsTint(
+        _ tone: RustHubModelRouteDiagnosticsPresentation.Tone
+    ) -> Color {
+        switch tone {
+        case .ready:
+            return .green
+        case .warning:
+            return .orange
+        case .blocked:
+            return .red
+        case .unavailable:
+            return .secondary
+        }
+    }
+
+    private var appModel: AppModel {
+        guard let appModelReference else {
+            preconditionFailure("ModelSettingsView requires xtAppModelReference")
+        }
+        return appModelReference
+    }
+
+    private var modelSettingsSnapshot: XTModelSettingsSnapshot {
+        modelSettingsStore.snapshot
+    }
+
+    private var navigationFocusSnapshot: XTNavigationFocusSnapshot {
+        navigationFocusStore.snapshot
+    }
+
+    @ViewBuilder
+    private func providerKeySelectionCard(summary: XTDoctorProjectionSummary) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(summary.title)
+                .font(.subheadline.weight(.semibold))
+
+            ForEach(summary.lines, id: \.self) { line in
+                Text(line)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color(NSColor.controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
+        )
+    }
+
     private func updateRoleModelSelection(modelId: String?) {
         let trimmedModelId = modelId?.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedModelId = trimmedModelId?.isEmpty == false ? trimmedModelId : nil
@@ -767,6 +1460,40 @@ struct ModelSettingsView: View {
         modelManager.setModel(for: selectedRole, modelId: normalizedModelId)
         roleModelChangeNotice = XTSettingsChangeNoticeBuilder.globalRoleModel(
             role: selectedRole,
+            modelId: normalizedModelId,
+            snapshot: visibleModelInventory.snapshot,
+            executionSnapshot: selectedRoleExecutionSnapshot,
+            transportMode: HubAIClient.transportMode().rawValue,
+            language: interfaceLanguage
+        )
+        roleModelUpdateFeedback.trigger()
+    }
+
+    private func updateRoleRouteModelSelection(
+        role: AXRole,
+        kind: RoleRoutePickerKind,
+        modelId: String?
+    ) {
+        let trimmedModelId = modelId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedModelId = trimmedModelId?.isEmpty == false ? trimmedModelId : nil
+        let route = modelSettingsSnapshot.settings.modelRoute(for: role)
+
+        switch kind {
+        case .primary:
+            guard normalizedModelOverrideValue(route.primaryModelId) != normalizedModelOverrideValue(normalizedModelId) else {
+                return
+            }
+            modelManager.setModel(for: role, modelId: normalizedModelId)
+        case .paidBackup:
+            guard normalizedModelOverrideValue(route.paidBackupModelId) != normalizedModelOverrideValue(normalizedModelId) else {
+                return
+            }
+            modelManager.setPaidBackupModel(for: role, modelId: normalizedModelId)
+        }
+
+        selectedRole = role
+        roleModelChangeNotice = XTSettingsChangeNoticeBuilder.globalRoleModel(
+            role: role,
             modelId: normalizedModelId,
             snapshot: visibleModelInventory.snapshot,
             executionSnapshot: selectedRoleExecutionSnapshot,

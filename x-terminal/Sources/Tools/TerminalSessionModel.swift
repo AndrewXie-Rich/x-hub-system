@@ -3,7 +3,13 @@ import Foundation
 
 @MainActor
 final class TerminalSessionModel: ObservableObject {
-    @Published var output: String = ""
+    @Published var output: String = "" {
+        didSet {
+            guard !isPublishingRenderedOutput else { return }
+            renderedOutput = output
+            renderedOutputDirty = false
+        }
+    }
     @Published var draft: String = ""
     @Published var isRunning: Bool = false
     @Published var lastExitCode: Int32? = nil
@@ -12,8 +18,11 @@ final class TerminalSessionModel: ObservableObject {
     private let root: URL
     private var flushTask: Task<Void, Never>? = nil
     private var pending: String = ""
+    private var renderedOutput: String = ""
+    private var renderedOutputDirty = false
+    private var isPublishingRenderedOutput = false
 
-    private let maxOutputChars = 240_000
+    private let maxOutputBytes = 240_000
 
     init(root: URL) {
         self.root = root
@@ -87,8 +96,10 @@ final class TerminalSessionModel: ObservableObject {
     }
 
     func clearOutput() {
-        output = ""
+        publishRenderedOutput("")
         pending = ""
+        renderedOutput = ""
+        renderedOutputDirty = false
         flushTask?.cancel()
         flushTask = nil
     }
@@ -114,13 +125,46 @@ final class TerminalSessionModel: ObservableObject {
 
     private func flushNow() {
         flushTask = nil
-        if pending.isEmpty { return }
-        output += pending
+        guard !pending.isEmpty || renderedOutputDirty else { return }
+        renderedOutput += pending
         pending = ""
+        clampRenderedOutputIfNeeded()
+        publishRenderedOutput(renderedOutput)
+        renderedOutputDirty = false
+    }
 
-        if output.count > maxOutputChars {
-            output = "[x-terminal] output truncated (keeping last \(maxOutputChars) chars)\n" + String(output.suffix(maxOutputChars))
+    private func publishRenderedOutput(_ nextOutput: String) {
+        guard output != nextOutput else { return }
+        isPublishingRenderedOutput = true
+        output = nextOutput
+        isPublishingRenderedOutput = false
+    }
+
+    private func clampRenderedOutputIfNeeded() {
+        let bytes = renderedOutput.utf8
+        guard bytes.count > maxOutputBytes else { return }
+        renderedOutput = "[x-terminal] output truncated (keeping last \(maxOutputBytes) bytes)\n"
+            + String(decoding: bytes.suffix(maxOutputBytes), as: UTF8.self)
+        renderedOutputDirty = true
+    }
+
+    private func markRenderedOutputChanged(_ nextOutput: String) {
+        guard renderedOutput != nextOutput else { return }
+        renderedOutput = nextOutput
+        renderedOutputDirty = true
+    }
+
+    private func removeLastRenderedOutputCharacterIfNeeded() {
+        guard !renderedOutput.isEmpty else { return }
+        renderedOutput.removeLast()
+        renderedOutputDirty = true
+    }
+
+    private func renderedOutputPrefixThroughLastLineBreak() -> String? {
+        guard let idx = renderedOutput.lastIndex(of: "\n") else {
+            return nil
         }
+        return String(renderedOutput[..<renderedOutput.index(after: idx)])
     }
 
     private func sanitize(_ s: String) -> String {
@@ -153,7 +197,7 @@ final class TerminalSessionModel: ObservableObject {
         // Drop other C0 controls to avoid rendering artifacts in the transcript.
         if s.isEmpty { return "" }
         var out = ""
-        out.reserveCapacity(s.count)
+        out.reserveCapacity(s.utf8.count)
         for scalar in s.unicodeScalars {
             switch scalar.value {
             case 0x09, 0x0A, 0x0D: // \t \n \r
@@ -184,8 +228,8 @@ final class TerminalSessionModel: ObservableObject {
             if v == 0x08 || v == 0x7F {
                 if !pending.isEmpty {
                     pending.removeLast()
-                } else if !output.isEmpty {
-                    output.removeLast()
+                } else {
+                    removeLastRenderedOutputCharacterIfNeeded()
                 }
                 continue
             }
@@ -198,12 +242,12 @@ final class TerminalSessionModel: ObservableObject {
             pending = String(pending[..<pending.index(after: idx)])
             return
         }
-        if let idx = output.lastIndex(of: "\n") {
-            output = String(output[..<output.index(after: idx)])
+        if let prefix = renderedOutputPrefixThroughLastLineBreak() {
+            markRenderedOutputChanged(prefix)
             pending = ""
             return
         }
-        output = ""
+        markRenderedOutputChanged("")
         pending = ""
     }
 }

@@ -13,6 +13,8 @@ function parseArgs(argv) {
     rustHubRoot: ROOT_DIR,
     httpBaseUrl: 'http://127.0.0.1:50151',
     maxSlowRequests: 0,
+    allowMemorySkillsProduction: false,
+    requireMemorySkillsProduction: false,
     writeReport: true,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -30,6 +32,13 @@ function parseArgs(argv) {
       case '--max-slow-requests':
         out.maxSlowRequests = Number(next || out.maxSlowRequests);
         i += 1;
+        break;
+      case '--allow-memory-skills-production':
+        out.allowMemorySkillsProduction = true;
+        break;
+      case '--require-memory-skills-production':
+        out.allowMemorySkillsProduction = true;
+        out.requireMemorySkillsProduction = true;
         break;
       case '--no-report':
         out.writeReport = false;
@@ -56,6 +65,8 @@ function usage() {
     '  --rust-hub-root <p>       Expected Rust Hub root exported to X-Hub/Node',
     '  --http-base-url <u>       Expected Rust xhubd HTTP base URL',
     '  --max-slow-requests <n>   Recent slow request budget, default 0',
+    '  --allow-memory-skills-production Permit explicit Rust memory writer and skills execution authority',
+    '  --require-memory-skills-production Require both Rust memory writer and skills execution authority',
     '  --no-report               Print only; do not write reports/',
     '  --self-test               Validate guard reducer logic',
   ].join('\n');
@@ -97,7 +108,7 @@ function collect(config) {
     '--http-base-url',
     config.httpBaseUrl,
   ]);
-  const daemonOps = runJson('bash', [
+  const daemonOpsArgs = [
     path.join(SCRIPT_DIR, 'daemon_ops_gate.command'),
     '--max-slow-requests',
     String(config.maxSlowRequests),
@@ -107,7 +118,13 @@ function collect(config) {
     '100',
     '--max-report-age-days',
     '30',
-  ]);
+  ];
+  if (config.requireMemorySkillsProduction) {
+    daemonOpsArgs.push('--require-memory-skills-production');
+  } else if (config.allowMemorySkillsProduction) {
+    daemonOpsArgs.push('--allow-memory-skills-production');
+  }
+  const daemonOps = runJson('bash', daemonOpsArgs);
   const ui = runJson('bash', [
     path.join(SCRIPT_DIR, 'ui_compatibility_no_product_ui_change_gate.command'),
   ]);
@@ -151,6 +168,10 @@ function reduce(collected, config) {
     daemon_ready: Boolean(collected.daemonOps?.ready),
     daemon_recent_slow_requests: Number(collected.daemonOps?.recent_slow_requests || collected.daemonOps?.slow_requests || 0),
     daemon_max_observed_http_elapsed_ms: Number(collected.daemonOps?.max_observed_http_elapsed_ms || 0),
+    memory_skills_production_allowed: Boolean(config.allowMemorySkillsProduction),
+    memory_skills_production_required: Boolean(config.requireMemorySkillsProduction),
+    memory_writer_authority_in_rust: Boolean(collected.daemonOps?.memory_writer_authority_in_rust),
+    skills_execution_authority_in_rust: Boolean(collected.daemonOps?.skills_execution_authority_in_rust),
     ui_product_change: Boolean(collected.ui?.product_ui_change),
     swift_ui_files_touched: Boolean(collected.ui?.swift_ui_files_touched),
     memory_writer_authority_target: false,
@@ -181,8 +202,14 @@ function runSelfTest() {
     daemonOps: { healthy: true, ready: true, slow_request_budget_ok: true, http_metrics_ready: true },
     ui: { product_ui_change: false, swift_ui_files_touched: false },
     doctor_ok: true,
-  }, { rustHubRoot: '/tmp/rust-hub', httpBaseUrl: 'http://127.0.0.1:50151' });
+  }, {
+    rustHubRoot: '/tmp/rust-hub',
+    httpBaseUrl: 'http://127.0.0.1:50151',
+    allowMemorySkillsProduction: true,
+    requireMemorySkillsProduction: true,
+  });
   if (!result.ok) throw new Error(`expected self-test ok: ${result.issues.join(',')}`);
+  if (!result.memory_skills_production_required) throw new Error('expected memory/skills requirement to round-trip');
 }
 
 async function main() {

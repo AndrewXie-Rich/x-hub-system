@@ -522,6 +522,8 @@ enum XTSkillCapabilityProfileSupport {
             families.append("skills.discover")
         case .skills_pin:
             families.append("skills.manage")
+        case .skillsExecuteRunner:
+            families.append("skills.execute")
         case .read_file, .list_dir, .search, .git_status, .git_diff, .ci_read, .session_list, .session_resume, .session_compact:
             families.append("repo.read")
         case .write_file, .delete_path, .move_path, .git_apply, .git_commit:

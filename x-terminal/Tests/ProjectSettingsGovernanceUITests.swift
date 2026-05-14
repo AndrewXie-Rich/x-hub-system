@@ -100,11 +100,22 @@ struct ProjectSettingsGovernanceUITests {
         #expect(AXProjectExecutionTier.a0Observe.allowedHighlights.contains("读项目记忆"))
         #expect(AXProjectExecutionTier.a1Plan.oneLineSummary.contains("工单 / 计划"))
         #expect(AXProjectExecutionTier.a2RepoAuto.defaultBudgetSummary.contains("45m run"))
+        #expect(AXProjectExecutionTier.a2RepoAuto.blockedHighlights.contains(where: { $0.contains("browser") }))
+        #expect(AXProjectExecutionTier.a3DeliverAuto.oneLineSummary.contains("仍不使用浏览器 / 设备"))
+        #expect(AXProjectExecutionTier.a4OpenClaw.allowedHighlights.contains(where: { $0.contains("runtime ready") }))
         #expect(
             AXProjectExecutionTier.a4OpenClaw.blockedHighlights.contains(
                 where: { $0.contains("TTL") && $0.contains("紧急回收") && $0.contains("审计轨迹") }
             )
         )
+    }
+
+    @Test
+    func trustedAutomationDeviceIDSuggestionKeepsA4BindingOneClickFriendly() {
+        #expect(xtTrustedAutomationNormalizeDeviceID(" My Mac.local ") == "my-mac-local")
+        #expect(xtTrustedAutomationNormalizeDeviceID("XT_Device_01") == "xt_device_01")
+        #expect(xtTrustedAutomationSuggestedDeviceID(existing: ["", " Demo Browser Device "]) == "demo-browser-device")
+        #expect(!xtTrustedAutomationSuggestedDeviceID(existing: []).isEmpty)
     }
 
     @Test

@@ -118,33 +118,35 @@ struct HubAIClientModelResolutionTests {
     }
 
     @Test
-    func authoritativeSnapshotInAutoModeFailsClosedToRemoteTruthWhenRemoteProfileExists() {
+    func authoritativeSnapshotInAutoModeFallsBackToLocalWhenRemoteSnapshotIsMissing() {
+        let localSnapshot = ModelStateSnapshot(
+            models: [
+                HubModel(
+                    id: "qwen3-14b-mlx",
+                    name: "Qwen 14B",
+                    backend: "mlx",
+                    quant: "bf16",
+                    contextLength: 32_768,
+                    paramsB: 14,
+                    roles: nil,
+                    state: .loaded,
+                    memoryBytes: nil,
+                    tokensPerSec: nil,
+                    modelPath: "/models/qwen3",
+                    note: nil
+                ),
+            ],
+            updatedAt: 1_776_200_351
+        )
+
         let resolved = HubAIClient.resolveAuthoritativeModelsSnapshot(
             mode: .auto,
             hasRemoteProfile: true,
             remoteSnapshot: nil,
-            localSnapshot: ModelStateSnapshot(
-                models: [
-                    HubModel(
-                        id: "qwen3-14b-mlx",
-                        name: "Qwen 14B",
-                        backend: "mlx",
-                        quant: "bf16",
-                        contextLength: 32_768,
-                        paramsB: 14,
-                        roles: nil,
-                        state: .loaded,
-                        memoryBytes: nil,
-                        tokensPerSec: nil,
-                        modelPath: "/models/qwen3",
-                        note: nil
-                    ),
-                ],
-                updatedAt: 1_776_200_351
-            )
+            localSnapshot: localSnapshot
         )
 
-        #expect(resolved.models.isEmpty)
+        #expect(resolved == localSnapshot)
     }
 
     @Test
@@ -201,7 +203,7 @@ struct HubAIClientModelResolutionTests {
     }
 
     @Test
-    func authoritativeSnapshotInAutoModePrefersLiveLocalHubWhenInventoryIsAvailable() {
+    func authoritativeSnapshotInAutoModeUsesRemoteCatalogWhenInventoryIsAvailable() {
         let localSnapshot = ModelStateSnapshot(
             models: [
                 HubModel(
@@ -250,7 +252,7 @@ struct HubAIClientModelResolutionTests {
             localRuntimeAlive: true
         )
 
-        #expect(resolved == localSnapshot)
+        #expect(resolved == remoteSnapshot)
     }
 
     @Test

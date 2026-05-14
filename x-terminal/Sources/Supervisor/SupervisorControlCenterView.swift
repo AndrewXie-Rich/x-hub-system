@@ -15,13 +15,31 @@ struct SupervisorControlCenterView: View {
                 return "AI 模型"
             }
         }
+
+        var summary: String {
+            switch self {
+            case .supervisor:
+                return "人格、语音、节奏"
+            case .models:
+                return "角色模型与路由"
+            }
+        }
+
+        var iconName: String {
+            switch self {
+            case .supervisor:
+                return "person.3.sequence"
+            case .models:
+                return "brain.head.profile"
+            }
+        }
     }
 
     let preferredTab: Tab
     let embedded: Bool
     let onClose: (() -> Void)?
 
-    @EnvironmentObject private var appModel: AppModel
+    @EnvironmentObject private var navigationFocusStore: XTNavigationFocusStore
     @State private var selectedTab: Tab
 
     init(
@@ -36,43 +54,8 @@ struct SupervisorControlCenterView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Supervisor Control Center")
-                        .font(.title2.weight(.semibold))
-
-                    Text(
-                        embedded
-                            ? "Supervisor 设置和 AI 模型设置统一收口在当前主窗口里；默认只保留这一个稳定入口。"
-                            : "Supervisor 设置和 AI 模型设置统一收口在这里；默认只保留这一个稳定入口。"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Spacer(minLength: 12)
-
-                if let onClose {
-                    Button("关闭") {
-                        onClose()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 16)
-
-            Picker("Control Center Tab", selection: $selectedTab) {
-                ForEach(Tab.allCases) { tab in
-                    Text(tab.label).tag(tab)
-                }
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 16)
-
+        VStack(alignment: .leading, spacing: 0) {
+            controlCenterHeader
             Divider()
 
             Group {
@@ -96,24 +79,115 @@ struct SupervisorControlCenterView: View {
         .onChange(of: preferredTab) { _ in
             syncPreferredTab()
         }
-        .onChange(of: appModel.modelSettingsFocusRequest?.nonce) { nonce in
+        .onChange(of: navigationFocusSnapshot.modelSettingsFocusRequest?.nonce) { nonce in
             guard nonce != nil else { return }
             selectedTab = .models
         }
-        .onChange(of: appModel.supervisorSettingsFocusRequest?.nonce) { nonce in
+        .onChange(of: navigationFocusSnapshot.supervisorSettingsFocusRequest?.nonce) { nonce in
             guard nonce != nil else { return }
             selectedTab = .supervisor
         }
     }
 
+    private var controlCenterHeader: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Supervisor Control Center")
+                        .font(.title2.weight(.semibold))
+
+                    Text("Supervisor 设置与 AI 模型的统一入口。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .layoutPriority(1)
+
+                Spacer(minLength: 12)
+
+                if let onClose {
+                    Button("关闭") {
+                        onClose()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .fixedSize()
+                }
+            }
+
+            controlCenterTabBar
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+    }
+
+    private var controlCenterTabBar: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                ForEach(Tab.allCases) { tab in
+                    controlCenterTabButton(tab)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(Tab.allCases) { tab in
+                    controlCenterTabButton(tab)
+                }
+            }
+        }
+    }
+
+    private func controlCenterTabButton(_ tab: Tab) -> some View {
+        let selected = selectedTab == tab
+
+        return Button {
+            selectedTab = tab
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: tab.iconName)
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(width: 18)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(tab.label)
+                        .font(.caption.weight(.semibold))
+                    Text(tab.summary)
+                        .font(.caption2)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 8)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .frame(minWidth: 180, maxWidth: .infinity, alignment: .leading)
+            .foregroundStyle(selected ? Color.white : Color.primary)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(selected ? Color.accentColor : Color.primary.opacity(0.04))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(selected ? Color.accentColor.opacity(0.28) : Color.primary.opacity(0.08), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .help(tab.summary)
+    }
+
     private func syncPreferredTab() {
-        if appModel.modelSettingsFocusRequest != nil {
+        if navigationFocusSnapshot.modelSettingsFocusRequest != nil {
             selectedTab = .models
-        } else if appModel.supervisorSettingsFocusRequest != nil {
+        } else if navigationFocusSnapshot.supervisorSettingsFocusRequest != nil {
             selectedTab = .supervisor
         } else {
             selectedTab = preferredTab
         }
+    }
+
+    private var navigationFocusSnapshot: XTNavigationFocusSnapshot {
+        navigationFocusStore.snapshot
     }
 }
 

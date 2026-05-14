@@ -30,9 +30,13 @@ enum FileTool {
         allowedRoots: [URL]? = nil,
         maxBytes: Int = 512_000
     ) throws -> String {
-        let url = resolvePath(path, projectRoot: projectRoot)
+        let scopedRoots = allowedRoots ?? [projectRoot]
+        let url = PathGuard.resolveAgainstScopedRoots(
+            target: resolvePath(path, projectRoot: projectRoot),
+            roots: scopedRoots
+        )
         try PathGuard.requireInsideAny(
-            roots: allowedRoots ?? [projectRoot],
+            roots: scopedRoots,
             target: url,
             denyCode: "path_outside_governed_read_roots",
             policyReason: "governed_read_roots",
@@ -49,7 +53,10 @@ enum FileTool {
     }
 
     static func writeText(path: String, content: String, projectRoot: URL, createDirs: Bool = true) throws {
-        let url = resolvePath(path, projectRoot: projectRoot)
+        let url = PathGuard.resolveAgainstScopedRoots(
+            target: resolvePath(path, projectRoot: projectRoot),
+            roots: [projectRoot]
+        )
         try PathGuard.requireInsideAny(
             roots: [projectRoot],
             target: url,
@@ -77,7 +84,10 @@ enum FileTool {
         recursive: Bool = false,
         force: Bool = false
     ) throws -> DeleteResult {
-        let url = resolvePath(path, projectRoot: projectRoot)
+        let url = PathGuard.resolveAgainstScopedRoots(
+            target: resolvePath(path, projectRoot: projectRoot),
+            roots: [projectRoot]
+        )
         let fm = FileManager.default
         try PathGuard.requireInsideAny(
             roots: [projectRoot],
@@ -135,8 +145,14 @@ enum FileTool {
         createDirs: Bool = true,
         overwrite: Bool = false
     ) throws -> MoveResult {
-        let sourceURL = resolvePath(sourcePath, projectRoot: projectRoot)
-        let destinationURL = resolvePath(destinationPath, projectRoot: projectRoot)
+        let sourceURL = PathGuard.resolveAgainstScopedRoots(
+            target: resolvePath(sourcePath, projectRoot: projectRoot),
+            roots: [projectRoot]
+        )
+        let destinationURL = PathGuard.resolveAgainstScopedRoots(
+            target: resolvePath(destinationPath, projectRoot: projectRoot),
+            roots: [projectRoot]
+        )
         let fm = FileManager.default
         try PathGuard.requireInsideAny(
             roots: [projectRoot],
@@ -207,9 +223,13 @@ enum FileTool {
         projectRoot: URL,
         allowedRoots: [URL]? = nil
     ) throws -> [String] {
-        let url = resolvePath(path, projectRoot: projectRoot)
+        let scopedRoots = allowedRoots ?? [projectRoot]
+        let url = PathGuard.resolveAgainstScopedRoots(
+            target: resolvePath(path, projectRoot: projectRoot),
+            roots: scopedRoots
+        )
         try PathGuard.requireInsideAny(
-            roots: allowedRoots ?? [projectRoot],
+            roots: scopedRoots,
             target: url,
             denyCode: "path_outside_governed_read_roots",
             policyReason: "governed_read_roots",
@@ -237,11 +257,15 @@ enum FileTool {
     ) throws -> [String] {
         let pat = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
         if pat.isEmpty { return [] }
-        let searchRoot = resolvePath(path, projectRoot: projectRoot)
+        let scopedRoots = allowedRoots ?? [projectRoot]
+        let searchRoot = PathGuard.resolveAgainstScopedRoots(
+            target: resolvePath(path, projectRoot: projectRoot),
+            roots: scopedRoots
+        )
         let resolvedSearchRoot = PathGuard.resolve(searchRoot)
         let resolvedProjectRoot = PathGuard.resolve(projectRoot)
         try PathGuard.requireInsideAny(
-            roots: allowedRoots ?? [projectRoot],
+            roots: scopedRoots,
             target: searchRoot,
             denyCode: "path_outside_governed_read_roots",
             policyReason: "governed_read_roots",

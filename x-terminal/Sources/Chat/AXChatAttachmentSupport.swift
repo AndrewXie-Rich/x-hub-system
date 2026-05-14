@@ -167,8 +167,10 @@ enum AXChatAttachmentSupport {
         var lines: [String] = [
             "Attachment Context:",
             "- Attached paths may be read with `read_file`. If an attachment is a directory, you may also use `list_dir` or `search` within that directory.",
+            "- Attachments with scope=project_workspace are project-copy paths. Subject to tool policy and approval, you may edit them and create new files under imported project directories.",
             "- External attachments are read-only and exact-path scoped. Do not use `write_file`, `move_path`, or `delete_path` on those external paths.",
             "- If you need to modify an external attachment, ask for it to be imported into the project workspace first or tell the user which project-relative destination you need.",
+            "- If the user says this file, this app, the attachment, or the thing they just sent, treat the active attachment as the primary subject before unrelated project memory.",
         ]
 
         let limited = Array(active.prefix(promptAttachmentLimit))
@@ -234,7 +236,7 @@ enum AXChatAttachmentSupport {
     }
 
     static func importSuccessNotice(_ result: AXChatAttachmentImportResult) -> String {
-        "已将附件 `\(result.sourceAttachment.displayName)` 导入项目工作区：`\(result.importedAttachment.displayPath)`。外部原件仍保持只读，后续请基于项目内副本继续。"
+        "已将附件 `\(result.sourceAttachment.displayName)` 导入项目工作区：`\(result.importedAttachment.displayPath)`。外部原件仍保持只读；可在项目内副本中编辑，若这是文件夹也可在其中新建文件。"
     }
 
     static func importSuccessNotice(
@@ -251,7 +253,7 @@ enum AXChatAttachmentSupport {
             .map { "`\($0.importedAttachment.displayPath)`" }
             .joined(separator: "、")
         let suffix = filtered.count > 3 ? " 等 \(filtered.count) 个文件" : ""
-        return "已将 \(filtered.count) 个附件导入项目工作区：\(preview)\(suffix)。外部原件仍保持只读；可直接在 Project Inbox 中点 Import & Continue，继续基于项目内副本开发。"
+        return "已将 \(filtered.count) 个附件导入项目工作区：\(preview)\(suffix)。外部原件仍保持只读；可直接在项目内副本中编辑，若包含文件夹也可在其中新建文件。"
     }
 
     static func importContinuationSuggestion(

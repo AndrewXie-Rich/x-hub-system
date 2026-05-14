@@ -1,6 +1,6 @@
 # Rust Hub Implementation Status
 
-Updated: 2026-05-07
+Updated: 2026-05-13
 
 ## Active Slice
 
@@ -519,9 +519,11 @@ Current slice:
   preflight that captures a write-before snapshot and emits apply, daemon
   relaunch, write-status smoke, and rollback plans without executing them: done
 - `tools/active_root_upgrade_plan.js` non-mutating source/package active root
-  alignment plan for smoother Rust Hub updates: done
+  alignment plan for smoother Rust Hub updates, with provider/model production
+  authority detection that skips route prep commands after cutover: done
 - `tools/active_root_upgrade_apply.js` dry-run-by-default source/package active
-  root upgrade orchestrator with explicit apply/relaunch/validate gates: done
+  root upgrade orchestrator with explicit apply/relaunch/validate gates and
+  production-aware route guard selection: done
 - Rust scheduler cross-process event/snapshot ID collision fix for concurrent
   CLI claims: done
 - Node Hub authority runtime readiness allows active Rust authority runs by
@@ -879,9 +881,11 @@ Current slice:
   implemented.
   Readiness and classic compat probes keep stale Rust-owned preferred
   `hub_status.json` evidence from falsely dropping the live production surface.
-  RHM-108 makes request-path repair read-only, uses a process-local live status
-  cache for readiness/compat probes and keeps durable writes in the background
-  heartbeat. RHM-109 starts heartbeat in trusted live mode, keeps live cutover
+  RHM-108 made request-path repair read-only, used a process-local live status
+  cache for readiness/compat probes, and kept durable writes in the background
+  heartbeat. RHM-117 supersedes that overlay during explicit live cutover by
+  writing stale or missing Rust-owned status back to disk and failing closed if
+  the write fails. RHM-109 starts heartbeat in trusted live mode, keeps live cutover
   request-path probes off direct Group Container status reads/metadata checks, and uses a
   `1000ms` heartbeat with a bounded `2000ms` status lease. Live Group Container
   writes prefer temp-file atomic rename but can fall back to a locked in-place
@@ -915,6 +919,46 @@ Current slice:
   final daemon ops metrics, failing closed if cumulative slow-request delta
   exceeds `--max-slow-requests`. This catches transient stutter even if samples
   have aged out of the bounded recent window by the time a long run finishes.
+- `RHM-117` XT live status on-demand disk repair: implemented. Explicit
+  cutover readiness and classic compat probes now repair stale or missing
+  Rust-owned `hub_status.json` by performing a gated fast disk write and
+  updating the live status cache. If the write fails, the probe no longer
+  returns a fresh memory-only overlay, so live heartbeat and production
+  stability gates fail closed on durable status-file problems.
+- `RHM-118` production stability session adoption: implemented.
+  `tools/production_live_stability_session.command --adopt` writes current
+  package state for an active long stability gate discovered in another package
+  root. `--status` now reports current, managed, and original process roots,
+  while `--start` refuses to create duplicate long sessions unless
+  `--replace` is explicit and `--stop` can stop a discovered session even when
+  local state is missing.
+- `RHM-119` production stability active status observability: implemented.
+  `tools/production_live_stability_session.command --status` remains read-only
+  but now reports the active gate process tree, the live heartbeat soak child
+  when present, report-file metadata, and a bounded `hub_status.json` freshness
+  sample. This lets an 8 hour or overnight stability session be inspected
+  without stopping it, without writing live status, and without changing
+  provider/model, scheduler, memory writer, skills execution, or UI authority.
+- `RHM-120` rolling checkpoint sidecar adoption: implemented.
+  `tools/production_live_stability_session.command --adopt-checkpoint-loop`
+  writes current package state for an active checkpoint loop worker discovered
+  in another package root. `--checkpoint-loop-status` now reports current,
+  managed, and original sidecar roots, while `--start-checkpoint-loop` refuses
+  duplicate sidecars unless `--replace` is explicit and `--stop-checkpoint-loop`
+  can stop a discovered sidecar even when local state is missing.
+- `RHM-121` production stability supervision status: implemented.
+  `tools/production_live_stability_session.command --supervision-status`
+  combines the long production stability session and rolling checkpoint sidecar
+  into one read-only payload. It reports compact supervision readiness, live
+  status freshness, heartbeat child presence, next checkpoint timing, latest
+  checkpoint result, slow-request delta budget, and authority/UI/secret drift
+  while embedding the full existing status payloads for diagnostics.
+- `RHM-122` production stability CLI context: implemented.
+  `tools/production_live_stability_session.command --status` now preserves
+  explicit `--http-base-url` and `--live-base-dir` values as fallback context
+  when the current package has no local session state yet. Existing adopted
+  state and discovered process metadata still take precedence, so package
+  migration and recovery output stays accurate without changing authority.
 - `RHM-036` HTTP latency metrics: implemented. `xhubd serve` now records
   route-level request counts, average/max latency, slow counts, and last status
   in memory, exposes them at `/runtime/http-metrics` and `/http/metrics`, and
@@ -1409,8 +1453,8 @@ cargo run --bin xhubd -- provider route --model-id gpt-4o
 cargo run --bin xhubd -- provider route --request-json '{"model_id":"claude-3.5-sonnet","provider":"claude","now_ms":1000}'
 node x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_provider_route_shadow_compare.test.js
 node x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_provider_route_shadow_compare_service_hook.test.js
-bash "rust/xhubd/tools/provider_route_shadow_compare_smoke.command" --model-id gpt-4o
-bash "rust/xhubd/tools/provider_route_shadow_compare_runner.command" --runs 10 --expect-ready --expect-zero-mismatch
+bash "rust/rust hub/tools/provider_route_shadow_compare_smoke.command" --model-id gpt-4o
+bash "rust/rust hub/tools/provider_route_shadow_compare_runner.command" --runs 10 --expect-ready --expect-zero-mismatch
 cargo run -p xhubd -- doctor
 cargo run -p xhubd -- serve-grpc
 bash tools/run_rust_hub.command migrate
@@ -1448,8 +1492,8 @@ node ../../x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_scheduler_lea
 node ../../x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_scheduler_bridge.test.js
 node ../../x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_scheduler_shadow_compare.test.js
 node ../../x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_scheduler_shadow_compare_service_hook.test.js
-node --input-type=module -e "import { createSchedulerStatusBridge } from './x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_scheduler_bridge.js'; const bridge = createSchedulerStatusBridge({ env: { XHUB_RUST_SCHEDULER_STATUS_READ: '1', XHUB_RUST_HUB_ROOT: 'rust/xhubd' } }); console.log(JSON.stringify(bridge.maybeReadStatus({ includeQueueItems: false, fallback: { queue_depth: 0, in_flight_total: 0 } })));"
-node --input-type=module -e "import { createSchedulerLeaseShadowBridge } from './x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_scheduler_lease_shadow_bridge.js'; const id='live_node_shadow_'+process.pid+'_'+Date.now(); const bridge=createSchedulerLeaseShadowBridge({ env: { XHUB_RUST_SCHEDULER_LEASE_SHADOW:'1', XHUB_RUST_HUB_ROOT:'rust/xhubd', XHUB_RUST_SCHEDULER_LEASE_SHADOW_TIMEOUT_MS:'10000' } }); bridge.mirrorImmediateAcquire({ requestId:id, scopeKey:'project:live-node-shadow', project_id:'live-node-shadow', device_id:'device-live' }); bridge.mirrorRelease({ requestId:id }); await bridge.flush(); console.log(JSON.stringify({ok:true,state_size:bridge._state.size,request_id:id}));"
+node --input-type=module -e "import { createSchedulerStatusBridge } from './x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_scheduler_bridge.js'; const bridge = createSchedulerStatusBridge({ env: { XHUB_RUST_SCHEDULER_STATUS_READ: '1', XHUB_RUST_HUB_ROOT: '/Users/andrew.xie/Documents/AX/rust/rust hub' } }); console.log(JSON.stringify(bridge.maybeReadStatus({ includeQueueItems: false, fallback: { queue_depth: 0, in_flight_total: 0 } })));"
+node --input-type=module -e "import { createSchedulerLeaseShadowBridge } from './x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_scheduler_lease_shadow_bridge.js'; const id='live_node_shadow_'+process.pid+'_'+Date.now(); const bridge=createSchedulerLeaseShadowBridge({ env: { XHUB_RUST_SCHEDULER_LEASE_SHADOW:'1', XHUB_RUST_HUB_ROOT:'/Users/andrew.xie/Documents/AX/rust/rust hub', XHUB_RUST_SCHEDULER_LEASE_SHADOW_TIMEOUT_MS:'10000' } }); bridge.mirrorImmediateAcquire({ requestId:id, scopeKey:'project:live-node-shadow', project_id:'live-node-shadow', device_id:'device-live' }); bridge.mirrorRelease({ requestId:id }); await bridge.flush(); console.log(JSON.stringify({ok:true,state_size:bridge._state.size,request_id:id}));"
 bash tools/xhubd_daemon.command env
 bash tools/xhubd_daemon.command self-test
 bash tools/daemon_ops_report.command --require-ready --max-log-bytes 4096
@@ -1902,16 +1946,91 @@ RHM-115 packaged baseline-aware slow request carryover checkpoint: ok
 RHM-116 readiness cache nonblocking hot-path unit test: ok
 RHM-116 HTTP metrics regression tests after readiness hot-path change: ok
 RHM-116 Rust xhubd full suite after readiness hot-path change: ok
+RHM-117 live cutover on-demand status-file creation unit test: ok
+RHM-117 stale Rust-owned status fast disk repair unit test: ok
+RHM-117 XT classic compatibility unit suite: ok
+RHM-117 Rust xhubd full suite after live status disk repair: ok
+RHM-117 UI compatibility and no SwiftUI product files: ok
+RHM-117 packaged Rust Hub doctor and UI compatibility gate: ok
+RHM-117 live launchd deploy from packaged xhubd: ok
+RHM-117 live daemon ops gate after deploy: ok
+RHM-117 live write-status smoke on /Users/andrew.xie/RELFlowHub: ok
+RHM-117 live production stability checkpoint after deploy: ok
+RHM-117 rolling checkpoint sidecar restarted from packaged root: ok
+RHM-118 production stability session script syntax: ok
+RHM-118 cross-package active session status discovery: ok
+RHM-118 packaged Rust Hub doctor and UI compatibility gate: ok
+RHM-118 packaged active production session adoption: ok
+RHM-118 packaged dist contains no SwiftUI product files: ok
+RHM-119 production stability active status syntax: ok
+RHM-119 active session status observability during active 8h session: ok
+RHM-119 packaged active session status observability: ok
+RHM-120 production stability session script syntax: ok
+RHM-120 rolling checkpoint sidecar status discovery: ok
+RHM-120 zero-preserving sidecar status merge: ok
+RHM-120 packaged Rust Hub doctor and UI compatibility gate: ok
+RHM-120 packaged active rolling checkpoint sidecar adoption: ok
+RHM-120 packaged dist contains no SwiftUI product files: ok
+RHM-121 production stability supervision status syntax: ok
+RHM-121 active supervision status during active 8h session: ok
+RHM-121 packaged supervision status: ok
+RHM-122 production stability session script syntax: ok
+RHM-122 no-state CLI context fallback: ok
+RHM-123 X-Hub Node production env passthrough Swift test: ok
+RHM-123 rebuilt X-Hub.app production runtime guard after relaunch: ok
+RHM-123 live heartbeat soak after rebuilt X-Hub.app relaunch: ok
+RHM-123 daemon ops and production live checkpoint after rebuilt X-Hub.app relaunch: ok
+RHM-123 UI compatibility and no SwiftUI product files: ok
+RHM-124 current active-root production authority status: ok
+RHM-124 latest packaged Rust Hub doctor and UI compatibility gate: ok
+RHM-124 refreshed 8h live stability session start: ok
+RHM-124 refreshed rolling checkpoint sidecar first checkpoint: ok
+RHM-124 daemon ops recent slow-request budget after refresh: ok
+RHM-124 process sanity without target/debug or target/release xhubd: ok
+RHM-125 Rust memory writer unit tests: ok
+RHM-125 Rust skills execution manifest/preflight unit tests: ok
+RHM-125 Rust xhubd full suite after memory/skills production surfaces: ok
+RHM-125 memory writer and skills execution production smoke: ok
+RHM-125 packaged memory writer and skills execution production smoke: ok
+RHM-125 process sanity without target/debug or target/release xhubd: ok
+RHM-126 memory/skills live-cutover guard implementation: ok
+RHM-126 final dist packaged and doctor/UI/no-Swift checks: ok
+RHM-126 live launchd relaunch with Rust memory writer and skills execution authority: ok
+RHM-126 live memory write / retrieval / skill execute / secret-denial smoke: ok
+RHM-126 ops gate with required memory/skills Rust authority: ok
+RHM-127 active root converged to package-store final root: ok
+RHM-127 X-Hub relaunch inherits final Rust Hub root: ok
+RHM-127 production stability gate accepts memory/skills authority carryover: ok
+RHM-127 package-store rolling checkpoint sidecar latest two checkpoints: ok
+RHM-127 live memory/skills smoke after active-root convergence: ok
+RHM-127 UI compatibility and no SwiftUI product files after convergence: ok
+RHM-128 domain/public endpoint auth gate implementation: ok
+RHM-128 domain readiness dry-run gate: ok
+RHM-128 XT pairing export bundle without stdout key leak: ok
+RHM-128 domain smoke script syntax and localhost self-check: ok
+RHM-128 Rust xhubd full suite after domain readiness change: ok
+RHM-129 domain activation plan implementation: ok
+RHM-129 domain activation plan self-test and placeholder rejection: ok
+RHM-130 active-root plan/apply production-aware syntax and self-tests: ok
+RHM-130 live dry-run skips route prep under provider/model production authority: ok
+RHM-130 packaged active-root plan/apply production-aware dry-run: ok
+RHM-130 scheduler guard accepts required Rust memory/skills production authority: ok
+RHM-131 XT file IPC heartbeat auto-discovers live base dir from classic compat: ok
 ```
 
 ## Next Task
 
 Continue post-cutover hardening:
 
-- keep live `hub_status.json` heartbeat evidence fresh under longer and
-  overnight soaks;
-- keep Rust memory writer authority and Rust skills execution authority off;
-- keep `/ready` and `/xt/classic-hub-compat` below slow-request budget during
-  live cutover;
-- make any remaining shadow smoke tools production-aware so they do not fail
-  solely because the explicit XT live cutover is now active.
+- let the package-store 8h live stability session and 4h rolling checkpoint
+  sidecar continue to collect evidence;
+- keep `current`, launchctl `XHUB_RUST_HUB_ROOT`, and X-Hub Node inherited root
+  aligned to the same final package;
+- keep `/ready` and `/xt/classic-hub-compat` under the recent slow-request
+  budget while memory writer and skills execution stay in Rust authority;
+- choose the real domain/tunnel provider, run
+  `cross_network_domain_activation_plan.command` with the final HTTPS URL, then
+  execute its access-key, launchd, watchdog, pairing, and domain-smoke steps in
+  order before XT uses the domain outside the first LAN pairing;
+- continue pruning old reports/logs through dry-run first, then apply only after
+  the retention plan is reviewed.

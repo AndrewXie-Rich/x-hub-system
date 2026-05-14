@@ -210,6 +210,45 @@ struct XTUnifiedDoctorReportTests {
     }
 
     @Test
+    func blockedExternalTerminalAccessKeysProjectIntoDoctorAndFailureIssue() throws {
+        let model = sampleModel(id: "hub.model.coder")
+        let projection = XTUnifiedDoctorExternalTerminalAccessProjection(
+            accessKeys: [
+                sampleExternalTerminalAccessKey(
+                    accessKeyID: "hk_blocked",
+                    name: "Blocked External Terminal",
+                    status: "revoked",
+                    statusReason: "token_revoked"
+                )
+            ],
+            observedAt: Date(timeIntervalSince1970: 1_741_300_060)
+        )
+
+        let report = XTUnifiedDoctorBuilder.build(
+            input: makeDoctorInput(
+                localConnected: true,
+                remoteConnected: false,
+                configuredModelIDs: [model.id],
+                models: [model],
+                bridgeAlive: true,
+                bridgeEnabled: true,
+                sessionRuntime: nil,
+                skillsSnapshot: readySkillsSnapshot(),
+                externalTerminalAccessProjection: projection
+            )
+        )
+
+        let section = try #require(report.section(.externalTerminalAccessReadiness))
+        #expect(section.state == .diagnosticRequired)
+        #expect(section.headline == "存在受阻的非 XT Terminal access key")
+        #expect(section.detailLines.contains("external_terminal_access_blocked_keys=1") == true)
+        #expect(section.externalTerminalAccessProjection?.blockedKeyCount == 1)
+        #expect(report.currentFailureCode == UITroubleshootIssue.externalTerminalAccessBlocked.rawValue)
+        #expect(report.currentFailureIssue == .externalTerminalAccessBlocked)
+        #expect(report.readyForFirstTask == true)
+    }
+
+    @Test
     func readySummaryIncludesPairedRouteSetLocalReadyContext() {
         let model = sampleModel(id: "hub.model.coder")
         let report = XTUnifiedDoctorBuilder.build(
@@ -1342,10 +1381,16 @@ struct XTUnifiedDoctorReportTests {
         let projection = try #require(section.supervisorSafePointTimelineProjection)
 
         #expect(projection.pendingGuidanceAvailable)
+        #expect(projection.latestGuidanceInjectionId == "guidance-safe-point-next-step")
+        #expect(projection.latestGuidanceAckStatus == SupervisorGuidanceAckStatus.pending.rawValue)
+        #expect(projection.latestGuidanceApplyState == SupervisorGuidanceApplyState.queued.rawValue)
+        #expect(projection.latestGuidanceLifecycle == "active")
         #expect(projection.pendingGuidanceInjectionId == "guidance-safe-point-next-step")
         #expect(projection.pendingGuidanceDeliveryMode == SupervisorGuidanceDeliveryMode.replanRequest.rawValue)
         #expect(projection.pendingGuidanceInterventionMode == SupervisorGuidanceInterventionMode.replanNextSafePoint.rawValue)
         #expect(projection.pendingGuidanceSafePointPolicy == SupervisorGuidanceSafePointPolicy.nextStepBoundary.rawValue)
+        #expect(projection.pendingGuidanceApplyState == SupervisorGuidanceApplyState.queued.rawValue)
+        #expect(projection.pendingGuidanceLifecycle == "active")
         #expect(projection.liveStateSource == "pending_tool_approval")
         #expect(projection.flowStep == 1)
         #expect(projection.toolResultsCount == 0)
@@ -1360,8 +1405,68 @@ struct XTUnifiedDoctorReportTests {
         #expect(projection.deliveryState == "waiting_next_step_boundary")
         #expect(projection.executionGate == "normal")
         #expect(projection.summaryLine.contains("pending guidance 等待下一步边界"))
+        #expect(projection.summaryLine.contains("apply_state=queued"))
+        #expect(section.detailLines.contains("supervisor_safe_point_latest_guidance_apply_state=queued"))
+        #expect(section.detailLines.contains("supervisor_safe_point_pending_guidance_apply_state=queued"))
         #expect(section.detailLines.contains("supervisor_safe_point_live_state_source=pending_tool_approval"))
         #expect(section.detailLines.contains("supervisor_safe_point_delivery_state=waiting_next_step_boundary"))
+    }
+
+    @Test
+    func sessionRuntimeSectionKeepsLatestGuidanceApplyStateVisibleAfterAckEvenWithoutPendingGuidance() throws {
+        let model = sampleModel(id: "hub.model.coder")
+        let root = makeProjectRoot(named: "xt-doctor-safe-point-acked")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-safe-point-acked",
+                reviewId: "review-safe-point-acked",
+                projectId: AXProjectRegistryStore.projectId(forRoot: ctx.root),
+                targetRole: .coder,
+                deliveryMode: .priorityInsert,
+                interventionMode: .suggestNextSafePoint,
+                safePointPolicy: .nextToolBoundary,
+                guidanceText: "先接受这条 guidance。",
+                ackStatus: .accepted,
+                ackRequired: true,
+                ackNote: "accepted",
+                injectedAtMs: 200,
+                ackUpdatedAtMs: 260,
+                auditRef: "audit-safe-point-acked"
+            ),
+            for: ctx
+        )
+
+        let report = XTUnifiedDoctorBuilder.build(
+            input: makeDoctorInput(
+                localConnected: true,
+                remoteConnected: false,
+                configuredModelIDs: [model.id],
+                models: [model],
+                bridgeAlive: true,
+                bridgeEnabled: true,
+                sessionRuntime: nil,
+                skillsSnapshot: readySkillsSnapshot(),
+                doctorProjectContext: ctx
+            )
+        )
+
+        let section = try #require(report.section(.sessionRuntimeReadiness))
+        let projection = try #require(section.supervisorSafePointTimelineProjection)
+
+        #expect(projection.pendingGuidanceAvailable == false)
+        #expect(projection.latestGuidanceInjectionId == "guidance-safe-point-acked")
+        #expect(projection.latestGuidanceAckStatus == SupervisorGuidanceAckStatus.accepted.rawValue)
+        #expect(projection.latestGuidanceApplyState == SupervisorGuidanceApplyState.acked.rawValue)
+        #expect(projection.latestGuidanceLifecycle == "settled")
+        #expect(projection.pendingGuidanceInjectionId == nil)
+        #expect(projection.deliveryState == nil)
+        #expect(projection.summaryLine.contains("latest_apply_state=acked"))
+        #expect(section.detailLines.contains("supervisor_safe_point_latest_guidance_apply_state=acked"))
+        #expect(section.detailLines.contains("supervisor_safe_point_pending_guidance_available=false"))
     }
 
     @Test
@@ -2183,6 +2288,392 @@ struct XTUnifiedDoctorReportTests {
     }
 
     @Test
+    func modelRouteSectionCarriesLatestProviderKeySelectionSnapshotIntoDoctorReport() {
+        ProviderKeySelectionSnapshotStore.shared.removeAll()
+        defer { ProviderKeySelectionSnapshotStore.shared.removeAll() }
+
+        let model = sampleModel(id: "hub.model.coder")
+        let decision = ProviderKeySelectionDecision(
+            requestedProvider: "openai",
+            requestedModelId: "openai/gpt-5.4",
+            strategy: "fill-first",
+            selectionScope: "openai::openai:api.openai.com:chat_completions",
+            selectedAccountKey: "openai:primary",
+            fallbackReasonCode: "",
+            candidates: [
+                ProviderKeyCandidateDecision(
+                    accountKey: "openai:primary",
+                    provider: "openai",
+                    poolID: "openai:api.openai.com:chat_completions",
+                    wireAPI: "chat_completions",
+                    availability: .ready,
+                    score: 1_000,
+                    selected: true,
+                    reasonCode: "selected_by_scheduler",
+                    retryAtMs: 0
+                ),
+                ProviderKeyCandidateDecision(
+                    accountKey: "openai:cooldown",
+                    provider: "openai",
+                    poolID: "openai:api.openai.com:chat_completions",
+                    wireAPI: "chat_completions",
+                    availability: .cooldown(
+                        reasonCode: "provider_timeout",
+                        retryAtMs: 120_000
+                    ),
+                    score: -.greatestFiniteMagnitude,
+                    selected: false,
+                    reasonCode: "provider_timeout",
+                    retryAtMs: 120_000
+                )
+            ]
+        )
+        ProviderKeySelectionSnapshotStore.shared.record(
+            decision: decision,
+            modelId: "openai/gpt-5.4"
+        )
+
+        let diagnostics = AXModelRouteDiagnosticsSummary(
+            recentEventCount: 1,
+            recentFailureCount: 1,
+            recentRemoteRetryRecoveryCount: 0,
+            latestEvent: AXModelRouteDiagnosticEvent(
+                schemaVersion: AXModelRouteDiagnosticEvent.currentSchemaVersion,
+                createdAt: 1_741_300_020,
+                projectId: "project-alpha",
+                projectDisplayName: "Alpha",
+                role: "coder",
+                stage: "chat_plan",
+                requestedModelId: "openai/gpt-5.4",
+                actualModelId: "",
+                runtimeProvider: "OpenAI",
+                executionPath: "remote_error",
+                fallbackReasonCode: "provider_not_ready",
+                auditRef: "route-audit-1",
+                remoteRetryAttempted: false,
+                remoteRetryFromModelId: "",
+                remoteRetryToModelId: "",
+                remoteRetryReasonCode: ""
+            ),
+            detailLines: [
+                "recent_route_events_24h=1",
+                "recent_route_failures_24h=1",
+                "route_event_1=project=Alpha role=coder path=remote_error requested=openai/gpt-5.4 reason=provider_not_ready provider=OpenAI audit_ref=route-audit-1"
+            ]
+        )
+
+        let report = XTUnifiedDoctorBuilder.build(
+            input: makeDoctorInput(
+                localConnected: true,
+                remoteConnected: false,
+                configuredModelIDs: [model.id],
+                models: [model],
+                bridgeAlive: true,
+                bridgeEnabled: true,
+                sessionRuntime: nil,
+                skillsSnapshot: readySkillsSnapshot(),
+                modelRouteDiagnostics: diagnostics
+            )
+        )
+
+        let section = report.section(.modelRouteReadiness)
+        #expect(section?.providerKeySelectionProjection?.selectedAccountKey == "openai:primary")
+        #expect(section?.providerKeyRouteContextProjection?.decision?.selectedAccountKey == "openai:primary")
+        #expect(section?.providerKeyRouteContextProjection?.modelId == "openai/gpt-5.4")
+        #expect(section?.summary.contains("最近一次远端 Key 调度") == true)
+        #expect(section?.detailLines.contains(where: { $0.hasPrefix("provider_key_selection_decision_json=") }) == true)
+        #expect(section?.detailLines.contains(where: { $0.contains("provider_key_selection_evidence_1=") }) == true)
+    }
+
+    @Test
+    func modelRouteSectionCarriesProviderKeyImportSourceStatusIntoDoctorReport() {
+        ProviderKeySelectionSnapshotStore.shared.removeAll()
+        defer { ProviderKeySelectionSnapshotStore.shared.removeAll() }
+
+        let model = sampleModel(id: "hub.model.coder")
+        let decision = ProviderKeySelectionDecision(
+            requestedProvider: "openai",
+            requestedModelId: "openai/gpt-5.4",
+            strategy: "fill-first",
+            selectionScope: "openai::openai:api.openai.com:chat_completions",
+            selectedAccountKey: "openai:primary",
+            fallbackReasonCode: "",
+            candidates: [
+                ProviderKeyCandidateDecision(
+                    accountKey: "openai:primary",
+                    provider: "openai",
+                    poolID: "openai:api.openai.com:chat_completions",
+                    wireAPI: "chat_completions",
+                    availability: .ready,
+                    score: 1_000,
+                    selected: true,
+                    reasonCode: "selected_by_scheduler",
+                    retryAtMs: 0
+                )
+            ]
+        )
+        ProviderKeySelectionSnapshotStore.shared.record(
+            decision: decision,
+            modelId: "openai/gpt-5.4"
+        )
+
+        let importSnapshot = HubProviderKeyImportSnapshot(
+            sources: [
+                HubProviderKeyImportSourceStatusSnapshot(
+                    sourceKey: "auth_dir:/Users/test/.codex",
+                    kind: "auth_dir",
+                    sourceRef: "/Users/test/.codex",
+                    state: "ready",
+                    lastSyncAtMs: 1_741_300_010_000,
+                    lastImportedCount: 2,
+                    ownedAccountCount: 1,
+                    lastErrorCount: 0,
+                    lastErrors: []
+                ),
+                HubProviderKeyImportSourceStatusSnapshot(
+                    sourceKey: "config_path:/Users/test/config149.toml",
+                    kind: "config_path",
+                    sourceRef: "/Users/test/config149.toml",
+                    state: "sync_failed",
+                    lastSyncAtMs: 1_741_300_015_000,
+                    lastImportedCount: 0,
+                    ownedAccountCount: 1,
+                    lastErrorCount: 1,
+                    lastErrors: ["unsupported_toml_config"]
+                ),
+            ],
+            accountSourceOwners: [
+                "openai:primary": ["auth_dir:/Users/test/.codex"]
+            ]
+        )
+
+        let diagnostics = AXModelRouteDiagnosticsSummary(
+            recentEventCount: 1,
+            recentFailureCount: 1,
+            recentRemoteRetryRecoveryCount: 0,
+            latestEvent: AXModelRouteDiagnosticEvent(
+                schemaVersion: AXModelRouteDiagnosticEvent.currentSchemaVersion,
+                createdAt: 1_741_300_020,
+                projectId: "project-alpha",
+                projectDisplayName: "Alpha",
+                role: "coder",
+                stage: "chat_plan",
+                requestedModelId: "openai/gpt-5.4",
+                actualModelId: "",
+                runtimeProvider: "OpenAI",
+                executionPath: "remote_error",
+                fallbackReasonCode: "provider_not_ready",
+                auditRef: "route-audit-1",
+                remoteRetryAttempted: false,
+                remoteRetryFromModelId: "",
+                remoteRetryToModelId: "",
+                remoteRetryReasonCode: ""
+            ),
+            detailLines: [
+                "recent_route_events_24h=1",
+                "recent_route_failures_24h=1",
+                "route_event_1=project=Alpha role=coder path=remote_error requested=openai/gpt-5.4 reason=provider_not_ready provider=OpenAI audit_ref=route-audit-1"
+            ]
+        )
+
+        let report = XTUnifiedDoctorBuilder.build(
+            input: makeDoctorInput(
+                localConnected: true,
+                remoteConnected: false,
+                configuredModelIDs: [model.id],
+                models: [model],
+                bridgeAlive: true,
+                bridgeEnabled: true,
+                sessionRuntime: nil,
+                skillsSnapshot: readySkillsSnapshot(),
+                providerKeyImportSnapshot: importSnapshot,
+                modelRouteDiagnostics: diagnostics
+            )
+        )
+
+        let section = report.section(.modelRouteReadiness)
+        #expect(section?.detailLines.contains("provider_key_import_source_count=2") == true)
+        #expect(section?.detailLines.contains(where: { $0.hasPrefix("provider_key_selected_import_source_1=") }) == true)
+        #expect(section?.detailLines.contains(where: { $0.hasPrefix("provider_key_import_source_issue_1=") }) == true)
+        #expect(section?.detailLines.contains("provider_key_import_source_issue_1_error_code=unsupported_toml_config") == true)
+        #expect(section?.detailLines.contains(where: { $0.hasPrefix("provider_key_import_source_issue_1_ref=/Users/test/config149.toml") }) == true)
+        #expect(section?.providerKeyRouteContextProjection?.decision?.selectedAccountKey == "openai:primary")
+        #expect(section?.providerKeyRouteContextProjection?.primaryImportIssue?.errorCode == "unsupported_toml_config")
+        #expect(section?.providerKeyRouteContextProjection?.importContextLines.contains(where: { $0.contains("config149.toml") }) == true)
+        #expect(section?.summary.contains("key 导入链路坏了") == true)
+        #expect(section?.summary.contains("最近一次远端 Key 调度") == true)
+        #expect(section?.nextStep.contains("Provider Key 管理") == true)
+        #expect(section?.nextStep.contains("/Users/test/config149.toml") == true)
+        #expect(section?.repairEntry == .hubProviderKeys)
+    }
+
+    @Test
+    func modelRouteSectionCarriesImportSourceIssuesEvenWithoutSelectionDecision() {
+        ProviderKeySelectionSnapshotStore.shared.removeAll()
+
+        let model = sampleModel(id: "hub.model.coder")
+        let importSnapshot = HubProviderKeyImportSnapshot(
+            sources: [
+                HubProviderKeyImportSourceStatusSnapshot(
+                    sourceKey: "config_path:/Users/test/config149.toml",
+                    kind: "config_path",
+                    sourceRef: "/Users/test/config149.toml",
+                    state: "sync_failed",
+                    lastSyncAtMs: 1_741_300_015_000,
+                    lastImportedCount: 0,
+                    ownedAccountCount: 1,
+                    lastErrorCount: 1,
+                    lastErrors: ["unsupported_toml_config"]
+                )
+            ],
+            accountSourceOwners: [:]
+        )
+
+        let diagnostics = AXModelRouteDiagnosticsSummary(
+            recentEventCount: 1,
+            recentFailureCount: 1,
+            recentRemoteRetryRecoveryCount: 0,
+            latestEvent: AXModelRouteDiagnosticEvent(
+                schemaVersion: AXModelRouteDiagnosticEvent.currentSchemaVersion,
+                createdAt: 1_741_300_020,
+                projectId: "project-alpha",
+                projectDisplayName: "Alpha",
+                role: "coder",
+                stage: "chat_plan",
+                requestedModelId: "openai/gpt-5.4",
+                actualModelId: "",
+                runtimeProvider: "OpenAI",
+                executionPath: "remote_error",
+                fallbackReasonCode: "provider_not_ready",
+                auditRef: "route-audit-1",
+                remoteRetryAttempted: false,
+                remoteRetryFromModelId: "",
+                remoteRetryToModelId: "",
+                remoteRetryReasonCode: ""
+            ),
+            detailLines: [
+                "recent_route_events_24h=1",
+                "recent_route_failures_24h=1",
+                "route_event_1=project=Alpha role=coder path=remote_error requested=openai/gpt-5.4 reason=provider_not_ready provider=OpenAI audit_ref=route-audit-1"
+            ]
+        )
+
+        let report = XTUnifiedDoctorBuilder.build(
+            input: makeDoctorInput(
+                localConnected: true,
+                remoteConnected: false,
+                configuredModelIDs: [model.id],
+                models: [model],
+                bridgeAlive: true,
+                bridgeEnabled: true,
+                sessionRuntime: nil,
+                skillsSnapshot: readySkillsSnapshot(),
+                providerKeyImportSnapshot: importSnapshot,
+                modelRouteDiagnostics: diagnostics
+            )
+        )
+
+        let section = report.section(.modelRouteReadiness)
+        #expect(section?.detailLines.contains("provider_key_import_source_count=1") == true)
+        #expect(section?.detailLines.contains(where: { $0.hasPrefix("provider_key_import_source_issue_1=") }) == true)
+        #expect(section?.detailLines.contains("provider_key_import_source_issue_1_error_code=unsupported_toml_config") == true)
+        #expect(section?.detailLines.contains(where: { $0.hasPrefix("provider_key_import_source_issue_1_ref=/Users/test/config149.toml") }) == true)
+        #expect(section?.detailLines.contains(where: { $0.hasPrefix("provider_key_selected_import_source_1=") }) == false)
+        #expect(section?.providerKeyRouteContextProjection?.decision == nil)
+        #expect(section?.providerKeyRouteContextProjection?.primaryImportIssue?.sourceRef == "/Users/test/config149.toml")
+        #expect(section?.summary.contains("key 导入链路坏了") == true)
+        #expect(section?.nextStep.contains("Provider Key 管理") == true)
+        #expect(section?.nextStep.contains("/Users/test/config149.toml") == true)
+        #expect(section?.repairEntry == .hubProviderKeys)
+    }
+
+    @Test
+    func modelRouteSectionCarriesRefreshFailureReasonAndMetadataRepairHint() {
+        ProviderKeySelectionSnapshotStore.shared.removeAll()
+
+        let decision = ProviderKeySelectionDecision(
+            requestedProvider: "gemini",
+            requestedModelId: "gemini-2.5-pro",
+            strategy: "fill-first",
+            selectionScope: "gemini::gemini-2.5-pro",
+            selectedAccountKey: "",
+            fallbackReasonCode: "all_keys_unavailable",
+            candidates: [
+                ProviderKeyCandidateDecision(
+                    accountKey: "gemini:primary",
+                    provider: "gemini",
+                    poolID: "gemini:generativelanguage.googleapis.com:default",
+                    wireAPI: "",
+                    availability: .blocked(reasonCode: "missing_oauth_client"),
+                    score: -.greatestFiniteMagnitude,
+                    selected: false,
+                    reasonCode: "missing_oauth_client",
+                    retryAtMs: 0,
+                    retryAtSource: "manual",
+                    statusMessage: "gemini refresh requires oauth client id and secret",
+                    requiredMetadata: ["client_id", "client_secret", "token_uri"]
+                )
+            ]
+        )
+        ProviderKeySelectionSnapshotStore.shared.record(
+            decision: decision,
+            modelId: "gemini-2.5-pro"
+        )
+
+        let model = sampleModel(id: "hub.model.coder")
+        let diagnostics = AXModelRouteDiagnosticsSummary(
+            recentEventCount: 1,
+            recentFailureCount: 1,
+            recentRemoteRetryRecoveryCount: 0,
+            latestEvent: AXModelRouteDiagnosticEvent(
+                schemaVersion: AXModelRouteDiagnosticEvent.currentSchemaVersion,
+                createdAt: 1_741_300_020,
+                projectId: "project-alpha",
+                projectDisplayName: "Alpha",
+                role: "coder",
+                stage: "chat_plan",
+                requestedModelId: "gemini-2.5-pro",
+                actualModelId: "",
+                runtimeProvider: "Gemini",
+                executionPath: "remote_error",
+                fallbackReasonCode: "provider_not_ready",
+                auditRef: "route-audit-gemini-1",
+                remoteRetryAttempted: false,
+                remoteRetryFromModelId: "",
+                remoteRetryToModelId: "",
+                remoteRetryReasonCode: ""
+            ),
+            detailLines: [
+                "recent_route_events_24h=1",
+                "recent_route_failures_24h=1",
+                "route_event_1=project=Alpha role=coder path=remote_error requested=gemini-2.5-pro reason=provider_not_ready provider=Gemini audit_ref=route-audit-gemini-1"
+            ]
+        )
+
+        let report = XTUnifiedDoctorBuilder.build(
+            input: makeDoctorInput(
+                localConnected: true,
+                remoteConnected: false,
+                configuredModelIDs: [model.id],
+                models: [model],
+                bridgeAlive: true,
+                bridgeEnabled: true,
+                sessionRuntime: nil,
+                skillsSnapshot: readySkillsSnapshot(),
+                providerKeyImportSnapshot: nil,
+                modelRouteDiagnostics: diagnostics
+            )
+        )
+
+        let section = report.section(.modelRouteReadiness)
+        #expect(section?.summary.contains("缺少 OAuth 续期所需元数据") == true)
+        #expect(section?.summary.contains("client_id / client_secret / token_uri") == true)
+        #expect(section?.summary.contains("gemini refresh requires oauth client id and secret") == true)
+        #expect(section?.nextStep.contains("Provider Key 管理") == true)
+        #expect(section?.nextStep.contains("client_id / client_secret / token_uri") == true)
+    }
+
+    @Test
     func modelRouteSectionExplainsRemoteGrpcDowngradeAsHubSideNotXTSilentRewrite() {
         let model = sampleModel(id: "hub.model.coder")
         let diagnostics = AXModelRouteDiagnosticsSummary(
@@ -2766,8 +3257,14 @@ struct XTUnifiedDoctorReportTests {
             $0.contains("heartbeat_project_memory_actual_resolution")
                 && $0.contains("effective_depth=deep")
         }))
+        #expect(
+            section.detailLines.contains(
+                "heartbeat_project_memory_actual_trigger_label=带着 review guidance 跟进执行（review_guidance_follow_up）"
+            )
+        )
         #expect(projection.projectMemoryStatusLine?.contains("latest coder usage") == true)
         #expect(projection.projectMemoryStatusLine?.contains("effective depth=deep") == true)
+        #expect(projection.projectMemoryStatusLine?.contains("review guidance") == true)
         #expect(projection.projectMemoryStatusLine?.contains("heartbeat digest 已在 Project AI working set 中") == true)
     }
 
@@ -3374,6 +3871,8 @@ private func makeDoctorInput(
     voicePermissionSnapshot: VoicePermissionSnapshot = .unknown,
     supervisorVoiceSmokeReport: XTSupervisorVoiceSmokeReportSummary? = nil,
     skillDoctorTruthProjection: XTUnifiedDoctorSkillDoctorTruthProjection? = nil,
+    externalTerminalAccessProjection: XTUnifiedDoctorExternalTerminalAccessProjection? = nil,
+    providerKeyImportSnapshot: HubProviderKeyImportSnapshot? = nil,
     reportPath: String = "/tmp/xt_unified_doctor_report.json",
     modelRouteDiagnostics: AXModelRouteDiagnosticsSummary = .empty,
     projectContextDiagnostics: AXProjectContextAssemblyDiagnosticsSummary = .empty,
@@ -3426,6 +3925,8 @@ private func makeDoctorInput(
         voicePlaybackActivity: voicePlaybackActivity,
         skillsSnapshot: skillsSnapshot,
         skillDoctorTruthProjection: skillDoctorTruthProjection,
+        externalTerminalAccessProjection: externalTerminalAccessProjection,
+        providerKeyImportSnapshot: providerKeyImportSnapshot,
         reportPath: reportPath,
         modelRouteDiagnostics: modelRouteDiagnostics,
         projectContextDiagnostics: projectContextDiagnostics,
@@ -3471,6 +3972,58 @@ private func makeProviderAwareDoctorRuntimeStatus(
         providers: providerStatuses,
         loadedInstances: [],
         loadedInstanceCount: nil
+    )
+}
+
+private func sampleExternalTerminalAccessKey(
+    accessKeyID: String = "hk_123",
+    name: String = "External Terminal",
+    status: String = "ready",
+    statusReason: String = "",
+    appID: String = "external_terminal"
+) -> HubAccessKeysClient.AccessKey {
+    HubAccessKeysClient.AccessKey(
+        schemaVersion: "hub.access_key.v1",
+        accessKeyID: accessKeyID,
+        authKind: "hub_access_key",
+        status: status,
+        statusReason: statusReason,
+        deviceID: "device-1",
+        userID: "user-1",
+        appID: appID,
+        name: name,
+        note: "",
+        tokenRedacted: "axh_***",
+        enabled: true,
+        createdAtMs: 1_741_299_000_000,
+        updatedAtMs: 1_741_300_000_000,
+        expiresAtMs: 1_741_386_400_000,
+        lastUsedAtMs: 1_741_300_010_000,
+        lastUsedPeerIP: "127.0.0.1",
+        lastUsedTransport: "grpc",
+        revokedAtMs: 0,
+        revokeReason: "",
+        revokedByUserID: "",
+        revokedVia: "",
+        createdByUserID: "user-1",
+        createdByAppID: "xt",
+        createdVia: "xt_ui",
+        lastRotatedAtMs: 0,
+        rotationCount: 0,
+        capabilities: [],
+        scopes: ["hub.connect"],
+        allowedCIDRs: [],
+        policyMode: "default",
+        trustProfilePresent: true,
+        connect: HubAccessKeysClient.AccessKeyConnect(
+            hubHost: "hub.example.test",
+            hubPort: 50051,
+            tlsMode: "disabled",
+            tlsServerName: "",
+            authEnvKey: "HUB_CLIENT_TOKEN"
+        ),
+        connectEnvTemplate: "export HUB_CLIENT_TOKEN=redacted",
+        connectEnv: nil
     )
 }
 

@@ -5,10 +5,15 @@ import UniformTypeIdentifiers
 /// 使用虚拟滚动和消息分页来处理大量消息
 struct OptimizedMessageTimelineView: View {
     let ctx: AXProjectContext
-    @ObservedObject var session: ChatSessionModel
+    let session: ChatSessionModel
 
     @State private var visibleRange: Range<Int> = 0..<50
     @State private var isLoadingMore = false
+    @StateObject private var chatStatusStore = XTChatStatusStore()
+    @StateObject private var timelineSessionStore = XTMessageTimelineSessionStore(
+        minimumUpdateIntervalNanoseconds: 50_000_000
+    )
+    @State private var timelineMessages: [AXChatMessage] = []
     @Namespace private var bottomID
 
     private let pageSize = 50
@@ -16,8 +21,9 @@ struct OptimizedMessageTimelineView: View {
 
     private var visibleMessages: [AXChatMessage] {
         let start = max(0, visibleRange.lowerBound)
-        let end = min(session.messages.count, visibleRange.upperBound)
-        return Array(session.messages[start..<end])
+        let end = min(timelineMessages.count, visibleRange.upperBound)
+        guard start < end else { return [] }
+        return Array(timelineMessages[start..<end])
     }
 
     var body: some View {
@@ -41,7 +47,7 @@ struct OptimizedMessageTimelineView: View {
                     }
 
                     // 加载指示器
-                    if session.isSending {
+                    if chatStatusSnapshot.isSending {
                         ThinkingIndicator()
                     }
 
@@ -53,7 +59,10 @@ struct OptimizedMessageTimelineView: View {
                 .padding(20)
                 .padding(.bottom, 120)
             }
-            .onChange(of: session.messages.count) { newCount in
+            .onChange(of: timelineSessionSnapshot.tailSignature) { _ in
+                refreshTimelineMessages()
+            }
+            .onChange(of: timelineSessionSnapshot.tailSignature.messageCount) { newCount in
                 // 新消息到达，扩展可见范围
                 if newCount > visibleRange.upperBound {
                     visibleRange = visibleRange.lowerBound..<newCount
@@ -65,8 +74,25 @@ struct OptimizedMessageTimelineView: View {
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
+            bindSessionProjectionStores()
+            session.ensureLoaded(ctx: ctx, limit: 200)
+            refreshTimelineMessages()
             // 初始化可见范围（显示最后 50 条）
-            let total = session.messages.count
+            let total = timelineMessages.count
+            visibleRange = max(0, total - pageSize)..<total
+        }
+        .onChange(of: ctx.root.path) { _ in
+            bindSessionProjectionStores()
+            session.ensureLoaded(ctx: ctx, limit: 200)
+            refreshTimelineMessages()
+            let total = timelineMessages.count
+            visibleRange = max(0, total - pageSize)..<total
+        }
+        .onChange(of: sessionIdentity) { _ in
+            bindSessionProjectionStores()
+            session.ensureLoaded(ctx: ctx, limit: 200)
+            refreshTimelineMessages()
+            let total = timelineMessages.count
             visibleRange = max(0, total - pageSize)..<total
         }
     }
@@ -86,13 +112,46 @@ struct OptimizedMessageTimelineView: View {
 
     private func checkIfNeedLoadMore(message: AXChatMessage) {
         // 如果滚动到接近顶部，自动加载更多
-        guard let index = session.messages.firstIndex(where: { $0.id == message.id }) else {
+        guard let index = timelineMessages.firstIndex(where: { $0.id == message.id }) else {
             return
         }
 
         if index < visibleRange.lowerBound + bufferSize && visibleRange.lowerBound > 0 {
             loadPreviousMessages()
         }
+    }
+
+    private var sessionIdentity: ObjectIdentifier {
+        ObjectIdentifier(session)
+    }
+
+    private var chatStatusSnapshot: XTChatStatusSnapshot {
+        if chatStatusStore.isBound(to: session) {
+            return chatStatusStore.snapshot
+        }
+        return XTChatStatusSnapshot(
+            messageCount: session.messages.count,
+            isSending: session.isSending,
+            lastError: session.lastError,
+            pendingToolCalls: session.pendingToolCalls
+        )
+    }
+
+    private var timelineSessionSnapshot: XTMessageTimelineSessionSnapshot {
+        if timelineSessionStore.isBound(to: session) {
+            return timelineSessionStore.snapshot
+        }
+        return XTMessageTimelineSessionSnapshot.make(from: session)
+    }
+
+    private func bindSessionProjectionStores() {
+        chatStatusStore.bind(to: session)
+        timelineSessionStore.bind(to: session)
+    }
+
+    private func refreshTimelineMessages() {
+        timelineMessages = session.messages
+        visibleRange = visibleRange.clamped(to: 0..<timelineMessages.count)
     }
 }
 

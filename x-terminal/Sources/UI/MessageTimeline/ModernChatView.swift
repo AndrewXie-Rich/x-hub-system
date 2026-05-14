@@ -2,17 +2,49 @@ import SwiftUI
 
 /// 新的聊天视图，使用现代化的消息时间线
 struct ModernChatView: View {
-    private struct RuntimeSectionSnapshot: Equatable {
+    private struct WorkHeaderState: Equatable {
+        var readinessText: String
+        var readinessTone: ProjectCoderExecutionStatusTone
+        var nextStepText: String
+        var detailText: String?
+
+        static let loading = WorkHeaderState(
+            readinessText: "载入中",
+            readinessTone: .neutral,
+            nextStepText: "正在读取当前项目状态。",
+            detailText: nil
+        )
+    }
+
+    private struct RuntimeHeaderSnapshot: Equatable {
         var displayName: String
         var governanceInterception: ProjectGovernanceInterceptionPresentation?
         var latestSessionSummary: AXSessionSummaryCapsulePresentation?
         var resumeReminder: AXSessionSummaryCapsulePresentation?
+        var coderSnapshot: AXRoleExecutionSnapshot
+        var configuredModelId: String
+        var interfaceLanguage: XTInterfaceLanguage
+        var statusPresentation: ProjectCoderExecutionStatusPresentation?
+        var primaryStatusAction: ProjectCoderExecutionStatusPrimaryActionPresentation?
+        var workHeaderState: WorkHeaderState
+        var routeNeedsAttention: Bool
+        var statusActionDisabled: Bool
+        var resumeActionDisabled: Bool
 
-        static let empty = RuntimeSectionSnapshot(
+        static let empty = RuntimeHeaderSnapshot(
             displayName: "",
             governanceInterception: nil,
             latestSessionSummary: nil,
-            resumeReminder: nil
+            resumeReminder: nil,
+            coderSnapshot: .empty(role: .coder),
+            configuredModelId: "",
+            interfaceLanguage: .defaultPreference,
+            statusPresentation: nil,
+            primaryStatusAction: nil,
+            workHeaderState: .loading,
+            routeNeedsAttention: false,
+            statusActionDisabled: false,
+            resumeActionDisabled: false
         )
     }
 
@@ -20,22 +52,25 @@ struct ModernChatView: View {
     let memory: AXMemory?
     let config: AXProjectConfig?
     let hubConnected: Bool
-    @ObservedObject var session: ChatSessionModel
-    @EnvironmentObject private var appModel: AppModel
+    let session: ChatSessionModel
+    @Environment(\.xtAppModelReference) private var appModelReference
+    @EnvironmentObject private var navigationFocusStore: XTNavigationFocusStore
     @Environment(\.openWindow) private var openWindow
-    @State private var highlightPendingToolApprovalCard: Bool = false
-    @State private var highlightedPendingToolApprovalRequestId: String?
+    @StateObject private var chatStatusStore = XTChatStatusStore()
     @State private var highlightedSkillActivityRequestId: String?
     @State private var highlightedSkillActivityFocusNonce: Int?
-    @State private var runtimeSectionSnapshot: RuntimeSectionSnapshot = .empty
+    @State private var runtimeHeaderSnapshot: RuntimeHeaderSnapshot = .empty
+    @State private var timelineScrollToBottomNonce = 0
+    @State private var localToolApprovalFocusNonce = 1_000_000
 
     var body: some View {
+        let statusSnapshot = chatStatusSnapshot
         VStack(spacing: 0) {
             projectRuntimeSection
 
             Divider()
 
-            ZStack(alignment: .bottom) {
+            ZStack {
                 // 背景
                 Color(nsColor: .windowBackgroundColor)
                     .ignoresSafeArea()
@@ -52,6 +87,12 @@ struct ModernChatView: View {
                     onRetrySkillActivity: { item in
                         session.retryProjectSkillActivity(item, router: appModel.llmRouter)
                     },
+                    onApprovePendingTools: {
+                        session.approvePendingTools(router: appModel.llmRouter)
+                    },
+                    onRejectPendingTools: {
+                        session.rejectPendingTools()
+                    },
                     onOpenGovernance: { destination, focusContext in
                         appModel.requestProjectSettingsFocus(
                             projectId: projectId,
@@ -60,35 +101,28 @@ struct ModernChatView: View {
                             detail: focusContext?.detail
                         )
                     },
+                    onStartWorkPrompt: { prompt in
+                        startWorkPrompt(prompt)
+                    },
+                    onResumeProject: {
+                        appModel.presentResumeBrief(projectId: projectId)
+                    },
+                    onRouteDiagnose: {
+                        session.presentProjectRouteDiagnosis(
+                            ctx: ctx,
+                            config: config,
+                            router: appModel.llmRouter
+                        )
+                    },
                     focusedSkillActivityRequestId: highlightedSkillActivityRequestId,
                     focusedSkillActivityNonce: highlightedSkillActivityFocusNonce,
-                    bottomPadding: session.pendingToolCalls.isEmpty ? 24 : 160
+                    bottomPadding: 24,
+                    scrollToBottomNonce: timelineScrollToBottomNonce
                 )
-
-                // 待审批工具浮动卡片
-                if !session.pendingToolCalls.isEmpty {
-                    VStack {
-                        Spacer()
-                        PendingToolApprovalView(
-                            session: session,
-                            hubConnected: hubConnected,
-                            isFocused: highlightPendingToolApprovalCard,
-                            focusedRequestId: highlightedPendingToolApprovalRequestId,
-                            onApprove: {
-                                session.approvePendingTools(router: appModel.llmRouter)
-                            },
-                            onReject: {
-                                session.rejectPendingTools()
-                            }
-                        )
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 20)
-                    }
-                }
             }
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .layoutPriority(1)
+
             VStack(spacing: 0) {
                 Divider()
                 DockInputView(
@@ -96,89 +130,124 @@ struct ModernChatView: View {
                     memory: memory,
                     config: config,
                     hubConnected: hubConnected,
-                    session: session
+                    session: session,
+                    composer: session.composer,
+                    status: statusSnapshot
                 )
-                .environmentObject(appModel)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
+            chatStatusStore.bind(to: session)
             session.ensureLoaded(ctx: ctx, limit: 200)
-            refreshProjectRuntimeSectionSnapshot()
+            refreshProjectRuntimeHeaderSnapshot()
+            requestTimelineScrollToBottom()
         }
         .onChange(of: ctx.root.path) { _ in
+            chatStatusStore.bind(to: session)
             session.ensureLoaded(ctx: ctx, limit: 200)
-            refreshProjectRuntimeSectionSnapshot()
+            refreshProjectRuntimeHeaderSnapshot()
+            requestTimelineScrollToBottom()
+        }
+        .onChange(of: sessionIdentity) { _ in
+            chatStatusStore.bind(to: session)
+            session.ensureLoaded(ctx: ctx, limit: 200)
+            refreshProjectRuntimeHeaderSnapshot()
+            requestTimelineScrollToBottom()
+        }
+        .onChange(of: hubConnected) { _ in
+            refreshProjectRuntimeHeaderSnapshot()
+        }
+        .onChange(of: config) { _ in
+            refreshProjectRuntimeHeaderSnapshot()
         }
         .onAppear {
             processProjectFocusRequest()
         }
-        .onChange(of: appModel.projectFocusRequest?.nonce) { _ in
+        .onChange(of: navigationFocusSnapshot.projectFocusRequest?.nonce) { _ in
             processProjectFocusRequest()
         }
-        .onChange(of: session.isSending) { _ in
-            if !session.isSending {
+        .onChange(of: chatStatusSnapshot.isSending) { isSending in
+            if !isSending {
                 processProjectFocusRequest()
             }
-            refreshProjectRuntimeSectionSnapshot()
+            refreshProjectRuntimeHeaderSnapshot()
         }
-        .onChange(of: session.pendingToolCalls.map(\.id).joined(separator: ",")) { _ in
-            if session.pendingToolCalls.isEmpty {
-                highlightPendingToolApprovalCard = false
-                highlightedPendingToolApprovalRequestId = nil
+        .onChange(of: chatStatusSnapshot.pendingToolCallIDSignature) { _ in
+            if chatStatusSnapshot.pendingToolCalls.isEmpty {
                 highlightedSkillActivityRequestId = nil
                 highlightedSkillActivityFocusNonce = nil
-            } else if let focusedRequestId = highlightedPendingToolApprovalRequestId,
-                      !session.pendingToolCalls.contains(where: { $0.id == focusedRequestId }) {
-                highlightedPendingToolApprovalRequestId = nil
+            } else if let focusedRequestId = highlightedSkillActivityRequestId,
+                      !chatStatusSnapshot.pendingToolCalls.contains(where: { $0.id == focusedRequestId }) {
                 highlightedSkillActivityRequestId = nil
                 highlightedSkillActivityFocusNonce = nil
             }
             processProjectFocusRequest()
-            refreshProjectRuntimeSectionSnapshot()
+            refreshProjectRuntimeHeaderSnapshot()
         }
-        .onChange(of: session.messages.count) { _ in
-            refreshProjectRuntimeSectionSnapshot()
+        .onChange(of: chatStatusSnapshot.messageCount) { _ in
+            refreshProjectRuntimeHeaderSnapshot()
         }
+    }
+
+    private var sessionIdentity: ObjectIdentifier {
+        ObjectIdentifier(session)
+    }
+
+    private var chatStatusSnapshot: XTChatStatusSnapshot {
+        if chatStatusStore.isBound(to: session) {
+            return chatStatusStore.snapshot
+        }
+        return XTChatStatusSnapshot(
+            messageCount: session.messages.count,
+            isSending: session.isSending,
+            lastError: session.lastError,
+            pendingToolCalls: session.pendingToolCalls
+        )
     }
 
     private var projectId: String {
         AXProjectRegistryStore.projectId(forRoot: ctx.root)
     }
 
+    private var navigationFocusSnapshot: XTNavigationFocusSnapshot {
+        navigationFocusStore.snapshot
+    }
+
+    private var appModel: AppModel {
+        guard let appModelReference else {
+            preconditionFailure("ModernChatView requires xtAppModelReference")
+        }
+        return appModelReference
+    }
+
     private func processProjectFocusRequest() {
-        guard let request = appModel.projectFocusRequest,
+        guard let request = navigationFocusSnapshot.projectFocusRequest,
               request.projectId == projectId else {
             return
         }
 
         switch request.subject {
         case let .toolApproval(requestId):
-            guard !session.pendingToolCalls.isEmpty else { return }
+            guard !chatStatusSnapshot.pendingToolCalls.isEmpty else { return }
             highlightedSkillActivityFocusNonce = request.nonce
 
             if let requestId = requestId?.trimmingCharacters(in: .whitespacesAndNewlines),
                !requestId.isEmpty {
-                if session.pendingToolCalls.contains(where: { $0.id == requestId }) {
-                    highlightPendingToolApprovalCard = true
-                    highlightedPendingToolApprovalRequestId = requestId
+                if chatStatusSnapshot.pendingToolCalls.contains(where: { $0.id == requestId }) {
                     highlightedSkillActivityRequestId = requestId
                     appModel.clearProjectFocusRequest(request)
                     return
                 }
-                highlightPendingToolApprovalCard = true
-                highlightedPendingToolApprovalRequestId = nil
                 highlightedSkillActivityRequestId = nil
                 appModel.clearProjectFocusRequest(request)
                 return
             }
 
-            highlightPendingToolApprovalCard = true
-            highlightedPendingToolApprovalRequestId = nil
             highlightedSkillActivityRequestId = nil
             appModel.clearProjectFocusRequest(request)
         case .routeDiagnose:
-            guard !session.isSending else { return }
+            guard !chatStatusSnapshot.isSending else { return }
             session.presentProjectRouteDiagnosis(
                 ctx: ctx,
                 config: config,
@@ -189,13 +258,74 @@ struct ModernChatView: View {
     }
 
     private var projectRuntimeSection: some View {
-        let snapshots = AXRoleExecutionSnapshots.latestSnapshots(for: ctx)
-        let coderSnapshot = snapshots[.coder] ?? .empty(role: .coder)
-        let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
-        let governancePresentation = ProjectGovernancePresentation(
-            resolved: appModel.resolvedProjectGovernance(for: ctx, config: config)
+        let headerSnapshot = runtimeHeaderSnapshot
+
+        return ProjectWorkHeaderCard(
+            icon: "hammer.circle.fill",
+            title: headerSnapshot.displayName.isEmpty ? ctx.projectName() : headerSnapshot.displayName,
+            readinessText: headerSnapshot.workHeaderState.readinessText,
+            readinessTone: headerSnapshot.workHeaderState.readinessTone,
+            nextStepText: headerSnapshot.workHeaderState.nextStepText,
+            badgeText: headerSnapshot.latestSessionSummary?.badgeText,
+            detailText: headerSnapshot.workHeaderState.detailText,
+            statusPresentation: headerSnapshot.statusPresentation,
+            primaryAction: chatPrimaryAction(
+                routeNeedsAttention: headerSnapshot.routeNeedsAttention,
+                primaryStatusAction: headerSnapshot.primaryStatusAction,
+                configuredModelId: headerSnapshot.configuredModelId,
+                snapshot: headerSnapshot.coderSnapshot,
+                governanceInterception: headerSnapshot.governanceInterception,
+                interfaceLanguage: headerSnapshot.interfaceLanguage,
+                disabled: headerSnapshot.statusActionDisabled,
+                statusSnapshot: chatStatusSnapshot,
+                hasResumeReminder: headerSnapshot.resumeReminder != nil,
+                resumeDisabled: headerSnapshot.resumeActionDisabled
+            ),
+            secondaryAction: chatSecondaryAction(
+                routeNeedsAttention: headerSnapshot.routeNeedsAttention,
+                primaryStatusAction: headerSnapshot.primaryStatusAction,
+                latestSessionSummary: headerSnapshot.latestSessionSummary,
+                resumeReminder: headerSnapshot.resumeReminder,
+                disabled: headerSnapshot.statusActionDisabled
+            ),
+            tertiaryAction: headerSnapshot.resumeReminder == nil ? nil : ProjectWorkHeaderAction(
+                title: "稍后",
+                helpText: "隐藏这条恢复提醒，稍后再处理。",
+                style: .plain,
+                disabled: false
+            ) {
+                appModel.dismissResumeReminder(projectId: projectId)
+                refreshProjectRuntimeHeaderSnapshot()
+            }
         )
-        let governanceInterception = runtimeSectionSnapshot.governanceInterception
+    }
+
+    private func buildRuntimeHeaderSnapshot(
+        statusSnapshot: XTChatStatusSnapshot
+    ) -> RuntimeHeaderSnapshot {
+        let coderSnapshot = XTProjectUIPresentationReadCache.roleExecutionSnapshot(
+            for: ctx,
+            role: .coder
+        ) {
+            AXRoleExecutionSnapshots.latestSnapshots(for: ctx)[.coder]
+                ?? .empty(role: .coder)
+        }
+        let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+        let governancePresentation = XTProjectUIPresentationReadCache.governancePresentation(
+            projectId: projectId
+        ) {
+            ProjectGovernancePresentation(
+                resolved: appModel.resolvedProjectGovernance(for: ctx, config: config)
+            )
+        }
+        let governanceInterception = XTProjectUIPresentationReadCache.latestGovernanceInterception(
+            for: ctx,
+            limit: 12
+        ) {
+            ProjectGovernanceInterceptionPresentation.latest(
+                from: AXProjectSkillActivityStore.loadRecentActivities(ctx: ctx, limit: 12)
+            )
+        }
         let configuredModelId = AXRoleExecutionSnapshots.configuredModelId(
             for: .coder,
             projectConfig: config,
@@ -216,132 +346,278 @@ struct ModernChatView: View {
             governanceInterception: governanceInterception,
             language: interfaceLanguage
         )
-        let latestSessionSummary = AXSessionSummaryCapsulePresentation.load(for: ctx)
-        let resumeReminder = appModel.resumeReminderPresentation(projectId: projectId)
-
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                Image(systemName: "hammer.circle.fill")
-                    .foregroundColor(.blue)
-                    .font(.system(size: 14))
-
-                Text(runtimeSectionSnapshot.displayName.isEmpty ? ctx.projectName() : runtimeSectionSnapshot.displayName)
-                    .font(.system(size: 13, weight: .medium))
-                    .lineLimit(1)
-            }
-
-            ProjectCoderExecutionStatusBar(
-                presentation: coderStatusPresentation,
-                actionTitle: primaryAction?.title,
-                actionHelpText: primaryAction?.helpText,
-                actionDisabled: session.isSending || !session.pendingToolCalls.isEmpty,
-                onAction: {
-                    guard let primaryAction else { return }
-                    ProjectCoderExecutionStatusPrimaryActionResolver.perform(
-                        primaryAction.kind,
-                        configuredModelId: configuredModelId,
-                        snapshot: coderSnapshot,
-                        ctx: ctx,
-                        config: config,
-                        session: session,
-                        appModel: appModel,
-                        openWindow: openWindow,
-                        governanceInterception: governanceInterception,
-                        interfaceLanguage: interfaceLanguage
-                    )
-                }
-            )
-
-            HStack(spacing: 8) {
-                Button {
-                    session.presentProjectResumeBrief(ctx: ctx)
-                } label: {
-                    Label("接上次进度", systemImage: "arrow.clockwise.circle")
-                        .font(.system(size: 12, weight: .medium))
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(session.isSending)
-                .help("基于 canonical memory、session summary 与最近执行记录，本地生成项目接续摘要；不会写入主上下文。")
-
-                if let latestSessionSummary {
-                    Text(latestSessionSummary.badgeText)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(Color.secondary.opacity(0.08))
-                        .clipShape(Capsule())
-                        .help(latestSessionSummary.helpText)
-                }
-
-                Spacer(minLength: 0)
-            }
-
-            if let resumeReminder {
-                HStack(alignment: .center, spacing: 10) {
-                    Image(systemName: "clock.arrow.trianglehead.counterclockwise.rotate.90")
-                        .foregroundColor(.orange)
-                        .font(.system(size: 13, weight: .semibold))
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("检测到最近交接摘要")
-                            .font(.system(size: 12, weight: .semibold))
-                        Text("\(resumeReminder.reasonLabel) · \(resumeReminder.relativeText)；如果你要从上次边界继续，可以直接恢复。")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-
-                    Spacer(minLength: 0)
-
-                    Button("稍后") {
-                        appModel.dismissResumeReminder(projectId: projectId)
-                        refreshProjectRuntimeSectionSnapshot()
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-
-                    Button("接上次进度") {
-                        appModel.presentResumeBrief(projectId: projectId)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .disabled(session.isSending)
-                }
-                .padding(12)
-                .background(Color.orange.opacity(0.08))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(Color.orange.opacity(0.22), lineWidth: 1)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-            }
+        let latestSessionSummary = XTProjectUIPresentationReadCache.sessionSummary(for: ctx) {
+            AXSessionSummaryCapsulePresentation.load(for: ctx)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .overlay(
-            Rectangle()
-                .frame(height: 1)
-                .foregroundColor(Color.secondary.opacity(0.2)),
-            alignment: .bottom
+        let resumeReminder = appModel.resumeReminderPresentation(projectId: projectId)
+        let workHeaderState = projectWorkHeaderState(
+            statusSnapshot: statusSnapshot,
+            coderStatusPresentation: coderStatusPresentation,
+            primaryAction: primaryAction,
+            latestSessionSummary: latestSessionSummary,
+            resumeReminder: resumeReminder
         )
-    }
+        let routeNeedsAttention = coderStatusPresentation.tone == ProjectCoderExecutionStatusTone.warning
+            || coderStatusPresentation.tone == ProjectCoderExecutionStatusTone.danger
+        let statusActionDisabled = statusSnapshot.isSending
+            || !statusSnapshot.pendingToolCalls.isEmpty
 
-    private func refreshProjectRuntimeSectionSnapshot() {
-        let currentProjectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
-        runtimeSectionSnapshot = RuntimeSectionSnapshot(
+        return RuntimeHeaderSnapshot(
             displayName: ctx.displayName(
                 registry: appModel.registry,
                 preferredDisplayName: ctx.projectName()
             ),
-            governanceInterception: ProjectGovernanceInterceptionPresentation.latest(
-                from: AXProjectSkillActivityStore.loadRecentActivities(ctx: ctx, limit: 12)
-            ),
-            latestSessionSummary: AXSessionSummaryCapsulePresentation.load(for: ctx),
-            resumeReminder: appModel.resumeReminderPresentation(projectId: currentProjectId)
+            governanceInterception: governanceInterception,
+            latestSessionSummary: latestSessionSummary,
+            resumeReminder: resumeReminder,
+            coderSnapshot: coderSnapshot,
+            configuredModelId: configuredModelId,
+            interfaceLanguage: interfaceLanguage,
+            statusPresentation: coderStatusPresentation,
+            primaryStatusAction: primaryAction,
+            workHeaderState: workHeaderState,
+            routeNeedsAttention: routeNeedsAttention,
+            statusActionDisabled: statusActionDisabled,
+            resumeActionDisabled: statusSnapshot.isSending
         )
+    }
+
+    private func projectWorkHeaderState(
+        statusSnapshot: XTChatStatusSnapshot,
+        coderStatusPresentation: ProjectCoderExecutionStatusPresentation,
+        primaryAction: ProjectCoderExecutionStatusPrimaryActionPresentation?,
+        latestSessionSummary: AXSessionSummaryCapsulePresentation?,
+        resumeReminder: AXSessionSummaryCapsulePresentation?
+    ) -> WorkHeaderState {
+        if !statusSnapshot.pendingToolCalls.isEmpty {
+            let count = statusSnapshot.pendingToolCalls.count
+            return WorkHeaderState(
+                readinessText: "等待审批",
+                readinessTone: .warning,
+                nextStepText: "有 \(count) 个工具请求等待审批，审批后将自动继续。",
+                detailText: "需要查看参数时，先打开下方审批详情再决定是否放行。"
+            )
+        }
+
+        if statusSnapshot.isSending {
+            return WorkHeaderState(
+                readinessText: "正在执行",
+                readinessTone: .neutral,
+                nextStepText: "当前这一轮还在运行，等结果回来后再继续下一步。",
+                detailText: ProjectWorkHeaderText.firstLine(coderStatusPresentation.summaryText)
+            )
+        }
+
+        if coderStatusPresentation.tone == .warning || coderStatusPresentation.tone == .danger {
+            let nextStep = primaryAction.map { "先\($0.title)，再继续当前项目。" }
+                ?? "当前执行路径有阻塞，先处理模型或路由问题。"
+            return WorkHeaderState(
+                readinessText: "需修复",
+                readinessTone: coderStatusPresentation.tone,
+                nextStepText: nextStep,
+                detailText: ProjectWorkHeaderText.firstLine(coderStatusPresentation.summaryText)
+                    ?? ProjectWorkHeaderText.firstLine(primaryAction?.helpText)
+            )
+        }
+
+        if let resumeReminder {
+            return WorkHeaderState(
+                readinessText: "可继续",
+                readinessTone: .success,
+                nextStepText: "检测到最近交接摘要，直接从上次边界继续最省事。",
+                detailText: "最近交接：\(resumeReminder.reasonLabel) · \(resumeReminder.relativeText)"
+            )
+        }
+
+        return WorkHeaderState(
+            readinessText: "可开始",
+            readinessTone: coderStatusPresentation.tone == .neutral ? .success : coderStatusPresentation.tone,
+            nextStepText: "底部输入框就是当前项目 Coder 聊天；直接描述要改什么、跑什么或继续哪一步。",
+            detailText: ProjectWorkHeaderText.firstLine(coderStatusPresentation.summaryText)
+                ?? latestSessionSummary?.detailText
+        )
+    }
+
+    private func chatPrimaryAction(
+        routeNeedsAttention: Bool,
+        primaryStatusAction: ProjectCoderExecutionStatusPrimaryActionPresentation?,
+        configuredModelId: String,
+        snapshot: AXRoleExecutionSnapshot,
+        governanceInterception: ProjectGovernanceInterceptionPresentation?,
+        interfaceLanguage: XTInterfaceLanguage,
+        disabled: Bool,
+        statusSnapshot: XTChatStatusSnapshot,
+        hasResumeReminder: Bool,
+        resumeDisabled: Bool
+    ) -> ProjectWorkHeaderAction? {
+        if !statusSnapshot.pendingToolCalls.isEmpty {
+            let count = statusSnapshot.pendingToolCalls.count
+            return ProjectWorkHeaderAction(
+                title: "审批",
+                helpText: "批准当前 \(count) 个待审批工具请求，审批后自动继续执行。",
+                style: .prominent,
+                disabled: !hubConnected || statusSnapshot.isSending
+            ) {
+                session.approvePendingTools(router: appModel.llmRouter)
+            }
+        }
+
+        if routeNeedsAttention, let primaryStatusAction {
+            return statusAction(
+                primaryStatusAction,
+                configuredModelId: configuredModelId,
+                snapshot: snapshot,
+                governanceInterception: governanceInterception,
+                interfaceLanguage: interfaceLanguage,
+                style: .prominent,
+                disabled: disabled
+            )
+        }
+
+        if hasResumeReminder {
+            return ProjectWorkHeaderAction(
+                title: "接上次进度",
+                helpText: "基于 canonical memory、session summary 与最近执行记录，生成项目接续摘要；不会写入主上下文。",
+                style: .prominent,
+                disabled: resumeDisabled
+            ) {
+                appModel.presentResumeBrief(projectId: projectId)
+            }
+        }
+
+        return nil
+    }
+
+    private func focusPendingToolApproval(requestId: String?) {
+        highlightedSkillActivityRequestId = requestId
+        highlightedSkillActivityFocusNonce = nextLocalProjectFocusNonce()
+    }
+
+    private func nextLocalProjectFocusNonce() -> Int {
+        localToolApprovalFocusNonce &+= 1
+        return localToolApprovalFocusNonce
+    }
+
+    private func chatSecondaryAction(
+        routeNeedsAttention: Bool,
+        primaryStatusAction: ProjectCoderExecutionStatusPrimaryActionPresentation?,
+        latestSessionSummary: AXSessionSummaryCapsulePresentation?,
+        resumeReminder: AXSessionSummaryCapsulePresentation?,
+        disabled: Bool
+    ) -> ProjectWorkHeaderAction? {
+        if let firstPending = chatStatusSnapshot.pendingToolCalls.first {
+            let count = chatStatusSnapshot.pendingToolCalls.count
+            return ProjectWorkHeaderAction(
+                title: "查看详情",
+                helpText: "跳到当前项目历史区里的 \(count) 个待审批工具请求。",
+                style: .secondary,
+                disabled: false
+            ) {
+                focusPendingToolApproval(requestId: firstPending.id)
+            }
+        }
+
+        if routeNeedsAttention {
+            return ProjectWorkHeaderAction(
+                title: "项目设置",
+                helpText: "打开当前项目的治理与执行设置。",
+                style: .secondary,
+                disabled: false
+            ) {
+                openProjectSettingsOverview()
+            }
+        }
+
+        if primaryStatusAction != nil || latestSessionSummary != nil || resumeReminder != nil {
+            return ProjectWorkHeaderAction(
+                title: "查看路由",
+                helpText: "解释这一轮为什么命中当前执行路径。",
+                style: .secondary,
+                disabled: disabled
+            ) {
+                session.presentProjectRouteDiagnosis(
+                    ctx: ctx,
+                    config: config,
+                    router: appModel.llmRouter
+                )
+            }
+        }
+
+        return ProjectWorkHeaderAction(
+            title: "项目设置",
+            helpText: "打开当前项目的治理与执行设置。",
+            style: .secondary,
+            disabled: false
+        ) {
+            openProjectSettingsOverview()
+        }
+    }
+
+    private func statusAction(
+        _ action: ProjectCoderExecutionStatusPrimaryActionPresentation,
+        configuredModelId: String,
+        snapshot: AXRoleExecutionSnapshot,
+        governanceInterception: ProjectGovernanceInterceptionPresentation?,
+        interfaceLanguage: XTInterfaceLanguage,
+        style: ProjectWorkHeaderActionStyle,
+        disabled: Bool
+    ) -> ProjectWorkHeaderAction {
+        ProjectWorkHeaderAction(
+            title: action.title,
+            helpText: action.helpText,
+            style: style,
+            disabled: disabled
+        ) {
+            ProjectCoderExecutionStatusPrimaryActionResolver.perform(
+                action.kind,
+                configuredModelId: configuredModelId,
+                snapshot: snapshot,
+                ctx: ctx,
+                config: config,
+                session: session,
+                appModel: appModel,
+                openWindow: openWindow,
+                governanceInterception: governanceInterception,
+                interfaceLanguage: interfaceLanguage
+            )
+        }
+    }
+
+    private func openProjectSettingsOverview() {
+        appModel.requestProjectSettingsFocus(
+            projectId: projectId,
+            destination: .overview
+        )
+    }
+
+    private func startWorkPrompt(_ prompt: String) {
+        session.composer.draft = prompt
+        guard hubConnected,
+              !chatStatusSnapshot.isSending,
+              chatStatusSnapshot.pendingToolCalls.isEmpty,
+              AXChatAttachmentSupport.hasSubmittableContent(
+                draft: session.composer.draft,
+                attachments: session.composer.draftAttachments
+              ) else {
+            return
+        }
+
+        session.send(
+            ctx: ctx,
+            memory: memory,
+            config: config,
+            router: appModel.llmRouter
+        )
+    }
+
+    private func refreshProjectRuntimeHeaderSnapshot() {
+        let next = buildRuntimeHeaderSnapshot(statusSnapshot: chatStatusSnapshot)
+        guard runtimeHeaderSnapshot != next else { return }
+        runtimeHeaderSnapshot = next
+    }
+
+    private func requestTimelineScrollToBottom() {
+        timelineScrollToBottomNonce &+= 1
     }
 }
 
@@ -362,6 +638,8 @@ struct ModernChatView_Previews: PreviewProvider {
             AXChatMessage(role: .assistant, tag: "claude-3.5", content: "I'll read that file for you.", createdAt: Date().timeIntervalSince1970 - 180),
         ]
 
+        let appModel = AppModel()
+
         return ModernChatView(
             ctx: ctx,
             memory: nil,
@@ -369,7 +647,9 @@ struct ModernChatView_Previews: PreviewProvider {
             hubConnected: true,
             session: session
         )
-        .environmentObject(AppModel())
+        .environment(\.xtAppModelReference, appModel)
+        .environmentObject(appModel.navigationFocusStore)
+        .environmentObject(appModel.hubConnectionStore)
         .frame(width: 1000, height: 700)
     }
 }

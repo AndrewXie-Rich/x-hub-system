@@ -1,5 +1,15 @@
 import Foundation
 
+enum SupervisorProjectMemoryBindingStrength: String, Codable, CaseIterable, Equatable, Sendable {
+    case none
+    case weak
+    case strong
+
+    var requiresProjectTruth: Bool {
+        self == .strong
+    }
+}
+
 enum SupervisorTurnMode: String, Codable, CaseIterable, Equatable, Sendable {
     case personalFirst = "personal_first"
     case projectFirst = "project_first"
@@ -43,6 +53,12 @@ struct SupervisorTurnRoutingDecision: Equatable, Sendable {
     var focusedCommitmentId: String?
     var confidence: Double
     var routingReasons: [String]
+    var projectMemoryBindingStrength: SupervisorProjectMemoryBindingStrength = .none
+    var projectMemoryBindingReason: String? = nil
+
+    var requiresProjectTruth: Bool {
+        projectMemoryBindingStrength.requiresProjectTruth
+    }
 
     var primaryMemoryDomain: String {
         switch mode {
@@ -121,9 +137,16 @@ enum SupervisorTurnRouter {
         let portfolioIntent = containsAny(normalized, portfolioReviewTokens)
         let personalIntent = containsAny(normalized, personalPlanningTokens)
             || normalizedContainsAny(normalizedKey, personalPlanningTokens)
-        let projectIntent = containsAny(normalized, projectPlanningTokens)
-            || normalizedContainsAny(normalizedKey, projectPlanningTokens)
+        let projectIntent = containsAny(normalized, projectTruthDemandTokens)
+            || normalizedContainsAny(normalizedKey, projectTruthDemandTokens)
         let hybridSchedulingIntent = containsAny(normalized, hybridSchedulingTokens)
+        let projectMemoryBindingStrength = resolvedProjectMemoryBindingStrength(
+            hasProjectFocus: focusedProject != nil,
+            projectTruthIntent: projectIntent
+        )
+        let projectMemoryBindingReason = projectMemoryBindingReason(
+            strength: projectMemoryBindingStrength
+        )
 
         var reasons: [String] = []
         if let focusedProject {
@@ -171,7 +194,9 @@ enum SupervisorTurnRouter {
                 focusedPersonName: nil,
                 focusedCommitmentId: nil,
                 confidence: 0.94,
-                routingReasons: reasons
+                routingReasons: reasons,
+                projectMemoryBindingStrength: projectMemoryBindingStrength,
+                projectMemoryBindingReason: projectMemoryBindingReason
             )
         }
 
@@ -183,11 +208,13 @@ enum SupervisorTurnRouter {
                 focusedPersonName: focusedPerson,
                 focusedCommitmentId: focusedCommitment?.memoryId,
                 confidence: explicitProject != nil && (explicitPerson != nil || explicitCommitment != nil) ? 0.98 : 0.9,
-                routingReasons: reasons
+                routingReasons: reasons,
+                projectMemoryBindingStrength: projectMemoryBindingStrength,
+                projectMemoryBindingReason: projectMemoryBindingReason
             )
         }
 
-        if hasProjectFocus && (projectIntent || usesProjectPointer || explicitProject != nil) {
+        if hasProjectFocus && projectMemoryBindingStrength.requiresProjectTruth {
             return SupervisorTurnRoutingDecision(
                 mode: .projectFirst,
                 focusedProjectId: focusedProject?.projectId,
@@ -195,11 +222,13 @@ enum SupervisorTurnRouter {
                 focusedPersonName: nil,
                 focusedCommitmentId: nil,
                 confidence: explicitProject != nil ? 0.97 : 0.8,
-                routingReasons: reasons
+                routingReasons: reasons,
+                projectMemoryBindingStrength: projectMemoryBindingStrength,
+                projectMemoryBindingReason: projectMemoryBindingReason
             )
         }
 
-        if hasPersonalFocus || personalIntent || usesPersonPointer {
+        if hasPersonalFocus || personalIntent || usesPersonPointer || hasProjectFocus {
             return SupervisorTurnRoutingDecision(
                 mode: .personalFirst,
                 focusedProjectId: nil,
@@ -207,7 +236,9 @@ enum SupervisorTurnRouter {
                 focusedPersonName: focusedPerson,
                 focusedCommitmentId: focusedCommitment?.memoryId,
                 confidence: hasPersonalFocus ? 0.94 : 0.76,
-                routingReasons: reasons
+                routingReasons: reasons,
+                projectMemoryBindingStrength: projectMemoryBindingStrength,
+                projectMemoryBindingReason: projectMemoryBindingReason
             )
         }
 
@@ -219,7 +250,9 @@ enum SupervisorTurnRouter {
                 focusedPersonName: nil,
                 focusedCommitmentId: nil,
                 confidence: 0.86,
-                routingReasons: reasons
+                routingReasons: reasons,
+                projectMemoryBindingStrength: projectMemoryBindingStrength,
+                projectMemoryBindingReason: projectMemoryBindingReason
             )
         }
 
@@ -230,7 +263,9 @@ enum SupervisorTurnRouter {
             focusedPersonName: nil,
             focusedCommitmentId: nil,
             confidence: 0.55,
-            routingReasons: reasons.isEmpty ? ["default_personal_fallback"] : reasons
+            routingReasons: reasons.isEmpty ? ["default_personal_fallback"] : reasons,
+            projectMemoryBindingStrength: projectMemoryBindingStrength,
+            projectMemoryBindingReason: projectMemoryBindingReason
         )
     }
 
@@ -269,22 +304,58 @@ enum SupervisorTurnRouter {
         "聊聊天"
     ]
 
-    private static let projectPlanningTokens = [
-        "项目",
+    private static let projectTruthDemandTokens = [
+        "当前状态",
+        "现在状态",
+        "最近进展",
+        "进度",
         "下一步",
+        "怎么推进",
         "推进",
+        "继续",
+        "接着做",
+        "继续做",
+        "继续推进",
         "blocker",
         "卡点",
         "阻塞",
         "review",
+        "审查",
+        "审阅",
+        "评审",
         "纠偏",
-        "计划",
         "工单",
         "交付",
         "done",
         "build",
         "test",
-        "repo"
+        "repo",
+        "代码",
+        "文件",
+        "编译",
+        "修复",
+        "fix",
+        "patch",
+        "日志",
+        "报错",
+        "错误",
+        "执行",
+        "验证",
+        "verify",
+        "证据",
+        "evidence",
+        "spec",
+        "decision",
+        "上下文记忆",
+        "项目记忆",
+        "完整上下文",
+        "背景信息",
+        "历史决策",
+        "架构",
+        "tech stack",
+        "history",
+        "context",
+        "demo"
     ]
 
     private static let hybridSchedulingTokens = [
@@ -539,6 +610,27 @@ enum SupervisorTurnRouter {
             return false
         }
         return containsAny(normalized, commitmentPointerTokens)
+    }
+
+    private static func resolvedProjectMemoryBindingStrength(
+        hasProjectFocus: Bool,
+        projectTruthIntent: Bool
+    ) -> SupervisorProjectMemoryBindingStrength {
+        guard hasProjectFocus else { return .none }
+        return projectTruthIntent ? .strong : .weak
+    }
+
+    private static func projectMemoryBindingReason(
+        strength: SupervisorProjectMemoryBindingStrength
+    ) -> String? {
+        switch strength {
+        case .none:
+            return nil
+        case .weak:
+            return "project_reference_without_truth_need"
+        case .strong:
+            return "project_truth_required"
+        }
     }
 
     private static func containsAny(_ text: String, _ needles: [String]) -> Bool {

@@ -106,6 +106,9 @@ struct XHubDoctorOutputCheckResult: Identifiable, Codable, Equatable, Sendable {
     var heartbeatGovernanceSnapshot: XHubDoctorOutputHeartbeatGovernanceSnapshot?
     var hubMemoryPromptProjection: HubMemoryPromptProjectionSnapshot?
     var memoryRouteTruthSnapshot: XHubDoctorOutputMemoryRouteTruthSnapshot?
+    var providerKeySelectionSnapshot: ProviderKeySelectionDecision?
+    var providerKeyRouteContextSnapshot: XHubDoctorOutputProviderKeyRouteContextSnapshot?
+    var externalTerminalAccessSnapshot: XTUnifiedDoctorExternalTerminalAccessProjection?
     var durableCandidateMirrorSnapshot: XHubDoctorOutputDurableCandidateMirrorSnapshot?
     var localStoreWriteSnapshot: XHubDoctorOutputLocalStoreWriteSnapshot?
     var skillDoctorTruthSnapshot: XTUnifiedDoctorSkillDoctorTruthProjection?
@@ -142,6 +145,9 @@ struct XHubDoctorOutputCheckResult: Identifiable, Codable, Equatable, Sendable {
         hubMemoryPromptProjection: HubMemoryPromptProjectionSnapshot? = nil,
         observedAtMs: Int64,
         memoryRouteTruthSnapshot: XHubDoctorOutputMemoryRouteTruthSnapshot? = nil,
+        providerKeySelectionSnapshot: ProviderKeySelectionDecision? = nil,
+        providerKeyRouteContextSnapshot: XHubDoctorOutputProviderKeyRouteContextSnapshot? = nil,
+        externalTerminalAccessSnapshot: XTUnifiedDoctorExternalTerminalAccessProjection? = nil,
         durableCandidateMirrorSnapshot: XHubDoctorOutputDurableCandidateMirrorSnapshot? = nil,
         localStoreWriteSnapshot: XHubDoctorOutputLocalStoreWriteSnapshot? = nil,
         skillDoctorTruthSnapshot: XTUnifiedDoctorSkillDoctorTruthProjection? = nil,
@@ -173,6 +179,9 @@ struct XHubDoctorOutputCheckResult: Identifiable, Codable, Equatable, Sendable {
         self.heartbeatGovernanceSnapshot = heartbeatGovernanceSnapshot
         self.hubMemoryPromptProjection = hubMemoryPromptProjection
         self.memoryRouteTruthSnapshot = memoryRouteTruthSnapshot
+        self.providerKeySelectionSnapshot = providerKeySelectionSnapshot
+        self.providerKeyRouteContextSnapshot = providerKeyRouteContextSnapshot
+        self.externalTerminalAccessSnapshot = externalTerminalAccessSnapshot
         self.durableCandidateMirrorSnapshot = durableCandidateMirrorSnapshot
         self.localStoreWriteSnapshot = localStoreWriteSnapshot
         self.skillDoctorTruthSnapshot = skillDoctorTruthSnapshot
@@ -207,11 +216,38 @@ struct XHubDoctorOutputCheckResult: Identifiable, Codable, Equatable, Sendable {
         case heartbeatGovernanceSnapshot = "heartbeat_governance_snapshot"
         case hubMemoryPromptProjection = "hub_memory_prompt_projection"
         case memoryRouteTruthSnapshot = "memory_route_truth_snapshot"
+        case providerKeySelectionSnapshot = "provider_key_selection_snapshot"
+        case providerKeyRouteContextSnapshot = "provider_key_route_context_snapshot"
+        case externalTerminalAccessSnapshot = "external_terminal_access_snapshot"
         case durableCandidateMirrorSnapshot = "durable_candidate_mirror_snapshot"
         case localStoreWriteSnapshot = "local_store_write_snapshot"
         case skillDoctorTruthSnapshot = "skill_doctor_truth_snapshot"
         case freshPairReconnectSmokeSnapshot = "fresh_pair_reconnect_smoke_snapshot"
         case observedAtMs = "observed_at_ms"
+    }
+}
+
+struct XHubDoctorOutputProviderKeyRouteContextSnapshot: Codable, Equatable, Sendable {
+    var pool: HubProviderKeysClient.ProviderPool?
+    var decision: ProviderKeySelectionDecision?
+    var modelId: String?
+    var importContextLines: [String]
+    var importIssues: [XTProviderKeyImportIssueContext]
+
+    init(_ context: XTProviderKeyRouteContext) {
+        self.pool = context.pool
+        self.decision = context.decision
+        self.modelId = context.modelId
+        self.importContextLines = context.importContextLines
+        self.importIssues = context.importIssues
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case pool
+        case decision
+        case modelId = "model_id"
+        case importContextLines = "import_context_lines"
+        case importIssues = "import_issues"
     }
 }
 
@@ -2226,6 +2262,7 @@ private extension XHubDoctorOutputCheckResult {
                 ageMsKey: "remote_snapshot_age_ms",
                 ttlRemainingMsKey: "remote_snapshot_ttl_remaining_ms"
             )
+        let providerKeyRouteContext = XTProviderKeyRouteContextPresentation.context(section: section)
         self.init(
             checkID: section.kind.rawValue,
             checkKind: section.kind.rawValue,
@@ -2293,6 +2330,13 @@ private extension XHubDoctorOutputCheckResult {
                 ?? HubMemoryPromptProjectionSnapshot.fromDoctorDetailLines(section.detailLines),
             observedAtMs: observedAtMs,
             memoryRouteTruthSnapshot: XHubDoctorOutputMemoryRouteTruthSnapshot(section: section),
+            providerKeySelectionSnapshot: section.providerKeySelectionProjection
+                ?? providerKeyRouteContext.decision
+                ?? XTProviderKeySelectionPresentation.decision(fromDoctorDetailLines: section.detailLines),
+            providerKeyRouteContextSnapshot: providerKeyRouteContext.hasSignal
+                ? XHubDoctorOutputProviderKeyRouteContextSnapshot(providerKeyRouteContext)
+                : nil,
+            externalTerminalAccessSnapshot: section.externalTerminalAccessProjection,
             durableCandidateMirrorSnapshot: XHubDoctorOutputDurableCandidateMirrorSnapshot(section: section),
             localStoreWriteSnapshot: XHubDoctorOutputLocalStoreWriteSnapshot(section: section),
             skillDoctorTruthSnapshot: section.skillDoctorTruthProjection,
@@ -3995,9 +4039,9 @@ private func xHubDoctorNextStepKind(
     switch destination {
     case .xtPairHub, .hubPairing, .hubLAN:
         return .reviewPairing
-    case .xtChooseModel, .hubModels:
+    case .xtChooseModel, .hubProviderKeys, .hubModels:
         return .chooseModel
-    case .hubGrants, .hubSecurity, .systemPermissions:
+    case .xtExternalTerminals, .hubGrants, .hubSecurity, .systemPermissions:
         return .reviewPermissions
     case .xtDiagnostics, .hubDiagnostics:
         return .inspectDiagnostics
@@ -4020,7 +4064,7 @@ private func xHubDoctorStepOwner(
     }
 
     switch destination {
-    case .xtPairHub, .xtChooseModel, .xtDiagnostics, .hubPairing, .hubLAN, .hubModels, .hubGrants, .hubSecurity, .hubDiagnostics, .systemPermissions, .homeSupervisor:
+    case .xtPairHub, .xtChooseModel, .xtDiagnostics, .xtExternalTerminals, .hubPairing, .hubLAN, .hubProviderKeys, .hubModels, .hubGrants, .hubSecurity, .hubDiagnostics, .systemPermissions, .homeSupervisor:
         return .user
     }
 }

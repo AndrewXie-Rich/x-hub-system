@@ -19,6 +19,10 @@ source of UI-visible stutter risk.
 - Request-path stale Rust-owned status repair is now read-only and
   nonblocking: the request returns a fresh in-memory Rust-owned live status
   overlay instead of writing `hub_status.json` itself.
+- RHM-117 later supersedes this request-path overlay for explicit live cutover:
+  stale or missing Rust-owned status is now repaired by a gated fast disk write
+  so the durable XT heartbeat evidence cannot stay stale while HTTP appears
+  ready.
 - Heartbeat writes are also remembered in a process-local live status cache, so
   `/ready` and `/xt/classic-hub-compat` do not need to read the live status file
   on every request under explicit production cutover.

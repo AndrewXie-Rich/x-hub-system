@@ -1,6 +1,7 @@
 import Foundation
 
 enum MessageTimelineFocusPresentation {
+    static let pendingToolApprovalSectionAnchorID = "pending-tool-approval-section"
     static let projectSkillActivitySectionAnchorID = "project-skill-activity-section"
 
     static func normalizedRequestID(_ requestID: String?) -> String? {
@@ -14,6 +15,20 @@ enum MessageTimelineFocusPresentation {
     static func projectSkillActivityAnchorID(requestID: String) -> String {
         let normalized = normalizedRequestID(requestID) ?? requestID
         return "project-skill-activity-\(normalized)"
+    }
+
+    static func pendingToolApprovalAnchor(
+        requestID: String?,
+        pendingRequestIDs: [String]
+    ) -> String? {
+        guard !pendingRequestIDs.isEmpty else { return nil }
+        guard let normalizedRequestID = normalizedRequestID(requestID) else {
+            return pendingToolApprovalSectionAnchorID
+        }
+        if pendingRequestIDs.contains(normalizedRequestID) {
+            return pendingToolApprovalSectionAnchorID
+        }
+        return pendingToolApprovalSectionAnchorID
     }
 
     static func mergedRecentSkillActivities(

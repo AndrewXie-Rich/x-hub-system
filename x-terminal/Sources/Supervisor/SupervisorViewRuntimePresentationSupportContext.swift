@@ -144,6 +144,7 @@ extension SupervisorViewRuntimePresentationSupport {
             afterTurnSummary: supervisor.supervisorAfterTurnDerivedSummary,
             pendingFollowUpQuestion: supervisor.supervisorPendingMemoryFactFollowUpQuestion,
             assemblySnapshot: supervisor.supervisorMemoryAssemblySnapshot,
+            previousAssemblySnapshot: supervisor.supervisorPreviousMemoryAssemblySnapshot,
             skillRegistryStatusLine: supervisor.supervisorSkillRegistryStatusLine,
             skillRegistrySnapshot: supervisor.supervisorSkillRegistrySnapshot,
             turnRoutingDecision: supervisor.supervisorLatestTurnRoutingDecision,

@@ -24,7 +24,7 @@ production session apply/rollback path without touching the live XT
 ```bash
 bash tools/xt_file_ipc_production_rollback_rehearsal.command --self-test
 bash tools/xt_file_ipc_production_rollback_rehearsal.command \
-  --rust-hub-root "rust/xhubd/dist/<package>"
+  --rust-hub-root "/Users/andrew.xie/Documents/AX/rust/rust hub/dist/<package>"
 ```
 
 ## Status

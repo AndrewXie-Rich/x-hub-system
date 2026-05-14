@@ -18,6 +18,11 @@ struct UITroubleshootingPathTests {
         let permissionGuide = UITroubleshootKnowledgeBase.guide(for: .permissionDenied)
         #expect(permissionGuide.steps.map(\.destination).contains(.systemPermissions))
 
+        let externalGuide = UITroubleshootKnowledgeBase.guide(for: .externalTerminalAccessBlocked)
+        #expect(externalGuide.steps.first?.destination == .xtExternalTerminals)
+        #expect(externalGuide.steps[1].destination == .xtExternalTerminals)
+        #expect(externalGuide.steps.last?.destination == .xtDiagnostics)
+
         let modelGuide = UITroubleshootKnowledgeBase.guide(for: .modelNotReady)
         #expect(modelGuide.steps.first?.destination == .xtChooseModel)
         #expect(modelGuide.steps.map(\.destination).contains(.hubModels))
@@ -47,6 +52,7 @@ struct UITroubleshootingPathTests {
         let grantGuide = UITroubleshootKnowledgeBase.guide(for: .grantRequired)
         let permissionGuide = UITroubleshootKnowledgeBase.guide(for: .permissionDenied)
         let paidGuide = UITroubleshootKnowledgeBase.guide(for: .paidModelAccessBlocked)
+        let externalGuide = UITroubleshootKnowledgeBase.guide(for: .externalTerminalAccessBlocked)
         let modelGuide = UITroubleshootKnowledgeBase.guide(for: .modelNotReady)
         let connectorGuide = UITroubleshootKnowledgeBase.guide(for: .connectorScopeBlocked)
 
@@ -56,10 +62,168 @@ struct UITroubleshootingPathTests {
         #expect(permissionGuide.steps[1].instruction.contains("本地网络"))
         #expect(permissionGuide.steps[1].instruction.contains("client isolation"))
         #expect(paidGuide.summary.contains("设备信任、模型和预算"))
+        #expect(externalGuide.summary.contains("HUB_CLIENT_TOKEN"))
+        #expect(externalGuide.steps[1].instruction.contains("轮换"))
+        #expect(externalGuide.steps[2].instruction.contains("HUB_CLIENT_TOKEN"))
         #expect(modelGuide.steps[1].instruction.contains("REL Flow Hub → 模型与付费访问"))
         #expect(paidGuide.steps[2].instruction.contains("REL Flow Hub → 模型与付费访问"))
         #expect(connectorGuide.summary.contains("远端导出开关"))
         #expect(connectorGuide.steps[1].instruction.contains("REL Flow Hub → 诊断与恢复"))
+    }
+
+    @Test
+    func troubleshootingGuideCarriesExternalTerminalAccessSnapshotContext() {
+        let guide = UITroubleshootKnowledgeBase.guide(
+            for: .externalTerminalAccessBlocked,
+            externalTerminalAccessProjection: XTUnifiedDoctorExternalTerminalAccessProjection(
+                accessKeys: [
+                    sampleTroubleshootExternalTerminalAccessKey(
+                        accessKeyID: "hk_blocked",
+                        name: "Expired External Terminal",
+                        status: "expired",
+                        statusReason: "token_expired"
+                    )
+                ],
+                sourceStatus: "fetch_failed",
+                observedAt: Date(timeIntervalSince1970: 1_741_300_060),
+                dataUpdatedAtMs: 1_741_300_000_000,
+                errorCode: "access_key_refresh_failed",
+                errorMessage: "timeout"
+            )
+        )
+
+        #expect(guide.contextLines.contains(where: { $0.contains("当前快照：1 个受阻") }))
+        #expect(guide.contextLines.contains(where: { $0.contains("实时刷新失败") && $0.contains("access_key_refresh_failed") }))
+        #expect(guide.contextLines.contains(where: { $0.contains("受阻 key：Expired External Terminal") && $0.contains("token_expired") }))
+        #expect(guide.contextLines.contains(where: { $0.contains("不会自动恢复") && $0.contains("轮换或新签发") }))
+    }
+
+    @Test
+    func troubleshootingGuideCarriesLatestProviderKeyEvidenceForModelIssues() {
+        let guide = UITroubleshootKnowledgeBase.guide(
+            for: .modelNotReady,
+            providerKeyRouteContext: XTProviderKeyRouteContext(
+                pool: nil,
+                decision: ProviderKeySelectionDecision(
+                    requestedProvider: "openai",
+                    requestedModelId: "openai/gpt-5.4",
+                    strategy: "fill-first",
+                    selectionScope: "openai::openai:api.openai.com:chat_completions",
+                    selectedAccountKey: "openai:primary",
+                    fallbackReasonCode: "",
+                    candidates: [
+                        ProviderKeyCandidateDecision(
+                            accountKey: "openai:primary",
+                            provider: "openai",
+                            poolID: "openai:api.openai.com:chat_completions",
+                            wireAPI: "chat_completions",
+                            availability: .ready,
+                            score: 1_200,
+                            selected: true,
+                            reasonCode: "selected_by_scheduler",
+                            retryAtMs: 0
+                        ),
+                        ProviderKeyCandidateDecision(
+                            accountKey: "openai:cooldown",
+                            provider: "openai",
+                            poolID: "openai:api.openai.com:chat_completions",
+                            wireAPI: "chat_completions",
+                            availability: .cooldown(
+                                reasonCode: "provider_timeout",
+                                retryAtMs: 120_000
+                            ),
+                            score: -.greatestFiniteMagnitude,
+                            selected: false,
+                            reasonCode: "provider_timeout",
+                            retryAtMs: 120_000
+                        )
+                    ]
+                ),
+                modelId: "openai/gpt-5.4",
+                importContextLines: [],
+                importIssues: []
+            ),
+        )
+
+        #expect(guide.contextLines.contains(where: { $0.contains("最近一次远端 Key 调度") }))
+        #expect(guide.contextLines.contains(where: { $0.contains("当前选中") && $0.contains("openai:primary") }))
+        #expect(guide.contextLines.contains(where: { $0.contains("跳过 openai:cooldown") }))
+    }
+
+    @Test
+    func troubleshootingGuideUsesUnifiedProviderKeyRouteContext() {
+        let guide = UITroubleshootKnowledgeBase.guide(
+            for: .modelNotReady,
+            providerKeyRouteContext: XTProviderKeyRouteContext(
+                pool: nil,
+                decision: ProviderKeySelectionDecision(
+                    requestedProvider: "openai",
+                    requestedModelId: "openai/gpt-5.4",
+                    strategy: "fill-first",
+                    selectionScope: "openai::openai:api.openai.com:responses",
+                    selectedAccountKey: "openai:primary",
+                    fallbackReasonCode: "",
+                    candidates: [
+                        ProviderKeyCandidateDecision(
+                            accountKey: "openai:primary",
+                            provider: "openai",
+                            poolID: "openai:api.openai.com:responses",
+                            wireAPI: "responses",
+                            availability: .ready,
+                            score: 1_200,
+                            selected: true,
+                            reasonCode: "selected_by_scheduler",
+                            retryAtMs: 0
+                        )
+                    ]
+                ),
+                modelId: "openai/gpt-5.4",
+                importContextLines: ["配置文件 config149.toml 最近一次同步失败"],
+                importIssues: [
+                    XTProviderKeyImportIssueContext(
+                        kind: "config_path",
+                        state: "sync_failed",
+                        sourceRef: "/Users/test/config149.toml",
+                        sourceName: "config149.toml",
+                        errorCode: "unsupported_toml_config",
+                        errorDetail: "missing auth entries"
+                    )
+                ]
+            )
+        )
+
+        #expect(guide.summary.contains("Provider Key 导入链"))
+        #expect(guide.steps[1].instruction.contains("config149.toml"))
+        #expect(guide.contextLines.contains(where: { $0.contains("config149.toml") }))
+        #expect(guide.contextLines.contains(where: { $0.contains("openai/gpt-5.4") || $0.contains("openai:primary") }))
+    }
+
+    @Test
+    func modelReadinessGuidePrefersProviderKeyImportRepairWhenImportSourceIsBroken() {
+        let guide = UITroubleshootKnowledgeBase.guide(
+            for: .modelNotReady,
+            providerKeyRouteContext: XTProviderKeyRouteContext(
+                pool: nil,
+                decision: nil,
+                modelId: nil,
+                importContextLines: [],
+                importIssues: [
+                    XTProviderKeyImportIssueContext(
+                        kind: "config_path",
+                        state: "sync_failed",
+                        sourceRef: "/Users/test/config149.toml",
+                        sourceName: "config149.toml",
+                        errorCode: "unsupported_toml_config",
+                        errorDetail: "unsupported_toml_config"
+                    )
+                ]
+            )
+        )
+
+        #expect(guide.summary.contains("Provider Key 导入链"))
+        #expect(guide.steps[1].destination == .hubProviderKeys)
+        #expect(guide.steps[1].instruction.contains("config149.toml"))
+        #expect(guide.steps[1].instruction.contains("Provider Key 管理"))
     }
 
     @Test
@@ -208,6 +372,15 @@ struct UITroubleshootingPathTests {
     }
 
     @Test
+    func troubleshootingRoutesExternalTerminalAccessFailuresToDedicatedIssue() {
+        #expect(UITroubleshootKnowledgeBase.issue(forFailureCode: "external_terminal_access_blocked") == .externalTerminalAccessBlocked)
+        #expect(UITroubleshootKnowledgeBase.issue(forFailureCode: "Client token has been revoked") == .externalTerminalAccessBlocked)
+        #expect(UITroubleshootKnowledgeBase.issue(forFailureCode: "Client token has expired") == .externalTerminalAccessBlocked)
+        #expect(UITroubleshootKnowledgeBase.issue(forFailureCode: "missing HUB_CLIENT_TOKEN in hub.env") == .externalTerminalAccessBlocked)
+        #expect(UITroubleshootKnowledgeBase.issue(forFailureCode: "access_key_not_found") == .externalTerminalAccessBlocked)
+    }
+
+    @Test
     func modelReadinessIssueUsesSharedRepairActionsAcrossWizardAndSettings() {
         let doctor = XTUnifiedDoctorBuilder.build(
             input: makeTroubleshootingDoctorInput(failureCode: "provider_not_ready")
@@ -253,6 +426,8 @@ struct UITroubleshootingPathTests {
         #expect(settingsActions.last?.id == "open_repair_entry")
         #expect(settingsActions.last?.title == "查看授权与排障")
         #expect(settingsActions.last?.subtitle == "模型未就绪；先打开排障入口")
+        #expect(UITroubleshootDestination.xtExternalTerminals.label == "XT 设置 → 非 XT Terminal 访问")
+        #expect(UITroubleshootDestination.hubProviderKeys.label == "REL Flow Hub → 设置 → Provider Key 管理")
         #expect(UITroubleshootDestination.hubModels.label == "REL Flow Hub → 模型与付费访问")
         #expect(UITroubleshootDestination.hubLAN.label == "REL Flow Hub → 网络连接")
         #expect(UITroubleshootDestination.hubPairing.label == "REL Flow Hub → 配对与设备信任")
@@ -263,6 +438,78 @@ struct UITroubleshootingPathTests {
                 for: .modelNotReady,
                 runtime: .empty
             ).contains("REL Flow Hub 检查模型清单和提供方状态")
+        )
+    }
+
+    @Test
+    func externalTerminalAccessDoctorIssueUsesSharedRepairActionsAcrossWizardAndSettings() {
+        let externalProjection = XTUnifiedDoctorExternalTerminalAccessProjection(
+            accessKeys: [
+                sampleTroubleshootExternalTerminalAccessKey(
+                    accessKeyID: "hk_expired",
+                    name: "Expired External Terminal",
+                    status: "expired",
+                    statusReason: "token_expired"
+                )
+            ],
+            sourceStatus: "ready",
+            observedAt: Date(timeIntervalSince1970: 1_741_300_060),
+            dataUpdatedAtMs: 1_741_300_000_000
+        )
+        let doctor = XTUnifiedDoctorBuilder.build(
+            input: makeTroubleshootingDoctorInput(
+                failureCode: "",
+                externalTerminalAccessProjection: externalProjection
+            )
+        )
+        let wizardPlan = UIFirstRunJourneyPlanner.plan(
+            for: HubSetupWizardState(
+                localConnected: true,
+                remoteConnected: false,
+                linking: false,
+                configuredModelRoles: 1,
+                totalModelRoles: AXRole.allCases.count,
+                failureCode: "",
+                runtime: .empty,
+                doctor: doctor
+            )
+        )
+        let settingsState = XTSettingsSurfaceState(
+            hubConnected: true,
+            remoteConnected: false,
+            linking: false,
+            localServerEnabled: true,
+            serverRunning: true,
+            failureCode: "",
+            runtime: .empty,
+            doctor: doctor
+        )
+        let settingsActions = XTSettingsSurfacePlanner.quickActions(for: settingsState)
+
+        #expect(doctor.currentFailureIssue == .externalTerminalAccessBlocked)
+        #expect(wizardPlan.currentFailureIssue == .externalTerminalAccessBlocked)
+        #expect(wizardPlan.primaryStatus.state == .diagnosticRequired)
+        #expect(wizardPlan.steps[2].state == .diagnosticRequired)
+        #expect(wizardPlan.steps[2].repairEntry == .xtExternalTerminals)
+        #expect(wizardPlan.actions.last?.id == "open_repair_entry")
+        #expect(wizardPlan.actions.last?.subtitle?.contains("Expired External Terminal") == true)
+        #expect(wizardPlan.actions.last?.subtitle?.contains("status=expired") == true)
+        #expect(wizardPlan.actions.last?.subtitle?.contains("token_expired") == true)
+        #expect(wizardPlan.actions.last?.subtitle?.contains("不会自动恢复") == true)
+        #expect(wizardPlan.actions.last?.subtitle?.contains("轮换或新签发") == true)
+
+        #expect(settingsActions.last?.id == "open_repair_entry")
+        #expect(settingsActions.last?.subtitle?.contains("Expired External Terminal") == true)
+        #expect(settingsActions.last?.subtitle?.contains("status=expired") == true)
+        #expect(settingsActions.last?.subtitle?.contains("token_expired") == true)
+        #expect(settingsActions.last?.subtitle?.contains("不会自动恢复") == true)
+        #expect(settingsActions.last?.subtitle?.contains("轮换或新签发") == true)
+        #expect(
+            UITroubleshootKnowledgeBase.repairEntryDetail(
+                for: .externalTerminalAccessBlocked,
+                runtime: .empty,
+                externalTerminalAccessProjection: externalProjection
+            ).contains("Expired External Terminal")
         )
     }
 
@@ -526,24 +773,35 @@ struct UITroubleshootingPathTests {
             "pair_hub",
             "choose_model",
             "grant_permissions",
+            "external_terminals",
             "security_runtime",
             "diagnostics"
         ])
         #expect(XTSettingsCenterManifest.sections[1].title == "AI 模型主入口")
         #expect(XTSettingsCenterManifest.sections[1].summary.contains("Supervisor Control Center · AI 模型"))
         #expect(XTSettingsCenterManifest.sections[1].repairEntry == "Supervisor Control Center → AI 模型")
+        #expect(XTSettingsCenterManifest.sections[3].title == "非 XT Terminal 访问")
+        #expect(XTSettingsCenterManifest.sections[3].repairEntry == "XT Settings → 非 XT Terminal 访问")
         #expect(XTSettingsCenterManifest.consumedFrozenFields.contains("xt.ui_information_architecture.v1"))
         #expect(XTSettingsCenterManifest.consumedFrozenFields.contains("xt.delivery_scope_freeze.v1.validated_scope"))
         #expect(XTSettingsCenterManifest.consumedFrozenFields.contains("xt.unblock_baton.v1"))
         #expect(XTSettingsCenterManifest.consumedFrozenFields.contains("xt.one_shot_replay_regression.v1"))
 
         let workspaceRoot = monorepoTestRepoRoot()
-        let hubSettingsPath = workspaceRoot
-            .appendingPathComponent("x-hub/macos/RELFlowHub/Sources/RELFlowHub/SettingsSheetView.swift")
-        let hubStringsPath = workspaceRoot
-            .appendingPathComponent("x-hub/macos/RELFlowHub/Sources/RELFlowHub/HubUIStrings.swift")
-        let hubCardPath = workspaceRoot
-            .appendingPathComponent("x-hub/macos/RELFlowHub/Sources/RELFlowHub/UI/HubSectionCard.swift")
+        let hubSourceRoot = workspaceRoot
+            .appendingPathComponent("x-hub/macos/RELFlowHub/Sources/RELFlowHub")
+        guard FileManager.default.fileExists(atPath: hubSourceRoot.path) else {
+            #expect(FileManager.default.fileExists(
+                atPath: workspaceRoot
+                    .appendingPathComponent("swift-xterminal/Sources/UI/SettingsView.swift")
+                    .path
+            ))
+            return
+        }
+
+        let hubSettingsPath = hubSourceRoot.appendingPathComponent("SettingsSheetView.swift")
+        let hubStringsPath = hubSourceRoot.appendingPathComponent("HubUIStrings.swift")
+        let hubCardPath = hubSourceRoot.appendingPathComponent("UI/HubSectionCard.swift")
 
         let hubSettingsSource = try String(contentsOf: hubSettingsPath, encoding: .utf8)
         #expect(hubSettingsSource.contains("Section(HubUIStrings.Settings.Overview.sectionTitle)"))
@@ -587,6 +845,58 @@ struct UITroubleshootingPathTests {
         #expect(diagnostics.contains(where: { $0.contains("resume_baton=continue_current_task_only") }))
         #expect(diagnostics.contains(where: { $0.contains("replay=") }))
     }
+}
+
+private func sampleTroubleshootExternalTerminalAccessKey(
+    accessKeyID: String = "hk_123",
+    name: String = "External Terminal",
+    status: String = "ready",
+    statusReason: String = "",
+    appID: String = "external_terminal"
+) -> HubAccessKeysClient.AccessKey {
+    HubAccessKeysClient.AccessKey(
+        schemaVersion: "hub.access_key.v1",
+        accessKeyID: accessKeyID,
+        authKind: "hub_access_key",
+        status: status,
+        statusReason: statusReason,
+        deviceID: "device-1",
+        userID: "user-1",
+        appID: appID,
+        name: name,
+        note: "",
+        tokenRedacted: "axh_***",
+        enabled: true,
+        createdAtMs: 1_741_299_000_000,
+        updatedAtMs: 1_741_300_000_000,
+        expiresAtMs: 1_741_386_400_000,
+        lastUsedAtMs: 1_741_300_010_000,
+        lastUsedPeerIP: "127.0.0.1",
+        lastUsedTransport: "grpc",
+        revokedAtMs: 0,
+        revokeReason: "",
+        revokedByUserID: "",
+        revokedVia: "",
+        createdByUserID: "user-1",
+        createdByAppID: "xt",
+        createdVia: "xt_ui",
+        lastRotatedAtMs: 0,
+        rotationCount: 0,
+        capabilities: [],
+        scopes: ["hub.connect"],
+        allowedCIDRs: [],
+        policyMode: "default",
+        trustProfilePresent: true,
+        connect: HubAccessKeysClient.AccessKeyConnect(
+            hubHost: "hub.example.test",
+            hubPort: 50051,
+            tlsMode: "disabled",
+            tlsServerName: "",
+            authEnvKey: "HUB_CLIENT_TOKEN"
+        ),
+        connectEnvTemplate: "export HUB_CLIENT_TOKEN=redacted",
+        connectEnv: nil
+    )
 }
 
 private func sampleRuntimeSnapshot() -> UIFailClosedRuntimeSnapshot {
@@ -871,7 +1181,10 @@ private func pairingRepairClosureScenarioSpecs() -> [PairingRepairClosureScenari
     ]
 }
 
-private func makeTroubleshootingDoctorInput(failureCode: String) -> XTUnifiedDoctorInput {
+private func makeTroubleshootingDoctorInput(
+    failureCode: String,
+    externalTerminalAccessProjection: XTUnifiedDoctorExternalTerminalAccessProjection? = nil
+) -> XTUnifiedDoctorInput {
     XTUnifiedDoctorInput(
         generatedAt: Date(timeIntervalSince1970: 1_741_300_000),
         localConnected: false,
@@ -892,7 +1205,8 @@ private func makeTroubleshootingDoctorInput(failureCode: String) -> XTUnifiedDoc
         sessionID: nil,
         sessionTitle: nil,
         sessionRuntime: nil,
-        skillsSnapshot: .empty
+        skillsSnapshot: .empty,
+        externalTerminalAccessProjection: externalTerminalAccessProjection
     )
 }
 

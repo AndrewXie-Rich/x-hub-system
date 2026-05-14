@@ -333,7 +333,8 @@ fn classic_hub_compat_value(input: &XtClassicCompatInput) -> Value {
             "apply_enabled": input.status_writer_apply_enabled,
             "method": "POST",
             "endpoint": "/xt/classic-hub-compat/write-status",
-            "writes_on_preflight_get": false,
+            "writes_on_preflight_get": live_cutover_status_overlay_allowed(input),
+            "preflight_get_write_scope": "stale_or_missing_rust_owned_live_status_repair_only",
             "requires_file_ipc_surface": true,
             "requires_production_cutover_authorization": true,
             "planned_status_path": preferred_status_path.display().to_string(),
@@ -1290,15 +1291,15 @@ fn read_preferred_status_with_freshness_repair(
         if raw_status_xt_live(input, &cached_status) {
             return Some(cached_status);
         }
-        return repair_stale_rust_owned_status_nonblocking(input, status_path)
+        return repair_stale_rust_owned_status_on_demand(input, status_path)
             .or(Some(cached_status));
-    }
-    if can_repair_rust_owned_status(input, status_path) {
-        return repair_stale_rust_owned_status_nonblocking(input, status_path);
     }
 
     let status = read_json(status_path);
     let Some(raw_status) = status.as_ref() else {
+        if can_repair_rust_owned_status(input, status_path) {
+            return repair_stale_rust_owned_status_on_demand(input, status_path);
+        }
         return status;
     };
     if raw_status_xt_live(input, raw_status) || !status_is_rust_owned(raw_status) {
@@ -1308,7 +1309,7 @@ fn read_preferred_status_with_freshness_repair(
         return status;
     }
 
-    repair_stale_rust_owned_status_nonblocking(input, status_path).or(status)
+    repair_stale_rust_owned_status_on_demand(input, status_path).or(status)
 }
 
 fn can_repair_rust_owned_status(input: &XtClassicCompatInput, status_path: &PathBuf) -> bool {
@@ -1384,19 +1385,28 @@ fn raw_status_xt_live(input: &XtClassicCompatInput, status: &Value) -> bool {
     fresh && has_pid
 }
 
-fn repair_stale_rust_owned_status_nonblocking(
+fn repair_stale_rust_owned_status_on_demand(
     input: &XtClassicCompatInput,
     status_path: &PathBuf,
 ) -> Option<Value> {
     let base_dir = status_path.parent().map(PathBuf::from)?;
     let ipc_path = base_dir.join("ipc_events");
-    let mut overlay_input = input.clone();
-    overlay_input.now_ms = now_ms();
-    Some(planned_hub_status_json(
-        &overlay_input,
-        &base_dir,
-        &ipc_path,
-    ))
+    let mut repair_input = input.clone();
+    repair_input.now_ms = now_ms();
+    let (wrote, _write_error, written_status, _effective_write_now_ms, _write_attempts, _age_ms) =
+        write_planned_status_with_retry(
+            &repair_input,
+            status_path,
+            &base_dir,
+            &ipc_path,
+            Some(repair_input.now_ms),
+            true,
+        );
+    if !wrote {
+        return None;
+    }
+    remember_live_status(&written_status);
+    Some(written_status)
 }
 
 fn candidate_base_dirs(input: &XtClassicCompatInput) -> Vec<PathBuf> {
@@ -2083,7 +2093,7 @@ mod tests {
     }
 
     #[test]
-    fn compat_get_live_cutover_uses_overlay_without_status_file_read() {
+    fn compat_get_live_cutover_writes_status_file_on_demand() {
         *LIVE_STATUS_CACHE.lock().unwrap() = None;
         let temp = unique_temp_dir("xhub-xt-compat-live-overlay");
         let preferred = temp.join("hub_status.json");
@@ -2129,13 +2139,30 @@ mod tests {
             value["xt_contract"]["candidate_statuses"][0]["rust_hub_authority"],
             "explicit_cutover_only"
         );
-        assert_eq!(preferred.exists(), false);
+        assert_eq!(preferred.exists(), true);
+        let written = read_json(&preferred).expect("written hub status json");
+        assert_eq!(
+            written
+                .get("rustHub")
+                .and_then(|value| value.get("authority"))
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+            "explicit_cutover_only"
+        );
+        assert!(
+            written
+                .get("updatedAt")
+                .and_then(Value::as_f64)
+                .map(|seconds| seconds * 1000.0)
+                .unwrap_or(0.0)
+                >= 101_000.0
+        );
 
         let _ = fs::remove_dir_all(temp);
     }
 
     #[test]
-    fn compat_get_overlays_stale_rust_owned_live_status_without_request_write() {
+    fn compat_get_repairs_stale_rust_owned_live_status_with_fast_write() {
         let temp = unique_temp_dir("xhub-xt-compat-stale-repair");
         let preferred = temp.join("hub_status.json");
         fs::create_dir_all(temp.join("ipc_events")).unwrap();
@@ -2185,7 +2212,15 @@ mod tests {
             .and_then(Value::as_f64)
             .map(|seconds| seconds * 1000.0)
             .unwrap_or(0.0);
-        assert_eq!(updated_at_ms, 100_000.0);
+        assert!(updated_at_ms >= 106_000.0);
+        assert_eq!(
+            written
+                .get("rustHub")
+                .and_then(|value| value.get("authority"))
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+            "explicit_cutover_only"
+        );
 
         let _ = fs::remove_dir_all(temp);
     }

@@ -98,13 +98,10 @@ struct SupervisorViewInteractionCoordinator {
 
     private func triggerBigTaskFlow(_ candidate: SupervisorBigTaskCandidate) {
         Task { @MainActor in
-            let selectedProjectTemplate = screenModel.selectedAutomationProject.map {
-                appModel.governanceTemplatePreview(for: $0)
-            }
             await SupervisorViewActionSupport.triggerBigTaskFlow(
                 candidate,
                 selectedProject: screenModel.selectedAutomationProject,
-                selectedProjectTemplate: selectedProjectTemplate,
+                selectedProjectTemplate: screenModel.selectedAutomationTemplatePreview,
                 setDismissedFingerprint: { ui.dismissedBigTaskFingerprint = $0 },
                 setInputText: { ui.inputText = $0 },
                 prepareOneShotControlPlane: { submission in

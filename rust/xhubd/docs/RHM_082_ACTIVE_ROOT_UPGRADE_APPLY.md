@@ -8,7 +8,7 @@ RHM-082 adds a dry-run-by-default active-root upgrade orchestrator.
 bash tools/active_root_upgrade_apply.command --target-root "/path/to/rust-hub-dist"
 ```
 
-Default mode is dry-run. It prints the scheduler authority, provider/model prep,
+Default mode is dry-run. It prints the scheduler authority, route authority,
 validation, and optional X-Hub relaunch steps without mutating launchctl,
 LaunchAgents, or the running app.
 
@@ -47,7 +47,14 @@ wait with:
 --relaunch-retry-wait-ms 15000
 ```
 
-This tool never enables provider/model production authority, memory writer
-authority, or skills execution authority. It does not touch SwiftUI product
-files. Provider/model route remains prep/candidate only unless a future
-production switch contract and rollback tool are implemented separately.
+When provider/model production authority is already active, this tool skips
+`route_authority_prep_session` apply/install so a package-root update cannot
+overwrite production fallback or cutover keys. In that mode `--validate` runs
+`route_authority_production_runtime_guard.command`, requiring memory/skills
+production if those keys are already active. `--force-route-prep` exists only
+for legacy prep sessions where intentionally returning to prep is acceptable.
+
+This tool never newly enables provider/model production authority, memory
+writer authority, or skills execution authority. It preserves the authority
+state that is already active while moving the active package root. It does not
+touch SwiftUI product files.

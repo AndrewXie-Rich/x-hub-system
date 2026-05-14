@@ -1528,6 +1528,10 @@ verdict=watch
         #expect(fields["memory_v1_source"] as? String == XTProjectMemoryGovernance.localProjectMemorySource)
         #expect(fields["role_aware_memory_mode"] as? String == "project_ai")
         #expect(fields["project_memory_resolution_trigger"] as? String == "normal_reply")
+        #expect(
+            fields["project_memory_resolution_trigger_label"] as? String
+                == "普通项目回复（normal_reply）"
+        )
         #expect(fields["workflow_present"] as? Bool == false)
         #expect(fields["execution_evidence_present"] as? Bool == false)
         #expect(fields["review_guidance_present"] as? Bool == false)
@@ -1806,6 +1810,10 @@ verdict=watch
         #expect(fields["project_memory_automation_delivery_closure_source"] as? String == "retry_package")
         #expect(fields["project_memory_automation_run_state"] as? String == XTAutomationRunState.blocked.rawValue)
         #expect(fields["project_memory_resolution_trigger"] as? String == "retry_execution")
+        #expect(
+            fields["project_memory_resolution_trigger_label"] as? String
+                == "自动重试链继续上次执行（retry_execution）"
+        )
         #expect(fields["project_memory_automation_attempt"] as? Int == 2)
         #expect(fields["project_memory_automation_retry_after_seconds"] as? Int == 45)
         #expect(fields["project_memory_automation_current_step_present"] as? Bool == true)
@@ -2028,6 +2036,10 @@ goal: keep governed memory continuity
         #expect(fields["execution_evidence_present"] as? Bool == true)
         #expect(fields["review_guidance_present"] as? Bool == true)
         #expect(fields["project_memory_resolution_trigger"] as? String == "review_guidance_follow_up")
+        #expect(
+            fields["project_memory_resolution_trigger_label"] as? String
+                == "带着 review guidance 跟进执行（review_guidance_follow_up）"
+        )
         #expect(selectedPlanes.contains("project_dialogue_plane"))
         #expect(selectedPlanes.contains("project_anchor_plane"))
         #expect(selectedPlanes.contains("evidence_plane"))

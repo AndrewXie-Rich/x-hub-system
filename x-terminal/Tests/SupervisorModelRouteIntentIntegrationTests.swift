@@ -60,7 +60,7 @@ struct SupervisorModelRouteIntentIntegrationTests {
             "帮我 rollout 到 production，并检查 grant 和权限问题"
         )
 
-        #expect(summary.contains("task-intent role=ops"))
+        #expect(summary.contains("task-intent role=supervisor"))
         #expect(summary.contains("grant=hub_policy_required"))
         #expect(summary.contains("hub_gate=required"))
         #expect(summary.contains("signals=["))
@@ -83,7 +83,7 @@ struct SupervisorModelRouteIntentIntegrationTests {
 
         #expect(prompt.contains("Preferred supervisor model id: openai/gpt-5.3-codex"))
         #expect(prompt.contains("Supervisor model route summary:"))
-        #expect(prompt.contains("task-intent role=doc"))
-        #expect(prompt.contains("preferred_classes=[local_writer, paid_writer]"))
+        #expect(prompt.contains("task-intent role=supervisor"))
+        #expect(prompt.contains("preferred_classes=[local_reasoner, paid_planner]"))
     }
 }

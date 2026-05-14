@@ -325,7 +325,7 @@ enum HubModelRoutingTruthBuilder {
         let projectOverride = projectID == nil
             ? nil
             : normalized(projectConfig?.modelOverride(for: role))
-        let globalAssignment = normalized(settings.assignment(for: role).model)
+        let globalAssignment = normalized(settings.modelRoute(for: role).primaryModelId)
         let value: String
 
         if projectOverride != nil {
@@ -498,7 +498,7 @@ enum HubModelRoutingTruthBuilder {
             projectRuntimeReadiness,
             language: language
         )
-        let globalModel = normalized(settings.assignment(for: role).model)
+        let globalModel = normalized(settings.modelRoute(for: role).primaryModelId)
 
         switch surface {
         case .globalRoleSettings:

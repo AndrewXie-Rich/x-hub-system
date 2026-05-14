@@ -1707,6 +1707,7 @@ run_gate_g5() {
   local heartbeat_memory_projection_source="${ROOT_DIR}/Sources/Supervisor/XTHeartbeatMemoryProjectionStore.swift"
   local xt_unified_doctor_source="${ROOT_DIR}/Sources/UI/XTUnifiedDoctor.swift"
   local xt_doctor_projection_source="${ROOT_DIR}/Sources/UI/XTDoctorProjectionPresentation.swift"
+  local provider_key_selection_presentation_source="${ROOT_DIR}/Sources/UI/ProviderKeySelectionPresentationSupport.swift"
   local xhub_doctor_output_source="${ROOT_DIR}/Sources/UI/XHubDoctorOutput.swift"
   local heartbeat_canonical_sync_tests="${ROOT_DIR}/Tests/SupervisorProjectHeartbeatCanonicalSyncTests.swift"
   local heartbeat_memory_projection_tests="${ROOT_DIR}/Tests/XTHeartbeatMemoryProjectionStoreTests.swift"
@@ -1797,6 +1798,30 @@ run_gate_g5() {
     cm_fail=1
   fi
   if ! check_pattern_fixed "${xhub_doctor_output_contract_schema}" "\"heartbeat_governance_snapshot\"" "${gate_name}" "generic doctor export heartbeat governance schema field"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xt_unified_doctor_source}" "providerKeySelectionProjection" "${gate_name}" "XT unified doctor provider key structured projection"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${provider_key_selection_presentation_source}" "XTProviderKeySelectionPresentation" "${gate_name}" "XT provider key summary presentation"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xhub_doctor_output_source}" "provider_key_selection_snapshot" "${gate_name}" "generic doctor export provider key selection snapshot"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xt_unified_doctor_contract_schema}" "\"providerKeySelectionProjection\"" "${gate_name}" "XT unified doctor contract provider key schema field"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xhub_doctor_output_contract_schema}" "\"provider_key_selection_snapshot\"" "${gate_name}" "generic doctor export provider key schema field"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xt_unified_doctor_report_tests}" "provider_key_selection_decision_json=" "${gate_name}" "XT doctor report tests keep provider key detail-line evidence"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xt_unified_doctor_report_tests}" "modelRouteSectionCarriesLatestProviderKeySelectionSnapshotIntoDoctorReport" "${gate_name}" "XT doctor report tests keep provider key structured projection evidence"; then
+    cm_fail=1
+  fi
+  if ! check_pattern_fixed "${xhub_doctor_output_tests}" "exportsProviderKeySelectionSnapshotFromModelRouteSection" "${gate_name}" "generic doctor output tests keep provider key export evidence"; then
     cm_fail=1
   fi
   if ! check_pattern_fixed "${xt_unified_doctor_source}" "hubMemoryPromptProjection" "${gate_name}" "XT unified doctor Hub prompt projection structured field"; then

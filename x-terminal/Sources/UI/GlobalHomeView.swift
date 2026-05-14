@@ -3,7 +3,10 @@ import SwiftUI
 import AppKit
 
 struct GlobalHomeView: View {
-    @EnvironmentObject private var appModel: AppModel
+    @Environment(\.xtAppModelReference) private var appModelReference
+    @EnvironmentObject private var hubConnectionStore: XTHubConnectionStore
+    @EnvironmentObject private var projectListStore: XTProjectListStore
+    @EnvironmentObject private var globalHomeStore: XTGlobalHomeStore
     @Environment(\.openWindow) private var openWindow
     @StateObject private var supervisorManager = SupervisorManager.shared
     @State private var projectInlineNotes: [String: String] = [:]
@@ -11,6 +14,7 @@ struct GlobalHomeView: View {
     @State private var supervisorCandidateReviewSnapshot: HubIPCClient.SupervisorCandidateReviewSnapshot?
     @State private var pendingGrantActionsInFlight: Set<String> = []
     @State private var supervisorCandidateReviewActionsInFlight: Set<String> = []
+    @State private var routeRepairWatchItems: [AXRouteRepairProjectWatchItem] = []
 
     private var homePendingGrantCount: Int {
         guard let snapshot = pendingGrantSnapshot else { return 0 }
@@ -24,16 +28,15 @@ struct GlobalHomeView: View {
     private var homePresentation: GlobalHomePresentation {
         GlobalHomePresentation.fromRuntime(
             appModel: appModel,
+            projects: sortedProjects,
+            hubInteractive: hubInteractive,
+            highlightedProjectName: globalHomeSnapshot.preferredResumeProject?.projectDisplayName,
             pendingGrantCount: homePendingGrantCount
         )
     }
 
     private var homeResumeReminder: AXResumeReminderProjectPresentation? {
-        appModel.latestResumeReminderProject()
-    }
-
-    private var routeRepairWatchItems: [AXRouteRepairProjectWatchItem] {
-        AXRouteRepairLogStore.watchItems(for: appModel.sortedProjects, limit: 3)
+        globalHomeSnapshot.latestResumeReminder
     }
 
     var body: some View {
@@ -48,7 +51,7 @@ struct GlobalHomeView: View {
                         .padding(.horizontal, 16)
                         .padding(.top, 16)
 
-                    if appModel.sortedProjects.isEmpty {
+                    if sortedProjects.isEmpty {
                         emptyProjectsCard
                             .padding(.horizontal, 16)
                             .padding(.bottom, 16)
@@ -62,11 +65,16 @@ struct GlobalHomeView: View {
         }
         .frame(minWidth: 720, minHeight: 520)
         .task {
+            refreshRouteRepairWatchItems()
             while !Task.isCancelled {
                 await refreshPendingGrants()
                 await refreshSupervisorCandidateReviews()
+                refreshRouteRepairWatchItems()
                 try? await Task.sleep(nanoseconds: 12_000_000_000)
             }
+        }
+        .onChange(of: routeRepairWatchSignature) { _ in
+            refreshRouteRepairWatchItems()
         }
     }
 
@@ -107,7 +115,7 @@ struct GlobalHomeView: View {
 
             StatusExplanationCard(explanation: presentation.primaryStatus)
 
-            if !appModel.skillsCompatibilitySnapshot.builtinGovernedSkills.isEmpty {
+            if !skillsCompatibilitySnapshot.builtinGovernedSkills.isEmpty {
                 builtinGovernedSkillsCard
             }
 
@@ -128,12 +136,12 @@ struct GlobalHomeView: View {
 
     private var emptyProjectsCard: some View {
         let explanation = StatusExplanation(
-            state: appModel.hubInteractive ? .ready : .blockedWaitingUpstream,
+            state: hubInteractive ? .ready : .blockedWaitingUpstream,
             headline: "先准备第一个项目",
             whatHappened: "当前还没有已登记项目，但首页已经可以承接项目总览、继续入口和诊断入口。",
             whyItHappened: "大任务入口已经从首页收口到 Supervisor 对话窗，首页只负责项目级概览。",
-            userAction: appModel.hubInteractive ? "先创建一个项目；需要发起大任务时，从右上角打开 Supervisor 窗口。" : "先点击“连接 Hub”，完成连接后再创建项目。",
-            machineStatusRef: "projects=0; hub_interactive=\(appModel.hubInteractive)",
+            userAction: hubInteractive ? "先创建一个项目；需要发起大任务时，从右上角打开 Supervisor 窗口。" : "先点击“连接 Hub”，完成连接后再创建项目。",
+            machineStatusRef: "projects=0; hub_interactive=\(hubInteractive)",
             hardLine: "首页只负责项目总览和继续入口",
             highlights: []
         )
@@ -166,7 +174,7 @@ struct GlobalHomeView: View {
                         Text(
                             AXRouteRepairLogStore.watchHeadline(
                                 for: item.digest,
-                                paidAccessSnapshot: appModel.hubRemotePaidAccessSnapshot
+                                paidAccessSnapshot: globalHomeSnapshot.remotePaidAccessSnapshot
                             )
                         )
                             .font(.caption)
@@ -212,7 +220,7 @@ struct GlobalHomeView: View {
     }
 
     private var builtinGovernedSkillsCard: some View {
-        let snapshot = appModel.skillsCompatibilitySnapshot
+        let snapshot = skillsCompatibilitySnapshot
         let managedStatusLine = snapshot.statusLine.trimmingCharacters(in: .whitespacesAndNewlines)
         let extraCount = max(0, snapshot.builtinGovernedSkillCount - builtinGovernedSkillHighlights.count)
 
@@ -310,7 +318,7 @@ struct GlobalHomeView: View {
     }
 
     private var builtinGovernedSkillHighlights: [AXBuiltinGovernedSkillSummary] {
-        let items = appModel.skillsCompatibilitySnapshot.builtinGovernedSkills
+        let items = skillsCompatibilitySnapshot.builtinGovernedSkills
         let preferredIDs = ["guarded-automation", "supervisor-voice"]
         let preferred = preferredIDs.compactMap { skillID in
             items.first(where: { $0.skillID == skillID })
@@ -351,7 +359,7 @@ struct GlobalHomeView: View {
     }
 
     private var projectsSection: some View {
-        let projectSessions: [(project: AXProjectEntry, session: ChatSessionModel)] = appModel.sortedProjects.compactMap { project in
+        let projectSessions: [(project: AXProjectEntry, session: ChatSessionModel)] = sortedProjects.compactMap { project in
             guard let session = appModel.sessionForProjectId(project.projectId) else { return nil }
             return (project, session)
         }
@@ -408,8 +416,8 @@ struct GlobalHomeView: View {
     private func handleHomeAction(_ action: PrimaryActionRailAction) {
         switch action.id {
         case "resume_project":
-            if appModel.canPresentPreferredResumeBrief {
-                appModel.presentPreferredResumeBrief()
+            if let target = globalHomeSnapshot.preferredResumeProject {
+                appModel.presentResumeBrief(projectId: target.projectId)
             } else {
                 supervisorManager.requestSupervisorWindow(reason: "home_resume_fallback")
             }
@@ -462,6 +470,42 @@ struct GlobalHomeView: View {
         appModel.selectProject(projectId)
         appModel.setPane(.chat, for: projectId)
         appModel.requestProjectRouteDiagnoseFocus(projectId: projectId)
+    }
+
+    private var sortedProjects: [AXProjectEntry] {
+        projectListStore.snapshot.projects
+    }
+
+    private var routeRepairWatchSignature: String {
+        sortedProjects
+            .map { "\($0.projectId)|\($0.rootPath)" }
+            .joined(separator: "\u{1F}")
+    }
+
+    private func refreshRouteRepairWatchItems() {
+        routeRepairWatchItems = AXRouteRepairLogStore.watchItems(
+            for: sortedProjects,
+            limit: 3
+        )
+    }
+
+    private var hubInteractive: Bool {
+        hubConnectionStore.snapshot.interactive
+    }
+
+    private var skillsCompatibilitySnapshot: XTGlobalHomeSkillsSnapshot {
+        globalHomeSnapshot.skills
+    }
+
+    private var globalHomeSnapshot: XTGlobalHomeSnapshot {
+        globalHomeStore.snapshot
+    }
+
+    private var appModel: AppModel {
+        guard let appModelReference else {
+            preconditionFailure("GlobalHomeView requires xtAppModelReference")
+        }
+        return appModelReference
     }
 
     private func pendingGrants(for projectId: String) -> [HubIPCClient.PendingGrantItem] {
@@ -688,8 +732,37 @@ struct ProjectHomeEntryControlPresentation: Equatable {
 }
 
 private struct ProjectHomeRow: View {
+    private struct RuntimeSnapshot: Equatable {
+        var latestSessionSummary: AXSessionSummaryCapsulePresentation?
+        var latestUIReview: XTUIReviewPresentation?
+        var governedAuthority: AXProjectGovernedAuthorityPresentation
+        var governancePresentation: ProjectGovernancePresentation?
+        var projectContextCompactSummary: AXProjectContextAssemblyCompactSummary?
+        var routeRepairDigest: AXRouteRepairLogDigest
+        var memoryHealthSummary: String
+        var candidates: [AXSkillCandidate]
+        var curations: [AXCurationSuggestion]
+
+        static let empty = RuntimeSnapshot(
+            latestSessionSummary: nil,
+            latestUIReview: nil,
+            governedAuthority: AXProjectGovernedAuthorityPresentation(
+                deviceAuthorityConfigured: false,
+                localAutoApproveConfigured: false,
+                governedReadableRootCount: 0,
+                pairedDeviceId: ""
+            ),
+            governancePresentation: nil,
+            projectContextCompactSummary: nil,
+            routeRepairDigest: .empty,
+            memoryHealthSummary: "未知",
+            candidates: [],
+            curations: []
+        )
+    }
+
     let project: AXProjectEntry
-    @ObservedObject var session: ChatSessionModel
+    let session: ChatSessionModel
     let inlineNoteText: String
     let onClearInlineNote: () -> Void
     let supervisorCandidateReviews: [HubIPCClient.SupervisorCandidateReviewItem]
@@ -699,29 +772,21 @@ private struct ProjectHomeRow: View {
     let onStageSupervisorCandidateReview: (HubIPCClient.SupervisorCandidateReviewItem) -> Void
     let onApprovePendingGrant: (HubIPCClient.PendingGrantItem) -> Void
     let onDenyPendingGrant: (HubIPCClient.PendingGrantItem) -> Void
-    @EnvironmentObject private var appModel: AppModel
+    @Environment(\.xtAppModelReference) private var appModelReference
+    @EnvironmentObject private var hubConnectionStore: XTHubConnectionStore
+    @StateObject private var chatStatusStore = XTChatStatusStore()
+    @State private var runtimeSnapshot: RuntimeSnapshot = .empty
     private let governanceSummaryConfiguration = ProjectGovernanceCompactSummarySurfaceConfiguration.watchlist
 
     var body: some View {
-        let pending = session.pendingToolCalls
-        let isRunning = session.isSending
-        let candidates = appModel.skillCandidates(for: project.projectId)
-        let curations = appModel.curationSuggestions(for: project.projectId)
-        let latestSessionSummary = AXSessionSummaryCapsulePresentation.load(for: projectContext)
-        let latestUIReview = XTUIReviewPresentation.loadLatestBrowserPage(for: projectContext)
-        let governed = appModel.governedAuthorityPresentation(for: project)
-        let governancePresentation = ProjectGovernancePresentation(
-            resolved: appModel.resolvedProjectGovernance(for: project)
-        )
-        let projectContextCompactSummary = AXProjectContextAssemblyDiagnosticsStore.doctorSummary(
-            for: projectContext,
-            config: appModel.projectConfigSnapshot(for: projectContext)
-        ).compactSummary
+        let statusSnapshot = chatStatusStore.snapshot
+        let pending = statusSnapshot.pendingToolCalls
+        let isRunning = statusSnapshot.isSending
+        let runtime = runtimeSnapshot
         let entryControl = ProjectHomeEntryControlPresentation.make(
             pendingCount: pending.count,
-            hubInteractive: appModel.hubInteractive
+            hubInteractive: hubInteractive
         )
-        let routeRepairDigest = AXRouteRepairLogStore.digest(for: projectContext, limit: 50)
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
                 Text(project.displayName)
@@ -733,23 +798,25 @@ private struct ProjectHomeRow: View {
                 Button("接上次进度") {
                     appModel.presentResumeBrief(projectId: project.projectId)
                 }
-                .disabled(session.isSending)
+                .disabled(isRunning)
                 Button("打开") {
                     openProjectWorkspace()
                 }
             }
 
-            ProjectGovernanceCompactSummaryView(
-                presentation: governancePresentation,
-                configuration: governanceSummaryConfiguration,
-                onExecutionTierTap: { openGovernanceSettings(.executionTier) },
-                onSupervisorTierTap: { openGovernanceSettings(.supervisorTier) },
-                onReviewCadenceTap: { openGovernanceSettings(.heartbeatReview) },
-                onStatusTap: { openGovernanceSettings(.overview) },
-                onCalloutTap: { openGovernanceSettings(.overview) }
-            )
+            if let governancePresentation = runtime.governancePresentation {
+                ProjectGovernanceCompactSummaryView(
+                    presentation: governancePresentation,
+                    configuration: governanceSummaryConfiguration,
+                    onExecutionTierTap: { openGovernanceSettings(.executionTier) },
+                    onSupervisorTierTap: { openGovernanceSettings(.supervisorTier) },
+                    onReviewCadenceTap: { openGovernanceSettings(.heartbeatReview) },
+                    onStatusTap: { openGovernanceSettings(.overview) },
+                    onCalloutTap: { openGovernanceSettings(.overview) }
+                )
+            }
 
-            if let projectContextCompactSummary {
+            if let projectContextCompactSummary = runtime.projectContextCompactSummary {
                 row(
                     title: "项目上下文",
                     value: projectContextCompactSummary.headlineText,
@@ -765,14 +832,14 @@ private struct ProjectHomeRow: View {
                 }
             }
 
-            if let latestSessionSummary {
+            if let latestSessionSummary = runtime.latestSessionSummary {
                 Text(latestSessionSummary.badgeText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .help(latestSessionSummary.helpText)
             }
 
-            if let latestUIReview {
+            if let latestUIReview = runtime.latestUIReview {
                 ProjectUIReviewCompactSummaryView(review: latestUIReview)
                 row(title: "UI 审查", value: latestUIReview.updatedText, placeholder: "未生成")
             }
@@ -780,11 +847,12 @@ private struct ProjectHomeRow: View {
             let digest = (project.statusDigest ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             let stateValue = (project.currentStateSummary ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             row(title: "状态", value: stateValue.isEmpty ? digest : stateValue, placeholder: "未生成")
-            row(title: "记忆", value: memoryHealthSummary(), placeholder: "未知")
-            if routeRepairDigest.totalEvents > 0 {
-                row(title: "路由修复", value: routeRepairDigest.headline, placeholder: "无")
+            row(title: "记忆", value: runtime.memoryHealthSummary, placeholder: "未知")
+            if runtime.routeRepairDigest.totalEvents > 0 {
+                row(title: "路由修复", value: runtime.routeRepairDigest.headline, placeholder: "无")
             }
-            if let clampMessage = governancePresentation.homeClampMessage {
+            if let governancePresentation = runtime.governancePresentation,
+               let clampMessage = governancePresentation.homeClampMessage {
                 row(
                     title: "收束 / 限制",
                     value: clampMessage,
@@ -796,7 +864,7 @@ private struct ProjectHomeRow: View {
             }
             row(
                 title: "执行权限",
-                value: governedSummary(governed),
+                value: governedSummary(runtime.governedAuthority),
                 placeholder: "人工审批",
                 action: { openGovernanceSettings(.overview) },
                 help: "查看当前项目的治理边界、执行权限和收束状态"
@@ -862,7 +930,7 @@ private struct ProjectHomeRow: View {
                             Button("转入审查") {
                                 onStageSupervisorCandidateReview(item)
                             }
-                            .disabled(inFlight || !appModel.hubInteractive)
+                            .disabled(inFlight || !hubInteractive)
                         } else {
                             Text(supervisorCandidateReviewStateText(item.reviewState))
                                 .font(.caption2.monospaced())
@@ -921,11 +989,11 @@ private struct ProjectHomeRow: View {
                         Button("批准") {
                             onApprovePendingGrant(grant)
                         }
-                        .disabled(inFlight || !appModel.hubInteractive)
+                        .disabled(inFlight || !hubInteractive)
                         Button("拒绝") {
                             onDenyPendingGrant(grant)
                         }
-                        .disabled(inFlight || !appModel.hubInteractive)
+                        .disabled(inFlight || !hubInteractive)
                     }
                 }
             }
@@ -939,11 +1007,11 @@ private struct ProjectHomeRow: View {
                 }
             }
 
-            if !candidates.isEmpty {
-                Text("技能候选：\(candidates.count)")
+            if !runtime.candidates.isEmpty {
+                Text("技能候选：\(runtime.candidates.count)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                ForEach(candidates) { cand in
+                ForEach(runtime.candidates) { cand in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(cand.title)
@@ -957,27 +1025,30 @@ private struct ProjectHomeRow: View {
                         Spacer(minLength: 8)
                         Button("晋升") {
                             appModel.approveSkillCandidate(projectId: project.projectId, candidateId: cand.id)
+                            refreshRuntimeSnapshot()
                         }
                         Button("忽略") {
                             appModel.rejectSkillCandidate(projectId: project.projectId, candidateId: cand.id)
+                            refreshRuntimeSnapshot()
                         }
                     }
                 }
             }
 
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("整理建议：\(curations.count)")
+                Text("整理建议：\(runtime.curations.count)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 8)
                 Button("Scan Vault") {
                     appModel.scanVaultNow(projectId: project.projectId)
+                    refreshRuntimeSnapshot()
                 }
                 .font(.caption)
             }
 
-            if !curations.isEmpty {
-                ForEach(curations) { s in
+            if !runtime.curations.isEmpty {
+                ForEach(runtime.curations) { s in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(s.title)
@@ -995,9 +1066,11 @@ private struct ProjectHomeRow: View {
                         Spacer(minLength: 8)
                         Button("应用") {
                             appModel.applyCurationSuggestion(projectId: project.projectId, suggestionId: s.id)
+                            refreshRuntimeSnapshot()
                         }
                         Button("忽略") {
                             appModel.dismissCurationSuggestion(projectId: project.projectId, suggestionId: s.id)
+                            refreshRuntimeSnapshot()
                         }
                     }
                 }
@@ -1045,10 +1118,83 @@ private struct ProjectHomeRow: View {
             }
         }
         .padding(.vertical, 8)
+        .onAppear {
+            chatStatusStore.bind(to: session)
+            refreshRuntimeSnapshot()
+        }
+        .onChange(of: sessionIdentity) { _ in
+            chatStatusStore.bind(to: session)
+            refreshRuntimeSnapshot()
+        }
+        .onChange(of: project) { _ in
+            refreshRuntimeSnapshot()
+        }
     }
 
     private var projectContext: AXProjectContext {
         AXProjectContext(root: URL(fileURLWithPath: project.rootPath, isDirectory: true))
+    }
+
+    private var sessionIdentity: ObjectIdentifier {
+        ObjectIdentifier(session)
+    }
+
+    private var hubInteractive: Bool {
+        hubConnectionStore.snapshot.interactive
+    }
+
+    private var appModel: AppModel {
+        guard let appModelReference else {
+            preconditionFailure("ProjectHomeRow requires xtAppModelReference")
+        }
+        return appModelReference
+    }
+
+    private func refreshRuntimeSnapshot() {
+        let next = buildRuntimeSnapshot()
+        guard runtimeSnapshot != next else { return }
+        runtimeSnapshot = next
+    }
+
+    private func buildRuntimeSnapshot() -> RuntimeSnapshot {
+        let context = projectContext
+        let latestSessionSummary = XTProjectUIPresentationReadCache.sessionSummary(for: context) {
+            AXSessionSummaryCapsulePresentation.load(for: context)
+        }
+        let latestUIReview = XTProjectUIPresentationReadCache.latestUIReview(for: context) {
+            XTUIReviewPresentation.loadLatestBrowserPage(for: context)
+        }
+        let governancePresentation = XTProjectUIPresentationReadCache.governancePresentation(
+            projectId: project.projectId
+        ) {
+            ProjectGovernancePresentation(
+                resolved: appModel.resolvedProjectGovernance(for: project)
+            )
+        }
+        let projectContextCompactSummary = XTProjectUIPresentationReadCache.contextDiagnostics(for: context) {
+            AXProjectContextAssemblyDiagnosticsStore.doctorSummary(
+                for: context,
+                config: appModel.projectConfigSnapshot(for: context)
+            )
+        }.compactSummary
+        let routeRepairDigest = XTProjectUIPresentationReadCache.routeRepairDigest(
+            for: context,
+            limit: 50
+        ) {
+            AXRouteRepairLogStore.digest(for: context, limit: 50)
+        }
+
+        return RuntimeSnapshot(
+            latestSessionSummary: latestSessionSummary,
+            latestUIReview: latestUIReview,
+            governedAuthority: appModel.governedAuthorityPresentation(for: project),
+            governancePresentation: governancePresentation,
+            projectContextCompactSummary: projectContextCompactSummary,
+            routeRepairDigest: routeRepairDigest,
+            memoryHealthSummary: memoryHealthSummary(),
+            candidates: appModel.skillCandidates(for: project.projectId),
+            curations: appModel.curationSuggestions(for: project.projectId)
+        )
     }
 
     private func timeText(_ ts: Double?) -> String {
@@ -1121,7 +1267,7 @@ private struct ProjectHomeRow: View {
 
     private func openProjectWorkspace() {
         appModel.selectProject(project.projectId)
-        if let pendingRequest = session.pendingToolCalls.first {
+        if let pendingRequest = chatStatusStore.snapshot.pendingToolCalls.first {
             appModel.setPane(.chat, for: project.projectId)
             appModel.requestProjectToolApprovalFocus(
                 projectId: project.projectId,
@@ -1455,7 +1601,24 @@ struct GlobalHomePresentation: Codable, Equatable {
 
     @MainActor
     static func fromRuntime(appModel: AppModel, pendingGrantCount: Int) -> GlobalHomePresentation {
-        let runningProjectCount = appModel.sortedProjects.reduce(into: 0) { partial, project in
+        fromRuntime(
+            appModel: appModel,
+            projects: appModel.sortedProjects,
+            hubInteractive: appModel.hubInteractive,
+            highlightedProjectName: appModel.preferredResumeProject()?.projectDisplayName,
+            pendingGrantCount: pendingGrantCount
+        )
+    }
+
+    @MainActor
+    static func fromRuntime(
+        appModel: AppModel,
+        projects: [AXProjectEntry],
+        hubInteractive: Bool,
+        highlightedProjectName: String? = nil,
+        pendingGrantCount: Int
+    ) -> GlobalHomePresentation {
+        let runningProjectCount = projects.reduce(into: 0) { partial, project in
             if appModel.sessionForProjectId(project.projectId)?.isSending == true {
                 partial += 1
             }
@@ -1476,11 +1639,11 @@ struct GlobalHomePresentation: Codable, Equatable {
 
         return map(
             input: GlobalHomePresentationInput(
-                hubInteractive: appModel.hubInteractive,
-                projectCount: appModel.sortedProjects.count,
+                hubInteractive: hubInteractive,
+                projectCount: projects.count,
                 runningProjectCount: runningProjectCount,
                 pendingGrantCount: pendingGrantCount,
-                highlightedProjectName: appModel.preferredResumeProject()?.projectDisplayName ?? appModel.sortedProjects.first?.displayName,
+                highlightedProjectName: highlightedProjectName ?? projects.first?.displayName,
                 autoConfirmPolicy: runtimePolicy?.autoConfirmPolicy.rawValue,
                 autoLaunchPolicy: runtimePolicy?.autoLaunchPolicy.rawValue,
                 grantGateMode: runtimePolicy?.grantGateMode,

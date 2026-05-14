@@ -18,7 +18,16 @@ struct XTerminalApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .environmentObject(appModel)
+                .environment(\.xtAppModelReference, appModel)
+                .environmentObject(appModel.hubConnectionStore)
+                .environmentObject(appModel.workSurfaceStore)
+                .environmentObject(appModel.navigationFocusStore)
+                .environmentObject(appModel.projectListStore)
+                .environmentObject(appModel.globalHomeStore)
+                .environmentObject(appModel.controlSurfaceStore)
+                .environmentObject(appModel.skillLibraryStore)
+                .environmentObject(appModel.modelSettingsStore)
+                .environmentObject(appModel.settingsCenterStore)
                 .onAppear {
                     appDelegate.bind(appModel: appModel)
                 }
@@ -26,27 +35,72 @@ struct XTerminalApp: App {
         
         Window("Supervisor AI", id: "supervisor") {
             SupervisorView()
-                .environmentObject(appModel)
+                .environment(\.xtAppModelReference, appModel)
+                .environmentObject(appModel.hubConnectionStore)
+                .environmentObject(appModel.workSurfaceStore)
+                .environmentObject(appModel.navigationFocusStore)
+                .environmentObject(appModel.projectListStore)
+                .environmentObject(appModel.globalHomeStore)
+                .environmentObject(appModel.controlSurfaceStore)
+                .environmentObject(appModel.skillLibraryStore)
+                .environmentObject(appModel.modelSettingsStore)
+                .environmentObject(appModel.settingsCenterStore)
         }
 
         Window("Supervisor Settings", id: "supervisor_settings") {
             SupervisorToolWindowRootView(preferredTab: .supervisor)
-                .environmentObject(appModel)
+                .environment(\.xtAppModelReference, appModel)
+                .environmentObject(appModel.hubConnectionStore)
+                .environmentObject(appModel.workSurfaceStore)
+                .environmentObject(appModel.navigationFocusStore)
+                .environmentObject(appModel.projectListStore)
+                .environmentObject(appModel.globalHomeStore)
+                .environmentObject(appModel.controlSurfaceStore)
+                .environmentObject(appModel.skillLibraryStore)
+                .environmentObject(appModel.modelSettingsStore)
+                .environmentObject(appModel.settingsCenterStore)
         }
 
         Window("AI 模型", id: "model_settings") {
             SupervisorToolWindowRootView(preferredTab: .models)
-                .environmentObject(appModel)
+                .environment(\.xtAppModelReference, appModel)
+                .environmentObject(appModel.hubConnectionStore)
+                .environmentObject(appModel.workSurfaceStore)
+                .environmentObject(appModel.navigationFocusStore)
+                .environmentObject(appModel.projectListStore)
+                .environmentObject(appModel.globalHomeStore)
+                .environmentObject(appModel.controlSurfaceStore)
+                .environmentObject(appModel.skillLibraryStore)
+                .environmentObject(appModel.modelSettingsStore)
+                .environmentObject(appModel.settingsCenterStore)
         }
 
         Window("Hub Setup", id: "hub_setup") {
             HubSetupWizardView()
-                .environmentObject(appModel)
+                .environment(\.xtAppModelReference, appModel)
+                .environmentObject(appModel.hubConnectionStore)
+                .environmentObject(appModel.workSurfaceStore)
+                .environmentObject(appModel.navigationFocusStore)
+                .environmentObject(appModel.projectListStore)
+                .environmentObject(appModel.globalHomeStore)
+                .environmentObject(appModel.controlSurfaceStore)
+                .environmentObject(appModel.skillLibraryStore)
+                .environmentObject(appModel.modelSettingsStore)
+                .environmentObject(appModel.settingsCenterStore)
         }
         
         Settings {
             SettingsView()
-                .environmentObject(appModel)
+                .environment(\.xtAppModelReference, appModel)
+                .environmentObject(appModel.hubConnectionStore)
+                .environmentObject(appModel.workSurfaceStore)
+                .environmentObject(appModel.navigationFocusStore)
+                .environmentObject(appModel.projectListStore)
+                .environmentObject(appModel.globalHomeStore)
+                .environmentObject(appModel.controlSurfaceStore)
+                .environmentObject(appModel.skillLibraryStore)
+                .environmentObject(appModel.modelSettingsStore)
+                .environmentObject(appModel.settingsCenterStore)
         }
         .commands {
             CommandGroup(after: .newItem) {
@@ -57,11 +111,13 @@ struct XTerminalApp: App {
             }
 
             CommandMenu("Project") {
-                Button(appModel.preferredResumeCommandTitle) {
-                    appModel.presentPreferredResumeBrief()
+                Button(preferredResumeCommandTitle) {
+                    if let target = preferredResumeProject {
+                        appModel.presentResumeBrief(projectId: target.projectId)
+                    }
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
-                .disabled(!appModel.canPresentPreferredResumeBrief)
+                .disabled(preferredResumeProject == nil)
 
                 Divider()
 
@@ -124,31 +180,27 @@ struct XTerminalApp: App {
                     ) {
                         appModel.setInterfaceLanguage(option)
                     }
+                    .disabled(option == appModel.settingsStore.settings.interfaceLanguage)
                 }
             }
         }
     }
 
+    private var preferredResumeProject: AXResumeReminderProjectPresentation? {
+        appModel.globalHomeStore.snapshot.preferredResumeProject
+    }
+
+    private var preferredResumeCommandTitle: String {
+        guard let target = preferredResumeProject else {
+            return "接上次进度"
+        }
+        return "接上次进度（\(target.projectDisplayName)）"
+    }
+
     private var hubCommandTitle: String {
-        if appModel.hubConnected {
-            return "Hub Connected"
-        }
-        if appModel.hubRemoteLinking {
-            return "Hub Linking..."
-        }
-        if appModel.hubRemoteConnected {
-            switch appModel.hubRemoteRoute {
-            case .lan:
-                return "Hub Relay (LAN)"
-            case .internet:
-                return "Hub Relay (Internet)"
-            case .internetTunnel:
-                return "Hub Relay (Tunnel)"
-            case .none:
-                return "Hub Relay"
-            }
-        }
-        return "One-Click Connect to Hub"
+        XTHubConnectionPresentation.menuCommandTitle(
+            for: appModel.hubConnectionSnapshot
+        )
     }
 }
 

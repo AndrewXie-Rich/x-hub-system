@@ -155,7 +155,7 @@ enum ProjectCoderExecutionStatusPrimaryActionResolver {
         }
 
         guard snapshot.hasRecord else {
-            return hubConnected ? nil : .openDiagnostics
+            return hubConnected ? nil : .openHubRecovery
         }
 
         let normalizedReason = normalizedIssueCode(snapshot.effectiveFailureReasonCode)
@@ -174,7 +174,7 @@ enum ProjectCoderExecutionStatusPrimaryActionResolver {
             case .grantReady:
                 return .openGovernanceOverview
             case .routeReady:
-                return hubConnected ? .openGovernanceOverview : .openDiagnostics
+                return hubConnected ? .openGovernanceOverview : .openHubRecovery
             case .capabilityReady, .checkpointRecoveryReady, .evidenceExportReady:
                 break
             }

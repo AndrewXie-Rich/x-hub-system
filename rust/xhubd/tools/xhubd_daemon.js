@@ -33,6 +33,33 @@ function parseBool(value, fallback = false) {
   return fallback;
 }
 
+function allowMemorySkillsProduction(args = {}) {
+  return parseBool(args['allow-memory-skills-production'], false)
+    || parseBool(process.env.XHUB_ALLOW_RUST_MEMORY_SKILLS_PRODUCTION, false);
+}
+
+function requireMemorySkillsProduction(args = {}) {
+  return parseBool(args['require-memory-skills-production'], false);
+}
+
+function memorySkillsAuthorityState(readiness) {
+  return {
+    memory_writer_authority_in_rust: readiness?.memory?.canonical_writer_in_rust === true,
+    skills_execution_authority_in_rust: readiness?.skills?.execution_authority_in_rust === true,
+  };
+}
+
+function appendMemorySkillsAuthorityIssues(issues, readiness, args = {}) {
+  const require = requireMemorySkillsProduction(args);
+  const allow = allowMemorySkillsProduction(args) || require;
+  const state = memorySkillsAuthorityState(readiness);
+  if (!allow && state.memory_writer_authority_in_rust) issues.push('memory_writer_authority_in_rust');
+  if (!allow && state.skills_execution_authority_in_rust) issues.push('skills_execution_authority_in_rust');
+  if (require && !state.memory_writer_authority_in_rust) issues.push('memory_writer_authority_not_active');
+  if (require && !state.skills_execution_authority_in_rust) issues.push('skills_execution_authority_not_active');
+  return { allow, require, ...state };
+}
+
 function parseArgs(argv) {
   const args = { _: [] };
   for (let i = 0; i < argv.length; i += 1) {
@@ -131,6 +158,23 @@ function resolveConfig(args = {}, env = process.env) {
   const publicHost = safeString(firstValue([args['public-host'], env.XHUB_RUST_HUB_PUBLIC_HOST, profileConfig.public_host, profileConfig.publicHost]))
     || discoveredPublicHost
     || connectHost;
+  const publicEndpoint = profile === 'domain'
+    || parseBool(firstValue([
+      args['public-endpoint'],
+      args.domain,
+      env.XHUB_RUST_CROSS_NETWORK_PUBLIC_ENDPOINT,
+      env.XHUB_RUST_HUB_PUBLIC_ENDPOINT,
+      profileConfig.public_endpoint,
+      profileConfig.publicEndpoint,
+      profileConfig.domain,
+    ]), false);
+  const publicBaseUrlRaw = safeString(firstValue([
+    args['public-base-url'],
+    env.XHUB_RUST_HUB_PUBLIC_BASE_URL,
+    profileConfig.public_base_url,
+    profileConfig.publicBaseUrl,
+  ]));
+  const publicBaseUrl = publicBaseUrlRaw || `http://${publicHost}:${port}`;
   const runDir = path.resolve(pathFromRoot(firstValue([args['run-dir'], env.XHUB_RUST_DAEMON_RUN_DIR, profileConfig.run_dir, profileConfig.runDir])) || path.join(ROOT_DIR, 'run'));
   const logDir = path.resolve(pathFromRoot(firstValue([args['log-dir'], env.XHUB_RUST_DAEMON_LOG_DIR, profileConfig.log_dir, profileConfig.logDir])) || path.join(ROOT_DIR, 'logs'));
   const pidFile = path.resolve(pathFromRoot(firstValue([args['pid-file'], env.XHUB_RUST_DAEMON_PID_FILE, profileConfig.pid_file, profileConfig.pidFile])) || path.join(runDir, 'xhubd.pid'));
@@ -148,7 +192,7 @@ function resolveConfig(args = {}, env = process.env) {
   const accessKeyFile = safeString(accessKeyFileRaw)
     ? path.resolve(pathFromRoot(accessKeyFileRaw))
     : '';
-  const httpRequireAccessKey = parseBool(firstValue([
+  const httpRequireAccessKey = publicEndpoint || parseBool(firstValue([
     args['require-access-key'],
     env.XHUB_RUST_HTTP_REQUIRE_ACCESS_KEY,
     profileConfig.http_require_access_key,
@@ -263,7 +307,8 @@ function resolveConfig(args = {}, env = process.env) {
     port,
     bindUrl: `http://${host}:${port}`,
     baseUrl: `http://${connectHost}:${port}`,
-    publicBaseUrl: `http://${publicHost}:${port}`,
+    publicBaseUrl,
+    publicEndpoint,
     runDir,
     logDir,
     pidFile,
@@ -394,9 +439,27 @@ function collectPidFileState(pidFile) {
   }
 }
 
-function httpGetJson(url, timeoutMs = 750) {
+function redactHttpDiagnostic(value) {
+  return String(value || '')
+    .replace(/Bearer\s+(?!\[REDACTED\])\S+/gi, 'Bearer [REDACTED]')
+    .replace(/access_key"\s*:\s*"(?!\[REDACTED\])[^"]*"/gi, 'access_key":"[REDACTED]"');
+}
+
+function readAccessKeyForProbe(config) {
+  if (!safeString(config.accessKeyFile)) return '';
+  try {
+    return safeString(fs.readFileSync(config.accessKeyFile, 'utf8'));
+  } catch {
+    return '';
+  }
+}
+
+function httpGetJson(url, timeoutMs = 750, accessKey = '') {
   return new Promise((resolve, reject) => {
-    const req = http.get(url, { timeout: timeoutMs, headers: { accept: 'application/json' } }, (res) => {
+    const headers = { accept: 'application/json' };
+    const token = safeString(accessKey);
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const req = http.get(url, { timeout: timeoutMs, headers }, (res) => {
       let body = '';
       res.setEncoding('utf8');
       res.on('data', (chunk) => {
@@ -408,7 +471,7 @@ function httpGetJson(url, timeoutMs = 750) {
       res.on('end', () => {
         const statusCode = Number(res.statusCode || 0);
         if (statusCode < 200 || statusCode >= 300) {
-          reject(new Error(`http_status:${statusCode}:${body.slice(0, 240)}`));
+          reject(new Error(`http_status:${statusCode}:${redactHttpDiagnostic(body.slice(0, 240))}`));
           return;
         }
         try {
@@ -429,7 +492,7 @@ async function readHealth(config) {
 }
 
 async function readReady(config) {
-  const readiness = await httpGetJson(`${config.baseUrl}/ready`, 1000);
+  const readiness = await httpGetJson(`${config.baseUrl}/ready`, 1000, readAccessKeyForProbe(config));
   return { ok: readiness?.ready === true, readiness };
 }
 
@@ -542,6 +605,7 @@ async function start(config) {
       XHUB_RUST_HUB_ALLOW_LAN: config.allowLan ? '1' : '0',
       XHUB_RUST_HUB_PUBLIC_HOST: config.publicHost,
       XHUB_RUST_HUB_PUBLIC_BASE_URL: config.publicBaseUrl,
+      XHUB_RUST_CROSS_NETWORK_PUBLIC_ENDPOINT: config.publicEndpoint ? '1' : '0',
       HUB_DB_PATH: config.dbPath,
       HUB_RUNTIME_BASE_DIR: config.runtimeBaseDir,
       XHUB_RUST_MEMORY_DIR: config.memoryDir,
@@ -778,6 +842,7 @@ function profile(config) {
     http_base_url: config.baseUrl,
     bind_url: config.bindUrl,
     public_base_url: config.publicBaseUrl,
+    public_endpoint: config.publicEndpoint,
     db_path: config.dbPath,
     runtime_base_dir: config.runtimeBaseDir,
     memory_dir: config.memoryDir,
@@ -840,6 +905,14 @@ const LAUNCHD_PASSTHROUGH_ENV_KEYS = [
   'XHUB_RUST_XT_CLASSIC_ROLLBACK_CONTRACT',
   'XHUB_RUST_XT_CLASSIC_FILE_IPC_READY',
   'XHUB_RUST_XT_CLASSIC_PRODUCTION_CUTOVER',
+  'XHUB_RUST_MEMORY_WRITER_AUTHORITY',
+  'XHUB_RUST_MEMORY_WRITE_AUTHORITY',
+  'XHUB_RUST_MEMORY_PRODUCTION_AUTHORITY',
+  'XHUB_RUST_SKILLS_EXECUTION_AUTHORITY',
+  'XHUB_RUST_SKILLS_PRODUCTION_EXECUTION',
+  'XHUB_RUST_SKILLS_EXECUTION_PRODUCTION',
+  'XHUB_RUST_SKILLS_RUNNER_PRODUCTION_AUTHORITY',
+  'XHUB_RUST_SKILLS_ALLOWED_RUNNERS',
 ];
 
 function launchctlGetenv(key) {
@@ -866,6 +939,7 @@ function launchdEnvironment(config) {
     XHUB_RUST_HUB_ALLOW_LAN: config.allowLan ? '1' : '0',
     XHUB_RUST_HUB_PUBLIC_HOST: config.publicHost,
     XHUB_RUST_HUB_PUBLIC_BASE_URL: config.publicBaseUrl,
+    XHUB_RUST_CROSS_NETWORK_PUBLIC_ENDPOINT: config.publicEndpoint ? '1' : '0',
     HUB_DB_PATH: config.dbPath,
     HUB_RUNTIME_BASE_DIR: config.runtimeBaseDir,
     XHUB_RUST_MEMORY_DIR: config.memoryDir,
@@ -980,6 +1054,7 @@ function prepareLaunchdRuntime(config, options = {}) {
     reports_copied: false,
     data_seeded: false,
     skills_seeded: false,
+    skills_synced: false,
   };
   if (options.dryRun) {
     return { serviceConfig, deployment };
@@ -1008,6 +1083,7 @@ function prepareLaunchdRuntime(config, options = {}) {
   deployment.reports_copied = copyDirectoryIfPresent(path.join(config.rootDir, 'reports'), path.join(serviceConfig.rootDir, 'reports'));
   deployment.data_seeded = copyDirectoryIfPresent(path.join(config.rootDir, 'data'), path.join(serviceConfig.rootDir, 'data'), { onlyIfMissing: true });
   deployment.skills_seeded = copyDirectoryIfPresent(path.join(config.rootDir, 'skills'), path.join(serviceConfig.rootDir, 'skills'), { onlyIfMissing: true });
+  deployment.skills_synced = copyDirectoryIfPresent(path.join(config.rootDir, 'skills'), path.join(serviceConfig.rootDir, 'skills'));
   return { serviceConfig, deployment };
 }
 
@@ -1536,6 +1612,22 @@ function publicHostReady(config, args = {}) {
   return true;
 }
 
+function publicBaseUrlReady(config, args = {}) {
+  const allowLoopback = parseBool(args['allow-loopback-public-host'], false);
+  const raw = safeString(config.publicBaseUrl);
+  if (!raw || raw.toLowerCase().includes('replace_with')) return false;
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) return false;
+  if (!parsed.hostname || isWildcardHost(parsed.hostname)) return false;
+  if (!allowLoopback && isLoopbackHost(parsed.hostname)) return false;
+  return true;
+}
+
 async function crossNetworkReadiness(config, args = {}) {
   const startedAt = Date.now();
   const reportPath = resolveReportPath(config, args['report-path'], 'cross_network_readiness');
@@ -1558,6 +1650,11 @@ async function crossNetworkReadiness(config, args = {}) {
   }
 
   const readiness = statusOut?.readiness || launchdOut.readiness || null;
+  const memorySkills = {
+    allow: allowMemorySkillsProduction(args) || requireMemorySkillsProduction(args),
+    require: requireMemorySkillsProduction(args),
+    ...memorySkillsAuthorityState(readiness),
+  };
   const launchdXml = launchdPlistXml(config);
   const watchdogXml = watchdogLaunchdPlistXml(config);
   const launchdPlistSafe = safeString(config.accessKeyFile)
@@ -1568,9 +1665,11 @@ async function crossNetworkReadiness(config, args = {}) {
     && !watchdogXml.includes('<key>RunAtLoad</key>');
 
   const checks = [
-    { name: 'lan_profile_or_allow_lan', ok: config.allowLan === true, blocking: true },
-    { name: 'non_loopback_bind', ok: !isLoopbackHost(config.host), blocking: true },
-    { name: 'public_host_ready', ok: publicHostReady(config, args), blocking: true },
+    { name: 'lan_profile_or_allow_lan_or_public_endpoint', ok: config.allowLan === true || config.publicEndpoint === true, blocking: true },
+    { name: 'non_loopback_bind_or_public_endpoint', ok: !isLoopbackHost(config.host) || config.publicEndpoint === true, blocking: true },
+    { name: 'public_host_ready', ok: config.publicEndpoint ? true : publicHostReady(config, args), blocking: true },
+    { name: 'public_base_url_ready', ok: publicBaseUrlReady(config, args), blocking: true },
+    { name: 'public_endpoint_requires_access_key', ok: !config.publicEndpoint || config.httpRequireAccessKey === true, blocking: true },
     { name: 'access_key_file_configured', ok: accessKey.configured, blocking: true },
     { name: 'access_key_file_exists', ok: accessKey.exists, blocking: true },
     { name: 'access_key_file_non_empty', ok: accessKey.non_empty, blocking: true },
@@ -1585,12 +1684,22 @@ async function crossNetworkReadiness(config, args = {}) {
     },
     {
       name: 'memory_writer_authority_disabled',
-      ok: readiness ? readiness?.memory?.canonical_writer_in_rust !== true : true,
+      ok: readiness ? (memorySkills.allow || !memorySkills.memory_writer_authority_in_rust) : true,
       blocking: true,
     },
     {
       name: 'skills_execution_authority_disabled',
-      ok: readiness ? readiness?.skills?.execution_authority_in_rust !== true : true,
+      ok: readiness ? (memorySkills.allow || !memorySkills.skills_execution_authority_in_rust) : true,
+      blocking: true,
+    },
+    {
+      name: 'memory_writer_authority_active',
+      ok: !memorySkills.require || memorySkills.memory_writer_authority_in_rust,
+      blocking: memorySkills.require,
+    },
+    {
+      name: 'skills_execution_authority_active',
+      ok: !memorySkills.require || memorySkills.skills_execution_authority_in_rust,
       blocking: true,
     },
     {
@@ -1626,6 +1735,7 @@ async function crossNetworkReadiness(config, args = {}) {
     bind_url: config.bindUrl,
     http_base_url: config.baseUrl,
     public_base_url: config.publicBaseUrl,
+    public_endpoint: config.publicEndpoint,
     require_live_ready: requireLiveReady,
     require_launchd_loaded: requireLaunchdLoaded,
     require_watchdog_timer: requireWatchdogTimer,
@@ -1640,8 +1750,10 @@ async function crossNetworkReadiness(config, args = {}) {
     production_authority_change: false,
     daemon_restarted: false,
     daemon_stopped: false,
-    memory_writer_authority_in_rust: readiness?.memory?.canonical_writer_in_rust === true,
-    skills_execution_authority_in_rust: readiness?.skills?.execution_authority_in_rust === true,
+    memory_skills_production_allowed: memorySkills.allow,
+    memory_skills_production_required: memorySkills.require,
+    memory_writer_authority_in_rust: memorySkills.memory_writer_authority_in_rust,
+    skills_execution_authority_in_rust: memorySkills.skills_execution_authority_in_rust,
     key_printed: false,
     secret_leak: false,
     checks,
@@ -1682,7 +1794,10 @@ function crossNetworkCommonArgs(config) {
     String(config.port),
     '--public-host',
     config.publicHost,
+    '--public-base-url',
+    config.publicBaseUrl,
   ];
+  if (config.publicEndpoint) args.push('--public-endpoint');
   if (safeString(config.profileFile)) args.push('--profile-file', config.profileFile);
   if (safeString(config.accessKeyFile)) args.push('--access-key-file', config.accessKeyFile);
   if (safeString(config.launchdLabel)) args.push('--launchd-label', config.launchdLabel);
@@ -1712,6 +1827,7 @@ function crossNetworkInstallPlan(config) {
     profile_file: config.profileFile || '',
     bind_url: config.bindUrl,
     public_base_url: config.publicBaseUrl,
+    public_endpoint: config.publicEndpoint,
     access_key_file: config.accessKeyFile || '',
     access_key_configured: accessKeyConfigured(config),
     launchd_label: config.launchdLabel,
@@ -2160,6 +2276,11 @@ async function opsReport(config, args = {}) {
   const readiness = statusOut.readiness || launchdOut.readiness || null;
   const healthy = statusOut.running === true || launchdOut.running === true;
   const readyState = readiness?.ready === true;
+  const memorySkills = {
+    allow: allowMemorySkillsProduction(args) || requireMemorySkillsProduction(args),
+    require: requireMemorySkillsProduction(args),
+    ...memorySkillsAuthorityState(readiness),
+  };
   const report = {
     ok: true,
     schema_version: 'xhub.rust_hub.daemon_ops_report.v1',
@@ -2189,8 +2310,10 @@ async function opsReport(config, args = {}) {
     rust_browser_product_ui: uiGate.rust_browser_product_ui === true,
     node_remains_authority: true,
     production_authority_change: false,
-    memory_writer_authority_in_rust: readiness?.memory?.canonical_writer_in_rust === true,
-    skills_execution_authority_in_rust: readiness?.skills?.execution_authority_in_rust === true,
+    memory_skills_production_allowed: memorySkills.allow,
+    memory_skills_production_required: memorySkills.require,
+    memory_writer_authority_in_rust: memorySkills.memory_writer_authority_in_rust,
+    skills_execution_authority_in_rust: memorySkills.skills_execution_authority_in_rust,
     cross_network_auth_gate: readiness?.capabilities?.cross_network_auth_gate === true,
     xt_file_ipc_run_once_smoke_enabled: xtFileIpcRunOnceSmoke.enabled === true,
     xt_file_ipc_run_once_smoke_ok: xtFileIpcRunOnceSmoke.ok === true,
@@ -2206,8 +2329,10 @@ async function opsReport(config, args = {}) {
     && report.ui_product_change === false
     && report.swift_ui_files_touched === false
     && report.rust_browser_product_ui === false
-    && report.memory_writer_authority_in_rust === false
-    && report.skills_execution_authority_in_rust === false
+    && (memorySkills.allow || report.memory_writer_authority_in_rust === false)
+    && (memorySkills.allow || report.skills_execution_authority_in_rust === false)
+    && (!memorySkills.require || report.memory_writer_authority_in_rust === true)
+    && (!memorySkills.require || report.skills_execution_authority_in_rust === true)
     && report.xt_file_ipc_run_once_smoke_ok === true
     && report.xt_file_ipc_background_watcher_smoke_ok === true;
   ensureDir(path.dirname(reportPath));
@@ -2586,8 +2711,7 @@ async function watchdog(config, args = {}) {
   if (uiGate.product_ui_change === true) issues.push('ui_product_change');
   if (uiGate.swift_ui_files_touched === true) issues.push('swift_ui_files_touched');
   if (uiGate.rust_browser_product_ui === true) issues.push('rust_browser_product_ui');
-  if (readiness?.memory?.canonical_writer_in_rust === true) issues.push('memory_writer_authority_in_rust');
-  if (readiness?.skills?.execution_authority_in_rust === true) issues.push('skills_execution_authority_in_rust');
+  const memorySkills = appendMemorySkillsAuthorityIssues(issues, readiness, args);
   issues.push(...watchdogPidIssues(sourcePidAfter, launchdPidAfter));
   for (const action of actions) {
     if (action.needed && apply && action.allowed && !action.applied) {
@@ -2668,8 +2792,10 @@ async function watchdog(config, args = {}) {
     production_authority_change: false,
     daemon_restarted: false,
     daemon_stopped: false,
-    memory_writer_authority_in_rust: readiness?.memory?.canonical_writer_in_rust === true,
-    skills_execution_authority_in_rust: readiness?.skills?.execution_authority_in_rust === true,
+    memory_skills_production_allowed: memorySkills.allow,
+    memory_skills_production_required: memorySkills.require,
+    memory_writer_authority_in_rust: memorySkills.memory_writer_authority_in_rust,
+    skills_execution_authority_in_rust: memorySkills.skills_execution_authority_in_rust,
     cross_network_auth_gate: readiness?.capabilities?.cross_network_auth_gate === true,
     secret_leak: false,
     issues,
@@ -2732,8 +2858,7 @@ async function opsGate(config, args = {}) {
   if (uiGate.rust_browser_product_ui === true) issues.push('rust_browser_product_ui');
   if (xtFileIpcRunOnceSmoke.ok !== true) issues.push('xt_file_ipc_run_once_smoke_failed');
   if (xtFileIpcBackgroundWatcherSmoke.ok !== true) issues.push('xt_file_ipc_background_watcher_smoke_failed');
-  if (readiness?.memory?.canonical_writer_in_rust === true) issues.push('memory_writer_authority_in_rust');
-  if (readiness?.skills?.execution_authority_in_rust === true) issues.push('skills_execution_authority_in_rust');
+  const memorySkills = appendMemorySkillsAuthorityIssues(issues, readiness, args);
 
   const report = {
     ok: issues.length === 0,
@@ -2784,8 +2909,10 @@ async function opsGate(config, args = {}) {
     production_authority_change: false,
     daemon_restarted: false,
     daemon_stopped: false,
-    memory_writer_authority_in_rust: readiness?.memory?.canonical_writer_in_rust === true,
-    skills_execution_authority_in_rust: readiness?.skills?.execution_authority_in_rust === true,
+    memory_skills_production_allowed: memorySkills.allow,
+    memory_skills_production_required: memorySkills.require,
+    memory_writer_authority_in_rust: memorySkills.memory_writer_authority_in_rust,
+    skills_execution_authority_in_rust: memorySkills.skills_execution_authority_in_rust,
     cross_network_auth_gate: readiness?.capabilities?.cross_network_auth_gate === true,
     xt_file_ipc_run_once_smoke_enabled: xtFileIpcRunOnceSmoke.enabled === true,
     xt_file_ipc_run_once_smoke_ok: xtFileIpcRunOnceSmoke.ok === true,
@@ -2863,6 +2990,95 @@ function accessKeyInit(config, args = {}) {
   });
 }
 
+function readAccessKeyForPairing(config) {
+  if (!safeString(config.accessKeyFile)) {
+    throw new Error('access_key_file_required_for_pairing');
+  }
+  const secret = fs.readFileSync(config.accessKeyFile, 'utf8').trim();
+  if (!secret) throw new Error('access_key_file_empty_for_pairing');
+  return secret;
+}
+
+function crossNetworkPairingExport(config, args = {}) {
+  if (!publicBaseUrlReady(config, args)) {
+    printJson({
+      ok: false,
+      schema_version: 'xhub.rust_hub.cross_network_pairing_export.v1',
+      command: 'cross-network-pairing-export',
+      error_code: 'public_base_url_not_ready',
+      public_base_url: config.publicBaseUrl,
+      key_printed: false,
+      secret_leak: false,
+    }, 2);
+    return;
+  }
+  const accessKey = readAccessKeyForPairing(config);
+  const outputDir = path.resolve(pathFromRoot(args['output-dir']) || path.join(config.rootDir, 'pairing'));
+  const outputFile = path.resolve(pathFromRoot(args['output-file']) || path.join(outputDir, `xt_hub_pairing_${utcStamp()}.json`));
+  const hubId = crypto
+    .createHash('sha256')
+    .update(`${config.publicBaseUrl}\n${config.launchdLabel}\n`)
+    .digest('hex')
+    .slice(0, 24);
+  const endpoints = [
+    {
+      kind: config.publicEndpoint ? 'domain' : 'lan',
+      base_url: config.publicBaseUrl,
+      priority: 10,
+      requires_access_key: true,
+    },
+  ];
+  if (!isLoopbackHost(config.host) && config.baseUrl !== config.publicBaseUrl) {
+    endpoints.push({
+      kind: 'lan-bind',
+      base_url: config.baseUrl,
+      priority: 20,
+      requires_access_key: true,
+    });
+  }
+  const pairing = {
+    schema_version: 'xhub.xt_hub_pairing.v1',
+    generated_at_iso: new Date().toISOString(),
+    hub_id: hubId,
+    hub_label: safeString(args['hub-label']) || 'AX Rust Hub',
+    public_base_url: config.publicBaseUrl,
+    endpoints,
+    auth: {
+      scheme: 'bearer',
+      access_key: accessKey,
+    },
+    reconnect_policy: {
+      health_path: '/health',
+      readiness_path: '/ready',
+      connect_timeout_ms: 5000,
+      read_timeout_ms: 30000,
+      backoff_initial_ms: 500,
+      backoff_max_ms: 15000,
+    },
+  };
+  ensureDir(path.dirname(outputFile));
+  fs.writeFileSync(outputFile, `${JSON.stringify(pairing, null, 2)}\n`, { mode: 0o600, flag: 'w' });
+  try {
+    fs.chmodSync(outputFile, 0o600);
+  } catch {}
+  printJson({
+    ok: true,
+    schema_version: 'xhub.rust_hub.cross_network_pairing_export.v1',
+    command: 'cross-network-pairing-export',
+    generated_at_iso: new Date().toISOString(),
+    pairing_file: outputFile,
+    pairing_file_mode: '0600',
+    pairing_file_contains_secret: true,
+    key_printed: false,
+    hub_id: hubId,
+    public_base_url: config.publicBaseUrl,
+    endpoint_count: endpoints.length,
+    production_authority_change: false,
+    ui_product_change: false,
+    secret_leak: false,
+  });
+}
+
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
@@ -2874,6 +3090,7 @@ function printEnv(config) {
     `export XHUB_RUST_HUB_HTTP_PORT=${shellQuote(String(config.port))}`,
     `export XHUB_RUST_HUB_ALLOW_LAN=${config.allowLan ? '1' : '0'}`,
     `export XHUB_RUST_HUB_PUBLIC_BASE_URL=${shellQuote(config.publicBaseUrl)}`,
+    `export XHUB_RUST_CROSS_NETWORK_PUBLIC_ENDPOINT=${config.publicEndpoint ? '1' : '0'}`,
     `export HUB_DB_PATH=${shellQuote(config.dbPath)}`,
     `export HUB_RUNTIME_BASE_DIR=${shellQuote(config.runtimeBaseDir)}`,
     `export XHUB_RUST_MEMORY_DIR=${shellQuote(config.memoryDir)}`,
@@ -2948,6 +3165,7 @@ function printHelp() {
   watchdog-uninstall Remove the watchdog timer LaunchAgent
   cross-network-readiness Check LAN/cross-device deployment readiness without mutation
   cross-network-install-plan Print LAN daemon/timer install, validation, and rollback plan
+  cross-network-pairing-export Write a 0600 XT pairing JSON bundle without printing the key
   ops-report Collect non-mutating health/readiness/launchd/http-metrics/log evidence
   maintenance Preview/apply bounded log and report retention
   ops-gate  Run daily/manual health, metrics, maintenance dry-run, and UI boundary gate
@@ -2959,12 +3177,14 @@ function printHelp() {
   self-test Start a temporary daemon, check health, and stop it
 
 Options:
-  --profile <p>    local or lan. lan binds 0.0.0.0 and sets allow-lan.
+  --profile <p>    local, lan, or domain. lan binds 0.0.0.0; domain models a tunnel/public URL.
   --profile-file <p> Profile JSON path, default config/daemon_profile.<profile>.json
   --port <n>       HTTP port, default XHUB_RUST_HUB_HTTP_PORT or 50151
   --host <host>    HTTP host, default XHUB_RUST_HUB_HOST or 127.0.0.1
   --allow-lan      Permit non-loopback bind without using --profile lan
   --public-host <h> Public LAN host/IP used in public_base_url output
+  --public-base-url <u> Exact public URL, e.g. https://hub.example.com
+  --public-endpoint Mark the public/domain endpoint as intentionally exposed through auth gate
   --db-path <path> SQLite DB path, default data/hub.sqlite3
   --runtime-base-dir <path> Runtime base dir, default runtime
   --memory-dir <path> Memory storage dir, default data/memory
@@ -3001,6 +3221,8 @@ Options:
   --xt-file-ipc-run-once-smoke-timeout-ms <n> Timeout for that isolated smoke
   --xt-file-ipc-background-watcher-smoke For ops-report/ops-gate, run isolated XT file IPC background watcher smoke
   --xt-file-ipc-background-watcher-smoke-timeout-ms <n> Timeout for that isolated smoke
+  --allow-memory-skills-production For ops/report/watchdog gates, permit explicit Rust memory writer and skills execution authority
+  --require-memory-skills-production For ops/report/watchdog gates, require both Rust memory writer and skills execution authority
   --allow-manual   For watchdog, do not require launchd to be loaded
   --repair-stale-pid For watchdog --apply, remove stale/invalid pid files
   --pid-file <p>   PID file, default run/xhubd.pid
@@ -3059,6 +3281,9 @@ async function main() {
       break;
     case 'cross-network-install-plan':
       crossNetworkInstallPlan(config);
+      break;
+    case 'cross-network-pairing-export':
+      crossNetworkPairingExport(config, args);
       break;
     case 'ops-report':
       await opsReport(config, args);

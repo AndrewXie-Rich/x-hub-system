@@ -11,6 +11,7 @@ const STATE_FILE = path.join(STATE_DIR, 'launchctl_session_env_state.json');
 const DEFAULT_PREP_SOAK_REPORT_MAX_AGE_MS = 60 * 60 * 1000;
 
 const KEYS = [
+  'XHUB_ENABLE_RUST_AUTHORITY_CUTOVER',
   'XHUB_RUST_HUB_ROOT',
   'XHUB_RUST_PROVIDER_ROUTE_PRODUCTION_AUTHORITY',
   'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_PRODUCTION',
@@ -123,6 +124,7 @@ function parseIntInRange(value, fallback, min, max) {
 
 function desiredEnv(config) {
   return {
+    XHUB_ENABLE_RUST_AUTHORITY_CUTOVER: '1',
     XHUB_RUST_HUB_ROOT: config.rustHubRoot,
     XHUB_RUST_PROVIDER_ROUTE_PRODUCTION_AUTHORITY: '1',
     XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_PRODUCTION: '1',
@@ -261,6 +263,7 @@ function requireApplyPreflight(config) {
 function runSelfTest() {
   const config = parseArgs(['--apply', '--rust-hub-root', '/tmp/rust-hub']);
   const env = desiredEnv(config);
+  if (env.XHUB_ENABLE_RUST_AUTHORITY_CUTOVER !== '1') throw new Error('rust authority cutover gate missing');
   if (env.XHUB_RUST_PROVIDER_ROUTE_PRODUCTION_AUTHORITY !== '1') throw new Error('provider production env missing');
   if (env.XHUB_RUST_MODEL_ROUTE_PRODUCTION_AUTHORITY !== '1') throw new Error('model production env missing');
   if (env.XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_REQUIRE_READY !== '1') throw new Error('provider require-ready missing');

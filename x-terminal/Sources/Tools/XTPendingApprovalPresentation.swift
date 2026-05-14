@@ -231,6 +231,8 @@ enum XTPendingApprovalPresentation {
             return "magnifyingglass"
         case .skills_pin:
             return "pin"
+        case .skillsExecuteRunner:
+            return "play.rectangle"
         case .summarize:
             return "text.alignleft"
         case .supervisorVoicePlayback:
@@ -368,6 +370,8 @@ enum XTPendingApprovalPresentation {
             return "搜索技能"
         case .skills_pin:
             return "更新技能可用性"
+        case .skillsExecuteRunner:
+            return "执行技能 Runner"
         case .summarize:
             return "总结内容"
         case .supervisorVoicePlayback:
@@ -738,6 +742,9 @@ enum XTPendingApprovalPresentation {
         case XTSkillExecutionReadinessState.grantRequired.rawValue:
             return "先完成 Hub grant，再恢复这次受治理技能调用。"
         case XTSkillExecutionReadinessState.localApprovalRequired.rawValue:
+            if (activity?.denyCode ?? "").trimmingCharacters(in: .whitespacesAndNewlines) == xtTrustedAutomationLocalApprovalRequiredDenyCode {
+                return "这次审批通过后，会为当前项目启用可信设备自动化；如果 macOS 系统权限缺失，会继续提示打开设置。"
+            }
             return "这次审批通过后，会按当前受治理路径继续执行。"
         default:
             return nil
@@ -762,6 +769,8 @@ enum XTPendingApprovalPresentation {
             return sentence("搜索技能", target: previewValue(for: toolCall, keys: ["query"], includeLabel: true), fallback: "搜索技能")
         case .skills_pin:
             return sentence("更新技能可用性", target: previewValue(for: toolCall, keys: ["skill_id", "package_sha256", "project_id"], includeLabel: true), fallback: "更新技能可用性")
+        case .skillsExecuteRunner:
+            return sentence("执行技能 Runner", target: previewValue(for: toolCall, keys: ["skill_id", "package_sha256"], includeLabel: true), fallback: "执行技能 Runner")
         case .run_command:
             return sentence("运行", target: previewValue(for: toolCall, keys: ["command"], includeLabel: true), fallback: "运行命令")
         case .process_start:

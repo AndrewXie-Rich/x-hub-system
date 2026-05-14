@@ -98,7 +98,10 @@ struct SupervisorMemoryAssemblySnapshotTests {
                     "context_refs",
                     "evidence_pack",
                 ],
-                excludedBlocks: []
+                excludedBlocks: [],
+                memoryBindingStrength: SupervisorProjectMemoryBindingStrength.strong.rawValue,
+                requiresProjectTruth: true,
+                projectMemorySuppressedForPureChat: false
             )
         )
 
@@ -115,6 +118,8 @@ struct SupervisorMemoryAssemblySnapshotTests {
         #expect(summary.detailText?.contains("focus project-alpha") == true)
         #expect(summary.helpText.contains("S-Tier 只提供 Supervisor 的 review-memory ceiling"))
         #expect(summary.helpText.contains("Recent Raw Context 和 Review Memory Depth"))
+        #expect(detailLines.contains("project_memory_binding_strength=strong"))
+        #expect(detailLines.contains("requires_project_truth=true"))
         #expect(
             detailLines.contains(where: {
                 $0.hasPrefix("supervisor_memory_policy_json=")
@@ -124,6 +129,62 @@ struct SupervisorMemoryAssemblySnapshotTests {
         #expect(detailLines.contains("supervisor_memory_selected_planes=continuity_lane,project_plane"))
         #expect(detailLines.contains("supervisor_memory_selected_serving_objects=recent_raw_dialogue_window,focused_project_anchor_pack,delta_feed,conflict_set,context_refs,evidence_pack"))
         #expect(detailLines.contains("supervisor_memory_serving_object_contract=dialogue_window,focused_project_anchor_pack,delta_feed,conflict_set,context_refs,evidence_pack"))
+    }
+
+    @Test
+    func compactSummaryShowsPureChatProjectSuppressionWhenHeavyProjectPackIsSkipped() {
+        let snapshot = SupervisorMemoryAssemblySnapshot(
+            source: "hub",
+            resolutionSource: "hub_memory",
+            updatedAt: 1,
+            assemblyPurpose: XTSupervisorMemoryAssemblyPurpose.conversation.rawValue,
+            reviewLevelHint: SupervisorReviewLevel.r1Pulse.rawValue,
+            requestedProfile: XTMemoryServingProfile.m1Execute.rawValue,
+            profileFloor: XTMemoryServingProfile.m1Execute.rawValue,
+            resolvedProfile: XTMemoryServingProfile.m1Execute.rawValue,
+            attemptedProfiles: [XTMemoryServingProfile.m1Execute.rawValue],
+            progressiveUpgradeCount: 0,
+            selectedSections: ["dialogue_window"],
+            omittedSections: [],
+            servingObjectContract: ["dialogue_window"],
+            contextRefsSelected: 0,
+            contextRefsOmitted: 0,
+            evidenceItemsSelected: 0,
+            evidenceItemsOmitted: 0,
+            budgetTotalTokens: 640,
+            usedTotalTokens: 240,
+            truncatedLayers: [],
+            freshness: "fresh",
+            cacheHit: false,
+            denyCode: nil,
+            downgradeCode: nil,
+            reasonCode: nil,
+            compressionPolicy: "balanced",
+            memoryAssemblyResolution: XTMemoryAssemblyResolution(
+                role: .supervisor,
+                dominantMode: SupervisorTurnMode.personalFirst.rawValue,
+                trigger: "user_turn",
+                configuredDepth: XTSupervisorReviewMemoryDepthProfile.auto.rawValue,
+                recommendedDepth: XTSupervisorReviewMemoryDepthProfile.compact.rawValue,
+                effectiveDepth: XTSupervisorReviewMemoryDepthProfile.compact.rawValue,
+                ceilingFromTier: XTMemoryServingProfile.m4FullScan.rawValue,
+                ceilingHit: false,
+                selectedSlots: ["recent_raw_dialogue_window"],
+                selectedPlanes: ["continuity_lane"],
+                selectedServingObjects: ["recent_raw_dialogue_window"],
+                excludedBlocks: ["focused_project_anchor_pack", "delta_feed", "evidence_pack"],
+                memoryBindingStrength: SupervisorProjectMemoryBindingStrength.none.rawValue,
+                requiresProjectTruth: false,
+                projectMemorySuppressedForPureChat: true,
+                suppressionReason: "ambient_project_selection_without_project_truth_need"
+            )
+        )
+
+        #expect(snapshot.compactSummary.detailText?.contains("pure chat light pack") == true)
+        #expect(snapshot.detailLine.contains("Project Memory Binding：None"))
+        #expect(snapshot.detailLine.contains("Project Memory Suppression：pure chat light pack applied"))
+        #expect(snapshot.continuityDrillDownLines.contains("project_memory_suppressed_for_pure_chat=true"))
+        #expect(snapshot.continuityDrillDownLines.contains("suppression_reason=ambient_project_selection_without_project_truth_need"))
     }
 
     @Test

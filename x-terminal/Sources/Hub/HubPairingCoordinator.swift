@@ -563,6 +563,39 @@ struct HubRemoteSkillManifestResult: Sendable {
     }
 }
 
+struct HubRemoteSkillPackageDownloadResult: Sendable {
+    var ok: Bool
+    var source: String
+    var packageSHA256: String
+    var data: Data
+    var reasonCode: String?
+    var logLines: [String]
+
+    var logText: String {
+        logLines.joined(separator: "\n")
+    }
+}
+
+struct HubRemoteSkillRunnerGateResult: Sendable {
+    var ok: Bool
+    var source: String
+    var skillId: String
+    var packageSHA256: String
+    var toolName: String
+    var decision: String
+    var toolRequestId: String
+    var grantId: String
+    var executionId: String
+    var denyCode: String?
+    var resultJSON: String
+    var executedAtMs: Int64
+    var logLines: [String]
+
+    var logText: String {
+        logLines.joined(separator: "\n")
+    }
+}
+
 struct HubRemoteAgentImportStageResult: Sendable {
     var ok: Bool
     var source: String
@@ -1352,6 +1385,11 @@ actor HubPairingCoordinator {
             fallbackDeviceName: opts.deviceName
         )
         let cachedPairing = cachedPairingLoad.pairing
+        let currentMachineHosts = Self.currentMachineIPv4Hosts()
+        let hasAuthoritativeLocalProfile = hasEnv || Self.hasAuthoritativeLocalPairingState(
+            cachedPairing: cachedPairing,
+            currentMachineHosts: currentMachineHosts
+        )
         logs.append(contentsOf: cachedPairingLoad.logLines)
         if nonEmpty(opts.internetHost) == nil, let cachedInternetHost = cachedPairing.internetHost {
             opts.internetHost = cachedInternetHost
@@ -1361,7 +1399,7 @@ actor HubPairingCoordinator {
             cachedPairing: cachedPairing,
             inviteAlias: opts.inviteAlias,
             inviteInstanceID: opts.inviteInstanceID,
-            hasAuthoritativeLocalProfile: hasEnv
+            hasAuthoritativeLocalProfile: hasAuthoritativeLocalProfile
         )
         let effectiveAllowBootstrap: Bool
         if allowBootstrap {
@@ -1384,7 +1422,7 @@ actor HubPairingCoordinator {
                 configuredInternetHost: opts.internetHost,
                 inviteToken: opts.inviteToken,
                 configuredEndpointIsAuthoritative: opts.configuredEndpointIsAuthoritative,
-                hasAuthoritativeLocalProfile: hasEnv
+                hasAuthoritativeLocalProfile: hasAuthoritativeLocalProfile
             ) {
                 logs.append("[1/3] Discover Hub ...")
                 if Self.shouldHonorConfiguredEndpointAuthority(
@@ -1413,7 +1451,7 @@ actor HubPairingCoordinator {
                     options: opts,
                     pairingPorts: candidates,
                     cachedPairing: cachedPairing,
-                    hasAuthoritativeLocalProfile: hasEnv
+                    hasAuthoritativeLocalProfile: hasAuthoritativeLocalProfile
                 )
                 logs.append(contentsOf: knownHostProbe.logLines)
                 if let candidate = knownHostProbe.candidate {
@@ -1503,7 +1541,7 @@ actor HubPairingCoordinator {
                                 discoveredHost: parsedHost,
                                 configuredInternetHost: opts.internetHost,
                                 cachedPairing: cachedPairing,
-                                hasAuthoritativeLocalProfile: hasEnv,
+                                hasAuthoritativeLocalProfile: hasAuthoritativeLocalProfile,
                                 currentMachineHosts: currentMachineHosts
                             ) {
                                 ignoredLocalLoopbackDiscoverCandidate = true
@@ -1580,7 +1618,7 @@ actor HubPairingCoordinator {
                     )
                 } else if let loopbackOnlyReason = Self.loopbackOnlyDiscoveryFailureReason(
                     ignoredLoopbackCandidate: ignoredLocalLoopbackDiscoverCandidate,
-                    hasAuthoritativeLocalProfile: hasEnv
+                    hasAuthoritativeLocalProfile: hasAuthoritativeLocalProfile
                 ) {
                     logs.append("[discover] remote LAN discovery is blocked; XT only saw its own loopback Hub. Check Local Network permission or Wi-Fi client isolation.")
                     emit(onProgress, .discover, .failed, loopbackOnlyReason)
@@ -1673,7 +1711,7 @@ actor HubPairingCoordinator {
                     options: opts,
                     pairingPorts: candidates,
                     cachedPairing: cachedPairing,
-                    hasAuthoritativeLocalProfile: hasEnv
+                    hasAuthoritativeLocalProfile: hasAuthoritativeLocalProfile
                 )
                 logs.append(contentsOf: knownHostProbe.logLines)
                 if let candidate = knownHostProbe.candidate {
@@ -1757,7 +1795,7 @@ actor HubPairingCoordinator {
                                 discoveredHost: parsedHost,
                                 configuredInternetHost: opts.internetHost,
                                 cachedPairing: cachedPairing,
-                                hasAuthoritativeLocalProfile: hasEnv,
+                                hasAuthoritativeLocalProfile: hasAuthoritativeLocalProfile,
                                 currentMachineHosts: currentMachineHosts
                             ) {
                                 ignoredLocalLoopbackDiscoverCandidate = true
@@ -1823,7 +1861,7 @@ actor HubPairingCoordinator {
                     emit(onProgress, .discover, .failed, blockedReason)
                 } else if let loopbackOnlyReason = Self.loopbackOnlyDiscoveryFailureReason(
                     ignoredLoopbackCandidate: ignoredLocalLoopbackDiscoverCandidate,
-                    hasAuthoritativeLocalProfile: hasEnv
+                    hasAuthoritativeLocalProfile: hasAuthoritativeLocalProfile
                 ) {
                     logs.append("[discover] remote LAN discovery is blocked; XT only saw its own loopback Hub. Check Local Network permission or Wi-Fi client isolation.")
                     emit(onProgress, .discover, .failed, loopbackOnlyReason)
@@ -2500,13 +2538,18 @@ actor HubPairingCoordinator {
             fallbackDeviceName: opts.deviceName
         )
         let cachedPairing = cachedPairingLoad.pairing
+        let currentMachineHosts = Self.currentMachineIPv4Hosts()
+        let hasAuthoritativeLocalProfile = hasEnv || Self.hasAuthoritativeLocalPairingState(
+            cachedPairing: cachedPairing,
+            currentMachineHosts: currentMachineHosts
+        )
         logs.append(contentsOf: cachedPairingLoad.logLines)
         let customEnv = discoveryEnv(
             internetHost: opts.internetHost,
             cachedPairing: cachedPairing,
             inviteAlias: opts.inviteAlias,
             inviteInstanceID: opts.inviteInstanceID,
-            hasAuthoritativeLocalProfile: hasEnv
+            hasAuthoritativeLocalProfile: hasAuthoritativeLocalProfile
         )
 
         let normalized = rawCandidates
@@ -2529,7 +2572,7 @@ actor HubPairingCoordinator {
             options: opts,
             pairingPorts: candidates,
             cachedPairing: cachedPairing,
-            hasAuthoritativeLocalProfile: hasEnv
+            hasAuthoritativeLocalProfile: hasAuthoritativeLocalProfile
         )
         logs.append(contentsOf: knownHostProbe.logLines)
         if let candidate = knownHostProbe.candidate {
@@ -2610,7 +2653,6 @@ actor HubPairingCoordinator {
             lastOutput = step.output
             if step.exitCode == 0 {
                 let parsedHost = parseStringField(step.output, fieldName: "host")
-                let currentMachineHosts = Self.currentMachineIPv4Hosts()
                 if let parsedHost,
                    Self.isCurrentMachineHost(
                     parsedHost,
@@ -2629,7 +2671,7 @@ actor HubPairingCoordinator {
                     discoveredHost: parsedHost,
                     configuredInternetHost: opts.internetHost,
                     cachedPairing: cachedPairing,
-                    hasAuthoritativeLocalProfile: hasEnv,
+                    hasAuthoritativeLocalProfile: hasAuthoritativeLocalProfile,
                     currentMachineHosts: currentMachineHosts
                 ) {
                     logs.append("[port-detect] ignore loopback candidate without authoritative local pairing state (got \(parsedHost ?? "unknown"))")
@@ -4836,6 +4878,259 @@ actor HubPairingCoordinator {
             packageSHA256: nonEmpty(decoded.packageSHA256) ?? normalizedPackageSHA256,
             manifestJSON: decoded.manifestJSON ?? "",
             reasonCode: reason?.replacingOccurrences(of: " ", with: "_"),
+            logLines: logs
+        )
+    }
+
+    func downloadRemoteSkillPackage(
+        options rawOptions: HubRemoteConnectOptions,
+        packageSHA256: String
+    ) -> HubRemoteSkillPackageDownloadResult {
+        let opts = sanitize(rawOptions)
+        var logs: [String] = []
+        let normalizedPackageSHA256 = packageSHA256
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
+        guard !normalizedPackageSHA256.isEmpty else {
+            return HubRemoteSkillPackageDownloadResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                packageSHA256: "",
+                data: Data(),
+                reasonCode: "missing_package_sha256",
+                logLines: ["remote skill package download requires package sha256"]
+            )
+        }
+
+        let stateDir = opts.stateDir ?? defaultStateDir()
+        let hubEnv = stateDir.appendingPathComponent("hub.env")
+        let clientKitBase = stateDir.appendingPathComponent("client_kit", isDirectory: true)
+        let clientKitHub = clientKitBase.appendingPathComponent("hub_grpc_server", isDirectory: true)
+        let clientKitSrc = clientKitHub.appendingPathComponent("src", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: hubEnv.path),
+              FileManager.default.fileExists(atPath: clientKitSrc.path) else {
+            return HubRemoteSkillPackageDownloadResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                packageSHA256: normalizedPackageSHA256,
+                data: Data(),
+                reasonCode: FileManager.default.fileExists(atPath: hubEnv.path) ? "client_kit_missing" : "hub_env_missing",
+                logLines: ["hub env or client kit missing for remote skill package download"]
+            )
+        }
+
+        let exported = readEnvExports(from: hubEnv)
+        let merged = mergedAxhubEnv(options: opts, extra: exported)
+        guard let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged) else {
+            return HubRemoteSkillPackageDownloadResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                packageSHA256: normalizedPackageSHA256,
+                data: Data(),
+                reasonCode: "node_missing",
+                logLines: ["missing node runtime for remote skill package download"]
+            )
+        }
+
+        var scriptEnv = merged
+        scriptEnv["XTERMINAL_SKILL_PACKAGE_DOWNLOAD_SHA256"] = normalizedPackageSHA256
+
+        let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
+        func runScript() -> StepOutput {
+            do {
+                let script = remoteSkillPackageDownloadScriptSource()
+                let result = try ProcessCapture.run(
+                    nodeBin,
+                    ["--input-type=module", "-"],
+                    cwd: clientKitHub,
+                    stdin: script.data(using: .utf8),
+                    timeoutSec: 60.0,
+                    env: scriptEnv
+                )
+                return StepOutput(exitCode: result.exitCode, output: result.combined, command: command)
+            } catch {
+                return StepOutput(exitCode: 127, output: String(describing: error), command: command)
+            }
+        }
+
+        var step = runScript()
+        appendStepLogs(into: &logs, step: step)
+        if step.exitCode != 0, shouldRetryAfterClientKitInstall(step.output) {
+            let install = runAxhubctl(args: ["install-client"], options: opts, env: [:], timeoutSec: 120.0)
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                step = runScript()
+                appendStepLogs(into: &logs, step: step)
+            }
+        }
+
+        guard let jsonLine = extractTrailingJSONObjectLine(step.output),
+              let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteSkillPackageDownloadScriptResult.self, from: data) else {
+            let fallback = inferFailureCode(from: step.output, fallback: "remote_skill_package_download_failed")
+            return HubRemoteSkillPackageDownloadResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                packageSHA256: normalizedPackageSHA256,
+                data: Data(),
+                reasonCode: fallback,
+                logLines: logs
+            )
+        }
+
+        let reason = nonEmpty(decoded.errorCode)
+            ?? nonEmpty(decoded.reason)
+            ?? nonEmpty(decoded.errorMessage)
+            ?? ((decoded.ok ?? false) ? nil : "remote_skill_package_download_failed")
+        let packageData = Data(base64Encoded: decoded.packageBase64 ?? "") ?? Data()
+
+        return HubRemoteSkillPackageDownloadResult(
+            ok: (decoded.ok ?? false) && !packageData.isEmpty,
+            source: nonEmpty(decoded.source) ?? "hub_runtime_grpc",
+            packageSHA256: nonEmpty(decoded.packageSHA256) ?? normalizedPackageSHA256,
+            data: packageData,
+            reasonCode: reason?.replacingOccurrences(of: " ", with: "_"),
+            logLines: logs
+        )
+    }
+
+    func evaluateRemoteSkillRunnerGate(
+        options rawOptions: HubRemoteConnectOptions,
+        request: HubIPCClient.SkillRunnerGateRequestPayload
+    ) -> HubRemoteSkillRunnerGateResult {
+        let opts = sanitize(rawOptions)
+        var logs: [String] = []
+        let normalizedPackageSHA256 = request.packageSHA256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedSkillId = request.skillId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedToolName = request.toolName.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let stateDir = opts.stateDir ?? defaultStateDir()
+        let hubEnv = stateDir.appendingPathComponent("hub.env")
+        let clientKitBase = stateDir.appendingPathComponent("client_kit", isDirectory: true)
+        let clientKitHub = clientKitBase.appendingPathComponent("hub_grpc_server", isDirectory: true)
+        let clientKitSrc = clientKitHub.appendingPathComponent("src", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: hubEnv.path),
+              FileManager.default.fileExists(atPath: clientKitSrc.path) else {
+            return HubRemoteSkillRunnerGateResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                skillId: normalizedSkillId,
+                packageSHA256: normalizedPackageSHA256,
+                toolName: normalizedToolName,
+                decision: "deny",
+                toolRequestId: "",
+                grantId: "",
+                executionId: "",
+                denyCode: FileManager.default.fileExists(atPath: hubEnv.path) ? "client_kit_missing" : "hub_env_missing",
+                resultJSON: "",
+                executedAtMs: 0,
+                logLines: ["hub env or client kit missing for remote skill runner gate"]
+            )
+        }
+
+        let exported = readEnvExports(from: hubEnv)
+        let merged = mergedAxhubEnv(options: opts, extra: exported)
+        guard let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged) else {
+            return HubRemoteSkillRunnerGateResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                skillId: normalizedSkillId,
+                packageSHA256: normalizedPackageSHA256,
+                toolName: normalizedToolName,
+                decision: "deny",
+                toolRequestId: "",
+                grantId: "",
+                executionId: "",
+                denyCode: "node_missing",
+                resultJSON: "",
+                executedAtMs: 0,
+                logLines: ["missing node runtime for remote skill runner gate"]
+            )
+        }
+
+        let execArgvJSON = (try? JSONEncoder().encode(request.execArgv)).flatMap {
+            String(data: $0, encoding: .utf8)
+        } ?? "[]"
+        var scriptEnv = merged
+        scriptEnv["XTERMINAL_SKILL_RUNNER_REQUEST_ID"] = request.requestId
+        scriptEnv["XTERMINAL_SKILL_RUNNER_PROJECT_ID"] = request.projectId ?? ""
+        scriptEnv["XTERMINAL_SKILL_RUNNER_SKILL_ID"] = normalizedSkillId
+        scriptEnv["XTERMINAL_SKILL_RUNNER_PACKAGE_SHA256"] = normalizedPackageSHA256
+        scriptEnv["XTERMINAL_SKILL_RUNNER_TOOL_NAME"] = normalizedToolName
+        scriptEnv["XTERMINAL_SKILL_RUNNER_TOOL_ARGS_HASH"] = request.toolArgsHash
+        scriptEnv["XTERMINAL_SKILL_RUNNER_RISK_TIER"] = request.riskTier
+        scriptEnv["XTERMINAL_SKILL_RUNNER_REQUIRED_GRANT_SCOPE"] = request.requiredGrantScope
+        scriptEnv["XTERMINAL_SKILL_RUNNER_EXEC_ARGV_JSON"] = execArgvJSON
+        scriptEnv["XTERMINAL_SKILL_RUNNER_EXEC_CWD"] = request.execCwd
+
+        let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
+        func runScript() -> StepOutput {
+            do {
+                let script = remoteSkillRunnerGateScriptSource()
+                let result = try ProcessCapture.run(
+                    nodeBin,
+                    ["--input-type=module", "-"],
+                    cwd: clientKitHub,
+                    stdin: script.data(using: .utf8),
+                    timeoutSec: 30.0,
+                    env: scriptEnv
+                )
+                return StepOutput(exitCode: result.exitCode, output: result.combined, command: command)
+            } catch {
+                return StepOutput(exitCode: 127, output: String(describing: error), command: command)
+            }
+        }
+
+        var step = runScript()
+        appendStepLogs(into: &logs, step: step)
+        if step.exitCode != 0, shouldRetryAfterClientKitInstall(step.output) {
+            let install = runAxhubctl(args: ["install-client"], options: opts, env: [:], timeoutSec: 120.0)
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                step = runScript()
+                appendStepLogs(into: &logs, step: step)
+            }
+        }
+
+        guard let jsonLine = extractTrailingJSONObjectLine(step.output),
+              let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteSkillRunnerGateScriptResult.self, from: data) else {
+            let fallback = inferFailureCode(from: step.output, fallback: "remote_skill_runner_gate_failed")
+            return HubRemoteSkillRunnerGateResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                skillId: normalizedSkillId,
+                packageSHA256: normalizedPackageSHA256,
+                toolName: normalizedToolName,
+                decision: "deny",
+                toolRequestId: "",
+                grantId: "",
+                executionId: "",
+                denyCode: fallback,
+                resultJSON: "",
+                executedAtMs: 0,
+                logLines: logs
+            )
+        }
+
+        let denyCode = nonEmpty(decoded.denyCode)
+            ?? nonEmpty(decoded.errorCode)
+            ?? nonEmpty(decoded.reason)
+            ?? nonEmpty(decoded.errorMessage)
+        return HubRemoteSkillRunnerGateResult(
+            ok: decoded.ok ?? false,
+            source: nonEmpty(decoded.source) ?? "hub_runtime_grpc",
+            skillId: nonEmpty(decoded.skillId) ?? normalizedSkillId,
+            packageSHA256: nonEmpty(decoded.packageSHA256) ?? normalizedPackageSHA256,
+            toolName: nonEmpty(decoded.toolName) ?? normalizedToolName,
+            decision: nonEmpty(decoded.decision) ?? "",
+            toolRequestId: nonEmpty(decoded.toolRequestId) ?? "",
+            grantId: nonEmpty(decoded.grantId) ?? "",
+            executionId: nonEmpty(decoded.executionId) ?? "",
+            denyCode: denyCode?.replacingOccurrences(of: " ", with: "_"),
+            resultJSON: decoded.resultJSON ?? "",
+            executedAtMs: max(0, decoded.executedAtMs ?? 0),
             logLines: logs
         )
     }
@@ -9275,6 +9570,18 @@ actor HubPairingCoordinator {
         )
     }
 
+    nonisolated static func shouldFailClosedOnDiscoveryReasonForTesting(
+        _ rawReason: String?
+    ) -> Bool {
+        shouldFailClosedOnDiscoveryReason(rawReason)
+    }
+
+    nonisolated static func shouldSkipBootstrapRefreshAfterConnectFailureForTesting(
+        _ rawReason: String?
+    ) -> Bool {
+        shouldSkipBootstrapRefreshAfterConnectFailure(rawReason)
+    }
+
     nonisolated static func orderedUniquePairingPortsForTesting(
         _ pairingPorts: [Int]
     ) -> [Int] {
@@ -9405,6 +9712,31 @@ actor HubPairingCoordinator {
                 lanDiscoveryName: nil
             ),
             hasAuthoritativeLocalProfile: hasAuthoritativeLocalProfile,
+            currentMachineHosts: ["127.0.0.1", "localhost"]
+        )
+    }
+
+    nonisolated static func hasAuthoritativeLocalPairingStateForTesting(
+        cachedHost: String? = nil,
+        cachedInternetHost: String? = nil,
+        cachedPairingPort: Int? = nil,
+        cachedGRPCPort: Int? = nil,
+        cachedHubInstanceID: String? = nil,
+        cachedLanDiscoveryName: String? = nil,
+        cachedPairingProfileEpoch: Int? = nil,
+        cachedRoutePackVersion: String? = nil
+    ) -> Bool {
+        hasAuthoritativeLocalPairingState(
+            cachedPairing: HubCachedPairingInfo(
+                host: cachedHost,
+                internetHost: cachedInternetHost,
+                pairingPort: cachedPairingPort,
+                grpcPort: cachedGRPCPort,
+                hubInstanceID: cachedHubInstanceID,
+                lanDiscoveryName: cachedLanDiscoveryName,
+                pairingProfileEpoch: cachedPairingProfileEpoch,
+                routePackVersion: cachedRoutePackVersion
+            ),
             currentMachineHosts: ["127.0.0.1", "localhost"]
         )
     }
@@ -9753,6 +10085,62 @@ actor HubPairingCoordinator {
             case source
             case packageSHA256 = "package_sha256"
             case manifestJSON = "manifest_json"
+            case reason
+            case errorCode = "error_code"
+            case errorMessage = "error_message"
+        }
+    }
+
+    private struct RemoteSkillPackageDownloadScriptResult: Codable {
+        var ok: Bool?
+        var source: String?
+        var packageSHA256: String?
+        var packageBase64: String?
+        var reason: String?
+        var errorCode: String?
+        var errorMessage: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case packageSHA256 = "package_sha256"
+            case packageBase64 = "package_base64"
+            case reason
+            case errorCode = "error_code"
+            case errorMessage = "error_message"
+        }
+    }
+
+    private struct RemoteSkillRunnerGateScriptResult: Codable {
+        var ok: Bool?
+        var source: String?
+        var skillId: String?
+        var packageSHA256: String?
+        var toolName: String?
+        var decision: String?
+        var toolRequestId: String?
+        var grantId: String?
+        var executionId: String?
+        var denyCode: String?
+        var resultJSON: String?
+        var executedAtMs: Int64?
+        var reason: String?
+        var errorCode: String?
+        var errorMessage: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case skillId = "skill_id"
+            case packageSHA256 = "package_sha256"
+            case toolName = "tool_name"
+            case decision
+            case toolRequestId = "tool_request_id"
+            case grantId = "grant_id"
+            case executionId = "execution_id"
+            case denyCode = "deny_code"
+            case resultJSON = "result_json"
+            case executedAtMs = "executed_at_ms"
             case reason
             case errorCode = "error_code"
             case errorMessage = "error_message"
@@ -13322,6 +13710,380 @@ main().catch((err) => {
     reason: msg || 'remote_skill_manifest_failed',
     error_code: msg || 'remote_skill_manifest_failed',
     error_message: msg || 'remote_skill_manifest_failed',
+  });
+  process.exit(1);
+});
+"""#
+    }
+
+    private func remoteSkillPackageDownloadScriptSource() -> String {
+        #"""
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import grpc from '@grpc/grpc-js';
+import protoLoader from '@grpc/proto-loader';
+
+const safe = (v) => String(v ?? '').trim();
+const out = (obj) => {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+};
+
+function reqClientFromEnv() {
+  return {
+    device_id: safe(process.env.HUB_DEVICE_ID || 'terminal_device'),
+    user_id: safe(process.env.HUB_USER_ID || ''),
+    app_id: safe(process.env.HUB_APP_ID || 'x_terminal'),
+    project_id: safe(process.env.HUB_PROJECT_ID || ''),
+    session_id: safe(process.env.HUB_SESSION_ID || ''),
+  };
+}
+
+function metadataFromEnv() {
+  const tok = safe(process.env.HUB_CLIENT_TOKEN || '');
+  const md = new grpc.Metadata();
+  if (tok) md.set('authorization', `Bearer ${tok}`);
+  return md;
+}
+
+async function resolveProtoPath() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'proto_path.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.resolveHubProtoPath === 'function') {
+        const p = safe(mod.resolveHubProtoPath(process.env));
+        if (p) return p;
+      }
+    } catch {}
+  }
+  const candidates = [
+    path.resolve(process.cwd(), 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', '..', 'protocol', 'hub_protocol_v1.proto'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+function loadProto(protoPath) {
+  const packageDef = protoLoader.loadSync(protoPath, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+  });
+  const loaded = grpc.loadPackageDefinition(packageDef);
+  return loaded?.ax?.hub?.v1;
+}
+
+async function makeClientCreds() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'client_credentials.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.makeClientCredentials === 'function') {
+        const built = mod.makeClientCredentials(process.env);
+        if (built?.creds) return { creds: built.creds, options: built.options || {} };
+      }
+    } catch {}
+  }
+  return { creds: grpc.credentials.createInsecure(), options: {} };
+}
+
+async function main() {
+  const protoPath = await resolveProtoPath();
+  const proto = loadProto(protoPath);
+  if (!proto?.HubSkills) throw new Error('hub_skills_missing');
+
+  const host = safe(process.env.HUB_HOST || '127.0.0.1');
+  const port = Number.parseInt(safe(process.env.HUB_PORT || '50051'), 10) || 50051;
+  const addr = `${host}:${port}`;
+  const packageSHA256 = safe(process.env.XTERMINAL_SKILL_PACKAGE_DOWNLOAD_SHA256 || '');
+  if (!packageSHA256) throw new Error('missing_package_sha256');
+
+  const { creds, options } = await makeClientCreds();
+  const skillsClient = new proto.HubSkills(addr, creds, options);
+  const md = metadataFromEnv();
+  const client = reqClientFromEnv();
+
+  const chunks = await new Promise((resolve, reject) => {
+    const rows = [];
+    const stream = skillsClient.DownloadSkillPackage({ client, package_sha256: packageSHA256 }, md);
+    stream.on('data', (chunk) => {
+      if (chunk?.data && chunk.data.length > 0) rows.push(Buffer.from(chunk.data));
+    });
+    stream.on('error', reject);
+    stream.on('end', () => resolve(rows));
+  });
+  const data = Buffer.concat(chunks);
+
+  out({
+    ok: data.length > 0,
+    source: 'hub_runtime_grpc',
+    package_sha256: packageSHA256,
+    package_base64: data.toString('base64'),
+  });
+}
+
+main().catch((err) => {
+  const msg = safe(err?.message || err);
+  out({
+    ok: false,
+    source: 'hub_runtime_grpc',
+    package_sha256: safe(process.env.XTERMINAL_SKILL_PACKAGE_DOWNLOAD_SHA256 || ''),
+    package_base64: '',
+    reason: msg || 'remote_skill_package_download_failed',
+    error_code: msg || 'remote_skill_package_download_failed',
+    error_message: msg || 'remote_skill_package_download_failed',
+  });
+  process.exit(1);
+});
+"""#
+    }
+
+    private func remoteSkillRunnerGateScriptSource() -> String {
+        #"""
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import grpc from '@grpc/grpc-js';
+import protoLoader from '@grpc/proto-loader';
+
+const safe = (v) => String(v ?? '').trim();
+const out = (obj) => {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+};
+
+function reqClientFromEnv(projectIdOverride) {
+  const projectId = projectIdOverride === undefined || projectIdOverride === null
+    ? safe(process.env.HUB_PROJECT_ID || '')
+    : safe(projectIdOverride);
+  return {
+    device_id: safe(process.env.HUB_DEVICE_ID || 'terminal_device'),
+    user_id: safe(process.env.HUB_USER_ID || ''),
+    app_id: safe(process.env.HUB_APP_ID || 'x_terminal'),
+    project_id: projectId,
+    session_id: safe(process.env.HUB_SESSION_ID || ''),
+  };
+}
+
+function metadataFromEnv() {
+  const tok = safe(process.env.HUB_CLIENT_TOKEN || '');
+  const md = new grpc.Metadata();
+  if (tok) md.set('authorization', `Bearer ${tok}`);
+  return md;
+}
+
+async function resolveProtoPath() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'proto_path.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.resolveHubProtoPath === 'function') {
+        const p = safe(mod.resolveHubProtoPath(process.env));
+        if (p) return p;
+      }
+    } catch {}
+  }
+  const candidates = [
+    path.resolve(process.cwd(), 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', '..', 'protocol', 'hub_protocol_v1.proto'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+function loadProto(protoPath) {
+  const packageDef = protoLoader.loadSync(protoPath, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+  });
+  const loaded = grpc.loadPackageDefinition(packageDef);
+  return loaded?.ax?.hub?.v1;
+}
+
+async function makeClientCreds() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'client_credentials.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.makeClientCredentials === 'function') {
+        const built = mod.makeClientCredentials(process.env);
+        if (built?.creds) return { creds: built.creds, options: built.options || {} };
+      }
+    } catch {}
+  }
+  return { creds: grpc.credentials.createInsecure(), options: {} };
+}
+
+function parseExecArgv() {
+  try {
+    const parsed = JSON.parse(safe(process.env.XTERMINAL_SKILL_RUNNER_EXEC_ARGV_JSON || '[]'));
+    return Array.isArray(parsed) ? parsed.map((item) => String(item ?? '')) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function unary(client, method, request, md) {
+  return await new Promise((resolve, reject) => {
+    client[method](request, md, (err, result) => {
+      if (err) reject(err);
+      else resolve(result || {});
+    });
+  });
+}
+
+async function main() {
+  const protoPath = await resolveProtoPath();
+  const proto = loadProto(protoPath);
+  if (!proto?.HubMemory) throw new Error('hub_memory_missing');
+
+  const host = safe(process.env.HUB_HOST || '127.0.0.1');
+  const port = Number.parseInt(safe(process.env.HUB_PORT || '50051'), 10) || 50051;
+  const addr = `${host}:${port}`;
+  const requestId = safe(process.env.XTERMINAL_SKILL_RUNNER_REQUEST_ID || `skill-runner-${Date.now()}`);
+  const projectId = safe(process.env.XTERMINAL_SKILL_RUNNER_PROJECT_ID || '');
+  const skillId = safe(process.env.XTERMINAL_SKILL_RUNNER_SKILL_ID || '');
+  const packageSHA256 = safe(process.env.XTERMINAL_SKILL_RUNNER_PACKAGE_SHA256 || '');
+  const toolName = safe(process.env.XTERMINAL_SKILL_RUNNER_TOOL_NAME || 'skills.run.runner');
+  const toolArgsHash = safe(process.env.XTERMINAL_SKILL_RUNNER_TOOL_ARGS_HASH || '');
+  const riskTier = safe(process.env.XTERMINAL_SKILL_RUNNER_RISK_TIER || 'medium');
+  const requiredGrantScope = safe(process.env.XTERMINAL_SKILL_RUNNER_REQUIRED_GRANT_SCOPE || 'readonly');
+  const execArgv = parseExecArgv();
+  const execCwd = safe(process.env.XTERMINAL_SKILL_RUNNER_EXEC_CWD || process.cwd());
+  if (!skillId) throw new Error('missing_skill_id');
+  if (!packageSHA256) throw new Error('missing_package_sha256');
+  if (!toolArgsHash) throw new Error('missing_tool_args_hash');
+  if (execArgv.length <= 0) throw new Error('approval_binding_invalid');
+
+  const { creds, options } = await makeClientCreds();
+  const memoryClient = new proto.HubMemory(addr, creds, options);
+  const md = metadataFromEnv();
+  const client = reqClientFromEnv(projectId);
+  const agentInstanceId = 'x-terminal-skill-runner';
+
+  const opened = await unary(memoryClient, 'AgentSessionOpen', {
+    request_id: `${requestId}:session`,
+    client,
+    agent_instance_id: agentInstanceId,
+    agent_name: 'X-Terminal Skill Runner',
+    agent_version: '1',
+    gateway_provider: 'x_terminal',
+  }, md);
+  if (!opened?.opened || !safe(opened?.session_id)) {
+    out({
+      ok: false,
+      source: 'hub_runtime_grpc',
+      skill_id: skillId,
+      package_sha256: packageSHA256,
+      tool_name: toolName,
+      decision: 'deny',
+      deny_code: safe(opened?.deny_code || 'session_open_failed'),
+      tool_request_id: '',
+      grant_id: '',
+      execution_id: '',
+      result_json: '',
+      executed_at_ms: 0,
+    });
+    return;
+  }
+
+  const sessionId = safe(opened.session_id);
+  const requested = await unary(memoryClient, 'AgentToolRequest', {
+    request_id: `${requestId}:request`,
+    client,
+    session_id: sessionId,
+    agent_instance_id: agentInstanceId,
+    tool_name: toolName,
+    tool_args_hash: toolArgsHash,
+    risk_tier: riskTier,
+    required_grant_scope: requiredGrantScope,
+    exec_argv: execArgv,
+    exec_cwd: execCwd,
+  }, md);
+  const decision = safe(requested?.decision || 'deny');
+  const toolRequestId = safe(requested?.tool_request_id || '');
+  const requestDeny = safe(requested?.deny_code || '');
+  if (!requested?.accepted || !toolRequestId || decision !== 'approve') {
+    out({
+      ok: false,
+      source: 'hub_runtime_grpc',
+      skill_id: skillId,
+      package_sha256: packageSHA256,
+      tool_name: toolName,
+      decision,
+      deny_code: requestDeny || (decision === 'pending' ? 'grant_pending' : 'agent_tool_request_denied'),
+      tool_request_id: toolRequestId,
+      grant_id: safe(requested?.grant_id || ''),
+      execution_id: '',
+      result_json: '',
+      executed_at_ms: 0,
+    });
+    return;
+  }
+
+  const grantId = safe(requested?.grant_id || '');
+  const executed = await unary(memoryClient, 'AgentToolExecute', {
+    request_id: `${requestId}:execute`,
+    client,
+    session_id: sessionId,
+    tool_request_id: toolRequestId,
+    tool_name: toolName,
+    tool_args_hash: toolArgsHash,
+    grant_id: grantId,
+    exec_argv: execArgv,
+    exec_cwd: execCwd,
+  }, md);
+  const denyCode = safe(executed?.deny_code || '');
+  out({
+    ok: !!executed?.executed && !denyCode,
+    source: 'hub_runtime_grpc',
+    skill_id: skillId,
+    package_sha256: packageSHA256,
+    tool_name: toolName,
+    decision,
+    tool_request_id: toolRequestId,
+    grant_id: grantId,
+    execution_id: safe(executed?.execution_id || ''),
+    deny_code: denyCode,
+    result_json: safe(executed?.result_json || ''),
+    executed_at_ms: Number(executed?.executed_at_ms || 0),
+  });
+}
+
+main().catch((err) => {
+  const msg = safe(err?.message || err);
+  out({
+    ok: false,
+    source: 'hub_runtime_grpc',
+    skill_id: safe(process.env.XTERMINAL_SKILL_RUNNER_SKILL_ID || ''),
+    package_sha256: safe(process.env.XTERMINAL_SKILL_RUNNER_PACKAGE_SHA256 || ''),
+    tool_name: safe(process.env.XTERMINAL_SKILL_RUNNER_TOOL_NAME || 'skills.run.runner'),
+    decision: 'deny',
+    deny_code: msg || 'remote_skill_runner_gate_failed',
+    tool_request_id: '',
+    grant_id: '',
+    execution_id: '',
+    result_json: '',
+    executed_at_ms: 0,
+    reason: msg || 'remote_skill_runner_gate_failed',
+    error_code: msg || 'remote_skill_runner_gate_failed',
+    error_message: msg || 'remote_skill_runner_gate_failed',
   });
   process.exit(1);
 });
@@ -18353,6 +19115,21 @@ main().catch((err) => {
     private nonisolated static func inferFailureCodeFromText(_ output: String, fallback: String) -> String {
         let text = output.lowercased()
         if text.isEmpty { return fallback }
+        let looksLikeHTMLPayload = text.contains("<!doctype html")
+            || text.contains("<html")
+            || text.contains("</html>")
+        let looksLikeHTMLServiceOutage = looksLikeHTMLPayload && (
+            text.contains("error code 504")
+            || text.contains("gateway time-out")
+            || text.contains("gateway timeout")
+            || text.contains("error code 503")
+            || text.contains("service unavailable")
+            || text.contains("error code 502")
+            || text.contains("bad gateway")
+        )
+        if looksLikeHTMLServiceOutage || (text.contains("bad_json") && looksLikeHTMLServiceOutage) {
+            return "service_unavailable"
+        }
         if text.contains("alert certificate required")
             || text.contains("tlsv13 alert certificate required")
             || text.contains("peer did not return a certificate")
@@ -20745,6 +21522,36 @@ main().catch((err) => {
         }
         if let cachedInternetHost = normalizedTrimmed(cachedPairing.internetHost),
            isCurrentMachineHost(cachedInternetHost, currentMachineHosts: currentMachineHosts) {
+            return true
+        }
+        return false
+    }
+
+    private nonisolated static func hasAuthoritativeLocalPairingState(
+        cachedPairing: HubCachedPairingInfo,
+        currentMachineHosts: Set<String>
+    ) -> Bool {
+        let localHostBound = [
+            normalizedTrimmed(cachedPairing.host),
+            normalizedTrimmed(cachedPairing.internetHost),
+        ]
+        .compactMap { $0 }
+        .contains { isCurrentMachineHost($0, currentMachineHosts: currentMachineHosts) }
+        guard localHostBound else { return false }
+
+        if cachedPairing.pairingPort != nil || cachedPairing.grpcPort != nil {
+            return true
+        }
+        if normalizedDiscoveryTokenValue(cachedPairing.hubInstanceID) != nil {
+            return true
+        }
+        if normalizedTrimmed(cachedPairing.lanDiscoveryName) != nil {
+            return true
+        }
+        if cachedPairing.pairingProfileEpoch != nil {
+            return true
+        }
+        if normalizedTrimmed(cachedPairing.routePackVersion) != nil {
             return true
         }
         return false

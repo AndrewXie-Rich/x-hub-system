@@ -82,6 +82,7 @@ rust/**/logs/
 rust/**/run/
 rust/**/reports/
 rust/**/config/*.local.json
+!rust/xhubd/config/daemon_profile.local.json
 
 # x-terminal work orders (not ready for public)
 x-terminal/work-orders/

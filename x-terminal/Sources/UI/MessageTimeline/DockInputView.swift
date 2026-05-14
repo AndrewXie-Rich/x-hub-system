@@ -1,258 +1,146 @@
 import SwiftUI
 
+private struct DockInputRuntimeStatusSnapshot: Equatable {
+    var configuredModelId: String
+    var coderSnapshot: AXRoleExecutionSnapshot
+    var latestGovernanceInterception: ProjectGovernanceInterceptionPresentation?
+    var primaryStatusAction: ProjectCoderExecutionStatusPrimaryActionPresentation?
+
+    static let empty = DockInputRuntimeStatusSnapshot(
+        configuredModelId: "",
+        coderSnapshot: .empty(role: .coder, source: "dock_input"),
+        latestGovernanceInterception: nil,
+        primaryStatusAction: nil
+    )
+}
+
 /// 现代化的底部 Dock 输入框，替代原来的 inputBar
 struct DockInputView: View {
     let ctx: AXProjectContext
     let memory: AXMemory?
     let config: AXProjectConfig?
     let hubConnected: Bool
-    @ObservedObject var session: ChatSessionModel
-    @EnvironmentObject private var appModel: AppModel
+    let session: ChatSessionModel
+    @ObservedObject var composer: ChatComposerState
+    let status: XTChatStatusSnapshot
+    @Environment(\.xtAppModelReference) private var appModelReference
+    @Environment(\.openWindow) private var openWindow
     @StateObject private var modelManager = HubModelManager.shared
 
     @State private var isFocused: Bool = false
-    @State private var inputHeight: CGFloat = 44
     @State private var showSlashSuggestions = false
+    @State private var slashSuggestions: [XTDockSlashSuggestion] = []
     @State private var isAttachmentDropTarget = false
     @State private var attachmentDropIntent: XTChatComposerDropIntent? = nil
+    @State private var visibleModelInventory = XTVisibleHubModelInventory.empty
+    @State private var runtimeStatusSnapshot = DockInputRuntimeStatusSnapshot.empty
 
     var body: some View {
         VStack(spacing: 0) {
-            // 顶部渐变阴影
-            Rectangle()
-                .fill(
-                    LinearGradient(
-                        colors: [.black.opacity(0.08), .clear],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-                .frame(height: 12)
-                .allowsHitTesting(false)
-
-            // 主输入区域
-            VStack(spacing: 12) {
-                // Slash 命令建议
+            VStack(spacing: 10) {
                 if showSlashSuggestions {
                     SlashSuggestionsView(
-                        draft: $session.draft,
-                        modelsState: modelManager.visibleSnapshot(fallback: appModel.modelsState),
+                        suggestions: slashSuggestions,
                         onSelect: { suggestion in
-                            session.draft = suggestion
+                            composer.draft = suggestion
                             showSlashSuggestions = false
                         }
                     )
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
 
-                // 输入框容器
-                HStack(alignment: .bottom, spacing: 12) {
-                    // 左侧：附件和设置按钮
-                    VStack(spacing: 8) {
-                        // 模型选择器
-                        ModelSelectorButton(ctx: ctx, config: config)
-                            .environmentObject(appModel)
+                VStack(alignment: .leading, spacing: 12) {
+                    toolbarRow
 
-                        // 语音输入
-                        VoiceInputButton(text: $session.draft)
-                    }
-
-                    // 中间：输入框
-                    VStack(alignment: .leading, spacing: 10) {
-                        if !session.draftAttachments.isEmpty {
-                            XTChatProjectInboxPanel(
-                                attachments: session.draftAttachments,
-                                projectImportEnabled: true,
-                                continuation: session.importContinuation,
-                                onRemove: session.removeDraftAttachment,
-                                onImport: { session.importAttachmentToProject($0, ctx: ctx) },
-                                onImportAll: { session.importAllExternalDraftAttachments(ctx: ctx) },
-                                onContinue: {
-                                    session.dismissImportContinuation()
-                                    isFocused = true
-                                },
-                                onContinueAndSend: {
-                                    session.dismissImportContinuation()
-                                    sendMessage()
-                                },
-                                canContinueAndSend: hubConnected &&
-                                    !session.isSending &&
-                                    session.pendingToolCalls.isEmpty &&
-                                    AXChatAttachmentSupport.hasSubmittableContent(
-                                        draft: session.draft,
-                                        attachments: session.draftAttachments
-                                    ),
-                                onDismissContinuation: session.dismissImportContinuation
-                            )
-                        }
-
-                        ZStack(alignment: .topLeading) {
-                            // 占位符
-                            if session.draft.isEmpty && session.draftAttachments.isEmpty && !isFocused {
-                                HStack(spacing: 8) {
-                                    Image(systemName: "sparkles")
-                                        .foregroundStyle(.tertiary)
-                                    Text("想问什么都可以，输入 / 查看命令…")
-                                        .foregroundStyle(.tertiary)
-                                }
-                                .font(.body)
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 12)
-                                .allowsHitTesting(false)
-                            }
-
-                            // 自动扩展的文本编辑器
-                            XTChatComposerTextView(
-                                text: $session.draft,
-                                isFocused: $isFocused,
-                                canSubmit: canSend && !session.isSending,
-                                diagnosticScope: "coder_dock",
-                                onSubmit: sendMessage,
-                                allowsImportDrop: true,
-                                onDropFiles: handleDroppedFiles,
-                                onDropHoverChange: {
-                                    isAttachmentDropTarget = $0
-                                    if !$0 {
-                                        attachmentDropIntent = nil
-                                    }
-                                },
-                                onDropIntentChange: { attachmentDropIntent = $0 }
-                            )
-                                .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 200)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .disabled(false) // 始终允许输入
-                                .onChange(of: session.draft) { newValue in
-                                    showSlashSuggestions = newValue.hasPrefix("/") && session.pendingToolCalls.isEmpty
-                                }
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(nsColor: .controlBackgroundColor))
-                    .cornerRadius(12)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(
-                                isAttachmentDropTarget ? Color.orange.opacity(0.7) : inputBorderColor,
-                                lineWidth: isAttachmentDropTarget ? 2 : (isFocused ? 2 : 1)
-                            )
-                            .allowsHitTesting(false)
-                    )
-                    .overlay {
-                        if isAttachmentDropTarget {
-                            XTChatContextDock(
-                                activeIntent: attachmentDropIntent,
-                                importEnabled: true
-                            )
-                            .padding(10)
-                            .allowsHitTesting(false)
-                        }
-                    }
-
-                    // 右侧：发送/取消按钮
-                    VStack(spacing: 8) {
-                        // 发送按钮
-                        Button {
-                            if session.isSending {
-                                session.cancel()
-                            } else {
+                    if !composer.draftAttachments.isEmpty {
+                        XTChatProjectInboxPanel(
+                            attachments: composer.draftAttachments,
+                            projectImportEnabled: true,
+                            continuation: composer.importContinuation,
+                            onRemove: session.removeDraftAttachment,
+                            onImport: { session.importAttachmentToProject($0, ctx: ctx) },
+                            onImportAll: { session.importAllExternalDraftAttachments(ctx: ctx) },
+                            onContinue: {
+                                session.dismissImportContinuation()
+                                isFocused = true
+                            },
+                            onContinueAndSend: {
+                                session.dismissImportContinuation()
                                 sendMessage()
-                            }
-                        } label: {
-                            ZStack {
-                                Circle()
-                                    .fill(sendButtonBackground)
-                                    .frame(width: 44, height: 44)
-
-                                Image(systemName: sendButtonIcon)
-                                    .font(.system(size: 18, weight: .semibold))
-                                    .foregroundColor(.white)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(!canSend)
-                        .shadow(color: sendButtonShadow, radius: 4, y: 2)
-
-                        // 自动运行工具开关
-                        Toggle("", isOn: $session.autoRunTools)
-                            .toggleStyle(.switch)
-                            .controlSize(.small)
-                            .disabled(!hubConnected)
-                            .help("自动执行工具（Auto-run tools）")
+                            },
+                            canContinueAndSend: hubConnected &&
+                                !status.isSending &&
+                                status.pendingToolCalls.isEmpty &&
+                                AXChatAttachmentSupport.hasSubmittableContent(
+                                    draft: composer.draft,
+                                    attachments: composer.draftAttachments
+                                ),
+                            onDismissContinuation: session.dismissImportContinuation
+                        )
                     }
-                }
-                .padding(.horizontal, 20)
 
-                // 底部状态栏
-                HStack(spacing: 12) {
-                    // 连接状态
-                    if !hubConnected {
-                        HStack(spacing: 6) {
-                            Image(systemName: "wifi.slash")
+                    if !status.pendingToolCalls.isEmpty {
+                        DockPendingToolApprovalPanel(
+                            session: session,
+                            status: status,
+                            hubConnected: hubConnected,
+                            onApprove: {
+                                session.approvePendingTools(router: appModel.llmRouter)
+                            },
+                            onReject: {
+                                session.rejectPendingTools()
+                            },
+                            onFocusHistory: {
+                                appModel.requestProjectToolApprovalFocus(
+                                    projectId: projectId,
+                                    requestId: status.pendingToolCalls.first?.id
+                                )
+                            }
+                        )
+                    } else if let blockerPresentation {
+                        DockInputBlockerBanner(presentation: blockerPresentation)
+                    }
+
+                    composerRow
+                    if blockerPresentation == nil {
+                        footerRow
+                    }
+
+                    if blockerPresentation == nil,
+                       let error = status.lastError,
+                       !error.isEmpty {
+                        HStack(spacing: 8) {
+                            Image(systemName: "exclamationmark.triangle.fill")
                                 .foregroundColor(.red)
-                            Text("Hub 未连接")
+                            Text(error)
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    } else {
-                        HStack(spacing: 6) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundColor(.green)
-                            Text("已连接")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.red)
+                                .textSelection(.enabled)
                         }
                     }
-
-                    Spacer()
-
-                    // 快捷键提示
-                    HStack(spacing: 4) {
-                        Text("↩")
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(.tertiary)
-                        Text("发送")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                        Text("·")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                        Text("⇧↩")
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(.tertiary)
-                        Text("换行")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    }
                 }
-                .padding(.horizontal, 20)
-                .padding(.bottom, 8)
-
-                // 错误提示
-                if let error = session.lastError, !error.isEmpty {
-                    HStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundColor(.red)
-                        Text(error)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .textSelection(.enabled)
-                    }
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 8)
-                }
-            }
-            .padding(.vertical, 12)
-            .background(
+                .padding(14)
+                .background(
                     VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow)
                         .allowsHitTesting(false)
-            )
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
+                )
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+            }
         }
-        .frame(maxWidth: 900) // 限制最大宽度
+        .frame(maxWidth: 920)
         .frame(maxWidth: .infinity)
         .onAppear {
             modelManager.setAppModel(appModel)
-            if appModel.hubInteractive {
+            refreshRuntimeStatusSnapshot()
+            syncVisibleModelInventory()
+            refreshSlashSuggestions()
+            if hubConnected {
                 Task {
                     await modelManager.fetchModels()
                 }
@@ -261,7 +149,17 @@ struct DockInputView: View {
                 isFocused = true
             }
         }
-        .onChange(of: appModel.hubInteractive) { connected in
+        .onChange(of: modelInventorySnapshot) { _ in
+            syncVisibleModelInventory()
+            refreshSlashSuggestions()
+        }
+        .onChange(of: runtimeStatusRefreshSignature) { _ in
+            refreshRuntimeStatusSnapshot()
+        }
+        .onChange(of: status.pendingToolCalls.count) { _ in
+            refreshSlashSuggestions()
+        }
+        .onChange(of: hubConnected) { connected in
             if connected {
                 Task {
                     await modelManager.fetchModels()
@@ -270,20 +168,199 @@ struct DockInputView: View {
         }
     }
 
+    private var toolbarRow: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 8) {
+                toolbarLeadingControls
+
+                Spacer(minLength: 8)
+
+                toolbarStatusChip
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                toolbarLeadingControls
+                toolbarStatusChip
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var toolbarLeadingControls: some View {
+        ModelSelectorButton(ctx: ctx, config: config)
+
+        VoiceInputButton(
+            text: $composer.draft,
+            style: .compact
+        )
+
+        Toggle(isOn: $composer.autoRunTools) {
+            Label("自动执行", systemImage: composer.autoRunTools ? "bolt.fill" : "bolt")
+                .font(.caption.weight(.semibold))
+        }
+        .toggleStyle(.switch)
+        .controlSize(.mini)
+        .disabled(!hubConnected)
+        .help("自动执行普通待确认工具；策略拒绝、权限不足和强制审批的工具仍会停在审批区。")
+        .fixedSize()
+
+        if !composer.draftAttachments.isEmpty {
+            DockComposerChip(
+                icon: "paperclip",
+                text: "\(composer.draftAttachments.count) 个附件",
+                tone: .neutral
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var toolbarStatusChip: some View {
+        if blockerPresentation == nil,
+           let statusChip = composerStatusChip {
+            DockComposerChip(
+                icon: statusChip.icon,
+                text: statusChip.text,
+                tone: statusChip.tone
+            )
+        }
+    }
+
+    private var composerRow: some View {
+        HStack(alignment: .bottom, spacing: 12) {
+            ZStack(alignment: .topLeading) {
+                if composer.draft.isEmpty && composer.draftAttachments.isEmpty && !isFocused {
+                    HStack(spacing: 8) {
+                        Image(systemName: "sparkles")
+                            .foregroundStyle(.tertiary)
+                        Text(placeholderText)
+                            .foregroundStyle(.tertiary)
+                    }
+                    .font(.body)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .allowsHitTesting(false)
+                }
+
+                XTChatComposerTextView(
+                    text: $composer.draft,
+                    isFocused: $isFocused,
+                    canSubmit: canSend && !status.isSending,
+                    diagnosticScope: "coder_dock",
+                    onSubmit: sendMessage,
+                    allowsImportDrop: true,
+                    onDropFiles: handleDroppedFiles,
+                    onDropHoverChange: {
+                        isAttachmentDropTarget = $0
+                        if !$0 {
+                            attachmentDropIntent = nil
+                        }
+                    },
+                    onDropIntentChange: { attachmentDropIntent = $0 }
+                )
+                .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 200)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .disabled(false)
+                .onChange(of: composer.draft) { _ in
+                    refreshSlashSuggestions()
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.85))
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(
+                        isAttachmentDropTarget ? Color.orange.opacity(0.7) : inputBorderColor,
+                        lineWidth: isAttachmentDropTarget ? 2 : (isFocused ? 2 : 1)
+                    )
+                    .allowsHitTesting(false)
+            )
+            .overlay {
+                if isAttachmentDropTarget {
+                    XTChatContextDock(
+                        activeIntent: attachmentDropIntent,
+                        importEnabled: true
+                    )
+                    .padding(10)
+                    .allowsHitTesting(false)
+                }
+            }
+
+            VStack(spacing: 8) {
+                Button {
+                    if status.isSending {
+                        session.cancel()
+                    } else {
+                        sendMessage()
+                    }
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(sendButtonBackground)
+                            .frame(width: 46, height: 46)
+
+                        Image(systemName: sendButtonIcon)
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(.white)
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(!canSend)
+                .shadow(color: sendButtonShadow, radius: 4, y: 2)
+
+                Text(status.isSending ? "停止" : "发送")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(canSend ? .primary : .secondary)
+            }
+        }
+    }
+
+    private var footerRow: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) {
+                footerGuidanceText
+
+                Spacer(minLength: 8)
+
+                footerShortcutText
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                footerGuidanceText
+                footerShortcutText
+            }
+        }
+    }
+
+    private var footerGuidanceText: some View {
+        Text(composerGuidanceText)
+            .font(.caption)
+            .foregroundStyle(composerGuidanceColor)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var footerShortcutText: some View {
+        Text("/ 查看命令 · ↩ 发送 · ⇧↩ 换行")
+            .font(.caption)
+            .foregroundStyle(.tertiary)
+            .lineLimit(1)
+    }
+
     private var canSend: Bool {
-        if session.isSending {
-            return true // 可以取消
+        if status.isSending {
+            return true
         }
         return hubConnected &&
             AXChatAttachmentSupport.hasSubmittableContent(
-                draft: session.draft,
-                attachments: session.draftAttachments
+                draft: composer.draft,
+                attachments: composer.draftAttachments
             ) &&
-            session.pendingToolCalls.isEmpty
+            status.pendingToolCalls.isEmpty
     }
 
     private var sendButtonIcon: String {
-        session.isSending ? "stop.fill" : "arrow.up"
+        status.isSending ? "stop.fill" : "arrow.up"
     }
 
     private var sendButtonBackground: LinearGradient {
@@ -295,7 +372,7 @@ struct DockInputView: View {
             )
         }
 
-        if session.isSending {
+        if status.isSending {
             return LinearGradient(
                 colors: [Color.red, Color.red.opacity(0.8)],
                 startPoint: .topLeading,
@@ -311,7 +388,7 @@ struct DockInputView: View {
     }
 
     private var sendButtonShadow: Color {
-        if session.isSending {
+        if status.isSending {
             return Color.red.opacity(0.3)
         }
         return canSend ? Color.accentColor.opacity(0.3) : Color.clear
@@ -324,7 +401,65 @@ struct DockInputView: View {
         return isFocused ? Color.accentColor : Color.secondary.opacity(0.2)
     }
 
+    private var placeholderText: String {
+        if !hubConnected {
+            return "Hub 未连接。你可以先写好需求，连上后再发送。"
+        }
+        if !status.pendingToolCalls.isEmpty {
+            return "先处理上方工具审批，处理完再继续这一轮。"
+        }
+        return "直接说要完成什么；输入 / 可查看常用命令。"
+    }
+
+    private var composerGuidanceText: String {
+        if !hubConnected {
+            return "当前还不能发出请求。先在 Control 里修复 Hub 连接，然后继续。"
+        }
+        if !status.pendingToolCalls.isEmpty {
+            return "这轮有待审批工具请求，先批准或拒绝，再继续输入或发送。"
+        }
+        if composer.draft.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") {
+            return "选择一个命令，或继续输入来缩小建议范围。"
+        }
+        if composer.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "直接描述目标即可；XT 会优先按当前项目上下文让 Coder 开工。"
+        }
+        return "内容已准备好，可以直接发送。"
+    }
+
+    private var composerGuidanceColor: Color {
+        if !hubConnected {
+            return .red
+        }
+        if !status.pendingToolCalls.isEmpty {
+            return .orange
+        }
+        return .secondary
+    }
+
+    private var composerStatusChip: (icon: String, text: String, tone: DockComposerChipTone)? {
+        if !hubConnected {
+            return ("wifi.slash", "Hub 未连接", .danger)
+        }
+        if !status.pendingToolCalls.isEmpty {
+            return ("hand.raised.fill", "待审批 \(status.pendingToolCalls.count)", .warning)
+        }
+        if status.isSending {
+            return ("ellipsis.circle.fill", "正在执行", .success)
+        }
+        return nil
+    }
+
     private func sendMessage() {
+        guard hubConnected,
+              !status.isSending,
+              status.pendingToolCalls.isEmpty,
+              AXChatAttachmentSupport.hasSubmittableContent(
+                draft: composer.draft,
+                attachments: composer.draftAttachments
+              ) else {
+            return
+        }
         session.send(ctx: ctx, memory: memory, config: config, router: appModel.llmRouter)
         isFocused = true
     }
@@ -342,101 +477,431 @@ struct DockInputView: View {
         attachmentDropIntent = nil
         isFocused = true
     }
+
+    private var modelInventorySnapshot: ModelStateSnapshot {
+        modelManager.visibleSnapshot(fallback: appModel.modelsState)
+    }
+
+    private var projectId: String {
+        AXProjectRegistryStore.projectId(forRoot: ctx.root)
+    }
+
+    private var appModel: AppModel {
+        guard let appModelReference else {
+            preconditionFailure("DockInputView requires xtAppModelReference")
+        }
+        return appModelReference
+    }
+
+    private var runtimeStatusRefreshSignature: String {
+        [
+            ctx.root.standardizedFileURL.path,
+            hubConnected ? "hub=1" : "hub=0",
+            status.lastError ?? "",
+            status.pendingToolCallIDSignature,
+            resolveConfiguredModelId(),
+            appModel.settingsStore.settings.interfaceLanguage.rawValue
+        ].joined(separator: "|")
+    }
+
+    private var coderSnapshot: AXRoleExecutionSnapshot {
+        runtimeStatusSnapshot.coderSnapshot
+    }
+
+    private var configuredModelId: String {
+        runtimeStatusSnapshot.configuredModelId
+    }
+
+    private func resolveConfiguredModelId() -> String {
+        AXRoleExecutionSnapshots.configuredModelId(
+            for: .coder,
+            projectConfig: config,
+            settings: appModel.settingsStore.settings
+        )
+    }
+
+    private var latestGovernanceInterception: ProjectGovernanceInterceptionPresentation? {
+        runtimeStatusSnapshot.latestGovernanceInterception
+    }
+
+    private var primaryStatusAction: ProjectCoderExecutionStatusPrimaryActionPresentation? {
+        runtimeStatusSnapshot.primaryStatusAction
+    }
+
+    private var blockerPresentation: DockInputBlockerPresentation? {
+        if !hubConnected {
+            return DockInputBlockerPresentation(
+                icon: "wifi.slash",
+                title: "Hub 当前未连通",
+                detail: "先打开 Hub Recovery 检查连接、配对和可执行模型，再继续这一轮。",
+                tone: .danger,
+                actionTitle: "修复 Hub",
+                actionHelpText: "打开 Hub Recovery，直接进入当前连接修复入口。",
+                action: {
+                    appModel.requestHubSetupFocus(
+                        sectionId: "troubleshoot",
+                        title: "Hub Recovery",
+                        detail: "当前项目聊天输入被 Hub 连接阻塞；先检查连接、配对和模型可执行状态。"
+                    )
+                    openWindow(id: "hub_setup")
+                }
+            )
+        }
+
+        let trimmedError = status.lastError?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmedError.isEmpty,
+           let primaryStatusAction {
+            return DockInputBlockerPresentation(
+                icon: blockerIcon(for: primaryStatusAction.kind),
+                title: "需要先修复后继续",
+                detail: trimmedError,
+                tone: blockerTone(for: primaryStatusAction.kind),
+                actionTitle: primaryStatusAction.title,
+                actionHelpText: primaryStatusAction.helpText,
+                action: {
+                    ProjectCoderExecutionStatusPrimaryActionResolver.perform(
+                        primaryStatusAction.kind,
+                        configuredModelId: configuredModelId,
+                        snapshot: coderSnapshot,
+                        ctx: ctx,
+                        config: config,
+                        session: session,
+                        appModel: appModel,
+                        openWindow: openWindow,
+                        governanceInterception: latestGovernanceInterception,
+                        interfaceLanguage: appModel.settingsStore.settings.interfaceLanguage
+                    )
+                }
+            )
+        }
+
+        return nil
+    }
+
+    private func refreshRuntimeStatusSnapshot() {
+        let configuredModelId = resolveConfiguredModelId()
+        let coderSnapshot = XTProjectUIPresentationReadCache.roleExecutionSnapshot(
+            for: ctx,
+            role: .coder
+        ) {
+            AXRoleExecutionSnapshots.latestSnapshots(for: ctx)[.coder]
+                ?? .empty(role: .coder, source: "dock_input")
+        }
+        let latestGovernanceInterception = XTProjectUIPresentationReadCache.latestGovernanceInterception(
+            for: ctx,
+            limit: 12
+        ) {
+            ProjectGovernanceInterceptionPresentation.latest(
+                from: AXProjectSkillActivityStore.loadRecentActivities(ctx: ctx, limit: 12)
+            )
+        }
+        let primaryStatusAction = ProjectCoderExecutionStatusPrimaryActionResolver.resolve(
+            configuredModelId: configuredModelId,
+            snapshot: coderSnapshot,
+            hubConnected: hubConnected,
+            governanceInterception: latestGovernanceInterception,
+            language: appModel.settingsStore.settings.interfaceLanguage
+        )
+        let nextSnapshot = DockInputRuntimeStatusSnapshot(
+            configuredModelId: configuredModelId,
+            coderSnapshot: coderSnapshot,
+            latestGovernanceInterception: latestGovernanceInterception,
+            primaryStatusAction: primaryStatusAction
+        )
+        guard runtimeStatusSnapshot != nextSnapshot else { return }
+        runtimeStatusSnapshot = nextSnapshot
+    }
+
+    private func syncVisibleModelInventory() {
+        visibleModelInventory = XTVisibleHubModelInventorySupport.build(
+            snapshot: modelInventorySnapshot
+        )
+    }
+
+    private func refreshSlashSuggestions() {
+        showSlashSuggestions = composer.draft.hasPrefix("/") && status.pendingToolCalls.isEmpty
+        guard showSlashSuggestions else {
+            slashSuggestions = []
+            return
+        }
+        slashSuggestions = XTDockSlashSuggestionSupport.suggestions(
+            for: composer.draft,
+            models: visibleModelInventory.sortedModels
+        )
+    }
+
+    private func blockerIcon(
+        for kind: ProjectCoderExecutionStatusPrimaryActionKind
+    ) -> String {
+        switch kind {
+        case .routeDiagnose:
+            return "point.topleft.down.curvedto.point.bottomright.up"
+        case .openModelSettings:
+            return "cpu"
+        case .openDiagnostics:
+            return "stethoscope"
+        case .openHubRecovery:
+            return "wifi.exclamationmark"
+        case .openHubConnectionLog:
+            return "list.bullet.rectangle"
+        case .openExecutionTier:
+            return "slider.horizontal.3"
+        case .openGovernanceOverview:
+            return "shield.lefthalf.filled"
+        }
+    }
+
+    private func blockerTone(
+        for kind: ProjectCoderExecutionStatusPrimaryActionKind
+    ) -> ProjectCoderExecutionStatusTone {
+        switch kind {
+        case .openHubRecovery, .openDiagnostics:
+            return .danger
+        case .openExecutionTier, .openGovernanceOverview:
+            return .warning
+        case .routeDiagnose, .openModelSettings, .openHubConnectionLog:
+            return .caution
+        }
+    }
 }
 
-/// 模型选择器按钮
+private struct DockPendingToolApprovalPanel: View {
+    let session: ChatSessionModel
+    let status: XTChatStatusSnapshot
+    let hubConnected: Bool
+    let onApprove: () -> Void
+    let onReject: () -> Void
+    let onFocusHistory: () -> Void
+    @State private var pendingSkillItems: [String: ProjectSkillActivityItem] = [:]
+
+    var body: some View {
+        let pendingToolCalls = status.pendingToolCalls
+        let batchPresentation = XTPendingApprovalPresentation.pendingBatchPresentation(
+            calls: pendingToolCalls,
+            activityByRequestID: pendingSkillItems
+        )
+        let batchDeltaLines = XTPendingApprovalPresentation.pendingBatchDeltaLines(
+            calls: pendingToolCalls,
+            activityByRequestID: pendingSkillItems
+        )
+
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Image(systemName: "hand.raised.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.orange)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("待审批")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text(batchPresentation.subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 8)
+
+                Button("历史") {
+                    onFocusHistory()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("定位到历史区里的待审批记录")
+
+                Button("拒绝") {
+                    onReject()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button {
+                    onApprove()
+                } label: {
+                    Label(
+                        batchPresentation.primaryActionTitle,
+                        systemImage: batchPresentation.primaryActionSystemImage
+                    )
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(!hubConnected || status.isSending)
+                .help(hubConnected ? batchPresentation.footerNote : batchPresentation.hubDisconnectedNote)
+            }
+
+            if !batchDeltaLines.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(batchDeltaLines.prefix(3)), id: \.self) { line in
+                        Text(line)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(pendingToolCalls) { call in
+                        PendingToolCallChip(
+                            toolCall: call,
+                            activity: pendingSkillItems[call.id]
+                        )
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color.orange.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.orange.opacity(0.18), lineWidth: 1)
+        )
+        .onAppear {
+            refreshPendingSkillItems()
+        }
+        .onChange(of: status.pendingToolCallIDSignature) { _ in
+            refreshPendingSkillItems()
+        }
+    }
+
+    private func refreshPendingSkillItems() {
+        pendingSkillItems = session.pendingProjectSkillActivityItems()
+    }
+}
+
+private struct DockInputBlockerPresentation {
+    let icon: String
+    let title: String
+    let detail: String
+    let tone: ProjectCoderExecutionStatusTone
+    let actionTitle: String
+    let actionHelpText: String?
+    let action: () -> Void
+}
+
+private struct DockInputBlockerBanner: View {
+    let presentation: DockInputBlockerPresentation
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(presentation.tone.color.opacity(0.14))
+                    .frame(width: 28, height: 28)
+
+                Image(systemName: presentation.icon)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(presentation.tone.color)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(presentation.title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.primary)
+
+                Text(presentation.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+
+            Spacer(minLength: 8)
+
+            Button(presentation.actionTitle) {
+                presentation.action()
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .tint(presentation.tone.color)
+            .help(presentation.actionHelpText ?? presentation.detail)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(presentation.tone.color.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(presentation.tone.color.opacity(0.18), lineWidth: 1)
+        )
+    }
+}
+
 struct ModelSelectorButton: View {
     let ctx: AXProjectContext
     let config: AXProjectConfig?
-    @EnvironmentObject private var appModel: AppModel
+    @Environment(\.xtAppModelReference) private var appModelReference
     @State private var showModelPicker = false
 
     var body: some View {
         Button {
             showModelPicker = true
         } label: {
-            Image(systemName: "cpu")
-                .font(.system(size: 18))
-                .foregroundColor(.secondary)
-                .frame(width: 44, height: 44)
-                .background(Color(nsColor: .controlBackgroundColor))
-                .cornerRadius(10)
+            HStack(spacing: 8) {
+                Image(systemName: "cpu")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.secondary)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("模型")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text(modelLabel)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.9))
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
+            )
         }
         .buttonStyle(.plain)
         .help("选择模型（Select Model）")
         .popover(isPresented: $showModelPicker) {
             ModelSelectorView(projectContext: ctx, config: config)
-                .environmentObject(appModel)
                 .frame(width: 300)
         }
     }
-}
 
-/// Slash 命令建议视图
-struct SlashSuggestionsView: View {
-    @Binding var draft: String
-    let modelsState: ModelStateSnapshot
-    let onSelect: (String) -> Void
-
-    private var suggestions: [SlashSuggestion] {
-        let lower = draft.lowercased()
-
-        // /model 命令
-        if lower == "/model" || lower.hasPrefix("/model ") {
-            let query = String(lower.dropFirst("/model".count)).trimmingCharacters(in: .whitespacesAndNewlines)
-            var items = modelsState.models
-                .filter { $0.state == .loaded }
-                .sorted { $0.id.lowercased() < $1.id.lowercased() }
-                .map { model in
-                    SlashSuggestion(
-                        title: "/model \(model.id)",
-                        subtitle: model.backend,
-                        insertion: "/model \(model.id)"
-                    )
-                }
-
-            if query.isEmpty || "auto".hasPrefix(query) {
-                items.insert(
-                    SlashSuggestion(
-                        title: "/model auto",
-                        subtitle: "使用默认模型",
-                        insertion: "/model auto"
-                    ),
-                    at: 0
-                )
-            }
-
-            if !query.isEmpty {
-                items = items.filter { $0.insertion.lowercased().contains(query) }
-            }
-
-            return items
-        }
-
-        // 基础命令
-        let base: [SlashSuggestion] = [
-            SlashSuggestion(title: "/models", subtitle: "查看可用模型", insertion: "/models"),
-            SlashSuggestion(title: "/model <id>", subtitle: "选择模型", insertion: "/model "),
-            SlashSuggestion(title: "/tools", subtitle: "工具策略设置", insertion: "/tools"),
-            SlashSuggestion(title: "/hub route", subtitle: "Hub 传输模式", insertion: "/hub route"),
-            SlashSuggestion(title: "/route diagnose", subtitle: "诊断当前模型路由", insertion: "/route diagnose"),
-            SlashSuggestion(title: "/network 30m", subtitle: "申请网络访问", insertion: "/network 30m"),
-            SlashSuggestion(title: "/clear", subtitle: "清空聊天记录", insertion: "/clear"),
-            SlashSuggestion(title: "/help", subtitle: "查看帮助", insertion: "/help"),
-        ]
-
-        if lower == "/" {
-            return base
-        }
-
-        let query = String(lower.dropFirst())
-        return base.filter { $0.insertion.lowercased().contains(query) || $0.title.lowercased().contains(query) }
+    private var modelLabel: String {
+        let configuredModelId = AXRoleExecutionSnapshots.configuredModelId(
+            for: .coder,
+            projectConfig: config,
+            settings: appModel.settingsStore.settings
+        )
+        let trimmed = configuredModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "auto" }
+        return ExecutionRoutePresentation.shortModelLabel(trimmed)
     }
 
+    private var appModel: AppModel {
+        guard let appModelReference else {
+            preconditionFailure("ModelSelectorButton requires xtAppModelReference")
+        }
+        return appModelReference
+    }
+}
+
+struct SlashSuggestionsView: View {
+    let suggestions: [XTDockSlashSuggestion]
+    let onSelect: (String) -> Void
+
     var body: some View {
+        let visibleSuggestions = Array(suggestions.prefix(8))
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                ForEach(suggestions.prefix(8)) { suggestion in
+                ForEach(visibleSuggestions) { suggestion in
                     Button {
                         onSelect(suggestion.insertion)
                     } label: {
@@ -466,7 +931,7 @@ struct SlashSuggestionsView: View {
                     .buttonStyle(.plain)
                     .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
 
-                    if suggestion.id != suggestions.prefix(8).last?.id {
+                    if suggestion.id != visibleSuggestions.last?.id {
                         Divider()
                     }
                 }
@@ -480,14 +945,45 @@ struct SlashSuggestionsView: View {
     }
 }
 
-struct SlashSuggestion: Identifiable {
-    let id = UUID()
-    let title: String
-    let subtitle: String
-    let insertion: String
+enum DockComposerChipTone {
+    case neutral
+    case success
+    case warning
+    case danger
+
+    var foreground: Color {
+        switch self {
+        case .neutral:
+            return .secondary
+        case .success:
+            return .green
+        case .warning:
+            return .orange
+        case .danger:
+            return .red
+        }
+    }
 }
 
-/// 毛玻璃效果
+struct DockComposerChip: View {
+    let icon: String
+    let text: String
+    var tone: DockComposerChipTone = .neutral
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+            Text(text)
+        }
+        .font(.caption.weight(.medium))
+        .foregroundStyle(tone.foreground)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(tone.foreground.opacity(0.10))
+        .clipShape(Capsule())
+    }
+}
+
 struct VisualEffectBlur: NSViewRepresentable {
     var material: NSVisualEffectView.Material
     var blendingMode: NSVisualEffectView.BlendingMode

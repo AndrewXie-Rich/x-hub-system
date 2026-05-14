@@ -94,7 +94,7 @@ node tools/model_inventory_shadow_compare_runner.js --dry-run \
   --min-compare-reports 5
 bash tools/model_inventory_shadow_compare_runner.command \
   --use-existing-runtime \
-  --runtime-base-dir ./build/reports/lpr_w4_09_a_mlx_text_require_real/runtime_base_dir \
+  --runtime-base-dir /Users/andrew.xie/Documents/AX/x-hub-system/build/reports/lpr_w4_09_a_mlx_text_require_real/runtime_base_dir \
   --runs 2 \
   --min-compare-reports 2 \
   --expect-ready \

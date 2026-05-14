@@ -4,6 +4,7 @@ import SwiftUI
 enum XTUnifiedDoctorSectionKind: String, CaseIterable, Codable, Sendable {
     case hubReachability = "hub_reachability"
     case pairingValidity = "pairing_validity"
+    case externalTerminalAccessReadiness = "external_terminal_access_readiness"
     case modelRouteReadiness = "model_route_readiness"
     case bridgeToolReadiness = "bridge_tool_readiness"
     case sessionRuntimeReadiness = "session_runtime_readiness"
@@ -19,6 +20,8 @@ enum XTUnifiedDoctorSectionKind: String, CaseIterable, Codable, Sendable {
             return "Hub 可达性"
         case .pairingValidity:
             return "配对有效性"
+        case .externalTerminalAccessReadiness:
+            return "非 XT Terminal 访问"
         case .modelRouteReadiness:
             return "模型路由就绪"
         case .bridgeToolReadiness:
@@ -42,7 +45,7 @@ enum XTUnifiedDoctorSectionKind: String, CaseIterable, Codable, Sendable {
         switch self {
         case .hubReachability, .modelRouteReadiness, .bridgeToolReadiness, .sessionRuntimeReadiness:
             return true
-        case .pairingValidity, .wakeProfileReadiness, .talkLoopReadiness, .voicePlaybackReadiness, .calendarReminderReadiness, .skillsCompatibilityReadiness:
+        case .pairingValidity, .externalTerminalAccessReadiness, .wakeProfileReadiness, .talkLoopReadiness, .voicePlaybackReadiness, .calendarReminderReadiness, .skillsCompatibilityReadiness:
             return false
         }
     }
@@ -749,11 +752,17 @@ struct XTUnifiedDoctorSupervisorGuidanceContinuityProjection: Codable, Equatable
 
 private struct XTUnifiedDoctorSupervisorSafePointTimelineProjectionStorage: Codable, Equatable, Sendable {
     let schemaVersion: String
+    let latestGuidanceInjectionId: String?
+    let latestGuidanceAckStatus: String?
+    let latestGuidanceApplyState: String?
+    let latestGuidanceLifecycle: String?
     let pendingGuidanceAvailable: Bool
     let pendingGuidanceInjectionId: String?
     let pendingGuidanceDeliveryMode: String?
     let pendingGuidanceInterventionMode: String?
     let pendingGuidanceSafePointPolicy: String?
+    let pendingGuidanceApplyState: String?
+    let pendingGuidanceLifecycle: String?
     let liveStateSource: String?
     let flowStep: Int?
     let toolResultsCount: Int?
@@ -771,11 +780,17 @@ private struct XTUnifiedDoctorSupervisorSafePointTimelineProjectionStorage: Coda
 
     init(
         schemaVersion: String,
+        latestGuidanceInjectionId: String?,
+        latestGuidanceAckStatus: String?,
+        latestGuidanceApplyState: String?,
+        latestGuidanceLifecycle: String?,
         pendingGuidanceAvailable: Bool,
         pendingGuidanceInjectionId: String?,
         pendingGuidanceDeliveryMode: String?,
         pendingGuidanceInterventionMode: String?,
         pendingGuidanceSafePointPolicy: String?,
+        pendingGuidanceApplyState: String?,
+        pendingGuidanceLifecycle: String?,
         liveStateSource: String?,
         flowStep: Int?,
         toolResultsCount: Int?,
@@ -792,11 +807,17 @@ private struct XTUnifiedDoctorSupervisorSafePointTimelineProjectionStorage: Coda
         summaryLine: String
     ) {
         self.schemaVersion = schemaVersion
+        self.latestGuidanceInjectionId = latestGuidanceInjectionId
+        self.latestGuidanceAckStatus = latestGuidanceAckStatus
+        self.latestGuidanceApplyState = latestGuidanceApplyState
+        self.latestGuidanceLifecycle = latestGuidanceLifecycle
         self.pendingGuidanceAvailable = pendingGuidanceAvailable
         self.pendingGuidanceInjectionId = pendingGuidanceInjectionId
         self.pendingGuidanceDeliveryMode = pendingGuidanceDeliveryMode
         self.pendingGuidanceInterventionMode = pendingGuidanceInterventionMode
         self.pendingGuidanceSafePointPolicy = pendingGuidanceSafePointPolicy
+        self.pendingGuidanceApplyState = pendingGuidanceApplyState
+        self.pendingGuidanceLifecycle = pendingGuidanceLifecycle
         self.liveStateSource = liveStateSource
         self.flowStep = flowStep
         self.toolResultsCount = toolResultsCount
@@ -821,11 +842,17 @@ struct XTUnifiedDoctorSupervisorSafePointTimelineProjection: Codable, Equatable,
     private let storage: XTUnifiedDoctorSupervisorSafePointTimelineProjectionStorage
 
     var schemaVersion: String { storage.schemaVersion }
+    var latestGuidanceInjectionId: String? { storage.latestGuidanceInjectionId }
+    var latestGuidanceAckStatus: String? { storage.latestGuidanceAckStatus }
+    var latestGuidanceApplyState: String? { storage.latestGuidanceApplyState }
+    var latestGuidanceLifecycle: String? { storage.latestGuidanceLifecycle }
     var pendingGuidanceAvailable: Bool { storage.pendingGuidanceAvailable }
     var pendingGuidanceInjectionId: String? { storage.pendingGuidanceInjectionId }
     var pendingGuidanceDeliveryMode: String? { storage.pendingGuidanceDeliveryMode }
     var pendingGuidanceInterventionMode: String? { storage.pendingGuidanceInterventionMode }
     var pendingGuidanceSafePointPolicy: String? { storage.pendingGuidanceSafePointPolicy }
+    var pendingGuidanceApplyState: String? { storage.pendingGuidanceApplyState }
+    var pendingGuidanceLifecycle: String? { storage.pendingGuidanceLifecycle }
     var liveStateSource: String? { storage.liveStateSource }
     var flowStep: Int? { storage.flowStep }
     var toolResultsCount: Int? { storage.toolResultsCount }
@@ -843,11 +870,17 @@ struct XTUnifiedDoctorSupervisorSafePointTimelineProjection: Codable, Equatable,
 
     init(
         schemaVersion: String = currentSchemaVersion,
+        latestGuidanceInjectionId: String?,
+        latestGuidanceAckStatus: String?,
+        latestGuidanceApplyState: String?,
+        latestGuidanceLifecycle: String?,
         pendingGuidanceAvailable: Bool,
         pendingGuidanceInjectionId: String?,
         pendingGuidanceDeliveryMode: String?,
         pendingGuidanceInterventionMode: String?,
         pendingGuidanceSafePointPolicy: String?,
+        pendingGuidanceApplyState: String?,
+        pendingGuidanceLifecycle: String?,
         liveStateSource: String?,
         flowStep: Int?,
         toolResultsCount: Int?,
@@ -865,11 +898,17 @@ struct XTUnifiedDoctorSupervisorSafePointTimelineProjection: Codable, Equatable,
     ) {
         self.storage = XTUnifiedDoctorSupervisorSafePointTimelineProjectionStorage(
             schemaVersion: schemaVersion,
+            latestGuidanceInjectionId: normalizedMeaningfulValue(latestGuidanceInjectionId),
+            latestGuidanceAckStatus: normalizedMeaningfulValue(latestGuidanceAckStatus),
+            latestGuidanceApplyState: normalizedMeaningfulValue(latestGuidanceApplyState),
+            latestGuidanceLifecycle: normalizedMeaningfulValue(latestGuidanceLifecycle),
             pendingGuidanceAvailable: pendingGuidanceAvailable,
             pendingGuidanceInjectionId: normalizedMeaningfulValue(pendingGuidanceInjectionId),
             pendingGuidanceDeliveryMode: normalizedMeaningfulValue(pendingGuidanceDeliveryMode),
             pendingGuidanceInterventionMode: normalizedMeaningfulValue(pendingGuidanceInterventionMode),
             pendingGuidanceSafePointPolicy: normalizedMeaningfulValue(pendingGuidanceSafePointPolicy),
+            pendingGuidanceApplyState: normalizedMeaningfulValue(pendingGuidanceApplyState),
+            pendingGuidanceLifecycle: normalizedMeaningfulValue(pendingGuidanceLifecycle),
             liveStateSource: normalizedMeaningfulValue(liveStateSource),
             flowStep: flowStep,
             toolResultsCount: toolResultsCount,
@@ -903,9 +942,13 @@ struct XTUnifiedDoctorSupervisorSafePointTimelineProjection: Codable, Equatable,
     }
 
     init?(ctx: AXProjectContext) {
-        guard let guidance = SupervisorGuidanceInjectionStore.latestPendingAck(for: ctx) else {
+        let nowMs = Int64((Date().timeIntervalSince1970 * 1000.0).rounded())
+        let latestGuidance = SupervisorGuidanceInjectionStore.latest(for: ctx)
+        let pendingGuidance = SupervisorGuidanceInjectionStore.latestPendingAck(for: ctx, nowMs: nowMs)
+        guard latestGuidance != nil || pendingGuidance != nil else {
             return nil
         }
+        let deliveryGuidance = pendingGuidance
 
         let pendingToolFlow = AXPendingActionsStore.pendingToolApproval(for: ctx)?.flow
         let liveStateSource = pendingToolFlow == nil ? "no_live_flow" : "pending_tool_approval"
@@ -919,44 +962,93 @@ struct XTUnifiedDoctorSupervisorSafePointTimelineProjection: Codable, Equatable,
             )
         }
         let promptVisibleNow = pendingToolFlow.map { flow in
-            normalizedMeaningfulValue(flow.lastPromptVisibleGuidanceInjectionId) == guidance.injectionId
+            normalizedMeaningfulValue(flow.lastPromptVisibleGuidanceInjectionId) == deliveryGuidance?.injectionId
         }
         let pauseRecorded = pendingToolFlow.map { flow in
-            normalizedMeaningfulValue(flow.lastSafePointPauseInjectionId) == guidance.injectionId
+            normalizedMeaningfulValue(flow.lastSafePointPauseInjectionId) == deliveryGuidance?.injectionId
         }
         let visibleFromPreRunMemory = safePointState.map { state in
-            guidance.injectedAtMs <= 0 || guidance.injectedAtMs <= state.runStartedAtMs
+            guard let deliveryGuidance else { return false }
+            return deliveryGuidance.injectedAtMs <= 0 || deliveryGuidance.injectedAtMs <= state.runStartedAtMs
         }
         let deliverableNow = safePointState.map { state in
-            SupervisorSafePointCoordinator.deliverablePendingGuidance(for: ctx, state: state)?.injectionId == guidance.injectionId
+            guard let deliveryGuidance else { return false }
+            return SupervisorSafePointCoordinator
+                .deliverablePendingGuidance(for: ctx, state: state)?
+                .injectionId == deliveryGuidance.injectionId
         }
         let rawPauseCandidate = safePointState.map { state in
-            SupervisorSafePointCoordinator.shouldPauseToolBatchAfterBoundary(for: ctx, state: state)?.injectionId == guidance.injectionId
+            guard let deliveryGuidance else { return false }
+            return SupervisorSafePointCoordinator
+                .shouldPauseToolBatchAfterBoundary(for: ctx, state: state)?
+                .injectionId == deliveryGuidance.injectionId
         }
         let shouldPauseToolBatchAfterBoundary = rawPauseCandidate.map { candidate in
             candidate && pauseRecorded != true
         }
-        let deliveryState = Self.deliveryState(
-            guidance: guidance,
-            liveStateSource: liveStateSource,
-            promptVisibleNow: promptVisibleNow,
-            visibleFromPreRunMemory: visibleFromPreRunMemory,
-            deliverableNow: deliverableNow
-        )
-        let executionGate = Self.executionGate(guidance)
+        let deliveryState = deliveryGuidance.flatMap {
+            Self.deliveryState(
+                guidance: $0,
+                liveStateSource: liveStateSource,
+                promptVisibleNow: promptVisibleNow,
+                visibleFromPreRunMemory: visibleFromPreRunMemory,
+                deliverableNow: deliverableNow
+            )
+        }
+        let executionGate = deliveryGuidance.map(Self.executionGate)
+        let promptVisibleGuidanceInjectionId = pendingToolFlow?.lastPromptVisibleGuidanceInjectionId
+        let latestGuidanceApplyState = latestGuidance.flatMap { latest in
+            SupervisorGuidanceInjectionStore.applyState(
+                for: latest,
+                nowMs: nowMs,
+                promptVisibleGuidanceInjectionId: latest.injectionId == deliveryGuidance?.injectionId
+                    ? promptVisibleGuidanceInjectionId
+                    : nil,
+                visibleFromPreRunMemory: latest.injectionId == deliveryGuidance?.injectionId
+                    ? (visibleFromPreRunMemory == true)
+                    : false
+            )
+        }
+        let pendingGuidanceSuperseded = pendingGuidance.map { pending in
+            guard let latestGuidance else { return false }
+            guard latestGuidance.injectionId != pending.injectionId else { return false }
+            guard latestGuidance.ackStatus == .accepted else { return false }
+            return !SupervisorGuidanceInjectionStore.isExpired(latestGuidance, nowMs: nowMs)
+        } ?? false
+        let pendingGuidanceApplyState = pendingGuidance.flatMap { pending in
+            SupervisorGuidanceInjectionStore.applyState(
+                for: pending,
+                nowMs: nowMs,
+                promptVisibleGuidanceInjectionId: promptVisibleGuidanceInjectionId,
+                visibleFromPreRunMemory: visibleFromPreRunMemory == true,
+                supersededByNewerGuidance: pendingGuidanceSuperseded
+            )
+        }
         let summaryLine = Self.summaryLine(
             deliveryState: deliveryState,
             executionGate: executionGate,
             shouldPauseToolBatchAfterBoundary: shouldPauseToolBatchAfterBoundary,
-            pauseRecorded: pauseRecorded
+            pauseRecorded: pauseRecorded,
+            latestGuidanceApplyState: latestGuidanceApplyState?.rawValue,
+            pendingGuidanceApplyState: pendingGuidanceApplyState?.rawValue
         ) ?? "Safe Point：当前没有可投递 guidance"
 
         self.init(
-            pendingGuidanceAvailable: true,
-            pendingGuidanceInjectionId: guidance.injectionId,
-            pendingGuidanceDeliveryMode: guidance.deliveryMode.rawValue,
-            pendingGuidanceInterventionMode: guidance.interventionMode.rawValue,
-            pendingGuidanceSafePointPolicy: guidance.safePointPolicy.rawValue,
+            latestGuidanceInjectionId: latestGuidance?.injectionId,
+            latestGuidanceAckStatus: latestGuidance?.ackStatus.rawValue,
+            latestGuidanceApplyState: latestGuidanceApplyState?.rawValue,
+            latestGuidanceLifecycle: latestGuidance.map {
+                SupervisorGuidanceInjectionStore.lifecycleSummary(for: $0, nowMs: nowMs)
+            },
+            pendingGuidanceAvailable: pendingGuidance != nil,
+            pendingGuidanceInjectionId: pendingGuidance?.injectionId,
+            pendingGuidanceDeliveryMode: pendingGuidance?.deliveryMode.rawValue,
+            pendingGuidanceInterventionMode: pendingGuidance?.interventionMode.rawValue,
+            pendingGuidanceSafePointPolicy: pendingGuidance?.safePointPolicy.rawValue,
+            pendingGuidanceApplyState: pendingGuidanceApplyState?.rawValue,
+            pendingGuidanceLifecycle: pendingGuidance.map {
+                SupervisorGuidanceInjectionStore.lifecycleSummary(for: $0, nowMs: nowMs)
+            },
             liveStateSource: liveStateSource,
             flowStep: safePointState?.flowStep,
             toolResultsCount: safePointState?.toolResultsCount,
@@ -993,7 +1085,31 @@ struct XTUnifiedDoctorSupervisorSafePointTimelineProjection: Codable, Equatable,
             pauseRecorded: detailBoolValue(
                 "supervisor_safe_point_pause_recorded",
                 from: detailLines
+            ),
+            latestGuidanceApplyState: detailValue(
+                "supervisor_safe_point_latest_guidance_apply_state",
+                from: detailLines
+            ),
+            pendingGuidanceApplyState: detailValue(
+                "supervisor_safe_point_pending_guidance_apply_state",
+                from: detailLines
             )
+        )
+        let latestGuidanceInjectionId = detailValue(
+            "supervisor_safe_point_latest_guidance_injection_id",
+            from: detailLines
+        )
+        let latestGuidanceAckStatus = detailValue(
+            "supervisor_safe_point_latest_guidance_ack_status",
+            from: detailLines
+        )
+        let latestGuidanceApplyState = detailValue(
+            "supervisor_safe_point_latest_guidance_apply_state",
+            from: detailLines
+        )
+        let latestGuidanceLifecycle = detailValue(
+            "supervisor_safe_point_latest_guidance_lifecycle",
+            from: detailLines
         )
         let pendingGuidanceAvailable = detailBoolValue(
             "supervisor_safe_point_pending_guidance_available",
@@ -1013,6 +1129,14 @@ struct XTUnifiedDoctorSupervisorSafePointTimelineProjection: Codable, Equatable,
         )
         let pendingGuidanceSafePointPolicy = detailValue(
             "supervisor_safe_point_pending_guidance_safe_point_policy",
+            from: detailLines
+        )
+        let pendingGuidanceApplyState = detailValue(
+            "supervisor_safe_point_pending_guidance_apply_state",
+            from: detailLines
+        )
+        let pendingGuidanceLifecycle = detailValue(
+            "supervisor_safe_point_pending_guidance_lifecycle",
             from: detailLines
         )
         let liveStateSource = detailValue(
@@ -1069,6 +1193,8 @@ struct XTUnifiedDoctorSupervisorSafePointTimelineProjection: Codable, Equatable,
         )
 
         guard pendingGuidanceAvailable
+                || normalizedMeaningfulValue(latestGuidanceInjectionId) != nil
+                || normalizedMeaningfulValue(latestGuidanceApplyState) != nil
                 || normalizedMeaningfulValue(pendingGuidanceInjectionId) != nil
                 || normalizedMeaningfulValue(deliveryState) != nil
                 || normalizedOptionalDoctorField(summaryLine) != nil else {
@@ -1076,11 +1202,17 @@ struct XTUnifiedDoctorSupervisorSafePointTimelineProjection: Codable, Equatable,
         }
 
         return XTUnifiedDoctorSupervisorSafePointTimelineProjection(
+            latestGuidanceInjectionId: latestGuidanceInjectionId,
+            latestGuidanceAckStatus: latestGuidanceAckStatus,
+            latestGuidanceApplyState: latestGuidanceApplyState,
+            latestGuidanceLifecycle: latestGuidanceLifecycle,
             pendingGuidanceAvailable: pendingGuidanceAvailable,
             pendingGuidanceInjectionId: pendingGuidanceInjectionId,
             pendingGuidanceDeliveryMode: pendingGuidanceDeliveryMode,
             pendingGuidanceInterventionMode: pendingGuidanceInterventionMode,
             pendingGuidanceSafePointPolicy: pendingGuidanceSafePointPolicy,
+            pendingGuidanceApplyState: pendingGuidanceApplyState,
+            pendingGuidanceLifecycle: pendingGuidanceLifecycle,
             liveStateSource: liveStateSource,
             flowStep: flowStep,
             toolResultsCount: toolResultsCount,
@@ -1103,6 +1235,18 @@ struct XTUnifiedDoctorSupervisorSafePointTimelineProjection: Codable, Equatable,
             "supervisor_safe_point_timeline_schema_version=\(schemaVersion)",
             "supervisor_safe_point_pending_guidance_available=\(pendingGuidanceAvailable)"
         ]
+        if let latestGuidanceInjectionId {
+            lines.append("supervisor_safe_point_latest_guidance_injection_id=\(latestGuidanceInjectionId)")
+        }
+        if let latestGuidanceAckStatus {
+            lines.append("supervisor_safe_point_latest_guidance_ack_status=\(latestGuidanceAckStatus)")
+        }
+        if let latestGuidanceApplyState {
+            lines.append("supervisor_safe_point_latest_guidance_apply_state=\(latestGuidanceApplyState)")
+        }
+        if let latestGuidanceLifecycle {
+            lines.append("supervisor_safe_point_latest_guidance_lifecycle=\(latestGuidanceLifecycle)")
+        }
         if let pendingGuidanceInjectionId {
             lines.append("supervisor_safe_point_pending_guidance_injection_id=\(pendingGuidanceInjectionId)")
         }
@@ -1114,6 +1258,12 @@ struct XTUnifiedDoctorSupervisorSafePointTimelineProjection: Codable, Equatable,
         }
         if let pendingGuidanceSafePointPolicy {
             lines.append("supervisor_safe_point_pending_guidance_safe_point_policy=\(pendingGuidanceSafePointPolicy)")
+        }
+        if let pendingGuidanceApplyState {
+            lines.append("supervisor_safe_point_pending_guidance_apply_state=\(pendingGuidanceApplyState)")
+        }
+        if let pendingGuidanceLifecycle {
+            lines.append("supervisor_safe_point_pending_guidance_lifecycle=\(pendingGuidanceLifecycle)")
         }
         if let liveStateSource {
             lines.append("supervisor_safe_point_live_state_source=\(liveStateSource)")
@@ -1204,13 +1354,21 @@ struct XTUnifiedDoctorSupervisorSafePointTimelineProjection: Codable, Equatable,
         deliveryState: String?,
         executionGate: String?,
         shouldPauseToolBatchAfterBoundary: Bool?,
-        pauseRecorded: Bool?
+        pauseRecorded: Bool?,
+        latestGuidanceApplyState: String?,
+        pendingGuidanceApplyState: String?
     ) -> String? {
-        guard let deliveryState = normalizedOptionalDoctorField(deliveryState) else {
-            return nil
+        var parts: [String] = []
+        if let deliveryState = normalizedOptionalDoctorField(deliveryState) {
+            parts.append(deliveryStateSummary(deliveryState))
+        } else if normalizedOptionalDoctorField(pendingGuidanceApplyState) == nil {
+            parts.append("当前没有待投递 guidance")
         }
-
-        var parts = [deliveryStateSummary(deliveryState)]
+        if let pendingGuidanceApplyState = normalizedOptionalDoctorField(pendingGuidanceApplyState) {
+            parts.append("apply_state=\(pendingGuidanceApplyState)")
+        } else if let latestGuidanceApplyState = normalizedOptionalDoctorField(latestGuidanceApplyState) {
+            parts.append("latest_apply_state=\(latestGuidanceApplyState)")
+        }
         if let executionGate = normalizedOptionalDoctorField(executionGate) {
             parts.append("execution_gate=\(executionGate)")
         }
@@ -1219,6 +1377,7 @@ struct XTUnifiedDoctorSupervisorSafePointTimelineProjection: Codable, Equatable,
         } else if pauseRecorded == true {
             parts.append("pause_already_recorded")
         }
+        guard !parts.isEmpty else { return nil }
         return "Safe Point：\(parts.joined(separator: " · "))"
     }
 
@@ -3012,6 +3171,9 @@ struct XTUnifiedDoctorHeartbeatGovernanceProjection: Codable, Equatable, Sendabl
         if let effectiveDepth = context.effectiveResolution.flatMap({ meaningfulToken($0.effectiveDepth) }) {
             parts.append("effective depth=\(effectiveDepth)")
         }
+        if let trigger = context.effectiveResolution.flatMap({ meaningfulToken($0.trigger) }) {
+            parts.append("触发原因：\(XTProjectMemoryTriggerPresentation.annotated(trigger))")
+        }
 
         if context.heartbeatDigestWorkingSetPresent {
             parts.append("heartbeat digest 已在 Project AI working set 中")
@@ -3037,6 +3199,15 @@ struct XTUnifiedDoctorHeartbeatGovernanceProjection: Codable, Equatable, Sendabl
         )
         let resolutionFields = tokenFields(actualResolution ?? policyResolution ?? "")
         let effectiveDepth = resolutionFields["effective_depth"]
+        let triggerLabel = rawValue(
+            detailLines,
+            prefix: "heartbeat_project_memory_actual_trigger_label="
+        ) ?? rawValue(
+            detailLines,
+            prefix: "heartbeat_project_memory_policy_trigger_label="
+        ) ?? meaningfulToken(resolutionFields["trigger"]).map {
+            XTProjectMemoryTriggerPresentation.annotated($0)
+        }
         let digestPresent = boolValue(
             rawValue(detailLines, prefix: "heartbeat_project_memory_heartbeat_digest_present=")
         )
@@ -3059,6 +3230,9 @@ struct XTUnifiedDoctorHeartbeatGovernanceProjection: Codable, Equatable, Sendabl
 
         if let effectiveDepth = meaningfulToken(effectiveDepth) {
             parts.append("effective depth=\(effectiveDepth)")
+        }
+        if let triggerLabel = normalizedOptionalDoctorField(triggerLabel) {
+            parts.append("触发原因：\(triggerLabel)")
         }
 
         if digestPresent == true {
@@ -3106,6 +3280,9 @@ final class XTUnifiedDoctorSection: Identifiable, Codable, Equatable, @unchecked
     var supervisorRemoteSnapshotCacheProjection: XTUnifiedDoctorRemoteSnapshotCacheProjection? = nil
     var hubMemoryPromptProjection: HubMemoryPromptProjectionSnapshot? = nil
     var memoryRouteTruthProjection: AXModelRouteTruthProjection? = nil
+    var providerKeySelectionProjection: ProviderKeySelectionDecision? = nil
+    var providerKeyRouteContextProjection: XTProviderKeyRouteContext? = nil
+    var externalTerminalAccessProjection: XTUnifiedDoctorExternalTerminalAccessProjection? = nil
     var durableCandidateMirrorProjection: XTUnifiedDoctorDurableCandidateMirrorProjection? = nil
     var localStoreWriteProjection: XTUnifiedDoctorLocalStoreWriteProjection? = nil
     var skillDoctorTruthProjection: XTUnifiedDoctorSkillDoctorTruthProjection? = nil
@@ -3135,6 +3312,9 @@ final class XTUnifiedDoctorSection: Identifiable, Codable, Equatable, @unchecked
             && lhs.supervisorRemoteSnapshotCacheProjection == rhs.supervisorRemoteSnapshotCacheProjection
             && lhs.hubMemoryPromptProjection == rhs.hubMemoryPromptProjection
             && lhs.memoryRouteTruthProjection == rhs.memoryRouteTruthProjection
+            && lhs.providerKeySelectionProjection == rhs.providerKeySelectionProjection
+            && lhs.providerKeyRouteContextProjection == rhs.providerKeyRouteContextProjection
+            && lhs.externalTerminalAccessProjection == rhs.externalTerminalAccessProjection
             && lhs.durableCandidateMirrorProjection == rhs.durableCandidateMirrorProjection
             && lhs.localStoreWriteProjection == rhs.localStoreWriteProjection
             && lhs.skillDoctorTruthProjection == rhs.skillDoctorTruthProjection
@@ -3163,6 +3343,9 @@ final class XTUnifiedDoctorSection: Identifiable, Codable, Equatable, @unchecked
         case supervisorRemoteSnapshotCacheProjection
         case hubMemoryPromptProjection
         case memoryRouteTruthProjection
+        case providerKeySelectionProjection
+        case providerKeyRouteContextProjection
+        case externalTerminalAccessProjection
         case durableCandidateMirrorProjection
         case localStoreWriteProjection
         case skillDoctorTruthProjection
@@ -3209,6 +3392,9 @@ final class XTUnifiedDoctorSection: Identifiable, Codable, Equatable, @unchecked
         supervisorRemoteSnapshotCacheProjection: XTUnifiedDoctorRemoteSnapshotCacheProjection? = nil,
         hubMemoryPromptProjection: HubMemoryPromptProjectionSnapshot? = nil,
         memoryRouteTruthProjection: AXModelRouteTruthProjection? = nil,
+        providerKeySelectionProjection: ProviderKeySelectionDecision? = nil,
+        providerKeyRouteContextProjection: XTProviderKeyRouteContext? = nil,
+        externalTerminalAccessProjection: XTUnifiedDoctorExternalTerminalAccessProjection? = nil,
         durableCandidateMirrorProjection: XTUnifiedDoctorDurableCandidateMirrorProjection? = nil,
         localStoreWriteProjection: XTUnifiedDoctorLocalStoreWriteProjection? = nil,
         skillDoctorTruthProjection: XTUnifiedDoctorSkillDoctorTruthProjection? = nil
@@ -3235,6 +3421,9 @@ final class XTUnifiedDoctorSection: Identifiable, Codable, Equatable, @unchecked
         self.supervisorRemoteSnapshotCacheProjection = supervisorRemoteSnapshotCacheProjection
         self.hubMemoryPromptProjection = hubMemoryPromptProjection
         self.memoryRouteTruthProjection = memoryRouteTruthProjection
+        self.providerKeySelectionProjection = providerKeySelectionProjection
+        self.providerKeyRouteContextProjection = providerKeyRouteContextProjection
+        self.externalTerminalAccessProjection = externalTerminalAccessProjection
         self.durableCandidateMirrorProjection = durableCandidateMirrorProjection
         self.localStoreWriteProjection = localStoreWriteProjection
         self.skillDoctorTruthProjection = skillDoctorTruthProjection
@@ -3310,6 +3499,18 @@ final class XTUnifiedDoctorSection: Identifiable, Codable, Equatable, @unchecked
                 AXModelRouteTruthProjection.self,
                 forKey: .memoryRouteTruthProjection
             ),
+            providerKeySelectionProjection: try container.decodeIfPresent(
+                ProviderKeySelectionDecision.self,
+                forKey: .providerKeySelectionProjection
+            ),
+            providerKeyRouteContextProjection: try container.decodeIfPresent(
+                XTProviderKeyRouteContext.self,
+                forKey: .providerKeyRouteContextProjection
+            ),
+            externalTerminalAccessProjection: try container.decodeIfPresent(
+                XTUnifiedDoctorExternalTerminalAccessProjection.self,
+                forKey: .externalTerminalAccessProjection
+            ),
             durableCandidateMirrorProjection: try container.decodeIfPresent(
                 XTUnifiedDoctorDurableCandidateMirrorProjection.self,
                 forKey: .durableCandidateMirrorProjection
@@ -3373,6 +3574,18 @@ final class XTUnifiedDoctorSection: Identifiable, Codable, Equatable, @unchecked
         )
         try container.encodeIfPresent(hubMemoryPromptProjection, forKey: .hubMemoryPromptProjection)
         try container.encodeIfPresent(memoryRouteTruthProjection, forKey: .memoryRouteTruthProjection)
+        try container.encodeIfPresent(
+            providerKeySelectionProjection,
+            forKey: .providerKeySelectionProjection
+        )
+        try container.encodeIfPresent(
+            providerKeyRouteContextProjection,
+            forKey: .providerKeyRouteContextProjection
+        )
+        try container.encodeIfPresent(
+            externalTerminalAccessProjection,
+            forKey: .externalTerminalAccessProjection
+        )
         try container.encodeIfPresent(durableCandidateMirrorProjection, forKey: .durableCandidateMirrorProjection)
         try container.encodeIfPresent(localStoreWriteProjection, forKey: .localStoreWriteProjection)
         try container.encodeIfPresent(skillDoctorTruthProjection, forKey: .skillDoctorTruthProjection)
@@ -3469,6 +3682,9 @@ struct XTUnifiedDoctorReportContract: Codable, Equatable {
             "supervisorRemoteSnapshotCacheProjection",
             "hubMemoryPromptProjection",
             "memoryRouteTruthProjection",
+            "providerKeySelectionProjection",
+            "providerKeyRouteContextProjection",
+            "externalTerminalAccessProjection",
             "durableCandidateMirrorProjection",
             "localStoreWriteProjection",
             "skillDoctorTruthProjection",
@@ -3544,6 +3760,8 @@ final class XTUnifiedDoctorInput: @unchecked Sendable {
     var calendarReminderSnapshot: XTUnifiedDoctorCalendarReminderSnapshot
     var skillsSnapshot: AXSkillsDoctorSnapshot
     var skillDoctorTruthProjection: XTUnifiedDoctorSkillDoctorTruthProjection? = nil
+    var externalTerminalAccessProjection: XTUnifiedDoctorExternalTerminalAccessProjection? = nil
+    var providerKeyImportSnapshot: HubProviderKeyImportSnapshot? = nil
     var reportPath: String
     var modelRouteDiagnostics: AXModelRouteDiagnosticsSummary
     var projectContextDiagnostics: AXProjectContextAssemblyDiagnosticsSummary
@@ -3597,6 +3815,8 @@ final class XTUnifiedDoctorInput: @unchecked Sendable {
         calendarReminderSnapshot: XTUnifiedDoctorCalendarReminderSnapshot = .empty,
         skillsSnapshot: AXSkillsDoctorSnapshot,
         skillDoctorTruthProjection: XTUnifiedDoctorSkillDoctorTruthProjection? = nil,
+        externalTerminalAccessProjection: XTUnifiedDoctorExternalTerminalAccessProjection? = nil,
+        providerKeyImportSnapshot: HubProviderKeyImportSnapshot? = nil,
         reportPath: String = XTUnifiedDoctorStore.defaultReportURL().path,
         modelRouteDiagnostics: AXModelRouteDiagnosticsSummary = .empty,
         projectContextDiagnostics: AXProjectContextAssemblyDiagnosticsSummary = .empty,
@@ -3645,6 +3865,8 @@ final class XTUnifiedDoctorInput: @unchecked Sendable {
         self.calendarReminderSnapshot = calendarReminderSnapshot
         self.skillsSnapshot = skillsSnapshot
         self.skillDoctorTruthProjection = skillDoctorTruthProjection
+        self.externalTerminalAccessProjection = externalTerminalAccessProjection
+        self.providerKeyImportSnapshot = providerKeyImportSnapshot
         self.reportPath = reportPath
         self.modelRouteDiagnostics = modelRouteDiagnostics
         self.projectContextDiagnostics = projectContextDiagnostics
@@ -3735,6 +3957,10 @@ enum XTUnifiedDoctorBuilder {
             firstPairCompletionProofSnapshot: input.firstPairCompletionProofSnapshot,
             pairedRouteSetSnapshot: input.pairedRouteSetSnapshot
         )
+        let externalTerminalAccess = buildExternalTerminalAccessSection(
+            projection: input.externalTerminalAccessProjection,
+            hubInteractive: hubInteractive
+        )
         let modelRoute = enrichModelRouteSection(
             normalizeModelRoutePosture(
                 voiceReadiness.check(.modelRouteReadiness)?.asDoctorSection()
@@ -3755,6 +3981,7 @@ enum XTUnifiedDoctorBuilder {
                 remoteInteractiveLoadedCount: remoteInteractiveLoadedCount
             ),
             diagnostics: input.modelRouteDiagnostics,
+            importSnapshot: input.providerKeyImportSnapshot,
             route: route
         )
         let bridgeTool = voiceReadiness.check(.bridgeToolReadiness)?.asDoctorSection()
@@ -3813,6 +4040,7 @@ enum XTUnifiedDoctorBuilder {
         let sections = [
             hubReachability,
             pairingValidity,
+            externalTerminalAccess,
             modelRoute,
             bridgeTool,
             sessionRuntime,
@@ -3833,6 +4061,15 @@ enum XTUnifiedDoctorBuilder {
             sections: sections,
             pairedRouteSetSnapshot: input.pairedRouteSetSnapshot
         )
+        let resolvedFailureCode = resolvedCurrentFailureCode(
+            explicitFailureCode: failureCode,
+            explicitFailureIssue: failureIssue,
+            externalTerminalAccessSection: externalTerminalAccess
+        )
+        let resolvedFailureIssue = resolvedCurrentFailureIssue(
+            explicitFailureIssue: failureIssue,
+            externalTerminalAccessSection: externalTerminalAccess
+        )
         let consumedContracts = orderedUnique(
             input.runtime.consumedContracts + [
                 XTUIInformationArchitectureContract.frozen.schemaVersion,
@@ -3850,8 +4087,8 @@ enum XTUnifiedDoctorBuilder {
             overallState: overallState,
             overallSummary: overallSummary,
             readyForFirstTask: readyForFirstTask,
-            currentFailureCode: failureCode,
-            currentFailureIssue: failureIssue,
+            currentFailureCode: resolvedFailureCode,
+            currentFailureIssue: resolvedFailureIssue,
             configuredModelRoles: configuredModelCount,
             availableModelCount: availableModelCount,
             loadedModelCount: loadedModelCount,
@@ -4098,8 +4335,8 @@ enum XTUnifiedDoctorBuilder {
                 summary = "当前不是 Hub 坏了，而是 Hub 明确判定这次首配不是“同一局域网来源”。即使你看到的是同一个 Wi‑Fi 名称，也可能因为 client isolation、访客网络或 VLAN 分段而被 Hub 识别成不同 LAN。"
                 nextStep = "确认 XT 与 Hub 真正在同一局域网内：若目标 \(host) 仍报这个错误，优先检查当前 Wi‑Fi / AP 是否开启了 client isolation、同 SSID 是否被切到不同 VLAN；修好后重新打开连接 Hub，并在 Hub 本机完成一次本地批准。"
             case .stableNamed, .rawIP(scope: .carrierGradeNat), .rawIP(scope: .publicInternet), .rawIP(scope: .unknown):
-                summary = "当前不是 Hub 坏了，而是 Hub 明确要求首次配对必须先在同一局域网内完成一次本地批准。正式异网入口、公网 raw IP 或 NAT 入口都不能直接替代这一步。"
-                nextStep = "先把 XT 和 Hub 放回同一局域网完成首配；Hub 本机批准成功后，再回到异网环境使用正式远端入口。"
+                summary = "当前不是 Hub 坏了，而是 Hub 明确要求首次配对必须先在同一局域网内完成一次本地批准。正式异网入口、公网 raw IP 或 NAT 入口都不能直接替代这一步；即使你看到的是同一个 Wi‑Fi 名称，也仍可能因为 client isolation、访客网络或 VLAN 分段而不被 Hub 视为同一 LAN。"
+                nextStep = "先把 XT 和 Hub 放回同一局域网完成首配；如果你以为两端已经在同一个 Wi‑Fi 下却仍失败，优先检查当前 Wi‑Fi / AP 是否开启了 client isolation、同 SSID 是否被切到不同 VLAN。Hub 本机批准成功后，再回到异网环境使用正式远端入口。"
             case .missing:
                 summary = "当前不是 Hub 坏了，而是 Hub 明确要求首次配对只能在同一 Wi-Fi / 同一局域网内完成。异网、蜂窝或只有公网入口时，系统会故意拒绝继续配对。"
                 nextStep = "把 XT 和 Hub 放回同一 Wi-Fi / 同一局域网后重新打开连接 Hub；在 Hub 本机完成一次本地批准后，再回到异网环境使用远端重连。"
@@ -4300,7 +4537,7 @@ enum XTUnifiedDoctorBuilder {
             )
         }
 
-        var section = baseSection
+        let section = baseSection
         let host = input.internetHost.trimmingCharacters(in: .whitespacesAndNewlines)
         let localPrefix = "XT 当前还能通过本机文件通道读取本机 Hub，但你手填的远端目标 \(host) 还没有连通；这里不会把“本机可用”误写成“远端已恢复”。"
 
@@ -4363,7 +4600,7 @@ enum XTUnifiedDoctorBuilder {
         snapshot: XTFreshPairReconnectSmokeSnapshot?
     ) -> XTUnifiedDoctorSection {
         guard let snapshot else { return section }
-        var section = section
+        let section = section
         section.detailLines = orderedUnique(section.detailLines + snapshot.detailLines())
 
         switch snapshot.status {
@@ -4488,7 +4725,7 @@ enum XTUnifiedDoctorBuilder {
             return base
         }
 
-        var section = base
+        let section = base
         section.detailLines = orderedUnique(
             base.detailLines + pairingReadinessDetailLines(
                 firstPairCompletionProofSnapshot: firstPairCompletionProofSnapshot,
@@ -4548,6 +4785,115 @@ enum XTUnifiedDoctorBuilder {
         }
 
         return section
+    }
+
+    private static func buildExternalTerminalAccessSection(
+        projection: XTUnifiedDoctorExternalTerminalAccessProjection?,
+        hubInteractive: Bool
+    ) -> XTUnifiedDoctorSection {
+        if let projection {
+            let detailLines = projection.doctorDetailLines()
+            let nextStep = "到 XT 设置 → 非 XT Terminal 访问核对这批 access key 的状态、到期与撤销原因；必要时直接轮换或重签，再重新分发新的 connect env。"
+
+            if projection.hasBlockedKeys {
+                let keyLabel = projection.primaryBlockedKey.map {
+                    $0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        ? $0.accessKeyID
+                        : $0.name
+                } ?? "当前 key"
+                let blockedSummary = projection.primaryBlockedKey?.troubleshootSummary
+                    ?? "至少有一把外部 terminal access key 当前已经不能继续使用。"
+                let reasonSummary = projection.primaryBlockedKey?.statusReasonSummary ?? ""
+                let fetchSuffix = projection.sourceStatus == "fetch_failed"
+                    ? " 这次 doctor 没拿到新的 Hub 回包，所以先按最近一次快照 fail-closed 展示。"
+                    : ""
+                let summary = [
+                    "当前已签发 \(projection.totalKeyCount) 把外部 terminal access key，其中 \(projection.blockedKeyCount) 把已受阻。",
+                    "\(keyLabel)：\(blockedSummary)",
+                    reasonSummary,
+                    fetchSuffix
+                ]
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+
+                return XTUnifiedDoctorSection(
+                    kind: .externalTerminalAccessReadiness,
+                    state: .diagnosticRequired,
+                    headline: "存在受阻的非 XT Terminal access key",
+                    summary: summary,
+                    nextStep: nextStep,
+                    repairEntry: .xtExternalTerminals,
+                    detailLines: detailLines,
+                    externalTerminalAccessProjection: projection
+                )
+            }
+
+            if projection.sourceStatus == "fetch_failed" {
+                let errorLine = normalizedOptionalDoctorField(projection.errorMessage)
+                    ?? normalizedOptionalDoctorField(projection.errorCode)
+                    ?? "unknown"
+                return XTUnifiedDoctorSection(
+                    kind: .externalTerminalAccessReadiness,
+                    state: .diagnosticRequired,
+                    headline: "非 XT Terminal access key 状态刷新失败",
+                    summary: "XT 这次没拿到新的 access key 生命周期状态，当前只能先保留上次快照。最近错误：\(errorLine)。",
+                    nextStep: nextStep,
+                    repairEntry: .xtExternalTerminals,
+                    detailLines: detailLines,
+                    externalTerminalAccessProjection: projection
+                )
+            }
+
+            if projection.totalKeyCount == 0 {
+                return XTUnifiedDoctorSection(
+                    kind: .externalTerminalAccessReadiness,
+                    state: .ready,
+                    headline: "还没有给非 XT Terminal 签发 access key",
+                    summary: "如果你没有给 CLI、自动化代理或其他外部 terminal 分发独立 access key，这一项现在可以忽略。",
+                    nextStep: "需要外部 terminal 时，再到 XT 设置 → 非 XT Terminal 访问签发一把 key 并导出 connect env。",
+                    repairEntry: .xtExternalTerminals,
+                    detailLines: detailLines,
+                    externalTerminalAccessProjection: projection
+                )
+            }
+
+            return XTUnifiedDoctorSection(
+                kind: .externalTerminalAccessReadiness,
+                state: .ready,
+                headline: "非 XT Terminal access key 未见生命周期阻塞",
+                summary: "最近一次核对里，已签发的 \(projection.totalKeyCount) 把外部 terminal access key 当前都没有落到 expired、revoked、disabled 或 invalid 状态。",
+                nextStep: "如果你要分发给新的外部 terminal，继续沿用这批 key 的签发 / 导出流程即可。",
+                repairEntry: .xtExternalTerminals,
+                detailLines: detailLines,
+                externalTerminalAccessProjection: projection
+            )
+        }
+
+        let state: XTUISurfaceState = hubInteractive ? .inProgress : .ready
+        let headline = hubInteractive
+            ? "非 XT Terminal access key 快照仍在同步"
+            : "非 XT Terminal access key 还没有可用快照"
+        let summary = hubInteractive
+            ? "XT 已连到 Hub，但这轮 doctor 还没拿到 access key 生命周期快照；如果你依赖外部 terminal，稍后再刷新一次。"
+            : "当前还没有可用的外部 terminal access key 快照；如果你没有给外部 terminal 分发独立 key，这一项可以忽略。"
+        let nextStep = hubInteractive
+            ? "稍等这轮 doctor 同步完成；如果长时间没有更新，就到 XT 设置 → 非 XT Terminal 访问手动刷新。"
+            : "需要时先连上 Hub，再到 XT 设置 → 非 XT Terminal 访问签发或核对 access key。"
+
+        return XTUnifiedDoctorSection(
+            kind: .externalTerminalAccessReadiness,
+            state: state,
+            headline: headline,
+            summary: summary,
+            nextStep: nextStep,
+            repairEntry: .xtExternalTerminals,
+            detailLines: [
+                "external_terminal_access_source_status=missing_snapshot",
+                "external_terminal_access_total_keys=0",
+                "external_terminal_access_ready_keys=0",
+                "external_terminal_access_blocked_keys=0"
+            ]
+        )
     }
 
     private static func pairingReadinessDetailLines(
@@ -4810,6 +5156,7 @@ enum XTUnifiedDoctorBuilder {
     private static func enrichModelRouteSection(
         _ base: XTUnifiedDoctorSection,
         diagnostics: AXModelRouteDiagnosticsSummary,
+        importSnapshot: HubProviderKeyImportSnapshot?,
         route: XTUnifiedDoctorRouteSnapshot
     ) -> XTUnifiedDoctorSection {
         var section = base
@@ -4821,6 +5168,12 @@ enum XTUnifiedDoctorBuilder {
             || diagnostics.recentRemoteRetryRecoveryCount > 0 {
             section.detailLines = orderedUnique(base.detailLines + diagnostics.detailLines)
         }
+        attachProviderKeySelectionSnapshot(
+            to: &section,
+            projection: projection,
+            importSnapshot: importSnapshot,
+            includeNarrative: false
+        )
 
         if let issueOverride = modelRouteIssueOverride(
             diagnostics: diagnostics,
@@ -4837,6 +5190,12 @@ enum XTUnifiedDoctorBuilder {
                 diagnostics: diagnostics,
                 projection: projection,
                 route: route
+            )
+            attachProviderKeySelectionSnapshot(
+                to: &section,
+                projection: projection,
+                importSnapshot: importSnapshot,
+                includeNarrative: true
             )
             return section
         }
@@ -4855,7 +5214,114 @@ enum XTUnifiedDoctorBuilder {
             projection: projection,
             route: route
         )
+        attachProviderKeySelectionSnapshot(
+            to: &section,
+            projection: projection,
+            importSnapshot: importSnapshot,
+            includeNarrative: true
+        )
         return section
+    }
+
+    private static func attachProviderKeySelectionSnapshot(
+        to section: inout XTUnifiedDoctorSection,
+        projection: AXModelRouteTruthProjection?,
+        importSnapshot: HubProviderKeyImportSnapshot?,
+        includeNarrative: Bool
+    ) {
+        section.detailLines = orderedUnique(
+            section.detailLines + XTProviderKeyImportSourcePresentation.detailLines(
+                snapshot: importSnapshot,
+                decision: nil
+            )
+        )
+
+        let modelId = providerKeySelectionModelID(
+            detailLines: section.detailLines,
+            projection: projection
+        )
+        let decision = modelId.flatMap { ProviderKeySelectionSnapshotStore.shared.decision(forModelId: $0) }
+        let pool = modelId.flatMap { ProviderKeyPoolSnapshotStore.shared.pool(forModelId: $0) }
+
+        if let modelId {
+            if let decision {
+                section.providerKeySelectionProjection = decision
+                section.detailLines = orderedUnique(
+                    section.detailLines + XTProviderKeySelectionPresentation.detailLines(
+                        pool: pool,
+                        decision: decision,
+                        modelId: modelId
+                    )
+                )
+                section.detailLines = orderedUnique(
+                    section.detailLines + XTProviderKeyImportSourcePresentation.detailLines(
+                        snapshot: importSnapshot,
+                        decision: decision
+                    )
+                )
+            } else if let pool {
+                section.detailLines = orderedUnique(
+                    section.detailLines + XTProviderKeySelectionPresentation.poolDetailLines(
+                        pool: pool,
+                        modelId: modelId
+                    )
+                )
+            }
+        }
+
+        let providerKeyRouteContextProjection = XTProviderKeyRouteContextPresentation.context(
+            pool: pool,
+            decision: decision,
+            modelId: modelId,
+            importContextLines: XTProviderKeyImportSourcePresentation.contextLines(
+                snapshot: importSnapshot,
+                decision: decision
+            ),
+            importIssues: XTProviderKeyImportSourcePresentation.issues(
+                snapshot: importSnapshot,
+                decision: decision
+            )
+        )
+        section.providerKeyRouteContextProjection = providerKeyRouteContextProjection.hasSignal
+            ? providerKeyRouteContextProjection
+            : nil
+
+        guard includeNarrative else { return }
+        let providerKeyContext = section.providerKeyRouteContextProjection
+            ?? XTProviderKeyRouteContextPresentation.context(
+                fromDoctorDetailLines: section.detailLines,
+                decision: decision,
+                modelId: modelId
+            )
+        if providerKeyContext.primaryImportIssue != nil,
+           section.repairEntry == .xtChooseModel || section.repairEntry == .hubModels {
+            section.repairEntry = .hubProviderKeys
+        }
+        if let evidence = XTProviderKeyRouteContextPresentation.narrativeSummaryText(
+            for: providerKeyContext
+        ), !section.summary.contains(evidence) {
+            section.summary = "\(section.summary) \(evidence)"
+        }
+        if let retryGuidance = XTProviderKeyRouteContextPresentation.narrativeNextStepText(
+            for: providerKeyContext
+        ), !section.nextStep.contains(retryGuidance) {
+            section.nextStep = "\(section.nextStep) \(retryGuidance)"
+        }
+    }
+
+    private static func providerKeySelectionModelID(
+        detailLines: [String],
+        projection: AXModelRouteTruthProjection?
+    ) -> String? {
+        if let requested = XTProviderKeySelectionPresentation.requestedModelID(
+            fromDoctorDetailLines: detailLines
+        ) {
+            return requested
+        }
+        guard let projection else { return nil }
+        let candidate = projection.winningBinding.modelID
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return candidate.isEmpty || candidate == "unknown" ? nil : candidate
     }
 
     private struct ModelRouteIssueOverride {
@@ -5229,7 +5695,7 @@ enum XTUnifiedDoctorBuilder {
         localInteractiveLoadedCount: Int,
         remoteInteractiveLoadedCount: Int
     ) -> XTUnifiedDoctorSection {
-        var section = base
+        let section = base
         let interactivePosture: String
         switch (localInteractiveLoadedCount > 0, remoteInteractiveLoadedCount > 0) {
         case (true, false):
@@ -5465,7 +5931,7 @@ enum XTUnifiedDoctorBuilder {
         turnContextAssembly: SupervisorTurnContextAssemblyResult?,
         projectContext: AXProjectContext?
     ) -> XTUnifiedDoctorSection {
-        var section = base
+        let section = base
         var detailLines = base.detailLines
         let projectMemoryReadiness = diagnostics.memoryAssemblyReadiness
 
@@ -6232,13 +6698,47 @@ enum XTUnifiedDoctorBuilder {
         }
     }
 
+    private static func resolvedCurrentFailureCode(
+        explicitFailureCode: String,
+        explicitFailureIssue: UITroubleshootIssue?,
+        externalTerminalAccessSection: XTUnifiedDoctorSection
+    ) -> String {
+        if !explicitFailureCode.isEmpty {
+            return explicitFailureCode
+        }
+        if explicitFailureIssue != nil {
+            return ""
+        }
+        guard externalTerminalAccessSection.kind == .externalTerminalAccessReadiness,
+              externalTerminalAccessSection.state == .diagnosticRequired,
+              externalTerminalAccessSection.externalTerminalAccessProjection?.hasBlockedKeys == true else {
+            return ""
+        }
+        return UITroubleshootIssue.externalTerminalAccessBlocked.rawValue
+    }
+
+    private static func resolvedCurrentFailureIssue(
+        explicitFailureIssue: UITroubleshootIssue?,
+        externalTerminalAccessSection: XTUnifiedDoctorSection
+    ) -> UITroubleshootIssue? {
+        if let explicitFailureIssue {
+            return explicitFailureIssue
+        }
+        guard externalTerminalAccessSection.kind == .externalTerminalAccessReadiness,
+              externalTerminalAccessSection.state == .diagnosticRequired,
+              externalTerminalAccessSection.externalTerminalAccessProjection?.hasBlockedKeys == true else {
+            return nil
+        }
+        return .externalTerminalAccessBlocked
+    }
+
     private static func enrichVoicePlaybackSection(
         _ section: XTUnifiedDoctorSection?,
         playbackActivity: VoicePlaybackActivity
     ) -> XTUnifiedDoctorSection? {
         let actionablePlaybackState = playbackActivity.state == .fallbackPlayed
             || playbackActivity.state == .failed
-        guard var section else {
+        guard let section else {
             guard actionablePlaybackState else { return nil }
             return XTUnifiedDoctorSection(
                 kind: .voicePlaybackReadiness,
@@ -6279,7 +6779,7 @@ enum XTUnifiedDoctorBuilder {
         report: XTSupervisorVoiceSmokeReportSummary?,
         phase: XTSupervisorVoiceSmokeReportSummary.Phase
     ) -> XTUnifiedDoctorSection? {
-        guard var section else { return nil }
+        guard let section else { return nil }
         guard let report else { return section }
 
         section.detailLines = orderedUnique(section.detailLines + report.detailLines(for: phase))
@@ -6400,6 +6900,8 @@ enum XTUnifiedDoctorBuilder {
             return "Hub 可达性"
         case .pairingValidity:
             return "配对有效性"
+        case .externalTerminalAccessReadiness:
+            return "非 XT Terminal 访问"
         case .modelRouteReadiness:
             return "模型路由"
         case .bridgeToolReadiness:
@@ -6938,6 +7440,7 @@ struct XTUnifiedDoctorSummaryView: View {
 private struct XTUnifiedDoctorSectionCard: View {
     let section: XTUnifiedDoctorSection
     @State private var diagnosticsExpanded = false
+    @State private var providerKeySelectionSummary: XTDoctorProjectionSummary?
 
     private var routeTruthProjection: AXModelRouteTruthProjection? {
         guard section.kind == .modelRouteReadiness else { return nil }
@@ -6950,6 +7453,34 @@ private struct XTUnifiedDoctorSectionCard: View {
     private var routeTruthSummary: XTDoctorProjectionSummary? {
         guard let routeTruthProjection else { return nil }
         return XTDoctorRouteTruthPresentation.summary(projection: routeTruthProjection)
+    }
+
+    private var providerKeyRouteContext: XTProviderKeyRouteContext {
+        XTProviderKeyRouteContextPresentation.context(section: section)
+    }
+
+    private var providerKeySelectionModelID: String? {
+        guard section.kind == .modelRouteReadiness else { return nil }
+        if let modelId = providerKeyRouteContext.modelId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !modelId.isEmpty,
+           modelId != "unknown" {
+            return modelId
+        }
+        guard let routeTruthProjection else { return nil }
+        let candidate = routeTruthProjection.winningBinding.modelID
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return candidate.isEmpty || candidate == "unknown" ? nil : candidate
+    }
+
+    private var providerKeySelectionTaskID: String {
+        [
+            section.kind.rawValue,
+            providerKeySelectionModelID ?? "none",
+            providerKeyRouteContext.decision?.selectedAccountKey ?? "none",
+            providerKeyRouteContext.primaryImportIssue?.sourceRef ?? "none",
+            String(providerKeyRouteContext.importContextLines.hashValue),
+            String(section.detailLines.hashValue)
+        ].joined(separator: "::")
     }
 
     private var skillDoctorTruthSummary: XTDoctorProjectionSummary? {
@@ -7106,6 +7637,10 @@ private struct XTUnifiedDoctorSectionCard: View {
                 XTDoctorProjectionSummaryView(summary: routeTruthSummary)
             }
 
+            if let providerKeySelectionSummary {
+                XTDoctorProjectionSummaryView(summary: providerKeySelectionSummary)
+            }
+
             if let skillDoctorTruthSummary {
                 XTDoctorProjectionSummaryView(summary: skillDoctorTruthSummary)
             }
@@ -7182,6 +7717,9 @@ private struct XTUnifiedDoctorSectionCard: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(UIThemeTokens.subtleBorder, lineWidth: 1)
         )
+        .task(id: providerKeySelectionTaskID) {
+            await refreshProviderKeySelectionSummary()
+        }
     }
 
     private var sectionStateLabel: String {
@@ -7200,6 +7738,49 @@ private struct XTUnifiedDoctorSectionCard: View {
             return "已冻结"
         case .diagnosticRequired:
             return "需诊断"
+        }
+    }
+
+    private func refreshProviderKeySelectionSummary() async {
+        let providerKeyContext = providerKeyRouteContext
+        guard providerKeyContext.modelId != nil || providerKeyContext.primaryImportIssue != nil else {
+            await MainActor.run {
+                providerKeySelectionSummary = nil
+            }
+            return
+        }
+
+        let resolvedContext: XTProviderKeyRouteContext
+        if let modelId = providerKeyContext.modelId {
+            let liveDecision: ProviderKeySelectionDecision?
+            if let existingDecision = providerKeyContext.decision {
+                liveDecision = existingDecision
+            } else {
+                liveDecision = await ProviderKeyManager.shared.lastSelectionDecisionForModel(modelId: modelId)
+            }
+
+            let livePool: HubProviderKeysClient.ProviderPool?
+            if let existingPool = providerKeyContext.pool {
+                livePool = existingPool
+            } else {
+                livePool = await ProviderKeyManager.shared.resolveProviderKeyPool(forModelId: modelId)
+            }
+            resolvedContext = XTProviderKeyRouteContextPresentation.context(
+                pool: livePool,
+                decision: liveDecision,
+                modelId: modelId,
+                importContextLines: providerKeyContext.importContextLines,
+                importIssues: providerKeyContext.importIssues
+            )
+        } else {
+            resolvedContext = providerKeyContext
+        }
+
+        let summary = XTProviderKeyRouteContextPresentation.summary(
+            for: resolvedContext
+        )
+        await MainActor.run {
+            providerKeySelectionSummary = summary
         }
     }
 }

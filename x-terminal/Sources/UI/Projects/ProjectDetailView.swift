@@ -326,9 +326,10 @@ struct ProjectDetailView: View {
     @ObservedObject var project: ProjectModel
     let initialFocusSection: XTProjectDetailSection
     let initialFocusContext: XTSectionFocusContext?
-    @EnvironmentObject private var appModel: AppModel
+    @Environment(\.xtAppModelReference) private var appModelReference
+    @EnvironmentObject private var hubConnectionStore: XTHubConnectionStore
     @Environment(\.dismiss) private var dismiss
-    @StateObject private var supervisorManager = SupervisorManager.shared
+    private let supervisorManager = SupervisorManager.shared
 
     @State private var showDeleteConfirmation = false
     @State private var showEditSheet = false
@@ -461,7 +462,6 @@ struct ProjectDetailView: View {
                     ctx: ctx,
                     initialGovernanceDestination: governanceDestination
                 )
-                    .environmentObject(appModel)
             } else {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("项目设置不可用")
@@ -695,7 +695,7 @@ struct ProjectDetailView: View {
             configuredModelId: configuredModelId,
             fallbackConfiguredModelId: configuredModelId,
             snapshot: coderSnapshot,
-            paidAccessSnapshot: appModel.hubRemotePaidAccessSnapshot
+            paidAccessSnapshot: hubConnectionSnapshot.remotePaidAccessSnapshot
         )
 
         return VStack(alignment: .leading, spacing: 12) {
@@ -713,7 +713,7 @@ struct ProjectDetailView: View {
             if let routeSummary = ExecutionRoutePresentation.routeSummaryText(
                 configuredModelId: configuredModelId,
                 snapshot: coderSnapshot,
-                paidAccessSnapshot: appModel.hubRemotePaidAccessSnapshot
+                paidAccessSnapshot: hubConnectionSnapshot.remotePaidAccessSnapshot
             ) {
                 infoNote(title: "最近一次实际执行", message: routeSummary)
             }
@@ -1382,6 +1382,17 @@ struct ProjectDetailView: View {
         return formatter.string(from: NSNumber(value: number)) ?? "\(number)"
     }
 
+    private var hubConnectionSnapshot: XTHubConnectionSnapshot {
+        hubConnectionStore.snapshot
+    }
+
+    private var appModel: AppModel {
+        guard let appModelReference else {
+            preconditionFailure("ProjectDetailView requires xtAppModelReference")
+        }
+        return appModelReference
+    }
+
     private var registeredProjectId: String? {
         let trimmed = project.registeredProjectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? nil : trimmed
@@ -1394,7 +1405,9 @@ struct ProjectDetailView: View {
             return nil
         }
         let ctx = AXProjectContext(root: URL(fileURLWithPath: rootPath, isDirectory: true))
-        return AXSessionSummaryCapsulePresentation.load(for: ctx)
+        return XTProjectUIPresentationReadCache.sessionSummary(for: ctx) {
+            AXSessionSummaryCapsulePresentation.load(for: ctx)
+        }
     }
 
     private var uiReviewContext: AXProjectContext? {
@@ -1410,28 +1423,34 @@ struct ProjectDetailView: View {
         guard let uiReviewContext else {
             return nil
         }
-        return XTUIReviewPresentation.loadLatestBrowserPage(for: uiReviewContext)
+        return XTProjectUIPresentationReadCache.latestUIReview(for: uiReviewContext) {
+            XTUIReviewPresentation.loadLatestBrowserPage(for: uiReviewContext)
+        }
     }
 
     private var governancePresentation: ProjectGovernancePresentation {
-        if let resolved = appModel.resolvedProjectGovernance(for: project) {
+        XTProjectUIPresentationReadCache.governancePresentation(
+            projectId: registeredProjectId ?? project.id.uuidString
+        ) {
+            if let resolved = appModel.resolvedProjectGovernance(for: project) {
+                return ProjectGovernancePresentation(
+                    resolved: resolved,
+                    scheduleState: uiReviewContext.map { SupervisorReviewScheduleStore.load(for: $0) }
+                )
+            }
+
             return ProjectGovernancePresentation(
-                resolved: resolved,
-                scheduleState: uiReviewContext.map { SupervisorReviewScheduleStore.load(for: $0) }
+                executionTier: project.executionTier,
+                supervisorInterventionTier: project.supervisorInterventionTier,
+                reviewPolicyMode: project.reviewPolicyMode,
+                progressHeartbeatSeconds: project.progressHeartbeatSeconds,
+                reviewPulseSeconds: project.reviewPulseSeconds,
+                brainstormReviewSeconds: project.brainstormReviewSeconds,
+                eventDrivenReviewEnabled: project.eventDrivenReviewEnabled,
+                eventReviewTriggers: project.eventReviewTriggers,
+                compatSource: "multi_project_detail"
             )
         }
-
-        return ProjectGovernancePresentation(
-            executionTier: project.executionTier,
-            supervisorInterventionTier: project.supervisorInterventionTier,
-            reviewPolicyMode: project.reviewPolicyMode,
-            progressHeartbeatSeconds: project.progressHeartbeatSeconds,
-            reviewPulseSeconds: project.reviewPulseSeconds,
-            brainstormReviewSeconds: project.brainstormReviewSeconds,
-            eventDrivenReviewEnabled: project.eventDrivenReviewEnabled,
-            eventReviewTriggers: project.eventReviewTriggers,
-            compatSource: "multi_project_detail"
-        )
     }
 
     private var governanceDetailSummary: ProjectDetailGovernanceSummary {
@@ -1439,7 +1458,11 @@ struct ProjectDetailView: View {
     }
 
     private var governanceTemplatePreview: AXProjectGovernanceTemplatePreview {
-        appModel.governanceTemplatePreview(for: project)
+        XTProjectUIPresentationReadCache.governanceTemplatePreview(
+            projectId: registeredProjectId ?? project.id.uuidString
+        ) {
+            appModel.governanceTemplatePreview(for: project)
+        }
     }
 
     private var configuredCoderModelId: String {
@@ -1450,7 +1473,7 @@ struct ProjectDetailView: View {
         ProjectCoderExecutionStatusResolver.map(
             configuredModelId: configuredCoderModelId,
             snapshot: coderExecutionSnapshot,
-            hubConnected: appModel.hubInteractive,
+            hubConnected: hubConnectionSnapshot.interactive,
             governancePresentation: governancePresentation,
             governanceInterception: latestGovernanceInterception
         )
@@ -1485,11 +1508,13 @@ struct ProjectDetailView: View {
 
     private var projectContextAssemblySummary: ProjectDetailContextAssemblySummary? {
         guard let ctx = projectContextAssemblyContext else { return nil }
-        let config = appModel.projectConfigSnapshot(for: ctx)
-        let diagnostics = AXProjectContextAssemblyDiagnosticsStore.doctorSummary(
-            for: ctx,
-            config: config
-        )
+        let diagnostics = XTProjectUIPresentationReadCache.contextDiagnostics(for: ctx) {
+            let config = appModel.projectConfigSnapshot(for: ctx)
+            return AXProjectContextAssemblyDiagnosticsStore.doctorSummary(
+                for: ctx,
+                config: config
+            )
+        }
         guard let presentation = diagnostics.presentation else { return nil }
         return ProjectDetailContextAssemblySummary(presentation: presentation)
     }
@@ -1498,8 +1523,13 @@ struct ProjectDetailView: View {
         guard let coderExecutionContext else {
             return .empty(role: .coder, source: "project_detail")
         }
-        return AXRoleExecutionSnapshots.latestSnapshots(for: coderExecutionContext)[.coder]
-            ?? .empty(role: .coder, source: "project_detail")
+        return XTProjectUIPresentationReadCache.roleExecutionSnapshot(
+            for: coderExecutionContext,
+            role: .coder
+        ) {
+            AXRoleExecutionSnapshots.latestSnapshots(for: coderExecutionContext)[.coder]
+                ?? .empty(role: .coder, source: "project_detail")
+        }
     }
 
     private var governanceActivityContext: AXProjectContext? {
@@ -1512,9 +1542,14 @@ struct ProjectDetailView: View {
         guard let context = governanceActivityContext ?? coderExecutionContext else {
             return nil
         }
-        return ProjectGovernanceInterceptionPresentation.latest(
-            from: AXProjectSkillActivityStore.loadRecentActivities(ctx: context, limit: 12)
-        )
+        return XTProjectUIPresentationReadCache.latestGovernanceInterception(
+            for: context,
+            limit: 12
+        ) {
+            ProjectGovernanceInterceptionPresentation.latest(
+                from: AXProjectSkillActivityStore.loadRecentActivities(ctx: context, limit: 12)
+            )
+        }
     }
 
     private var projectSettingsContext: AXProjectContext? {
@@ -1875,9 +1910,11 @@ struct ProjectDetailView_Previews: PreviewProvider {
         project.messageCount = 42
         project.pendingApprovals = 2
         project.priority = 7
+        let appModel = AppModel()
 
         return ProjectDetailView(project: project)
-            .environmentObject(AppModel())
+            .environment(\.xtAppModelReference, appModel)
+            .environmentObject(appModel.hubConnectionStore)
     }
 }
 #endif

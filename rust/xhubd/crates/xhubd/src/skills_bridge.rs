@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use xhub_core::HubConfig;
@@ -16,8 +19,8 @@ use xhub_db::{
     SkillPreflightAuditSummary,
 };
 use xhub_skills::{
-    evaluate_skill_preflight, scan_skill_catalog, SkillCatalog, SkillCatalogEntry,
-    SkillPreflightDecision, SkillPreflightRequest, SKILL_CATALOG_SCHEMA,
+    evaluate_skill_preflight_with_authority, scan_skill_catalog, SkillCatalog, SkillCatalogEntry,
+    SkillExecutionSpec, SkillPreflightDecision, SkillPreflightRequest, SKILL_CATALOG_SCHEMA,
     SKILL_POLICY_EVENTS_PRUNE_SCHEMA, SKILL_POLICY_EVENTS_SCHEMA, SKILL_POLICY_SOURCE,
     SKILL_POLICY_STORE_READINESS_SCHEMA, SKILL_PREFLIGHT_AUDIT_PRUNE_SCHEMA,
     SKILL_PREFLIGHT_AUDIT_SCHEMA, SKILL_PREFLIGHT_AUDIT_SUMMARY_SCHEMA, SKILL_PREFLIGHT_SCHEMA,
@@ -193,6 +196,25 @@ fn dispatch(config: &HubConfig, args: &[String]) -> Result<String, String> {
                 granted_capabilities: flags.optional_list("granted-capabilities"),
             };
             preflight_json_from_request(config, skills_dir, request)
+        }
+        "execute" | "run" => {
+            let flags = FlagArgs::parse(&args[1..])?;
+            let skills_dir = flags
+                .optional("skills-dir")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| skills_dir_from_env(config));
+            execute_json_from_value(
+                config,
+                json!({
+                    "skills_dir": skills_dir.display().to_string(),
+                    "request_id": flags.optional("request-id").unwrap_or_default(),
+                    "audit_ref": flags.optional("audit-ref").unwrap_or_default(),
+                    "scope_key": flags.optional("scope-key").unwrap_or_else(|| "default".to_string()),
+                    "skill_id": flags.optional("skill-id").unwrap_or_default(),
+                    "requested_capabilities": flags.optional_list("requested-capabilities"),
+                    "input": flags.optional("input").unwrap_or_default(),
+                }),
+            )
         }
         other => Err(format!("unknown skills command: {other}")),
     }
@@ -560,7 +582,11 @@ pub fn preflight_json_from_request(
     ensure_skill_policy_db(config)?;
     merge_durable_policy(config, &mut request)?;
     let catalog = scan_skill_catalog(&skills_dir);
-    let decision = evaluate_skill_preflight(&catalog, request);
+    let decision = evaluate_skill_preflight_with_authority(
+        &catalog,
+        request,
+        skills_execution_authority_enabled(),
+    );
     write_preflight_audit(config, &decision)?;
     Ok(json!({
         "schema_version": SCHEMA_VERSION,
@@ -602,6 +628,357 @@ pub fn preflight_json_from_value(config: &HubConfig, body: Value) -> Result<Stri
     preflight_json_from_request(config, skills_dir, request)
 }
 
+pub fn execute_json_from_value(config: &HubConfig, body: Value) -> Result<String, String> {
+    ensure_skill_policy_db(config)?;
+    let skills_dir = value_string(&body, "skills_dir")
+        .or_else(|| value_string(&body, "skillsDir"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| skills_dir_from_env(config));
+    let mut request = SkillPreflightRequest {
+        request_id: value_string(&body, "request_id")
+            .or_else(|| value_string(&body, "requestId"))
+            .unwrap_or_default(),
+        audit_ref: value_string(&body, "audit_ref")
+            .or_else(|| value_string(&body, "auditRef"))
+            .unwrap_or_default(),
+        scope_key: value_string(&body, "scope_key")
+            .or_else(|| value_string(&body, "scopeKey"))
+            .unwrap_or_else(|| "default".to_string()),
+        skill_id: value_string(&body, "skill_id")
+            .or_else(|| value_string(&body, "skillId"))
+            .unwrap_or_default(),
+        requested_capabilities: value_string_list(&body, "requested_capabilities")
+            .or_else(|| value_string_list(&body, "requestedCapabilities"))
+            .unwrap_or_default(),
+        pinned_skill_ids: value_string_list(&body, "pinned_skill_ids")
+            .or_else(|| value_string_list(&body, "pinnedSkillIds"))
+            .unwrap_or_default(),
+        granted_capabilities: value_string_list(&body, "granted_capabilities")
+            .or_else(|| value_string_list(&body, "grantedCapabilities"))
+            .unwrap_or_default(),
+    };
+    merge_durable_policy(config, &mut request)?;
+    let catalog = scan_skill_catalog(&skills_dir);
+    let authority_enabled = skills_execution_authority_enabled();
+    let decision =
+        evaluate_skill_preflight_with_authority(&catalog, request.clone(), authority_enabled);
+    write_preflight_audit(config, &decision)?;
+
+    let actor = value_string(&body, "actor").unwrap_or_else(|| "rust_hub".to_string());
+    let actor = public_token_or_default(&actor, "rust_hub")?;
+    let input_value = body.get("input").cloned().unwrap_or(Value::Null);
+    if contains_secret_pattern(&input_value.to_string()) {
+        let policy_event_id = write_policy_event(
+            config,
+            "execute",
+            &decision.scope_key,
+            &decision.skill_id,
+            None,
+            &actor,
+            "denied",
+            json!({"deny_code": "skill_input_secret_pattern_denied"}),
+        )?;
+        return Ok(skill_execute_response(
+            false,
+            "denied",
+            "skill_input_secret_pattern_denied",
+            "",
+            authority_enabled,
+            &decision,
+            None,
+            policy_event_id,
+        ));
+    }
+    if !authority_enabled {
+        let policy_event_id = write_policy_event(
+            config,
+            "execute",
+            &decision.scope_key,
+            &decision.skill_id,
+            None,
+            &actor,
+            "denied",
+            json!({"deny_code": "skills_execution_authority_disabled"}),
+        )?;
+        return Ok(skill_execute_response(
+            false,
+            "denied",
+            "skills_execution_authority_disabled",
+            "",
+            false,
+            &decision,
+            None,
+            policy_event_id,
+        ));
+    }
+    if !decision.allowed {
+        let policy_event_id = write_policy_event(
+            config,
+            "execute",
+            &decision.scope_key,
+            &decision.skill_id,
+            None,
+            &actor,
+            "denied",
+            json!({"deny_code": "skill_preflight_denied", "reason_codes": decision.reason_codes.clone()}),
+        )?;
+        return Ok(skill_execute_response(
+            false,
+            "denied",
+            "skill_preflight_denied",
+            "",
+            true,
+            &decision,
+            None,
+            policy_event_id,
+        ));
+    }
+
+    let Some(entry) = catalog.entries.iter().find(|entry| {
+        entry.skill_id == decision.skill_id || entry.directory_name == decision.skill_id
+    }) else {
+        let policy_event_id = write_policy_event(
+            config,
+            "execute",
+            &decision.scope_key,
+            &decision.skill_id,
+            None,
+            &actor,
+            "denied",
+            json!({"deny_code": "skill_not_found"}),
+        )?;
+        return Ok(skill_execute_response(
+            false,
+            "denied",
+            "skill_not_found",
+            "",
+            true,
+            &decision,
+            None,
+            policy_event_id,
+        ));
+    };
+
+    let run = execute_skill_entry(&skills_dir, entry, &input_value);
+    let (ok, status, deny_code, error_code, output) = match run {
+        SkillRunResult::Ok(output) => (
+            true,
+            "executed".to_string(),
+            String::new(),
+            String::new(),
+            Some(output),
+        ),
+        SkillRunResult::Denied(code) => (false, "denied".to_string(), code, String::new(), None),
+        SkillRunResult::Error(code) => (false, "error".to_string(), String::new(), code, None),
+    };
+    let policy_event_id = write_policy_event(
+        config,
+        "execute",
+        &decision.scope_key,
+        &decision.skill_id,
+        None,
+        &actor,
+        status.as_str(),
+        json!({
+            "status": status.as_str(),
+            "deny_code": deny_code.as_str(),
+            "error_code": error_code.as_str(),
+            "output_returned": output.is_some(),
+            "detail_json_included": false,
+        }),
+    )?;
+    Ok(skill_execute_response(
+        ok,
+        status.as_str(),
+        deny_code.as_str(),
+        error_code.as_str(),
+        true,
+        &decision,
+        output,
+        policy_event_id,
+    ))
+}
+
+enum SkillRunResult {
+    Ok(Value),
+    Denied(String),
+    Error(String),
+}
+
+fn execute_skill_entry(
+    skills_dir: &Path,
+    entry: &SkillCatalogEntry,
+    _input: &Value,
+) -> SkillRunResult {
+    let spec = &entry.execution;
+    match spec.kind.as_str() {
+        "builtin" => execute_builtin_skill(entry, spec),
+        "process" => execute_process_skill(skills_dir, entry, spec),
+        _ => SkillRunResult::Denied("skill_execution_spec_missing".to_string()),
+    }
+}
+
+fn execute_builtin_skill(entry: &SkillCatalogEntry, spec: &SkillExecutionSpec) -> SkillRunResult {
+    match spec.name.as_str() {
+        "healthcheck" => SkillRunResult::Ok(json!({
+            "kind": "builtin",
+            "name": "healthcheck",
+            "skill_id": entry.skill_id,
+            "status": "ok",
+            "stdout": "",
+            "stderr": "",
+            "output_redacted": false,
+            "detail_json_included": false,
+        })),
+        _ => SkillRunResult::Denied("builtin_skill_not_allowed".to_string()),
+    }
+}
+
+fn execute_process_skill(
+    skills_dir: &Path,
+    entry: &SkillCatalogEntry,
+    spec: &SkillExecutionSpec,
+) -> SkillRunResult {
+    if spec.entrypoint.trim().is_empty() {
+        return SkillRunResult::Denied("skill_entrypoint_missing".to_string());
+    }
+    if spec.entrypoint.starts_with('/') || spec.entrypoint.split('/').any(|part| part == "..") {
+        return SkillRunResult::Denied("skill_entrypoint_path_denied".to_string());
+    }
+    if !spec.runner.is_empty() && !runner_allowed(&spec.runner) {
+        return SkillRunResult::Denied("skill_runner_not_allowed".to_string());
+    }
+
+    let skill_dir = skills_dir.join(&entry.directory_name);
+    let canonical_skill_dir = match skill_dir.canonicalize() {
+        Ok(value) => value,
+        Err(_) => return SkillRunResult::Denied("skill_dir_missing".to_string()),
+    };
+    let entrypoint = skill_dir.join(&spec.entrypoint);
+    let canonical_entrypoint = match entrypoint.canonicalize() {
+        Ok(value) => value,
+        Err(_) => return SkillRunResult::Denied("skill_entrypoint_missing".to_string()),
+    };
+    if !canonical_entrypoint.starts_with(&canonical_skill_dir) {
+        return SkillRunResult::Denied("skill_entrypoint_path_denied".to_string());
+    }
+
+    let mut command = if spec.runner.is_empty() {
+        Command::new(&canonical_entrypoint)
+    } else {
+        let mut command = Command::new(&spec.runner);
+        command.arg(&canonical_entrypoint);
+        command
+    };
+    command
+        .args(spec.args.iter())
+        .current_dir(&canonical_skill_dir)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin")
+        .env("XHUB_SKILL_ID", &entry.skill_id)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = match command.spawn() {
+        Ok(value) => value,
+        Err(_) => return SkillRunResult::Error("skill_process_spawn_failed".to_string()),
+    };
+    let started = Instant::now();
+    let timeout = Duration::from_millis(spec.timeout_ms.clamp(100, 30_000));
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                let output = match child.wait_with_output() {
+                    Ok(value) => value,
+                    Err(_) => {
+                        return SkillRunResult::Error("skill_process_output_failed".to_string())
+                    }
+                };
+                let status_code = output.status.code().unwrap_or(-1);
+                if !output.status.success() {
+                    return SkillRunResult::Error(format!("skill_process_exit_{status_code}"));
+                }
+                let stdout = safe_process_output(&output.stdout);
+                let stderr = safe_process_output(&output.stderr);
+                let output_redacted = stdout.1 || stderr.1;
+                return SkillRunResult::Ok(json!({
+                    "kind": "process",
+                    "skill_id": entry.skill_id,
+                    "status": "ok",
+                    "exit_code": status_code,
+                    "stdout": stdout.0,
+                    "stderr": stderr.0,
+                    "output_redacted": output_redacted,
+                    "detail_json_included": false,
+                }));
+            }
+            Ok(None) => {
+                if started.elapsed() > timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return SkillRunResult::Error("skill_process_timeout".to_string());
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(_) => return SkillRunResult::Error("skill_process_wait_failed".to_string()),
+        }
+    }
+}
+
+fn runner_allowed(runner: &str) -> bool {
+    let runner = runner.trim();
+    if runner.is_empty() || contains_secret_pattern(runner) || runner.contains('/') {
+        return false;
+    }
+    env::var("XHUB_RUST_SKILLS_ALLOWED_RUNNERS")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .any(|item| item == runner)
+}
+
+fn safe_process_output(bytes: &[u8]) -> (String, bool) {
+    let mut value = String::from_utf8_lossy(bytes).to_string();
+    value = value.chars().take(8_000).collect();
+    if contains_secret_pattern(&value) {
+        ("[REDACTED]".to_string(), true)
+    } else {
+        (value, false)
+    }
+}
+
+fn skill_execute_response(
+    ok: bool,
+    status: &str,
+    deny_code: &str,
+    error_code: &str,
+    authority_enabled: bool,
+    decision: &SkillPreflightDecision,
+    output: Option<Value>,
+    policy_event_id: String,
+) -> String {
+    json!({
+        "schema_version": "xhub.skills_execute.v1",
+        "ok": ok,
+        "command": "execute",
+        "status": status,
+        "deny_code": deny_code,
+        "error_code": error_code,
+        "authority": if authority_enabled { "rust_execution_authority" } else { "policy_gate_only" },
+        "execution_authority_in_rust": authority_enabled,
+        "hub_executes_third_party_code": decision.hub_executes_third_party_code,
+        "requires_pin_or_grant": decision.requires_pin_or_grant,
+        "preflight": preflight_to_value(decision),
+        "policy_event_id": policy_event_id,
+        "output": output.unwrap_or_else(|| json!({})),
+        "detail_json_included": false,
+        "secret_leak": false,
+    })
+    .to_string()
+}
+
 pub fn skills_dir_from_env(config: &HubConfig) -> PathBuf {
     env::var("XHUB_RUST_SKILLS_DIR")
         .ok()
@@ -611,11 +988,29 @@ pub fn skills_dir_from_env(config: &HubConfig) -> PathBuf {
         .unwrap_or_else(|| config.root_dir.join("skills"))
 }
 
+pub fn skills_execution_authority_enabled() -> bool {
+    env_bool("XHUB_RUST_SKILLS_EXECUTION_AUTHORITY", false)
+        && env_bool("XHUB_RUST_SKILLS_PRODUCTION_EXECUTION", false)
+        && env_bool("XHUB_RUST_SKILLS_EXECUTION_PRODUCTION", false)
+        && env_bool("XHUB_RUST_SKILLS_RUNNER_PRODUCTION_AUTHORITY", false)
+}
+
+fn env_bool(key: &str, fallback: bool) -> bool {
+    match env::var(key) {
+        Ok(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => fallback,
+    }
+}
+
 pub fn help_json() -> String {
+    let execution_authority = skills_execution_authority_enabled();
     json!({
         "schema_version": SCHEMA_VERSION,
         "ok": true,
-        "commands": ["catalog", "readiness", "policy-readiness", "pin", "grant", "unpin", "revoke-grant", "policy", "policy-events", "policy-events-prune", "audit", "audit-prune", "preflight"],
+        "commands": ["catalog", "readiness", "policy-readiness", "pin", "grant", "unpin", "revoke-grant", "policy", "policy-events", "policy-events-prune", "audit", "audit-prune", "preflight", "execute"],
         "catalog_schema": SKILL_CATALOG_SCHEMA,
         "readiness_schema": SKILL_READINESS_SCHEMA,
         "preflight_schema": SKILL_PREFLIGHT_SCHEMA,
@@ -626,8 +1021,8 @@ pub fn help_json() -> String {
         "policy_events_prune_schema": SKILL_POLICY_EVENTS_PRUNE_SCHEMA,
         "policy_store_readiness_schema": SKILL_POLICY_STORE_READINESS_SCHEMA,
         "policy_source": SKILL_POLICY_SOURCE,
-        "authority": "policy_gate_only",
-        "execution_authority_in_rust": false,
+        "authority": if execution_authority { "rust_execution_authority" } else { "policy_gate_only" },
+        "execution_authority_in_rust": execution_authority,
         "hub_executes_third_party_code": false,
         "requires_pin_or_grant": true,
         "flags": [
@@ -652,6 +1047,7 @@ pub fn help_json() -> String {
 }
 
 pub fn catalog_to_value(catalog: &SkillCatalog) -> Value {
+    let execution_authority = skills_execution_authority_enabled();
     json!({
         "schema_version": SKILL_CATALOG_SCHEMA,
         "source": SKILL_POLICY_SOURCE,
@@ -662,8 +1058,8 @@ pub fn catalog_to_value(catalog: &SkillCatalog) -> Value {
         "accepted_skill_count": catalog.accepted_count(),
         "blocked_skill_count": catalog.blocked_count(),
         "issue_count": catalog.issues.len(),
-        "authority": "policy_gate_only",
-        "execution_authority_in_rust": false,
+        "authority": if execution_authority { "rust_execution_authority" } else { "policy_gate_only" },
+        "execution_authority_in_rust": execution_authority,
         "hub_executes_third_party_code": catalog.boundary.hub_executes_third_party_code,
         "requires_pin_or_grant": catalog.boundary.requires_pin_or_grant,
         "entries": catalog.entries.iter().map(entry_to_value).collect::<Vec<_>>(),
@@ -675,6 +1071,7 @@ pub fn catalog_to_value(catalog: &SkillCatalog) -> Value {
 }
 
 pub fn readiness_to_value(catalog: &SkillCatalog) -> Value {
+    let execution_authority = skills_execution_authority_enabled();
     json!({
         "schema_version": SKILL_READINESS_SCHEMA,
         "source": SKILL_POLICY_SOURCE,
@@ -685,9 +1082,10 @@ pub fn readiness_to_value(catalog: &SkillCatalog) -> Value {
         "accepted_skill_count": catalog.accepted_count(),
         "blocked_skill_count": catalog.blocked_count(),
         "issue_count": catalog.issues.len(),
-        "authority": "policy_gate_only",
+        "authority": if execution_authority { "rust_execution_authority" } else { "policy_gate_only" },
         "catalog_shadow_http": true,
-        "execution_authority_in_rust": false,
+        "execution_authority_in_rust": execution_authority,
+        "execute_http": true,
         "hub_executes_third_party_code": catalog.boundary.hub_executes_third_party_code,
         "requires_pin_or_grant": catalog.boundary.requires_pin_or_grant,
         "deny_code": if catalog.ready { "" } else { "skills_catalog_not_ready" },
@@ -699,6 +1097,7 @@ pub fn policy_store_readiness_to_value(
     max_preflight_audit_rows: i64,
     max_policy_event_rows: i64,
 ) -> Value {
+    let execution_authority = skills_execution_authority_enabled();
     let mut issue_codes = Vec::new();
     if summary.preflight_audit_count > max_preflight_audit_rows {
         issue_codes.push("preflight_audit_rows_exceed_limit");
@@ -720,8 +1119,8 @@ pub fn policy_store_readiness_to_value(
         "latest_policy_event_ms": summary.latest_policy_event_ms,
         "max_preflight_audit_rows": max_preflight_audit_rows,
         "max_policy_event_rows": max_policy_event_rows,
-        "authority": "policy_gate_only",
-        "execution_authority_in_rust": false,
+        "authority": if execution_authority { "rust_execution_authority" } else { "policy_gate_only" },
+        "execution_authority_in_rust": execution_authority,
         "hub_executes_third_party_code": false,
         "detail_json_included": false,
     })
@@ -739,6 +1138,15 @@ fn entry_to_value(entry: &SkillCatalogEntry) -> Value {
         "capability_tags": entry.capability_tags,
         "requires_pin_or_grant": entry.requires_pin_or_grant,
         "hub_executes_third_party_code": entry.hub_executes_third_party_code,
+        "execution": {
+            "kind": entry.execution.kind,
+            "name": entry.execution.name,
+            "runner": entry.execution.runner,
+            "entrypoint": entry.execution.entrypoint,
+            "args": entry.execution.args,
+            "timeout_ms": entry.execution.timeout_ms,
+            "executable": entry.execution.is_executable(),
+        },
     })
 }
 

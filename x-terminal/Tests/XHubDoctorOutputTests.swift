@@ -157,6 +157,200 @@ struct XHubDoctorOutputTests {
     }
 
     @Test
+    func exportsProviderKeySelectionSnapshotFromModelRouteSection() throws {
+        var xtReport = sampleXTUnifiedDoctorReport(sourceReportPath: "/tmp/xt_unified_doctor_report.json")
+        xtReport.sections[1] = XTUnifiedDoctorSection(
+            kind: .modelRouteReadiness,
+            state: .diagnosticRequired,
+            headline: "Model route is unavailable",
+            summary: "No governed model route is available for the current task. Latest remote key routing says the selected key was skipped by provider state.",
+            nextStep: "Choose a supported model in XT Settings and re-run diagnostics.",
+            repairEntry: .xtChooseModel,
+            detailLines: [
+                "route_event_1=project=Alpha role=coder path=remote_error requested=openai/gpt-5.4 reason=provider_not_ready provider=OpenAI audit_ref=route-audit-1"
+            ],
+            providerKeySelectionProjection: ProviderKeySelectionDecision(
+                requestedProvider: "openai",
+                requestedModelId: "openai/gpt-5.4",
+                strategy: "fill-first",
+                selectionScope: "openai::openai:api.openai.com:responses",
+                selectedAccountKey: "openai:primary",
+                fallbackReasonCode: "",
+                candidates: [
+                    ProviderKeyCandidateDecision(
+                        accountKey: "openai:primary",
+                        provider: "openai",
+                        poolID: "openai:api.openai.com:responses",
+                        wireAPI: "responses",
+                        availability: .ready,
+                        score: 1_200,
+                        selected: true,
+                        reasonCode: "selected_by_scheduler",
+                        retryAtMs: 0
+                    )
+                ]
+            ),
+            providerKeyRouteContextProjection: XTProviderKeyRouteContext(
+                pool: nil,
+                decision: ProviderKeySelectionDecision(
+                    requestedProvider: "openai",
+                    requestedModelId: "openai/gpt-5.4",
+                    strategy: "fill-first",
+                    selectionScope: "openai::openai:api.openai.com:responses",
+                    selectedAccountKey: "openai:primary",
+                    fallbackReasonCode: "",
+                    candidates: [
+                        ProviderKeyCandidateDecision(
+                            accountKey: "openai:primary",
+                            provider: "openai",
+                            poolID: "openai:api.openai.com:responses",
+                            wireAPI: "responses",
+                            availability: .ready,
+                            score: 1_200,
+                            selected: true,
+                            reasonCode: "selected_by_scheduler",
+                            retryAtMs: 0
+                        )
+                    ]
+                ),
+                modelId: "openai/gpt-5.4",
+                importContextLines: [
+                    "配置文件 config149.toml 最近一次同步失败"
+                ],
+                importIssues: [
+                    XTProviderKeyImportIssueContext(
+                        kind: "config_path",
+                        state: "sync_failed",
+                        sourceRef: "/Users/test/config149.toml",
+                        sourceName: "config149.toml",
+                        errorCode: "unsupported_toml_config",
+                        errorDetail: "missing auth entries"
+                    )
+                ]
+            )
+        )
+
+        let bundle = XHubDoctorOutputReport.xtReadinessBundle(
+            from: xtReport,
+            outputPath: "/tmp/xhub_doctor_output_xt_provider_key.json"
+        )
+
+        let check = try #require(bundle.checks.first {
+            $0.checkID == XTUnifiedDoctorSectionKind.modelRouteReadiness.rawValue
+        })
+        #expect(check.providerKeySelectionSnapshot?.requestedProvider == "openai")
+        #expect(check.providerKeySelectionSnapshot?.requestedModelId == "openai/gpt-5.4")
+        #expect(check.providerKeySelectionSnapshot?.selectedAccountKey == "openai:primary")
+        #expect(check.providerKeySelectionSnapshot?.candidates.first?.wireAPI == "responses")
+        #expect(check.providerKeyRouteContextSnapshot?.modelId == "openai/gpt-5.4")
+        #expect(check.providerKeyRouteContextSnapshot?.decision?.selectedAccountKey == "openai:primary")
+        #expect(check.providerKeyRouteContextSnapshot?.importIssues.first?.errorCode == "unsupported_toml_config")
+        #expect(check.providerKeyRouteContextSnapshot?.importContextLines.contains("配置文件 config149.toml 最近一次同步失败") == true)
+    }
+
+    @Test
+    func exportsProviderKeySelectionSnapshotFromRouteContextWhenSelectionProjectionIsMissing() throws {
+        var xtReport = sampleXTUnifiedDoctorReport(sourceReportPath: "/tmp/xt_unified_doctor_report.json")
+        xtReport.sections[1] = XTUnifiedDoctorSection(
+            kind: .modelRouteReadiness,
+            state: .diagnosticRequired,
+            headline: "Model route is unavailable",
+            summary: "No governed model route is available for the current task.",
+            nextStep: "Inspect the structured route context before reparsing fallback text.",
+            repairEntry: .xtChooseModel,
+            detailLines: [
+                "provider_key_selection_model_id=stale/model"
+            ],
+            providerKeyRouteContextProjection: XTProviderKeyRouteContext(
+                pool: nil,
+                decision: ProviderKeySelectionDecision(
+                    requestedProvider: "openai",
+                    requestedModelId: "openai/gpt-5.4",
+                    strategy: "fill-first",
+                    selectionScope: "openai::openai:api.openai.com:responses",
+                    selectedAccountKey: "openai:route-context",
+                    fallbackReasonCode: "",
+                    candidates: [
+                        ProviderKeyCandidateDecision(
+                            accountKey: "openai:route-context",
+                            provider: "openai",
+                            poolID: "openai:api.openai.com:responses",
+                            wireAPI: "responses",
+                            availability: .ready,
+                            score: 1_200,
+                            selected: true,
+                            reasonCode: "selected_by_scheduler",
+                            retryAtMs: 0
+                        )
+                    ]
+                ),
+                modelId: "openai/gpt-5.4",
+                importContextLines: [],
+                importIssues: []
+            )
+        )
+
+        let bundle = XHubDoctorOutputReport.xtReadinessBundle(
+            from: xtReport,
+            outputPath: "/tmp/xhub_doctor_output_xt_provider_key_route_context_only.json"
+        )
+
+        let check = try #require(bundle.checks.first {
+            $0.checkID == XTUnifiedDoctorSectionKind.modelRouteReadiness.rawValue
+        })
+        #expect(check.providerKeySelectionSnapshot?.requestedModelId == "openai/gpt-5.4")
+        #expect(check.providerKeySelectionSnapshot?.selectedAccountKey == "openai:route-context")
+        #expect(check.providerKeySelectionSnapshot?.candidates.first?.accountKey == "openai:route-context")
+    }
+
+    @Test
+    func exportsExternalTerminalAccessSnapshotFromDoctorSection() throws {
+        var xtReport = sampleXTUnifiedDoctorReport(sourceReportPath: "/tmp/xt_unified_doctor_report.json")
+        let projection = XTUnifiedDoctorExternalTerminalAccessProjection(
+            accessKeys: [
+                sampleExternalTerminalAccessKey(
+                    accessKeyID: "hk_blocked",
+                    name: "Blocked External Terminal",
+                    status: "expired",
+                    statusReason: "token_expired"
+                )
+            ],
+            observedAt: Date(timeIntervalSince1970: 1_741_300_060)
+        )
+
+        xtReport.sections.append(
+            XTUnifiedDoctorSection(
+                kind: .externalTerminalAccessReadiness,
+                state: .diagnosticRequired,
+                headline: "存在受阻的非 XT Terminal access key",
+                summary: "至少有一把外部 terminal access key 当前已受阻。",
+                nextStep: "到 XT 设置 → 非 XT Terminal 访问核对并轮换 key。",
+                repairEntry: .xtExternalTerminals,
+                detailLines: projection.doctorDetailLines(),
+                externalTerminalAccessProjection: projection
+            )
+        )
+
+        let bundle = XHubDoctorOutputReport.xtReadinessBundle(
+            from: xtReport,
+            outputPath: "/tmp/xhub_doctor_output_xt_external_terminal_access.json"
+        )
+
+        let check = try #require(bundle.checks.first {
+            $0.checkID == XTUnifiedDoctorSectionKind.externalTerminalAccessReadiness.rawValue
+        })
+        let snapshot = try #require(check.externalTerminalAccessSnapshot)
+        #expect(snapshot.blockedKeyCount == 1)
+        #expect(snapshot.totalKeyCount == 1)
+        #expect(snapshot.primaryIssue == .externalTerminalAccessBlocked)
+        #expect(snapshot.accessKeys.first?.status == "expired")
+        #expect(bundle.nextSteps.contains {
+            $0.stepID == XTUnifiedDoctorSectionKind.externalTerminalAccessReadiness.rawValue
+                && $0.destinationRef == UITroubleshootDestination.xtExternalTerminals.rawValue
+        })
+    }
+
+    @Test
     func writesMachineReadableGenericDoctorReportWithHeartbeatGovernanceRecoveryExplainability() throws {
         let tempRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("xhub-doctor-output-heartbeat-shown-\(UUID().uuidString)", isDirectory: true)
@@ -1686,14 +1880,20 @@ struct XHubDoctorOutputTests {
             "supervisor_safe_point_should_pause_tool_batch_after_boundary=false",
             "supervisor_safe_point_delivery_state=waiting_next_step_boundary",
             "supervisor_safe_point_execution_gate=normal",
-            "Safe Point：pending guidance 等待下一步边界 · execution_gate=normal"
+            "Safe Point：pending guidance 等待下一步边界 · apply_state=queued · execution_gate=normal"
         ]
         let structuredSafePointProjection = XTUnifiedDoctorSupervisorSafePointTimelineProjection(
+            latestGuidanceInjectionId: "guidance-next-tool-structured",
+            latestGuidanceAckStatus: SupervisorGuidanceAckStatus.pending.rawValue,
+            latestGuidanceApplyState: SupervisorGuidanceApplyState.queued.rawValue,
+            latestGuidanceLifecycle: "active",
             pendingGuidanceAvailable: true,
             pendingGuidanceInjectionId: "guidance-next-tool-structured",
             pendingGuidanceDeliveryMode: SupervisorGuidanceDeliveryMode.priorityInsert.rawValue,
             pendingGuidanceInterventionMode: SupervisorGuidanceInterventionMode.suggestNextSafePoint.rawValue,
             pendingGuidanceSafePointPolicy: SupervisorGuidanceSafePointPolicy.nextToolBoundary.rawValue,
+            pendingGuidanceApplyState: SupervisorGuidanceApplyState.queued.rawValue,
+            pendingGuidanceLifecycle: "active",
             liveStateSource: "pending_tool_approval",
             flowStep: 1,
             toolResultsCount: 1,
@@ -1707,7 +1907,7 @@ struct XHubDoctorOutputTests {
             shouldPauseToolBatchAfterBoundary: true,
             deliveryState: "deliverable_now",
             executionGate: "normal",
-            summaryLine: "Safe Point：pending guidance 当前可立即投递 · execution_gate=normal · pause_after_tool_boundary"
+            summaryLine: "Safe Point：pending guidance 当前可立即投递 · apply_state=queued · execution_gate=normal · pause_after_tool_boundary"
         )
 
         var xtReport = sampleXTUnifiedDoctorReport(sourceReportPath: "/tmp/xt_unified_doctor_report.json")
@@ -1867,7 +2067,7 @@ struct XHubDoctorOutputTests {
     }
 
     @Test
-    func projectsHeartbeatGovernanceSnapshotFromStructuredSessionReadinessProjection() {
+    func projectsHeartbeatGovernanceSnapshotFromStructuredSessionReadinessProjection() throws {
         var xtReport = sampleXTUnifiedDoctorReport(sourceReportPath: "/tmp/xt_unified_doctor_report.json")
         xtReport.sections[2] = XTUnifiedDoctorSection(
             kind: .sessionRuntimeReadiness,
@@ -1883,51 +2083,59 @@ struct XHubDoctorOutputTests {
         )
 
         let bundle = XHubDoctorOutputReport.xtReadinessBundle(from: xtReport)
-        let check = bundle.checks.first { $0.checkID == XTUnifiedDoctorSectionKind.sessionRuntimeReadiness.rawValue }
+        let check = try #require(bundle.checks.first {
+            $0.checkID == XTUnifiedDoctorSectionKind.sessionRuntimeReadiness.rawValue
+        })
+        let snapshot = try #require(check.heartbeatGovernanceSnapshot)
+        let reviewPulse = snapshot.reviewPulse
+        let nextReviewDue = snapshot.nextReviewDue
+        let recovery = try #require(snapshot.recoveryDecision)
+        let doctorExplainabilityText = try #require(recovery.doctorExplainabilityText)
+        let projectMemoryTopIssueSummary = try #require(snapshot.projectMemoryTopIssueSummary)
 
-        #expect(check?.heartbeatGovernanceSnapshot?.projectId == "project-alpha")
-        #expect(check?.heartbeatGovernanceSnapshot?.projectName == "Alpha")
-        #expect(check?.heartbeatGovernanceSnapshot?.latestQualityBand == HeartbeatQualityBand.weak.rawValue)
-        #expect(check?.heartbeatGovernanceSnapshot?.latestQualityBandDisplayText == "偏弱")
-        #expect(check?.heartbeatGovernanceSnapshot?.weakReasonDisplayTexts == ["证据偏弱", "完成把握偏低", "Project memory 需要关注"])
-        #expect(check?.heartbeatGovernanceSnapshot?.openAnomalyDisplayTexts == ["完成声明证据偏弱"])
-        #expect(check?.heartbeatGovernanceSnapshot?.projectPhaseDisplayText == "发布")
-        #expect(check?.heartbeatGovernanceSnapshot?.executionStatusDisplayText == "完成候选")
-        #expect(check?.heartbeatGovernanceSnapshot?.riskTierDisplayText == "高")
-        #expect(check?.heartbeatGovernanceSnapshot?.projectMemoryReady == false)
-        #expect(check?.heartbeatGovernanceSnapshot?.projectMemoryIssueCodes == ["project_memory_usage_missing"])
-        #expect(check?.heartbeatGovernanceSnapshot?.projectMemoryTopIssueSummary?.contains("最近一次 memory 装配真相") == true)
-        #expect(check?.heartbeatGovernanceSnapshot?.digestVisibility == XTHeartbeatDigestVisibilityDecision.shown.rawValue)
-        #expect(check?.heartbeatGovernanceSnapshot?.digestReasonCodes.contains("weak_done_claim") == true)
-        #expect(check?.heartbeatGovernanceSnapshot?.digestReasonCodes.contains("project_memory_attention") == true)
-        #expect(check?.heartbeatGovernanceSnapshot?.digestVisibilityDisplayText == "显示给用户")
-        #expect(check?.heartbeatGovernanceSnapshot?.digestReasonDisplayTexts == ["完成声明证据偏弱", "heartbeat 质量偏弱", "当前有待执行复盘候选", "Project memory 需要关注"])
-        #expect(check?.heartbeatGovernanceSnapshot?.digestWhatChangedText.contains("完成声明证据偏弱") == true)
-        #expect(check?.heartbeatGovernanceSnapshot?.digestSystemNextStepText == "Ship release once final review clears")
-        #expect(check?.heartbeatGovernanceSnapshot?.reviewPulse.configuredSeconds == 1_200)
-        #expect(check?.heartbeatGovernanceSnapshot?.reviewPulse.recommendedSeconds == 600)
-        #expect(check?.heartbeatGovernanceSnapshot?.reviewPulse.effectiveSeconds == 600)
-        #expect(check?.heartbeatGovernanceSnapshot?.reviewPulse.dimensionDisplayText == "脉冲复盘")
-        #expect(check?.heartbeatGovernanceSnapshot?.reviewPulse.effectiveReasonDisplayTexts == ["因项目进入 release 阶段而收紧到更密的交付节奏", "因进入 done candidate 而进一步收紧完成前复核"])
-        #expect(check?.heartbeatGovernanceSnapshot?.reviewPulse.nextDueReasonDisplayTexts == ["脉冲复盘窗口已到"])
-        #expect(check?.heartbeatGovernanceSnapshot?.nextReviewDue.kind == SupervisorCadenceDimension.reviewPulse.rawValue)
-        #expect(check?.heartbeatGovernanceSnapshot?.nextReviewDue.due == true)
-        #expect(check?.heartbeatGovernanceSnapshot?.nextReviewDue.kindDisplayText == "脉冲复盘")
-        #expect(check?.heartbeatGovernanceSnapshot?.nextReviewDue.reasonDisplayTexts == ["脉冲复盘窗口已到"])
-        #expect(check?.heartbeatGovernanceSnapshot?.recoveryDecision?.action == HeartbeatRecoveryAction.queueStrategicReview.rawValue)
-        #expect(check?.heartbeatGovernanceSnapshot?.recoveryDecision?.actionDisplayText == "排队治理复盘")
-        #expect(check?.heartbeatGovernanceSnapshot?.recoveryDecision?.urgencyDisplayText == "紧急处理")
-        #expect(check?.heartbeatGovernanceSnapshot?.recoveryDecision?.reasonDisplayText == "heartbeat 或 lane 信号要求先做治理复盘")
-        #expect(check?.heartbeatGovernanceSnapshot?.recoveryDecision?.systemNextStepDisplayText == "系统会先基于事件触发 · pre-done 信号排队一次救援复盘，并在下一个 safe point 注入 guidance")
-        #expect(check?.heartbeatGovernanceSnapshot?.recoveryDecision?.sourceSignalDisplayTexts == ["异常 完成声明证据偏弱", "复盘候选 pre-done 信号 / 一次救援复盘 / 事件触发"])
-        #expect(check?.heartbeatGovernanceSnapshot?.recoveryDecision?.anomalyTypeDisplayTexts == ["完成声明证据偏弱"])
-        #expect(check?.heartbeatGovernanceSnapshot?.recoveryDecision?.queuedReviewTrigger == SupervisorReviewTrigger.preDoneSummary.rawValue)
-        #expect(check?.heartbeatGovernanceSnapshot?.recoveryDecision?.queuedReviewTriggerDisplayText == "pre-done 信号")
-        #expect(check?.heartbeatGovernanceSnapshot?.recoveryDecision?.queuedReviewLevelDisplayText == "一次救援复盘")
-        #expect(check?.heartbeatGovernanceSnapshot?.recoveryDecision?.queuedReviewRunKindDisplayText == "事件触发")
-        #expect(check?.heartbeatGovernanceSnapshot?.recoveryDecision?.doctorExplainabilityText?.contains("救援复盘") == true)
-        #expect(check?.heartbeatGovernanceSnapshot?.recoveryDecision?.doctorExplainabilityText?.contains("紧急处理") == true)
-        #expect(check?.heartbeatGovernanceSnapshot?.recoveryDecision?.doctorExplainabilityText?.contains("Queue a deeper governance review") == false)
+        #expect(snapshot.projectId == "project-alpha")
+        #expect(snapshot.projectName == "Alpha")
+        #expect(snapshot.latestQualityBand == HeartbeatQualityBand.weak.rawValue)
+        #expect(snapshot.latestQualityBandDisplayText == "偏弱")
+        #expect(snapshot.weakReasonDisplayTexts == ["证据偏弱", "完成把握偏低", "Project memory 需要关注"])
+        #expect(snapshot.openAnomalyDisplayTexts == ["完成声明证据偏弱"])
+        #expect(snapshot.projectPhaseDisplayText == "发布")
+        #expect(snapshot.executionStatusDisplayText == "完成候选")
+        #expect(snapshot.riskTierDisplayText == "高")
+        #expect(snapshot.projectMemoryReady == false)
+        #expect(snapshot.projectMemoryIssueCodes == ["project_memory_usage_missing"])
+        #expect(projectMemoryTopIssueSummary.contains("最近一次 memory 装配真相"))
+        #expect(snapshot.digestVisibility == XTHeartbeatDigestVisibilityDecision.shown.rawValue)
+        #expect(snapshot.digestReasonCodes.contains("weak_done_claim"))
+        #expect(snapshot.digestReasonCodes.contains("project_memory_attention"))
+        #expect(snapshot.digestVisibilityDisplayText == "显示给用户")
+        #expect(snapshot.digestReasonDisplayTexts == ["完成声明证据偏弱", "heartbeat 质量偏弱", "当前有待执行复盘候选", "Project memory 需要关注"])
+        #expect(snapshot.digestWhatChangedText.contains("完成声明证据偏弱"))
+        #expect(snapshot.digestSystemNextStepText == "Ship release once final review clears")
+        #expect(reviewPulse.configuredSeconds == 1_200)
+        #expect(reviewPulse.recommendedSeconds == 600)
+        #expect(reviewPulse.effectiveSeconds == 600)
+        #expect(reviewPulse.dimensionDisplayText == "脉冲复盘")
+        #expect(reviewPulse.effectiveReasonDisplayTexts == ["因项目进入 release 阶段而收紧到更密的交付节奏", "因进入 done candidate 而进一步收紧完成前复核"])
+        #expect(reviewPulse.nextDueReasonDisplayTexts == ["脉冲复盘窗口已到"])
+        #expect(nextReviewDue.kind == SupervisorCadenceDimension.reviewPulse.rawValue)
+        #expect(nextReviewDue.due == true)
+        #expect(nextReviewDue.kindDisplayText == "脉冲复盘")
+        #expect(nextReviewDue.reasonDisplayTexts == ["脉冲复盘窗口已到"])
+        #expect(recovery.action == HeartbeatRecoveryAction.queueStrategicReview.rawValue)
+        #expect(recovery.actionDisplayText == "排队治理复盘")
+        #expect(recovery.urgencyDisplayText == "紧急处理")
+        #expect(recovery.reasonDisplayText == "heartbeat 或 lane 信号要求先做治理复盘")
+        #expect(recovery.systemNextStepDisplayText == "系统会先基于事件触发 · pre-done 信号排队一次救援复盘，并在下一个 safe point 注入 guidance")
+        #expect(recovery.sourceSignalDisplayTexts == ["异常 完成声明证据偏弱", "复盘候选 pre-done 信号 / 一次救援复盘 / 事件触发"])
+        #expect(recovery.anomalyTypeDisplayTexts == ["完成声明证据偏弱"])
+        #expect(recovery.queuedReviewTrigger == SupervisorReviewTrigger.preDoneSummary.rawValue)
+        #expect(recovery.queuedReviewTriggerDisplayText == "pre-done 信号")
+        #expect(recovery.queuedReviewLevelDisplayText == "一次救援复盘")
+        #expect(recovery.queuedReviewRunKindDisplayText == "事件触发")
+        #expect(doctorExplainabilityText.contains("救援复盘"))
+        #expect(doctorExplainabilityText.contains("紧急处理"))
+        #expect(doctorExplainabilityText.contains("Queue a deeper governance review") == false)
     }
 
     @Test
@@ -2496,6 +2704,58 @@ private func sampleXTUnifiedDoctorReport(sourceReportPath: String) -> XTUnifiedD
         ],
         consumedContracts: ["xt.ui_surface_state_contract.v1", XTUnifiedDoctorReportContract.frozen.schemaVersion],
         reportPath: sourceReportPath
+    )
+}
+
+private func sampleExternalTerminalAccessKey(
+    accessKeyID: String = "hk_123",
+    name: String = "External Terminal",
+    status: String = "ready",
+    statusReason: String = "",
+    appID: String = "external_terminal"
+) -> HubAccessKeysClient.AccessKey {
+    HubAccessKeysClient.AccessKey(
+        schemaVersion: "hub.access_key.v1",
+        accessKeyID: accessKeyID,
+        authKind: "hub_access_key",
+        status: status,
+        statusReason: statusReason,
+        deviceID: "device-1",
+        userID: "user-1",
+        appID: appID,
+        name: name,
+        note: "",
+        tokenRedacted: "axh_***",
+        enabled: true,
+        createdAtMs: 1_741_299_000_000,
+        updatedAtMs: 1_741_300_000_000,
+        expiresAtMs: 1_741_386_400_000,
+        lastUsedAtMs: 1_741_300_010_000,
+        lastUsedPeerIP: "127.0.0.1",
+        lastUsedTransport: "grpc",
+        revokedAtMs: 0,
+        revokeReason: "",
+        revokedByUserID: "",
+        revokedVia: "",
+        createdByUserID: "user-1",
+        createdByAppID: "xt",
+        createdVia: "xt_ui",
+        lastRotatedAtMs: 0,
+        rotationCount: 0,
+        capabilities: [],
+        scopes: ["hub.connect"],
+        allowedCIDRs: [],
+        policyMode: "default",
+        trustProfilePresent: true,
+        connect: HubAccessKeysClient.AccessKeyConnect(
+            hubHost: "hub.example.test",
+            hubPort: 50051,
+            tlsMode: "disabled",
+            tlsServerName: "",
+            authEnvKey: "HUB_CLIENT_TOKEN"
+        ),
+        connectEnvTemplate: "export HUB_CLIENT_TOKEN=redacted",
+        connectEnv: nil
     )
 }
 

@@ -546,8 +546,32 @@ enum HubAIError: Error, LocalizedError {
             if r.hasPrefix("mlx_lm_unavailable") {
                 return "Hub runtime is running but MLX is unavailable: \(r)"
             }
+            if let remoteHTMLFailure = remoteHTMLFailurePresentation(r) {
+                return remoteHTMLFailure
+            }
             return "AI failed: \(r.isEmpty ? "unknown" : r)"
         }
+    }
+
+    private func remoteHTMLFailurePresentation(_ rawReason: String) -> String? {
+        let normalized = rawReason.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return nil }
+
+        let lowered = normalized.lowercased()
+        let looksLikeHTMLPayload = lowered.contains("<!doctype html")
+            || lowered.contains("<html")
+            || lowered.contains("</html>")
+        guard lowered.hasPrefix("bad_json") || looksLikeHTMLPayload else { return nil }
+
+        let mentions504 = lowered.contains("gateway time-out")
+            || lowered.contains("gateway timeout")
+            || lowered.contains("error code 504")
+            || lowered.contains("504:")
+        if mentions504 {
+            return "The configured remote model endpoint returned an HTML 504 Gateway Time-out page instead of the expected JSON response. Check the provider Base URL / reverse proxy in REL Flow Hub → Settings → Remote Models; the upstream endpoint may be down or not OpenAI-compatible."
+        }
+
+        return "The configured remote model endpoint returned HTML instead of the expected JSON response. Check the provider Base URL / compatibility in REL Flow Hub → Settings → Remote Models."
     }
 
     private func quotaOrBillingExhaustedReason(_ rawReason: String) -> Bool {
@@ -1269,7 +1293,13 @@ actor HubAIClient {
 
     func loadRuntimeStatus() -> AIRuntimeStatus? {
         let url = HubPaths.runtimeStatusURL()
-        return AIRuntimeStatus.load(from: url)
+        guard let status = AIRuntimeStatus.load(from: url) else {
+            return nil
+        }
+        guard status.hasAuthoritativeRuntimeState else {
+            return nil
+        }
+        return status
     }
 
     static func resolveRouteDecisionModelsSnapshot(
@@ -1396,6 +1426,7 @@ actor HubAIClient {
         taskType: String,
         preferredModelId: String? = nil,
         explicitModelId: String? = nil,
+        remoteBackupModelId configuredRemoteBackupModelId: String? = nil,
         appId: String = "x_terminal",
         projectId: String? = nil,
         sessionId: String? = nil,
@@ -1427,7 +1458,17 @@ actor HubAIClient {
             taskType: taskType
         )
         let effectiveRemoteModelId = resolvedExplicitModelId ?? resolvedPreferredModelId
-        let remoteBackupModelId = Self.preferredRemoteRetryBackupModelID(
+        let resolvedConfiguredRemoteBackupModelId = Self.sanitizedInteractiveGenerateModelID(
+            configuredRemoteBackupModelId,
+            snapshot: modelSnapshot,
+            taskType: taskType
+        )
+        let configuredBackupMatchesPrimary =
+            resolvedConfiguredRemoteBackupModelId?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .caseInsensitiveCompare(effectiveRemoteModelId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "") == .orderedSame
+        let effectiveConfiguredRemoteBackupModelId = configuredBackupMatchesPrimary ? nil : resolvedConfiguredRemoteBackupModelId
+        let remoteBackupModelId = effectiveConfiguredRemoteBackupModelId ?? Self.preferredRemoteRetryBackupModelID(
             requestedModelId: effectiveRemoteModelId,
             snapshot: modelSnapshot,
             transportMode: decision.mode,
@@ -1489,7 +1530,30 @@ actor HubAIClient {
         forcedReqId: String?
     ) async throws -> String {
         let rid = forcedReqId ?? UUID().uuidString
-        let req = HubAIRequest(
+
+        let effectiveModelId = explicitModelId ?? preferredModelId
+        var providerKey: HubAIRequestProviderKey? = nil
+        if let modelId = effectiveModelId {
+            if let account = await ProviderKeyManager.shared.resolveProviderKey(forModelId: modelId) {
+                providerKey = HubAIRequestProviderKey(
+                    accountKey: account.accountKey,
+                    provider: account.provider,
+                    apiKey: "",
+                    baseUrl: account.baseUrl,
+                    proxyUrl: account.proxyUrl,
+                    authType: account.authType,
+                    refreshToken: "",
+                    accountId: account.accountId,
+                    oauthSourceKey: account.oauthSourceKey,
+                    authIndex: account.authIndex,
+                    sourceType: account.sourceType,
+                    sourceRef: account.sourceRef,
+                    customHeaders: [:]
+                )
+            }
+        }
+
+        var req = HubAIRequest(
             req_id: rid,
             app_id: appId,
             task_type: taskType,
@@ -1502,6 +1566,7 @@ actor HubAIClient {
             created_at: Date().timeIntervalSince1970,
             auto_load: autoLoad
         )
+        req.provider_key = providerKey
 
         let reqDir = HubPaths.reqDir()
         let respDir = HubPaths.respDir()

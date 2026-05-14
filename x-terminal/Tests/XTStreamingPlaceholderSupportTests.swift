@@ -116,4 +116,62 @@ struct XTStreamingPlaceholderSupportTests {
 
         #expect(session.assistantThinkingPresentationForTesting(message) == nil)
     }
+
+    @Test
+    func chatSessionHidesThinkingPlaceholderForVisibleAssistantText() {
+        let session = ChatSessionModel()
+        let message = AXChatMessage(role: .assistant, content: "\n  visible text")
+        session.messages = [message]
+        session.isSending = true
+        session.setAssistantProgressLinesForTesting(
+            ["我在整理这一步的执行方案。"],
+            messageID: message.id
+        )
+
+        #expect(session.assistantThinkingPresentationForTesting(message) == nil)
+        #expect(!session.shouldShowThinkingIndicator)
+    }
+
+    @Test
+    func chatSessionKeepsThinkingPlaceholderForWhitespaceOnlyAssistantText() {
+        let session = ChatSessionModel()
+        let message = AXChatMessage(role: .assistant, content: "\n  \t")
+        session.messages = [message]
+        session.isSending = true
+
+        #expect(session.assistantThinkingPresentationForTesting(message)?.title == "准备回复")
+        #expect(!session.shouldShowThinkingIndicator)
+    }
+
+    @Test
+    func chatSessionBatchesProgressRailAfterFirstLine() {
+        let session = ChatSessionModel()
+        let message = AXChatMessage(role: .assistant, content: "")
+        session.messages = [message]
+        session.isSending = true
+
+        session.appendAssistantProgressLineForTesting(
+            messageIndex: 0,
+            line: "我在读取 Sources/App.swift。"
+        )
+        #expect(
+            session.assistantThinkingPresentationForTesting(message)?.title
+                == "读取上下文"
+        )
+
+        session.appendAssistantProgressLineForTesting(
+            messageIndex: 0,
+            line: "我在执行 swift test --filter XTStreamingPlaceholderSupportTests。"
+        )
+        #expect(
+            session.assistantThinkingPresentationForTesting(message)?.title
+                == "读取上下文"
+        )
+
+        session.flushAssistantProgressForTesting(messageID: message.id)
+        #expect(
+            session.assistantThinkingPresentationForTesting(message)?.title
+                == "运行验证"
+        )
+    }
 }

@@ -31,9 +31,9 @@ enum AXProjectExecutionTier: String, Codable, CaseIterable, Sendable {
         case .a2RepoAuto:
             return "可在项目根目录内自主改文件、跑构建 / 测试并更新计划，仍不碰高风险执行面。"
         case .a3DeliverAuto:
-            return "围绕单个项目连续推进到交付完成，可自动收口并回写总结。"
+            return "围绕单个项目连续推进到交付完成，可自动收口并回写总结，仍不使用浏览器 / 设备执行面。"
         case .a4OpenClaw:
-            return "在受治理前提下使用完整代理执行面，包含浏览器 / 设备 / 连接器 / 扩展。"
+            return "在 A4 runtime ready 后使用完整代理执行面，包含浏览器 / 设备 / 连接器 / 扩展。"
         }
     }
 
@@ -65,9 +65,9 @@ enum AXProjectExecutionTier: String, Codable, CaseIterable, Sendable {
             ]
         case .a4OpenClaw:
             return [
-                "browser runtime",
-                "device tools",
-                "connector / extension",
+                "runtime ready 后的 browser runtime",
+                "runtime ready 后的 device tools",
+                "受治理 connector / extension",
                 "预批准的低风险本地动作"
             ]
         }

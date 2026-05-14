@@ -2,21 +2,25 @@ import SwiftUI
 
 /// 待审批工具调用的浮动卡片
 struct PendingToolApprovalView: View {
-    @ObservedObject var session: ChatSessionModel
+    let session: ChatSessionModel
     let hubConnected: Bool
     var isFocused: Bool = false
     var focusedRequestId: String? = nil
     let onApprove: () -> Void
     let onReject: () -> Void
+    @StateObject private var chatStatusStore = XTChatStatusStore()
+    @State private var pendingSkillItems: [String: ProjectSkillActivityItem] = [:]
 
     var body: some View {
-        let pendingSkillItems = session.pendingProjectSkillActivityItems()
+        let statusSnapshot = chatStatusStore.snapshot
+        let pendingToolCalls = statusSnapshot.pendingToolCalls
+        let pendingToolCallIDSignature = statusSnapshot.pendingToolCallIDSignature
         let batchPresentation = XTPendingApprovalPresentation.pendingBatchPresentation(
-            calls: session.pendingToolCalls,
+            calls: pendingToolCalls,
             activityByRequestID: pendingSkillItems
         )
         let batchDeltaLines = XTPendingApprovalPresentation.pendingBatchDeltaLines(
-            calls: session.pendingToolCalls,
+            calls: pendingToolCalls,
             activityByRequestID: pendingSkillItems
         )
         VStack(alignment: .leading, spacing: 12) {
@@ -110,7 +114,7 @@ struct PendingToolApprovalView: View {
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 12) {
-                        ForEach(session.pendingToolCalls) { call in
+                        ForEach(pendingToolCalls) { call in
                             PendingToolCallChip(
                                 toolCall: call,
                                 activity: pendingSkillItems[call.id],
@@ -126,7 +130,7 @@ struct PendingToolApprovalView: View {
                 .onChange(of: focusedRequestId) { _ in
                     scrollToFocusedRequestIfNeeded(using: proxy)
                 }
-                .onChange(of: session.pendingToolCalls.map(\.id).joined(separator: ",")) { _ in
+                .onChange(of: pendingToolCallIDSignature) { _ in
                     scrollToFocusedRequestIfNeeded(using: proxy)
                 }
             }
@@ -155,11 +159,20 @@ struct PendingToolApprovalView: View {
         .shadow(color: isFocused ? Color.orange.opacity(0.22) : .black.opacity(0.1), radius: isFocused ? 12 : 8, y: 4)
         .padding(.horizontal, 20)
         .padding(.bottom, 12)
+        .onAppear {
+            bindAndRefreshPendingSkillItems()
+        }
+        .onChange(of: sessionIdentity) { _ in
+            bindAndRefreshPendingSkillItems()
+        }
+        .onChange(of: pendingToolCallIDSignature) { _ in
+            refreshPendingSkillItems()
+        }
     }
 
     private func scrollToFocusedRequestIfNeeded(using proxy: ScrollViewProxy) {
         guard let focusedRequestId,
-              session.pendingToolCalls.contains(where: { $0.id == focusedRequestId }) else {
+              chatStatusStore.snapshot.pendingToolCalls.contains(where: { $0.id == focusedRequestId }) else {
             return
         }
 
@@ -168,6 +181,19 @@ struct PendingToolApprovalView: View {
                 proxy.scrollTo(focusedRequestId, anchor: .center)
             }
         }
+    }
+
+    private var sessionIdentity: ObjectIdentifier {
+        ObjectIdentifier(session)
+    }
+
+    private func bindAndRefreshPendingSkillItems() {
+        chatStatusStore.bind(to: session)
+        refreshPendingSkillItems()
+    }
+
+    private func refreshPendingSkillItems() {
+        pendingSkillItems = session.pendingProjectSkillActivityItems()
     }
 }
 

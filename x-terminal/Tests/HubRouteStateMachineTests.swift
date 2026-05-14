@@ -16,6 +16,18 @@ struct HubRouteStateMachineTests {
     }
 
     @Test
+    func autoFallbackTreatsHTML504BadJSONAsRemoteOutage() {
+        let raw = """
+        bad_json:<!DOCTYPE html>
+        <html lang="en-US">
+        <title>picfix.pro | 504: Gateway time-out</title>
+        <span class="code-label">Error code 504</span>
+        </html>
+        """
+        #expect(HubRouteStateMachine.shouldFallbackToFile(afterRemoteReasonCode: raw))
+    }
+
+    @Test
     func pendingGrantSnapshotAutoFallbackRequiresRouteUnavailableReason() {
         let autoWithRemote = HubRouteStateMachine.resolve(mode: .auto, hasRemoteProfile: true)
         #expect(

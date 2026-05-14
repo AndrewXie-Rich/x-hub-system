@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(SCRIPT_DIR, '..');
 const DEFAULT_HTTP_BASE_URL = 'http://127.0.0.1:50151';
-const DEFAULT_LIVE_BASE_DIR = path.join(process.env.HOME || '', 'Library', 'Group Containers', 'group.rel.flowhub');
+const FALLBACK_LIVE_BASE_DIR = path.join(process.env.HOME || '', 'Library', 'Group Containers', 'group.rel.flowhub');
 const STATUS_READER_SCRIPT = `
 const fs = require('node:fs');
 const [statusPath, ipcPath, baseDir, nowRaw] = process.argv.slice(1);
@@ -66,11 +66,14 @@ function parseIntInRange(value, fallback, min, max) {
 function parseArgs(argv) {
   const out = {
     httpBaseUrl: DEFAULT_HTTP_BASE_URL,
-    liveBaseDir: DEFAULT_LIVE_BASE_DIR,
+    liveBaseDir: '',
+    liveBaseDirSource: 'auto',
     durationMs: 30000,
     intervalMs: 2000,
     maxStatusAgeMs: 5000,
     statusReadTimeoutMs: 3000,
+    allowMemorySkillsProduction: false,
+    requireMemorySkillsProduction: false,
     reportPath: '',
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -83,6 +86,7 @@ function parseArgs(argv) {
         break;
       case '--live-base-dir':
         out.liveBaseDir = String(next || '').trim() || out.liveBaseDir;
+        out.liveBaseDirSource = 'argument';
         i += 1;
         break;
       case '--duration-ms':
@@ -100,6 +104,13 @@ function parseArgs(argv) {
       case '--status-read-timeout-ms':
         out.statusReadTimeoutMs = parseIntInRange(next, out.statusReadTimeoutMs, 100, 30000);
         i += 1;
+        break;
+      case '--allow-memory-skills-production':
+        out.allowMemorySkillsProduction = true;
+        break;
+      case '--require-memory-skills-production':
+        out.allowMemorySkillsProduction = true;
+        out.requireMemorySkillsProduction = true;
         break;
       case '--report-path':
         out.reportPath = String(next || '').trim();
@@ -127,11 +138,13 @@ function usage() {
     '',
     'Options:',
     '  --http-base-url <u>      Rust xhubd HTTP base URL',
-    '  --live-base-dir <p>      Live XT file IPC base dir',
+    '  --live-base-dir <p>      Live XT file IPC base dir; defaults to /xt/classic-hub-compat discovery',
     '  --duration-ms <ms>       Soak duration, default 30000',
     '  --interval-ms <ms>       Delay between checks, default 2000',
     '  --max-status-age-ms <ms> Freshness budget, default 5000',
     '  --status-read-timeout-ms <ms> Child-process status read timeout, default 3000',
+    '  --allow-memory-skills-production Permit explicit Rust memory writer and skills execution authority',
+    '  --require-memory-skills-production Require both Rust memory writer and skills execution authority',
     '  --report-path <p>       JSON report path',
   ].join('\n');
 }
@@ -167,6 +180,32 @@ function getJson(url, timeoutMs = 5000) {
     req.on('timeout', () => req.destroy(new Error('timeout')));
     req.on('error', (error) => resolve({ ok: false, status_code: 0, body: null, error: String(error.message || error) }));
   });
+}
+
+function firstUsableLiveBaseDir(compatBody) {
+  const candidates = [
+    compatBody?.status_writer?.planned_base_dir,
+    compatBody?.xt_contract?.active_classic_hub?.base_dir,
+    compatBody?.xt_contract?.active_classic_hub?.base_dir_from_status,
+  ].map((item) => String(item || '').trim()).filter(Boolean);
+  for (const candidate of candidates) {
+    if (path.isAbsolute(candidate)) return path.resolve(candidate);
+  }
+  const statusPath = String(compatBody?.status_writer?.planned_status_path || compatBody?.xt_contract?.preferred_status_path || '').trim();
+  if (path.isAbsolute(statusPath)) return path.dirname(path.resolve(statusPath));
+  return '';
+}
+
+async function resolveLiveBaseDir(config) {
+  if (String(config.liveBaseDir || '').trim()) {
+    return { ...config, liveBaseDir: path.resolve(config.liveBaseDir), liveBaseDirSource: config.liveBaseDirSource || 'argument' };
+  }
+  const compat = await getJson(`${config.httpBaseUrl}/xt/classic-hub-compat`, 10000);
+  const discovered = compat.ok ? firstUsableLiveBaseDir(compat.body) : '';
+  if (discovered) {
+    return { ...config, liveBaseDir: discovered, liveBaseDirSource: 'xt_classic_hub_compat' };
+  }
+  return { ...config, liveBaseDir: path.resolve(FALLBACK_LIVE_BASE_DIR), liveBaseDirSource: 'fallback_group_container' };
 }
 
 function emptyStatus(baseDir, statusPath, ipcPath, overrides = {}) {
@@ -236,8 +275,12 @@ function checkCycle(config, index, startedAtMs) {
     if (ready.ok && ready.body?.capabilities?.xt_file_ipc_production_surface_ready !== true) {
       addIssue(issues, 'production_surface_not_ready', { value: ready.body?.capabilities?.xt_file_ipc_production_surface_ready });
     }
-    if (ready.ok && ready.body?.memory?.canonical_writer_in_rust === true) addIssue(issues, 'memory_writer_authority_changed');
-    if (ready.ok && ready.body?.skills?.execution_authority_in_rust === true) addIssue(issues, 'skills_execution_authority_changed');
+    const memoryAuthority = ready.ok && ready.body?.memory?.canonical_writer_in_rust === true;
+    const skillsAuthority = ready.ok && ready.body?.skills?.execution_authority_in_rust === true;
+    if (memoryAuthority && !config.allowMemorySkillsProduction) addIssue(issues, 'memory_writer_authority_changed');
+    if (skillsAuthority && !config.allowMemorySkillsProduction) addIssue(issues, 'skills_execution_authority_changed');
+    if (config.requireMemorySkillsProduction && !memoryAuthority) addIssue(issues, 'memory_writer_authority_not_active');
+    if (config.requireMemorySkillsProduction && !skillsAuthority) addIssue(issues, 'skills_execution_authority_not_active');
     if (!compat.ok || compat.body?.ok !== true) addIssue(issues, 'compat_not_ok', { error: compat.error, status_code: compat.status_code });
     const active = compat.body?.xt_contract?.active_classic_hub;
     if (!active || active.xt_live !== true) addIssue(issues, 'compat_active_xt_live_missing', { active });
@@ -262,6 +305,8 @@ function checkCycle(config, index, startedAtMs) {
       ok: issues.length === 0,
       issues,
       status,
+      memory_writer_authority_in_rust: memoryAuthority,
+      skills_execution_authority_in_rust: skillsAuthority,
       ready_surface: ready.body?.capabilities?.xt_file_ipc_production_surface_ready === true,
       compat_xt_live: active?.xt_live === true,
       compat_deny_code: String(compat.body?.deny_code || ''),
@@ -270,6 +315,7 @@ function checkCycle(config, index, startedAtMs) {
 }
 
 async function run(config) {
+  config = await resolveLiveBaseDir(config);
   const startedAtMs = nowMs();
   const cycles = [];
   let index = 0;
@@ -293,14 +339,17 @@ async function run(config) {
     duration_ms: nowMs() - startedAtMs,
     http_base_url: config.httpBaseUrl,
     live_base_dir: path.resolve(config.liveBaseDir),
+    live_base_dir_source: config.liveBaseDirSource,
     max_status_age_ms: config.maxStatusAgeMs,
     status_read_timeout_ms: config.statusReadTimeoutMs,
     cycle_count: cycles.length,
     status_unique_updated_at_count: updatedAtValues.length,
     max_observed_status_age_ms: ages.length ? Math.max(...ages) : 0,
     min_observed_status_age_ms: ages.length ? Math.min(...ages) : 0,
-    memory_writer_authority_in_rust: false,
-    skills_execution_authority_in_rust: false,
+    memory_skills_production_allowed: config.allowMemorySkillsProduction,
+    memory_skills_production_required: config.requireMemorySkillsProduction,
+    memory_writer_authority_in_rust: cycles.some((cycle) => cycle.memory_writer_authority_in_rust === true),
+    skills_execution_authority_in_rust: cycles.some((cycle) => cycle.skills_execution_authority_in_rust === true),
     issues,
     cycles,
     report_path: config.reportPath,

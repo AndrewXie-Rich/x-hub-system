@@ -73,6 +73,104 @@ struct ToolExecutorRuntimePolicyTests {
     }
 
     @Test
+    func activeRepoWritePlanPromotesMinimalToolProfileToCoding() throws {
+        let fixture = ToolExecutorProjectFixture(name: "runtime-policy-repo-write-plan-promotes-coding")
+        defer { fixture.cleanup() }
+
+        let ctx = AXProjectContext(root: fixture.root)
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config = config
+            .settingProjectGovernance(
+                executionTier: .a2RepoAuto,
+                supervisorInterventionTier: .s2PeriodicReview
+            )
+            .settingToolPolicy(profile: ToolProfile.minimal.rawValue)
+        try AXProjectStore.saveConfig(config, for: ctx)
+        try SupervisorProjectPlanStore.upsert(
+            SupervisorPlanRecord(
+                schemaVersion: SupervisorPlanRecord.currentSchemaVersion,
+                planId: "plan-repo-write",
+                jobId: "job-1",
+                projectId: AXProjectRegistryStore.projectId(forRoot: fixture.root),
+                status: .active,
+                currentOwner: "supervisor",
+                steps: [
+                    SupervisorPlanStepRecord(
+                        schemaVersion: SupervisorPlanStepRecord.currentSchemaVersion,
+                        stepId: "step-1",
+                        title: "写入文件",
+                        kind: .callSkill,
+                        status: .pending,
+                        skillId: "repo.write.file",
+                        currentOwner: "supervisor",
+                        detail: "",
+                        orderIndex: 0,
+                        updatedAtMs: 1
+                    )
+                ],
+                createdAtMs: 1,
+                updatedAtMs: 1,
+                auditRef: "audit-plan-repo-write"
+            ),
+            for: ctx
+        )
+
+        let reloaded = try AXProjectStore.loadOrCreateConfig(for: ctx)
+
+        #expect(ToolPolicy.parseProfile(reloaded.toolProfile) == .coding)
+        #expect(ToolPolicy.effectiveAllowedTools(
+            profileRaw: reloaded.toolProfile,
+            allowTokens: reloaded.toolAllow,
+            denyTokens: reloaded.toolDeny
+        ).contains(.write_file))
+    }
+
+    @Test
+    func loadConfigRepairsStaleWriteFilePolicyMemoryWhenWriteFileIsAllowed() throws {
+        let fixture = ToolExecutorProjectFixture(name: "runtime-policy-repairs-stale-write-memory")
+        defer { fixture.cleanup() }
+
+        let ctx = AXProjectContext(root: fixture.root)
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config = config
+            .settingProjectGovernance(
+                executionTier: .a2RepoAuto,
+                supervisorInterventionTier: .s2PeriodicReview
+            )
+            .settingToolPolicy(profile: ToolProfile.coding.rawValue)
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        var memory = AXMemory.new(projectName: "写文件测试", projectRoot: fixture.root.path)
+        memory.currentState = [
+            "write_file工具被策略阻止(profile=minimal), 代码已提供需手动创建",
+            "业务目标已锁定"
+        ]
+        memory.nextSteps = [
+            "用户需手动创建三个文件或解除write_file工具限制"
+        ]
+        memory.risks = [
+            "write_file工具策略限制(profile=minimal)阻止自动创建文件"
+        ]
+        try AXProjectStore.saveMemory(memory, for: ctx)
+
+        _ = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        let repaired = try #require(AXProjectStore.loadMemoryIfPresent(for: ctx))
+        let combined = (
+            repaired.currentState +
+                repaired.nextSteps +
+                repaired.openQuestions +
+                repaired.risks +
+                repaired.recommendations
+        ).joined(separator: "\n")
+
+        #expect(!combined.contains("profile=minimal"))
+        #expect(!combined.contains("手动创建三个文件"))
+        #expect(!combined.contains("解除write_file工具限制"))
+        #expect(repaired.currentState.contains("业务目标已锁定"))
+        #expect(repaired.currentState.contains("当前工具策略允许在项目根目录内使用 write_file；旧的 minimal/profile 手动建文件提示已失效。"))
+    }
+
+    @Test
     func deletePathFailsClosedWhenExecutionTierDoesNotAllowRepoDeleteMove() async throws {
         let fixture = ToolExecutorProjectFixture(name: "runtime-policy-delete-path-deny")
         defer { fixture.cleanup() }

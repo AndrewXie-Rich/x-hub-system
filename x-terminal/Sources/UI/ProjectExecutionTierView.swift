@@ -243,10 +243,16 @@ struct ProjectExecutionTierView: View {
         switch value {
         case "browser runtime":
             return "浏览器运行时"
+        case "runtime ready 后的 browser runtime":
+            return "runtime ready 后的浏览器运行时"
         case "device tools":
             return "设备工具"
+        case "runtime ready 后的 device tools":
+            return "runtime ready 后的设备工具"
         case "connector / extension":
             return "连接器 / 扩展"
+        case "受治理 connector / extension":
+            return "受治理连接器 / 扩展"
         case "不能触发 browser / device side effect":
             return "不能触发浏览器 / 设备副作用"
         case "不能触发 browser / device / connector side effect":

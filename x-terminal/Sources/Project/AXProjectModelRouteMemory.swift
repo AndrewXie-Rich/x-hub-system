@@ -495,9 +495,10 @@ enum AXProjectModelRouteMemoryStore {
 
     private static func usageRecord(from obj: [String: Any]) -> UsageRecord? {
         guard text(obj["type"]) == "ai_usage",
-              let role = AXRole(rawValue: text(obj["role"])) else {
+              let rawRole = AXRole(rawValue: text(obj["role"])) else {
             return nil
         }
+        let role = rawRole.primaryRole
 
         return UsageRecord(
             role: role,

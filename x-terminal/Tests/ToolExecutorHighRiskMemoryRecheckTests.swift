@@ -62,6 +62,16 @@ struct ToolExecutorHighRiskMemoryRecheckTests {
         let fixture = ToolExecutorProjectFixture(name: "write-file-create-actual")
         defer { fixture.cleanup() }
 
+        let ctx = AXProjectContext(root: fixture.root)
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config = config.settingProjectGovernance(executionTier: .a2RepoAuto)
+        config = config.settingToolPolicy(profile: ToolProfile.coding.rawValue)
+        config = config.settingRuntimeSurfacePolicy(
+            mode: AXProjectExecutionTier.a2RepoAuto.defaultRuntimeSurfacePreset,
+            updatedAt: Date(timeIntervalSince1970: 1_773_500_000)
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
+
         let result = try await ToolExecutor.execute(
             call: ToolCall(
                 tool: .write_file,
@@ -99,6 +109,54 @@ struct ToolExecutorHighRiskMemoryRecheckTests {
         #expect(jsonString(summary["deny_code"]) == XTMemoryUseDenyCode.memorySnapshotStaleForHighRiskAct.rawValue)
         #expect(jsonString(summary["memory_mode"]) == XTMemoryUseMode.toolActHighRisk.rawValue)
         #expect(jsonString(summary["memory_freshness"]) == "unavailable")
+    }
+
+    @Test
+    func browserOpenURLDoesNotTriggerFreshHubRecheckGate() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "browser-open-url-no-fresh-recheck")
+        defer { fixture.cleanup() }
+
+        let config = AXProjectConfig.default(forProjectRoot: fixture.root)
+        let denied = await ToolExecutor.deniedHighRiskMemoryRecheckResultIfNeeded(
+            call: ToolCall(
+                tool: .deviceBrowserControl,
+                args: [
+                    "action": .string("open_url"),
+                    "url": .string("http://localhost:8000")
+                ]
+            ),
+            projectRoot: fixture.root,
+            config: config,
+            resolutionOverride: failingResolution()
+        )
+
+        #expect(denied == nil)
+    }
+
+    @Test
+    func browserInteractiveActionStillRequiresFreshHubRecheckGate() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "browser-click-fresh-recheck")
+        defer { fixture.cleanup() }
+
+        let config = AXProjectConfig.default(forProjectRoot: fixture.root)
+        let result = await ToolExecutor.deniedHighRiskMemoryRecheckResultIfNeeded(
+            call: ToolCall(
+                tool: .deviceBrowserControl,
+                args: [
+                    "action": .string("click"),
+                    "selector": .string("#start")
+                ]
+            ),
+            projectRoot: fixture.root,
+            config: config,
+            resolutionOverride: failingResolution()
+        )
+
+        let denied = try #require(result)
+        #expect(denied.ok == false)
+        let summary = try #require(toolSummaryObject(denied.output))
+        #expect(jsonString(summary["deny_code"]) == XTMemoryUseDenyCode.memorySnapshotStaleForHighRiskAct.rawValue)
+        #expect(jsonString(summary["memory_mode"]) == XTMemoryUseMode.toolActHighRisk.rawValue)
     }
 
     private func failingResolution() -> HubIPCClient.MemoryContextResolutionResult {

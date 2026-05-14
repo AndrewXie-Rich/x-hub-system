@@ -175,7 +175,7 @@ struct SupervisorConversationSessionIntegrationTests {
 
             try await waitUntil("voice follow-up prompt emitted") {
                 manager.messages.contains(where: {
-                    $0.role == .assistant && $0.content.contains("我们一项一项补")
+                    $0.role == .assistant && $0.content.contains("先补：长期目标和完成标准")
                 })
             }
             try await waitUntil("voice follow-up prompt settled", timeoutMs: 5_000) {
@@ -187,7 +187,7 @@ struct SupervisorConversationSessionIntegrationTests {
             #expect(manager.conversationSessionSnapshot.remainingTTLSeconds == 180)
             #expect(manager.supervisorPendingMemoryFactFollowUpStatusLine.contains("亮亮"))
             #expect(manager.supervisorPendingMemoryFactFollowUpQuestion.contains("长期目标和完成标准"))
-            #expect(spoken.contains(where: { $0.contains("我们一项一项补") }))
+            #expect(spoken.contains(where: { $0.contains("先补：长期目标和完成标准") }))
 
             now = now.addingTimeInterval(60)
             controller.refresh()

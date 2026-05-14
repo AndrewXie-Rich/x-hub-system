@@ -1,0 +1,17 @@
+{
+  "schema_version": "xhub.rust_hub.daemon_profile.v1",
+  "profile": "local",
+  "host": "127.0.0.1",
+  "port": 50151,
+  "allow_lan": false,
+  "db_path": "data/hub.sqlite3",
+  "runtime_base_dir": "runtime",
+  "memory_dir": "data/memory",
+  "skills_dir": "skills",
+  "run_dir": "run",
+  "log_dir": "logs",
+  "pid_file": "run/xhubd.pid",
+  "launchd_label": "com.ax.xhubd.local",
+  "launchd_plist_path": "run/com.ax.xhubd.local.plist",
+  "wait_ms": 10000
+}

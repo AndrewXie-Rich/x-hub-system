@@ -6,13 +6,35 @@ struct TerminalChatView: View {
     let memory: AXMemory?
     let config: AXProjectConfig?
     let hubConnected: Bool
-    @ObservedObject var session: ChatSessionModel
-    @EnvironmentObject private var appModel: AppModel
+    let session: ChatSessionModel
+    @ObservedObject private var composer: ChatComposerState
+    @Environment(\.xtAppModelReference) private var appModelReference
+    @EnvironmentObject private var modelSettingsStore: XTModelSettingsStore
     @Environment(\.openWindow) private var openWindow
     @StateObject private var modelManager = HubModelManager.shared
+    @StateObject private var chatStatusStore = XTChatStatusStore()
+    @StateObject private var timelineSessionStore = XTMessageTimelineSessionStore(
+        minimumUpdateIntervalNanoseconds: 50_000_000
+    )
     @State private var isInputFocused: Bool = false
     @State private var isAttachmentDropTarget: Bool = false
     @State private var attachmentDropIntent: XTChatComposerDropIntent? = nil
+    @State private var transcriptAttributedSnapshot = NSAttributedString(string: "")
+
+    init(
+        ctx: AXProjectContext,
+        memory: AXMemory?,
+        config: AXProjectConfig?,
+        hubConnected: Bool,
+        session: ChatSessionModel
+    ) {
+        self.ctx = ctx
+        self.memory = memory
+        self.config = config
+        self.hubConnected = hubConnected
+        self.session = session
+        _composer = ObservedObject(wrappedValue: session.composer)
+    }
 
     private struct SlashSuggestion: Identifiable {
         var id: String { insertion }
@@ -25,7 +47,7 @@ struct TerminalChatView: View {
         VStack(spacing: 0) {
             transcript
 
-            if !session.pendingToolCalls.isEmpty {
+            if !chatStatusSnapshot.pendingToolCalls.isEmpty {
                 pendingApprovalBar
             }
 
@@ -35,18 +57,33 @@ struct TerminalChatView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
+            bindSessionProjectionStores()
             session.ensureLoaded(ctx: ctx, limit: 200)
+            refreshTranscriptAttributed()
             modelManager.setAppModel(appModel)
-            if appModel.hubInteractive {
+            if modelSettingsSnapshot.hubInteractive {
                 Task {
                     await modelManager.fetchModels()
                 }
             }
         }
         .onChange(of: ctx.root.path) { _ in
+            bindSessionProjectionStores()
             session.ensureLoaded(ctx: ctx, limit: 200)
+            refreshTranscriptAttributed()
         }
-        .onChange(of: appModel.hubInteractive) { connected in
+        .onChange(of: sessionIdentity) { _ in
+            bindSessionProjectionStores()
+            session.ensureLoaded(ctx: ctx, limit: 200)
+            refreshTranscriptAttributed()
+        }
+        .onChange(of: timelineSessionSnapshot.tailSignature) { _ in
+            refreshTranscriptAttributed()
+        }
+        .onChange(of: timelineSessionSnapshot.isSending) { _ in
+            refreshTranscriptAttributed()
+        }
+        .onChange(of: modelSettingsSnapshot.hubInteractive) { connected in
             if connected {
                 Task {
                     await modelManager.fetchModels()
@@ -57,10 +94,10 @@ struct TerminalChatView: View {
 
     private var transcript: some View {
         ZStack(alignment: .bottomLeading) {
-            TranscriptTextView(attributedText: transcriptAttributed)
+            TranscriptTextView(attributedText: transcriptAttributedSnapshot)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            if session.isSending {
+            if chatStatusSnapshot.isSending {
                 HStack(spacing: 8) {
                     Text("assistant")
                         .font(.system(.caption, design: .monospaced))
@@ -76,9 +113,10 @@ struct TerminalChatView: View {
     }
 
     private var pendingApprovalBar: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let pendingToolCalls = chatStatusSnapshot.pendingToolCalls
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
-                Text("待批准：\(session.pendingToolCalls.count) 个工具调用")
+                Text("待批准：\(pendingToolCalls.count) 个工具调用")
                     .font(.system(.body, design: .monospaced))
                 Spacer(minLength: 0)
                 Button("批准并执行") {
@@ -102,51 +140,85 @@ struct TerminalChatView: View {
     }
 
     private var pendingSummary: String {
-        session.pendingToolCalls.map { c in
+        chatStatusSnapshot.pendingToolCalls.map { c in
             let keys = c.args.keys.sorted().joined(separator: ",")
             return "- \(c.tool.rawValue) id=\(c.id) args=\(keys)"
         }.joined(separator: "\n")
     }
 
+    private var appModel: AppModel {
+        guard let appModelReference else {
+            preconditionFailure("TerminalChatView requires xtAppModelReference")
+        }
+        return appModelReference
+    }
+
+    private var modelSettingsSnapshot: XTModelSettingsSnapshot {
+        modelSettingsStore.snapshot
+    }
+
+    private var sessionIdentity: ObjectIdentifier {
+        ObjectIdentifier(session)
+    }
+
+    private var chatStatusSnapshot: XTChatStatusSnapshot {
+        if chatStatusStore.isBound(to: session) {
+            return chatStatusStore.snapshot
+        }
+        return XTChatStatusSnapshot(
+            messageCount: session.messages.count,
+            isSending: session.isSending,
+            lastError: session.lastError,
+            pendingToolCalls: session.pendingToolCalls
+        )
+    }
+
+    private var timelineSessionSnapshot: XTMessageTimelineSessionSnapshot {
+        if timelineSessionStore.isBound(to: session) {
+            return timelineSessionStore.snapshot
+        }
+        return XTMessageTimelineSessionSnapshot.make(from: session)
+    }
+
     private var inputBar: some View {
+        let status = chatStatusSnapshot
+        let canSubmit = hubConnected &&
+            !status.isSending &&
+            status.pendingToolCalls.isEmpty &&
+            AXChatAttachmentSupport.hasSubmittableContent(
+                draft: composer.draft,
+                attachments: composer.draftAttachments
+            )
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 ModelSelectorView(projectContext: ctx, config: config)
-                    .environmentObject(appModel)
 
-                VoiceInputButton(text: $session.draft)
+                VoiceInputButton(text: $composer.draft)
 
-                Toggle("自动执行工具", isOn: $session.autoRunTools)
+                Toggle("自动执行", isOn: $composer.autoRunTools)
                     .toggleStyle(.switch)
                     .disabled(!hubConnected)
+                    .help("自动执行普通待确认工具；策略拒绝、权限不足和强制审批的工具仍会停在审批区。")
 
                 Spacer(minLength: 0)
 
                 Button("取消") { session.cancel() }
-                    .disabled(!session.isSending)
+                    .disabled(!status.isSending)
 
-                Button(session.isSending ? "发送中…" : "发送") {
+                Button(status.isSending ? "发送中…" : "发送") {
                     sendMessage()
                 }
-                .disabled(
-                    !hubConnected ||
-                        session.isSending ||
-                        !session.pendingToolCalls.isEmpty ||
-                        !AXChatAttachmentSupport.hasSubmittableContent(
-                            draft: session.draft,
-                            attachments: session.draftAttachments
-                        )
-                )
+                .disabled(!canSubmit)
                 .keyboardShortcut(.return, modifiers: [.command])
             }
 
             memoryRouteRail
             coderExecutionStatusBar
-            if !session.draftAttachments.isEmpty {
+            if !composer.draftAttachments.isEmpty {
                 XTChatProjectInboxPanel(
-                    attachments: session.draftAttachments,
+                    attachments: composer.draftAttachments,
                     projectImportEnabled: true,
-                    continuation: session.importContinuation,
+                    continuation: composer.importContinuation,
                     onRemove: session.removeDraftAttachment,
                     onImport: { session.importAttachmentToProject($0, ctx: ctx) },
                     onImportAll: { session.importAllExternalDraftAttachments(ctx: ctx) },
@@ -158,31 +230,19 @@ struct TerminalChatView: View {
                         session.dismissImportContinuation()
                         sendMessage()
                     },
-                    canContinueAndSend: hubConnected &&
-                        !session.isSending &&
-                        session.pendingToolCalls.isEmpty &&
-                        AXChatAttachmentSupport.hasSubmittableContent(
-                            draft: session.draft,
-                            attachments: session.draftAttachments
-                        ),
+                    canContinueAndSend: canSubmit,
                     onDismissContinuation: session.dismissImportContinuation
                 )
             }
             XTChatComposerTextView(
-                text: $session.draft,
+                text: $composer.draft,
                 isFocused: $isInputFocused,
                 font: .monospacedSystemFont(
                     ofSize: NSFont.preferredFont(forTextStyle: .body).pointSize,
                     weight: .regular
                 ),
-                isEditable: session.pendingToolCalls.isEmpty,
-                canSubmit: hubConnected &&
-                    !session.isSending &&
-                    session.pendingToolCalls.isEmpty &&
-                    AXChatAttachmentSupport.hasSubmittableContent(
-                        draft: session.draft,
-                        attachments: session.draftAttachments
-                    ),
+                isEditable: status.pendingToolCalls.isEmpty,
+                canSubmit: canSubmit,
                 diagnosticScope: "terminal_chat",
                 onSubmit: sendMessage,
                 allowsImportDrop: true,
@@ -225,7 +285,7 @@ struct TerminalChatView: View {
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
 
-            if let err = session.lastError, !err.isEmpty {
+            if let err = status.lastError, !err.isEmpty {
                 Text(err)
                     .foregroundStyle(.red)
                     .font(.system(.caption, design: .monospaced))
@@ -243,12 +303,13 @@ struct TerminalChatView: View {
     }
 
     private func sendMessage() {
+        let status = chatStatusSnapshot
         guard hubConnected,
-              !session.isSending,
-              session.pendingToolCalls.isEmpty,
+              !status.isSending,
+              status.pendingToolCalls.isEmpty,
               AXChatAttachmentSupport.hasSubmittableContent(
-                  draft: session.draft,
-                  attachments: session.draftAttachments
+                  draft: composer.draft,
+                  attachments: composer.draftAttachments
               ) else {
             return
         }
@@ -305,7 +366,7 @@ struct TerminalChatView: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-            .disabled(session.isSending || !session.pendingToolCalls.isEmpty)
+            .disabled(chatStatusSnapshot.isSending || !chatStatusSnapshot.pendingToolCalls.isEmpty)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -314,14 +375,19 @@ struct TerminalChatView: View {
     }
 
     private var coderExecutionStatusBar: some View {
-        let snapshot = AXRoleExecutionSnapshots.latestSnapshots(for: ctx)[.coder]
-            ?? .empty(role: .coder, source: "terminal_chat")
+        let snapshot = XTProjectUIPresentationReadCache.roleExecutionSnapshot(
+            for: ctx,
+            role: .coder
+        ) {
+            AXRoleExecutionSnapshots.latestSnapshots(for: ctx)[.coder]
+                ?? .empty(role: .coder, source: "terminal_chat")
+        }
         let configuredModelId = AXRoleExecutionSnapshots.configuredModelId(
             for: .coder,
             projectConfig: config,
-            settings: appModel.settingsStore.settings
+            settings: modelSettingsSnapshot.settings
         )
-        let interfaceLanguage = appModel.settingsStore.settings.interfaceLanguage
+        let interfaceLanguage = modelSettingsSnapshot.interfaceLanguage
         let primaryAction = ProjectCoderExecutionStatusPrimaryActionResolver.resolve(
             configuredModelId: configuredModelId,
             snapshot: snapshot,
@@ -340,7 +406,7 @@ struct TerminalChatView: View {
             ),
             actionTitle: primaryAction?.title,
             actionHelpText: primaryAction?.helpText,
-            actionDisabled: session.isSending || !session.pendingToolCalls.isEmpty,
+            actionDisabled: chatStatusSnapshot.isSending || !chatStatusSnapshot.pendingToolCalls.isEmpty,
             onAction: {
                 guard let primaryAction else { return }
                 ProjectCoderExecutionStatusPrimaryActionResolver.perform(
@@ -366,15 +432,20 @@ struct TerminalChatView: View {
     }
 
     private var latestGovernanceInterception: ProjectGovernanceInterceptionPresentation? {
-        ProjectGovernanceInterceptionPresentation.latest(
-            from: AXProjectSkillActivityStore.loadRecentActivities(ctx: ctx, limit: 12)
-        )
+        XTProjectUIPresentationReadCache.latestGovernanceInterception(
+            for: ctx,
+            limit: 12
+        ) {
+            ProjectGovernanceInterceptionPresentation.latest(
+                from: AXProjectSkillActivityStore.loadRecentActivities(ctx: ctx, limit: 12)
+            )
+        }
     }
 
     private var showSlashSuggestions: Bool {
-        let t = session.draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let t = composer.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         if !t.hasPrefix("/") { return false }
-        if !session.pendingToolCalls.isEmpty { return false }
+        if !chatStatusSnapshot.pendingToolCalls.isEmpty { return false }
         return true
     }
 
@@ -383,7 +454,7 @@ struct TerminalChatView: View {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(slashSuggestions.prefix(12)) { item in
                     Button {
-                        session.draft = item.insertion
+                        composer.draft = item.insertion
                     } label: {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Text(item.title)
@@ -418,13 +489,13 @@ struct TerminalChatView: View {
     }
 
     private var slashSuggestions: [SlashSuggestion] {
-        let raw = session.draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = composer.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard raw.hasPrefix("/") else { return [] }
         let lower = raw.lowercased()
 
         if lower == "/model" || lower.hasPrefix("/model ") {
             let query = String(lower.dropFirst("/model".count)).trimmingCharacters(in: .whitespacesAndNewlines)
-            let loaded = modelManager.visibleSnapshot(fallback: appModel.modelsState).models
+            let loaded = modelManager.visibleSnapshot(fallback: modelSettingsSnapshot.modelsState).models
                 .filter { $0.state == .loaded }
                 .sorted { $0.id.lowercased() < $1.id.lowercased() }
             var out = loaded.map { m in
@@ -548,7 +619,24 @@ struct TerminalChatView: View {
         return base.filter { $0.insertion.lowercased().contains(q) || $0.title.lowercased().contains(q) }
     }
 
-    private var transcriptAttributed: NSAttributedString {
+    private func bindSessionProjectionStores() {
+        chatStatusStore.bind(to: session)
+        timelineSessionStore.bind(to: session)
+    }
+
+    private func refreshTranscriptAttributed() {
+        transcriptAttributedSnapshot = TerminalChatTranscriptPresentation.attributedString(
+            messages: session.messages,
+            isSending: timelineSessionSnapshot.isSending
+        )
+    }
+}
+
+enum TerminalChatTranscriptPresentation {
+    static func attributedString(
+        messages: [AXChatMessage],
+        isSending: Bool
+    ) -> NSAttributedString {
         let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
         let small = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
 
@@ -558,7 +646,16 @@ struct TerminalChatView: View {
             out.append(NSAttributedString(string: s + "\n", attributes: [.font: font, .foregroundColor: color]))
         }
 
-        for msg in session.messages {
+        let streamingTailID: String? = {
+            guard isSending,
+                  let tail = messages.last,
+                  tail.role == .assistant else {
+                return nil
+            }
+            return tail.id
+        }()
+
+        for msg in messages {
             let prefix: String
             let labelColor: NSColor = .secondaryLabelColor
             let bodyColor: NSColor
@@ -579,7 +676,11 @@ struct TerminalChatView: View {
             }
 
             appendLine(prefix, font: small, color: labelColor)
-            appendLine(msg.content.isEmpty ? "…" : msg.content, font: font, color: bodyColor)
+            let visibleContent = visibleContent(
+                for: msg,
+                isStreamingTail: msg.id == streamingTailID
+            )
+            appendLine(visibleContent.isEmpty ? "…" : visibleContent, font: font, color: bodyColor)
             if !msg.attachments.isEmpty {
                 appendLine(
                     "attachments: " + msg.attachments.map(\.displayPath).joined(separator: ", "),
@@ -591,5 +692,21 @@ struct TerminalChatView: View {
         }
 
         return out
+    }
+
+    static func visibleContent(
+        for message: AXChatMessage,
+        isStreamingTail: Bool
+    ) -> String {
+        if isStreamingTail {
+            return MessageTimelineStreamingTextPresentation.visibleContent(
+                for: message.content,
+                isStreamingTail: true
+            )
+        }
+        guard MessageTimelineLongTextPresentation.shouldCollapse(message.content) else {
+            return message.content
+        }
+        return MessageTimelineLongTextPresentation.previewContent(for: message.content)
     }
 }

@@ -34,6 +34,7 @@ struct SupervisorProjectDrillDownPresentation: Equatable {
     var scopeOptions: [SupervisorProjectDrillDownScopeOptionPresentation]
     var statusLine: String
     var governanceTags: [SupervisorPortfolioTagPresentation]
+    var governancePresentation: ProjectGovernancePresentation?
     var runtimeSummary: String?
     var scopeRestrictionText: String?
     var latestUIReview: XTUIReviewPresentation?
@@ -46,6 +47,7 @@ enum SupervisorProjectDrillDownPresentationMapper {
         allowedScopes: [SupervisorProjectDrillDownScope],
         selectedScope: SupervisorProjectDrillDownScope,
         governanceTags: [SupervisorPortfolioTagPresentation],
+        governancePresentation: ProjectGovernancePresentation? = nil,
         runtimeSummary: String?,
         latestUIReview: XTUIReviewPresentation?,
         governanceNowMs: Int64
@@ -66,6 +68,7 @@ enum SupervisorProjectDrillDownPresentationMapper {
             ],
             statusLine: statusLine(for: snapshot),
             governanceTags: governanceTags,
+            governancePresentation: governancePresentation,
             runtimeSummary: nonEmpty(runtimeSummary),
             scopeRestrictionText: allowedScopes.contains(.capsulePlusRecent)
                 ? nil

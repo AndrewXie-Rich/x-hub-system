@@ -716,16 +716,27 @@ struct XTChatComposerTextView: NSViewRepresentable {
             insetHeight: insetHeight,
             minimumLineHeight: minimumLineHeight
         )
-        textView.frame.size = NSSize(width: width, height: height)
-        textView.minSize.height = viewportHeight
-        textView.textContainer?.containerSize = NSSize(
+        let nextFrameSize = NSSize(width: width, height: height)
+        let didResize = textView.frame.size != nextFrameSize
+        if didResize {
+            textView.frame.size = nextFrameSize
+        }
+        if textView.minSize.height != viewportHeight {
+            textView.minSize.height = viewportHeight
+        }
+        let nextContainerSize = NSSize(
             width: width,
             height: CGFloat.greatestFiniteMagnitude
         )
+        if textView.textContainer?.containerSize != nextContainerSize {
+            textView.textContainer?.containerSize = nextContainerSize
+        }
 
         textView.requestProgrammaticFocus()
-        textView.window?.invalidateCursorRects(for: textView)
-        nsView.window?.invalidateCursorRects(for: nsView)
+        if didResize {
+            textView.window?.invalidateCursorRects(for: textView)
+            nsView.window?.invalidateCursorRects(for: nsView)
+        }
         XTChatComposerDiagnostics.log(
             diagnosticScope,
             "updateNSView focused=\(isFocused) editable=\(isEditable) canSubmit=\(canSubmit) draftLength=\(text.count) firstResponder=\(XTChatComposerDiagnostics.describe(textView.window?.firstResponder))"

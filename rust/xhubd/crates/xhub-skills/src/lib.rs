@@ -82,6 +82,38 @@ pub struct SkillCatalogEntry {
     pub capability_tags: Vec<String>,
     pub requires_pin_or_grant: bool,
     pub hub_executes_third_party_code: bool,
+    pub execution: SkillExecutionSpec,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillExecutionSpec {
+    pub kind: String,
+    pub name: String,
+    pub runner: String,
+    pub entrypoint: String,
+    pub args: Vec<String>,
+    pub timeout_ms: u64,
+}
+
+impl SkillExecutionSpec {
+    pub fn none() -> Self {
+        Self {
+            kind: "none".to_string(),
+            name: String::new(),
+            runner: String::new(),
+            entrypoint: String::new(),
+            args: Vec::new(),
+            timeout_ms: 0,
+        }
+    }
+
+    pub fn is_executable(&self) -> bool {
+        matches!(self.kind.as_str(), "builtin" | "process")
+    }
+
+    pub fn executes_third_party_code(&self) -> bool {
+        self.kind == "process"
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -204,6 +236,10 @@ pub fn scan_skill_catalog(skills_dir: &Path) -> SkillCatalog {
         }
     }
 
+    catalog.boundary.hub_executes_third_party_code = catalog
+        .entries
+        .iter()
+        .any(|entry| entry.hub_executes_third_party_code);
     catalog.ready = catalog.issues.is_empty();
     catalog
 }
@@ -211,6 +247,14 @@ pub fn scan_skill_catalog(skills_dir: &Path) -> SkillCatalog {
 pub fn evaluate_skill_preflight(
     catalog: &SkillCatalog,
     request: SkillPreflightRequest,
+) -> SkillPreflightDecision {
+    evaluate_skill_preflight_with_authority(catalog, request, false)
+}
+
+pub fn evaluate_skill_preflight_with_authority(
+    catalog: &SkillCatalog,
+    request: SkillPreflightRequest,
+    execution_authority_in_rust: bool,
 ) -> SkillPreflightDecision {
     let boundary = SkillBoundary::default();
     let request_id = sanitize_public_text(&request.request_id).unwrap_or_default();
@@ -255,6 +299,9 @@ pub fn evaluate_skill_preflight(
     if matches!(skill, Some(entry) if entry.status == SkillStatus::Blocked) {
         reason_codes.push("skill_blocked".to_string());
     }
+    let hub_executes_third_party_code = skill
+        .map(|entry| entry.hub_executes_third_party_code)
+        .unwrap_or(false);
 
     let pinned = !skill_id.is_empty() && pinned_skill_ids.iter().any(|item| item == &skill_id);
     if boundary.requires_pin_or_grant && !pinned {
@@ -309,8 +356,8 @@ pub fn evaluate_skill_preflight(
         undeclared_capabilities,
         pinned,
         requires_pin_or_grant: boundary.requires_pin_or_grant,
-        execution_authority_in_rust: false,
-        hub_executes_third_party_code: boundary.hub_executes_third_party_code,
+        execution_authority_in_rust,
+        hub_executes_third_party_code,
         audit_schema_version: SKILL_PREFLIGHT_AUDIT_SCHEMA,
     }
 }
@@ -363,6 +410,7 @@ fn scan_skill_json(skill_dir: &Path, manifest_path: &Path) -> SkillCatalogEntry 
     }
 
     let capability_tags = collect_json_tags(&value);
+    let execution = parse_execution_spec(value.get("execution"), &mut reason_codes);
     entry_from_parts(
         skill_id,
         display_name,
@@ -371,6 +419,7 @@ fn scan_skill_json(skill_dir: &Path, manifest_path: &Path) -> SkillCatalogEntry 
         ManifestKind::SkillJson,
         reason_codes,
         capability_tags,
+        execution,
     )
 }
 
@@ -398,6 +447,7 @@ fn scan_skill_md(skill_dir: &Path, manifest_path: &Path) -> SkillCatalogEntry {
         ManifestKind::SkillMd,
         reason_codes,
         capability_tags,
+        SkillExecutionSpec::none(),
     )
 }
 
@@ -409,6 +459,7 @@ fn entry_from_parts(
     manifest_kind: ManifestKind,
     reason_codes: Vec<String>,
     capability_tags: Vec<String>,
+    execution: SkillExecutionSpec,
 ) -> SkillCatalogEntry {
     let blocked = reason_codes.iter().any(|code| is_blocking_reason(code));
     let boundary = SkillBoundary::default();
@@ -426,7 +477,8 @@ fn entry_from_parts(
         reason_codes,
         capability_tags,
         requires_pin_or_grant: boundary.requires_pin_or_grant,
-        hub_executes_third_party_code: boundary.hub_executes_third_party_code,
+        hub_executes_third_party_code: execution.executes_third_party_code(),
+        execution,
     }
 }
 
@@ -437,7 +489,93 @@ fn is_blocking_reason(code: &str) -> bool {
             | "manifest_secret_pattern_denied"
             | "invalid_skill_json"
             | "skill_id_missing"
+            | "execution_secret_pattern_denied"
+            | "execution_kind_unsupported"
+            | "execution_entrypoint_missing"
+            | "execution_entrypoint_absolute_denied"
+            | "execution_entrypoint_parent_traversal_denied"
     )
+}
+
+fn parse_execution_spec(
+    value: Option<&Value>,
+    reason_codes: &mut Vec<String>,
+) -> SkillExecutionSpec {
+    let Some(value) = value else {
+        return SkillExecutionSpec::none();
+    };
+    let Some(object) = value.as_object() else {
+        reason_codes.push("execution_kind_unsupported".to_string());
+        return SkillExecutionSpec::none();
+    };
+    if contains_secret_pattern(&value.to_string()) {
+        reason_codes.push("execution_secret_pattern_denied".to_string());
+        return SkillExecutionSpec::none();
+    }
+
+    let kind = value_string(value, "kind")
+        .or_else(|| value_string(value, "type"))
+        .unwrap_or_else(|| "builtin".to_string())
+        .to_ascii_lowercase();
+    match kind.as_str() {
+        "builtin" => {
+            let name = value_string(value, "name")
+                .or_else(|| value_string(value, "builtin"))
+                .unwrap_or_else(|| "healthcheck".to_string());
+            SkillExecutionSpec {
+                kind,
+                name: sanitize_public_token(&name).unwrap_or_else(|| "healthcheck".to_string()),
+                runner: String::new(),
+                entrypoint: String::new(),
+                args: Vec::new(),
+                timeout_ms: parse_timeout_ms(object.get("timeout_ms")).unwrap_or(1_000),
+            }
+        }
+        "process" => {
+            let entrypoint = value_string(value, "entrypoint").unwrap_or_default();
+            if entrypoint.is_empty() {
+                reason_codes.push("execution_entrypoint_missing".to_string());
+            }
+            if entrypoint.starts_with('/') {
+                reason_codes.push("execution_entrypoint_absolute_denied".to_string());
+            }
+            if entrypoint.split('/').any(|part| part == "..") {
+                reason_codes.push("execution_entrypoint_parent_traversal_denied".to_string());
+            }
+            SkillExecutionSpec {
+                kind,
+                name: String::new(),
+                runner: value_string(value, "runner")
+                    .and_then(|item| sanitize_public_token(&item))
+                    .unwrap_or_default(),
+                entrypoint: sanitize_public_text(&entrypoint).unwrap_or_default(),
+                args: collect_string_array(value.get("args")),
+                timeout_ms: parse_timeout_ms(object.get("timeout_ms")).unwrap_or(5_000),
+            }
+        }
+        _ => {
+            reason_codes.push("execution_kind_unsupported".to_string());
+            SkillExecutionSpec::none()
+        }
+    }
+}
+
+fn parse_timeout_ms(value: Option<&Value>) -> Option<u64> {
+    value
+        .and_then(Value::as_u64)
+        .map(|value| value.clamp(100, 30_000))
+}
+
+fn collect_string_array(value: Option<&Value>) -> Vec<String> {
+    match value {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .filter_map(sanitize_public_text)
+            .take(32)
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 fn read_limited(path: &Path) -> Result<String, std::io::Error> {
@@ -681,6 +819,55 @@ mod tests {
         assert!(decision.allowed);
         assert_eq!(decision.decision, "allow");
         assert!(!decision.execution_authority_in_rust);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn scans_builtin_execution_manifest_without_third_party_code() {
+        let dir = temp_dir("exec_builtin");
+        let skill = dir.join("health");
+        fs::create_dir_all(&skill).expect("mkdir");
+        fs::write(
+            skill.join("skill.json"),
+            r#"{"id":"health","name":"Health","capabilities":["health"],"execution":{"kind":"builtin","name":"healthcheck"}}"#,
+        )
+        .expect("write");
+        let catalog = scan_skill_catalog(&dir);
+        assert!(catalog.ready);
+        assert_eq!(catalog.entries[0].execution.kind, "builtin");
+        assert!(catalog.entries[0].execution.is_executable());
+        assert!(!catalog.entries[0].hub_executes_third_party_code);
+        let decision = evaluate_skill_preflight_with_authority(
+            &catalog,
+            SkillPreflightRequest {
+                skill_id: "health".to_string(),
+                requested_capabilities: vec!["health".to_string()],
+                pinned_skill_ids: vec!["health".to_string()],
+                granted_capabilities: vec!["health".to_string()],
+                ..Default::default()
+            },
+            true,
+        );
+        assert!(decision.allowed);
+        assert!(decision.execution_authority_in_rust);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn blocks_unsafe_process_entrypoint() {
+        let dir = temp_dir("exec_bad_path");
+        let skill = dir.join("bad");
+        fs::create_dir_all(&skill).expect("mkdir");
+        fs::write(
+            skill.join("skill.json"),
+            r#"{"id":"bad","capabilities":["filesystem"],"execution":{"kind":"process","entrypoint":"../run.sh"}}"#,
+        )
+        .expect("write");
+        let catalog = scan_skill_catalog(&dir);
+        assert!(!catalog.ready);
+        assert!(catalog.entries[0]
+            .reason_codes
+            .contains(&"execution_entrypoint_parent_traversal_denied".to_string()));
         let _ = fs::remove_dir_all(dir);
     }
 

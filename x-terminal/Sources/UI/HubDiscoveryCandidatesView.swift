@@ -1,16 +1,18 @@
 import SwiftUI
 
 struct HubDiscoveryCandidatesView: View {
-    @ObservedObject var appModel: AppModel
+    let candidates: [HubDiscoveredHubCandidateSummary]
+    let selectionDisabled: Bool
+    let onSelect: (HubDiscoveredHubCandidateSummary) -> Void
 
     var body: some View {
-        if appModel.hubDiscoveredCandidates.count > 1 {
+        if candidates.count > 1 {
             VStack(alignment: .leading, spacing: 8) {
                 Text("检测到多个局域网 Hub。在你明确固定其中一个之前，自动连接会保持阻断。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                ForEach(appModel.hubDiscoveredCandidates) { candidate in
+                ForEach(candidates) { candidate in
                     HStack(alignment: .top, spacing: 12) {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(candidate.displayName)
@@ -24,10 +26,10 @@ struct HubDiscoveryCandidatesView: View {
                         Spacer(minLength: 12)
 
                         Button("使用这个 Hub") {
-                            appModel.selectDiscoveredHubCandidate(candidate)
+                            onSelect(candidate)
                         }
                         .buttonStyle(.bordered)
-                        .disabled(appModel.hubPortAutoDetectRunning || appModel.hubRemoteLinking)
+                        .disabled(selectionDisabled)
                     }
                     .padding(10)
                     .background(

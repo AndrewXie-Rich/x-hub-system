@@ -176,6 +176,8 @@ enum ToolResultPresentation {
             return "搜索技能"
         case .skills_pin:
             return "更新技能可用性"
+        case .skillsExecuteRunner:
+            return "执行技能 Runner"
         case .summarize:
             return "总结内容"
         case .supervisorVoicePlayback:

@@ -4,16 +4,27 @@ import Testing
 
 struct SupervisorModelRoutePolicyTests {
     @Test
-    func routePolicyFreezesAllFiveRoleRoutes() {
+    func routePolicyFreezesThreeVisibleRoleRoutes() {
         let policy = SupervisorModelRoutePolicy.default(projectID: "proj_demo")
 
         #expect(policy.schemaVersion == SupervisorModelRoutePolicy.currentSchemaVersion)
-        #expect(policy.roleRoutes.count == 5)
-        #expect(policy.route(for: .planner)?.taskTags == ["scope_freeze", "spec_capsule", "decision_blocker"])
+        #expect(policy.roleRoutes.count == 3)
+        #expect(
+            policy.route(for: .supervisor)?.taskTags == [
+                "scope_freeze",
+                "spec_capsule",
+                "decision_blocker",
+                "docs",
+                "release_notes",
+                "spec_freeze_writeup",
+                "runbook",
+                "rollout",
+                "runtime_probe",
+                "operator_action",
+            ]
+        )
         #expect(policy.route(for: .coder)?.taskTags == ["codegen", "refactor", "runtime_fix"])
         #expect(policy.route(for: .reviewer)?.taskTags == ["review", "regression", "gate_review"])
-        #expect(policy.route(for: .doc)?.taskTags == ["docs", "release_notes", "spec_freeze_writeup"])
-        #expect(policy.route(for: .ops)?.taskTags == ["runbook", "rollout", "runtime_probe", "operator_action"])
     }
 
     @Test
@@ -44,26 +55,61 @@ struct SupervisorModelRoutePolicyTests {
         var config = AXProjectConfig.default(forProjectRoot: root)
         config = config.settingModelOverride(role: .coder, modelId: "openai/gpt-coder")
         config = config.settingModelOverride(role: .reviewer, modelId: "anthropic/reviewer-pro")
-        config = config.settingModelOverride(role: .advisor, modelId: "local/reasoner")
-        config = config.settingModelOverride(role: .refine, modelId: "local/writer")
+        config = config.settingModelOverride(role: .supervisor, modelId: "local/reasoner")
 
         let policy = SupervisorModelRoutePolicy.default(projectID: "proj_demo")
-        let planner = policy.routeDecision(for: .init(taskTags: ["scope_freeze"]), projectConfig: config)
+        let supervisor = policy.routeDecision(for: .init(taskTags: ["scope_freeze"]), projectConfig: config)
         let coder = policy.routeDecision(
             for: .init(taskTags: ["codegen"], codeExecution: true),
             projectConfig: config
         )
         let reviewer = policy.routeDecision(for: .init(taskTags: ["review"]), projectConfig: config)
-        let doc = policy.routeDecision(for: .init(taskTags: ["docs"]), projectConfig: config)
+        let docs = policy.routeDecision(for: .init(taskTags: ["docs"]), projectConfig: config)
 
-        #expect(planner.projectModelHints == ["local/reasoner"])
-        #expect(coder.projectModelHints == ["openai/gpt-coder", "local/writer"])
-        #expect(reviewer.projectModelHints == ["anthropic/reviewer-pro", "local/reasoner"])
-        #expect(doc.projectModelHints == ["local/writer", "local/reasoner", "anthropic/reviewer-pro"])
+        #expect(supervisor.projectModelHints == ["local/reasoner"])
+        #expect(coder.projectModelHints == ["openai/gpt-coder"])
+        #expect(reviewer.projectModelHints == ["anthropic/reviewer-pro"])
+        #expect(docs.projectModelHints == ["local/reasoner"])
 
-        #expect(planner.projectModelHints != coder.projectModelHints)
+        #expect(supervisor.projectModelHints != coder.projectModelHints)
         #expect(coder.projectModelHints != reviewer.projectModelHints)
-        #expect(doc.projectModelHints != coder.projectModelHints)
+        #expect(docs.projectModelHints != coder.projectModelHints)
+    }
+
+    @Test
+    func highRiskWithoutExplicitReviewIntentStaysOnSupervisorRoute() {
+        let policy = SupervisorModelRoutePolicy.default(projectID: "proj_demo")
+        let decision = policy.routeDecision(
+            for: .init(taskTags: ["unknown_tag"], risk: .high)
+        )
+
+        #expect(decision.role == .supervisor)
+        #expect(decision.grantPolicy == .hubPolicyRequired)
+        #expect(decision.projectModelHints.isEmpty)
+    }
+
+    @Test
+    func explicitReviewIntentClampsBackToExecutionRouteWhenWorkTurnsMutable() {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xt-route-policy-review-boundary-\(UUID().uuidString)", isDirectory: true)
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingModelOverride(role: .coder, modelId: "openai/gpt-coder")
+        config = config.settingModelOverride(role: .reviewer, modelId: "anthropic/reviewer-pro")
+
+        let policy = SupervisorModelRoutePolicy.default(projectID: "proj_demo")
+        let executionDecision = policy.routeDecision(
+            for: .init(taskTags: ["review"], codeExecution: true),
+            projectConfig: config
+        )
+        let reviewDecision = policy.routeDecision(
+            for: .init(taskTags: ["gate_review"], sideEffect: .externalRead),
+            projectConfig: config
+        )
+
+        #expect(executionDecision.role == .coder)
+        #expect(executionDecision.projectModelHints == ["openai/gpt-coder"])
+        #expect(reviewDecision.role == .reviewer)
+        #expect(reviewDecision.projectModelHints == ["anthropic/reviewer-pro"])
     }
 
     @Test
@@ -97,10 +143,9 @@ struct SupervisorModelRoutePolicyTests {
         let configRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("xt-route-policy-evidence-\(UUID().uuidString)", isDirectory: true)
         var config = AXProjectConfig.default(forProjectRoot: configRoot)
-        config = config.settingModelOverride(role: .advisor, modelId: "local/reasoner")
+        config = config.settingModelOverride(role: .supervisor, modelId: "local/reasoner")
         config = config.settingModelOverride(role: .coder, modelId: "openai/gpt-coder")
         config = config.settingModelOverride(role: .reviewer, modelId: "anthropic/reviewer-pro")
-        config = config.settingModelOverride(role: .refine, modelId: "local/writer")
 
         let samples: [SupervisorModelRouteDecision] = [
             policy.routeDecision(for: .init(taskTags: ["scope_freeze"]), projectConfig: config),
@@ -119,11 +164,11 @@ struct SupervisorModelRoutePolicyTests {
         let evidence = RoleRoutePolicyEvidence(
             policy: policy,
             assertions: [
-                "scope_freeze->planner",
+                "scope_freeze->supervisor",
                 "codegen->coder",
                 "review->reviewer",
-                "docs->doc",
-                "operator_action->ops",
+                "docs->supervisor",
+                "operator_action->supervisor",
                 "high_risk->hub_policy_required",
                 "explainability_non_empty"
             ],

@@ -50,7 +50,7 @@ into the Rust backend migration.
 | Hub setup wizard | `x-terminal/Sources/UI/HubSetupWizardView.swift` | Keep onboarding path and provider/account setup flow unchanged until explicit product work. |
 | Settings guidance | `x-terminal/Sources/UI/XTSettingsGuidancePresentation.swift` | Keep current guidance hierarchy while allowing Rust truth to feed status text. |
 | Supervisor persona center | `x-terminal/Sources/UI/Supervisor/SupervisorPersonaCenterView.swift` | Keep available model source shape and persona model assignments stable. |
-| Rust diagnostic page | `rust/xhubd/crates/xhubd/src/main.rs` `GET /` | Keep as diagnostic/readiness page only; no product settings ownership. |
+| Rust diagnostic page | `rust hub/crates/xhubd/src/main.rs` `GET /` | Keep as diagnostic/readiness page only; no product settings ownership. |
 
 ## Allowed Rust Data Replacements
 

@@ -9,15 +9,12 @@ struct SupervisorViewAdapter {
     let interactionCoordinator: SupervisorViewInteractionCoordinator
 
     func contentProps(totalWidth: CGFloat, totalHeight: CGFloat) -> SupervisorViewContent.Props {
-        let selectedAutomationTemplatePreview = screenModel.selectedAutomationProject.map {
-            appModel.governanceTemplatePreview(for: $0)
-        }
         return .init(
             supervisor: supervisor,
             totalWidth: totalWidth,
             totalHeight: totalHeight,
             selectedAutomationProject: screenModel.selectedAutomationProject,
-            selectedAutomationTemplatePreview: selectedAutomationTemplatePreview,
+            selectedAutomationTemplatePreview: screenModel.selectedAutomationTemplatePreview,
             legacyRuntime: screenModel.legacyRuntime,
             dashboardPresentations: screenModel.dashboardPresentations,
             viewResources: screenModel.viewResources,

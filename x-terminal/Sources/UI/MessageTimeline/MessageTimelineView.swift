@@ -90,6 +90,76 @@ enum MessageTimelineWindowingSupport {
         guard bottomAnchorMaxY.isFinite else { return true }
         return bottomAnchorMaxY <= viewportHeight + threshold
     }
+
+    static func updatedStickToBottomState(
+        currentValue: Bool,
+        bottomAnchorMaxY: CGFloat,
+        viewportHeight: CGFloat,
+        threshold: CGFloat = 72
+    ) -> Bool? {
+        let nextValue = shouldStickToBottom(
+            bottomAnchorMaxY: bottomAnchorMaxY,
+            viewportHeight: viewportHeight,
+            threshold: threshold
+        )
+        return nextValue == currentValue ? nil : nextValue
+    }
+}
+
+enum MessageTimelineChangeCoalescing {
+    static func shouldSkipTailRefresh(
+        handledByMessageCountChange: XTMessageTimelineTailSignature?,
+        currentTailSignature: XTMessageTimelineTailSignature
+    ) -> Bool {
+        handledByMessageCountChange == currentTailSignature
+    }
+}
+
+enum MessageTimelineStreamingTextPresentation {
+    static let defaultByteThreshold = 12_000
+    static let defaultSuffixCharacterLimit = 4_000
+
+    static func visibleContent(
+        for content: String,
+        isStreamingTail: Bool,
+        byteThreshold: Int = defaultByteThreshold,
+        suffixCharacterLimit: Int = defaultSuffixCharacterLimit
+    ) -> String {
+        guard isStreamingTail,
+              content.utf8.count > max(0, byteThreshold) else {
+            return content
+        }
+
+        let suffix = content.suffix(max(1, suffixCharacterLimit))
+        return "...\n" + suffix
+    }
+}
+
+enum MessageTimelineLongTextPresentation {
+    static let defaultCollapseByteThreshold = 24_000
+    static let defaultPreviewCharacterLimit = 6_000
+
+    static func shouldCollapse(
+        _ content: String,
+        byteThreshold: Int = defaultCollapseByteThreshold
+    ) -> Bool {
+        content.utf8.count > max(0, byteThreshold)
+    }
+
+    static func previewContent(
+        for content: String,
+        characterLimit: Int = defaultPreviewCharacterLimit
+    ) -> String {
+        let limit = max(1, characterLimit)
+        guard let endIndex = content.index(
+            content.startIndex,
+            offsetBy: limit,
+            limitedBy: content.endIndex
+        ), endIndex < content.endIndex else {
+            return content
+        }
+        return String(content[..<endIndex]) + "\n..."
+    }
 }
 
 private enum MessageTimelineFormatters {
@@ -108,7 +178,11 @@ private enum MessageTimelineRenderCache {
     private static let maxParsedContentEntries = 256
 
     static func parsedContent(for message: AXChatMessage) -> ParsedContent {
-        let key = "\(message.id)|\(message.content.count)|\(message.content.hashValue)"
+        guard ToolCallParser.mightContainToolCalls(message.content) else {
+            return .plainText(message.content)
+        }
+
+        let key = "\(message.id)|\(XTMessageTimelineContentFingerprint.make(from: message.content))"
         parsedContentLock.lock()
         if let cached = parsedContentByKey[key] {
             parsedContentLock.unlock()
@@ -131,11 +205,241 @@ private enum MessageTimelineRenderCache {
     }
 }
 
-private struct MessageTimelineBottomOffsetPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = .greatestFiniteMagnitude
+struct MessageRowSnapshot: Identifiable, Equatable {
+    let message: AXChatMessage
+    let thinkingPresentation: XTStreamingPlaceholderPresentation?
+    let showsRouteDiagnoseActions: Bool
+    let usesStructuredAssistantContent: Bool
+    let isStreamingTail: Bool
 
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
+    var id: String { message.id }
+
+    init(
+        message: AXChatMessage,
+        thinkingPresentation: XTStreamingPlaceholderPresentation? = nil,
+        showsRouteDiagnoseActions: Bool? = nil,
+        usesStructuredAssistantContent: Bool? = nil,
+        isStreamingTail: Bool = false
+    ) {
+        self.message = message
+        self.thinkingPresentation = thinkingPresentation
+        self.showsRouteDiagnoseActions = showsRouteDiagnoseActions
+            ?? RouteDiagnoseMessagePresentation.matches(message)
+        self.usesStructuredAssistantContent = usesStructuredAssistantContent
+            ?? (message.role == .assistant && ToolCallParser.mightContainToolCalls(message.content))
+        self.isStreamingTail = isStreamingTail
+    }
+}
+
+enum MessageTimelineRowProjection {
+    static func timelineMessages(from messages: [AXChatMessage]) -> [AXChatMessage] {
+        messages.filter { $0.role != .tool }
+    }
+
+    static func sessionSendingForRow(
+        _ isSending: Bool,
+        snapshot: MessageRowSnapshot
+    ) -> Bool {
+        snapshot.showsRouteDiagnoseActions ? isSending : false
+    }
+
+    static func streamingTailMessageID(
+        isSending: Bool,
+        timelineMessages: [AXChatMessage]
+    ) -> String? {
+        guard isSending,
+              let tail = timelineMessages.last,
+              tail.role == .assistant else {
+            return nil
+        }
+        return tail.id
+    }
+
+    static func latestTimelineMessage(from messages: [AXChatMessage]) -> AXChatMessage? {
+        messages.reversed().first { $0.role != .tool }
+    }
+
+    static func latestTimelineMessageBeforeSourceTail(from messages: [AXChatMessage]) -> AXChatMessage? {
+        guard messages.count > 1 else { return nil }
+        var index = messages.index(before: messages.endIndex)
+        while index > messages.startIndex {
+            index = messages.index(before: index)
+            let message = messages[index]
+            if message.role != .tool {
+                return message
+            }
+        }
+        return nil
+    }
+
+    static func snapshots(
+        for messages: [AXChatMessage],
+        previousSnapshots: [MessageRowSnapshot] = [],
+        streamingTailMessageID: String? = nil,
+        thinkingPresentation: (AXChatMessage) -> XTStreamingPlaceholderPresentation?
+    ) -> [MessageRowSnapshot] {
+        var previousByID: [String: MessageRowSnapshot] = [:]
+        for snapshot in previousSnapshots {
+            previousByID[snapshot.id] = snapshot
+        }
+        return messages.map { message in
+            let thinking = thinkingPresentation(message)
+            let isStreamingTail = message.id == streamingTailMessageID
+            if let previous = previousByID[message.id],
+               previous.message == message,
+               previous.thinkingPresentation == thinking,
+               previous.isStreamingTail == isStreamingTail {
+                return previous
+            }
+            return MessageRowSnapshot(
+                message: message,
+                thinkingPresentation: thinking,
+                isStreamingTail: isStreamingTail
+            )
+        }
+    }
+
+    static func presentationRefreshIndexes(
+        timelineMessages: [AXChatMessage],
+        previousSnapshots: [MessageRowSnapshot]
+    ) -> [Int] {
+        guard !timelineMessages.isEmpty,
+              timelineMessages.count == previousSnapshots.count else {
+            return []
+        }
+
+        let latestIndex = timelineMessages.count - 1
+        var indexes: [Int] = [latestIndex]
+        for index in previousSnapshots.indices
+            where index != latestIndex && previousSnapshots[index].thinkingPresentation != nil {
+            indexes.append(index)
+        }
+        return indexes
+    }
+}
+
+private struct MessageTimelineStickToBottomObserver: NSViewRepresentable {
+    var threshold: CGFloat
+    var onStateChange: (Bool) -> Void
+
+    final class Coordinator: NSObject {
+        var threshold: CGFloat
+        var onStateChange: (Bool) -> Void
+        private weak var observedClipView: NSClipView?
+        private weak var observedScrollView: NSScrollView?
+        private weak var pendingHostView: NSView?
+        private var lastValue: Bool?
+        private var attachRefreshScheduled = false
+
+        init(
+            threshold: CGFloat,
+            onStateChange: @escaping (Bool) -> Void
+        ) {
+            self.threshold = threshold
+            self.onStateChange = onStateChange
+        }
+
+        func scheduleAttachAndRefresh(from hostView: NSView) {
+            pendingHostView = hostView
+            guard !attachRefreshScheduled else { return }
+            attachRefreshScheduled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.attachRefreshScheduled = false
+                guard let hostView = self.pendingHostView else { return }
+                self.pendingHostView = nil
+                self.attachIfNeeded(from: hostView)
+                self.refreshCurrentState()
+            }
+        }
+
+        deinit {
+            detach()
+        }
+
+        func attachIfNeeded(from hostView: NSView) {
+            var ancestor: NSView? = hostView.superview
+            while let view = ancestor {
+                if let scrollView = view as? NSScrollView {
+                    attach(to: scrollView)
+                    return
+                }
+                ancestor = view.superview
+            }
+        }
+
+        func refreshCurrentState() {
+            guard let scrollView = observedScrollView,
+                  let documentView = scrollView.documentView else {
+                return
+            }
+            let viewportHeight = scrollView.contentView.bounds.height
+            let bottomAnchorMaxY = documentView.bounds.height - scrollView.contentView.bounds.minY
+            let nextValue = MessageTimelineWindowingSupport.shouldStickToBottom(
+                bottomAnchorMaxY: bottomAnchorMaxY,
+                viewportHeight: viewportHeight,
+                threshold: threshold
+            )
+            guard lastValue != nextValue else { return }
+            lastValue = nextValue
+            onStateChange(nextValue)
+        }
+
+        private func attach(to scrollView: NSScrollView) {
+            guard observedScrollView !== scrollView else {
+                return
+            }
+
+            detach()
+            observedScrollView = scrollView
+
+            let clipView = scrollView.contentView
+            clipView.postsBoundsChangedNotifications = true
+            observedClipView = clipView
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(boundsDidChange),
+                name: NSView.boundsDidChangeNotification,
+                object: clipView
+            )
+        }
+
+        private func detach() {
+            if let clipView = observedClipView {
+                NotificationCenter.default.removeObserver(
+                    self,
+                    name: NSView.boundsDidChangeNotification,
+                    object: clipView
+                )
+            }
+            observedClipView = nil
+            observedScrollView = nil
+        }
+
+        @objc
+        private func boundsDidChange() {
+            refreshCurrentState()
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(
+            threshold: threshold,
+            onStateChange: onStateChange
+        )
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        view.isHidden = true
+        context.coordinator.scheduleAttachAndRefresh(from: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.threshold = threshold
+        context.coordinator.onStateChange = onStateChange
+        context.coordinator.scheduleAttachAndRefresh(from: nsView)
     }
 }
 
@@ -143,28 +447,41 @@ private struct MessageTimelineBottomOffsetPreferenceKey: PreferenceKey {
 struct MessageTimelineView: View {
     let ctx: AXProjectContext
     let config: AXProjectConfig?
-    @ObservedObject var session: ChatSessionModel
+    let session: ChatSessionModel
     let hubConnected: Bool
     let onApproveSkillActivity: (String) -> Void
     let onRetrySkillActivity: (ProjectSkillActivityItem) -> Void
+    let onApprovePendingTools: () -> Void
+    let onRejectPendingTools: () -> Void
     let onOpenGovernance: (XTProjectGovernanceDestination, XTSectionFocusContext?) -> Void
+    var onStartWorkPrompt: ((String) -> Void)? = nil
+    var onResumeProject: (() -> Void)? = nil
+    var onRouteDiagnose: (() -> Void)? = nil
     var focusedSkillActivityRequestId: String? = nil
     var focusedSkillActivityNonce: Int? = nil
     var bottomPadding: CGFloat = 24
+    var scrollToBottomNonce: Int = 0
     @Namespace private var bottomID
+    @StateObject private var timelineSessionStore = XTMessageTimelineSessionStore(
+        minimumUpdateIntervalNanoseconds: 16_000_000
+    )
     @State private var recentSkillActivities: [ProjectSkillActivityItem] = []
     @State private var selectedSkillRecord: ProjectSkillRecordSheetState?
     @State private var pendingFocusedSkillActivityNonce: Int?
     @State private var timelineMessages: [AXChatMessage] = []
+    @State private var timelineRowSnapshots: [MessageRowSnapshot] = []
+    @State private var timelineSourceMessageCount = 0
     @State private var visibleMessageRange: Range<Int> = 0..<0
     @State private var isLoadingPreviousMessages = false
-    @State private var scrollViewportHeight: CGFloat = 0
-    @State private var bottomAnchorMaxY: CGFloat = .greatestFiniteMagnitude
+    @State private var shouldStickToBottomState = true
+    @State private var bottomScrollScheduled = false
+    @State private var pendingBottomScrollAnimationDuration: Double?
+    @State private var tailSignatureHandledByMessageCountChange: XTMessageTimelineTailSignature?
 
     private let recentSkillActivityLimit = 8
-    private let initialMessagePageSize = 60
-    private let prependMessagePageSize = 30
-    private let maxVisibleMessageWindow = 120
+    private let initialMessagePageSize = 48
+    private let prependMessagePageSize = 24
+    private let maxVisibleMessageWindow = 96
 
     private var visibleMessages: ArraySlice<AXChatMessage> {
         let range = visibleMessageRange.clamped(to: 0..<timelineMessages.count)
@@ -172,16 +489,37 @@ struct MessageTimelineView: View {
         return timelineMessages[range]
     }
 
+    private var visibleRowSnapshots: ArraySlice<MessageRowSnapshot> {
+        let range = visibleMessageRange.clamped(to: 0..<timelineRowSnapshots.count)
+        guard !range.isEmpty else { return [] }
+        return timelineRowSnapshots[range]
+    }
+
     private var shouldStickToBottom: Bool {
-        MessageTimelineWindowingSupport.shouldStickToBottom(
-            bottomAnchorMaxY: bottomAnchorMaxY,
-            viewportHeight: scrollViewportHeight
-        )
+        shouldStickToBottomState
+    }
+
+    private var sessionIdentity: ObjectIdentifier {
+        ObjectIdentifier(session)
+    }
+
+    private var timelineSessionSnapshot: XTMessageTimelineSessionSnapshot {
+        if timelineSessionStore.isBound(to: session) {
+            return timelineSessionStore.snapshot
+        }
+        return XTMessageTimelineSessionSnapshot.make(from: session)
+    }
+
+    private var shouldShowWorkEmptyState: Bool {
+        visibleMessages.isEmpty
+            && recentSkillActivities.isEmpty
+            && timelineSessionSnapshot.pendingToolCalls.isEmpty
+            && !timelineSessionSnapshot.shouldShowThinkingIndicator
     }
 
     var body: some View {
-        GeometryReader { geometry in
-            timelineScrollContainer(in: geometry)
+        ScrollViewReader { proxy in
+            timelineScrollView(using: proxy)
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .sheet(item: $selectedSkillRecord) { record in
@@ -189,96 +527,153 @@ struct MessageTimelineView: View {
         }
     }
 
-    private func timelineScrollContainer(in geometry: GeometryProxy) -> some View {
-        let viewportHeight = geometry.size.height
-        return ScrollViewReader { proxy in
-            timelineScrollView(using: proxy, viewportHeight: viewportHeight)
-        }
-    }
-
-    private func timelineScrollView(
-        using proxy: ScrollViewProxy,
-        viewportHeight: CGFloat
-    ) -> some View {
+    private func timelineScrollView(using proxy: ScrollViewProxy) -> some View {
         ScrollView {
             timelineStack(using: proxy)
         }
-        .coordinateSpace(name: "messageTimelineScroll")
+        .background(
+            MessageTimelineStickToBottomObserver(threshold: 72) { newValue in
+                if shouldStickToBottomState != newValue {
+                    shouldStickToBottomState = newValue
+                }
+            }
+            .frame(width: 0, height: 0)
+        )
         .onAppear {
-            scrollViewportHeight = viewportHeight
+            timelineSessionStore.bind(to: session)
             pendingFocusedSkillActivityNonce = focusedSkillActivityNonce
             syncTimelineMessages()
             syncVisibleMessageRangeToLatest()
             refreshRecentSkillActivities(using: proxy)
-            DispatchQueue.main.async {
-                proxy.scrollTo(bottomID, anchor: .bottom)
-            }
-        }
-        .onChange(of: viewportHeight) { newHeight in
-            scrollViewportHeight = newHeight
+            scheduleScrollToBottom(using: proxy)
         }
         .onChange(of: ctx.root.path) { _ in
+            timelineSessionStore.bind(to: session)
             syncTimelineMessages()
             visibleMessageRange = MessageTimelineWindowingSupport.initialVisibleRange(
                 totalCount: timelineMessages.count,
                 pageSize: initialMessagePageSize
             )
             refreshRecentSkillActivities(using: proxy)
-            DispatchQueue.main.async {
-                proxy.scrollTo(bottomID, anchor: .bottom)
-            }
+            scheduleScrollToBottom(using: proxy)
         }
-        .onChange(of: session.messages.count) { _ in
+        .onChange(of: sessionIdentity) { _ in
+            timelineSessionStore.bind(to: session)
             syncTimelineMessages()
             syncVisibleMessageRangeToLatest()
             refreshRecentSkillActivities(using: proxy)
+            scheduleScrollToBottom(using: proxy)
+        }
+        .onChange(of: timelineSessionSnapshot.messageCount) { _ in
+            syncTimelineMessagesForSourceCountChange()
+            syncVisibleMessageRangeToLatest()
+            refreshRecentSkillActivities(using: proxy)
+            tailSignatureHandledByMessageCountChange = timelineSessionSnapshot.tailSignature
             guard pendingFocusedSkillActivityNonce == nil else { return }
             guard shouldStickToBottom || timelineMessages.last?.role == .user else { return }
-            withAnimation(.easeOut(duration: 0.3)) {
-                proxy.scrollTo(bottomID, anchor: .bottom)
-            }
+            scheduleScrollToBottom(using: proxy, animatedDuration: 0.3)
         }
-        .onChange(of: session.isSending) { sending in
+        .onChange(of: timelineSessionSnapshot.isSending) { sending in
+            syncLatestTimelineRowSnapshot()
             guard sending, pendingFocusedSkillActivityNonce == nil, shouldStickToBottom else { return }
-            withAnimation(.easeOut(duration: 0.2)) {
-                proxy.scrollTo(bottomID, anchor: .bottom)
-            }
+            scheduleScrollToBottom(using: proxy, animatedDuration: 0.2)
         }
-        .onChange(of: session.messages.last?.content ?? "") { _ in
+        .onChange(of: timelineSessionSnapshot.tailSignature) { _ in
+            if MessageTimelineChangeCoalescing.shouldSkipTailRefresh(
+                handledByMessageCountChange: tailSignatureHandledByMessageCountChange,
+                currentTailSignature: timelineSessionSnapshot.tailSignature
+            ) {
+                tailSignatureHandledByMessageCountChange = nil
+                return
+            }
             syncTimelineMessagesKeepingTailFresh()
             guard pendingFocusedSkillActivityNonce == nil, shouldStickToBottom else { return }
-            proxy.scrollTo(bottomID, anchor: .bottom)
+            scheduleScrollToBottom(using: proxy)
         }
-        .onChange(of: session.pendingToolCalls.map(\.id).joined(separator: ",")) { _ in
+        .onChange(of: timelineSessionSnapshot.presentationVersion) { _ in
+            syncTimelinePresentationRowSnapshots()
+            guard pendingFocusedSkillActivityNonce == nil,
+                  shouldStickToBottom,
+                  timelineSessionSnapshot.shouldShowThinkingIndicator else { return }
+            scheduleScrollToBottom(using: proxy)
+        }
+        .onChange(of: timelineSessionSnapshot.pendingToolCallIDSignature) { _ in
             refreshRecentSkillActivities(using: proxy)
         }
         .onChange(of: recentSkillActivities.count) { _ in
             guard pendingFocusedSkillActivityNonce == nil, shouldStickToBottom else { return }
-            proxy.scrollTo(bottomID, anchor: .bottom)
+            scheduleScrollToBottom(using: proxy)
         }
         .onChange(of: focusedSkillActivityNonce) { newNonce in
             pendingFocusedSkillActivityNonce = newNonce
             refreshRecentSkillActivities(using: proxy)
         }
-        .onPreferenceChange(MessageTimelineBottomOffsetPreferenceKey.self) { newValue in
-            bottomAnchorMaxY = newValue
+        .onChange(of: scrollToBottomNonce) { _ in
+            forceScrollToBottom(using: proxy)
+        }
+    }
+
+    private func forceScrollToBottom(using proxy: ScrollViewProxy) {
+        syncTimelineMessages()
+        syncVisibleMessageRangeToLatest()
+        shouldStickToBottomState = true
+        scheduleScrollToBottom(using: proxy)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            syncTimelineMessages()
+            syncVisibleMessageRangeToLatest()
+            proxy.scrollTo(bottomID, anchor: .bottom)
+        }
+    }
+
+    private func scheduleScrollToBottom(
+        using proxy: ScrollViewProxy,
+        animatedDuration: Double? = nil
+    ) {
+        if let animatedDuration {
+            pendingBottomScrollAnimationDuration = max(
+                pendingBottomScrollAnimationDuration ?? 0,
+                animatedDuration
+            )
+        }
+
+        guard !bottomScrollScheduled else { return }
+        bottomScrollScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.016) {
+            bottomScrollScheduled = false
+            let duration = pendingBottomScrollAnimationDuration
+            pendingBottomScrollAnimationDuration = nil
+            if let duration, duration > 0 {
+                withAnimation(.easeOut(duration: duration)) {
+                    proxy.scrollTo(bottomID, anchor: .bottom)
+                }
+            } else {
+                proxy.scrollTo(bottomID, anchor: .bottom)
+            }
         }
     }
 
     @ViewBuilder
     private func timelineStack(using proxy: ScrollViewProxy) -> some View {
         LazyVStack(spacing: 16) {
-            if visibleMessageRange.lowerBound > 0 {
+            if shouldShowWorkEmptyState {
+                workEmptyState
+            } else if visibleMessageRange.lowerBound > 0 {
                 previousMessagesLoader(using: proxy)
             }
 
-            messageRows
+            if !shouldShowWorkEmptyState {
+                messageRows
+            }
+
+            if !timelineSessionSnapshot.pendingToolCalls.isEmpty {
+                pendingToolApprovalSection
+            }
 
             if !recentSkillActivities.isEmpty {
                 skillActivitySection
             }
 
-            if session.shouldShowThinkingIndicator {
+            if timelineSessionSnapshot.shouldShowThinkingIndicator {
                 ThinkingIndicator()
                     .transition(.opacity)
             }
@@ -289,27 +684,96 @@ struct MessageTimelineView: View {
         .padding(.bottom, bottomPadding)
     }
 
+    private var workEmptyState: some View {
+        let latestSessionSummary = XTProjectUIPresentationReadCache.sessionSummary(for: ctx) {
+            AXSessionSummaryCapsulePresentation.load(for: ctx)
+        }
+        let actions: [ProjectWorkEmptyStateAction] = {
+            var items: [ProjectWorkEmptyStateAction] = [
+                ProjectWorkEmptyStateAction(
+                    title: "开始：了解项目",
+                    subtitle: "快速浏览当前项目结构、风险和建议起点。",
+                    style: .prominent
+                ) {
+                    onStartWorkPrompt?(
+                        "先快速浏览这个项目，告诉我当前结构、主要模块、明显风险，以及最合理的起步方式。"
+                    )
+                },
+                ProjectWorkEmptyStateAction(
+                    title: "开始：规划下一步",
+                    subtitle: "先不要写代码，先给我最合理的下一步和检查项。",
+                    style: .secondary
+                ) {
+                    onStartWorkPrompt?(
+                        "先不要写代码。基于这个项目当前状态，给我一个最合理的下一步计划，并说明为什么先做这些。"
+                    )
+                }
+            ]
+
+            if latestSessionSummary != nil {
+                items.append(
+                    ProjectWorkEmptyStateAction(
+                        title: "接上次进度",
+                        subtitle: "读取最近交接摘要，从上次边界继续。",
+                        style: .secondary
+                    ) {
+                        onResumeProject?()
+                    }
+                )
+            }
+
+            items.append(
+                ProjectWorkEmptyStateAction(
+                    title: "解释当前路由",
+                    subtitle: "先看这轮为什么会命中当前执行路径。",
+                    style: .plain
+                ) {
+                    onRouteDiagnose?()
+                }
+            )
+
+            return items
+        }()
+
+        return ProjectWorkEmptyStateView(
+            title: "开始 \(ctx.projectName())",
+            summaryText: "直接说目标即可；如果你想先收敛上下文，也可以用下面的起步动作。",
+            detailText: latestSessionSummary.map {
+                "检测到最近交接：\($0.reasonLabel) · \($0.relativeText)。如果这就是你要继续的工作，直接恢复会更快。"
+            } ?? "当前还没有聊天历史。这里更适合先定目标、看起点，再进入连续执行。",
+            actions: actions
+        )
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
+    }
+
     @ViewBuilder
     private var messageRows: some View {
-        ForEach(visibleMessages) { message in
-            MessageCard(
+        ForEach(visibleRowSnapshots) { snapshot in
+            TimelineMessageRow(
                 ctx: ctx,
                 config: config,
                 session: session,
-                message: message
+                sessionIsSending: MessageTimelineRowProjection.sessionSendingForRow(
+                    timelineSessionSnapshot.isSending,
+                    snapshot: snapshot
+                ),
+                snapshot: snapshot
             )
-                .id(message.id)
+                .equatable()
+                .id(snapshot.id)
         }
     }
 
     private var skillActivitySection: some View {
         ProjectSkillActivitySection(
             items: recentSkillActivities,
-            pendingRequestIDs: Set(session.pendingToolCalls.map(\.id)),
+            pendingRequestIDs: Set(timelineSessionSnapshot.pendingToolCallIDs),
             focusedRequestID: focusedSkillActivityRequestId,
             isFocused: focusedSkillActivityNonce != nil,
             hubConnected: hubConnected,
-            isBusy: session.isSending,
+            isBusy: timelineSessionSnapshot.isSending,
             onApprove: onApproveSkillActivity,
             onReject: { requestID in
                 session.rejectPendingTool(requestID: requestID)
@@ -322,17 +786,22 @@ struct MessageTimelineView: View {
         .transition(.opacity.combined(with: .move(edge: .bottom)))
     }
 
+    private var pendingToolApprovalSection: some View {
+        PendingToolApprovalView(
+            session: session,
+            hubConnected: hubConnected,
+            isFocused: focusedSkillActivityNonce != nil,
+            focusedRequestId: focusedSkillActivityRequestId,
+            onApprove: onApprovePendingTools,
+            onReject: onRejectPendingTools
+        )
+        .id(MessageTimelineFocusPresentation.pendingToolApprovalSectionAnchorID)
+        .transition(.opacity.combined(with: .move(edge: .bottom)))
+    }
+
     private var bottomAnchor: some View {
         Color.clear
             .frame(height: 1)
-            .background(
-                GeometryReader { proxy in
-                    Color.clear.preference(
-                        key: MessageTimelineBottomOffsetPreferenceKey.self,
-                        value: proxy.frame(in: .named("messageTimelineScroll")).maxY
-                    )
-                }
-            )
             .id(bottomID)
     }
 
@@ -342,15 +811,52 @@ struct MessageTimelineView: View {
         let items = resolvedRecentSkillActivities()
         recentSkillActivities = items
         if let proxy {
+            if scrollToFocusedPendingToolApprovalIfNeeded(using: proxy) {
+                return
+            }
             scrollToFocusedSkillActivityIfNeeded(using: proxy, items: items)
         }
     }
 
+    @discardableResult
+    private func scrollToFocusedPendingToolApprovalIfNeeded(
+        using proxy: ScrollViewProxy
+    ) -> Bool {
+        guard let focusedSkillActivityNonce,
+              pendingFocusedSkillActivityNonce == focusedSkillActivityNonce else {
+            return false
+        }
+        guard let anchorID = MessageTimelineFocusPresentation.pendingToolApprovalAnchor(
+            requestID: focusedSkillActivityRequestId,
+            pendingRequestIDs: timelineSessionSnapshot.pendingToolCallIDs
+        ) else {
+            return false
+        }
+
+        DispatchQueue.main.async {
+            withAnimation(.easeInOut(duration: 0.24)) {
+                proxy.scrollTo(anchorID, anchor: .center)
+            }
+            pendingFocusedSkillActivityNonce = nil
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) {
+            withAnimation(.easeInOut(duration: 0.18)) {
+                proxy.scrollTo(anchorID, anchor: .center)
+            }
+        }
+        return true
+    }
+
     private func resolvedRecentSkillActivities() -> [ProjectSkillActivityItem] {
-        let items = ProjectSkillActivityPresentation.loadRecentActivities(
-            ctx: ctx,
+        let items = XTProjectUIPresentationReadCache.recentSkillActivities(
+            for: ctx,
             limit: recentSkillActivityLimit
-        )
+        ) {
+            ProjectSkillActivityPresentation.loadRecentActivities(
+                ctx: ctx,
+                limit: recentSkillActivityLimit
+            )
+        }
         guard let focusedRequestID = MessageTimelineFocusPresentation.normalizedRequestID(
             focusedSkillActivityRequestId
         ) else {
@@ -447,113 +953,277 @@ struct MessageTimelineView: View {
     }
 
     private func syncTimelineMessages() {
-        timelineMessages = session.messages.filter { $0.role != .tool }
+        let sourceMessages = session.messages
+        timelineSourceMessageCount = sourceMessages.count
+        timelineMessages = MessageTimelineRowProjection.timelineMessages(from: sourceMessages)
+        syncTimelineRowSnapshots()
     }
 
-    private func syncTimelineMessagesKeepingTailFresh() {
-        let filtered = session.messages.filter { $0.role != .tool }
-        guard !timelineMessages.isEmpty,
-              timelineMessages.count == filtered.count,
-              let currentLast = timelineMessages.last,
-              let filteredLast = filtered.last,
-              currentLast.id == filteredLast.id else {
-            timelineMessages = filtered
+    private func syncTimelineMessagesForSourceCountChange() {
+        let sourceMessages = session.messages
+        let sourceCount = sourceMessages.count
+        guard sourceCount == timelineSourceMessageCount + 1,
+              let appendedMessage = sourceMessages.last else {
+            syncTimelineMessages()
             return
         }
 
-        if currentLast != filteredLast {
-            timelineMessages[timelineMessages.count - 1] = filteredLast
+        let previousLatestMessage = MessageTimelineRowProjection.latestTimelineMessageBeforeSourceTail(
+            from: sourceMessages
+        )
+        if let currentLast = timelineMessages.last {
+            guard previousLatestMessage?.id == currentLast.id else {
+                syncTimelineMessages()
+                return
+            }
+        } else if previousLatestMessage != nil {
+            syncTimelineMessages()
+            return
         }
+
+        timelineSourceMessageCount = sourceCount
+        guard appendedMessage.role != .tool else { return }
+
+        if let currentLast = timelineMessages.last,
+           currentLast.id == appendedMessage.id {
+            if currentLast != appendedMessage {
+                timelineMessages[timelineMessages.count - 1] = appendedMessage
+                syncLatestTimelineRowSnapshot()
+            }
+            return
+        }
+
+        timelineMessages.append(appendedMessage)
+        appendLatestTimelineRowSnapshot(for: appendedMessage)
+    }
+
+    private func syncTimelineMessagesKeepingTailFresh() {
+        guard let latestTimelineMessage = MessageTimelineRowProjection.latestTimelineMessage(
+            from: session.messages
+        ) else {
+            guard !timelineMessages.isEmpty else { return }
+            timelineMessages = []
+            syncTimelineRowSnapshots()
+            return
+        }
+
+        guard !timelineMessages.isEmpty,
+              let currentLast = timelineMessages.last,
+              currentLast.id == latestTimelineMessage.id else {
+            syncTimelineMessages()
+            return
+        }
+
+        if currentLast != latestTimelineMessage {
+            timelineMessages[timelineMessages.count - 1] = latestTimelineMessage
+            syncLatestTimelineRowSnapshot()
+        }
+    }
+
+    private func syncTimelineRowSnapshots() {
+        let nextSnapshots = MessageTimelineRowProjection.snapshots(
+            for: timelineMessages,
+            previousSnapshots: timelineRowSnapshots,
+            streamingTailMessageID: currentStreamingTailMessageID
+        ) { message in
+            session.assistantThinkingPresentation(for: message)
+        }
+        guard timelineRowSnapshots != nextSnapshots else { return }
+        timelineRowSnapshots = nextSnapshots
+    }
+
+    private var currentStreamingTailMessageID: String? {
+        MessageTimelineRowProjection.streamingTailMessageID(
+            isSending: timelineSessionSnapshot.isSending,
+            timelineMessages: timelineMessages
+        )
+    }
+
+    private func appendLatestTimelineRowSnapshot(for message: AXChatMessage) {
+        guard timelineRowSnapshots.count == timelineMessages.count - 1 else {
+            syncTimelineRowSnapshots()
+            return
+        }
+
+        timelineRowSnapshots.append(
+            MessageRowSnapshot(
+                message: message,
+                thinkingPresentation: session.assistantThinkingPresentation(for: message),
+                isStreamingTail: message.id == currentStreamingTailMessageID
+            )
+        )
+    }
+
+    private func syncLatestTimelineRowSnapshot() {
+        guard !timelineMessages.isEmpty,
+              timelineRowSnapshots.count == timelineMessages.count,
+              let latestMessage = timelineMessages.last else {
+            syncTimelineRowSnapshots()
+            return
+        }
+
+        let nextSnapshot = MessageRowSnapshot(
+            message: latestMessage,
+            thinkingPresentation: session.assistantThinkingPresentation(for: latestMessage),
+            isStreamingTail: latestMessage.id == currentStreamingTailMessageID
+        )
+        let latestIndex = timelineMessages.count - 1
+        guard timelineRowSnapshots[latestIndex] != nextSnapshot else { return }
+        timelineRowSnapshots[latestIndex] = nextSnapshot
+    }
+
+    private func syncTimelinePresentationRowSnapshots() {
+        let indexes = MessageTimelineRowProjection.presentationRefreshIndexes(
+            timelineMessages: timelineMessages,
+            previousSnapshots: timelineRowSnapshots
+        )
+        guard !indexes.isEmpty else {
+            syncTimelineRowSnapshots()
+            return
+        }
+
+        var nextSnapshots = timelineRowSnapshots
+        let streamingTailMessageID = currentStreamingTailMessageID
+        var didChange = false
+        for index in indexes {
+            let message = timelineMessages[index]
+            let nextSnapshot = MessageRowSnapshot(
+                message: message,
+                thinkingPresentation: session.assistantThinkingPresentation(for: message),
+                isStreamingTail: message.id == streamingTailMessageID
+            )
+            guard nextSnapshots[index] != nextSnapshot else { continue }
+            nextSnapshots[index] = nextSnapshot
+            didChange = true
+        }
+        guard didChange else { return }
+        timelineRowSnapshots = nextSnapshots
     }
 }
 
 /// 单个消息卡片
+private struct TimelineMessageRow: View, Equatable {
+    let ctx: AXProjectContext?
+    let config: AXProjectConfig?
+    let session: ChatSessionModel?
+    let sessionIsSending: Bool
+    let snapshot: MessageRowSnapshot
+
+    static func == (lhs: TimelineMessageRow, rhs: TimelineMessageRow) -> Bool {
+        lhs.ctx == rhs.ctx &&
+        lhs.config == rhs.config &&
+        lhs.sessionIsSending == rhs.sessionIsSending &&
+        lhs.snapshot == rhs.snapshot
+    }
+
+    var body: some View {
+        MessageCard(
+            ctx: ctx,
+            config: config,
+            session: session,
+            sessionIsSending: sessionIsSending,
+            snapshot: snapshot
+        )
+    }
+}
+
 struct MessageCard: View {
     let ctx: AXProjectContext?
     let config: AXProjectConfig?
     let session: ChatSessionModel?
-    let message: AXChatMessage
-    @State private var isHovered = false
+    let sessionIsSending: Bool
+    let snapshot: MessageRowSnapshot
 
     init(
         ctx: AXProjectContext? = nil,
         config: AXProjectConfig? = nil,
         session: ChatSessionModel? = nil,
-        message: AXChatMessage
+        sessionIsSending: Bool = false,
+        message: AXChatMessage,
+        thinkingPresentation: XTStreamingPlaceholderPresentation? = nil
     ) {
         self.ctx = ctx
         self.config = config
         self.session = session
-        self.message = message
+        self.sessionIsSending = sessionIsSending
+        self.snapshot = MessageRowSnapshot(
+            message: message,
+            thinkingPresentation: thinkingPresentation
+        )
+    }
+
+    init(
+        ctx: AXProjectContext? = nil,
+        config: AXProjectConfig? = nil,
+        session: ChatSessionModel? = nil,
+        sessionIsSending: Bool = false,
+        snapshot: MessageRowSnapshot
+    ) {
+        self.ctx = ctx
+        self.config = config
+        self.session = session
+        self.sessionIsSending = sessionIsSending
+        self.snapshot = snapshot
+    }
+
+    private var message: AXChatMessage {
+        snapshot.message
+    }
+
+    private var thinkingPresentation: XTStreamingPlaceholderPresentation? {
+        snapshot.thinkingPresentation
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            // 头像
-            MessageAvatar(role: message.role)
+        HStack(alignment: .top, spacing: 0) {
+            if isUserMessage {
+                Spacer(minLength: 56)
+            }
 
-            // 消息内容
-            VStack(alignment: .leading, spacing: 8) {
-                // 消息头部
-                HStack(spacing: 8) {
-                    Text(roleLabel)
-                        .font(.system(.subheadline, design: .rounded))
-                        .fontWeight(.semibold)
-                        .foregroundColor(roleLabelColor)
+            VStack(alignment: bubbleHorizontalAlignment, spacing: 8) {
+                headerRow
 
-                    if let tag = message.tag, !tag.isEmpty {
-                        Text(tag)
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.secondary.opacity(0.1))
-                            .cornerRadius(4)
-                    }
-
-                    Spacer()
-
-                    Text(timeLabel)
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-
-                    // 悬停时显示操作按钮
-                    if isHovered && message.role != .tool {
-                        MessageActionButtons(message: message)
-                    }
-                }
-
-                // 消息内容
                 MessageContentView(
                     ctx: ctx,
                     config: config,
                     session: session,
-                    message: message
+                    sessionIsSending: sessionIsSending,
+                    snapshot: snapshot
                 )
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(16)
-        .background(cardBackground)
-        .cornerRadius(12)
-        .shadow(
-            color: isHovered ? .black.opacity(0.08) : .clear,
-            radius: isHovered ? 6 : 0,
-            x: 0,
-            y: isHovered ? 2 : 0
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(borderColor, lineWidth: 1)
-        )
-        .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.15)) {
-                isHovered = hovering
+            .frame(
+                maxWidth: isUserMessage ? 620 : .infinity,
+                alignment: bubbleFrameAlignment
+            )
+            .padding(.vertical, 12)
+            .padding(.horizontal, 14)
+            .background(cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(borderColor, lineWidth: 1)
+            )
+            .overlay(alignment: .leading) {
+                if !isUserMessage {
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(roleAccentColor.opacity(0.8))
+                        .frame(width: 3)
+                        .padding(.vertical, 10)
+                        .padding(.leading, 1)
+                }
+            }
+
+            if !isUserMessage {
+                Spacer(minLength: 56)
             }
         }
+        .frame(maxWidth: .infinity, alignment: isUserMessage ? .trailing : .leading)
     }
 
     private var roleLabel: String {
+        if message.isSupervisorDispatch {
+            return "Supervisor"
+        }
         switch message.role {
         case .user:
             return "你"
@@ -564,93 +1234,155 @@ struct MessageCard: View {
         }
     }
 
-    private var roleLabelColor: Color {
+    private var isUserMessage: Bool {
+        message.role == .user && !message.isSupervisorDispatch
+    }
+
+    private var bubbleHorizontalAlignment: HorizontalAlignment {
+        isUserMessage ? .trailing : .leading
+    }
+
+    private var bubbleFrameAlignment: Alignment {
+        isUserMessage ? .trailing : .leading
+    }
+
+    private var roleAccentColor: Color {
+        if message.isSupervisorDispatch {
+            return .indigo
+        }
         switch message.role {
         case .user:
             return .blue
         case .assistant:
-            return .purple
+            return .teal
         case .tool:
             return .secondary
         }
     }
 
     private var cardBackground: Color {
+        if message.isSupervisorDispatch {
+            return Color.indigo.opacity(0.06)
+        }
         switch message.role {
         case .user:
-            return Color.blue.opacity(0.06)
+            return Color.blue.opacity(0.08)
         case .assistant:
-            return Color(nsColor: .controlBackgroundColor)
+            return Color(nsColor: .controlBackgroundColor).opacity(0.95)
         case .tool:
-            return Color.secondary.opacity(0.04)
+            return Color.secondary.opacity(0.05)
         }
     }
 
     private var borderColor: Color {
+        if message.isSupervisorDispatch {
+            return Color.indigo.opacity(0.16)
+        }
         switch message.role {
         case .user:
-            return Color.blue.opacity(0.15)
+            return Color.blue.opacity(0.18)
         case .assistant:
-            return Color.secondary.opacity(0.1)
+            return Color.teal.opacity(0.18)
         case .tool:
-            return Color.secondary.opacity(0.08)
+            return Color.secondary.opacity(0.12)
         }
+    }
+
+    private var roleIconName: String? {
+        message.isSupervisorDispatch ? "person.2.fill" : nil
     }
 
     private var timeLabel: String {
         let date = Date(timeIntervalSince1970: message.createdAt)
         return MessageTimelineFormatters.time.string(from: date)
     }
-}
 
-/// 消息头像
-struct MessageAvatar: View {
-    let role: AXChatRole
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .fill(avatarGradient)
-                .frame(width: 36, height: 36)
-
-            Image(systemName: iconName)
-                .foregroundColor(.white)
-                .font(.system(size: 16, weight: .semibold))
+    @ViewBuilder
+    private var headerRow: some View {
+        if isUserMessage {
+            HStack(spacing: 8) {
+                Spacer(minLength: 0)
+                headerMetaRow
+                tagView
+                MessageRoleBadge(
+                    role: message.role,
+                    label: roleLabel,
+                    accentColor: roleAccentColor,
+                    iconName: roleIconName
+                )
+            }
+        } else {
+            HStack(spacing: 8) {
+                MessageRoleBadge(
+                    role: message.role,
+                    label: roleLabel,
+                    accentColor: roleAccentColor,
+                    iconName: roleIconName
+                )
+                tagView
+                Spacer(minLength: 0)
+                headerMetaRow
+            }
         }
-        .shadow(color: .black.opacity(0.1), radius: 3, x: 0, y: 1)
     }
 
-    private var iconName: String {
+    private var headerMetaRow: some View {
+        HStack(spacing: 6) {
+            Text(timeLabel)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+
+            if message.role != .tool {
+                MessageActionButtons(message: message)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var tagView: some View {
+        if let tag = message.tag, !tag.isEmpty {
+            Text(tag)
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(Color.secondary.opacity(0.08))
+                .clipShape(Capsule())
+        }
+    }
+}
+
+struct MessageRoleBadge: View {
+    let role: AXChatRole
+    let label: String
+    let accentColor: Color
+    var iconName: String? = nil
+
+    var body: some View {
+        Label(label, systemImage: resolvedIconName)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(accentColor)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(accentColor.opacity(0.1))
+            .clipShape(Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(accentColor.opacity(0.18), lineWidth: 1)
+            )
+    }
+
+    private var resolvedIconName: String {
+        if let iconName {
+            return iconName
+        }
         switch role {
         case .user:
             return "person.fill"
         case .assistant:
             return "sparkles"
         case .tool:
-            return "wrench.fill"
-        }
-    }
-
-    private var avatarGradient: LinearGradient {
-        switch role {
-        case .user:
-            return LinearGradient(
-                colors: [Color.blue, Color.blue.opacity(0.7)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        case .assistant:
-            return LinearGradient(
-                colors: [Color.purple, Color.pink],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        case .tool:
-            return LinearGradient(
-                colors: [Color.secondary, Color.secondary.opacity(0.7)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+            return "wrench.adjustable"
         }
     }
 }
@@ -665,8 +1397,11 @@ struct MessageActionButtons: View {
                 copyToClipboard(message.content)
             } label: {
                 Image(systemName: "doc.on.doc")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22, height: 22)
+                    .background(Color.secondary.opacity(0.08))
+                    .clipShape(Circle())
             }
             .buttonStyle(.plain)
             .help("复制")
@@ -684,7 +1419,44 @@ struct MessageContentView: View {
     let ctx: AXProjectContext?
     let config: AXProjectConfig?
     let session: ChatSessionModel?
-    let message: AXChatMessage
+    let sessionIsSending: Bool
+    let snapshot: MessageRowSnapshot
+
+    init(
+        ctx: AXProjectContext? = nil,
+        config: AXProjectConfig? = nil,
+        session: ChatSessionModel? = nil,
+        sessionIsSending: Bool = false,
+        message: AXChatMessage,
+        thinkingPresentation: XTStreamingPlaceholderPresentation? = nil
+    ) {
+        self.ctx = ctx
+        self.config = config
+        self.session = session
+        self.sessionIsSending = sessionIsSending
+        self.snapshot = MessageRowSnapshot(
+            message: message,
+            thinkingPresentation: thinkingPresentation
+        )
+    }
+
+    init(
+        ctx: AXProjectContext? = nil,
+        config: AXProjectConfig? = nil,
+        session: ChatSessionModel? = nil,
+        sessionIsSending: Bool = false,
+        snapshot: MessageRowSnapshot
+    ) {
+        self.ctx = ctx
+        self.config = config
+        self.session = session
+        self.sessionIsSending = sessionIsSending
+        self.snapshot = snapshot
+    }
+
+    private var message: AXChatMessage {
+        snapshot.message
+    }
 
     var body: some View {
         switch message.role {
@@ -694,7 +1466,8 @@ struct MessageContentView: View {
                 ctx: ctx,
                 config: config,
                 session: session,
-                message: message
+                sessionIsSending: sessionIsSending,
+                snapshot: snapshot
             )
 
         case .tool:
@@ -704,10 +1477,7 @@ struct MessageContentView: View {
         case .user:
             // User 消息：简单文本
             VStack(alignment: .leading, spacing: 10) {
-                Text(message.content)
-                    .font(.body)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                MessagePlainTextBody(content: message.content)
 
                 if !message.attachments.isEmpty {
                     XTChatAttachmentStrip(
@@ -726,6 +1496,54 @@ struct MessageContentView: View {
     }
 }
 
+struct MessagePlainTextBody: View {
+    let content: String
+    var isStreamingTail: Bool = false
+    @State private var isExpanded = false
+
+    var body: some View {
+        if isStreamingTail {
+            Text(
+                MessageTimelineStreamingTextPresentation.visibleContent(
+                    for: content,
+                    isStreamingTail: true
+                )
+            )
+            .font(.body)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else if MessageTimelineLongTextPresentation.shouldCollapse(content) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(
+                    isExpanded
+                    ? content
+                    : MessageTimelineLongTextPresentation.previewContent(for: content)
+                )
+                .font(.body)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Button {
+                    isExpanded.toggle()
+                } label: {
+                    Label(
+                        isExpanded ? "收起" : "展开全文",
+                        systemImage: isExpanded
+                            ? "arrow.up.left.and.arrow.down.right"
+                            : "arrow.down.right.and.arrow.up.left"
+                    )
+                    .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.borderless)
+            }
+        } else {
+            Text(content)
+                .font(.body)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
 struct ProjectSkillActivitySection: View {
     let items: [ProjectSkillActivityItem]
     let pendingRequestIDs: Set<String>
@@ -740,16 +1558,15 @@ struct ProjectSkillActivitySection: View {
     let onViewFullRecord: (ProjectSkillActivityItem) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Image(systemName: "sparkles.rectangle.stack")
                     .foregroundStyle(.secondary)
                 Text("最近技能动态")
-                    .font(.system(.subheadline, design: .rounded))
-                    .fontWeight(.semibold)
+                    .font(.caption.weight(.semibold))
                 Spacer()
-                Text("\(items.count)")
-                    .font(.system(.caption, design: .rounded))
+                Text("\(items.count) 条")
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
@@ -779,12 +1596,12 @@ struct ProjectSkillActivitySection: View {
                 .id(MessageTimelineFocusPresentation.projectSkillActivityAnchorID(requestID: item.requestID))
             }
         }
-        .padding(16)
-        .background(isFocused ? Color.orange.opacity(0.08) : Color.secondary.opacity(0.04))
-        .cornerRadius(12)
+        .padding(14)
+        .background(isFocused ? Color.orange.opacity(0.06) : Color.secondary.opacity(0.03))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(isFocused ? Color.orange.opacity(0.22) : Color.secondary.opacity(0.08), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(isFocused ? Color.orange.opacity(0.2) : Color.secondary.opacity(0.08), lineWidth: 1)
         )
     }
 }
@@ -800,24 +1617,31 @@ struct ProjectSkillActivityCard: View {
     let onRetry: () -> Void
     let onOpenGovernance: (XTProjectGovernanceDestination, XTSectionFocusContext?) -> Void
     let onViewFullRecord: () -> Void
+    @State private var showGovernanceDetails = false
     @State private var showDiagnostics = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .center, spacing: 8) {
-                Image(systemName: ProjectSkillActivityPresentation.iconName(for: item))
-                    .foregroundStyle(iconColor)
-                    .font(.system(size: 14))
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                HStack(spacing: 8) {
+                    Image(systemName: ProjectSkillActivityPresentation.iconName(for: item))
+                        .foregroundStyle(iconColor)
+                        .font(.system(size: 13, weight: .semibold))
 
-                Text(ProjectSkillActivityPresentation.title(for: item))
-                    .font(.system(.body, design: .rounded))
-                    .fontWeight(.semibold)
+                    Text(ProjectSkillActivityPresentation.title(for: item))
+                        .font(.system(.subheadline, design: .rounded))
+                        .fontWeight(.semibold)
+                        .lineLimit(1)
+                }
 
-                Spacer()
+                Spacer(minLength: 8)
+
+                Text(timeLabel)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
 
                 Text(ProjectSkillActivityPresentation.statusLabel(for: item))
-                    .font(.system(.caption2, design: .rounded))
-                    .fontWeight(.semibold)
+                    .font(.caption2.weight(.semibold))
                     .foregroundStyle(iconColor)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
@@ -828,59 +1652,39 @@ struct ProjectSkillActivityCard: View {
             HStack(spacing: 8) {
                 let skillBadge = ProjectSkillActivityPresentation.skillBadgeText(for: item)
                 if !skillBadge.isEmpty {
-                    Text(skillBadge)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(Color.secondary.opacity(0.08))
-                        .cornerRadius(6)
+                    metaBadge(skillBadge)
                 }
 
-                Text(ProjectSkillActivityPresentation.toolBadge(for: item))
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                let toolBadge = ProjectSkillActivityPresentation.toolBadge(for: item)
+                if !toolBadge.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    metaBadge(toolBadge)
+                }
 
                 Spacer()
-
-                Text(timeLabel)
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
             }
 
             Text(ProjectSkillActivityPresentation.timelineBody(for: item))
-                .font(.system(.subheadline, design: .default))
+                .font(.subheadline)
                 .foregroundStyle(.primary)
+                .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
 
-            ForEach(ProjectSkillActivityPresentation.cardGovernedDetailLines(for: item), id: \.self) { line in
-                Text(line)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if let governanceTruthLine = ProjectSkillActivityPresentation.displayGovernanceTruthLine(for: item) {
-                Text(governanceTruthLine)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if let governanceInterception,
-               governanceInterception.shouldShowGovernanceReason {
-                Text("治理原因：\(governanceInterception.governanceReason)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if let policyReason = governanceInterception?.policyReason {
-                Text("策略原因：\(policyReason)")
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
+            if !governanceDetailLines.isEmpty {
+                DisclosureGroup("治理详情", isExpanded: $showGovernanceDetails) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(governanceDetailLines, id: \.self) { line in
+                            Text(line)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .padding(.top, 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .font(.caption)
+                .tint(.secondary)
             }
 
             HStack(spacing: 8) {
@@ -952,11 +1756,11 @@ struct ProjectSkillActivityCard: View {
             .tint(.secondary)
         }
         .padding(12)
-        .background(isFocused ? Color.orange.opacity(0.12) : iconColor.opacity(0.06))
-        .cornerRadius(10)
+        .background(isFocused ? Color.orange.opacity(0.1) : Color(nsColor: .controlBackgroundColor).opacity(0.72))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(isFocused ? Color.orange.opacity(0.6) : iconColor.opacity(0.18), lineWidth: isFocused ? 1.5 : 1)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(isFocused ? Color.orange.opacity(0.52) : iconColor.opacity(0.16), lineWidth: isFocused ? 1.5 : 1)
         )
         .shadow(color: isFocused ? Color.orange.opacity(0.16) : .clear, radius: 8, y: 2)
     }
@@ -980,10 +1784,7 @@ struct ProjectSkillActivityCard: View {
 
     private var timeLabel: String {
         let date = Date(timeIntervalSince1970: item.createdAt)
-        let formatter = DateFormatter()
-        formatter.timeStyle = .short
-        formatter.dateStyle = .none
-        return formatter.string(from: date)
+        return MessageTimelineFormatters.time.string(from: date)
     }
 
     private var guardrailRepairHint: XTGuardrailRepairHint? {
@@ -992,6 +1793,49 @@ struct ProjectSkillActivityCard: View {
 
     private var governanceInterception: ProjectGovernanceInterceptionPresentation? {
         ProjectGovernanceInterceptionPresentation.make(from: item)
+    }
+
+    private var governanceDetailLines: [String] {
+        var lines = ProjectSkillActivityPresentation.cardGovernedDetailLines(for: item)
+
+        if let governanceTruthLine = ProjectSkillActivityPresentation.displayGovernanceTruthLine(for: item) {
+            lines.append(governanceTruthLine)
+        }
+
+        if let governanceInterception,
+           governanceInterception.shouldShowGovernanceReason {
+            lines.append("治理原因：\(governanceInterception.governanceReason)")
+        }
+
+        if let policyReason = governanceInterception?.policyReason {
+            lines.append("策略原因：\(policyReason)")
+        }
+
+        return uniqueNonEmpty(lines)
+    }
+
+    private func metaBadge(_ text: String) -> some View {
+        Text(text)
+            .font(.system(.caption2, design: .monospaced))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(Color.secondary.opacity(0.08))
+            .clipShape(Capsule())
+    }
+
+    private func uniqueNonEmpty(_ rawValues: [String]) -> [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+
+        for rawValue in rawValues {
+            let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !seen.contains(trimmed) else { continue }
+            seen.insert(trimmed)
+            result.append(trimmed)
+        }
+
+        return result
     }
 }
 
@@ -1426,7 +2270,7 @@ private struct ProjectSkillRecordTimelineCard: View {
 struct ToolResultView: View {
     let ctx: AXProjectContext?
     let message: AXChatMessage
-    @EnvironmentObject private var appModel: AppModel
+    @Environment(\.xtAppModelReference) private var appModelReference
     @State private var toolResult: ToolResult?
     @State private var showDiagnostics = false
 
@@ -1596,6 +2440,13 @@ struct ToolResultView: View {
             destination: destination
         )
     }
+
+    private var appModel: AppModel {
+        guard let appModelReference else {
+            preconditionFailure("ToolResultView requires xtAppModelReference")
+        }
+        return appModelReference
+    }
 }
 
 /// Assistant 消息内容（支持 tool calls 展示）
@@ -1603,11 +2454,51 @@ struct AssistantMessageContent: View {
     let ctx: AXProjectContext?
     let config: AXProjectConfig?
     let session: ChatSessionModel?
-    let message: AXChatMessage
-    @State private var parsedContent: ParsedContent?
+    let sessionIsSending: Bool
+    let snapshot: MessageRowSnapshot
+
+    init(
+        ctx: AXProjectContext? = nil,
+        config: AXProjectConfig? = nil,
+        session: ChatSessionModel? = nil,
+        sessionIsSending: Bool = false,
+        message: AXChatMessage,
+        thinkingPresentation: XTStreamingPlaceholderPresentation? = nil
+    ) {
+        self.ctx = ctx
+        self.config = config
+        self.session = session
+        self.sessionIsSending = sessionIsSending
+        self.snapshot = MessageRowSnapshot(
+            message: message,
+            thinkingPresentation: thinkingPresentation
+        )
+    }
+
+    init(
+        ctx: AXProjectContext? = nil,
+        config: AXProjectConfig? = nil,
+        session: ChatSessionModel? = nil,
+        sessionIsSending: Bool = false,
+        snapshot: MessageRowSnapshot
+    ) {
+        self.ctx = ctx
+        self.config = config
+        self.session = session
+        self.sessionIsSending = sessionIsSending
+        self.snapshot = snapshot
+    }
+
+    private var message: AXChatMessage {
+        snapshot.message
+    }
 
     private var thinkingPresentation: XTStreamingPlaceholderPresentation? {
-        session?.assistantThinkingPresentation(for: message)
+        snapshot.thinkingPresentation
+    }
+
+    private var parsedContent: ParsedContent {
+        MessageTimelineRenderCache.parsedContent(for: message)
     }
 
     var body: some View {
@@ -1615,72 +2506,93 @@ struct AssistantMessageContent: View {
             if let thinkingPresentation {
                 XTStreamingPlaceholderView(presentation: thinkingPresentation)
                     .frame(maxWidth: .infinity, alignment: .leading)
-            } else if let parsed = parsedContent, !parsed.isEmpty {
-                // 结构化内容
-                ForEach(parsed.parts) { part in
-                    ParsedPartView(part: part)
-                }
             } else {
-                // 纯文本内容
-                if !message.content.isEmpty {
-                    Text(message.content)
-                        .font(.body)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
+                messageBody
             }
 
             if let ctx,
                let session,
-               RouteDiagnoseMessagePresentation.matches(message) {
+               snapshot.showsRouteDiagnoseActions {
                 RouteDiagnoseActionRail(
                     ctx: ctx,
                     config: config,
                     session: session,
+                    sessionIsSending: sessionIsSending,
                     messageContent: message.content
                 )
             }
         }
-        .onAppear {
-            parsedContent = MessageTimelineRenderCache.parsedContent(for: message)
+    }
+
+    @ViewBuilder
+    private var messageBody: some View {
+        if snapshot.usesStructuredAssistantContent {
+            structuredMessageBody
+        } else {
+            plainTextBody
         }
-        .onChange(of: message.content) { newContent in
-            _ = newContent
-            parsedContent = MessageTimelineRenderCache.parsedContent(for: message)
+    }
+
+    @ViewBuilder
+    private var structuredMessageBody: some View {
+        if !parsedContent.isEmpty {
+            ForEach(parsedContent.parts) { part in
+                ParsedPartView(part: part)
+            }
+        } else {
+            plainTextBody
+        }
+    }
+
+    @ViewBuilder
+    private var plainTextBody: some View {
+        if !message.content.isEmpty {
+            MessagePlainTextBody(
+                content: message.content,
+                isStreamingTail: snapshot.isStreamingTail
+            )
         }
     }
 }
 
 struct RouteDiagnoseActionRail: View {
+    private struct RuntimeSnapshot: Equatable {
+        var effectiveProjectConfig: AXProjectConfig?
+        var recommendation: HubModelPickerRecommendationState?
+        var latestRouteEvent: AXModelRouteDiagnosticEvent?
+        var supervisorRouteExplainability: RouteDiagnoseMessagePresentation.SupervisorRouteExplainability?
+
+        static let empty = RuntimeSnapshot(
+            effectiveProjectConfig: nil,
+            recommendation: nil,
+            latestRouteEvent: nil,
+            supervisorRouteExplainability: nil
+        )
+    }
+
     let ctx: AXProjectContext
     let config: AXProjectConfig?
-    @ObservedObject var session: ChatSessionModel
+    let session: ChatSessionModel
+    let sessionIsSending: Bool
     let messageContent: String
-    @EnvironmentObject private var appModel: AppModel
+    @Environment(\.xtAppModelReference) private var appModelReference
+    @EnvironmentObject private var hubConnectionStore: XTHubConnectionStore
     @Environment(\.openWindow) private var openWindow
     @StateObject private var modelManager = HubModelManager.shared
     @StateObject private var updateFeedback = XTTransientUpdateFeedbackState()
     @State private var showModelPicker = false
     @State private var repairActionInFlight = false
     @State private var actionNotice: XTSettingsChangeNotice?
+    @State private var runtimeSnapshot = RuntimeSnapshot.empty
 
     private var effectiveProjectConfig: AXProjectConfig? {
-        if appModel.projectContext?.root.standardizedFileURL == ctx.root.standardizedFileURL,
-           let current = appModel.projectConfig {
-            return current
-        }
-        return (try? AXProjectStore.loadOrCreateConfig(for: ctx))
+        runtimeSnapshot.effectiveProjectConfig
             ?? config
             ?? .default(forProjectRoot: ctx.root)
     }
 
     private var recommendation: HubModelPickerRecommendationState? {
-        RouteDiagnoseMessagePresentation.recommendation(
-            config: effectiveProjectConfig,
-            settings: appModel.settingsStore.settings,
-            ctx: ctx,
-            modelsState: visibleModelSnapshot
-        )
+        runtimeSnapshot.recommendation
     }
 
     private var availableModels: [HubModel] {
@@ -1705,11 +2617,11 @@ struct RouteDiagnoseActionRail: View {
     }
 
     private var latestRouteEvent: AXModelRouteDiagnosticEvent? {
-        AXModelRouteDiagnosticsStore.recentEvents(for: ctx, limit: 1).first
+        runtimeSnapshot.latestRouteEvent
     }
 
     private var supervisorRouteExplainability: RouteDiagnoseMessagePresentation.SupervisorRouteExplainability? {
-        RouteDiagnoseMessagePresentation.supervisorRouteExplainability(from: messageContent)
+        runtimeSnapshot.supervisorRouteExplainability
     }
 
     private func recordRouteRepairLog(
@@ -1737,8 +2649,8 @@ struct RouteDiagnoseActionRail: View {
     private var repairAction: RouteDiagnoseMessagePresentation.RepairAction? {
         RouteDiagnoseMessagePresentation.repairAction(
             latestEvent: latestRouteEvent,
-            hubConnected: appModel.hubConnected,
-            hubRemoteConnected: appModel.hubRemoteConnected,
+            hubConnected: hubConnectionSnapshot.localConnected,
+            hubRemoteConnected: hubConnectionSnapshot.remoteConnected,
             hasRecommendation: recommendation != nil,
             messageContent: messageContent
         )
@@ -1748,7 +2660,7 @@ struct RouteDiagnoseActionRail: View {
         guard let repairAction else { return nil }
         return RouteDiagnoseMessagePresentation.title(
             for: repairAction,
-            inProgress: repairActionInFlight || appModel.hubRemoteLinking,
+            inProgress: repairActionInFlight || hubConnectionSnapshot.remoteLinking,
             language: interfaceLanguage
         )
     }
@@ -1769,7 +2681,7 @@ struct RouteDiagnoseActionRail: View {
         guard let repairAction else { return false }
         switch repairAction {
         case .connectHubAndDiagnose, .reconnectHubAndDiagnose:
-            return repairActionInFlight || appModel.hubRemoteLinking
+            return repairActionInFlight || hubConnectionSnapshot.remoteLinking
         case .openChooseModel, .openProjectGovernanceOverview, .openHubRecovery, .openHubConnectionLog:
             return false
         }
@@ -1789,7 +2701,6 @@ struct RouteDiagnoseActionRail: View {
                         language: interfaceLanguage
                     )
                 )
-                    .environmentObject(appModel)
                     .frame(width: 420)
             }
             .onDisappear {
@@ -1799,7 +2710,10 @@ struct RouteDiagnoseActionRail: View {
             .onAppear {
                 handleRouteDiagnoseAppear()
             }
-            .onChange(of: appModel.hubInteractive) { connected in
+            .onChange(of: runtimeRefreshSignature) { _ in
+                refreshRuntimeSnapshot()
+            }
+            .onChange(of: hubConnectionSnapshot.interactive) { connected in
                 if connected {
                     fetchVisibleModels()
                 }
@@ -1840,21 +2754,21 @@ struct RouteDiagnoseActionRail: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
-                .disabled(session.isSending)
+                .disabled(sessionIsSending)
 
                 Button(XTL10n.RouteDiagnose.moreModels.resolve(interfaceLanguage)) {
                     openRouteDiagnoseModelPicker()
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .disabled(!appModel.hubInteractive)
+                .disabled(!hubConnectionSnapshot.interactive)
             } else {
                 Button(XTL10n.RouteDiagnose.changeModel.resolve(interfaceLanguage)) {
                     openRouteDiagnoseModelPicker()
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
-                .disabled(!appModel.hubInteractive)
+                .disabled(!hubConnectionSnapshot.interactive)
             }
 
             Button(XTL10n.RouteDiagnose.rediagnose.resolve(interfaceLanguage)) {
@@ -1866,7 +2780,7 @@ struct RouteDiagnoseActionRail: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-            .disabled(session.isSending)
+            .disabled(sessionIsSending)
         }
     }
 
@@ -1969,11 +2883,66 @@ struct RouteDiagnoseActionRail: View {
 
     private func handleRouteDiagnoseAppear() {
         modelManager.setAppModel(appModel)
+        refreshRuntimeSnapshot()
         fetchVisibleModels()
     }
 
+    private var runtimeRefreshSignature: String {
+        let modelSignature = visibleModelSnapshot.models
+            .map { "\($0.id):\(String(describing: $0.state))" }
+            .joined(separator: ",")
+        return [
+            ctx.root.standardizedFileURL.path,
+            "\(messageContent.utf8.count)",
+            "\(XTMessageTimelineContentFingerprint.make(from: messageContent))",
+            "\(visibleModelSnapshot.updatedAt)",
+            modelSignature,
+            appModel.settingsStore.settings.interfaceLanguage.rawValue,
+            appModel.settingsStore.settings.assignment(for: .coder).model ?? "",
+            appModel.projectConfig?.modelOverride(for: .coder) ?? ""
+        ].joined(separator: "|")
+    }
+
+    private func refreshRuntimeSnapshot() {
+        let effectiveConfig = resolveEffectiveProjectConfig()
+        let recommendation = RouteDiagnoseMessagePresentation.recommendation(
+            config: effectiveConfig,
+            settings: appModel.settingsStore.settings,
+            ctx: ctx,
+            modelsState: visibleModelSnapshot
+        )
+        let latestRouteEvent = XTProjectUIPresentationReadCache.latestRouteEvent(
+            for: ctx,
+            limit: 1
+        ) {
+            AXModelRouteDiagnosticsStore.recentEvents(for: ctx, limit: 1).first
+        }
+        let supervisorRouteExplainability = RouteDiagnoseMessagePresentation
+            .supervisorRouteExplainability(from: messageContent)
+        let nextSnapshot = RuntimeSnapshot(
+            effectiveProjectConfig: effectiveConfig,
+            recommendation: recommendation,
+            latestRouteEvent: latestRouteEvent,
+            supervisorRouteExplainability: supervisorRouteExplainability
+        )
+        guard runtimeSnapshot != nextSnapshot else { return }
+        runtimeSnapshot = nextSnapshot
+    }
+
+    private func resolveEffectiveProjectConfig() -> AXProjectConfig? {
+        if appModel.projectContext?.root.standardizedFileURL == ctx.root.standardizedFileURL,
+           let current = appModel.projectConfig {
+            return current
+        }
+        return XTProjectUIPresentationReadCache.projectConfig(for: ctx) {
+            (try? AXProjectStore.loadOrCreateConfig(for: ctx))
+                ?? config
+                ?? .default(forProjectRoot: ctx.root)
+        }
+    }
+
     private func fetchVisibleModels() {
-        guard appModel.hubInteractive else { return }
+        guard hubConnectionSnapshot.interactive else { return }
         Task {
             await modelManager.fetchModels()
         }
@@ -2188,6 +3157,7 @@ struct RouteDiagnoseActionRail: View {
         appModel.setProjectRoleModel(for: ctx, role: .coder, modelId: recommendation.modelId)
         let refreshedConfig = (try? AXProjectStore.loadOrCreateConfig(for: ctx))
             ?? effectiveProjectConfig
+        refreshRuntimeSnapshot()
         presentRouteActionNotice(
             XTSettingsChangeNoticeBuilder.projectRoleModel(
                 projectName: ctx.displayName(registry: appModel.registry),
@@ -2224,6 +3194,17 @@ struct RouteDiagnoseActionRail: View {
         if plan.shouldHighlight {
             updateFeedback.trigger()
         }
+    }
+
+    private var hubConnectionSnapshot: XTHubConnectionSnapshot {
+        hubConnectionStore.snapshot
+    }
+
+    private var appModel: AppModel {
+        guard let appModelReference else {
+            preconditionFailure("RouteDiagnoseActionRail requires xtAppModelReference")
+        }
+        return appModelReference
     }
 }
 
@@ -2346,6 +3327,8 @@ struct ToolCallCard: View {
             return "magnifyingglass"
         case .skills_pin:
             return "pin"
+        case .skillsExecuteRunner:
+            return "play.rectangle"
         case .summarize:
             return "text.alignleft"
         case .supervisorVoicePlayback:

@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct SupervisorPersonalAssistantSummaryBoard: View {
-    @EnvironmentObject private var appModel: AppModel
+    @EnvironmentObject private var settingsCenterStore: XTSettingsCenterStore
 
     @StateObject private var personalMemoryStore = SupervisorPersonalMemoryStore.shared
     @StateObject private var reviewStore = SupervisorPersonalReviewNoteStore.shared
@@ -9,7 +9,7 @@ struct SupervisorPersonalAssistantSummaryBoard: View {
     let onQuickPrompt: (String) -> Void
 
     private var activePersona: SupervisorPersonaSlot {
-        let registry = appModel.settingsStore.settings.supervisorPersonaRegistry
+        let registry = settingsSnapshot.supervisorPersonaRegistry
         let active = registry.activePersona.enabled ? registry.activePersona : registry.defaultPersona
         return active.enabled ? active : (registry.slots.first(where: \.enabled) ?? registry.defaultPersona)
     }
@@ -79,7 +79,7 @@ struct SupervisorPersonalAssistantSummaryBoard: View {
         .onChange(of: personalMemoryStore.snapshot) { _ in
             refreshReviewNotes()
         }
-        .onChange(of: appModel.settingsStore.settings.supervisorPersonaRegistry) { _ in
+        .onChange(of: settingsSnapshot.supervisorPersonaRegistry) { _ in
             refreshReviewNotes()
         }
     }
@@ -114,5 +114,9 @@ struct SupervisorPersonalAssistantSummaryBoard: View {
             personalMemory: personalMemoryStore.snapshot,
             intent: .derivedRefresh
         )
+    }
+
+    private var settingsSnapshot: XTerminalSettings {
+        settingsCenterStore.snapshot.settings
     }
 }

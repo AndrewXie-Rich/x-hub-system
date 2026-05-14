@@ -32,7 +32,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         }
 
         let ctx = AXProjectContext(root: root)
-        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeWorkflowContinuationRecipe(), activate: true, for: ctx)
 
         let prepared = try manager.prepareAutomationRun(
             for: ctx,
@@ -79,7 +79,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         }
 
         let ctx = AXProjectContext(root: root)
-        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeWorkflowContinuationRecipe(), activate: true, for: ctx)
 
         let prepared = try manager.prepareAutomationRun(
             for: ctx,
@@ -119,7 +119,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         }
 
         let ctx = AXProjectContext(root: root)
-        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeWorkflowContinuationRecipe(), activate: true, for: ctx)
         let project = makeProjectEntry(root: root)
         let appModel = makeTestingAppModel()
         appModel.registry = AXProjectRegistry(
@@ -185,7 +185,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         }
 
         let ctx = AXProjectContext(root: root)
-        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeWorkflowContinuationRecipe(), activate: true, for: ctx)
 
         let olderStableRunID = "run-stable-older"
         let olderStableLineage = XTAutomationRunLineage.root(runID: olderStableRunID)
@@ -562,7 +562,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         }
 
         let ctx = AXProjectContext(root: root)
-        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeWorkflowContinuationRecipe(), activate: true, for: ctx)
         let prepared = try hydrator.prepareAutomationRun(
             for: ctx,
             request: makeRequest(now: Date(timeIntervalSince1970: 1_773_200_302))
@@ -5068,6 +5068,118 @@ struct SupervisorManagerAutomationRuntimeTests {
     }
 
     @Test
+    func continueIntentRoutesPendingLaunchRunStepIntoGovernedAutomationRuntime() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeWorkflowContinuationRecipe(), activate: true, for: ctx)
+        var project = makeProjectEntry(root: root)
+        project.displayName = "坦克大战"
+
+        let appModel = makeTestingAppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        try installLaunchRunWorkflow(
+            ctx: ctx,
+            project: project,
+            stepStatus: .pending
+        )
+
+        let rendered = try #require(
+            manager.directSupervisorActionIfApplicableForTesting("继续")
+        )
+
+        #expect(rendered.contains("✅ automation 已启动准备"))
+        #expect(rendered.contains("项目: \(project.displayName)"))
+        #expect(rendered.contains("recipe: xt-auto-workflow-continuation@v1"))
+        #expect(manager.automationCurrentCheckpoint?.state == .queued)
+
+        let plan = try #require(SupervisorProjectPlanStore.load(for: ctx).plans.first)
+        let launchRunStep = try #require(plan.steps.first(where: { $0.stepId == "step-002" }))
+        #expect(launchRunStep.status == .running)
+        #expect(launchRunStep.detail.contains("launch_run delegated to governed automation runtime"))
+
+        let config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        #expect(config.toolProfile == ToolProfile.coding.rawValue)
+    }
+
+    @Test
+    func continueIntentRecoversBlockedLaunchRunStepIntoGovernedAutomationRuntime() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+        let baseNow = Date().timeIntervalSince1970
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeWorkflowContinuationRecipe(), activate: true, for: ctx)
+        var project = makeProjectEntry(root: root)
+        project.displayName = "坦克大战"
+
+        let appModel = makeTestingAppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let prepared = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: baseNow - 2))
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .blocked,
+            retryAfterSeconds: 0,
+            auditRef: "audit-xt-auto-manager-workflow-continue-blocked",
+            now: Date(timeIntervalSince1970: baseNow - 1)
+        )
+        try installLaunchRunWorkflow(
+            ctx: ctx,
+            project: project,
+            stepStatus: .blocked
+        )
+
+        let rendered = try #require(
+            manager.directSupervisorActionIfApplicableForTesting("继续")
+        )
+
+        #expect(rendered.contains("♻️ automation 恢复判定"))
+        #expect(rendered.contains("run_id: \(prepared.launchRef)"))
+        #expect(rendered.contains("decision: resume"))
+
+        let plan = try #require(SupervisorProjectPlanStore.load(for: ctx).plans.first)
+        let launchRunStep = try #require(plan.steps.first(where: { $0.stepId == "step-002" }))
+        #expect(launchRunStep.status == .running)
+        #expect(launchRunStep.detail.contains("launch_run recovery resume"))
+    }
+
+    @Test
     func naturalLanguageAutomationCancelPrependsProjectScopedGovernanceBriefForPendingGrant() throws {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
@@ -5332,7 +5444,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         }
 
         let ctx = AXProjectContext(root: root)
-        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeWorkflowContinuationRecipe(), activate: true, for: ctx)
         var project = makeProjectEntry(root: root)
         project.displayName = "亮亮"
 
@@ -7306,6 +7418,128 @@ struct SupervisorManagerAutomationRuntimeTests {
             blockerSummary: nil,
             lastSummaryAt: nil,
             lastEventAt: nil
+        )
+    }
+
+    private func installLaunchRunWorkflow(
+        ctx: AXProjectContext,
+        project: AXProjectEntry,
+        stepStatus: SupervisorPlanStepStatus
+    ) throws {
+        let nowMs = Int64((Date().timeIntervalSince1970 * 1000.0).rounded())
+        let jobId = "job-launch-run-\(project.projectId.prefix(8))"
+        let planId = "plan-launch-run-\(project.projectId.prefix(8))"
+        let planStatus: SupervisorPlanStatus = stepStatus == .blocked ? .blocked : .active
+        let jobStatus: SupervisorJobStatus = stepStatus == .blocked ? .blocked : .running
+
+        try SupervisorProjectJobStore.upsert(
+            SupervisorJobRecord(
+                schemaVersion: SupervisorJobRecord.currentSchemaVersion,
+                jobId: jobId,
+                projectId: project.projectId,
+                goal: "推进坦克大战最小可运行骨架",
+                priority: .high,
+                status: jobStatus,
+                source: .supervisor,
+                currentOwner: "coder",
+                activePlanId: planId,
+                createdAtMs: nowMs,
+                updatedAtMs: nowMs,
+                auditRef: "audit-\(jobId)"
+            ),
+            for: ctx
+        )
+
+        try SupervisorProjectPlanStore.upsert(
+            SupervisorPlanRecord(
+                schemaVersion: SupervisorPlanRecord.currentSchemaVersion,
+                planId: planId,
+                jobId: jobId,
+                projectId: project.projectId,
+                status: planStatus,
+                currentOwner: "coder",
+                steps: [
+                    SupervisorPlanStepRecord(
+                        schemaVersion: SupervisorPlanStepRecord.currentSchemaVersion,
+                        stepId: "step-001",
+                        title: "锁定默认方案与验收口径",
+                        kind: .writeMemory,
+                        status: .completed,
+                        skillId: "",
+                        currentOwner: "supervisor",
+                        detail: "bootstrap_source=test",
+                        dependsOn: nil,
+                        timeoutMs: nil,
+                        maxRetries: nil,
+                        failurePolicy: nil,
+                        orderIndex: 0,
+                        updatedAtMs: nowMs
+                    ),
+                    SupervisorPlanStepRecord(
+                        schemaVersion: SupervisorPlanStepRecord.currentSchemaVersion,
+                        stepId: "step-002",
+                        title: "搭建最小可运行骨架",
+                        kind: .launchRun,
+                        status: stepStatus,
+                        skillId: "",
+                        currentOwner: "coder",
+                        detail: "owner=coder\nfocus=minimal runnable skeleton",
+                        dependsOn: ["step-001"],
+                        timeoutMs: nil,
+                        maxRetries: 1,
+                        failurePolicy: .replan,
+                        orderIndex: 1,
+                        updatedAtMs: nowMs
+                    ),
+                    SupervisorPlanStepRecord(
+                        schemaVersion: SupervisorPlanStepRecord.currentSchemaVersion,
+                        stepId: "step-003",
+                        title: "完成验证与交付收口",
+                        kind: .writeMemory,
+                        status: .pending,
+                        skillId: "",
+                        currentOwner: "coder",
+                        detail: "owner=coder\nfocus=verify and summarize",
+                        dependsOn: ["step-002"],
+                        timeoutMs: nil,
+                        maxRetries: 1,
+                        failurePolicy: .replan,
+                        orderIndex: 2,
+                        updatedAtMs: nowMs
+                    )
+                ],
+                createdAtMs: nowMs,
+                updatedAtMs: nowMs,
+                auditRef: "audit-\(planId)"
+            ),
+            for: ctx
+        )
+    }
+
+    private func makeWorkflowContinuationRecipe() -> AXAutomationRecipeRuntimeBinding {
+        AXAutomationRecipeRuntimeBinding(
+            recipeID: "xt-auto-workflow-continuation",
+            recipeVersion: 1,
+            lifecycleState: .ready,
+            goal: "continue governed workflow launch_run via automation runtime",
+            triggerRefs: [
+                "xt.automation_trigger_envelope.v1:manual/retry"
+            ],
+            deliveryTargets: ["channel://telegram/project-a"],
+            acceptancePackRef: "build/reports/xt_w3_22_acceptance_pack.v1.json",
+            executionProfile: .balanced,
+            touchMode: .guidedTouch,
+            innovationLevel: .l1,
+            laneStrategy: .singleLane,
+            requiredToolGroups: ["group:full"],
+            requiresTrustedAutomation: false,
+            trustedDeviceID: "",
+            workspaceBindingHash: "",
+            grantPolicyRef: "policy://automation-trigger/project-a",
+            rolloutStatus: .active,
+            lastEditedAtMs: 1_773_203_000_000,
+            lastEditAuditRef: "audit-xt-auto-workflow-continuation-bind",
+            lastLaunchRef: ""
         )
     }
 

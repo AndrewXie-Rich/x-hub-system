@@ -20,6 +20,7 @@ final class HubLLMProvider: LLMProvider {
                         taskType: req.taskType,
                         preferredModelId: req.preferredModelId,
                         explicitModelId: nil,
+                        remoteBackupModelId: req.remoteBackupModelId,
                         appId: "x_terminal",
                         projectId: req.projectId,
                         sessionId: req.sessionId,
@@ -31,6 +32,7 @@ final class HubLLMProvider: LLMProvider {
                     )
 
                     var usage: LLMUsage? = nil
+
                     for try await ev in await HubAIClient.shared.streamResponse(reqId: rid, timeoutSec: 600.0) {
                         if ev.type == "delta", let t = ev.text {
                             continuation.yield(.delta(t))

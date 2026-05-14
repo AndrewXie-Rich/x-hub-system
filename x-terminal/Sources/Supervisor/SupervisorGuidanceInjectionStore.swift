@@ -21,6 +21,36 @@ enum SupervisorGuidanceAckStatus: String, Codable, Sendable {
     case rejected
 }
 
+enum SupervisorGuidanceApplyState: String, Codable, Sendable {
+    case queued
+    case injected
+    case ackPending = "ack_pending"
+    case acked
+    case deferred
+    case superseded
+
+    var displayName: String {
+        rawValue
+    }
+
+    var summaryText: String {
+        switch self {
+        case .queued:
+            return "已进入 guidance queue，等待 safe point"
+        case .injected:
+            return "已注入当前 prompt"
+        case .ackPending:
+            return "已注入当前 prompt，等待 Project AI ack"
+        case .acked:
+            return "已完成 ack"
+        case .deferred:
+            return "已暂缓，等待后续 safe point"
+        case .superseded:
+            return "已被更新 guidance 覆盖"
+        }
+    }
+}
+
 struct SupervisorGuidanceInjectionRecord: Identifiable, Equatable, Codable, Sendable {
     static let currentSchemaVersion = "xt.supervisor_guidance_injection.v1"
 
@@ -261,6 +291,34 @@ enum SupervisorGuidanceInjectionStore {
             return item.maxRetryCount > 0 ? "retry budget exhausted" : "deferred"
         case .accepted, .rejected:
             return "settled"
+        }
+    }
+
+    static func applyState(
+        for item: SupervisorGuidanceInjectionRecord,
+        nowMs: Int64,
+        promptVisibleGuidanceInjectionId: String? = nil,
+        visibleFromPreRunMemory: Bool = false,
+        supersededByNewerGuidance: Bool = false
+    ) -> SupervisorGuidanceApplyState? {
+        guard !isExpired(item, nowMs: nowMs) else { return nil }
+        if supersededByNewerGuidance {
+            return .superseded
+        }
+
+        switch item.ackStatus {
+        case .accepted:
+            return .acked
+        case .deferred:
+            return .deferred
+        case .rejected:
+            return nil
+        case .pending:
+            let promptVisible = normalizedGuidanceToken(promptVisibleGuidanceInjectionId ?? "") == item.injectionId
+            if promptVisible || visibleFromPreRunMemory {
+                return item.ackRequired ? .ackPending : .injected
+            }
+            return .queued
         }
     }
 

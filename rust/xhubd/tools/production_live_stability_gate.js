@@ -30,6 +30,8 @@ function parseArgs(argv) {
     requireUiCompatibility: true,
     requireRelFlowHubProcess: true,
     requireNoTargetXhubd: true,
+    allowMemorySkillsProduction: false,
+    requireMemorySkillsProduction: false,
     includeChildOutput: false,
     reportPath: '',
   };
@@ -77,6 +79,13 @@ function parseArgs(argv) {
         break;
       case '--allow-target-xhubd':
         out.requireNoTargetXhubd = false;
+        break;
+      case '--allow-memory-skills-production':
+        out.allowMemorySkillsProduction = true;
+        break;
+      case '--require-memory-skills-production':
+        out.allowMemorySkillsProduction = true;
+        out.requireMemorySkillsProduction = true;
         break;
       case '--include-child-output':
         out.includeChildOutput = true;
@@ -133,6 +142,8 @@ function usage() {
     '  --skip-ui-compatibility         Skip no-product-UI-change gate',
     '  --allow-missing-relflowhub      Do not fail if RELFlowHub process is absent',
     '  --allow-target-xhubd            Do not fail if target/debug or target/release xhubd is present',
+    '  --allow-memory-skills-production Permit explicit Rust memory writer and skills execution authority',
+    '  --require-memory-skills-production Require both Rust memory writer and skills execution authority',
     '  --include-child-output          Embed full child JSON outputs in the top-level report',
     '  --report-path <p>               JSON report path',
   ].join('\n');
@@ -389,14 +400,19 @@ function isBaselineSlowRequestCarryover(opsGate, metricsDelta, config) {
   const opIssues = Array.isArray(opsGate.output?.issues)
     ? opsGate.output.issues.map((issue) => String(issue))
     : [];
+  const memorySkillsAuthorityOk = config.allowMemorySkillsProduction
+    ? (!config.requireMemorySkillsProduction
+      || (opsGate.summary.memory_writer_authority_in_rust === true
+        && opsGate.summary.skills_execution_authority_in_rust === true))
+    : (opsGate.summary.memory_writer_authority_in_rust === false
+      && opsGate.summary.skills_execution_authority_in_rust === false);
   return opsGate.ok === false
     && opIssues.length === 1
     && opIssues[0] === 'slow_request_budget_exceeded'
     && opsGate.summary.healthy === true
     && opsGate.summary.ready === true
     && opsGate.summary.http_metrics_ready === true
-    && opsGate.summary.memory_writer_authority_in_rust === false
-    && opsGate.summary.skills_execution_authority_in_rust === false
+    && memorySkillsAuthorityOk
     && opsGate.summary.ui_product_change === false
     && opsGate.summary.secret_leak === false
     && metricsDelta.known === true
@@ -408,6 +424,12 @@ async function run(config) {
   const startedAtMs = Date.now();
   const metricsBefore = await getHttpMetrics(config, 'http_metrics_baseline');
   const heartbeatReportPath = path.join(REPORT_DIR, `xt_file_ipc_live_heartbeat_soak_for_stability_${utcStamp()}.json`);
+  const memorySkillsGateArgs = [];
+  if (config.requireMemorySkillsProduction) {
+    memorySkillsGateArgs.push('--require-memory-skills-production');
+  } else if (config.allowMemorySkillsProduction) {
+    memorySkillsGateArgs.push('--allow-memory-skills-production');
+  }
   const heartbeat = runJsonStep('xt_file_ipc_live_heartbeat_soak', 'node', [
     path.join(SCRIPT_DIR, 'xt_file_ipc_live_heartbeat_soak.js'),
     '--http-base-url', config.httpBaseUrl,
@@ -417,6 +439,7 @@ async function run(config) {
     '--max-status-age-ms', String(config.maxStatusAgeMs),
     '--status-read-timeout-ms', String(config.statusReadTimeoutMs),
     '--report-path', heartbeatReportPath,
+    ...memorySkillsGateArgs,
   ], {
     cwd: config.rustHubRoot,
     timeoutMs: config.durationMs + Math.max(30000, config.intervalMs * 4),
@@ -428,6 +451,7 @@ async function run(config) {
   const opsGate = runJsonStep('daemon_ops_gate', 'bash', [
     path.join(SCRIPT_DIR, 'daemon_ops_gate.command'),
     '--max-slow-requests', String(config.maxSlowRequests),
+    ...memorySkillsGateArgs,
   ], {
     cwd: config.rustHubRoot,
     timeoutMs: 120000,
@@ -448,6 +472,7 @@ async function run(config) {
     '--rust-hub-root', config.rustHubRoot,
     '--http-base-url', config.httpBaseUrl,
     '--allow-xt-file-ipc-production',
+    ...memorySkillsGateArgs,
   ], {
     cwd: config.rustHubRoot,
     timeoutMs: 60000,
@@ -524,8 +549,10 @@ async function run(config) {
     || Boolean(uiGate?.summary?.swift_ui_files_touched)
     || Boolean(uiGate?.summary?.rust_browser_product_ui);
   const secretLeak = opsGate.summary.secret_leak || runtimeGuard.summary.secret_leak;
-  if (memoryWriterAuthority) issues.push({ code: 'memory_writer_authority_changed' });
-  if (skillsExecutionAuthority) issues.push({ code: 'skills_execution_authority_changed' });
+  if (memoryWriterAuthority && !config.allowMemorySkillsProduction) issues.push({ code: 'memory_writer_authority_changed' });
+  if (skillsExecutionAuthority && !config.allowMemorySkillsProduction) issues.push({ code: 'skills_execution_authority_changed' });
+  if (config.requireMemorySkillsProduction && !memoryWriterAuthority) issues.push({ code: 'memory_writer_authority_not_active' });
+  if (config.requireMemorySkillsProduction && !skillsExecutionAuthority) issues.push({ code: 'skills_execution_authority_not_active' });
   if (uiProductChange) issues.push({ code: 'ui_product_change_detected' });
   if (secretLeak) issues.push({ code: 'secret_leak_detected' });
 
@@ -542,6 +569,8 @@ async function run(config) {
     max_status_age_ms: config.maxStatusAgeMs,
     status_read_timeout_ms: config.statusReadTimeoutMs,
     max_slow_requests: config.maxSlowRequests,
+    memory_skills_production_allowed: config.allowMemorySkillsProduction,
+    memory_skills_production_required: config.requireMemorySkillsProduction,
     http_metrics_baseline: {
       ok: metricsBefore.ok,
       status_code: metricsBefore.status_code,

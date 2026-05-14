@@ -25,6 +25,7 @@ enum SupervisorViewStateSupport {
     struct ScreenModel {
         let selectedAutomationProject: AXProjectEntry?
         let selectedAutomationRecipe: AXAutomationRecipeRuntimeBinding?
+        let selectedAutomationTemplatePreview: AXProjectGovernanceTemplatePreview?
         let selectedAutomationLastLaunchRef: String
         let legacyRuntime: XTLegacySupervisorRuntimeContext
         let dashboardPresentations: SupervisorViewRuntimePresentationSupport.DashboardPresentationBundle
@@ -53,13 +54,18 @@ enum SupervisorViewStateSupport {
             appModel: appModel,
             selectedAutomationProject: selectedProject
         )
+        let selectedTemplatePreview = selectedProject.map {
+            appModel.governanceTemplatePreview(for: $0)
+        }
         let selectedLastLaunchRef = selectedAutomationLastLaunchRef(
             appModel: appModel,
             supervisor: supervisor,
             selectedAutomationProject: selectedProject
         )
         let legacyRuntime = appModel.ensureLegacySupervisorRuntimeContext()
-        let xtReadySnapshot = supervisor.xtReadyIncidentExportSnapshot(limit: 120)
+        let xtReadySnapshot = SupervisorXTReadyIncidentExportSnapshotCache.snapshot(limit: 120) {
+            supervisor.xtReadyIncidentExportSnapshot(limit: 120)
+        }
         let cockpitPresentation = SupervisorCockpitPresentation.fromRuntime(
             supervisorManager: supervisor,
             orchestrator: legacyRuntime.orchestrator,
@@ -85,6 +91,7 @@ enum SupervisorViewStateSupport {
         return ScreenModel(
             selectedAutomationProject: selectedProject,
             selectedAutomationRecipe: selectedRecipe,
+            selectedAutomationTemplatePreview: selectedTemplatePreview,
             selectedAutomationLastLaunchRef: selectedLastLaunchRef,
             legacyRuntime: legacyRuntime,
             dashboardPresentations: dashboardPresentations,
@@ -323,8 +330,34 @@ enum SupervisorViewStateSupport {
                 projectName: projectName,
                 record: refreshedRecord
             )
-        }
     }
+}
+
+@MainActor
+private enum SupervisorXTReadyIncidentExportSnapshotCache {
+    private struct Entry {
+        let loadedAt: Date
+        let snapshot: SupervisorManager.XTReadyIncidentExportSnapshot
+    }
+
+    private static let maxAgeSeconds: TimeInterval = 1.0
+    private static var entries: [Int: Entry] = [:]
+
+    static func snapshot(
+        limit: Int,
+        now: Date = Date(),
+        loader: () -> SupervisorManager.XTReadyIncidentExportSnapshot
+    ) -> SupervisorManager.XTReadyIncidentExportSnapshot {
+        if let entry = entries[limit],
+           now.timeIntervalSince(entry.loadedAt) < maxAgeSeconds {
+            return entry.snapshot
+        }
+
+        let snapshot = loader()
+        entries[limit] = Entry(loadedAt: now, snapshot: snapshot)
+        return snapshot
+    }
+}
 
     private static func pendingGrantStableKey(
         _ grant: SupervisorManager.SupervisorPendingGrant

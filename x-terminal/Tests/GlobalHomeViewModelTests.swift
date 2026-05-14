@@ -78,6 +78,39 @@ struct GlobalHomeViewModelTests {
     }
 
     @Test
+    @MainActor
+    func globalHomeRuntimePresentationUsesFocusedProjectAndHubInputs() {
+        let appModel = AppModel.makeForTesting()
+        appModel.registry = .empty()
+
+        let presentation = GlobalHomePresentation.fromRuntime(
+            appModel: appModel,
+            projects: [
+                AXProjectEntry(
+                    projectId: "focused-home-project",
+                    rootPath: "/tmp/focused-home-project",
+                    displayName: "Focused Home",
+                    lastOpenedAt: 0,
+                    manualOrderIndex: nil,
+                    pinned: false,
+                    statusDigest: nil,
+                    currentStateSummary: nil,
+                    nextStepSummary: nil,
+                    blockerSummary: nil,
+                    lastSummaryAt: nil,
+                    lastEventAt: nil
+                )
+            ],
+            hubInteractive: true,
+            pendingGrantCount: 0
+        )
+
+        #expect(presentation.primaryStatus.machineStatusRef.contains("hub_interactive=true"))
+        #expect(presentation.primaryStatus.machineStatusRef.contains("projects=1"))
+        #expect(presentation.actions.first?.title == "继续 Focused Home")
+    }
+
+    @Test
     func globalHomeProjectRowsBindGovernanceSummaryToWatchlistConfiguration() {
         let configuration = ProjectGovernanceCompactSummarySurfaceConfiguration.watchlist
         #expect(configuration.showAxisLegend)

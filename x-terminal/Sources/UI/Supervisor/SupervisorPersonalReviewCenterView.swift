@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct SupervisorPersonalReviewCenterView: View {
-    @EnvironmentObject private var appModel: AppModel
+    @EnvironmentObject private var settingsCenterStore: XTSettingsCenterStore
 
     @StateObject private var personalMemoryStore = SupervisorPersonalMemoryStore.shared
     @StateObject private var reviewStore = SupervisorPersonalReviewNoteStore.shared
@@ -60,7 +60,7 @@ struct SupervisorPersonalReviewCenterView: View {
         .onChange(of: personalMemoryStore.snapshot) { _ in
             refreshDerivedNotes()
         }
-        .onChange(of: appModel.settingsStore.settings.supervisorPersonaRegistry) { _ in
+        .onChange(of: settingsSnapshot.supervisorPersonaRegistry) { _ in
             refreshDerivedNotes()
         }
     }
@@ -198,7 +198,7 @@ struct SupervisorPersonalReviewCenterView: View {
     }
 
     private var activePersona: SupervisorPersonaSlot {
-        let registry = appModel.settingsStore.settings.supervisorPersonaRegistry
+        let registry = settingsSnapshot.supervisorPersonaRegistry
         let active = registry.activePersona.enabled ? registry.activePersona : registry.defaultPersona
         return active.enabled ? active : (registry.slots.first(where: \.enabled) ?? registry.defaultPersona)
     }
@@ -245,5 +245,9 @@ struct SupervisorPersonalReviewCenterView: View {
             intent: .completionMark
         )
         refreshDerivedNotes(now: now)
+    }
+
+    private var settingsSnapshot: XTerminalSettings {
+        settingsCenterStore.snapshot.settings
     }
 }

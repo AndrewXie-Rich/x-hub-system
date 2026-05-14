@@ -1,0 +1,22 @@
+{
+  "schema_version": "xhub.rust_hub.daemon_profile.v1",
+  "profile": "domain",
+  "host": "127.0.0.1",
+  "port": 50151,
+  "allow_lan": false,
+  "public_endpoint": true,
+  "public_base_url": "https://REPLACE_WITH_HUB_DOMAIN",
+  "http_require_access_key": true,
+  "db_path": "data/hub.sqlite3",
+  "runtime_base_dir": "runtime",
+  "memory_dir": "data/memory",
+  "skills_dir": "skills",
+  "access_key_file": "secrets/xhubd_domain_access_key",
+  "run_dir": "run",
+  "log_dir": "logs",
+  "pid_file": "run/xhubd.pid",
+  "launchd_label": "com.ax.xhubd.domain",
+  "launchd_plist_path": "run/com.ax.xhubd.domain.plist",
+  "watchdog_launchd_label": "com.ax.xhubd.domain.watchdog",
+  "wait_ms": 10000
+}

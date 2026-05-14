@@ -137,6 +137,7 @@ extension AppModel {
         }
         set {
             UserDefaults.standard.set(newValue, forKey: "xterminal_multi_project_view_enabled")
+            refreshWorkSurfaceSnapshot()
             objectWillChange.send()
         }
     }

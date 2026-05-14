@@ -18,6 +18,8 @@ struct SupervisorPortfolioProjectRowPresentation: Equatable, Identifiable {
     var isSelected: Bool
     var actionabilityTags: [SupervisorPortfolioTagPresentation]
     var governanceTags: [SupervisorPortfolioTagPresentation]
+    var governancePresentation: ProjectGovernancePresentation? = nil
+    var projectContextCompactSummary: AXProjectContextAssemblyCompactSummary? = nil
     var priorityLine: String? = nil
     var priorityTone: SupervisorHeaderControlTone? = nil
     var uiReviewSummaryLine: String?
@@ -34,7 +36,9 @@ enum SupervisorPortfolioProjectRowPresentationMapper {
         isSelected: Bool,
         governed: AXProjectGovernedAuthorityPresentation?,
         templatePreview: AXProjectGovernanceTemplatePreview?,
-        latestUIReview: XTUIReviewPresentation?
+        latestUIReview: XTUIReviewPresentation?,
+        governancePresentation: ProjectGovernancePresentation? = nil,
+        projectContextCompactSummary: AXProjectContextAssemblyCompactSummary? = nil
     ) -> SupervisorPortfolioProjectRowPresentation {
         SupervisorPortfolioProjectRowPresentation(
             id: card.projectId,
@@ -52,6 +56,8 @@ enum SupervisorPortfolioProjectRowPresentationMapper {
                 governed: governed,
                 templatePreview: templatePreview
             ),
+            governancePresentation: governancePresentation,
+            projectContextCompactSummary: projectContextCompactSummary,
             priorityLine: priorityLine(card),
             priorityTone: priorityTone(card),
             uiReviewSummaryLine: latestUIReview?.compactStatusText,

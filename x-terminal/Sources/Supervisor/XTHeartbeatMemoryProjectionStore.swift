@@ -75,6 +75,12 @@ struct XTHeartbeatProjectMemoryContextSnapshot: Codable, Equatable, Sendable {
             lines.append(
                 "\(prefix)_policy_resolution trigger=\(Self.compact(policyMemoryAssemblyResolution.trigger, fallback: "none")) effective_depth=\(Self.compact(policyMemoryAssemblyResolution.effectiveDepth, fallback: "none")) ceiling=\(Self.compact(policyMemoryAssemblyResolution.ceilingFromTier, fallback: "none")) ceiling_hit=\(policyMemoryAssemblyResolution.ceilingHit)"
             )
+            if let triggerLabelLine = XTProjectMemoryTriggerPresentation.detailLine(
+                prefix: "\(prefix)_policy_trigger_label",
+                raw: policyMemoryAssemblyResolution.trigger
+            ) {
+                lines.append(triggerLabelLine)
+            }
         }
 
         if let memoryAssemblyResolution,
@@ -82,6 +88,12 @@ struct XTHeartbeatProjectMemoryContextSnapshot: Codable, Equatable, Sendable {
             lines.append(
                 "\(prefix)_actual_resolution trigger=\(Self.compact(memoryAssemblyResolution.trigger, fallback: "none")) effective_depth=\(Self.compact(memoryAssemblyResolution.effectiveDepth, fallback: "none")) ceiling=\(Self.compact(memoryAssemblyResolution.ceilingFromTier, fallback: "none")) ceiling_hit=\(memoryAssemblyResolution.ceilingHit)"
             )
+            if let triggerLabelLine = XTProjectMemoryTriggerPresentation.detailLine(
+                prefix: "\(prefix)_actual_trigger_label",
+                raw: memoryAssemblyResolution.trigger
+            ) {
+                lines.append(triggerLabelLine)
+            }
         }
 
         if let effectiveResolution {
@@ -412,6 +424,9 @@ enum XTHeartbeatMemoryProjectionStore {
             if let effectiveResolution = projectMemoryContext.effectiveResolution {
                 entry["project_memory_effective_depth"] = effectiveResolution.effectiveDepth
                 entry["project_memory_resolution_trigger"] = effectiveResolution.trigger
+                entry["project_memory_resolution_trigger_label"] = XTProjectMemoryTriggerPresentation.annotated(
+                    effectiveResolution.trigger
+                )
                 entry["project_memory_ceiling_from_tier"] = effectiveResolution.ceilingFromTier
                 entry["project_memory_ceiling_hit"] = effectiveResolution.ceilingHit
                 if !effectiveResolution.selectedPlanes.isEmpty {

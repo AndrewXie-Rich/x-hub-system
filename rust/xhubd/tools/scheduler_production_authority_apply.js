@@ -11,6 +11,7 @@ const DEFAULT_PLIST = path.join(os.homedir(), 'Library', 'LaunchAgents', 'com.re
 const STATE_DIR = path.join(ROOT_DIR, 'reports', 'scheduler_production_authority');
 const STATE_FILE = path.join(STATE_DIR, 'dock_agent_env_state.json');
 const MANAGED_KEYS = [
+  'XHUB_ENABLE_RUST_AUTHORITY_CUTOVER',
   'XHUB_RUST_HUB_ROOT',
   'XHUB_RUST_SCHEDULER_STATUS_READ',
   'XHUB_RUST_SCHEDULER_STATUS_REQUIRE_READY',
@@ -153,6 +154,7 @@ function usage() {
 
 function authorityEnv(config) {
   return {
+    XHUB_ENABLE_RUST_AUTHORITY_CUTOVER: '1',
     XHUB_RUST_HUB_ROOT: config.rustHubRoot,
     XHUB_RUST_SCHEDULER_STATUS_READ: '1',
     XHUB_RUST_SCHEDULER_STATUS_REQUIRE_READY: '1',
@@ -308,6 +310,7 @@ function runSelfTest() {
   const config = parseArgs(['--apply', '--rust-hub-root', '/tmp/rust-hub', '--no-active-runs']);
   const original = { Label: 'com.rel.flowhub.dock-agent', EnvironmentVariables: { EXISTING: '1', XHUB_RUST_SCHEDULER_AUTHORITY: '0' } };
   const applied = applyEnv(original, config);
+  if (applied.plist.EnvironmentVariables.XHUB_ENABLE_RUST_AUTHORITY_CUTOVER !== '1') throw new Error('apply did not enable rust authority cutover gate');
   if (applied.plist.EnvironmentVariables.XHUB_RUST_SCHEDULER_AUTHORITY !== '1') throw new Error('apply did not enable authority');
   if (applied.plist.EnvironmentVariables.XHUB_RUST_SCHEDULER_AUTHORITY_ALLOW_ACTIVE_RUNS !== '0') throw new Error('allow active runs mismatch');
   const rolledBack = rollbackEnv(applied.plist, applied.state);

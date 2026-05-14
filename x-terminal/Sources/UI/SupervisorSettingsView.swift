@@ -14,8 +14,67 @@ private struct SupervisorProjectModelPanelSelection {
     let sourceLabel: String
 }
 
+private enum SupervisorSettingsNavigationSection: String, CaseIterable, Identifiable {
+    case overview
+    case personalAssistant
+    case voice
+    case rhythm
+    case projectModels
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .overview:
+            return "快速设置"
+        case .personalAssistant:
+            return "个人助手"
+        case .voice:
+            return "语音"
+        case .rhythm:
+            return "节奏"
+        case .projectModels:
+            return "项目模型"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .overview:
+            return "语言、模式、隐私和上下文"
+        case .personalAssistant:
+            return "人格、记忆、跟进和复盘"
+        case .voice:
+            return "输入、唤醒、播放和诊断"
+        case .rhythm:
+            return "心跳、提醒和日程"
+        case .projectModels:
+            return "项目级模型分配"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .overview:
+            return "slider.horizontal.3"
+        case .personalAssistant:
+            return "person.crop.circle.badge.checkmark"
+        case .voice:
+            return "mic.circle"
+        case .rhythm:
+            return "waveform.path.ecg"
+        case .projectModels:
+            return "rectangle.3.group"
+        }
+    }
+}
+
 struct SupervisorSettingsView: View {
-    @EnvironmentObject private var appModel: AppModel
+    @Environment(\.xtAppModelReference) private var appModelReference
+    @EnvironmentObject private var settingsCenterStore: XTSettingsCenterStore
+    @EnvironmentObject private var modelSettingsStore: XTModelSettingsStore
+    @EnvironmentObject private var navigationFocusStore: XTNavigationFocusStore
+    @EnvironmentObject private var projectListStore: XTProjectListStore
     @StateObject private var modelManager = HubModelManager.shared
     @StateObject private var supervisorManager = SupervisorManager.shared
     @StateObject private var calendarAccessController = XTCalendarAccessController.shared
@@ -42,41 +101,32 @@ struct SupervisorSettingsView: View {
     @State private var projectModelAssignmentChangeNotice: XTSettingsChangeNotice?
     @State private var visibleModelInventory = XTVisibleHubModelInventory.empty
     @State private var sortedProjects: [AXProjectEntry] = []
+    @State private var selectedNavigationSection: SupervisorSettingsNavigationSection = .overview
     
     var body: some View {
+        let _ = settingsCenterSnapshot
+        let _ = modelSettingsSnapshot
+        let _ = navigationFocusSnapshot
+        let _ = projectListSnapshot
         ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    header
-                    interfaceLanguageSection
-                    supervisorWorkModeSection
-                    supervisorPrivacyModeSection
-                    SupervisorPersonaCenterView()
-                    SupervisorPersonalMemoryCenterView()
-                    recentRawContextSection
-                        .id(XTSupervisorSettingsFocusSection.recentRawContext.rawValue)
-                    reviewMemoryDepthSection
-                        .id(XTSupervisorSettingsFocusSection.reviewMemoryDepth.rawValue)
-                    SupervisorFollowUpQueueView()
-                    SupervisorPersonalReviewCenterView()
-                    heartbeatPolicySection
-                    supervisorCalendarReminderSection
-                    voiceRuntimeSection
+            HStack(spacing: 0) {
+                navigationPane(proxy: proxy)
 
-                    Divider()
+                Divider()
 
-                    if sortedProjects.isEmpty {
-                        Text("没有项目。请先创建或打开一个项目。")
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                            .padding()
-                    } else {
-                        modelAssignmentArea
-                            .frame(minHeight: 420)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Color.clear
+                            .frame(height: 0)
+                            .id("supervisor_settings_detail_top")
+
+                        header
+                        selectedNavigationContent
                     }
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
-                .padding(16)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .background(Color(nsColor: .windowBackgroundColor))
             }
             .frame(minWidth: 900, minHeight: 700)
             .onAppear {
@@ -90,13 +140,13 @@ struct SupervisorSettingsView: View {
                     await modelManager.fetchModels()
                 }
             }
-            .onChange(of: appModel.registry.updatedAt) { _ in
+            .onChange(of: projectListSnapshot.projects) { _ in
                 syncSortedProjects()
             }
             .onChange(of: modelInventorySnapshot) { _ in
                 syncVisibleModelInventory()
             }
-            .onChange(of: appModel.supervisorSettingsFocusRequest?.nonce) { _ in
+            .onChange(of: navigationFocusSnapshot.supervisorSettingsFocusRequest?.nonce) { _ in
                 processSupervisorSettingsFocusRequest(proxy)
             }
             .onChange(of: supervisorManager.voiceWakeProfileSnapshot.generatedAtMs) { _ in
@@ -123,40 +173,198 @@ struct SupervisorSettingsView: View {
     
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Supervisor 设置")
-                    .font(.title2)
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(selectedNavigationSection.title)
+                        .font(UIThemeTokens.sectionFont())
 
-                Text(supervisorManager.supervisorPersonaStatusLine)
-                    .font(.caption.monospaced())
+                    Text(selectedNavigationSection.summary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .layoutPriority(1)
+
+                Spacer(minLength: 12)
+
+                supervisorSettingsHeaderActions
+            }
+
+            supervisorSettingsStatusPills
+        }
+        .padding(.bottom, 2)
+    }
+
+    private var supervisorSettingsHeaderActions: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                supervisorSettingsHeaderActionContent
+            }
+
+            VStack(alignment: .trailing, spacing: 6) {
+                supervisorSettingsHeaderActionContent
+            }
+        }
+        .fixedSize()
+    }
+
+    @ViewBuilder
+    private var supervisorSettingsHeaderActionContent: some View {
+        Button("刷新模型列表") {
+            Task {
+                await modelManager.fetchModels()
+            }
+        }
+        .buttonStyle(.bordered)
+
+        Button("打开 AI 模型") {
+            supervisorManager.requestSupervisorWindow(
+                sheet: .modelSettings,
+                reason: "supervisor_settings_open_model_settings",
+                focusConversation: false
+            )
+        }
+        .buttonStyle(.bordered)
+    }
+
+    private var supervisorSettingsStatusPills: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                supervisorSettingsStatusPillContent
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                supervisorSettingsStatusPillContent
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var supervisorSettingsStatusPillContent: some View {
+        XTCompactStatusPill(
+            iconName: "person.crop.circle",
+            text: personaRuntimePresentation.persistedActivePersonaName,
+            tint: .accentColor
+        )
+        XTCompactStatusPill(
+            iconName: supervisorManager.voiceReadinessSnapshot.overallState.iconName,
+            text: voiceSurfaceStateLabel(supervisorManager.voiceReadinessSnapshot.overallState),
+            tint: supervisorManager.voiceReadinessSnapshot.overallState.tint
+        )
+        XTCompactStatusPill(
+            iconName: "briefcase",
+            text: sortedProjects.isEmpty ? "无项目" : "\(sortedProjects.count) 个项目",
+            tint: sortedProjects.isEmpty ? Color.secondary : UIThemeTokens.color(for: .ready)
+        )
+    }
+
+    private func navigationPane(proxy: ScrollViewProxy) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("设置")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.top, 12)
+
+            ForEach(SupervisorSettingsNavigationSection.allCases) { section in
+                Button {
+                    selectedNavigationSection = section
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        proxy.scrollTo("supervisor_settings_detail_top", anchor: .top)
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: section.iconName)
+                            .font(.system(size: 13, weight: .semibold))
+                            .frame(width: 18)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(section.title)
+                                .font(.caption.weight(.semibold))
+                            Text(section.summary)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundStyle(selectedNavigationSection == section ? .primary : .secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(
+                        selectedNavigationSection == section
+                            ? Color.accentColor.opacity(0.12)
+                            : Color.clear
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+
+            Spacer(minLength: 0)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("当前")
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
 
-                Spacer()
-                
-                Button("刷新模型列表") {
-                    Task {
-                        await modelManager.fetchModels()
-                    }
-                }
-                .buttonStyle(.bordered)
+                XTCompactStatusPill(
+                    iconName: "person.crop.circle",
+                    text: personaRuntimePresentation.persistedActivePersonaName,
+                    tint: .accentColor
+                )
 
-                Button("打开 AI 模型") {
-                    supervisorManager.requestSupervisorWindow(
-                        sheet: .modelSettings,
-                        reason: "supervisor_settings_open_model_settings",
-                        focusConversation: false
-                    )
-                }
-                .buttonStyle(.bordered)
+                XTCompactStatusPill(
+                    iconName: supervisorManager.voiceReadinessSnapshot.overallState.iconName,
+                    text: voiceSurfaceStateLabel(supervisorManager.voiceReadinessSnapshot.overallState),
+                    tint: supervisorManager.voiceReadinessSnapshot.overallState.tint
+                )
+
+                Text(supervisorManager.supervisorPersonaStatusLine)
+                    .font(UIThemeTokens.monoFont())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
             }
-            
-            Text("这里统一管理 Supervisor 的人格、心跳 / 语音运行时，以及各个项目的模型分配。")
-                .font(.body)
-                .foregroundStyle(.secondary)
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.primary.opacity(0.035))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .padding(.horizontal, 8)
+        .frame(width: 220)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+    }
 
-            Text("如果某台已配对终端要用不同的本地模型加载参数，请到 Hub 的设备编辑页给这台设备单独覆盖；这里显示的是 Hub 模型目录的默认配置。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+    @ViewBuilder
+    private var selectedNavigationContent: some View {
+        switch selectedNavigationSection {
+        case .overview:
+            interfaceLanguageSection
+            supervisorWorkModeSection
+            supervisorPrivacyModeSection
+        case .personalAssistant:
+            SupervisorPersonaCenterView()
+            SupervisorPersonalMemoryCenterView()
+            recentRawContextSection
+                .id(XTSupervisorSettingsFocusSection.recentRawContext.rawValue)
+            reviewMemoryDepthSection
+                .id(XTSupervisorSettingsFocusSection.reviewMemoryDepth.rawValue)
+            SupervisorFollowUpQueueView()
+            SupervisorPersonalReviewCenterView()
+        case .voice:
+            voiceRuntimeSection
+        case .rhythm:
+            heartbeatPolicySection
+            supervisorCalendarReminderSection
+        case .projectModels:
+            if sortedProjects.isEmpty {
+                Text("没有项目。请先创建或打开一个项目。")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding()
+            } else {
+                modelAssignmentArea
+                    .frame(minHeight: 420)
+            }
         }
     }
     
@@ -171,11 +379,11 @@ struct SupervisorSettingsView: View {
     }
 
     private var interfaceLanguage: XTInterfaceLanguage {
-        appModel.settingsStore.settings.interfaceLanguage
+        settingsSnapshot.interfaceLanguage
     }
 
     private var interfaceLanguageSection: some View {
-        let language = appModel.settingsStore.settings.interfaceLanguage
+        let language = settingsSnapshot.interfaceLanguage
 
         return VStack(alignment: .leading, spacing: 12) {
             Text(XTL10n.InterfaceLanguage.title.resolve(language))
@@ -197,7 +405,7 @@ struct SupervisorSettingsView: View {
             Picker(
                 XTL10n.InterfaceLanguage.pickerLabel.resolve(language),
                 selection: Binding(
-                    get: { appModel.settingsStore.settings.interfaceLanguage },
+                    get: { settingsSnapshot.interfaceLanguage },
                     set: { updateInterfaceLanguage($0) }
                 )
             ) {
@@ -233,7 +441,7 @@ struct SupervisorSettingsView: View {
     }
 
     private var supervisorWorkModeSection: some View {
-        let mode = appModel.settingsStore.settings.supervisorWorkMode
+        let mode = settingsSnapshot.supervisorWorkMode
 
         return VStack(alignment: .leading, spacing: 12) {
             Text("工作模式")
@@ -253,7 +461,7 @@ struct SupervisorSettingsView: View {
             }
 
             Picker("工作模式", selection: Binding(
-                get: { appModel.settingsStore.settings.supervisorWorkMode },
+                get: { settingsSnapshot.supervisorWorkMode },
                 set: { updateSupervisorWorkMode($0) }
             )) {
                 ForEach(XTSupervisorWorkMode.allCases) { option in
@@ -305,8 +513,8 @@ struct SupervisorSettingsView: View {
     }
 
     private var supervisorPrivacyModeSection: some View {
-        let mode = appModel.settingsStore.settings.supervisorPrivacyMode
-        let configuredProfile = appModel.settingsStore.settings.supervisorRecentRawContextProfile
+        let mode = settingsSnapshot.supervisorPrivacyMode
+        let configuredProfile = settingsSnapshot.supervisorRecentRawContextProfile
         let effectiveProfile = mode.effectiveRecentRawContextProfile(configuredProfile)
 
         return VStack(alignment: .leading, spacing: 12) {
@@ -327,7 +535,7 @@ struct SupervisorSettingsView: View {
             }
 
             Picker("隐私模式", selection: Binding(
-                get: { appModel.settingsStore.settings.supervisorPrivacyMode },
+                get: { settingsSnapshot.supervisorPrivacyMode },
                 set: { updateSupervisorPrivacyMode($0) }
             )) {
                 ForEach(XTPrivacyMode.allCases) { option in
@@ -410,7 +618,7 @@ struct SupervisorSettingsView: View {
     }
 
     private var supervisorCalendarReminderSection: some View {
-        let preferences = appModel.settingsStore.settings.supervisorCalendarReminders
+        let preferences = settingsSnapshot.supervisorCalendarReminders
         let authorizationStatus = calendarAccessController.authorizationStatus
         let upcomingMeetings = calendarEventStore.upcomingMeetings.prefix(3)
 
@@ -581,8 +789,8 @@ struct SupervisorSettingsView: View {
     }
 
     private var recentRawContextSection: some View {
-        let selectedProfile = appModel.settingsStore.settings.supervisorRecentRawContextProfile
-        let privacyMode = appModel.settingsStore.settings.supervisorPrivacyMode
+        let selectedProfile = settingsSnapshot.supervisorRecentRawContextProfile
+        let privacyMode = settingsSnapshot.supervisorPrivacyMode
         let effectiveProfile = privacyMode.effectiveRecentRawContextProfile(selectedProfile)
 
         return VStack(alignment: .leading, spacing: 12) {
@@ -606,7 +814,7 @@ struct SupervisorSettingsView: View {
             }
 
             Picker("最近原始上下文", selection: Binding(
-                get: { appModel.settingsStore.settings.supervisorRecentRawContextProfile },
+                get: { settingsSnapshot.supervisorRecentRawContextProfile },
                 set: { updateSupervisorRecentRawContextProfile($0) }
             )) {
                 ForEach(XTSupervisorRecentRawContextProfile.allCases) { profile in
@@ -650,7 +858,7 @@ struct SupervisorSettingsView: View {
     }
 
     private var reviewMemoryDepthSection: some View {
-        let selectedProfile = appModel.settingsStore.settings.supervisorReviewMemoryDepthProfile
+        let selectedProfile = settingsSnapshot.supervisorReviewMemoryDepthProfile
         let snapshot = supervisorManager.supervisorMemoryAssemblySnapshot
         let snapshotConfigured = snapshot.flatMap {
             XTSupervisorReviewMemoryDepthProfile(rawValue: $0.configuredReviewMemoryDepth)
@@ -688,7 +896,7 @@ struct SupervisorSettingsView: View {
             }
 
             Picker("Review Memory Depth", selection: Binding(
-                get: { appModel.settingsStore.settings.supervisorReviewMemoryDepthProfile },
+                get: { settingsSnapshot.supervisorReviewMemoryDepthProfile },
                 set: { updateSupervisorReviewMemoryDepthProfile($0) }
             )) {
                 ForEach(XTSupervisorReviewMemoryDepthProfile.allCases) { profile in
@@ -752,8 +960,9 @@ struct SupervisorSettingsView: View {
     }
 
     private func processSupervisorSettingsFocusRequest(_ proxy: ScrollViewProxy) {
-        guard let request = appModel.supervisorSettingsFocusRequest else { return }
+        guard let request = navigationFocusSnapshot.supervisorSettingsFocusRequest else { return }
         activeFocusRequest = request
+        selectedNavigationSection = .personalAssistant
         withAnimation(.easeInOut(duration: 0.2)) {
             proxy.scrollTo(request.section.rawValue, anchor: .top)
         }
@@ -777,26 +986,26 @@ struct SupervisorSettingsView: View {
     }
 
     private func updateInterfaceLanguage(_ language: XTInterfaceLanguage) {
-        guard appModel.settingsStore.settings.interfaceLanguage != language else { return }
+        guard settingsSnapshot.interfaceLanguage != language else { return }
         appModel.setInterfaceLanguage(language)
         interfaceLanguageChangeNotice = XTSettingsChangeNoticeBuilder.interfaceLanguage(language)
         interfaceLanguageUpdateFeedback.trigger()
     }
 
     private func updateSupervisorWorkMode(_ mode: XTSupervisorWorkMode) {
-        guard appModel.settingsStore.settings.supervisorWorkMode != mode else { return }
+        guard settingsSnapshot.supervisorWorkMode != mode else { return }
         appModel.setSupervisorWorkMode(mode)
         workModeChangeNotice = XTSettingsChangeNoticeBuilder.supervisorWorkMode(mode)
         workModeUpdateFeedback.trigger()
     }
 
     private func updateSupervisorPrivacyMode(_ mode: XTPrivacyMode) {
-        let currentMode = appModel.settingsStore.settings.supervisorPrivacyMode
+        let currentMode = settingsSnapshot.supervisorPrivacyMode
         guard currentMode != mode else { return }
         appModel.setSupervisorPrivacyMode(mode)
         privacyModeChangeNotice = XTSettingsChangeNoticeBuilder.supervisorPrivacyMode(
             mode,
-            configuredProfile: appModel.settingsStore.settings.supervisorRecentRawContextProfile
+            configuredProfile: settingsSnapshot.supervisorRecentRawContextProfile
         )
         privacyModeUpdateFeedback.trigger()
     }
@@ -804,11 +1013,11 @@ struct SupervisorSettingsView: View {
     private func updateSupervisorRecentRawContextProfile(
         _ profile: XTSupervisorRecentRawContextProfile
     ) {
-        guard appModel.settingsStore.settings.supervisorRecentRawContextProfile != profile else { return }
+        guard settingsSnapshot.supervisorRecentRawContextProfile != profile else { return }
         appModel.setSupervisorRecentRawContextProfile(profile)
         recentRawContextChangeNotice = XTSettingsChangeNoticeBuilder.supervisorRecentRawContext(
             profile: profile,
-            privacyMode: appModel.settingsStore.settings.supervisorPrivacyMode
+            privacyMode: settingsSnapshot.supervisorPrivacyMode
         )
         recentRawContextUpdateFeedback.trigger()
     }
@@ -816,7 +1025,7 @@ struct SupervisorSettingsView: View {
     private func updateSupervisorReviewMemoryDepthProfile(
         _ profile: XTSupervisorReviewMemoryDepthProfile
     ) {
-        guard appModel.settingsStore.settings.supervisorReviewMemoryDepthProfile != profile else { return }
+        guard settingsSnapshot.supervisorReviewMemoryDepthProfile != profile else { return }
         appModel.setSupervisorReviewMemoryDepthProfile(profile)
         reviewMemoryDepthChangeNotice = XTSettingsChangeNoticeBuilder.supervisorReviewMemoryDepth(profile)
         reviewMemoryDepthUpdateFeedback.trigger()
@@ -1509,7 +1718,7 @@ struct SupervisorSettingsView: View {
             
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
-                    ForEach([AXRole.coder, .coarse, .refine, .reviewer, .advisor, .supervisor], id: \.self) { role in
+                    ForEach(AXRole.allCases, id: \.self) { role in
                         roleButton(role)
                     }
                 }
@@ -1643,7 +1852,7 @@ struct SupervisorSettingsView: View {
                     sourceBadges: selection.selectedHubModel?
                         .routingSourceBadges(language: interfaceLanguage) ?? [],
                     supplementary: routeTruth,
-                    disabled: !appModel.hubInteractive || sortedAvailableHubModels.isEmpty,
+                    disabled: !modelSettingsSnapshot.hubInteractive || sortedAvailableHubModels.isEmpty,
                     automaticRouteLabel: XTL10n.Common.automaticRouting.resolve(interfaceLanguage)
                 ) {
                     showProjectModelPicker = true
@@ -1838,13 +2047,13 @@ struct SupervisorSettingsView: View {
     }
 
     private var modelInventorySnapshot: ModelStateSnapshot {
-        modelManager.visibleSnapshot(fallback: appModel.modelsState)
+        modelManager.visibleSnapshot(fallback: modelSettingsSnapshot.modelsState)
     }
 
     private var supervisorModelInventoryTruth: XTModelInventoryTruthPresentation {
         XTModelInventoryTruthPresentation.build(
             snapshot: modelInventorySnapshot,
-            hubBaseDir: appModel.hubBaseDir ?? HubPaths.baseDir()
+            hubBaseDir: modelSettingsSnapshot.hubBaseDir ?? HubPaths.baseDir()
         )
     }
 
@@ -1859,7 +2068,7 @@ struct SupervisorSettingsView: View {
             role: role,
             ctx: selection.projectContext,
             snapshot: modelInventorySnapshot,
-            paidAccessSnapshot: appModel.hubRemotePaidAccessSnapshot,
+            paidAccessSnapshot: modelSettingsSnapshot.remotePaidAccessSnapshot,
             language: interfaceLanguage
         ),
            let recommendedModelId = guidance.recommendedModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -1946,7 +2155,7 @@ struct SupervisorSettingsView: View {
             role: role,
             ctx: configuredBinding.ctx,
             snapshot: modelInventorySnapshot,
-            paidAccessSnapshot: appModel.hubRemotePaidAccessSnapshot,
+            paidAccessSnapshot: modelSettingsSnapshot.remotePaidAccessSnapshot,
             language: interfaceLanguage
         ) {
             return appendingGrpcRouteInterpretationWarning(
@@ -2133,7 +2342,7 @@ struct SupervisorSettingsView: View {
     }
 
     private func syncSortedProjects() {
-        sortedProjects = appModel.sortedProjects
+        sortedProjects = projectListSnapshot.projects
         guard let selectedProjectId else {
             self.selectedProjectId = sortedProjects.first?.projectId
             return
@@ -2829,6 +3038,33 @@ struct SupervisorSettingsView: View {
             token,
             to: wakeTriggerWordsDraft
         )
+    }
+
+    private var settingsCenterSnapshot: XTSettingsCenterSnapshot {
+        settingsCenterStore.snapshot
+    }
+
+    private var settingsSnapshot: XTerminalSettings {
+        settingsCenterSnapshot.settings
+    }
+
+    private var modelSettingsSnapshot: XTModelSettingsSnapshot {
+        modelSettingsStore.snapshot
+    }
+
+    private var navigationFocusSnapshot: XTNavigationFocusSnapshot {
+        navigationFocusStore.snapshot
+    }
+
+    private var projectListSnapshot: XTProjectListSnapshot {
+        projectListStore.snapshot
+    }
+
+    private var appModel: AppModel {
+        guard let appModelReference else {
+            preconditionFailure("SupervisorSettingsView requires xtAppModelReference")
+        }
+        return appModelReference
     }
 }
 

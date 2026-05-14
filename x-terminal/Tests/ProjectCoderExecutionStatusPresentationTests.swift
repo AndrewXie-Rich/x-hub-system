@@ -662,7 +662,7 @@ struct ProjectCoderExecutionStatusPresentationTests {
     }
 
     @Test
-    func primaryActionKeepsOfflineSupervisorRouteBlockerOnDiagnostics() throws {
+    func primaryActionRoutesOfflineSupervisorRouteBlockerToHubRecovery() throws {
         let snapshot = AXRoleExecutionSnapshot(
             role: .coder,
             updatedAt: 42,
@@ -690,12 +690,12 @@ struct ProjectCoderExecutionStatusPresentationTests {
             )
         )
 
-        #expect(action.kind == .openDiagnostics)
-        #expect(action.title == "XT Diagnostics")
+        #expect(action.kind == .openHubRecovery)
+        #expect(action.title == "Hub 诊断与恢复")
     }
 
     @Test
-    func primaryActionRoutesOfflineNoRecordToDiagnostics() throws {
+    func primaryActionRoutesOfflineNoRecordToHubRecovery() throws {
         let action = try #require(
             ProjectCoderExecutionStatusPrimaryActionResolver.resolve(
                 configuredModelId: "openai/gpt-5.4",
@@ -705,8 +705,8 @@ struct ProjectCoderExecutionStatusPresentationTests {
             )
         )
 
-        #expect(action.kind == .openDiagnostics)
-        #expect(action.title == "XT Diagnostics")
+        #expect(action.kind == .openHubRecovery)
+        #expect(action.title == "Hub 诊断与恢复")
     }
 
     @Test

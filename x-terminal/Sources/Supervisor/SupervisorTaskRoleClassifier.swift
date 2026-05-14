@@ -53,14 +53,12 @@ struct SupervisorTaskRoleClassifier {
         }
 
         if matchedSignals.count == 1, let only = matchedSignals.first {
+            let resolvedRole = resolveSingleMatchedRole(only.role, input: input)
             return Output(
-                role: only.role,
+                role: resolvedRole,
                 normalizedTaskTags: normalizedTaskTags,
                 matchedSignals: matchedSignals,
-                reasons: [
-                    "matched_explicit_role_tags:\(only.role.rawValue)",
-                    "role:\(only.role.rawValue) selected from task_tags \(only.taskTags.joined(separator: ","))"
-                ]
+                reasons: singleMatchReasons(for: only, resolvedRole: resolvedRole, input: input)
             )
         }
 
@@ -92,18 +90,18 @@ struct SupervisorTaskRoleClassifier {
         let role: SupervisorTaskRole
         let reason: String
 
-        if input.sideEffect.hasOperationalSideEffect {
-            role = .ops
-            reason = "no_explicit_task_tag_match; operational_side_effect routes to ops"
-        } else if input.codeExecution {
+        if input.sideEffect.requiresSupervisorRoute {
+            role = .supervisor
+            reason = "no_explicit_task_tag_match; mutating_external_side_effect routes to supervisor"
+        } else if input.codeExecution || input.sideEffect.requiresCoderRoute {
             role = .coder
-            reason = "no_explicit_task_tag_match; code_execution routes to coder"
+            reason = "no_explicit_task_tag_match; execution_path routes to coder"
         } else if input.risk.requiresHubPolicy {
-            role = .reviewer
-            reason = "no_explicit_task_tag_match; high_risk routes to reviewer"
+            role = .supervisor
+            reason = "no_explicit_task_tag_match; high_risk escalates grant policy but stays on supervisor until explicit review intent"
         } else {
-            role = .planner
-            reason = "no_explicit_task_tag_match; fail_closed defaults to planner"
+            role = .supervisor
+            reason = "no_explicit_task_tag_match; fail_closed defaults to supervisor"
         }
 
         return Output(
@@ -114,32 +112,67 @@ struct SupervisorTaskRoleClassifier {
         )
     }
 
+    private func resolveSingleMatchedRole(_ role: SupervisorTaskRole, input: Input) -> SupervisorTaskRole {
+        guard role == .reviewer else { return role }
+
+        if input.sideEffect.requiresSupervisorRoute {
+            return .supervisor
+        }
+        if input.codeExecution || input.sideEffect.requiresCoderRoute {
+            return .coder
+        }
+        return .reviewer
+    }
+
+    private func singleMatchReasons(
+        for signal: MatchedRoleSignal,
+        resolvedRole: SupervisorTaskRole,
+        input: Input
+    ) -> [String] {
+        var reasons = [
+            "matched_explicit_role_tags:\(signal.role.rawValue)"
+        ]
+
+        if signal.role == resolvedRole {
+            reasons.append("role:\(signal.role.rawValue) selected from task_tags \(signal.taskTags.joined(separator: ","))")
+            return reasons
+        }
+
+        reasons.append("explicit_review_role_clamped_to:\(resolvedRole.rawValue)")
+        if input.sideEffect.requiresSupervisorRoute {
+            reasons.append("reviewer_reserved_for_read_only_review_regression_gate; mutating_external_side_effect keeps the task on supervisor")
+        } else if input.codeExecution || input.sideEffect.requiresCoderRoute {
+            reasons.append("reviewer_reserved_for_read_only_review_regression_gate; execution_path keeps the task on coder")
+        }
+        return reasons
+    }
+
     private func resolveConflict(for signals: [MatchedRoleSignal], input: Input) -> SupervisorTaskRole {
         let matchedRoles = Set(signals.map(\.role))
 
-        if matchedRoles.contains(.ops), input.sideEffect.hasOperationalSideEffect {
-            return .ops
+        if matchedRoles.contains(.supervisor), input.sideEffect.requiresSupervisorRoute {
+            return .supervisor
         }
-        if matchedRoles.contains(.reviewer), input.risk.requiresHubPolicy {
-            return .reviewer
-        }
-        if matchedRoles.contains(.coder), input.codeExecution {
+        if matchedRoles.contains(.coder), (input.codeExecution || input.sideEffect.requiresCoderRoute) {
             return .coder
         }
 
-        let conservativeOrder: [SupervisorTaskRole] = [.ops, .reviewer, .coder, .doc, .planner]
-        return conservativeOrder.first(where: matchedRoles.contains) ?? .planner
+        let conservativeOrder: [SupervisorTaskRole] = [.supervisor, .coder, .reviewer]
+        return conservativeOrder.first(where: matchedRoles.contains) ?? .supervisor
     }
 
     private func conflictReason(for role: SupervisorTaskRole, input: Input) -> String {
-        if role == .ops, input.sideEffect.hasOperationalSideEffect {
-            return "ops_preferred_due_to_side_effect"
+        if role == .supervisor, input.sideEffect.requiresSupervisorRoute {
+            return "supervisor_preferred_due_to_mutating_external_side_effect"
         }
-        if role == .reviewer, input.risk.requiresHubPolicy {
-            return "reviewer_preferred_due_to_high_risk"
+        if role == .coder, (input.codeExecution || input.sideEffect.requiresCoderRoute) {
+            return "coder_preferred_due_to_execution_path"
         }
-        if role == .coder, input.codeExecution {
-            return "coder_preferred_due_to_code_execution"
+        if role == .supervisor, input.risk.requiresHubPolicy {
+            return "high_risk_kept_on_supervisor_until_explicit_review_intent"
+        }
+        if role == .reviewer {
+            return "reviewer_retained_only_after_non_execution_conflict_resolution"
         }
         return "conservative_role_precedence_applied"
     }

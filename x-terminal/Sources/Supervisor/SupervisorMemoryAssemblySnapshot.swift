@@ -310,6 +310,31 @@ struct SupervisorMemoryAssemblySnapshot: Equatable, Codable, Sendable {
         return "本轮缺口：\(labels.joined(separator: "、"))"
     }
 
+    var memoryBindingStrengthHumanLine: String? {
+        let raw = actualizedMemoryAssemblyResolution?.memoryBindingStrength?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let requiresTruth = actualizedMemoryAssemblyResolution?.requiresProjectTruth
+        guard !raw.isEmpty || requiresTruth != nil else { return nil }
+
+        var parts = [
+            "Project Memory Binding：\(memoryBindingStrengthLabel(raw))"
+        ]
+        if let requiresTruth {
+            parts.append(requiresTruth ? "project truth required" : "project truth not required")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    var projectMemorySuppressionHumanLine: String? {
+        guard actualizedMemoryAssemblyResolution?.projectMemorySuppressedForPureChat == true else { return nil }
+        let reason = actualizedMemoryAssemblyResolution?.suppressionReason?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if reason.isEmpty {
+            return "Project Memory Suppression：pure chat light pack applied"
+        }
+        return "Project Memory Suppression：pure chat light pack applied · \(suppressionReasonLabel(reason))"
+    }
+
     var compactSummary: SupervisorMemoryAssemblyCompactSummary {
         let configuredDepth = reviewDepthProfileLabel(
             configuredReviewMemoryDepth,
@@ -367,6 +392,9 @@ struct SupervisorMemoryAssemblySnapshot: Equatable, Codable, Sendable {
                     ? "guidance \(latestGuidanceAckStatus)"
                     : "guidance omitted"
             )
+        }
+        if actualizedMemoryAssemblyResolution?.projectMemorySuppressedForPureChat == true {
+            detailParts.append("pure chat light pack")
         }
 
         return SupervisorMemoryAssemblyCompactSummary(
@@ -465,6 +493,12 @@ struct SupervisorMemoryAssemblySnapshot: Equatable, Codable, Sendable {
         }
         if let reviewMemoryDepthHumanLine {
             parts.append(reviewMemoryDepthHumanLine)
+        }
+        if let memoryBindingStrengthHumanLine {
+            parts.append(memoryBindingStrengthHumanLine)
+        }
+        if let projectMemorySuppressionHumanLine {
+            parts.append(projectMemorySuppressionHumanLine)
         }
         if let guidanceContinuityHumanLine {
             parts.append(guidanceContinuityHumanLine)
@@ -602,6 +636,12 @@ struct SupervisorMemoryAssemblySnapshot: Equatable, Codable, Sendable {
         if let reviewMemoryDepthHumanLine {
             lines.append(reviewMemoryDepthHumanLine)
         }
+        if let memoryBindingStrengthHumanLine {
+            lines.append(memoryBindingStrengthHumanLine)
+        }
+        if let projectMemorySuppressionHumanLine {
+            lines.append(projectMemorySuppressionHumanLine)
+        }
         if let governanceReviewHumanLine {
             lines.append(governanceReviewHumanLine)
         }
@@ -664,6 +704,20 @@ struct SupervisorMemoryAssemblySnapshot: Equatable, Codable, Sendable {
             lines.append("supervisor_memory_resolution_schema_version=\(memoryAssemblyResolution.schemaVersion)")
             if let json = xtSupervisorMemoryCompactJSONString(memoryAssemblyResolution) {
                 lines.append("supervisor_memory_assembly_resolution_json=\(json)")
+            }
+            if let bindingStrength = memoryAssemblyResolution.memoryBindingStrength,
+               !bindingStrength.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                lines.append("project_memory_binding_strength=\(bindingStrength)")
+            }
+            if let requiresProjectTruth = memoryAssemblyResolution.requiresProjectTruth {
+                lines.append("requires_project_truth=\(requiresProjectTruth)")
+            }
+            if let projectMemorySuppressedForPureChat = memoryAssemblyResolution.projectMemorySuppressedForPureChat {
+                lines.append("project_memory_suppressed_for_pure_chat=\(projectMemorySuppressedForPureChat)")
+            }
+            if let suppressionReason = memoryAssemblyResolution.suppressionReason,
+               !suppressionReason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                lines.append("suppression_reason=\(suppressionReason)")
             }
             if !memoryAssemblyResolution.selectedPlanes.isEmpty {
                 lines.append(
@@ -982,6 +1036,30 @@ struct SupervisorMemoryAssemblySnapshot: Equatable, Codable, Sendable {
         }
         let trimmedFallback = fallback.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmedFallback.isEmpty ? "" : trimmedFallback
+    }
+
+    private func memoryBindingStrengthLabel(_ raw: String) -> String {
+        switch raw {
+        case SupervisorProjectMemoryBindingStrength.none.rawValue:
+            return "None"
+        case SupervisorProjectMemoryBindingStrength.weak.rawValue:
+            return "Weak"
+        case SupervisorProjectMemoryBindingStrength.strong.rawValue:
+            return "Strong"
+        default:
+            return fallbackHumanizedToken(raw).capitalized
+        }
+    }
+
+    private func suppressionReasonLabel(_ raw: String) -> String {
+        switch raw {
+        case "project_reference_without_truth_need":
+            return "project reference exists but the turn does not require current project truth"
+        case "ambient_project_selection_without_project_truth_need":
+            return "ambient selected project was suppressed because the turn stays in pure chat"
+        default:
+            return fallbackHumanizedToken(raw)
+        }
     }
 
     private func fallbackHumanizedToken(_ raw: String) -> String {

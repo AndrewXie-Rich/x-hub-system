@@ -171,12 +171,51 @@ struct AXChatAttachmentSupportTests {
         let notice = AXChatAttachmentSupport.importSuccessNotice(results: results)
         let suggestion = AXChatAttachmentSupport.importContinuationSuggestion(results: results)
 
-        #expect(notice?.contains("Import & Continue") == true)
+        #expect(notice?.contains("项目内副本中编辑") == true)
         #expect(notice?.contains("2 个附件") == true)
         #expect(suggestion?.headline == "2 个文件已进入项目")
         #expect(suggestion?.placementHint.contains("Imported Attachments/") == true)
         #expect(suggestion?.linkedFilesHint.contains("README") == true)
         #expect(suggestion?.suggestedPrompt.contains("按代码、配置、文档或资源分类") == true)
+    }
+
+    @Test
+    func promptSummaryMarksImportedProjectWorkspaceDirectoriesWritable() {
+        let attachment = AXChatAttachment(
+            displayName: "ExternalApp",
+            path: "/tmp/project/Imported Attachments/ExternalApp",
+            relativePath: "Imported Attachments/ExternalApp",
+            kind: .directory,
+            scope: .projectWorkspace
+        )
+
+        let summary = AXChatAttachmentSupport.promptSummary(
+            currentTurnAttachments: [attachment],
+            activeAttachments: [attachment],
+            projectRoot: URL(fileURLWithPath: "/tmp/project")
+        )
+
+        #expect(summary.contains("scope=project_workspace"))
+        #expect(summary.contains("project_relation=inside_project"))
+        #expect(summary.contains("edit them and create new files under imported project directories"))
+    }
+
+    @Test
+    func promptSummaryTellsModelAttachmentReferencesBeatProjectMemory() {
+        let attachment = AXChatAttachment(
+            displayName: "Tk_Acoustic_Plot 2.app",
+            path: "/tmp/Tk_Acoustic_Plot 2.app",
+            kind: .directory,
+            scope: .attachmentReadOnly
+        )
+
+        let summary = AXChatAttachmentSupport.promptSummary(
+            currentTurnAttachments: [attachment],
+            activeAttachments: [attachment],
+            projectRoot: nil
+        )
+
+        #expect(summary.contains("treat the active attachment as the primary subject before unrelated project memory"))
     }
 
     @Test

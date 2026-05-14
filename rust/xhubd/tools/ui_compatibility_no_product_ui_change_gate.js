@@ -35,7 +35,7 @@ const REQUIRED_MAIN_NEEDLES = [
   '<a href="/health">Health JSON</a>',
   '<a href="/ready">Ready JSON</a>',
   '"ml_execution_in_rust": false',
-  '"canonical_writer_in_rust": false',
+  '"canonical_writer_in_rust": memory_writer_authority',
   '"retrieval_shadow_http": true',
   '"skills_catalog_http": true',
   '"skills_preflight_http": true',

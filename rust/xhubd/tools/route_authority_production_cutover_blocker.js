@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(SCRIPT_DIR, '..');
 const REPORT_DIR = path.join(ROOT_DIR, 'reports');
-const DEFAULT_XHUB_SRC = './x-hub/grpc-server/hub_grpc_server/src';
+const DEFAULT_XHUB_SRC = '/Users/andrew.xie/Documents/AX/x-hub-system/x-hub/grpc-server/hub_grpc_server/src';
 const PRODUCTION_SWITCH_CONTRACT_VERSION = 'xhub.route_authority.production_switch_contract.v1';
 const PROVIDER_PRODUCTION_SWITCH_KEYS = [
   'XHUB_RUST_PROVIDER_ROUTE_PRODUCTION_AUTHORITY',

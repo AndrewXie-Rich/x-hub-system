@@ -15,6 +15,7 @@ struct LLMRequest: Codable, Equatable {
     // Provider hints.
     var taskType: String
     var preferredModelId: String?
+    var remoteBackupModelId: String? = nil
     var projectId: String? = nil
     var sessionId: String? = nil
     var transportOverride: HubTransportMode? = nil

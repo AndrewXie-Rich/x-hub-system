@@ -12,6 +12,7 @@ struct SupervisorHeaderSection: View {
     let heartbeatIconScale: CGFloat
     let onTriggerBigTask: (SupervisorBigTaskCandidate) -> Void
     let onDismissBigTask: (SupervisorBigTaskCandidate) -> Void
+    let onVoiceCallAction: () -> Void
     let onAction: (SupervisorHeaderAction) -> Void
 
     var body: some View {
@@ -22,6 +23,15 @@ struct SupervisorHeaderSection: View {
             hubInteractive: hubInteractive,
             latestRuntimeActivityText: supervisor.latestRuntimeActivity?.text,
             context: context,
+            voiceStatus: SupervisorHeaderVoiceStatusPresentationMapper.map(
+                replaySummary: supervisor.voiceReplaySummary,
+                safetyReport: supervisor.voiceSafetyInvariantReport,
+                callModeActive: supervisor.voiceCallModeActive,
+                preflight: supervisor.voiceCallEntryPreflight,
+                runtimeState: supervisor.voiceRuntimeState,
+                routeDecision: supervisor.voiceRouteDecision,
+                captureSource: supervisor.voiceCaptureSource
+            ),
             isProcessing: isProcessing,
             processingStatusText: processingStatusText,
             detectedBigTaskCandidate: detectedBigTaskCandidate,
@@ -29,6 +39,7 @@ struct SupervisorHeaderSection: View {
             heartbeatIconScale: heartbeatIconScale,
             onTriggerBigTask: onTriggerBigTask,
             onDismissBigTask: onDismissBigTask,
+            onVoiceCallAction: onVoiceCallAction,
             onAction: onAction
         )
     }

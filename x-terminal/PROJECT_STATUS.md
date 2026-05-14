@@ -282,7 +282,7 @@ ExecutionMonitor 监控执行
 
 ### 启动应用
 ```bash
-cd "${PROJECT_ROOT:-$(cd "$(dirname "$0")/.." $HOME/path/to/workspace/x-hub-system$HOME/path/to/workspace/x-hub-system pwd)}/x-terminal"
+cd "/Users/andrew.xie/Documents/AX/x-hub-system/x-terminal"
 swift run
 ```
 
@@ -372,7 +372,7 @@ swift run
 
 ### 项目路径
 ```
-${PROJECT_ROOT:-$(cd "$(dirname "$0")/.." $HOME/path/to/workspace/x-hub-system$HOME/path/to/workspace/x-hub-system pwd)}/x-terminal
+/Users/andrew.xie/Documents/AX/x-hub-system/x-terminal
 ```
 
 ### 编译命令

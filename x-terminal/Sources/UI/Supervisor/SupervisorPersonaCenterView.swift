@@ -1,7 +1,8 @@
 import SwiftUI
 
 struct SupervisorPersonaCenterView: View {
-    @EnvironmentObject private var appModel: AppModel
+    @Environment(\.xtAppModelReference) private var appModelReference
+    @EnvironmentObject private var settingsCenterStore: XTSettingsCenterStore
 
     @State private var selectedPersonaID: String = "persona_slot_1"
     @State private var draftRegistry = SupervisorPersonaRegistry.default(defaultVoicePersona: .conversational)
@@ -31,7 +32,7 @@ struct SupervisorPersonaCenterView: View {
         .onAppear {
             syncFromSettings()
         }
-        .onChange(of: appModel.settingsStore.settings.supervisorPersonaRegistry) { _ in
+        .onChange(of: settingsSnapshot.supervisorPersonaRegistry) { _ in
             syncFromSettings()
         }
     }
@@ -438,8 +439,8 @@ struct SupervisorPersonaCenterView: View {
     }
 
     private func syncFromSettings() {
-        let registry = appModel.settingsStore.settings.supervisorPersonaRegistry
-            .normalized(defaultVoicePersona: appModel.settingsStore.settings.voice.persona)
+        let registry = settingsSnapshot.supervisorPersonaRegistry
+            .normalized(defaultVoicePersona: defaultVoicePersona)
         draftRegistry = registry
         if registry.slot(for: selectedPersonaID) == nil {
             selectedPersonaID = registry.activePersonaID
@@ -452,9 +453,9 @@ struct SupervisorPersonaCenterView: View {
     private var presentation: SupervisorPersonaCenterPresentation {
         SupervisorPersonaCenterPresentation(
             draftRegistry: draftRegistry,
-            persistedRegistry: appModel.settingsStore.settings.supervisorPersonaRegistry,
+            persistedRegistry: settingsSnapshot.supervisorPersonaRegistry,
             selectedPersonaID: selectedPersonaID,
-            defaultVoicePersona: appModel.settingsStore.settings.voice.persona
+            defaultVoicePersona: defaultVoicePersona
         )
     }
 
@@ -469,7 +470,7 @@ struct SupervisorPersonaCenterView: View {
 
     private func saveDraft() {
         let normalized = draftRegistry.normalized(
-            defaultVoicePersona: appModel.settingsStore.settings.voice.persona
+            defaultVoicePersona: defaultVoicePersona
         )
         appModel.settingsStore.settings = appModel.settingsStore.settings.setting(
             supervisorPersonaRegistry: normalized
@@ -482,7 +483,7 @@ struct SupervisorPersonaCenterView: View {
         guard let index = draftRegistry.slots.firstIndex(where: { $0.personaID == selectedPersonaID }) else { return }
         let seed = SupervisorPersonaSlot.seed(
             index: index,
-            defaultVoicePersona: appModel.settingsStore.settings.voice.persona
+            defaultVoicePersona: defaultVoicePersona
         )
         draftRegistry = draftRegistry.setting(slot: seed)
     }
@@ -610,6 +611,21 @@ struct SupervisorPersonaCenterView: View {
             return "当前槽位会优先请求这个 Hub 语音包。若本机 Hub IPC 不可用，播放链仍会按现有回退规则收束。\(detail)"
         }
         return "当前槽位会优先请求这个 Hub 语音包；如果该语音包不再可用，运行时会按现有播放解析规则回退。"
+    }
+
+    private var settingsSnapshot: XTerminalSettings {
+        settingsCenterStore.snapshot.settings
+    }
+
+    private var defaultVoicePersona: VoicePersonaPreset {
+        settingsSnapshot.voice.persona
+    }
+
+    private var appModel: AppModel {
+        guard let appModelReference else {
+            preconditionFailure("SupervisorPersonaCenterView requires xtAppModelReference")
+        }
+        return appModelReference
     }
 
     private func personaAccentColor(_ token: String) -> Color {

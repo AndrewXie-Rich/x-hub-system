@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 struct MemoryInspectorView: View {
-    @EnvironmentObject private var appModel: AppModel
+    @Environment(\.xtAppModelReference) private var appModelReference
     let ctx: AXProjectContext
     let memory: AXMemory?
 
@@ -53,6 +53,13 @@ struct MemoryInspectorView: View {
         .onChange(of: memory?.updatedAt ?? 0) { _ in
             refresh()
         }
+    }
+
+    private var appModel: AppModel {
+        guard let appModelReference else {
+            preconditionFailure("MemoryInspectorView requires xtAppModelReference")
+        }
+        return appModelReference
     }
 
     private func refresh() {

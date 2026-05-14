@@ -128,18 +128,21 @@ Public users should download packaged builds from GitHub Releases. The repositor
 Recommended assets for a macOS release:
 
 ```text
-XHub-System-<version>-macos-arm64.dmg
-X-Hub-<version>-macos-arm64.dmg
-X-Terminal-<version>-macos-arm64.dmg
+XHub-System-Rust-<version>-macos-arm64.dmg
+XHub-System-Rust-<version>-macos-arm64.zip
+XHub-Rust-Hub-<version>-macos-arm64.zip
+X-Terminal-RustXT-<version>-macos-arm64.zip
 SHA256SUMS.txt
 ```
 
-The combined `XHub-System` DMG is the primary user-facing package because Hub and X-Terminal are designed to be installed and paired together. The separate Hub and X-Terminal DMGs are useful for maintainers, advanced users, and partial-update testing.
+The combined `XHub-System-Rust` DMG or ZIP is the primary user-facing Rust preview package because Rust Hub and X-Terminal are designed to be installed and validated together. The separate Rust Hub and X-Terminal runtime ZIPs are useful for maintainers, advanced users, and partial-update testing.
+
+Legacy note: the non-Rust `XHub-System-<version>-macos-arm64.dmg` naming belongs to the older Swift/Node Hub app packaging path. Do not use it for a Rust refactor release unless the release notes explicitly mark it as legacy.
 
 Build release assets from the repository root:
 
 ```bash
-XHUB_RELEASE_VERSION=v0.1.0-alpha.1 scripts/package_macos_release.command
+XHUB_RELEASE_VERSION=v0.1.0-alpha.2-rust-preview scripts/package_rust_preview_release.command
 ```
 
 The script writes assets to:

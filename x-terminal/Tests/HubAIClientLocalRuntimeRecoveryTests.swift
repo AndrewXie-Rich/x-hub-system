@@ -75,11 +75,92 @@ struct HubAIClientLocalRuntimeRecoveryTests {
         }
     }
 
+    @Test
+    func loadRuntimeStatusRejectsHeartbeatOnlyStatus() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        HubPaths.setPinnedBaseDirOverride(tempDir)
+        defer {
+            HubPaths.clearPinnedBaseDirOverride()
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        try writeRuntimeStatus(
+            """
+            {
+              "pid": 46081,
+              "updatedAt": \(Date().timeIntervalSince1970),
+              "mlxOk": true,
+              "runtimeVersion": "2026-02-11-runtime-stop-v1",
+              "loadedModelCount": 0
+            }
+            """,
+            to: tempDir
+        )
+
+        let status = await HubAIClient.shared.loadRuntimeStatus()
+        #expect(status == nil)
+    }
+
+    @Test
+    func loadRuntimeStatusAcceptsAuthoritativeStatusSnapshot() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        HubPaths.setPinnedBaseDirOverride(tempDir)
+        defer {
+            HubPaths.clearPinnedBaseDirOverride()
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        let now = Date().timeIntervalSince1970
+        try writeRuntimeStatus(
+            """
+            {
+              "schema_version": "xhub.local_runtime_status.v2",
+              "pid": 9041,
+              "updatedAt": \(now),
+              "mlxOk": true,
+              "runtimeVersion": "2026-03-14-mlx-instance-identity-v1",
+              "providers": {
+                "mlx": {
+                  "provider": "mlx",
+                  "ok": true,
+                  "reasonCode": "ready",
+                  "runtimeVersion": "2026-03-14-mlx-instance-identity-v1",
+                  "availableTaskKinds": ["text_generate"],
+                  "loadedModels": [],
+                  "deviceBackend": "mps",
+                  "updatedAt": \(now),
+                  "loadedModelCount": 0
+                }
+              },
+              "loadedInstanceCount": 0
+            }
+            """,
+            to: tempDir
+        )
+
+        let status = await HubAIClient.shared.loadRuntimeStatus()
+        let resolvedStatus = try #require(status)
+        #expect(resolvedStatus.hasAuthoritativeRuntimeState)
+        #expect(resolvedStatus.runtimeVersion == "2026-03-14-mlx-instance-identity-v1")
+    }
+
     private func writeModelsState(to dir: URL, models: [HubModel]) throws {
         let snapshot = ModelStateSnapshot(models: models, updatedAt: Date().timeIntervalSince1970)
         let url = dir.appendingPathComponent("models_state.json")
         let data = try JSONEncoder().encode(snapshot)
         try data.write(to: url, options: .atomic)
+    }
+
+    private func writeRuntimeStatus(_ payload: String, to dir: URL) throws {
+        try payload.write(
+            to: dir.appendingPathComponent("ai_runtime_status.json"),
+            atomically: true,
+            encoding: .utf8
+        )
     }
 
     private func localLoadedModel() -> HubModel {

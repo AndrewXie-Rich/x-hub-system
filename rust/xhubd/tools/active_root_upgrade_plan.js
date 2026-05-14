@@ -9,11 +9,44 @@ const ROOT_DIR = path.resolve(SCRIPT_DIR, '..');
 const REPORT_DIR = path.join(ROOT_DIR, 'reports');
 const NODE_PROCESS_MARKERS = ['hub_grpc_server/src/server.js', 'relflowhub_node'];
 const ROOT_KEY = 'XHUB_RUST_HUB_ROOT';
+const PROVIDER_MODEL_PRODUCTION_KEYS = [
+  'XHUB_ENABLE_RUST_AUTHORITY_CUTOVER',
+  'XHUB_RUST_PROVIDER_ROUTE_PRODUCTION_AUTHORITY',
+  'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_PRODUCTION',
+  'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_CUTOVER',
+  'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_APPLY',
+  'XHUB_RUST_MODEL_ROUTE_PRODUCTION_AUTHORITY',
+  'XHUB_RUST_MODEL_ROUTE_AUTHORITY_PRODUCTION',
+  'XHUB_RUST_MODEL_ROUTE_AUTHORITY_CUTOVER',
+  'XHUB_RUST_MODEL_ROUTE_AUTHORITY_APPLY',
+];
+const MEMORY_SKILLS_PRODUCTION_KEYS = [
+  'XHUB_RUST_MEMORY_WRITER_AUTHORITY',
+  'XHUB_RUST_MEMORY_WRITE_AUTHORITY',
+  'XHUB_RUST_MEMORY_PRODUCTION_AUTHORITY',
+  'XHUB_RUST_SKILLS_EXECUTION_AUTHORITY',
+  'XHUB_RUST_SKILLS_PRODUCTION_EXECUTION',
+  'XHUB_RUST_SKILLS_EXECUTION_PRODUCTION',
+  'XHUB_RUST_SKILLS_RUNNER_PRODUCTION_AUTHORITY',
+];
+const ROUTE_PREP_KEYS = [
+  'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_PREP',
+  'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_FALLBACK_ON_ERROR',
+  'XHUB_RUST_MODEL_ROUTE_AUTHORITY_PREP',
+  'XHUB_RUST_MODEL_ROUTE_AUTHORITY_FALLBACK_ON_ERROR',
+];
+const AUTHORITY_READ_KEYS = [
+  ROOT_KEY,
+  ...PROVIDER_MODEL_PRODUCTION_KEYS,
+  ...MEMORY_SKILLS_PRODUCTION_KEYS,
+  ...ROUTE_PREP_KEYS,
+];
 
 function parseArgs(argv) {
   const out = {
     targetRoot: ROOT_DIR,
     httpBaseUrl: 'http://127.0.0.1:50151',
+    forceRoutePrep: false,
     writeReport: true,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -31,6 +64,9 @@ function parseArgs(argv) {
         break;
       case '--no-report':
         out.writeReport = false;
+        break;
+      case '--force-route-prep':
+        out.forceRoutePrep = true;
         break;
       case '--self-test':
         out.selfTest = true;
@@ -53,20 +89,29 @@ function usage() {
     'Options:',
     '  --target-root <p>     Rust Hub root to make active, default current package/source root',
     '  --http-base-url <u>   Rust xhubd HTTP base URL, default http://127.0.0.1:50151',
+    '  --force-route-prep    Force legacy route prep apply/install commands even if production is detected',
     '  --no-report           Print only; do not write reports/',
     '  --self-test           Validate reducer logic',
   ].join('\n');
 }
 
-function readLaunchctlRoot() {
+function readLaunchctlValue(key) {
   try {
-    return execFileSync('launchctl', ['getenv', ROOT_KEY], {
+    return execFileSync('launchctl', ['getenv', key], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     }).trim();
   } catch {
     return '';
   }
+}
+
+function readLaunchctlValues(keys) {
+  return Object.fromEntries(keys.map((key) => [key, readLaunchctlValue(key)]));
+}
+
+function readLaunchctlRoot() {
+  return readLaunchctlValue(ROOT_KEY);
 }
 
 function findNodeProcess() {
@@ -114,10 +159,89 @@ function quote(value) {
   return `"${String(value).replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
 }
 
+function valueEnabled(value) {
+  return ['1', 'true', 'yes', 'on'].includes(String(value || '').trim().toLowerCase());
+}
+
+function enabledLaunchctlKeys(values, keys) {
+  return keys.filter((key) => valueEnabled(values[key]));
+}
+
+function enabledNodeKeys(command, keys) {
+  return keys.filter((key) => valueEnabled(extractEnvValue(command || '', key)));
+}
+
+function collectAuthority(node) {
+  const launchctlValues = readLaunchctlValues(AUTHORITY_READ_KEYS);
+  const providerLaunchctlKeys = enabledLaunchctlKeys(launchctlValues, PROVIDER_MODEL_PRODUCTION_KEYS);
+  const providerNodeKeys = enabledNodeKeys(node?.command || '', PROVIDER_MODEL_PRODUCTION_KEYS);
+  const memoryLaunchctlKeys = enabledLaunchctlKeys(launchctlValues, MEMORY_SKILLS_PRODUCTION_KEYS);
+  const memoryNodeKeys = enabledNodeKeys(node?.command || '', MEMORY_SKILLS_PRODUCTION_KEYS);
+  const prepLaunchctlKeys = enabledLaunchctlKeys(launchctlValues, ROUTE_PREP_KEYS);
+  const prepNodeKeys = enabledNodeKeys(node?.command || '', ROUTE_PREP_KEYS);
+  return {
+    providerModelProductionActive: providerLaunchctlKeys.length > 0 || providerNodeKeys.length > 0,
+    memorySkillsProductionActive: memoryLaunchctlKeys.length > 0 || memoryNodeKeys.length > 0,
+    routePrepActive: prepLaunchctlKeys.length > 0 || prepNodeKeys.length > 0,
+    provider_model_production_launchctl_keys: providerLaunchctlKeys,
+    provider_model_production_node_keys: providerNodeKeys,
+    memory_skills_production_launchctl_keys: memoryLaunchctlKeys,
+    memory_skills_production_node_keys: memoryNodeKeys,
+    route_prep_launchctl_keys: prepLaunchctlKeys,
+    route_prep_node_keys: prepNodeKeys,
+  };
+}
+
+function selectRouteAuthorityMode(config, authority) {
+  if (config.forceRoutePrep) return 'prep_forced';
+  if (authority?.providerModelProductionActive) return 'production';
+  return 'prep';
+}
+
+function memorySkillsGuardArg(authority) {
+  return authority?.memorySkillsProductionActive
+    ? '--require-memory-skills-production'
+    : '--allow-memory-skills-production';
+}
+
+function schedulerApplyCommands(root, config) {
+  return [
+    `bash ${quote(path.join(root, 'tools', 'scheduler_production_authority_session.command'))} --apply --rust-hub-root ${quote(root)} --http-base-url ${quote(config.httpBaseUrl)}`,
+    `bash ${quote(path.join(root, 'tools', 'scheduler_production_authority_session_launchd.command'))} --install --rust-hub-root ${quote(root)} --http-base-url ${quote(config.httpBaseUrl)}`,
+  ];
+}
+
+function routePrepApplyCommands(root, config) {
+  return [
+    `bash ${quote(path.join(root, 'tools', 'route_authority_prep_session.command'))} --apply --rust-hub-root ${quote(root)} --http-base-url ${quote(config.httpBaseUrl)}`,
+    `bash ${quote(path.join(root, 'tools', 'route_authority_prep_session_launchd.command'))} --install --rust-hub-root ${quote(root)} --http-base-url ${quote(config.httpBaseUrl)}`,
+  ];
+}
+
+function validationCommands(root, config, authority, routeAuthorityMode) {
+  const commands = [
+    `bash ${quote(path.join(root, 'tools', 'scheduler_production_authority_guard.command'))} --rust-hub-root ${quote(root)} --http-base-url ${quote(config.httpBaseUrl)} ${memorySkillsGuardArg(authority)}`,
+  ];
+  if (routeAuthorityMode === 'production') {
+    commands.push(
+      `bash ${quote(path.join(root, 'tools', 'route_authority_production_runtime_guard.command'))} --rust-hub-root ${quote(root)} --http-base-url ${quote(config.httpBaseUrl)} ${memorySkillsGuardArg(authority)}`,
+    );
+  } else {
+    commands.push(
+      `bash ${quote(path.join(root, 'tools', 'route_authority_prep_runtime_guard.command'))} --rust-hub-root ${quote(root)}`,
+      `bash ${quote(path.join(root, 'tools', 'route_authority_production_cutover_blocker.command'))} --rust-hub-root ${quote(root)}`,
+    );
+  }
+  commands.push(`bash ${quote(path.join(root, 'tools', 'ui_compatibility_no_product_ui_change_gate.command'))}`);
+  return commands;
+}
+
 function collect(config) {
+  const node = findNodeProcess();
   return {
     launchctlRoot: readLaunchctlRoot(),
-    node: findNodeProcess(),
+    node,
+    authority: collectAuthority(node),
     targetExists: fs.existsSync(config.targetRoot),
     targetHasBin: fs.existsSync(path.join(config.targetRoot, 'bin', 'xhubd'))
       || fs.existsSync(path.join(config.targetRoot, 'target', 'release', 'xhubd')),
@@ -128,6 +252,16 @@ function collect(config) {
 function reduce(collected, config) {
   const activeRoot = collected.node.envRoot || collected.launchctlRoot || '';
   const targetRoot = path.resolve(config.targetRoot);
+  const authority = collected.authority || collectAuthority(collected.node || {});
+  const routeAuthorityMode = selectRouteAuthorityMode(config, authority);
+  const applyCommands = [
+    ...schedulerApplyCommands(targetRoot, config),
+    ...(routeAuthorityMode === 'production' ? [] : routePrepApplyCommands(targetRoot, config)),
+  ];
+  const rollbackCommands = activeRoot ? [
+    ...schedulerApplyCommands(activeRoot, config),
+    ...(routeAuthorityMode === 'production' ? [] : routePrepApplyCommands(activeRoot, config)),
+  ] : [];
   const issues = [];
   if (!collected.targetExists) issues.push('target_root_missing');
   if (!collected.targetHasBin) issues.push('target_xhubd_binary_missing');
@@ -151,30 +285,24 @@ function reduce(collected, config) {
     target_has_tools: collected.targetHasTools,
     active_root_aligned_with_target: aligned,
     action_required: !aligned,
-    apply_commands: [
-      `bash ${quote(path.join(targetRoot, 'tools', 'scheduler_production_authority_session.command'))} --apply --rust-hub-root ${quote(targetRoot)} --http-base-url ${quote(config.httpBaseUrl)}`,
-      `bash ${quote(path.join(targetRoot, 'tools', 'scheduler_production_authority_session_launchd.command'))} --install --rust-hub-root ${quote(targetRoot)} --http-base-url ${quote(config.httpBaseUrl)}`,
-      `bash ${quote(path.join(targetRoot, 'tools', 'route_authority_prep_session.command'))} --apply --rust-hub-root ${quote(targetRoot)} --http-base-url ${quote(config.httpBaseUrl)}`,
-      `bash ${quote(path.join(targetRoot, 'tools', 'route_authority_prep_session_launchd.command'))} --install --rust-hub-root ${quote(targetRoot)} --http-base-url ${quote(config.httpBaseUrl)}`,
-    ],
+    route_authority_mode: routeAuthorityMode,
+    provider_model_production_authority_detected: authority.providerModelProductionActive,
+    memory_skills_production_authority_detected: authority.memorySkillsProductionActive,
+    route_prep_authority_detected: authority.routePrepActive,
+    route_prep_apply_skipped: routeAuthorityMode === 'production',
+    route_prep_apply_skip_reason: routeAuthorityMode === 'production'
+      ? 'provider_model_production_authority_detected'
+      : '',
+    authority_detection: authority,
+    apply_commands: applyCommands,
     restart_note: 'After applying the session env, relaunch X-Hub so its Node process inherits the target root.',
-    validation_commands: [
-      `bash ${quote(path.join(targetRoot, 'tools', 'scheduler_production_authority_guard.command'))} --rust-hub-root ${quote(targetRoot)}`,
-      `bash ${quote(path.join(targetRoot, 'tools', 'route_authority_prep_runtime_guard.command'))} --rust-hub-root ${quote(targetRoot)}`,
-      `bash ${quote(path.join(targetRoot, 'tools', 'route_authority_production_cutover_blocker.command'))} --rust-hub-root ${quote(targetRoot)}`,
-      `bash ${quote(path.join(targetRoot, 'tools', 'ui_compatibility_no_product_ui_change_gate.command'))}`,
-    ],
-    rollback_commands: activeRoot ? [
-      `bash ${quote(path.join(activeRoot, 'tools', 'scheduler_production_authority_session.command'))} --apply --rust-hub-root ${quote(activeRoot)} --http-base-url ${quote(config.httpBaseUrl)}`,
-      `bash ${quote(path.join(activeRoot, 'tools', 'scheduler_production_authority_session_launchd.command'))} --install --rust-hub-root ${quote(activeRoot)} --http-base-url ${quote(config.httpBaseUrl)}`,
-      `bash ${quote(path.join(activeRoot, 'tools', 'route_authority_prep_session.command'))} --apply --rust-hub-root ${quote(activeRoot)} --http-base-url ${quote(config.httpBaseUrl)}`,
-      `bash ${quote(path.join(activeRoot, 'tools', 'route_authority_prep_session_launchd.command'))} --install --rust-hub-root ${quote(activeRoot)} --http-base-url ${quote(config.httpBaseUrl)}`,
-    ] : [],
+    validation_commands: validationCommands(targetRoot, config, authority, routeAuthorityMode),
+    rollback_commands: rollbackCommands,
     production_authority_change: false,
-    provider_route_authority_target: false,
-    model_route_authority_target: false,
-    memory_writer_authority_target: false,
-    skills_execution_authority_target: false,
+    provider_route_authority_target: authority.providerModelProductionActive,
+    model_route_authority_target: authority.providerModelProductionActive,
+    memory_writer_authority_target: authority.memorySkillsProductionActive,
+    skills_execution_authority_target: authority.memorySkillsProductionActive,
     ui_product_change: false,
     secret_leak: false,
     issues,
@@ -190,6 +318,11 @@ function runSelfTest() {
   const result = reduce({
     launchctlRoot: '/tmp/current',
     node: { pid: 1, envRoot: '/tmp/current' },
+    authority: {
+      providerModelProductionActive: false,
+      memorySkillsProductionActive: false,
+      routePrepActive: true,
+    },
     targetExists: true,
     targetHasBin: true,
     targetHasTools: true,
@@ -197,6 +330,25 @@ function runSelfTest() {
   if (!result.ok) throw new Error(`expected target to be valid: ${result.issues.join(',')}`);
   if (result.action_required !== true) throw new Error('expected upgrade action required');
   if (result.production_authority_change !== false) throw new Error('plan must not change production authority');
+  const productionResult = reduce({
+    launchctlRoot: '/tmp/current',
+    node: { pid: 1, envRoot: '/tmp/current' },
+    authority: {
+      providerModelProductionActive: true,
+      memorySkillsProductionActive: true,
+      routePrepActive: false,
+    },
+    targetExists: true,
+    targetHasBin: true,
+    targetHasTools: true,
+  }, { targetRoot: '/tmp/target', httpBaseUrl: 'http://127.0.0.1:50151', forceRoutePrep: false });
+  if (productionResult.route_authority_mode !== 'production') throw new Error('expected production route authority mode');
+  if (productionResult.apply_commands.some((cmd) => cmd.includes('route_authority_prep_session'))) {
+    throw new Error('production active-root plan must not apply route prep env');
+  }
+  if (!productionResult.validation_commands.some((cmd) => cmd.includes('route_authority_production_runtime_guard.command'))) {
+    throw new Error('production active-root plan must validate production runtime authority');
+  }
 }
 
 async function main() {

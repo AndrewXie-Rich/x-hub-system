@@ -11,6 +11,7 @@ enum UITroubleshootIssue: String, CaseIterable, Codable, Sendable {
     case modelNotReady = "model_not_ready"
     case connectorScopeBlocked = "connector_scope_blocked"
     case paidModelAccessBlocked = "paid_model_access_blocked"
+    case externalTerminalAccessBlocked = "external_terminal_access_blocked"
     case pairingRepairRequired = "pairing_repair_required"
     case multipleHubsAmbiguous = "multiple_hubs_ambiguous"
     case hubPortConflict = "hub_port_conflict"
@@ -40,6 +41,8 @@ enum UITroubleshootIssue: String, CaseIterable, Codable, Sendable {
             return "远端导出受阻"
         case .paidModelAccessBlocked:
             return "付费模型访问受阻"
+        case .externalTerminalAccessBlocked:
+            return "外部 Terminal 访问受阻"
         case .pairingRepairRequired:
             return "配对需要修复"
         case .multipleHubsAmbiguous:
@@ -63,6 +66,8 @@ enum UITroubleshootIssue: String, CaseIterable, Codable, Sendable {
             return "当 Hub 的远端导出开关、设备远端策略、预算策略或用户远端偏好把付费远端挡住时，应该直接带你去 Hub 排障和边界修复入口。"
         case .paidModelAccessBlocked:
             return "当设备级付费模型策略、白名单或预算把请求挡住时，诊断入口应该直接指向设备信任、模型和预算，而不是只告诉你权限被拒。"
+        case .externalTerminalAccessBlocked:
+            return "给非 XT terminal 分发的 Hub access key 过期、撤销、禁用，或外部环境还在继续用旧的 HUB_CLIENT_TOKEN 时，XT 应该直接把你带回 access key 管理页，而不是只留下一个 401。"
         case .pairingRepairRequired:
             return "当本地配对档案过期、令牌失效或证书不再匹配时，系统应该明确要求你清理失效配对并重配，而不是继续拿旧档案反复重连。"
         case .multipleHubsAmbiguous:
@@ -79,8 +84,10 @@ enum UITroubleshootDestination: String, Codable, Sendable {
     case xtPairHub = "xt_pair_hub"
     case xtChooseModel = "xt_choose_model"
     case xtDiagnostics = "xt_diagnostics"
+    case xtExternalTerminals = "xt_external_terminals"
     case hubLAN = "hub_lan_grpc"
     case hubPairing = "hub_pairing_device_trust"
+    case hubProviderKeys = "hub_provider_keys"
     case hubModels = "hub_models_paid_access"
     case hubGrants = "hub_grants_permissions"
     case hubSecurity = "hub_security_boundary"
@@ -96,10 +103,14 @@ enum UITroubleshootDestination: String, Codable, Sendable {
             return "Supervisor 控制中心 → AI 模型"
         case .xtDiagnostics:
             return "XT 设置 → 诊断与核对"
+        case .xtExternalTerminals:
+            return "XT 设置 → 非 XT Terminal 访问"
         case .hubLAN:
             return "REL Flow Hub → 网络连接"
         case .hubPairing:
             return "REL Flow Hub → 配对与设备信任"
+        case .hubProviderKeys:
+            return "REL Flow Hub → 设置 → Provider Key 管理"
         case .hubModels:
             return "REL Flow Hub → 模型与付费访问"
         case .hubGrants:
@@ -128,6 +139,19 @@ struct UITroubleshootGuide: Identifiable, Codable, Equatable, Sendable {
     let issue: UITroubleshootIssue
     let summary: String
     let steps: [UITroubleshootStep]
+    let contextLines: [String]
+
+    init(
+        issue: UITroubleshootIssue,
+        summary: String,
+        steps: [UITroubleshootStep],
+        contextLines: [String] = []
+    ) {
+        self.issue = issue
+        self.summary = summary
+        self.steps = steps
+        self.contextLines = contextLines
+    }
 
     var id: String { issue.rawValue }
     var title: String { issue.title }
@@ -202,31 +226,149 @@ struct UITroubleshootPairingContext: Equatable, Sendable {
 }
 
 enum UITroubleshootKnowledgeBase {
+    private static func normalizedProviderKeyRouteContext(
+        _ providerKeyRouteContext: XTProviderKeyRouteContext?
+    ) -> XTProviderKeyRouteContext {
+        guard let providerKeyRouteContext, providerKeyRouteContext.hasSignal else {
+            return .empty
+        }
+        return providerKeyRouteContext
+    }
+
+    fileprivate static func compatibilityProviderKeyRouteContext(
+        providerKeySelectionDecision: ProviderKeySelectionDecision?,
+        providerKeySelectionModelId: String?,
+        providerKeyImportContextLines: [String],
+        providerKeyImportIssues: [XTProviderKeyImportIssueContext]
+    ) -> XTProviderKeyRouteContext? {
+        let context = XTProviderKeyRouteContextPresentation.context(
+            decision: providerKeySelectionDecision,
+            modelId: providerKeySelectionModelId,
+            importContextLines: providerKeyImportContextLines,
+            importIssues: providerKeyImportIssues
+        )
+        return context.hasSignal ? context : nil
+    }
+
     static func guides(
         for issues: [UITroubleshootIssue],
         paidAccessSnapshot: HubRemotePaidAccessSnapshot? = nil,
         internetHost: String? = nil,
-        pairingContext: UITroubleshootPairingContext? = nil
+        pairingContext: UITroubleshootPairingContext? = nil,
+        providerKeyRouteContext: XTProviderKeyRouteContext? = nil,
+        externalTerminalAccessProjection: XTUnifiedDoctorExternalTerminalAccessProjection? = nil
     ) -> [UITroubleshootGuide] {
-        issues.map {
+        let resolvedProviderKeyContext = normalizedProviderKeyRouteContext(providerKeyRouteContext)
+        return issues.map {
             guide(
                 for: $0,
                 paidAccessSnapshot: paidAccessSnapshot,
                 internetHost: internetHost,
-                pairingContext: pairingContext
+                pairingContext: pairingContext,
+                providerKeyRouteContext: resolvedProviderKeyContext,
+                externalTerminalAccessProjection: externalTerminalAccessProjection
             )
         }
+    }
+
+    @_disfavoredOverload
+    @available(*, deprecated, message: "Pass providerKeyRouteContext instead of split provider-key fields.")
+    static func guides(
+        for issues: [UITroubleshootIssue],
+        paidAccessSnapshot: HubRemotePaidAccessSnapshot? = nil,
+        internetHost: String? = nil,
+        pairingContext: UITroubleshootPairingContext? = nil,
+        providerKeySelectionDecision: ProviderKeySelectionDecision? = nil,
+        providerKeySelectionModelId: String? = nil,
+        providerKeyImportContextLines: [String] = [],
+        providerKeyImportIssues: [XTProviderKeyImportIssueContext] = [],
+        externalTerminalAccessProjection: XTUnifiedDoctorExternalTerminalAccessProjection? = nil
+    ) -> [UITroubleshootGuide] {
+        guides(
+            for: issues,
+            paidAccessSnapshot: paidAccessSnapshot,
+            internetHost: internetHost,
+            pairingContext: pairingContext,
+            providerKeyRouteContext: compatibilityProviderKeyRouteContext(
+                providerKeySelectionDecision: providerKeySelectionDecision,
+                providerKeySelectionModelId: providerKeySelectionModelId,
+                providerKeyImportContextLines: providerKeyImportContextLines,
+                providerKeyImportIssues: providerKeyImportIssues
+            ),
+            externalTerminalAccessProjection: externalTerminalAccessProjection
+        )
+    }
+
+    @_disfavoredOverload
+    @available(*, deprecated, message: "Pass providerKeyRouteContext instead of split provider-key fields.")
+    static func guide(
+        for issue: UITroubleshootIssue,
+        paidAccessSnapshot: HubRemotePaidAccessSnapshot? = nil,
+        internetHost: String? = nil,
+        pairingContext: UITroubleshootPairingContext? = nil,
+        providerKeySelectionDecision: ProviderKeySelectionDecision? = nil,
+        providerKeySelectionModelId: String? = nil,
+        providerKeyImportContextLines: [String] = [],
+        providerKeyImportIssues: [XTProviderKeyImportIssueContext] = [],
+        externalTerminalAccessProjection: XTUnifiedDoctorExternalTerminalAccessProjection? = nil
+    ) -> UITroubleshootGuide {
+        guide(
+            for: issue,
+            paidAccessSnapshot: paidAccessSnapshot,
+            internetHost: internetHost,
+            pairingContext: pairingContext,
+            providerKeyRouteContext: compatibilityProviderKeyRouteContext(
+                providerKeySelectionDecision: providerKeySelectionDecision,
+                providerKeySelectionModelId: providerKeySelectionModelId,
+                providerKeyImportContextLines: providerKeyImportContextLines,
+                providerKeyImportIssues: providerKeyImportIssues
+            ),
+            externalTerminalAccessProjection: externalTerminalAccessProjection
+        )
     }
 
     static func guide(
         for issue: UITroubleshootIssue,
         paidAccessSnapshot: HubRemotePaidAccessSnapshot? = nil,
         internetHost: String? = nil,
-        pairingContext: UITroubleshootPairingContext? = nil
+        pairingContext: UITroubleshootPairingContext? = nil,
+        providerKeyRouteContext: XTProviderKeyRouteContext? = nil,
+        externalTerminalAccessProjection: XTUnifiedDoctorExternalTerminalAccessProjection? = nil
     ) -> UITroubleshootGuide {
+        let resolvedProviderKeyContext = normalizedProviderKeyRouteContext(providerKeyRouteContext)
+
+        func finalize(_ guide: UITroubleshootGuide) -> UITroubleshootGuide {
+            let providerKeyContextLines = XTProviderKeyRouteContextPresentation.contextLines(
+                for: issue,
+                context: resolvedProviderKeyContext
+            )
+            let externalAccessContextLines = externalTerminalAccessContextLines(
+                for: issue,
+                projection: externalTerminalAccessProjection
+            )
+            var seen: Set<String> = []
+            let contextLines = (guide.contextLines + providerKeyContextLines + externalAccessContextLines).filter {
+                seen.insert($0).inserted
+            }
+            guard !contextLines.isEmpty else { return guide }
+            return UITroubleshootGuide(
+                issue: guide.issue,
+                summary: guide.summary,
+                steps: guide.steps,
+                contextLines: contextLines
+            )
+        }
+
+        if let override = XTProviderKeyRouteContextPresentation.guideOverride(
+            for: issue,
+            context: resolvedProviderKeyContext
+        ) {
+            return finalize(override)
+        }
+
         switch issue {
         case .grantRequired:
-            return UITroubleshootGuide(
+            return finalize(UITroubleshootGuide(
                 issue: issue,
                 summary: issue.summary,
                 steps: [
@@ -234,9 +376,9 @@ enum UITroubleshootKnowledgeBase {
                     UITroubleshootStep(index: 2, instruction: "到 Hub 授权面核对这次请求需要的能力范围与配额，例如付费模型、联网访问或设备能力。", destination: .hubGrants),
                     UITroubleshootStep(index: 3, instruction: "授权修复后回到配对 / smoke 路径重试，再进入首个任务。", destination: .xtPairHub)
                 ]
-            )
+            ))
         case .permissionDenied:
-            return UITroubleshootGuide(
+            return finalize(UITroubleshootGuide(
                 issue: issue,
                 summary: issue.summary,
                 steps: [
@@ -244,9 +386,9 @@ enum UITroubleshootKnowledgeBase {
                     UITroubleshootStep(index: 2, instruction: "若日志出现 `local_network_permission_required` 或 `local_network_discovery_blocked`，先到系统设置 → 隐私与安全性 → 本地网络允许 X-Terminal；若已经允许，再确认当前 Wi-Fi / AP 没开 client isolation。若是其它系统权限或 Hub 安全边界问题，也从这里继续修。", destination: .systemPermissions),
                     UITroubleshootStep(index: 3, instruction: "完成修复后到 XT 设置 → 诊断 查看最新结果并重新触发一次请求。", destination: .xtDiagnostics)
                 ]
-            )
+            ))
         case .modelNotReady:
-            return UITroubleshootGuide(
+            return finalize(UITroubleshootGuide(
                 issue: issue,
                 summary: issue.summary,
                 steps: [
@@ -254,9 +396,9 @@ enum UITroubleshootKnowledgeBase {
                     UITroubleshootStep(index: 2, instruction: "到 REL Flow Hub → 模型与付费访问 查看真实可用模型清单、提供方就绪状态，以及当前绑定是否还存在。", destination: .hubModels),
                     UITroubleshootStep(index: 3, instruction: "修复后回 XT 设置 → 诊断与核对，重跑一次路由诊断，确认原始拒绝原因不再出现。", destination: .xtDiagnostics)
                 ]
-            )
+            ))
         case .connectorScopeBlocked:
-            return UITroubleshootGuide(
+            return finalize(UITroubleshootGuide(
                 issue: issue,
                 summary: issue.summary,
                 steps: [
@@ -264,7 +406,7 @@ enum UITroubleshootKnowledgeBase {
                     UITroubleshootStep(index: 2, instruction: "再到 REL Flow Hub → 诊断与恢复 查看远端导出开关、恢复建议和对应审计；如果看到远端导出被拦，优先从这里定位。", destination: .hubDiagnostics),
                     UITroubleshootStep(index: 3, instruction: "再按这次拒绝原因修边界：设备或策略拦截优先看 REL Flow Hub → 安全边界；预算拦截看模型与付费访问；如果只是用户自己关掉了远端偏好，就回 XT 调整后再重试。", destination: .hubSecurity)
                 ]
-            )
+            ))
         case .paidModelAccessBlocked:
             let pairedDeviceTruth = paidAccessSnapshot.map {
                 XTRouteTruthPresentation.paidModelRuntimeTruthText($0)
@@ -283,7 +425,7 @@ enum UITroubleshootKnowledgeBase {
                 }
                 return " 当前设备真值：\(pairedDeviceTruth)。"
             }()
-            return UITroubleshootGuide(
+            return finalize(UITroubleshootGuide(
                 issue: issue,
                 summary: summary,
                 steps: [
@@ -291,7 +433,17 @@ enum UITroubleshootKnowledgeBase {
                     UITroubleshootStep(index: 2, instruction: "到 Hub 配对与设备信任页检查该设备是 new_profile 还是 legacy_grant，以及付费模型模式 / allowlist 是否允许当前请求。", destination: .hubPairing),
                     UITroubleshootStep(index: 3, instruction: "再到 REL Flow Hub → 模型与付费访问 查看 daily / single-request budget；修复后回 XT 设置 → 诊断 重试。\(budgetHintSuffix)", destination: .hubModels)
                 ]
-            )
+            ))
+        case .externalTerminalAccessBlocked:
+            return finalize(UITroubleshootGuide(
+                issue: issue,
+                summary: issue.summary,
+                steps: [
+                    UITroubleshootStep(index: 1, instruction: "先到 XT 设置 → 非 XT Terminal 访问，确认目标 access key 当前是 ready、expired、revoked 还是 disabled，并核对这把 key 的到期时间、撤销原因和连接目标。", destination: .xtExternalTerminals),
+                    UITroubleshootStep(index: 2, instruction: "如果 key 已过期、已撤销、已禁用，或之前没有保存原始 secret，就在这里直接轮换或新签发一把 key，然后重新复制 connect env / 导入脚本。", destination: .xtExternalTerminals),
+                    UITroubleshootStep(index: 3, instruction: "把外部 terminal 上旧的 `HUB_CLIENT_TOKEN` 替换成这次新导出的值后再重试；如果仍失败，再到 XT 设置 → 诊断与核对核对当前 Hub 主机、端口和可达性。", destination: .xtDiagnostics)
+                ]
+            ))
         case .pairingRepairRequired:
             return pairingRepairGuide(issue: issue, pairingContext: pairingContext)
         case .multipleHubsAmbiguous:
@@ -321,6 +473,17 @@ enum UITroubleshootKnowledgeBase {
                 pairingContext: pairingContext
             )
         }
+    }
+
+    private static func externalTerminalAccessContextLines(
+        for issue: UITroubleshootIssue,
+        projection: XTUnifiedDoctorExternalTerminalAccessProjection?
+    ) -> [String] {
+        guard issue == .externalTerminalAccessBlocked,
+              let projection else {
+            return []
+        }
+        return projection.troubleshootContextLines()
     }
 
     private static func pairingRepairGuide(
@@ -497,6 +660,19 @@ enum UITroubleshootKnowledgeBase {
         if normalized.contains("device_paid_model_disabled") || normalized.contains("device_paid_model_not_allowed") || normalized.contains("device_daily_token_budget_exceeded") || normalized.contains("device_single_request_token_exceeded") || normalized.contains("legacy_grant_flow_required") {
             return .paidModelAccessBlocked
         }
+        if normalized.contains("external_terminal_access_blocked")
+            || normalized.contains("hub_access_key_revoked")
+            || normalized.contains("hub_access_key_expired")
+            || normalized.contains("hub_access_key_disabled")
+            || normalized.contains("client_token_has_been_revoked")
+            || normalized.contains("client_token_has_expired")
+            || normalized.contains("missing_invalid_client_token")
+            || normalized.contains("missing_hub_client_token")
+            || normalized.contains("hub_client_token_missing")
+            || normalized.contains("access_key_not_found")
+            || normalized.contains("client_disabled") {
+            return .externalTerminalAccessBlocked
+        }
         if normalized.contains("connector_scope_blocked")
             || normalized.contains("remote_export_blocked")
             || normalized.contains("device_remote_export_denied")
@@ -520,6 +696,7 @@ enum UITroubleshootKnowledgeBase {
             || normalized.contains("pairing_profile_epoch_stale")
             || normalized.contains("route_pack_outdated")
             || normalized.contains("mtls_client_certificate_required")
+            || normalized.contains("certificate_required")
             || normalized.contains("pairing_health_failed")
             || normalized.contains("bootstrap_refresh_failed")
             || normalized.contains("discover_failed_using_cached_profile")
@@ -597,6 +774,13 @@ enum UITroubleshootKnowledgeBase {
                 subtitle: "先看远端导出开关、拒绝原因和修复提示",
                 systemImage: "lock.shield"
             )
+        case .externalTerminalAccessBlocked:
+            return UITroubleshootActionDescriptor(
+                id: "open_external_terminal_access",
+                title: "检查非 XT Terminal access",
+                subtitle: "先核对 key 状态、必要时轮换，再重新导出 connect env",
+                systemImage: "key.fill"
+            )
         default:
             return UITroubleshootActionDescriptor(
                 id: "pair_hub",
@@ -619,6 +803,8 @@ enum UITroubleshootKnowledgeBase {
             return "打开模型就绪排障入口"
         case .connectorScopeBlocked:
             return "打开 Hub Recovery"
+        case .externalTerminalAccessBlocked:
+            return "打开非 XT Terminal 访问修复入口"
         default:
             return "查看授权与排障"
         }
@@ -651,7 +837,8 @@ enum UITroubleshootKnowledgeBase {
     static func repairEntryDetail(
         for issue: UITroubleshootIssue?,
         runtime: UIFailClosedRuntimeSnapshot,
-        pairingContext: UITroubleshootPairingContext? = nil
+        pairingContext: UITroubleshootPairingContext? = nil,
+        externalTerminalAccessProjection: XTUnifiedDoctorExternalTerminalAccessProjection? = nil
     ) -> String {
         switch issue {
         case .pairingRepairRequired:
@@ -670,6 +857,32 @@ enum UITroubleshootKnowledgeBase {
             return "XT 核对当前模型和实际路由记录 -> REL Flow Hub 检查模型清单和提供方状态 -> XT 诊断与核对重跑"
         case .connectorScopeBlocked:
             return "XT 诊断与核对记下实际路由记录 / 审计编号 / 拒绝原因 -> Hub 排障查看远端导出开关 -> 按安全边界或预算入口修复"
+        case .externalTerminalAccessBlocked:
+            if let blockedKey = externalTerminalAccessProjection?.primaryBlockedKey {
+                let keyLabel = blockedKey.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? blockedKey.accessKeyID
+                    : blockedKey.name
+                let status = blockedKey.status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? "blocked"
+                    : blockedKey.status
+                let reason = blockedKey.statusReason.trimmingCharacters(in: .whitespacesAndNewlines)
+                let keyState = reason.isEmpty
+                    ? "status=\(status)"
+                    : "status=\(status), reason=\(reason)"
+                let recovery = blockedKey.recoverySummary?
+                    .replacingOccurrences(of: "预计恢复：", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return [
+                    "XT 核对 \(keyLabel)（\(keyState)）",
+                    recovery?.isEmpty == false
+                        ? recovery
+                        : "必要时轮换或新签发并重新复制 connect env",
+                    "用新的 HUB_CLIENT_TOKEN 重试"
+                ]
+                .compactMap { $0 }
+                .joined(separator: " -> ")
+            }
+            return "XT 核对目标 access key 的状态 / 到期 / 撤销原因 -> 必要时轮换或新签发并重新复制 connect env -> 用新的 HUB_CLIENT_TOKEN 重试"
         case .hubUnreachable:
             if pairingContext?.readiness == .remoteBlocked {
                 return "不要反复重试旧入口 -> XT 刷新邀请 / 证书 -> Hub 修 pairing/device trust -> 再做异网重连自检"
@@ -705,19 +918,57 @@ struct TroubleshootPanel: View {
     let paidAccessSnapshot: HubRemotePaidAccessSnapshot?
     let internetHost: String?
     let pairingContext: UITroubleshootPairingContext?
+    let providerKeyRouteContext: XTProviderKeyRouteContext?
+    let externalTerminalAccessProjection: XTUnifiedDoctorExternalTerminalAccessProjection?
 
     init(
         title: String = "三步排障",
         issues: [UITroubleshootIssue] = UITroubleshootIssue.allCases,
         paidAccessSnapshot: HubRemotePaidAccessSnapshot? = nil,
         internetHost: String? = nil,
-        pairingContext: UITroubleshootPairingContext? = nil
+        pairingContext: UITroubleshootPairingContext? = nil,
+        providerKeyRouteContext: XTProviderKeyRouteContext? = nil,
+        externalTerminalAccessProjection: XTUnifiedDoctorExternalTerminalAccessProjection? = nil
     ) {
         self.title = title
         self.issues = issues
         self.paidAccessSnapshot = paidAccessSnapshot
         self.internetHost = internetHost
         self.pairingContext = pairingContext
+        self.providerKeyRouteContext = providerKeyRouteContext?.hasSignal == true
+            ? providerKeyRouteContext
+            : nil
+        self.externalTerminalAccessProjection = externalTerminalAccessProjection
+    }
+
+    @_disfavoredOverload
+    @available(*, deprecated, message: "Pass providerKeyRouteContext instead of split provider-key fields.")
+    init(
+        title: String = "三步排障",
+        issues: [UITroubleshootIssue] = UITroubleshootIssue.allCases,
+        paidAccessSnapshot: HubRemotePaidAccessSnapshot? = nil,
+        internetHost: String? = nil,
+        pairingContext: UITroubleshootPairingContext? = nil,
+        providerKeySelectionDecision: ProviderKeySelectionDecision? = nil,
+        providerKeySelectionModelId: String? = nil,
+        providerKeyImportContextLines: [String] = [],
+        providerKeyImportIssues: [XTProviderKeyImportIssueContext] = [],
+        externalTerminalAccessProjection: XTUnifiedDoctorExternalTerminalAccessProjection? = nil
+    ) {
+        self.init(
+            title: title,
+            issues: issues,
+            paidAccessSnapshot: paidAccessSnapshot,
+            internetHost: internetHost,
+            pairingContext: pairingContext,
+            providerKeyRouteContext: UITroubleshootKnowledgeBase.compatibilityProviderKeyRouteContext(
+                providerKeySelectionDecision: providerKeySelectionDecision,
+                providerKeySelectionModelId: providerKeySelectionModelId,
+                providerKeyImportContextLines: providerKeyImportContextLines,
+                providerKeyImportIssues: providerKeyImportIssues
+            ),
+            externalTerminalAccessProjection: externalTerminalAccessProjection
+        )
     }
 
     var body: some View {
@@ -730,7 +981,9 @@ struct TroubleshootPanel: View {
                     for: issues,
                     paidAccessSnapshot: paidAccessSnapshot,
                     internetHost: internetHost,
-                    pairingContext: pairingContext
+                    pairingContext: pairingContext,
+                    providerKeyRouteContext: providerKeyRouteContext,
+                    externalTerminalAccessProjection: externalTerminalAccessProjection
                 )
             ) { guide in
                 VStack(alignment: .leading, spacing: 8) {
@@ -746,6 +999,17 @@ struct TroubleshootPanel: View {
                     Text(guide.summary)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+
+                    if !guide.contextLines.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(guide.contextLines, id: \.self) { line in
+                                Text("• \(line)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
 
                     ForEach(guide.steps) { step in
                         HStack(alignment: .top, spacing: 8) {
@@ -782,6 +1046,8 @@ struct TroubleshootPanel: View {
             return "lock.shield"
         case .paidModelAccessBlocked:
             return "lock.desktopcomputer"
+        case .externalTerminalAccessBlocked:
+            return "key.fill"
         case .pairingRepairRequired:
             return "arrow.trianglehead.2.clockwise.rotate.90"
         case .multipleHubsAmbiguous:

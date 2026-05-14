@@ -9,13 +9,14 @@ const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(SCRIPT_DIR, '..');
 const STATE_DIR = path.join(ROOT_DIR, 'reports', 'scheduler_production_authority');
 const STATE_FILE = path.join(STATE_DIR, 'launchctl_session_env_state.json');
-const DEFAULT_APP = 'build/X-Hub.app';
+const DEFAULT_APP = '/Users/andrew.xie/Documents/AX/x-hub-system/build/X-Hub.app';
 const NODE_PROCESS_MARKERS = [
   'hub_grpc_server/src/server.js',
   'relflowhub_node',
 ];
 
 const KEYS = [
+  'XHUB_ENABLE_RUST_AUTHORITY_CUTOVER',
   'XHUB_RUST_HUB_ROOT',
   'XHUB_RUST_SCHEDULER_STATUS_READ',
   'XHUB_RUST_SCHEDULER_STATUS_REQUIRE_READY',
@@ -116,6 +117,7 @@ function usage() {
 
 function desiredEnv(config) {
   return {
+    XHUB_ENABLE_RUST_AUTHORITY_CUTOVER: '1',
     XHUB_RUST_HUB_ROOT: config.rustHubRoot,
     XHUB_RUST_SCHEDULER_STATUS_READ: '1',
     XHUB_RUST_SCHEDULER_STATUS_REQUIRE_READY: '1',
@@ -201,6 +203,7 @@ function inspect(config) {
 
 function inspectRunningNodeProcess(config, desired) {
   const safeDesired = {
+    XHUB_ENABLE_RUST_AUTHORITY_CUTOVER: desired.XHUB_ENABLE_RUST_AUTHORITY_CUTOVER,
     XHUB_RUST_HUB_ROOT: desired.XHUB_RUST_HUB_ROOT,
     XHUB_RUST_SCHEDULER_AUTHORITY: desired.XHUB_RUST_SCHEDULER_AUTHORITY,
     XHUB_RUST_SCHEDULER_AUTHORITY_HTTP: desired.XHUB_RUST_SCHEDULER_AUTHORITY_HTTP,
@@ -306,6 +309,7 @@ function openApp(appPath) {
 function runSelfTest() {
   const config = parseArgs(['--apply', '--rust-hub-root', '/tmp/rust-hub']);
   const env = desiredEnv(config);
+  if (env.XHUB_ENABLE_RUST_AUTHORITY_CUTOVER !== '1') throw new Error('rust authority cutover gate missing');
   if (env.XHUB_RUST_SCHEDULER_AUTHORITY !== '1') throw new Error('authority env missing');
   if (env.XHUB_RUST_HUB_ROOT !== '/tmp/rust-hub') throw new Error('root override failed');
 }

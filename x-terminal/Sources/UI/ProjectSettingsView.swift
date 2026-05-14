@@ -17,10 +17,13 @@ struct ProjectSettingsView: View {
     let ctx: AXProjectContext
     let initialGovernanceDestination: XTProjectGovernanceDestination
 
-    @EnvironmentObject private var appModel: AppModel
+    @Environment(\.xtAppModelReference) private var appModelReference
+    @EnvironmentObject private var modelSettingsStore: XTModelSettingsStore
+    @EnvironmentObject private var workSurfaceStore: XTWorkSurfaceStore
+    @EnvironmentObject private var navigationFocusStore: XTNavigationFocusStore
     @Environment(\.dismiss) private var dismiss
     @StateObject private var modelManager = HubModelManager.shared
-    @StateObject private var supervisorManager = SupervisorManager.shared
+    private let supervisorManager = SupervisorManager.shared
     @StateObject private var projectModelUpdateFeedback = XTTransientUpdateFeedbackState()
     @State private var trustedAutomationDeviceIdDraft: String = ""
     @State private var governedReadableRootsDraft: String = ""
@@ -68,10 +71,10 @@ struct ProjectSettingsView: View {
         .onChange(of: initialGovernanceDestination) { value in
             selectedGovernanceDestination = value
         }
-        .onChange(of: appModel.projectSettingsFocusRequest?.nonce) { _ in
+        .onChange(of: navigationFocusSnapshot.projectSettingsFocusRequest?.nonce) { _ in
             processProjectSettingsFocusRequest()
         }
-        .onChange(of: appModel.hubInteractive) { connected in
+        .onChange(of: modelSettingsSnapshot.hubInteractive) { connected in
             Task {
                 await refreshProjectSkillGovernanceSurface(force: true)
             }
@@ -81,7 +84,7 @@ struct ProjectSettingsView: View {
                 }
             }
         }
-        .onChange(of: appModel.projectConfig) { _ in
+        .onChange(of: workSurfaceSnapshot.projectConfig) { _ in
             syncProjectConfigSnapshotFromCurrentSelection()
             refreshProjectSkillsCompatibilitySnapshot()
         }
@@ -104,7 +107,7 @@ struct ProjectSettingsView: View {
                         Button("关闭") { dismiss() }
                     }
 
-                    Text(ctx.displayName(registry: appModel.registry))
+                    Text(projectDisplayName)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
 
@@ -128,7 +131,7 @@ struct ProjectSettingsView: View {
                                 )
                             }
 
-                            if !appModel.hubInteractive {
+                            if !modelSettingsSnapshot.hubInteractive {
                                 Text("Hub 未连接，无法读取可用模型列表。")
                                     .font(.caption)
                                     .foregroundStyle(.red)
@@ -225,16 +228,47 @@ struct ProjectSettingsView: View {
         [.uiReview] + XTProjectGovernanceDestination.editorCases
     }
 
+    private var appModel: AppModel {
+        guard let appModelReference else {
+            preconditionFailure("ProjectSettingsView requires xtAppModelReference")
+        }
+        return appModelReference
+    }
+
+    private var modelSettingsSnapshot: XTModelSettingsSnapshot {
+        modelSettingsStore.snapshot
+    }
+
+    private var workSurfaceSnapshot: XTWorkSurfaceSnapshot {
+        workSurfaceStore.snapshot
+    }
+
+    private var navigationFocusSnapshot: XTNavigationFocusSnapshot {
+        navigationFocusStore.snapshot
+    }
+
     private var governanceConfig: AXProjectConfig {
         projectConfigSnapshot
     }
 
     private var isCurrentProjectSelected: Bool {
-        appModel.projectContext?.root.standardizedFileURL.path == ctx.root.standardizedFileURL.path
+        workSurfaceSnapshot.projectContext?.root.standardizedFileURL.path == ctx.root.standardizedFileURL.path
     }
 
     private var currentProjectRemoteRuntimeSurfaceOverride: AXProjectRuntimeSurfaceRemoteOverrideSnapshot? {
         isCurrentProjectSelected ? appModel.projectRemoteRuntimeSurfaceOverride : nil
+    }
+
+    private var projectDisplayName: String {
+        if routeTruthProjectID == modelSettingsSnapshot.selectedProjectId,
+           let selectedName = modelSettingsSnapshot.selectedProjectName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !selectedName.isEmpty {
+            return selectedName
+        }
+        return AXProjectRegistryStore.displayName(
+            forRoot: ctx.root,
+            registry: .empty()
+        )
     }
 
     private var currentProjectAIStrengthProfile: AXProjectAIStrengthProfile {
@@ -255,10 +289,12 @@ struct ProjectSettingsView: View {
     }
 
     private var currentProjectContextAssemblyDiagnostics: AXProjectContextAssemblyDiagnosticsSummary {
-        AXProjectContextAssemblyDiagnosticsStore.doctorSummary(
-            for: ctx,
-            config: governanceConfig
-        )
+        XTProjectUIPresentationReadCache.contextDiagnostics(for: ctx) {
+            AXProjectContextAssemblyDiagnosticsStore.doctorSummary(
+                for: ctx,
+                config: governanceConfig
+            )
+        }
     }
 
     private var currentProjectContextAssemblyPresentation: AXProjectContextAssemblyPresentation? {
@@ -273,9 +309,14 @@ struct ProjectSettingsView: View {
     }
 
     private var recentGovernanceInterception: ProjectGovernanceInterceptionPresentation? {
-        ProjectGovernanceInterceptionPresentation.latest(
-            from: AXProjectSkillActivityStore.loadRecentActivities(ctx: ctx, limit: 32)
-        )
+        XTProjectUIPresentationReadCache.latestGovernanceInterception(
+            for: ctx,
+            limit: 32
+        ) {
+            ProjectGovernanceInterceptionPresentation.latest(
+                from: AXProjectSkillActivityStore.loadRecentActivities(ctx: ctx, limit: 32)
+            )
+        }
     }
 
     private var skillGovernanceProjectID: String {
@@ -283,11 +324,11 @@ struct ProjectSettingsView: View {
     }
 
     private var skillGovernanceProjectName: String {
-        ctx.displayName(registry: appModel.registry)
+        projectDisplayName
     }
 
     private var skillGovernanceHubBaseDir: URL {
-        appModel.hubBaseDir ?? HubPaths.baseDir()
+        modelSettingsSnapshot.hubBaseDir ?? HubPaths.baseDir()
     }
 
     private var projectSkillProfileSnapshot: XTProjectEffectiveSkillProfileSnapshot {
@@ -314,7 +355,7 @@ struct ProjectSettingsView: View {
         [
             skillGovernanceProjectID,
             skillGovernanceHubBaseDir.path,
-            appModel.hubInteractive ? "hub=interactive" : "hub=offline"
+            modelSettingsSnapshot.hubInteractive ? "hub=interactive" : "hub=offline"
         ].joined(separator: "|")
     }
 
@@ -368,11 +409,11 @@ struct ProjectSettingsView: View {
     }
 
     private func globalModelId(_ role: AXRole) -> String? {
-        appModel.settingsStore.settings.assignment(for: role).model
+        modelSettingsSnapshot.settings.assignment(for: role).model
     }
 
     private var interfaceLanguage: XTInterfaceLanguage {
-        appModel.settingsStore.settings.interfaceLanguage
+        modelSettingsSnapshot.interfaceLanguage
     }
 
     private func roleModelSelectionButton(_ role: AXRole) -> some View {
@@ -381,7 +422,7 @@ struct ProjectSettingsView: View {
         let identifier = selectedModelIdentifier(for: role)
         let sourceLabel = selectedModelPresentationSourceLabel(for: role)
         let routeTruth = projectRoleRouteTruth(for: role)
-        let buttonDisabled = !appModel.hubInteractive || sortedAvailableHubModels.isEmpty
+        let buttonDisabled = !modelSettingsSnapshot.hubInteractive || sortedAvailableHubModels.isEmpty
 
         return HubModelRoutingButton(
             title: title,
@@ -828,6 +869,9 @@ struct ProjectSettingsView: View {
         let repairActions = readiness.suggestedOpenSettingsActions(
             forDeviceToolGroups: status.mode == .trustedAutomation ? deviceGroups : []
         )
+        let a4Selected = config.executionTier == .a4OpenClaw
+            || resolvedGovernanceState.effectiveBundle.executionTier == .a4OpenClaw
+        let a4RuntimeReady = status.trustedAutomationReady && status.permissionOwnerReady
 
         return GroupBox("设备执行绑定") {
             VStack(alignment: .leading, spacing: 10) {
@@ -844,6 +888,39 @@ struct ProjectSettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                if a4Selected {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: a4RuntimeReady ? "checkmark.seal.fill" : "bolt.badge.clock.fill")
+                            .foregroundStyle(a4RuntimeReady ? .green : .orange)
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("A4 浏览器 / 设备执行")
+                                .font(.caption.weight(.semibold))
+                            Text(a4RuntimeReady
+                                 ? "当前项目 A4 runtime ready 已完成。浏览器导航、页面快照和设备动作仍继续受授权、TTL、审计和高风险门禁约束。"
+                                 : "A4 是最高 Coder 执行档。完成项目绑定后，打开 URL / 页面快照这类低风险浏览器动作可以先尝试；点击、输入、上传和 OS UI 操作仍需要完整系统权限。")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        Spacer(minLength: 0)
+
+                        Button(a4RuntimeReady ? "刷新 A4 绑定" : "启用 A4 执行") {
+                            enableA4TrustedAutomationBinding()
+                        }
+                    }
+                    .padding(10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill((a4RuntimeReady ? Color.green : Color.orange).opacity(0.10))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke((a4RuntimeReady ? Color.green : Color.orange).opacity(0.22))
+                    )
+                }
+
                 Text("这是一条项目级设备执行绑定，不等于把整个 X-Terminal 永久全开；高档执行场景模板也不等于自动拥有全部设备权限。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -853,13 +930,17 @@ struct ProjectSettingsView: View {
                         .font(.system(.body, design: .monospaced))
                         .frame(width: 120, alignment: .leading)
 
-                    TextField("device_xt_001", text: $trustedAutomationDeviceIdDraft)
+                    TextField(
+                        xtTrustedAutomationSuggestedDeviceID(existing: [
+                            governanceConfig.trustedAutomationDeviceId
+                        ]),
+                        text: $trustedAutomationDeviceIdDraft
+                    )
                         .textFieldStyle(.roundedBorder)
 
                     Button("绑定当前项目") {
                         saveTrustedAutomationBinding(armed: true)
                     }
-                    .disabled(trustedAutomationDeviceIdDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
                     Button("关闭绑定") {
                         saveTrustedAutomationBinding(armed: false)
@@ -1015,7 +1096,7 @@ struct ProjectSettingsView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(selectedGovernanceDestination.localizedDisplayTitle)
                         .font(.headline)
-                    Text(ctx.displayName(registry: appModel.registry))
+                    Text(projectDisplayName)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -1230,15 +1311,24 @@ struct ProjectSettingsView: View {
     }
 
     private var executionTierFocusedSection: some View {
-        ProjectExecutionTierView(
-            configuredTier: governanceConfig.executionTier,
-            effectiveTier: resolvedGovernanceState.effectiveBundle.executionTier,
-            effectiveProjectMemoryCeiling: resolvedGovernanceState.projectMemoryCeiling,
-            effectiveRuntimeSurfaceMode: effectiveRuntimeSurface.effectiveMode,
-            inlineMessage: governanceInlineMessage,
-            inlineMessageIsError: governanceInlineMessageIsError,
-            onSelectTier: updateExecutionTier
-        )
+        VStack(alignment: .leading, spacing: 12) {
+            ProjectExecutionTierView(
+                configuredTier: governanceConfig.executionTier,
+                effectiveTier: resolvedGovernanceState.effectiveBundle.executionTier,
+                effectiveProjectMemoryCeiling: resolvedGovernanceState.projectMemoryCeiling,
+                effectiveRuntimeSurfaceMode: effectiveRuntimeSurface.effectiveMode,
+                inlineMessage: governanceInlineMessage,
+                inlineMessageIsError: governanceInlineMessageIsError,
+                onSelectTier: updateExecutionTier
+            )
+
+            aTierBoundaryGuideSection
+
+            if governanceConfig.executionTier == .a4OpenClaw
+                || resolvedGovernanceState.effectiveBundle.executionTier == .a4OpenClaw {
+                trustedAutomationSection
+            }
+        }
         .id(XTProjectSettingsSectionID.executionTier)
     }
 
@@ -1266,9 +1356,9 @@ struct ProjectSettingsView: View {
             brainstormReviewSeconds: governanceConfig.brainstormReviewSeconds,
             eventDrivenReviewEnabled: governanceConfig.eventDrivenReviewEnabled,
             eventReviewTriggers: governanceConfig.eventReviewTriggers,
-            configuredSupervisorRecentRawContextProfile: appModel.settingsStore.settings.supervisorRecentRawContextProfile,
-            configuredSupervisorReviewMemoryDepth: appModel.settingsStore.settings.supervisorReviewMemoryDepthProfile,
-            supervisorPrivacyMode: appModel.settingsStore.settings.supervisorPrivacyMode,
+            configuredSupervisorRecentRawContextProfile: modelSettingsSnapshot.settings.supervisorRecentRawContextProfile,
+            configuredSupervisorReviewMemoryDepth: modelSettingsSnapshot.settings.supervisorReviewMemoryDepthProfile,
+            supervisorPrivacyMode: modelSettingsSnapshot.settings.supervisorPrivacyMode,
             resolvedGovernance: resolvedGovernanceState,
             governancePresentation: resolvedGovernancePresentation,
             inlineMessage: governanceInlineMessage,
@@ -1281,6 +1371,105 @@ struct ProjectSettingsView: View {
             onSetEventReviewTriggers: { updateProjectGovernance(eventReviewTriggers: $0) }
         )
         .id(XTProjectSettingsSectionID.reviewCadence)
+    }
+
+    private var aTierBoundaryGuideSection: some View {
+        GroupBox("A2 / A3 / A4 执行边界") {
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 210), spacing: 10)],
+                alignment: .leading,
+                spacing: 10
+            ) {
+                aTierBoundaryGuideCard(
+                    tier: .a2RepoAuto,
+                    title: "A2 Repo Auto",
+                    detail: "日常功能开发主力档：创建 / 修改项目文件、跑 build / test、更新计划。",
+                    allowed: "project_local_fs / repo.mutate / repo.verify",
+                    blocked: "浏览器、设备、连接器、远端副作用"
+                )
+
+                aTierBoundaryGuideCard(
+                    tier: .a3DeliverAuto,
+                    title: "A3 Deliver Auto",
+                    detail: "连续交付档：允许多 step 推进、commit / PR 级收口，但仍不碰设备执行面。",
+                    allowed: "A2 能力 + 交付收口 / CI read",
+                    blocked: "浏览器、设备、连接器、扩展执行"
+                )
+
+                aTierBoundaryGuideCard(
+                    tier: .a4OpenClaw,
+                    title: "A4 Agent",
+                    detail: "最高代理执行档：浏览器 / 设备 / 连接器可用，但必须完成 runtime ready。",
+                    allowed: "A3 能力 + 受治理 browser / device",
+                    blocked: "绕过授权、TTL、审计、kill-switch"
+                )
+            }
+            .padding(8)
+        }
+    }
+
+    private func aTierBoundaryGuideCard(
+        tier: AXProjectExecutionTier,
+        title: String,
+        detail: String,
+        allowed: String,
+        blocked: String
+    ) -> some View {
+        let tint = aTierBoundaryTint(tier)
+        let selected = governanceConfig.executionTier == tier
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(tint)
+                Spacer(minLength: 0)
+                if selected {
+                    Text("当前")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(tint)
+                }
+            }
+
+            Text(detail)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("允许：\(allowed)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("阻止：\(blocked)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(tint.opacity(selected ? 0.14 : 0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(tint.opacity(selected ? 0.55 : 0.18), lineWidth: selected ? 1.5 : 1)
+        )
+    }
+
+    private func aTierBoundaryTint(_ tier: AXProjectExecutionTier) -> Color {
+        switch tier {
+        case .a0Observe:
+            return .gray
+        case .a1Plan:
+            return .blue
+        case .a2RepoAuto:
+            return .teal
+        case .a3DeliverAuto:
+            return .green
+        case .a4OpenClaw:
+            return .orange
+        }
     }
 
     private var runtimeSurfaceSection: some View {
@@ -1581,18 +1770,18 @@ struct ProjectSettingsView: View {
     }
 
     private func modelInventorySnapshot() -> ModelStateSnapshot {
-        modelManager.visibleSnapshot(fallback: appModel.modelsState)
+        modelManager.visibleSnapshot(fallback: modelSettingsSnapshot.modelsState)
     }
 
     private var projectModelInventoryTruth: XTModelInventoryTruthPresentation {
         XTModelInventoryTruthPresentation.build(
             snapshot: modelInventorySnapshot(),
-            hubBaseDir: appModel.hubBaseDir ?? HubPaths.baseDir()
+            hubBaseDir: modelSettingsSnapshot.hubBaseDir ?? HubPaths.baseDir()
         )
     }
 
     private var availableHubModels: [HubModel] {
-        modelManager.visibleSnapshot(fallback: appModel.modelsState).models
+        modelManager.visibleSnapshot(fallback: modelSettingsSnapshot.modelsState).models
     }
 
     private func selectedModelPresentation(for role: AXRole) -> ModelInfo? {
@@ -1642,15 +1831,20 @@ struct ProjectSettingsView: View {
     }
 
     private var routeTruthProjectName: String {
-        ctx.displayName(registry: appModel.registry)
+        projectDisplayName
     }
 
     private func projectRoleExecutionSnapshot(for role: AXRole) -> AXRoleExecutionSnapshot {
         if role == .supervisor {
             return ExecutionRoutePresentation.supervisorSnapshot(from: supervisorManager)
         }
-        return AXRoleExecutionSnapshots.latestSnapshots(for: ctx)[role]
-            ?? .empty(role: role, source: "project_settings")
+        return XTProjectUIPresentationReadCache.roleExecutionSnapshot(
+            for: ctx,
+            role: role
+        ) {
+            AXRoleExecutionSnapshots.latestSnapshots(for: ctx)[role]
+                ?? .empty(role: role, source: "project_settings")
+        }
     }
 
     private func projectRoleRouteTruth(for role: AXRole) -> HubModelRoutingSupplementaryPresentation {
@@ -1664,7 +1858,7 @@ struct ProjectSettingsView: View {
                 projectRoot: ctx.root,
                 config: governanceConfig
             ).runtimeReadinessSnapshot,
-            settings: appModel.settingsStore.settings,
+            settings: modelSettingsSnapshot.settings,
             snapshot: projectRoleExecutionSnapshot(for: role),
             transportMode: HubAIClient.transportMode().rawValue,
             language: interfaceLanguage
@@ -1717,7 +1911,7 @@ struct ProjectSettingsView: View {
             role: role,
             ctx: ctx,
             snapshot: modelInventorySnapshot(),
-            paidAccessSnapshot: appModel.hubRemotePaidAccessSnapshot,
+            paidAccessSnapshot: modelSettingsSnapshot.remotePaidAccessSnapshot,
             language: interfaceLanguage
         ),
            let recommendedModelId = guidance.recommendedModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -1795,7 +1989,7 @@ struct ProjectSettingsView: View {
             role: role,
             ctx: ctx,
             snapshot: modelInventorySnapshot(),
-            paidAccessSnapshot: appModel.hubRemotePaidAccessSnapshot,
+            paidAccessSnapshot: modelSettingsSnapshot.remotePaidAccessSnapshot,
             language: interfaceLanguage
         ) {
             return appendingGrpcRouteInterpretationWarning(
@@ -1963,7 +2157,7 @@ struct ProjectSettingsView: View {
     }
 
     private func syncProjectConfigSnapshotFromCurrentSelection() {
-        guard isCurrentProjectSelected, let config = appModel.projectConfig else { return }
+        guard isCurrentProjectSelected, let config = workSurfaceSnapshot.projectConfig else { return }
         projectConfigSnapshot = config
         syncProjectConfigDrafts(config)
     }
@@ -2063,7 +2257,7 @@ struct ProjectSettingsView: View {
         )
         reloadProjectConfigSnapshot()
         projectModelChangeNotice = XTSettingsChangeNoticeBuilder.projectRoleModel(
-            projectName: ctx.displayName(registry: appModel.registry),
+            projectName: projectDisplayName,
             role: role,
             modelId: normalizedModelId,
             inheritedModelId: globalModelId(role),
@@ -2079,16 +2273,37 @@ struct ProjectSettingsView: View {
         (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
-    private func saveTrustedAutomationBinding(armed: Bool) {
-        let deviceId = trustedAutomationDeviceIdDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func saveTrustedAutomationBinding(armed: Bool, deviceIdOverride: String? = nil) {
+        let rawDeviceId = deviceIdOverride ?? trustedAutomationDeviceIdDraft
+        let deviceId = armed
+            ? xtTrustedAutomationSuggestedDeviceID(existing: [
+                rawDeviceId,
+                governanceConfig.trustedAutomationDeviceId
+            ])
+            : xtTrustedAutomationNormalizeDeviceID(rawDeviceId)
         let mode: AXProjectAutomationMode = armed ? .trustedAutomation : .standard
         appModel.setProjectTrustedAutomationBinding(
             for: ctx,
             mode: mode,
             deviceId: deviceId,
+            deviceToolGroups: armed ? xtTrustedAutomationDefaultDeviceToolGroups() : governanceConfig.deviceToolGroups,
             workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: ctx.root)
         )
+        trustedAutomationDeviceIdDraft = deviceId
         reloadProjectConfigSnapshot()
+        governanceInlineMessage = armed
+            ? "已启用当前项目的 A4 可信自动化绑定。若系统权限仍缺失，下方权限宿主状态会列出一次性修复项。"
+            : "已关闭当前项目的可信自动化绑定。A4 档位仍可保存，但浏览器 / 设备执行会回到 runtime ready 缺口状态。"
+        governanceInlineMessageIsError = false
+    }
+
+    private func enableA4TrustedAutomationBinding() {
+        let deviceId = xtTrustedAutomationSuggestedDeviceID(existing: [
+            trustedAutomationDeviceIdDraft,
+            governanceConfig.trustedAutomationDeviceId
+        ])
+        saveTrustedAutomationBinding(armed: true, deviceIdOverride: deviceId)
+        advancedGovernanceExpanded = true
     }
 
     private func applyGovernanceTemplate(_ profile: AXProjectGovernanceTemplate) {
@@ -2142,6 +2357,16 @@ struct ProjectSettingsView: View {
         if currentSupervisor < reviewReference {
             governanceInlineMessage = "\(tier.displayName) 已保留当前 S-Tier \(currentSupervisor.displayName)。这个组合允许保存，但低于 \(reviewReference.displayName) 风险参考线，建议只在你明确接受更弱监督时使用。"
             governanceInlineMessageIsError = false
+        } else if tier == .a4OpenClaw {
+            governanceInlineMessage = "已切到 A4 Agent。A4 允许浏览器 / 设备执行，但还需要在下方完成一次 A4 runtime ready 绑定。"
+            governanceInlineMessageIsError = false
+            advancedGovernanceExpanded = true
+        } else if tier == .a2RepoAuto {
+            governanceInlineMessage = "已切到 A2 Repo Auto。这个档位适合创建 / 修改项目文件和跑 build / test，不会使用浏览器或设备执行面。"
+            governanceInlineMessageIsError = false
+        } else if tier == .a3DeliverAuto {
+            governanceInlineMessage = "已切到 A3 Deliver Auto。这个档位适合连续交付和收口，仍不会使用浏览器、设备、连接器或扩展执行面。"
+            governanceInlineMessageIsError = false
         } else {
             clearGovernanceInlineMessage()
         }
@@ -2168,7 +2393,7 @@ struct ProjectSettingsView: View {
     }
 
     private func processProjectSettingsFocusRequest() {
-        guard let request = appModel.projectSettingsFocusRequest else { return }
+        guard let request = navigationFocusSnapshot.projectSettingsFocusRequest else { return }
         let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
         guard request.projectId == projectId else { return }
         guard activeFocusRequest?.nonce != request.nonce else { return }

@@ -91,13 +91,14 @@ final class HubModelManager: ObservableObject {
     func getPreferredModel(for role: AXRole) -> String? {
         guard let appModel = appModel else { return nil }
         let settings = appModel.settingsStore.settings
-        let assignment = settings.assignment(for: role)
+        let route = settings.modelRoute(for: role)
 
-        if assignment.providerKind == ProviderKind.hub {
-            return assignment.model
-        }
+        return route.primaryModelId
+    }
 
-        return nil
+    func getPaidBackupModel(for role: AXRole) -> String? {
+        guard let appModel = appModel else { return nil }
+        return appModel.settingsStore.settings.modelRoute(for: role).paidBackupModelId
     }
 
     func setModel(for role: AXRole, modelId: String?) {
@@ -108,8 +109,41 @@ final class HubModelManager: ObservableObject {
                 || normalizedModelId(currentAssignment.model) != normalizedModelId(modelId) else {
             return
         }
-        let newSettings = settings.setting(role: role, providerKind: ProviderKind.hub, model: modelId)
+        let newSettings = settings.settingRolePrimaryModel(role: role, modelId: modelId)
         appModel.settingsStore.settings = newSettings
+        appModel.settingsStore.save()
+        objectWillChange.send()
+    }
+
+    func setPaidBackupModel(for role: AXRole, modelId: String?) {
+        guard let appModel = appModel else { return }
+        let settings = appModel.settingsStore.settings
+        let currentRoute = settings.modelRoute(for: role)
+        guard normalizedModelId(currentRoute.paidBackupModelId) != normalizedModelId(modelId) else {
+            return
+        }
+        appModel.settingsStore.settings = settings.settingRolePaidBackupModel(role: role, modelId: modelId)
+        appModel.settingsStore.save()
+        objectWillChange.send()
+    }
+
+    func setLocalFallbackMode(
+        for role: AXRole,
+        mode: LocalModelFallbackMode,
+        modelId: String? = nil
+    ) {
+        guard let appModel = appModel else { return }
+        let settings = appModel.settingsStore.settings
+        let currentRoute = settings.modelRoute(for: role)
+        guard currentRoute.localFallbackMode != mode
+                || normalizedModelId(currentRoute.localFallbackModelId) != normalizedModelId(modelId) else {
+            return
+        }
+        appModel.settingsStore.settings = settings.settingRoleLocalFallback(
+            role: role,
+            mode: mode,
+            modelId: modelId
+        )
         appModel.settingsStore.save()
         objectWillChange.send()
     }

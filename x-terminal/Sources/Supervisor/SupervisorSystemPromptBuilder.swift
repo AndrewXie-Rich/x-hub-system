@@ -23,6 +23,7 @@ struct SupervisorSystemPromptBuilder {
             lines.append(contentsOf: buildWorkModeSection(params))
             lines.append(contentsOf: buildPrivacyModeSection(params))
         }
+        lines.append(contentsOf: buildAuthorityBoundarySection(isMinimal: isMinimal))
         lines.append(contentsOf: buildConversationStyleSection(params, isMinimal: isMinimal))
         lines.append(contentsOf: buildPersonalAssistantContextSection(params))
         lines.append(contentsOf: buildPersonalMemoryContextSection(params))
@@ -108,6 +109,25 @@ struct SupervisorSystemPromptBuilder {
             "- Long-term memory, session handoff capsules, and project state reconstruction remain available; privacy mode only tightens recent raw dialogue exposure.",
             ""
         ]
+    }
+
+    private func buildAuthorityBoundarySection(isMinimal: Bool) -> [String] {
+        var lines = [
+            "## Supervisor / Coder Authority Boundary",
+            "- A-Tier is the project Coder execution authority. It decides what the project Coder may do: A0 observe, A1 plan/write memory, A2 edit repo and run build/test in the project root, A3 continue delivery, A4 use governed browser/device/connector surfaces only when runtime readiness and grants pass.",
+            "- S-Tier is Supervisor intervention depth. It decides how closely you review, replan, coach, or rescue work; it does not by itself grant Coder file, shell, browser, device, or skill authority.",
+            "- You are Supervisor. Do not treat your own lack of a direct file/shell channel in this chat turn as proof that XT or the project Coder lacks that capability.",
+            "- Before claiming a capability is unavailable, check the current Memory Context governance lines, effective_execution_tier, effective_supervisor_tier, tool policy, skills_registry, grants, and runtime readiness.",
+            "- If the user asks you to do implementation work, route it through governed project execution: CREATE_JOB, UPSERT_PLAN, CALL_SKILL, CALL_GLOBAL_SKILL, or the governed project Coder dispatch when execution intent is clear and the registry/governance supports it.",
+            "- If execution is blocked by tier or runtime readiness, name the exact missing authority and tell the user where it belongs: A-Tier for Coder permissions, S-Tier for Supervisor depth, grants/runtime readiness for governed skills or automation.",
+            "- For a focused project coding instruction, do not ask the user to copy the same text into Workbench / Coder. Dispatch it through the governed project Coder path or create/update the governed workflow first. Only point the user to Workbench / Coder when there is no focused project, the current mode forbids execution, or runtime evidence shows dispatch is blocked."
+        ]
+        if !isMinimal {
+            lines.append("- If asked to create a project or supervisor-managed task, use CREATE_PROJECT or CREATE_JOB instead of telling the user to manually create files, unless governance or runtime evidence explicitly blocks that action.")
+            lines.append("- If a request belongs to Coder but needs stronger authority, state the smallest required A-Tier change and keep the requested S-Tier depth separate.")
+        }
+        lines.append("")
+        return lines
     }
 
     private func buildConversationStyleSection(
@@ -268,6 +288,10 @@ struct SupervisorSystemPromptBuilder {
         if !decision.routingReasons.isEmpty {
             lines.append("- Routing reasons: \(decision.routingReasons.joined(separator: " | "))")
         }
+        lines.append("- Project memory binding: \(decision.projectMemoryBindingStrength.rawValue)")
+        if let bindingReason = cleaned(decision.projectMemoryBindingReason) {
+            lines.append("- Project memory binding reason: \(bindingReason)")
+        }
 
         switch decision.mode {
         case .personalFirst:
@@ -278,6 +302,9 @@ struct SupervisorSystemPromptBuilder {
             lines.append("- Treat personal memory and project memory as co-equal inputs for this turn. Resolve tension between commitments, people waiting, and project execution instead of flattening the answer to one side.")
         case .portfolioReview:
             lines.append("- Start from the portfolio brief. Only drill into a focused project if the current turn clearly needs a deeper single-project recommendation.")
+        }
+        if decision.projectMemoryBindingStrength != .none && !decision.requiresProjectTruth {
+            lines.append("- A project reference alone is not enough to load the focused project pack. If current project truth is not required, stay on recent dialogue plus lightweight personal context.")
         }
 
         lines.append("")

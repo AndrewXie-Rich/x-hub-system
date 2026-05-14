@@ -250,6 +250,11 @@ enum XTProjectSkillRouter {
             toolName: toolName,
             args: &args
         )
+        enrichSkillRunnerBindingArgsIfNeeded(
+            toolName: toolName,
+            item: item,
+            args: &args
+        )
 
         for group in dispatch.requiredAny {
             let presentCount = group.filter { governedDispatchHasValue(args[$0]) }.count
@@ -316,6 +321,26 @@ enum XTProjectSkillRouter {
         )
         guard let resolvedModel = resolution.resolvedModel else { return }
         args["preferred_model_id"] = .string(resolvedModel.id)
+    }
+
+    private static func enrichSkillRunnerBindingArgsIfNeeded(
+        toolName: ToolName,
+        item: SupervisorSkillRegistryItem,
+        args: inout [String: JSONValue]
+    ) {
+        guard toolName == .skillsExecuteRunner else { return }
+        if !governedDispatchHasValue(args["skill_id"]) {
+            let skillId = normalized(item.skillId)
+            if !skillId.isEmpty {
+                args["skill_id"] = .string(skillId)
+            }
+        }
+        if !governedDispatchHasValue(args["package_sha256"]) {
+            let packageSHA256 = normalized(item.packageSHA256).lowercased()
+            if !packageSHA256.isEmpty {
+                args["package_sha256"] = .string(packageSHA256)
+            }
+        }
     }
 
     private static func normalizedHubStateDirPath(_ raw: String?) -> String? {

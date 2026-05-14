@@ -119,6 +119,10 @@ struct XTMemoryAssemblyResolution: Codable, Equatable, Sendable {
     var excludedBlocks: [String]
     var budgetSummary: String?
     var auditRef: String?
+    var memoryBindingStrength: String?
+    var requiresProjectTruth: Bool?
+    var projectMemorySuppressedForPureChat: Bool?
+    var suppressionReason: String?
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -136,6 +140,10 @@ struct XTMemoryAssemblyResolution: Codable, Equatable, Sendable {
         case excludedBlocks = "excluded_blocks"
         case budgetSummary = "budget_summary"
         case auditRef = "audit_ref"
+        case memoryBindingStrength = "memory_binding_strength"
+        case requiresProjectTruth = "requires_project_truth"
+        case projectMemorySuppressedForPureChat = "project_memory_suppressed_for_pure_chat"
+        case suppressionReason = "suppression_reason"
     }
 
     init(
@@ -152,7 +160,11 @@ struct XTMemoryAssemblyResolution: Codable, Equatable, Sendable {
         selectedServingObjects: [String] = [],
         excludedBlocks: [String] = [],
         budgetSummary: String? = nil,
-        auditRef: String? = nil
+        auditRef: String? = nil,
+        memoryBindingStrength: String? = nil,
+        requiresProjectTruth: Bool? = nil,
+        projectMemorySuppressedForPureChat: Bool? = nil,
+        suppressionReason: String? = nil
     ) {
         self.schemaVersion = Self.currentSchemaVersion
         self.role = role
@@ -169,6 +181,10 @@ struct XTMemoryAssemblyResolution: Codable, Equatable, Sendable {
         self.excludedBlocks = excludedBlocks
         self.budgetSummary = budgetSummary
         self.auditRef = auditRef
+        self.memoryBindingStrength = memoryBindingStrength
+        self.requiresProjectTruth = requiresProjectTruth
+        self.projectMemorySuppressedForPureChat = projectMemorySuppressedForPureChat
+        self.suppressionReason = suppressionReason
     }
 }
 
@@ -589,7 +605,10 @@ enum XTRoleAwareMemoryPolicyResolver {
         governanceReviewRunKind: SupervisorReviewRunKind? = nil,
         reviewMemoryCeiling: XTMemoryServingProfile?,
         privacyMode: XTPrivacyMode,
-        assemblyPurpose: XTSupervisorMemoryAssemblyPurpose? = nil
+        assemblyPurpose: XTSupervisorMemoryAssemblyPurpose? = nil,
+        projectMemoryBindingStrength: SupervisorProjectMemoryBindingStrength = .none,
+        projectMemorySuppressedForPureChat: Bool = false,
+        suppressionReason: String? = nil
     ) -> XTSupervisorMemoryPolicy {
         let trigger = supervisorTrigger(
             triggerSource: triggerSource,
@@ -599,16 +618,19 @@ enum XTRoleAwareMemoryPolicyResolver {
             reviewLevelHint: reviewLevelHint,
             dominantMode: dominantMode
         )
+        let projectTruthRequired = projectMemoryBindingStrength.requiresProjectTruth
         let resolvedAssemblyPurpose = assemblyPurpose ?? defaultSupervisorAssemblyPurpose(
             reviewLevelHint: reviewLevelHint,
             dominantMode: dominantMode,
             focusedProjectSelected: focusedProjectSelected,
-            trigger: trigger
+            trigger: trigger,
+            projectTruthRequired: projectTruthRequired
         )
         let recommendedRecentRaw = recommendedSupervisorRecentRawContextProfile(
             reviewLevelHint: reviewLevelHint,
             dominantMode: dominantMode,
-            trigger: trigger
+            trigger: trigger,
+            assemblyPurpose: resolvedAssemblyPurpose
         )
         let privacyAdjustedConfiguredRecent = privacyMode.effectiveRecentRawContextProfile(
             configuredSupervisorRecentRawContextProfile
@@ -629,7 +651,8 @@ enum XTRoleAwareMemoryPolicyResolver {
         let minimumRequiredProfile = min(
             minimumSupervisorServingFloor(
                 reviewLevelHint: reviewLevelHint,
-                focusedProjectSelected: focusedProjectSelected
+                focusedProjectSelected: focusedProjectSelected,
+                assemblyPurpose: resolvedAssemblyPurpose
             ),
             effectiveCeiling
         )
@@ -692,13 +715,21 @@ enum XTRoleAwareMemoryPolicyResolver {
                 ceilingFromTier: ceiling.rawValue,
                 ceilingHit: ceilingHit,
                 selectedSlots: selectedServingObjects,
-                selectedPlanes: selectedSupervisorPlanes(for: dominantMode),
+                selectedPlanes: selectedSupervisorPlanes(
+                    assemblyPurpose: resolvedAssemblyPurpose,
+                    dominantMode: dominantMode,
+                    crossLinkContextAvailable: crossLinkContextAvailable
+                ),
                 selectedServingObjects: selectedServingObjects,
                 excludedBlocks: excludedSupervisorBlocks(
                     assemblyPurpose: resolvedAssemblyPurpose,
                     focusedProjectSelected: focusedProjectSelected,
                     privacyMode: privacyMode
-                )
+                ),
+                memoryBindingStrength: projectMemoryBindingStrength.rawValue,
+                requiresProjectTruth: projectTruthRequired,
+                projectMemorySuppressedForPureChat: projectMemorySuppressedForPureChat ? true : nil,
+                suppressionReason: suppressionReason
             )
         )
     }
@@ -1005,11 +1036,14 @@ enum XTRoleAwareMemoryPolicyResolver {
         if XTMemoryServingProfileSelector.fullScanRequestSignals(userMessage) {
             return "manual_full_scan_request"
         }
+        if XTMemoryServingProfileSelector.reviewPlanRequestSignals(userMessage) {
+            return "manual_request"
+        }
         switch reviewLevelHint {
         case .r3Rescue:
             return "pre_high_risk_action"
         case .r2Strategic:
-            return "manual_request"
+            return "user_turn"
         case .r1Pulse:
             return "user_turn"
         }
@@ -1070,15 +1104,22 @@ enum XTRoleAwareMemoryPolicyResolver {
         reviewLevelHint: SupervisorReviewLevel,
         dominantMode: SupervisorTurnMode,
         focusedProjectSelected: Bool,
-        trigger: String
+        trigger: String,
+        projectTruthRequired: Bool
     ) -> XTSupervisorMemoryAssemblyPurpose {
         if dominantMode == .portfolioReview {
             return .portfolioReview
         }
-        if trigger == "manual_request" || trigger == "manual_full_scan_request" || reviewLevelHint != .r1Pulse {
+        if trigger == "manual_full_scan_request" {
             return .governanceReview
         }
-        if focusedProjectSelected && (dominantMode == .projectFirst || dominantMode == .hybrid) {
+        if projectTruthRequired && trigger == "manual_request" {
+            return .governanceReview
+        }
+        if projectTruthRequired && reviewLevelHint == .r3Rescue {
+            return .governanceReview
+        }
+        if projectTruthRequired && focusedProjectSelected {
             return .projectAssist
         }
         return .conversation
@@ -1087,10 +1128,19 @@ enum XTRoleAwareMemoryPolicyResolver {
     private static func recommendedSupervisorRecentRawContextProfile(
         reviewLevelHint: SupervisorReviewLevel,
         dominantMode: SupervisorTurnMode,
-        trigger: String
+        trigger: String,
+        assemblyPurpose: XTSupervisorMemoryAssemblyPurpose
     ) -> XTSupervisorRecentRawContextProfile {
         if trigger == "manual_full_scan_request" || dominantMode == .portfolioReview {
             return .extended40Pairs
+        }
+        switch assemblyPurpose {
+        case .conversation:
+            return dominantMode == .hybrid ? .deep20Pairs : .standard12Pairs
+        case .projectAssist:
+            return dominantMode == .hybrid ? .deep20Pairs : .standard12Pairs
+        case .governanceReview, .portfolioReview:
+            break
         }
         switch reviewLevelHint {
         case .r3Rescue:
@@ -1122,8 +1172,17 @@ enum XTRoleAwareMemoryPolicyResolver {
 
     private static func minimumSupervisorServingFloor(
         reviewLevelHint: SupervisorReviewLevel,
-        focusedProjectSelected: Bool
+        focusedProjectSelected: Bool,
+        assemblyPurpose: XTSupervisorMemoryAssemblyPurpose
     ) -> XTMemoryServingProfile {
+        switch assemblyPurpose {
+        case .conversation:
+            return .m1Execute
+        case .projectAssist:
+            return .m1Execute
+        case .governanceReview, .portfolioReview:
+            break
+        }
         switch reviewLevelHint {
         case .r1Pulse:
             return .m1Execute
@@ -1202,18 +1261,34 @@ enum XTRoleAwareMemoryPolicyResolver {
     }
 
     private static func selectedSupervisorPlanes(
-        for dominantMode: SupervisorTurnMode
+        assemblyPurpose: XTSupervisorMemoryAssemblyPurpose,
+        dominantMode: SupervisorTurnMode,
+        crossLinkContextAvailable: Bool
     ) -> [String] {
-        switch dominantMode {
-        case .personalFirst:
-            return ["continuity_lane", "assistant_plane"]
-        case .projectFirst:
-            return ["continuity_lane", "project_plane", "cross_link_plane"]
-        case .hybrid:
-            return ["continuity_lane", "assistant_plane", "project_plane", "cross_link_plane"]
-        case .portfolioReview:
-            return ["continuity_lane", "project_plane", "cross_link_plane"]
+        var ordered: [String] = ["continuity_lane"]
+        var seen = Set(ordered)
+
+        func append(_ plane: String) {
+            guard seen.insert(plane).inserted else { return }
+            ordered.append(plane)
         }
+
+        switch assemblyPurpose {
+        case .conversation:
+            if dominantMode == .personalFirst || dominantMode == .hybrid {
+                append("assistant_plane")
+            }
+        case .projectAssist, .governanceReview, .portfolioReview:
+            if dominantMode == .hybrid {
+                append("assistant_plane")
+            }
+            append("project_plane")
+        }
+
+        if crossLinkContextAvailable {
+            append("cross_link_plane")
+        }
+        return ordered
     }
 
     private static func selectedSupervisorServingObjects(

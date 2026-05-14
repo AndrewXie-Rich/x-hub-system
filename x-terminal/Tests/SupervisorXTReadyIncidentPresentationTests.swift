@@ -592,4 +592,46 @@ struct SupervisorXTReadyIncidentPresentationTests {
         #expect(presentation.supervisorVoiceActionLabel == "打开 XT Diagnostics")
         #expect(presentation.supervisorVoiceActionURL == expectedActionURL)
     }
+
+    @Test
+    func mapUsesHubProviderKeysDeepLinkForVoiceDiagnosisImportSourceRepair() {
+        let snapshot = SupervisorManager.XTReadyIncidentExportSnapshot(
+            autoExportEnabled: true,
+            ledgerIncidentCount: 3,
+            requiredIncidentEventCount: 3,
+            missingIncidentCodes: [],
+            memoryAssemblyReady: true,
+            memoryAssemblyIssues: [],
+            memoryAssemblyStatusLine: "ready",
+            strictE2EReady: true,
+            strictE2EIssues: [],
+            supervisorVoiceDiagnosis: .init(
+                status: XHubDoctorCheckStatus.fail.rawValue,
+                headline: "Model route is blocked by provider key import",
+                message: "Hub cannot build the model route until the provider key import source is repaired.",
+                detailLines: [
+                    "provider_key_import_source_issue_1=Codex auth import failed.",
+                    "provider_key_import_source_issue_1_kind=config_path",
+                    "provider_key_import_source_issue_1_state=sync_failed",
+                    "provider_key_import_source_issue_1_ref=/Users/test/config149.toml",
+                    "provider_key_import_source_issue_1_name=config149.toml"
+                ],
+                nextStep: "Open Hub Provider Keys and repair the broken import source.",
+                repairDestinationRef: UITroubleshootDestination.hubProviderKeys.rawValue,
+                generatedAtMs: 1_741_300_456
+            ),
+            status: "ok",
+            reportPath: "/tmp/xt-ready.json"
+        )
+
+        let presentation = SupervisorXTReadyIncidentPresentationMapper.map(snapshot: snapshot)
+
+        #expect(presentation.supervisorVoiceActionLabel == "打开 Hub Provider Keys")
+        #expect(
+            presentation.supervisorVoiceActionURL
+                == RELFlowHubActionURLBuilder.providerKeysSettingsURL(
+                    sourceRef: "/Users/test/config149.toml"
+                )?.absoluteString
+        )
+    }
 }

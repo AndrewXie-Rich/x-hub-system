@@ -96,6 +96,34 @@ extension SupervisorViewStateSupport {
         )
     }
 
+    static func lightweightHeaderControlContext(
+        appModel: AppModel,
+        supervisor: SupervisorManager,
+        showHeartbeatFeed: Bool,
+        showSignalCenter: Bool
+    ) -> SupervisorHeaderControls.Context {
+        let heartbeatPresentation = SupervisorHeartbeatPresentation.map(
+            entries: supervisor.heartbeatHistory,
+            historicalProjectBoundaryRepairStatusLine: appModel.historicalProjectBoundaryRepairStatusLine
+        )
+        return SupervisorHeaderControls.Context(
+            hasFocusRequest: appModel.supervisorFocusRequest != nil,
+            pendingHubGrantCount: supervisor.frontstagePendingHubGrants.count,
+            pendingSkillApprovalCount: supervisor.frontstagePendingSupervisorSkillApprovals.count,
+            hasLatestHeartbeat: supervisor.latestHeartbeat != nil,
+            highestHeartbeatPriority: SupervisorHeartbeatPresentation.highestPriority(
+                entries: supervisor.heartbeatHistory,
+                historicalProjectBoundaryRepairStatusLine: appModel.historicalProjectBoundaryRepairStatusLine
+            ),
+            heartbeatOverview: heartbeatPresentation.overview,
+            hasLatestRuntimeActivity: supervisor.latestRuntimeActivity != nil,
+            signalCenterOverview: nil,
+            isHeartbeatFeedVisible: showHeartbeatFeed,
+            isSignalCenterVisible: showSignalCenter,
+            requestedWindowSheet: supervisor.requestedWindowSheet
+        )
+    }
+
     static func configuredSupervisorModelId(
         appModel: AppModel
     ) -> String {
@@ -124,7 +152,7 @@ extension SupervisorViewStateSupport {
     static func canOpenCanonicalMemorySyncStatusFile(
         url: URL
     ) -> Bool {
-        FileManager.default.fileExists(atPath: url.path)
+        SupervisorCanonicalMemorySyncStatusFileAvailabilityCache.fileExists(at: url)
     }
 
     static func automationSelfIterateEnabledBinding(
@@ -143,5 +171,30 @@ extension SupervisorViewStateSupport {
             get: { appModel.projectConfig?.automationMaxAutoRetryDepth ?? 2 },
             set: { appModel.setProjectAutomationSelfIteration(maxAutoRetryDepth: $0) }
         )
+    }
+}
+
+@MainActor
+private enum SupervisorCanonicalMemorySyncStatusFileAvailabilityCache {
+    private struct Entry {
+        let checkedAt: Date
+        let exists: Bool
+    }
+
+    private static let maxAgeSeconds: TimeInterval = 2.0
+    private static var entries: [String: Entry] = [:]
+
+    static func fileExists(
+        at url: URL,
+        now: Date = Date()
+    ) -> Bool {
+        let key = url.standardizedFileURL.path
+        if let entry = entries[key],
+           now.timeIntervalSince(entry.checkedAt) < maxAgeSeconds {
+            return entry.exists
+        }
+        let exists = FileManager.default.fileExists(atPath: key)
+        entries[key] = Entry(checkedAt: now, exists: exists)
+        return exists
     }
 }

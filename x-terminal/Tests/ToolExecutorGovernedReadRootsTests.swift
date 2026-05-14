@@ -180,6 +180,32 @@ struct ToolExecutorGovernedReadRootsTests {
     }
 
     @Test
+    func listDirAllowsMarkdownWrappedProjectRootAlias() async throws {
+        let baseDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xterminal-project-root-alias-\(UUID().uuidString)", isDirectory: true)
+        let realRoot = baseDir.appendingPathComponent("`坦克大战`", isDirectory: true)
+        let aliasedRoot = baseDir.appendingPathComponent("坦克大战", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: baseDir) }
+
+        try FileManager.default.createDirectory(at: realRoot, withIntermediateDirectories: true)
+        try Data("# Tank Battle".utf8).write(
+            to: realRoot.appendingPathComponent("README.md"),
+            options: .atomic
+        )
+
+        let result = try await ToolExecutor.execute(
+            call: ToolCall(
+                tool: .list_dir,
+                args: ["path": .string(aliasedRoot.path)]
+            ),
+            projectRoot: realRoot
+        )
+
+        #expect(result.ok)
+        #expect(result.output.contains("README.md"))
+    }
+
+    @Test
     func listDirAtProjectRootWithOnlyInternalStateLooksLikeEmptyWorkspace() async throws {
         let fixture = ToolExecutorProjectFixture(name: "project-root-list-dir-only-xterminal")
         defer { fixture.cleanup() }
@@ -345,6 +371,43 @@ struct ToolExecutorGovernedReadRootsTests {
         #expect(jsonString(summary["deny_code"]) == "path_write_outside_project_root")
         #expect(jsonString(summary["policy_source"]) == "governed_path_scope")
         #expect(!FileManager.default.fileExists(atPath: externalFile.path))
+    }
+
+    @Test
+    func writeFileAllowsMarkdownWrappedProjectRootAlias() async throws {
+        let baseDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xterminal-project-write-alias-\(UUID().uuidString)", isDirectory: true)
+        let realRoot = baseDir.appendingPathComponent("`坦克大战`", isDirectory: true)
+        let aliasedFile = baseDir
+            .appendingPathComponent("坦克大战", isDirectory: true)
+            .appendingPathComponent("index.html")
+        defer { try? FileManager.default.removeItem(at: baseDir) }
+
+        try FileManager.default.createDirectory(at: realRoot, withIntermediateDirectories: true)
+        let ctx = AXProjectContext(root: realRoot)
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config = config.settingToolPolicy(profile: ToolProfile.coding.rawValue)
+        config = config.settingProjectGovernance(
+            executionTier: .a2RepoAuto,
+            supervisorInterventionTier: .s2PeriodicReview
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let result = try await ToolExecutor.execute(
+            call: ToolCall(
+                tool: .write_file,
+                args: [
+                    "path": .string(aliasedFile.path),
+                    "content": .string("<!doctype html>\n")
+                ]
+            ),
+            projectRoot: realRoot
+        )
+
+        let writtenFile = realRoot.appendingPathComponent("index.html")
+        #expect(result.ok)
+        #expect(FileManager.default.fileExists(atPath: writtenFile.path))
+        #expect(String(decoding: try Data(contentsOf: writtenFile), as: UTF8.self) == "<!doctype html>\n")
     }
 
     @Test

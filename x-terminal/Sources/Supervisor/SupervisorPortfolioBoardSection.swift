@@ -3,7 +3,7 @@ import SwiftUI
 
 struct SupervisorPortfolioBoardSection: View {
     @Environment(\.openURL) private var openURL
-    @ObservedObject var supervisorManager: SupervisorManager
+    let supervisorManager: SupervisorManager
 
     let presentation: SupervisorPortfolioBoardPresentation
     let activeDrillDownPresentation: SupervisorProjectDrillDownPresentation?
@@ -505,8 +505,6 @@ private struct PortfolioMetricBadge: View {
 }
 
 private struct PortfolioProjectRow: View {
-    @EnvironmentObject private var appModel: AppModel
-
     let row: SupervisorPortfolioProjectRowPresentation
     let onSelect: () -> Void
     let onOpenGovernance: (XTProjectGovernanceDestination) -> Void
@@ -550,7 +548,7 @@ private struct PortfolioProjectRow: View {
                 }
             }
 
-            if let governancePresentation {
+            if let governancePresentation = row.governancePresentation {
                 ProjectGovernanceCompactSummaryView(
                     presentation: governancePresentation,
                     configuration: .operationalDense,
@@ -563,7 +561,7 @@ private struct PortfolioProjectRow: View {
                 )
             }
 
-            if let projectContextCompactSummary {
+            if let projectContextCompactSummary = row.projectContextCompactSummary {
                 Button {
                     onOpenGovernance(.overview)
                 } label: {
@@ -640,25 +638,6 @@ private struct PortfolioProjectRow: View {
                 .stroke(row.isSelected ? Color.accentColor : .clear, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-
-    private var governancePresentation: ProjectGovernancePresentation? {
-        SupervisorPortfolioGovernanceSurfaceSupport.presentation(
-            projectId: row.id,
-            appModel: appModel
-        )
-    }
-
-    private var projectContext: AXProjectContext? {
-        appModel.projectContext(for: row.id)
-    }
-
-    private var projectContextCompactSummary: AXProjectContextAssemblyCompactSummary? {
-        guard let projectContext else { return nil }
-        return AXProjectContextAssemblyDiagnosticsStore.doctorSummary(
-            for: projectContext,
-            config: appModel.projectConfigSnapshot(for: projectContext)
-        ).compactSummary
     }
 
     private func toneColor(_ tone: SupervisorHeaderControlTone) -> Color {
@@ -748,7 +727,7 @@ private struct PortfolioToneTag: View {
 }
 
 private struct SupervisorProjectDrillDownPanel: View {
-    @EnvironmentObject private var appModel: AppModel
+    @Environment(\.xtAppModelReference) private var appModelReference
 
     let presentation: SupervisorProjectDrillDownPresentation
     @Binding var selectedDrillDownScope: SupervisorProjectDrillDownScope
@@ -783,7 +762,7 @@ private struct SupervisorProjectDrillDownPanel: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
-            if let governancePresentation {
+            if let governancePresentation = presentation.governancePresentation {
                 ProjectGovernanceCompactSummaryView(
                     presentation: governancePresentation,
                     showCallout: true,
@@ -904,11 +883,11 @@ private struct SupervisorProjectDrillDownPanel: View {
         appModel.projectContext(for: presentation.projectId)
     }
 
-    private var governancePresentation: ProjectGovernancePresentation? {
-        SupervisorPortfolioGovernanceSurfaceSupport.presentation(
-            projectId: presentation.projectId,
-            appModel: appModel
-        )
+    private var appModel: AppModel {
+        guard let appModelReference else {
+            preconditionFailure("SupervisorProjectDrillDownPanel requires xtAppModelReference")
+        }
+        return appModelReference
     }
 
     private var latestUIReviewHeader: some View {
@@ -1015,19 +994,6 @@ private struct SupervisorProjectDrillDownSectionView: View {
         case .warning:
             return .orange
         }
-    }
-}
-
-@MainActor
-private enum SupervisorPortfolioGovernanceSurfaceSupport {
-    static func presentation(
-        projectId: String,
-        appModel: AppModel
-    ) -> ProjectGovernancePresentation? {
-        guard let project = appModel.registry.project(for: projectId) else { return nil }
-        return ProjectGovernancePresentation(
-            resolved: appModel.resolvedProjectGovernance(for: project)
-        )
     }
 }
 
@@ -1185,7 +1151,7 @@ private struct PortfolioActionEventRow: View {
 }
 
 private struct PortfolioUIReviewActivityRow: View {
-    @EnvironmentObject private var appModel: AppModel
+    @Environment(\.xtAppModelReference) private var appModelReference
 
     let row: SupervisorPortfolioUIReviewActivityPresentation
     let onOpenProjectDetail: () -> Void
@@ -1298,6 +1264,13 @@ private struct PortfolioUIReviewActivityRow: View {
 
     private var projectContext: AXProjectContext? {
         appModel.projectContext(for: row.projectId)
+    }
+
+    private var appModel: AppModel {
+        guard let appModelReference else {
+            preconditionFailure("PortfolioUIReviewActivityRow requires xtAppModelReference")
+        }
+        return appModelReference
     }
 
     private var activityActions: [XTUIReviewActionStripItem] {

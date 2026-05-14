@@ -94,6 +94,22 @@ struct HubPairingCoordinatorTests {
     }
 
     @Test
+    func inferFailureCodeMapsRemoteHTML504ToServiceUnavailable() {
+        let reason = HubPairingCoordinator.inferFailureCodeForTesting(
+            from: """
+            bad_json:<!DOCTYPE html>
+            <html lang="en-US">
+            <title>picfix.pro | 504: Gateway time-out</title>
+            <span class="code-label">Error code 504</span>
+            </html>
+            """,
+            fallback: "remote_chat_failed"
+        )
+
+        #expect(reason == "service_unavailable")
+    }
+
+    @Test
     func fetchRemoteModelsUsesAuthoritativeInternetHostWhenHubEnvHostIsStale() async throws {
         let stateDir = try makeTempStateDir(prefix: "hub_remote_models_authoritative_host")
         defer { try? FileManager.default.removeItem(at: stateDir) }
@@ -1159,6 +1175,30 @@ struct HubPairingCoordinatorTests {
             HubPairingCoordinator.shouldIgnoreDiscoveredLoopbackCandidateForTesting(
                 discoveredHost: "localhost",
                 configuredInternetHost: "127.0.0.1"
+            ) == false
+        )
+    }
+
+    @Test
+    func cachedPairingMetadataCanEstablishAuthoritativeLocalProfileWithoutHubEnv() {
+        #expect(
+            HubPairingCoordinator.hasAuthoritativeLocalPairingStateForTesting(
+                cachedHost: "127.0.0.1",
+                cachedPairingPort: 50055,
+                cachedHubInstanceID: "hub_33bdbcae9a4fa1cb9c27",
+                cachedRoutePackVersion: "route_pack_fc0ca9ea7d27911389f56f66"
+            ) == true
+        )
+        #expect(
+            HubPairingCoordinator.hasAuthoritativeLocalPairingStateForTesting(
+                cachedHost: "127.0.0.1"
+            ) == false
+        )
+        #expect(
+            HubPairingCoordinator.hasAuthoritativeLocalPairingStateForTesting(
+                cachedHost: "192.168.10.20",
+                cachedPairingPort: 50055,
+                cachedHubInstanceID: "hub_33bdbcae9a4fa1cb9c27"
             ) == false
         )
     }
