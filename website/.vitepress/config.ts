@@ -109,8 +109,8 @@ const zhSidebar = [
 ]
 
 export default defineConfig({
-  title: 'X-Hub',
-  description: 'User-owned AI control plane for governed execution.',
+  title: 'X-Hub-System',
+  description: 'Hub-first governed Agent control plane.',
   cleanUrls: true,
   lang: 'en-US',
   lastUpdated: true,
@@ -120,8 +120,8 @@ export default defineConfig({
       label: 'English',
       lang: 'en-US',
       link: '/',
-      title: 'X-Hub',
-      description: 'User-owned AI control plane for governed execution.',
+      title: 'X-Hub-System',
+      description: 'Hub-first governed Agent control plane.',
       themeConfig: {
         nav: enNav,
         sidebar: enSidebar,
@@ -136,8 +136,8 @@ export default defineConfig({
       label: '简体中文',
       lang: 'zh-CN',
       link: '/zh-CN/',
-      title: 'X-Hub',
-      description: '面向受控执行的用户自有 AI 控制平面。',
+      title: 'X-Hub-System',
+      description: 'Hub-first 的受治理 Agent 控制平面。',
       themeConfig: {
         nav: zhNav,
         sidebar: zhSidebar,
@@ -152,19 +152,19 @@ export default defineConfig({
   head: [
     ['meta', { name: 'theme-color', content: '#0f5f46' }],
     ['meta', { property: 'og:type', content: 'website' }],
-    ['meta', { property: 'og:title', content: 'X-Hub' }],
+    ['meta', { property: 'og:title', content: 'X-Hub-System' }],
     [
       'meta',
       {
         property: 'og:description',
         content:
-          'Hub-first governed execution for AI systems that need policy, memory, grants, audit, and runtime truth under user control.'
+          'Hub-first governed Agent control plane for model routing, memory truth, skills, quotas, grants, audit, and runtime truth.'
       }
     ],
     ['link', { rel: 'icon', href: '/favicon.svg' }]
   ],
   themeConfig: {
-    siteTitle: 'X-Hub',
+    siteTitle: 'X-Hub-System',
     logo: '/favicon.svg',
     search: {
       provider: 'local'

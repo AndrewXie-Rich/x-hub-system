@@ -2,171 +2,143 @@
 layout: home
 
 hero:
-  name: X-Hub
-  text: Governed AI execution for teams that need real control.
-  tagline: X-Hub unifies trust, routing, memory truth, grants, audit, and runtime posture in one user-owned control plane.
+  name: X-Hub-System
+  text: Governed Agent control plane.
+  tagline: X-Hub-System centralizes model routing, memory truth, skills, provider accounts, quotas, grants, policy, audit, and terminal execution under one user-owned Hub.
   actions:
     - theme: brand
       text: Read the architecture
       link: /architecture
     - theme: alt
-      text: See the security model
-      link: /security
+      text: See what it governs
+      link: /skills
     - theme: alt
-      text: Browse the docs
+      text: Browse docs
       link: /docs
 
 features:
-  - title: Hub-owned trust root
-    details: Policy, routing, memory truth, grants, audit, and kill authority stay in the Hub instead of leaking into every client.
-  - title: Governed execution model
-    details: Autonomy, review, intervention, and runtime clamps remain explicit controls rather than collapsing into one vague auto mode.
-  - title: Local-first runtime boundary
-    details: Local models, paid models, paired terminals, and remote channels can all route through the same governed control plane.
+  - title: Hub-first trust root
+    details: The terminal can execute, but the Hub owns route truth, grants, policy, memory truth, audit, and kill authority.
+  - title: Governed autonomy
+    details: A-Tier, S-Tier, heartbeat, review, grants, and runtime clamps make autonomy visible instead of vague.
+  - title: One model and capability plane
+    details: Local models, paid providers, skills, channels, quotas, and fallback truth converge through one control boundary.
 ---
 
-<div class="preview-note">
+<section class="site-note">
   <strong>Public technical preview</strong>
-  The architecture thesis is already real and runnable. Product polish, onboarding, and some capability surfaces are
-  still moving quickly, so the homepage focuses on the core system shape and reading path rather than every evolving detail.
-</div>
+  X-Hub-System is already runnable, but still in active productization. This site focuses on the architecture, the governed capability surface, and the reading path for people evaluating the system.
+</section>
 
-<div class="home-signal-strip">
-  <span>Hub-first trust model</span>
-  <span>Fail-closed by design</span>
-  <span>Local-first, cloud-optional</span>
-  <span>Governed autonomy</span>
-</div>
-
-<div class="home-citadel">
-  <div class="home-citadel__story">
-    <p class="home-kicker">Official site</p>
-    <h2>The safer way to run serious AI systems.</h2>
-    <p class="home-lead">
-      Most AI products optimize for raw capability first and hope trust holds later. X-Hub starts from the control
-      plane: who owns authority, how execution gets governed, where memory truth lives, and how runtime posture stays
-      visible when the system moves from chat into action. For memory specifically, the user still chooses which AI
-      executes memory jobs in X-Hub, and durable memory truth still lands through `Writer + Gate`.
+<section class="home-hero-band">
+  <div class="home-hero-band__copy">
+    <p class="home-kicker">Why it exists</p>
+    <h2>Most agents get powerful by putting too much trust in one runtime.</h2>
+    <p>
+      X-Hub-System moves the trust anchor out of terminals, plugins, browser context, and vendor defaults. Clients can still be useful execution surfaces, but authority to route, grant, deny, remember, audit, and stop execution stays in the Hub.
     </p>
-    <div class="home-assurance-grid">
-      <div class="home-assurance">
-        <strong>Hub-owned trust root</strong>
-        <span>Policy, grants, audit, routing, and kill authority stay in one governed place.</span>
-      </div>
-      <div class="home-assurance">
-        <strong>Fail-closed posture</strong>
-        <span>Broken readiness or stale trust state should block execution instead of faking confidence.</span>
-      </div>
-      <div class="home-assurance">
-        <strong>Local-first operating path</strong>
-        <span>Local models, optional paid models, and user-owned infrastructure can share one policy boundary.</span>
-      </div>
+  </div>
+  <div class="home-flow">
+    <div class="home-flow__row">
+      <span>Client asks</span>
+      <strong>X-Terminal / generic clients / channels</strong>
+    </div>
+    <div class="home-flow__row">
+      <span>Hub decides</span>
+      <strong>policy, grants, memory, quotas, route truth</strong>
+    </div>
+    <div class="home-flow__row">
+      <span>Surface acts</span>
+      <strong>local models, paid APIs, tools, skills, connectors</strong>
+    </div>
+    <div class="home-flow__row">
+      <span>Truth returns</span>
+      <strong>audit, evidence, fallback, deny reasons, quota state</strong>
     </div>
   </div>
+</section>
 
-  <div class="home-citadel__panel">
-    <div class="home-panel">
-      <p class="home-panel__eyebrow">System posture</p>
-      <div class="home-panel__row">
-        <span>Trust root</span>
-        <strong>Hub</strong>
-      </div>
-      <div class="home-panel__row">
-        <span>Final authority</span>
-        <strong>Explicit grants</strong>
-      </div>
-      <div class="home-panel__row">
-        <span>Memory truth</span>
-        <strong>Hub-anchored</strong>
-      </div>
-      <div class="home-panel__row">
-        <span>Operating posture</span>
-        <strong>Visible and governed</strong>
-      </div>
-    </div>
-
-    <div class="home-stack">
-      <div class="home-stack__card">
-        <label>Product surface</label>
-        <strong>X-Hub</strong>
-        <p>The user-owned control plane for trust, routing, policy, grants, audit, and runtime posture.</p>
-      </div>
-      <div class="home-stack__card">
-        <label>Paired surface</label>
-        <strong>X-Terminal</strong>
-        <p>The deep interaction surface for governed execution, review, and operator visibility.</p>
-      </div>
-      <div class="home-stack__card">
-        <label>Governed runtime</label>
-        <strong>Clients, channels, local and paid models</strong>
-        <p>Execution surfaces remain useful and extensible without silently becoming the new trust boundary.</p>
-      </div>
-    </div>
-  </div>
-</div>
-
-<div class="home-value">
+<section class="home-problems">
   <div class="home-section-head">
-    <p class="home-kicker">Why teams choose X-Hub</p>
+    <p class="home-kicker">What it solves</p>
     <h2>Built for execution range without trust sprawl.</h2>
-    <p>X-Hub is for teams that need the system to act, but still need the operating boundary to remain defensible.</p>
+    <p>The difference is not one feature. It is where the trust root lives and how every higher-risk surface is forced back through a governed boundary.</p>
   </div>
 
-  <div class="home-value__grid">
-    <a class="home-value-card" href="/architecture">
-      <span>Authority</span>
-      <strong>Keep the trust boundary where it belongs</strong>
-      <p>The terminal, plugin bundle, remote channel, and model vendor do not become the default control plane.</p>
-      <em>User-owned control plane</em>
-    </a>
-
-    <a class="home-value-card" href="/security">
-      <span>Posture</span>
-      <strong>Favor fail-closed behavior over false confidence</strong>
-      <p>When readiness is broken or trust is stale, the system should block instead of pretending everything is fine.</p>
-      <em>Security-first operating model</em>
-    </a>
-
-    <a class="home-value-card" href="/governed-autonomy">
-      <span>Execution</span>
-      <strong>Scale autonomy without turning it into black-box drift</strong>
-      <p>Autonomy, review, intervention, and clamps remain visible controls instead of collapsing into one auto mode.</p>
-      <em>Governed execution</em>
-    </a>
+  <div class="home-problem-table">
+    <div class="home-problem-row home-problem-row--head">
+      <div>Common agent-stack failure mode</div>
+      <div>X-Hub-System design response</div>
+    </div>
+    <div class="home-problem-row">
+      <div>Prompts, tools, memory, secrets, and execution collapse into one runtime trust zone.</div>
+      <div>The Hub owns trust, grants, route truth, memory truth, policy, audit, and kill authority.</div>
+    </div>
+    <div class="home-problem-row">
+      <div>Plugin installation silently expands privilege.</div>
+      <div>Skills use manifests, trust roots, pins, preflight checks, grants, deny codes, revocation, and audit.</div>
+    </div>
+    <div class="home-problem-row">
+      <div>Local models and paid APIs drift into separate governance paths.</div>
+      <div>Model routing, provider accounts, OAuth/key state, quotas, fallback, and downgrade truth converge in one plane.</div>
+    </div>
+    <div class="home-problem-row">
+      <div>Remote channels become shadow control planes.</div>
+      <div>Slack, Telegram, Feishu, voice, and mobile-style ingress converge through authz, replay guard, grants, and audit.</div>
+    </div>
+    <div class="home-problem-row">
+      <div>Auto mode hides risk and weakens supervision.</div>
+      <div>A-Tier, S-Tier, heartbeat, review, grants, runtime clamps, and kill switches keep autonomy governable.</div>
+    </div>
   </div>
-</div>
+</section>
 
-<div class="home-product">
+<section class="home-capabilities">
   <div class="home-section-head">
-    <p class="home-kicker">Product surface</p>
-    <h2>One control plane. Multiple governed surfaces.</h2>
-    <p>X-Hub is not one chat window. It is a Hub-first product surface built for real execution.</p>
+    <p class="home-kicker">Governed capability surface</p>
+    <h2>One Hub authority above many AI execution surfaces.</h2>
+    <p>X-Hub-System is designed to govern a growing set of model, memory, skill, quota, terminal, channel, and evidence surfaces without making each one a new control plane.</p>
   </div>
 
-  <div class="home-product__grid">
-    <div class="home-product-card">
-      <label>Control plane</label>
-      <strong>X-Hub</strong>
-      <p>The core product surface for policy, routing, memory truth, grants, audit, and runtime posture, including Hub-side memory control where the user chooses the executor and durable writes still terminate through `Writer + Gate`.</p>
-    </div>
-    <div class="home-product-card">
-      <label>Paired surface</label>
-      <strong>X-Terminal</strong>
-      <p>The deep paired experience for execution, review, visibility, and governed interaction.</p>
-    </div>
-    <div class="home-product-card">
-      <label>Governed runtime</label>
-      <strong>Local models, paid models, channels, and tools</strong>
-      <p>Execution can expand across surfaces without letting the execution surface become sovereign.</p>
-    </div>
+  <div class="home-capability-grid">
+    <a class="home-capability-card" href="/architecture">
+      <span>Trust</span>
+      <strong>Hub-owned control plane</strong>
+      <p>Identity, pairing, policy, grants, readiness, and kill-switch posture stay centralized.</p>
+    </a>
+    <a class="home-capability-card" href="/local-first">
+      <span>Models</span>
+      <strong>Local + paid routing</strong>
+      <p>Configured route, actual route, fallback, downgrade, and provider readiness stay visible.</p>
+    </a>
+    <a class="home-capability-card" href="/skills">
+      <span>Skills</span>
+      <strong>Governed skill packages</strong>
+      <p>Official skills, manifests, trust roots, pins, preflight gates, grants, and revocation.</p>
+    </a>
+    <a class="home-capability-card" href="/governed-autonomy">
+      <span>Autonomy</span>
+      <strong>Supervisor-grade controls</strong>
+      <p>Execution authority, review depth, heartbeat cadence, guidance, and intervention are separate controls.</p>
+    </a>
+    <a class="home-capability-card" href="/channels-and-voice">
+      <span>Ingress</span>
+      <strong>Channels and voice</strong>
+      <p>Remote operator surfaces can enter through replay guard, challenge, grant, and audit paths.</p>
+    </a>
+    <a class="home-capability-card" href="/security">
+      <span>Evidence</span>
+      <strong>Runtime truth</strong>
+      <p>Audit refs, evidence refs, denial reasons, quota pressure, and recovery signals remain operator-visible.</p>
+    </a>
   </div>
-</div>
+</section>
 
-<div class="home-diagrams">
+<section class="home-diagrams">
   <div class="home-section-head">
     <p class="home-kicker">System shape</p>
-    <h2>Product surface above. Trusted control plane underneath.</h2>
-    <p>These two diagrams are the shortest visual explanation of how X-Hub is meant to be read.</p>
+    <h2>Two views: the authority boundary and the governed capability map.</h2>
+    <p>These diagrams are the fastest way to see what X-Hub-System is trying to make governable.</p>
   </div>
 
   <div class="home-diagrams__grid">
@@ -174,60 +146,30 @@ features:
       <img src="/xhub_trust_control_plane.svg" alt="X-Hub trust and control plane diagram" />
       <div class="home-diagram-card__copy">
         <strong>Trust and control plane</strong>
-        X-Terminal follows the deep governed path. Other clients can still consume Hub capabilities without becoming equivalent trust roots.
+        Clients can ask. The Hub decides. Execution surfaces act only after governance, and runtime truth returns to the Hub.
       </div>
     </div>
     <div class="home-diagram-card">
       <img src="/xhub_deployment_runtime_topology.svg" alt="X-Hub governed capability map diagram" />
       <div class="home-diagram-card__copy">
         <strong>Governed capability map</strong>
-        X-Hub can govern models, memory, skills, quotas, terminals, channels, Supervisor state, and runtime evidence through one authority boundary.
+        Models, memory, skills, quotas, terminals, channels, Supervisor state, and runtime evidence converge through one authority boundary.
       </div>
     </div>
   </div>
-</div>
+</section>
 
-<div class="home-contrast">
+<section class="home-readpath">
   <div class="home-section-head">
-    <p class="home-kicker">Why it feels different</p>
-    <h2>Not another terminal-first agent wrapper.</h2>
-    <p>The difference is not a feature list. The difference is where the trust root lives and how execution stays governable.</p>
+    <p class="home-kicker">Reading path</p>
+    <h2>Evaluate the system from architecture to operator surface.</h2>
   </div>
-
-  <div class="home-contrast__table">
-    <div class="home-contrast__row home-contrast__row--head">
-      <div>Typical terminal-first agent</div>
-      <div>X-Hub</div>
-    </div>
-    <div class="home-contrast__row">
-      <div>Prompts, tools, memory, secrets, and execution often collapse into one runtime trust zone.</div>
-      <div>The trust anchor moves into the Hub so clients can stay useful, replaceable execution surfaces.</div>
-    </div>
-    <div class="home-contrast__row">
-      <div>Higher autonomy often means blurrier supervision and weaker runtime truth.</div>
-      <div>Autonomy, review, intervention, and clamps stay separated into explicit controls.</div>
-    </div>
-    <div class="home-contrast__row">
-      <div>Remote providers, plugins, or channels often become hidden control surfaces by default.</div>
-      <div>The Hub keeps policy, grants, audit, keys, and release timing under user control.</div>
-    </div>
+  <div class="home-readpath__grid">
+    <a href="/architecture">Architecture</a>
+    <a href="/security">Trust model</a>
+    <a href="/why-not-just-an-agent">Why not just an agent?</a>
+    <a href="/governed-autonomy">Governed autonomy</a>
+    <a href="/skills">Governed skills</a>
+    <a href="/docs">Documentation map</a>
   </div>
-
-  <p class="home-contrast__link">
-    Want the fuller argument? <a href="/why-not-just-an-agent">Read why X-Hub is not just another agent stack.</a>
-  </p>
-</div>
-
-<div class="home-cta-band">
-  <div class="home-section-head">
-    <p class="home-kicker">Start here</p>
-    <h2>Use X-Hub like a platform, not just another agent demo.</h2>
-    <p>Start with the control plane story, inspect the trust model, or go straight into the docs.</p>
-  </div>
-
-  <div class="home-cta-band__actions">
-    <a href="/architecture">Explore Architecture</a>
-    <a href="/security">Read the Trust Model</a>
-    <a href="/docs">Browse Documentation</a>
-  </div>
-</div>
+</section>
