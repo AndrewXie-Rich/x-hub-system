@@ -37,16 +37,16 @@ X-Hub 反过来做：
 - 执行 memory jobs 的 AI 仍由用户在 X-Hub 中选择
 - durable memory truth 仍只经 `Writer + Gate` 落库，而不是由任意客户端或 skill runtime 直接写入
 
-## 部署姿态
+## 受治理能力地图
 
-<img class="diagram-frame" src="/xhub_deployment_runtime_topology.svg" alt="X-Hub deployment and runtime topology" />
+<img class="diagram-frame" src="/xhub_deployment_runtime_topology.svg" alt="X-Hub governed capability map" />
 
-这套拓扑是明显以操作者为中心的：
+这张能力地图刻意以控制平面为中心：
 
-- 用户自有的 Hub 主机保持中心位置
-- 配对交互表面位于控制平面之上，而不是和它并列
-- 本地运行时和可选外部服务都作为附着边界存在，而不是暗中替代控制平面
+- 模型路由、记忆、技能、provider 账号、额度、终端执行、通道、Supervisor 状态和审计都可以汇入同一个 Hub authority
+- 本地和远程运行表面都是附着边界，而不是隐藏的替代控制平面
 - 云服务可以使用，但不必成为策略和运行时真相最终落点
+- 实现细节可以演进，但 authority 边界要始终清楚
 
 ## 表面分工
 

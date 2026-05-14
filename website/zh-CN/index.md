@@ -177,10 +177,10 @@ features:
       </div>
     </div>
     <div class="home-diagram-card">
-      <img src="/xhub_deployment_runtime_topology.svg" alt="X-Hub deployment and runtime topology diagram" />
+      <img src="/xhub_deployment_runtime_topology.svg" alt="X-Hub governed capability map diagram" />
       <div class="home-diagram-card__copy">
-        <strong>部署与运行时拓扑</strong>
-        用户自有的 Hub 主机保持中心位置，本地运行时、通道工作进程和外部服务都围绕它受控展开。
+        <strong>受治理能力地图</strong>
+        模型、记忆、技能、额度、终端、通道、Supervisor 状态和运行证据都可以汇入同一个 Hub authority 边界。
       </div>
     </div>
   </div>

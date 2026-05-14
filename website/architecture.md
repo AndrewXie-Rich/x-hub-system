@@ -37,16 +37,16 @@ For memory specifically, the public boundary is intentionally simple:
 - the user still chooses which AI executes memory jobs in X-Hub
 - durable memory truth still terminates through `Writer + Gate` instead of through an arbitrary client or skill runtime
 
-## Deployment Posture
+## Governed Capability Map
 
-<img class="diagram-frame" src="/xhub_deployment_runtime_topology.svg" alt="X-Hub deployment and runtime topology" />
+<img class="diagram-frame" src="/xhub_deployment_runtime_topology.svg" alt="X-Hub governed capability map" />
 
-The deployment topology is intentionally user-centered:
+The capability map is intentionally control-plane centered:
 
-- the user-owned Hub host stays central
-- paired interaction surfaces sit above the control plane, not beside it
-- local runtimes and optional external services remain attached boundaries instead of hidden replacement control planes
+- model routing, memory, skills, provider accounts, quotas, terminal execution, channels, Supervisor state, and audit can converge through one Hub authority
+- local and remote runtime surfaces remain attached boundaries rather than hidden replacement control planes
 - cloud services can be used, but they do not have to become the place where policy or runtime truth lives
+- implementation details can evolve while the authority boundary stays legible
 
 ## Surface Roles
 

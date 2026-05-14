@@ -178,10 +178,10 @@ features:
       </div>
     </div>
     <div class="home-diagram-card">
-      <img src="/xhub_deployment_runtime_topology.svg" alt="X-Hub deployment and runtime topology diagram" />
+      <img src="/xhub_deployment_runtime_topology.svg" alt="X-Hub governed capability map diagram" />
       <div class="home-diagram-card__copy">
-        <strong>Deployment and runtime topology</strong>
-        The user-owned Hub host stays central while local runtimes, channel workers, and optional external services remain governed edges.
+        <strong>Governed capability map</strong>
+        X-Hub can govern models, memory, skills, quotas, terminals, channels, Supervisor state, and runtime evidence through one authority boundary.
       </div>
     </div>
   </div>

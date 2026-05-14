@@ -17,7 +17,7 @@ The repository currently contains:
 
 - `X-Hub`: the macOS Hub app and Node-backed service layer.
 - `X-Terminal`: the paired terminal and Supervisor surface.
-- `Rust Hub`: the ongoing Rust rewrite and daemon/bridge migration work under guarded authority gates.
+- `Rust backend work`: an efficiency and reliability rewrite path under guarded authority gates.
 - `official-agent-skills`: governed official skill packages, manifests, trust roots, and distribution artifacts.
 - `website`: the VitePress public documentation site source.
 
@@ -39,10 +39,40 @@ Use this status table when reading the repository:
 | Hub-backed memory governance | Validated direction with active implementation |
 | Governed official skills catalog, package pinning, and trust roots | Preview-working |
 | Supervisor, project governance tiers, voice authorization, and channel ingress | Preview-working / in progress by surface |
-| Rust `xhubd` rewrite | Active guarded migration, with shadow, prep, and subsystem-specific cutover gates |
-| Rust `xtd` sidecar | Scaffold / future runtime hot-path sidecar |
+| Rust backend rewrite | Active implementation work for latency, daemon stability, and long-running reliability |
 
 For surface-by-surface truth, use `docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md`.
+
+## What It Solves
+
+Most Agent stacks make models more capable by putting prompts, tools, memory, browser state, secrets, and side-effect execution into one runtime. That is powerful, but it also makes the runtime hard to govern.
+
+X-Hub-System takes the opposite approach: clients can stay useful and powerful, but the authority to route, grant, deny, remember, audit, and stop execution stays in a user-owned Hub.
+
+| Problem in common Agent stacks | X-Hub-System answer |
+|---|---|
+| The terminal owns prompts, tools, memory, secrets, and execution together | Hub owns trust, grants, policy, memory truth, route truth, and audit; terminals become governed surfaces |
+| Plugin installation silently expands privilege | Skills are packaged, pinned, reviewed, denied, revoked, and audited through Hub governance |
+| Local models and paid APIs drift into separate control paths | Local models, paid providers, fallback, downgrade, quotas, and readiness are routed through one governed plane |
+| Remote channels become shadow control planes | Slack, Telegram, Feishu, voice, and mobile-style ingress converge through Hub authz, replay guard, grants, and audit before higher-trust execution |
+| "Auto mode" hides supervision and risk | A-Tier, S-Tier, heartbeat, review, grants, kill switches, and runtime clamps keep autonomy governable |
+| Memory drifts across clients and plugins | Hub-backed memory truth stays anchored to `Writer + Gate`, while clients consume governed projections |
+| Runtime failures are masked as success | X-Hub surfaces actual route, fallback, downgrade, blocked reasons, quota pressure, and evidence refs |
+
+## What X-Hub Can Govern
+
+X-Hub-System is designed as a governed Agent control plane, not a single chat UI. The Hub can sit above:
+
+- model routing across local models and paid providers
+- provider accounts, OAuth/key state, quotas, usage windows, and reset timing
+- memory truth, constitutional guidance, and durable-write boundaries
+- official skills, manifests, trust roots, pins, preflight gates, and revocation
+- X-Terminal tool execution, local permission ownership, and device-capable actions
+- Supervisor autonomy tiers, review cadence, heartbeat state, and intervention surfaces
+- external operator channels, voice authorization, and mobile confirmation paths
+- audit, evidence, runtime truth, deny reasons, fallback truth, and recovery diagnostics
+
+The point is not that every surface is finished. The point is that they are designed to enter through one governable authority boundary instead of becoming independent control planes.
 
 ## Download And Install
 
@@ -167,34 +197,6 @@ Upload those files to the matching GitHub Release. Do not commit generated `.app
 
 For the release process, use `RELEASE.md`.
 
-## Rust Migration Status
-
-Rust is a real part of the repository, but it should be read precisely.
-
-| Path | Role |
-|---|---|
-| `rust/xhubd/` | Rust rewrite of X-Hub core, daemon work, scheduler/model/skills/memory bridge surfaces, shadow compare, readiness gates, and guarded cutover tooling |
-| `rust/xtd/` | Future Rust sidecar for XT runtime hot paths; currently scaffolded and intentionally not the authority for grants, durable memory, audit, kill-switches, or skill execution |
-
-Current authority is subsystem-specific and gate-controlled. Do not assume a Rust path owns production authority unless the relevant gate, environment switch, and release notes say so.
-
-Rust quick checks:
-
-```bash
-cd rust/xhubd
-cargo test
-```
-
-```bash
-cd rust/xtd
-cargo test
-```
-
-Rust-specific details:
-
-- `rust/xhubd/README.md`
-- `rust/xtd/README.md`
-
 ## Architecture In 30 Seconds
 
 X-Hub-System separates the trust root from the terminal.
@@ -215,9 +217,18 @@ Trust and control plane:
 
 ![X-Hub trust and control plane](docs/open-source/assets/xhub_trust_control_plane.svg)
 
-Deployment and runtime topology:
+Governed capability map:
 
-![X-Hub deployment and runtime topology](docs/open-source/assets/xhub_deployment_runtime_topology.svg)
+![X-Hub governed capability map](docs/open-source/assets/xhub_deployment_runtime_topology.svg)
+
+## Implementation Note: Rust Backend Work
+
+Parts of the Hub backend are being rewritten in Rust to improve latency, daemon stability, backpressure handling, long-running reliability, and future cutover safety. That is an implementation upgrade, not the core thesis. The product architecture remains Hub-first: authority stays governed by explicit gates, release notes, and subsystem-specific cutover rules.
+
+Rust-specific details:
+
+- `rust/xhubd/README.md`
+- `rust/xtd/README.md`
 
 ## What Makes It Different
 
