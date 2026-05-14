@@ -6,7 +6,8 @@ If you only need one rule, it is this:
 
 - `x-hub/` is the active Hub control plane
 - `x-terminal/` is the active terminal surface
-- `archive/` is history, not runtime
+- `rust/xhubd/` is the guarded Rust Hub rewrite and migration surface
+- `rust/xtd/` is the XT Rust sidecar scaffold
 
 This document explains where the live build, run, pairing, and documentation entrypoints are. It is a navigation document, not a release-scope expansion document.
 
@@ -49,7 +50,8 @@ This repository has one active Hub surface and one active terminal surface:
 
 - `x-hub/` is the only active Hub control plane
 - `x-terminal/` is the only active terminal implementation
-- `archive/x-terminal-legacy/` is preserved history and must not be used for build, run, pairing, release, or setup entrypoints
+- `rust/xhubd/` is active migration work, but production authority is subsystem-specific and gate-controlled
+- `rust/xtd/` is scaffolded sidecar work and must not be treated as Hub authority
 
 ## Top-Level Map
 
@@ -57,12 +59,14 @@ This repository has one active Hub surface and one active terminal surface:
 |---|---|---|
 | `x-hub/` | active | Hub app, gRPC server, model routing, grants, trust, pairing, audit, and memory-backed constitutional guardrail surfaces |
 | `x-terminal/` | active | Terminal UI, session runtime, supervisor, readiness checks, tools, and local gates |
+| `rust/xhubd/` | active migration | Rust Hub rewrite, daemon, bridges, shadow compare, readiness gates, and guarded authority tooling |
+| `rust/xtd/` | scaffold | Future Rust sidecar for XT runtime hot paths |
 | `protocol/` | active | Shared contracts between Hub and terminal surfaces |
 | `specs/` | active | Executable spec packs and traceability material |
 | `docs/` | active | Product docs, release docs, work orders, security docs, and operating guidance |
 | `official-agent-skills/` | active | Official Agent skill sources, trust roots, and distribution artifacts used by the active skills surface |
 | `scripts/` | active | Repo-level validation, packaging, and reporting scripts |
-| `archive/` | archived | Historical material only; not part of the active runtime surface |
+| `website/` | active docs | VitePress public website source |
 | `build/` | generated | Local outputs and machine-readable reports |
 | `data/` | generated | Local runtime state, probes, and generated artifacts |
 
@@ -116,6 +120,20 @@ swift build
 bash x-terminal/scripts/ci/xt_release_gate.sh
 ```
 
+### Rust Hub Checks
+
+```bash
+cd rust/xhubd
+cargo test
+```
+
+### XT Rust Sidecar Checks
+
+```bash
+cd rust/xtd
+cargo test
+```
+
 ### Working Index
 
 - `docs/WORKING_INDEX.md`
@@ -141,6 +159,14 @@ For memory control specifically, the user chooses which AI executes memory jobs 
 
 Owns interaction, session runtime, supervisor flows, doctor/readiness surfaces, and tool execution UX.
 
+### `rust/xhubd/`
+
+Owns the Rust Hub rewrite and migration surface: daemon, bridges, scheduler/model/skills/memory support, shadow compare, readiness gates, and guarded authority tooling. Do not treat a Rust path as production authority unless the relevant gate, environment switch, and release notes say so.
+
+### `rust/xtd/`
+
+Owns the future XT Rust sidecar scaffold for runtime hot paths. It does not own Hub authority, durable memory, grants, audit, kill-switches, or skill execution authority.
+
 ### `protocol/`
 
 Owns shared interfaces and contracts between Hub and terminal surfaces.
@@ -157,9 +183,13 @@ Owns official Agent skill sources, trust roots, and release-facing distribution 
 
 Owns repo-level validation and packaging helpers. Terminal-local validation stays in `x-terminal/scripts/`.
 
-## Archived Path Policy
+### `website/`
 
-`archive/x-terminal-legacy/` exists only to preserve old local material.
+Owns the VitePress public website source and GitHub Pages documentation surface.
+
+## Historical Path Policy
+
+The clean public repository is not expected to expose historical runtime paths as active entrypoints. If an internal checkout contains archived material, it is history only.
 
 - Do not point README files, setup docs, or runtime diagnostics at archived paths.
 - Do not add new code that resolves skills, tools, or build outputs from archived paths.
