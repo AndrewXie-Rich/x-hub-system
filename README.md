@@ -214,6 +214,12 @@ To run only that source gate without building the release:
 XHUB_RELEASE_GATE_ONLY=1 scripts/package_rust_preview_release.command
 ```
 
+After packaging, run the live artifact smoke without launching the GUI:
+
+```bash
+scripts/rust_preview_release_live_smoke.command build/release/<version>/stage/XHub-System-Rust-<version>-macos-arm64
+```
+
 Upload those files to the matching GitHub Release. Do not commit generated `.app`, `.dmg`, or `build/` outputs.
 
 For the release process, use `RELEASE.md`.

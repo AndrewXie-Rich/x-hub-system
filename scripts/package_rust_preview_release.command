@@ -66,6 +66,7 @@ assert_hub_ui_source_gate() {
     "rust/xhubd/tools/xt_hub_contract_smoke.js"
     "x-terminal/Sources/Hub/HubContractClient.swift"
     "x-terminal/Sources/UI/XTUnifiedDoctor.swift"
+    "scripts/rust_preview_release_live_smoke.command"
   )
   for relative_path in "${required[@]}"; do
     require_path "$relative_path"

@@ -142,6 +142,7 @@ The Rust daemon/status page is an internal runtime surface. It must not be the o
 
 `scripts/package_rust_preview_release.command` includes a Git-tracked source gate for the Swift Hub UI, Rust kernel contract, Swift pairing proxy, and XT contract client files, plus a staged-artifact gate for `X-Hub.app/Contents/Resources/rust-hub/bin/xhubd`. If those files are missing or untracked, or the staged app is missing its embedded Rust kernel, the release build should fail instead of publishing a daemon-only Hub tag.
 Run `XHUB_RELEASE_GATE_ONLY=1 scripts/package_rust_preview_release.command` to check this gate without building release artifacts.
+Run `scripts/rust_preview_release_live_smoke.command <release-stage-dir-or-X-Hub.app>` after packaging to start the packaged Rust kernel and packaged Hub Node sidecar without launching the GUI, then verify `/pairing/discovery`, `/xt/hub-contract`, and remote-entry candidates.
 
 Legacy note: the non-Rust `XHub-System-<version>-macos-arm64.dmg` naming belongs to the older Swift/Node Hub app packaging path. Do not use it for a Rust refactor release unless the release notes explicitly mark it as legacy.
 
