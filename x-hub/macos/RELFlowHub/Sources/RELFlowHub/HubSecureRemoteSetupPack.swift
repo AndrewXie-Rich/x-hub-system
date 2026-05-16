@@ -7,9 +7,13 @@ enum HubSecureRemoteSetupPackBuilder {
         inviteToken: String?,
         pairingPort: Int,
         grpcPort: Int,
-        hubInstanceID: String?
+        hubInstanceID: String?,
+        allowPrivateVPNIP: Bool = false
     ) -> String? {
-        guard let host = HubExternalAccessInviteSupport.normalizedStableNamedExternalHost(externalHost),
+        guard let host = HubExternalAccessInviteSupport.normalizedSecureRemoteHost(
+            externalHost,
+            allowPrivateVPNIP: allowPrivateVPNIP
+        ),
               let inviteToken = normalizedNonEmpty(inviteToken),
               let inviteURL = HubExternalAccessInviteSupport.externalInviteURL(
                 alias: alias,
@@ -35,7 +39,7 @@ REL Flow Hub Secure Remote Setup
 Recommended path:
 1. On the XT device, open the invite link below. This is the preferred secure path.
 2. If that device already has `axhubctl`, you can run the bootstrap command below instead.
-3. XT will keep using this stable host for future network switches instead of falling back to raw IP.
+3. XT will keep using this stable DNS/tailnet/VPN entry for future network switches instead of falling back to public raw IP.
 
 Invite link:
 \(inviteURL.absoluteString)
@@ -44,7 +48,7 @@ Bootstrap command (existing XT / axhubctl only):
 \(command)
 
 Security notes:
-- Uses stable named host only: \(host)
+- Uses stable DNS/tailnet host or VPN encrypted IP: \(host)
 - External pairing requires invite token validation
 - Fails closed if the required client kit cannot be installed
 - Does not fetch `axhubctl` over unauthenticated remote HTTP

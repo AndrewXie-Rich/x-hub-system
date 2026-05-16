@@ -534,7 +534,10 @@ final class HubGRPCServerSupport: ObservableObject {
     }
 
     var canProvisionSecureRemoteSetupPack: Bool {
-        HubExternalAccessInviteSupport.normalizedStableNamedExternalHost(xtTerminalInternetHost) != nil
+        HubExternalAccessInviteSupport.normalizedSecureRemoteHost(
+            xtTerminalInternetHost,
+            allowPrivateVPNIP: allowsPrivateVPNIPForSecureRemoteSetupPack
+        ) != nil
     }
 
     var hasExternalInviteToken: Bool {
@@ -552,8 +555,48 @@ final class HubGRPCServerSupport: ObservableObject {
             inviteToken: externalInviteTokenRecord?.tokenSecret,
             pairingPort: xtTerminalPairingPort,
             grpcPort: port,
-            hubInstanceID: bonjourAdvertiser.metadata?.hubInstanceID
+            hubInstanceID: bonjourAdvertiser.metadata?.hubInstanceID,
+            allowPrivateVPNIP: allowsPrivateVPNIPForSecureRemoteSetupPack
         ) ?? ""
+    }
+
+    var allowsPrivateVPNIPForSecureRemoteSetupPack: Bool {
+        if !internetHostOverride.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return true
+        }
+        guard let host = xtTerminalInternetHost?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !host.isEmpty else {
+            return false
+        }
+        return Self.interfaceRowsContainRemoteTunnelIP(host, rows: lanAddresses)
+    }
+
+    var noDomainPrivateRemoteHost: String? {
+        Self.preferredNoDomainPrivateRemoteHost(interfaceRows: lanAddresses)
+    }
+
+    var isUsingNoDomainPrivateRemoteHost: Bool {
+        guard let host = noDomainPrivateRemoteHost else { return false }
+        return internetHostOverride.trimmingCharacters(in: .whitespacesAndNewlines) == host
+    }
+
+    func isUsingNoDomainPrivateRemoteHost(_ preferredHost: String?) -> Bool {
+        let trimmedHost = preferredHost?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let host = trimmedHost.isEmpty ? noDomainPrivateRemoteHost : trimmedHost
+        guard let host else { return false }
+        return internetHostOverride.trimmingCharacters(in: .whitespacesAndNewlines) == host
+    }
+
+    @discardableResult
+    func applyNoDomainPrivateRemoteHost(_ preferredHost: String? = nil) -> Bool {
+        let trimmedHost = preferredHost?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let host = trimmedHost.isEmpty ? noDomainPrivateRemoteHost : trimmedHost
+        guard let host else { return false }
+        internetHostOverride = host
+        if tlsMode != "mtls" {
+            tlsMode = "mtls"
+        }
+        return true
     }
 
     private static let autoStartKey = "relflowhub_grpc_autostart"
@@ -731,7 +774,10 @@ final class HubGRPCServerSupport: ObservableObject {
         // (server.js itself is under Resources/hub_grpc_server/src/server.js)
         p.currentDirectoryURL = serverJS.deletingLastPathComponent().deletingLastPathComponent()
 
-        var env = ProcessInfo.processInfo.environment
+        var env = RustHubRuntimeSupport.nodeSidecarBaseEnvironment(ProcessInfo.processInfo.environment)
+        for (key, value) in RustHubRuntimeSupport.nodeSidecarEnvironmentAdditions(baseEnvironment: env) {
+            env[key] = value
+        }
         env["HUB_HOST"] = "0.0.0.0"
         env["HUB_PORT"] = String(port)
         env["HUB_DB_PATH"] = dbURL.path
@@ -1663,6 +1709,34 @@ HUB_CLIENT_TOKEN='\(tok)'
         }?.ip
     }
 
+    static func preferredNoDomainPrivateRemoteHost(interfaceRows rows: [String]) -> String? {
+        let candidates = rows.compactMap(parseInterfaceIPv4Row(_:))
+        guard !candidates.isEmpty else { return nil }
+
+        return candidates
+            .filter { candidate in
+                isRemoteTunnelInterfaceName(candidate.ifname)
+                    && (isCarrierGradeNatIPv4(candidate.ip) || isPrivateIPv4(candidate.ip))
+            }
+            .min { lhs, rhs in
+                noDomainRemoteHostScore(lhs) < noDomainRemoteHostScore(rhs)
+            }?.ip
+    }
+
+    private static func noDomainRemoteHostScore(_ candidate: (ifname: String, ip: String)) -> Int {
+        if isCarrierGradeNatIPv4(candidate.ip) {
+            return 0
+        }
+        let ifname = candidate.ifname.lowercased()
+        if ifname.hasPrefix("wg") {
+            return 1
+        }
+        if ifname.hasPrefix("tun") || ifname.hasPrefix("tap") || ifname.hasPrefix("utun") {
+            return 2
+        }
+        return 3
+    }
+
     private static func preferredXTTerminalInternetHostScore(_ candidate: (ifname: String, ip: String)) -> Int {
         let ifname = candidate.ifname.lowercased()
         if isRemoteTunnelInterfaceName(ifname) {
@@ -1694,6 +1768,12 @@ HUB_CLIENT_TOKEN='\(tok)'
         return (ifname: String(ifname), ip: String(ip))
     }
 
+    private static func interfaceRowsContainRemoteTunnelIP(_ ip: String, rows: [String]) -> Bool {
+        rows.compactMap(parseInterfaceIPv4Row(_:)).contains { candidate in
+            candidate.ip == ip && isRemoteTunnelInterfaceName(candidate.ifname)
+        }
+    }
+
     private static func isRemoteTunnelInterfaceName(_ rawIfname: String) -> Bool {
         let ifname = rawIfname.lowercased()
         return ifname.hasPrefix("utun")
@@ -1716,6 +1796,14 @@ HUB_CLIENT_TOKEN='\(tok)'
         if a == 192 && b == 168 { return false }
         if isCarrierGradeNatIPv4(ip) { return false }
         return true
+    }
+
+    private static func isPrivateIPv4(_ ip: String) -> Bool {
+        guard let (a, b, _, _) = parseIPv4Octets(ip) else { return false }
+        if a == 10 { return true }
+        if a == 172 && b >= 16 && b <= 31 { return true }
+        if a == 192 && b == 168 { return true }
+        return false
     }
 
     private static func parseIPv4Octets(_ raw: String) -> (Int, Int, Int, Int)? {

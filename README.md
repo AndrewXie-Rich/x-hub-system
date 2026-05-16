@@ -42,6 +42,10 @@ Use this status table when reading the repository:
 | Rust backend rewrite | Active implementation work for latency, daemon stability, and long-running reliability |
 
 For surface-by-surface truth, use `docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md`.
+For XT integration work, use the Hub kernel capability contract:
+`GET /xt/hub-contract` (`xhub.rust_hub.xt_contract.v1`). XT and agents updating
+XT should read it before adding memory, skills, model route, provider route,
+grant, audit, or remote-entry behavior.
 
 ## What It Solves
 
@@ -88,22 +92,26 @@ Current Rust preview package:
 XHub-System-Rust-<version>-macos-arm64.dmg
 ```
 
-That combined package contains the Rust Hub runtime/daemon package and the X-Terminal runtime package with the Rust `xtd` sidecar.
+That combined package contains one user-facing Hub: `X-Hub.app`, the native Swift macOS UI shell with the Rust kernel/runtime embedded inside the app bundle. It also contains X-Terminal and the Rust `xtd` sidecar.
+Normal users should not need to start or understand a separate Rust Hub daemon.
 
 Install flow:
 
 1. Open the combined Rust preview DMG or ZIP.
-2. Start Rust Hub with `bash Rust-Hub/tools/xhubd_daemon.command start`.
-3. Check Rust Hub readiness with `bash Rust-Hub/tools/xhubd_daemon.command ready`.
-4. Launch X-Terminal with `bash X-Terminal-Runtime/RUN_XT.command`.
-5. Confirm model route, bridge, and readiness status before relying on automation.
+2. Drag `X-Hub.app` and `X-Terminal.app` to Applications.
+3. Launch `X-Hub.app` first.
+4. Launch `X-Terminal.app` and pair it with X-Hub.
+5. Confirm model route, bridge, Rust runtime readiness, and pairing status before relying on automation.
 
 Advanced users can install one side at a time:
 
 ```text
+X-Hub-<version>-macos-arm64.zip
 XHub-Rust-Hub-<version>-macos-arm64.zip
 X-Terminal-RustXT-<version>-macos-arm64.zip
 ```
+
+`XHub-Rust-Hub-*` is the daemon/runtime package for CLI or service workflows. It is not the primary user-facing Hub UI.
 
 If no packaged release is available yet, build from source using the steps below.
 
@@ -140,7 +148,7 @@ git clone git@github.com:AndrewXie-Rich/x-hub-system.git
 cd x-hub-system
 ```
 
-Build the Rust Hub daemon/runtime:
+Build the Hub Rust kernel/runtime for diagnostics or maintainer work:
 
 ```bash
 bash rust/xhubd/tools/build_rust_hub.command --release
@@ -152,7 +160,7 @@ Build the X-Terminal app and Rust `xtd` sidecar:
 bash x-terminal/tools/build_xt_with_rust_sidecar.command
 ```
 
-Run the Rust Hub and launch X-Terminal:
+Run the Hub kernel directly for diagnostics, then launch X-Terminal:
 
 ```bash
 bash rust/xhubd/tools/xhubd_daemon.command start
@@ -193,9 +201,17 @@ Expected assets:
 ```text
 XHub-System-Rust-<version>-macos-arm64.dmg
 XHub-System-Rust-<version>-macos-arm64.zip
+X-Hub-<version>-macos-arm64.zip
 XHub-Rust-Hub-<version>-macos-arm64.zip
 X-Terminal-RustXT-<version>-macos-arm64.zip
 SHA256SUMS.txt
+```
+
+The release script fails before packaging if the required Swift Hub UI, Rust kernel contract, Swift pairing proxy, and XT contract client files are missing from Git tracking. It also checks the staged app for `X-Hub.app/Contents/Resources/rust-hub/bin/xhubd` before archive creation. This prevents publishing a source tag or release asset that only contains the Rust daemon/runtime lane.
+To run only that source gate without building the release:
+
+```bash
+XHUB_RELEASE_GATE_ONLY=1 scripts/package_rust_preview_release.command
 ```
 
 Upload those files to the matching GitHub Release. Do not commit generated `.app`, `.dmg`, or `build/` outputs.
@@ -278,7 +294,7 @@ Release discipline:
 |---|---|
 | `x-hub/` | Active Hub app, Node service layer, model routing, grants, pairing, audit, and trust surfaces |
 | `x-terminal/` | Active X-Terminal app, session runtime, Supervisor surfaces, readiness checks, and tools |
-| `rust/xhubd/` | Rust Hub rewrite, daemon, bridges, shadow/authority gates, and migration tooling |
+| `rust/xhubd/` | Hub Rust kernel/runtime rewrite, daemon service, bridges, authority gates, and migration tooling |
 | `rust/xtd/` | XT Rust sidecar scaffold |
 | `official-agent-skills/` | Official Agent skill sources, manifests, trust roots, and distribution artifacts |
 | `protocol/` | Shared contracts between Hub, terminal, and runtime surfaces |

@@ -5488,6 +5488,16 @@ enum HubUIStrings {
             static let externalHostOverride = "外部地址覆盖"
             static let externalHostPlaceholder = "tailnet 或 DNS 主机名"
             static let externalHostHint = "可选。正式远端接入建议填写 relay、VPN、tailnet 或公网 DNS 主机名，不建议直接填 raw IP。留空只用于当前局域网 / 同 Wi‑Fi 自动发现。"
+            static let noDomainAccessTitle = "没有域名？使用私有网络入口"
+            static let useNoDomainPrivateHost = "使用检测到的私有入口"
+            static let noDomainPrivateHostApplied = "已使用这个私有入口"
+            static let noDomainAccessMTLSHint = "会把 Hub 外部地址固定到这个私网地址，并切换到 mTLS。"
+            static let noDomainRustCoreSource = "来源：Rust 内核推荐"
+            static let noDomainSwiftFallbackSource = "来源：Swift 本机兜底"
+            static let noDomainAccessMissing = "当前没有检测到 Tailscale / Headscale / WireGuard / ZeroTier 这类稳定私网地址。没有域名时，建议先让 Hub 和 XT 加入同一个私有网络；否则只能同网连接或临时使用公网 IP。"
+            static func noDomainAccessDetected(_ host: String) -> String {
+                "检测到可用于无域名远程连接的私网入口：\(host)"
+            }
             static let externalInviteTitle = "外部访问邀请"
             static let externalHubAlias = "Hub Alias"
             static let externalHubAliasPlaceholder = "ops-main"

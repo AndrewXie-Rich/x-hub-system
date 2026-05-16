@@ -22,10 +22,15 @@ enum HubRemoteAccessHealthSummaryBuilder {
         serverRunning: Bool,
         externalHost: String?,
         hasInviteToken: Bool,
-        keepSystemAwakeWhileServing: Bool
+        keepSystemAwakeWhileServing: Bool,
+        allowPrivateVPNIP: Bool = false
     ) -> HubRemoteAccessHealthSummary {
         let accessEnabled = autoStartEnabled || serverRunning
         let host = HubRemoteAccessHostClassification.classify(externalHost)
+        let formalRemoteHost = HubExternalAccessInviteSupport.normalizedSecureRemoteHost(
+            externalHost,
+            allowPrivateVPNIP: allowPrivateVPNIP
+        )
 
         if !accessEnabled {
             return HubRemoteAccessHealthSummary(
@@ -50,8 +55,13 @@ enum HubRemoteAccessHealthSummaryBuilder {
                 accessScopeText = HubUIStrings.Settings.GRPC.RemoteHealth.scopeLANOnly
                 operatorHintText = HubUIStrings.Settings.GRPC.RemoteHealth.hintOfflineLANOnly
             case .rawIP:
-                accessScopeText = HubUIStrings.Settings.GRPC.RemoteHealth.scopeTemporaryRemote
-                operatorHintText = HubUIStrings.Settings.GRPC.RemoteHealth.hintOfflineRawIP
+                if formalRemoteHost != nil {
+                    accessScopeText = HubUIStrings.Settings.GRPC.RemoteHealth.scopeRemoteOffline
+                    operatorHintText = HubUIStrings.Settings.GRPC.RemoteHealth.hintOfflineStableNamed
+                } else {
+                    accessScopeText = HubUIStrings.Settings.GRPC.RemoteHealth.scopeTemporaryRemote
+                    operatorHintText = HubUIStrings.Settings.GRPC.RemoteHealth.hintOfflineRawIP
+                }
             case .stableNamed:
                 accessScopeText = HubUIStrings.Settings.GRPC.RemoteHealth.scopeRemoteOffline
                 operatorHintText = HubUIStrings.Settings.GRPC.RemoteHealth.hintOfflineStableNamed
@@ -91,6 +101,13 @@ enum HubRemoteAccessHealthSummaryBuilder {
             )
         case .rawIP:
             let value = host.displayHost ?? ""
+            if formalRemoteHost != nil {
+                return formalRemoteSummary(
+                    host: value,
+                    hasInviteToken: hasInviteToken,
+                    keepSystemAwakeWhileServing: keepSystemAwakeWhileServing
+                )
+            }
             return HubRemoteAccessHealthSummary(
                 state: .warning,
                 badgeText: HubUIStrings.Settings.GRPC.RemoteHealth.badgeTemporary,
@@ -102,39 +119,51 @@ enum HubRemoteAccessHealthSummaryBuilder {
             )
         case .stableNamed:
             let value = host.displayHost ?? ""
-            if !hasInviteToken {
-                return HubRemoteAccessHealthSummary(
-                    state: .warning,
-                    badgeText: HubUIStrings.Settings.GRPC.RemoteHealth.badgeNeedsToken,
-                    headline: HubUIStrings.Settings.GRPC.RemoteHealth.tokenMissingHeadline,
-                    detail: HubUIStrings.Settings.GRPC.RemoteHealth.tokenMissingDetail(value),
-                    accessScopeText: HubUIStrings.Settings.GRPC.RemoteHealth.scopeRemotePending,
-                    operatorHintText: HubUIStrings.Settings.GRPC.RemoteHealth.hintTokenMissing,
-                    nextStep: HubUIStrings.Settings.GRPC.RemoteHealth.tokenMissingNextStep
-                )
-            }
-
-            if !keepSystemAwakeWhileServing {
-                return HubRemoteAccessHealthSummary(
-                    state: .warning,
-                    badgeText: HubUIStrings.Settings.GRPC.RemoteHealth.badgeAttention,
-                    headline: HubUIStrings.Settings.GRPC.RemoteHealth.sleepRiskHeadline,
-                    detail: HubUIStrings.Settings.GRPC.RemoteHealth.sleepRiskDetail(value),
-                    accessScopeText: HubUIStrings.Settings.GRPC.RemoteHealth.scopeRemoteReady,
-                    operatorHintText: HubUIStrings.Settings.GRPC.RemoteHealth.hintSleepRisk,
-                    nextStep: HubUIStrings.Settings.GRPC.RemoteHealth.sleepRiskNextStep
-                )
-            }
-
-            return HubRemoteAccessHealthSummary(
-                state: .ready,
-                badgeText: HubUIStrings.Settings.GRPC.RemoteHealth.badgeReady,
-                headline: HubUIStrings.Settings.GRPC.RemoteHealth.readyHeadline,
-                detail: HubUIStrings.Settings.GRPC.RemoteHealth.readyDetail(value),
-                accessScopeText: HubUIStrings.Settings.GRPC.RemoteHealth.scopeRemoteReady,
-                operatorHintText: HubUIStrings.Settings.GRPC.RemoteHealth.hintReady,
-                nextStep: HubUIStrings.Settings.GRPC.RemoteHealth.readyNextStep
+            return formalRemoteSummary(
+                host: value,
+                hasInviteToken: hasInviteToken,
+                keepSystemAwakeWhileServing: keepSystemAwakeWhileServing
             )
         }
+    }
+
+    private static func formalRemoteSummary(
+        host: String,
+        hasInviteToken: Bool,
+        keepSystemAwakeWhileServing: Bool
+    ) -> HubRemoteAccessHealthSummary {
+        if !hasInviteToken {
+            return HubRemoteAccessHealthSummary(
+                state: .warning,
+                badgeText: HubUIStrings.Settings.GRPC.RemoteHealth.badgeNeedsToken,
+                headline: HubUIStrings.Settings.GRPC.RemoteHealth.tokenMissingHeadline,
+                detail: HubUIStrings.Settings.GRPC.RemoteHealth.tokenMissingDetail(host),
+                accessScopeText: HubUIStrings.Settings.GRPC.RemoteHealth.scopeRemotePending,
+                operatorHintText: HubUIStrings.Settings.GRPC.RemoteHealth.hintTokenMissing,
+                nextStep: HubUIStrings.Settings.GRPC.RemoteHealth.tokenMissingNextStep
+            )
+        }
+
+        if !keepSystemAwakeWhileServing {
+            return HubRemoteAccessHealthSummary(
+                state: .warning,
+                badgeText: HubUIStrings.Settings.GRPC.RemoteHealth.badgeAttention,
+                headline: HubUIStrings.Settings.GRPC.RemoteHealth.sleepRiskHeadline,
+                detail: HubUIStrings.Settings.GRPC.RemoteHealth.sleepRiskDetail(host),
+                accessScopeText: HubUIStrings.Settings.GRPC.RemoteHealth.scopeRemoteReady,
+                operatorHintText: HubUIStrings.Settings.GRPC.RemoteHealth.hintSleepRisk,
+                nextStep: HubUIStrings.Settings.GRPC.RemoteHealth.sleepRiskNextStep
+            )
+        }
+
+        return HubRemoteAccessHealthSummary(
+            state: .ready,
+            badgeText: HubUIStrings.Settings.GRPC.RemoteHealth.badgeReady,
+            headline: HubUIStrings.Settings.GRPC.RemoteHealth.readyHeadline,
+            detail: HubUIStrings.Settings.GRPC.RemoteHealth.readyDetail(host),
+            accessScopeText: HubUIStrings.Settings.GRPC.RemoteHealth.scopeRemoteReady,
+            operatorHintText: HubUIStrings.Settings.GRPC.RemoteHealth.hintReady,
+            nextStep: HubUIStrings.Settings.GRPC.RemoteHealth.readyNextStep
+        )
     }
 }

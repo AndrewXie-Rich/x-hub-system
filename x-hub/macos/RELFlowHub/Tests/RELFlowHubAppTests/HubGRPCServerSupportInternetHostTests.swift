@@ -30,6 +30,49 @@ final class HubGRPCServerSupportInternetHostTests: XCTestCase {
     }
 
     @MainActor
+    func testPreferredNoDomainPrivateRemoteHostPrefersTailscaleAddress() {
+        let selected = HubGRPCServerSupport.preferredNoDomainPrivateRemoteHost(
+            interfaceRows: [
+                "en0: 192.168.0.12",
+                "utun6: 10.7.0.12",
+                "utun7: 100.96.10.8",
+            ]
+        )
+
+        XCTAssertEqual(selected, "100.96.10.8")
+    }
+
+    @MainActor
+    func testPreferredNoDomainPrivateRemoteHostIgnoresLANAndPublicAddresses() {
+        let selected = HubGRPCServerSupport.preferredNoDomainPrivateRemoteHost(
+            interfaceRows: [
+                "en0: 192.168.0.12",
+                "en1: 17.81.11.116",
+            ]
+        )
+
+        XCTAssertNil(selected)
+    }
+
+    @MainActor
+    func testSecureRemoteHostAllowsTailscaleIPButRejectsPublicRawIP() {
+        XCTAssertEqual(
+            HubExternalAccessInviteSupport.normalizedSecureRemoteHost("100.96.10.8"),
+            "100.96.10.8"
+        )
+        XCTAssertNil(HubExternalAccessInviteSupport.normalizedSecureRemoteHost("17.81.11.116"))
+    }
+
+    @MainActor
+    func testSecureRemoteHostAllowsExplicitPrivateVPNIP() {
+        XCTAssertNil(HubExternalAccessInviteSupport.normalizedSecureRemoteHost("10.7.0.12"))
+        XCTAssertEqual(
+            HubExternalAccessInviteSupport.normalizedSecureRemoteHost("10.7.0.12", allowPrivateVPNIP: true),
+            "10.7.0.12"
+        )
+    }
+
+    @MainActor
     func testPreferredExternalHubAliasPrefersSanitizedOverride() {
         let alias = HubExternalAccessInviteSupport.preferredExternalHubAlias(
             override: " Ops Main / CN ",

@@ -1244,11 +1244,11 @@ struct ModelSettingsView: View {
     private var rustHubReadinessCompactText: String {
         switch rustHubReadinessPresentation.tone {
         case .ready:
-            return XTL10n.text(interfaceLanguage, zhHans: "Rust Hub shadow ready", en: "Rust Hub shadow ready")
+            return XTL10n.text(interfaceLanguage, zhHans: "Hub 内核 ready", en: "Hub kernel ready")
         case .warning:
-            return XTL10n.text(interfaceLanguage, zhHans: "Rust Hub 需核对", en: "Rust Hub review")
+            return XTL10n.text(interfaceLanguage, zhHans: "Hub 内核需核对", en: "Hub kernel review")
         case .unavailable:
-            return XTL10n.text(interfaceLanguage, zhHans: "Rust Hub shadow off", en: "Rust Hub shadow off")
+            return XTL10n.text(interfaceLanguage, zhHans: "Hub 内核 off", en: "Hub kernel off")
         }
     }
 

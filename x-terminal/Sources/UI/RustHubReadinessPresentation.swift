@@ -14,11 +14,11 @@ struct RustHubReadinessPresentation: Equatable {
 
     static func loading(language: XTInterfaceLanguage = .defaultPreference) -> RustHubReadinessPresentation {
         RustHubReadinessPresentation(
-            title: XTL10n.text(language, zhHans: "Rust Hub shadow 状态", en: "Rust Hub Shadow Status"),
+            title: XTL10n.text(language, zhHans: "Hub 内核状态", en: "Hub Kernel Status"),
             badgeText: XTL10n.text(language, zhHans: "读取中", en: "Loading"),
             tone: .unavailable,
             lines: [
-                XTL10n.text(language, zhHans: "正在读取 Rust Hub `/ready`。", en: "Reading Rust Hub `/ready`.")
+                XTL10n.text(language, zhHans: "正在读取 Hub 内核 `/ready`。", en: "Reading Hub kernel `/ready`.")
             ]
         )
     }
@@ -29,14 +29,14 @@ struct RustHubReadinessPresentation: Equatable {
     ) -> RustHubReadinessPresentation {
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
         return RustHubReadinessPresentation(
-            title: XTL10n.text(language, zhHans: "Rust Hub shadow 状态", en: "Rust Hub Shadow Status"),
+            title: XTL10n.text(language, zhHans: "Hub 内核状态", en: "Hub Kernel Status"),
             badgeText: XTL10n.text(language, zhHans: "未连接", en: "Offline"),
             tone: .unavailable,
             lines: [
                 XTL10n.text(
                     language,
-                    zhHans: "XT 暂时读不到 Rust Hub shadow HTTP；经典 Hub 连接状态不受这个诊断影响。",
-                    en: "XT cannot read Rust Hub shadow HTTP right now; classic Hub connectivity is unaffected by this diagnostic."
+                    zhHans: "XT 暂时读不到 Hub 内核 HTTP 诊断；已配对 Hub 连接状态不受这个诊断影响。",
+                    en: "XT cannot read Hub kernel HTTP diagnostics right now; paired Hub connectivity is unaffected by this diagnostic."
                 ),
                 XTL10n.text(
                     language,
@@ -61,7 +61,7 @@ struct RustHubReadinessPresentation: Equatable {
         let badge: String
         if snapshot.ok && snapshot.ready && boundaryOK {
             tone = .ready
-            badge = XTL10n.text(language, zhHans: "Shadow Ready", en: "Shadow Ready")
+            badge = XTL10n.text(language, zhHans: "内核就绪", en: "Kernel Ready")
         } else if snapshot.ok || snapshot.ready {
             tone = .warning
             badge = XTL10n.text(language, zhHans: "需核对", en: "Review")
@@ -89,8 +89,8 @@ struct RustHubReadinessPresentation: Equatable {
             ),
             XTL10n.text(
                 language,
-                zhHans: "Classic Hub：这不会把 XT 的 Hub pairing/gRPC 标记为已连接；生产模型、授权、memory 写入和 skill 执行仍等待经典 Hub 链路。",
-                en: "Classic Hub: this does not mark XT Hub pairing/gRPC as connected; production model, grant, memory write, and skill execution still wait for the classic Hub path."
+                zhHans: "Hub 连接：这只是内核诊断，不会单独把 XT 的 Hub pairing/gRPC 标记为已连接；生产模型、授权、memory 写入和 skill 执行仍以已配对 Hub 入口为准。",
+                en: "Hub connection: this is only a kernel diagnostic and does not independently mark XT Hub pairing/gRPC as connected; production model, grant, memory write, and skill execution still follow the paired Hub entrypoint."
             )
         ]
 
@@ -105,7 +105,7 @@ struct RustHubReadinessPresentation: Equatable {
         lines.append(capabilityLine(snapshot: snapshot, language: language))
 
         return RustHubReadinessPresentation(
-            title: XTL10n.text(language, zhHans: "Rust Hub shadow 状态", en: "Rust Hub Shadow Status"),
+            title: XTL10n.text(language, zhHans: "Hub 内核状态", en: "Hub Kernel Status"),
             badgeText: badge,
             tone: tone,
             lines: lines
@@ -120,21 +120,21 @@ struct RustHubReadinessPresentation: Equatable {
         if snapshot.ok && snapshot.ready && boundaryOK {
             return XTL10n.text(
                 language,
-                zhHans: "Rust Hub shadow HTTP 已就绪；当前是诊断/只读后端，不是经典 Hub 生产连接。",
-                en: "Rust Hub shadow HTTP is ready; this is a diagnostics/read-only backend, not the classic production Hub connection."
+                zhHans: "Hub 内核 HTTP 已就绪；当前是诊断/只读后端，生产连接仍以已配对 Hub 入口为准。",
+                en: "Hub kernel HTTP is ready; this is a diagnostics/read-only backend, and production connectivity still follows the paired Hub entrypoint."
             )
         }
         if !boundaryOK {
             return XTL10n.text(
                 language,
-                zhHans: "Rust Hub 返回的 authority 边界需要核对；XT 不会把它提升为生产 Hub。",
-                en: "Rust Hub returned authority boundaries that need review; XT will not promote it to production Hub."
+                zhHans: "Hub 内核返回的 authority 边界需要核对；XT 不会把它提升为生产 Hub 入口。",
+                en: "Hub kernel returned authority boundaries that need review; XT will not promote it to the production Hub entrypoint."
             )
         }
         return XTL10n.text(
             language,
-            zhHans: "Rust Hub shadow HTTP 尚未 ready；XT 继续按经典 Hub 离线处理。",
-            en: "Rust Hub shadow HTTP is not ready; XT continues treating the classic Hub as offline."
+            zhHans: "Hub 内核 HTTP 尚未 ready；XT 继续按已配对 Hub 链路状态处理。",
+            en: "Hub kernel HTTP is not ready; XT continues using the paired Hub link state."
         )
     }
 
@@ -152,8 +152,8 @@ struct RustHubReadinessPresentation: Equatable {
         let enabled = interesting.filter { snapshot.capabilities[$0] == true }
         return XTL10n.text(
             language,
-            zhHans: "Rust HTTP 能力：\(enabled.isEmpty ? "none" : enabled.joined(separator: ", "))",
-            en: "Rust HTTP capabilities: \(enabled.isEmpty ? "none" : enabled.joined(separator: ", "))"
+            zhHans: "Hub 内核 HTTP 能力：\(enabled.isEmpty ? "none" : enabled.joined(separator: ", "))",
+            en: "Hub kernel HTTP capabilities: \(enabled.isEmpty ? "none" : enabled.joined(separator: ", "))"
         )
     }
 

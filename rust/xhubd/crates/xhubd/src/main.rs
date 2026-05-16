@@ -34,10 +34,12 @@ mod evidence_bridge;
 mod grpc_runtime;
 mod memory_bridge;
 mod model_bridge;
+mod network_bridge;
 mod provider_bridge;
 mod scheduler_bridge;
 mod skills_bridge;
 mod xt_compat;
+mod xt_contract;
 mod xt_file_ipc;
 
 #[tokio::main]
@@ -64,6 +66,8 @@ async fn run() -> Result<(), String> {
         "provider" => provider_bridge::run(&config, &args[2..]),
         "model" => model_bridge::run(&config, &args[2..]),
         "memory" => memory_bridge::run(&config, &args[2..]),
+        "network" => network_bridge::run(&config, &args[2..]),
+        "xt" => xt_contract::run(&config, &args[2..]),
         "evidence" => evidence_bridge::run(&config, &args[2..]),
         "skills" => skills_bridge::run(&config, &args[2..]),
         "scheduler-smoke" => scheduler_smoke(&config),
@@ -112,6 +116,10 @@ fn print_help() {
     println!("           JSON remote/local model inventory and route bridge commands");
     println!("  memory <retrieve|search|readiness>");
     println!("           JSON memory retrieval shadow read-only commands");
+    println!("  network <remote-entry-candidates>");
+    println!("           JSON remote-entry candidates for Swift Hub shell setup");
+    println!("  xt <contract>");
+    println!("           JSON Hub capability contract for X-Terminal integrations");
     println!("  evidence <write|list>");
     println!("           JSON unified evidence ledger commands");
     println!("  skills <catalog|readiness|policy-readiness|pin|grant|unpin|revoke-grant|policy|policy-events|policy-events-prune|audit|audit-prune|preflight>");
@@ -497,6 +505,9 @@ fn handle_client(mut stream: TcpStream, state: &HubState) -> Result<(), String> 
             }
             "/runtime/scheduler_status" => ("200 OK", scheduler_status_json()),
             "/runtime/http-metrics" | "/http/metrics" => http_metrics_json(state),
+            "/xt/hub-contract" | "/xt/contract" | "/contract/xt" => {
+                xt_contract::contract_http_json(config)
+            }
             "/xt/classic-hub-compat" | "/compat/xt-classic-hub" | "/compat/classic-hub" => {
                 ("200 OK", xt_compat::classic_hub_compat_json(config))
             }
@@ -567,6 +578,11 @@ fn handle_client(mut stream: TcpStream, state: &HubState) -> Result<(), String> 
             "/provider/compare" => provider_compare_http_json(config, query, request.body.as_str()),
             "/provider/reports" => provider_reports_http_json(config, query),
             "/provider/readiness" => provider_readiness_http_json(config, query),
+            "/network/remote-entry-candidates"
+            | "/network/remote-entry"
+            | "/remote/entry-candidates" => {
+                network_bridge::remote_entry_candidates_http_json(config, query)
+            }
             "/memory/search" => memory_search_http_json(state, query),
             "/memory/retrieve" => memory_retrieve_http_json(state, query, request.body.as_str()),
             "/memory/write" | "/memory/append" => {
@@ -3244,12 +3260,14 @@ fn root_body() -> String {
         <div class="links">
           <a href="/health">Health JSON</a>
           <a href="/ready">Ready JSON</a>
+          <a href="/xt/hub-contract">XT Hub Contract</a>
           <a href="/model/inventory">Model Inventory</a>
           <a href="/model/route">Model Route</a>
           <a href="/model/diagnostics">Model Diagnostics</a>
           <a href="/provider/readiness">Provider Readiness</a>
           <a href="/skills/readiness">Skills Readiness</a>
           <a href="/skills/preflight">Skills Preflight</a>
+          <a href="/network/remote-entry-candidates">Remote Entry Candidates</a>
         </div>
       </div>
       <div class="panel">
@@ -3288,7 +3306,8 @@ export XHUB_RUST_MODEL_INVENTORY_HTTP_BASE_URL=http://127.0.0.1:50151</pre>
           row('Model diagnostics HTTP', ready.capabilities && ready.capabilities.model_route_diagnostics_http),
           row('Provider route HTTP', ready.capabilities && ready.capabilities.provider_route_http),
           row('Skills catalog HTTP', ready.capabilities && ready.capabilities.skills_catalog_http),
-          row('Skills preflight HTTP', ready.capabilities && ready.capabilities.skills_preflight_http)
+          row('Skills preflight HTTP', ready.capabilities && ready.capabilities.skills_preflight_http),
+          row('Remote entry candidates', ready.capabilities && ready.capabilities.remote_entry_candidates_http)
         ].join('');
         document.getElementById('checks').innerHTML = (ready.checks || []).map((item) => {
           const klass = item.ok ? 'check good' : 'check fail';
@@ -3718,6 +3737,7 @@ fn readiness_json(
             "memory_retrieval_http": true,
             "memory_write_http": true,
             "memory_writer_authority_in_rust": memory_writer_authority,
+            "xt_hub_contract_http": true,
             "xt_classic_hub_compat_preflight_http": true,
             "xt_classic_hub_grpc_probe_http": true,
             "xt_classic_hub_compat_authority": "preflight_only",
@@ -3755,6 +3775,8 @@ fn readiness_json(
             "cross_network_public_endpoint": public_endpoint_enabled,
             "domain_public_endpoint_ready": public_endpoint_ready,
             "cross_network_auth_gate": true,
+            "remote_entry_candidates_http": true,
+            "swift_shell_remote_entry_authority": true,
         },
         "checks": [
             {"name": "proto", "ok": proto_ok, "blocking": true},

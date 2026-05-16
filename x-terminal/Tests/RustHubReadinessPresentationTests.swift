@@ -62,9 +62,9 @@ struct RustHubReadinessPresentationTests {
         let joined = presentation.lines.joined(separator: "\n")
 
         #expect(presentation.tone == .ready)
-        #expect(presentation.badgeText == "Shadow Ready")
-        #expect(joined.contains("Rust Hub shadow HTTP 已就绪"))
-        #expect(joined.contains("不会把 XT 的 Hub pairing/gRPC 标记为已连接"))
+        #expect(presentation.badgeText == "内核就绪")
+        #expect(joined.contains("Hub 内核 HTTP 已就绪"))
+        #expect(joined.contains("不会单独把 XT 的 Hub pairing/gRPC 标记为已连接"))
         #expect(joined.contains("model_exec_rust=false"))
         #expect(joined.contains("skills_exec_rust=false"))
     }

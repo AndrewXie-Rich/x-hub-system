@@ -57,6 +57,10 @@ import {
   operatorChannelLiveTestProviderRow,
 } from './operator_channel_live_test_evidence.js';
 
+const XT_HUB_CONTRACT_ENDPOINT = '/xt/hub-contract';
+const XT_HUB_CONTRACT_SCHEMA_VERSION = 'xhub.rust_hub.xt_contract.v1';
+const HUB_PRODUCT_BOUNDARY = 'swift_shell_rust_kernel';
+
 function safeString(v) {
   return String(v ?? '').trim();
 }
@@ -382,6 +386,117 @@ function textResponse(res, status, text, headers = {}) {
     ...headers,
   });
   res.end(body);
+}
+
+function readTextFileTrimmed(filePath) {
+  const p = safeString(filePath);
+  if (!p) return '';
+  try {
+    return safeString(fs.readFileSync(p, 'utf8'));
+  } catch {
+    return '';
+  }
+}
+
+function rustHubHTTPBaseURL() {
+  const raw = safeString(
+    process.env.XHUB_RUST_HUB_HTTP_BASE_URL
+      || process.env.XHUB_RUST_HTTP_BASE_URL
+      || process.env.XHUBD_HTTP_BASE_URL
+      || 'http://127.0.0.1:50151'
+  );
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'http:') return 'http://127.0.0.1:50151';
+    return url.toString().replace(/\/+$/, '');
+  } catch {
+    return 'http://127.0.0.1:50151';
+  }
+}
+
+function rustHubHTTPAccessKey() {
+  const direct = safeString(process.env.XHUB_RUST_HTTP_ACCESS_KEY || process.env.XHUB_RUST_HUB_ACCESS_KEY);
+  if (direct) return direct;
+
+  for (const key of ['XHUB_RUST_HTTP_ACCESS_KEY_FILE', 'XHUB_RUST_HUB_ACCESS_KEY_FILE']) {
+    const value = readTextFileTrimmed(process.env[key]);
+    if (value) return value;
+  }
+
+  const root = safeString(process.env.XHUB_RUST_HUB_ROOT);
+  if (root) {
+    for (const rel of [
+      'secrets/xhubd_http_access_key',
+      'secrets/xhubd_domain_access_key',
+      'secrets/xhubd_lan_access_key',
+    ]) {
+      const value = readTextFileTrimmed(path.join(root, rel));
+      if (value) return value;
+    }
+  }
+  return '';
+}
+
+function fetchRustHubJSONPath(routePath, { timeoutMs = 1500 } = {}) {
+  return new Promise((resolve) => {
+    const base = rustHubHTTPBaseURL();
+    let target;
+    try {
+      target = new URL(routePath, `${base}/`);
+    } catch {
+      resolve({
+        ok: false,
+        status: 500,
+        text: '',
+        error: 'rust_kernel_base_url_invalid',
+      });
+      return;
+    }
+
+    const accessKey = rustHubHTTPAccessKey();
+    const headers = {
+      accept: 'application/json',
+    };
+    if (accessKey) {
+      headers.authorization = `Bearer ${accessKey}`;
+      headers['x-xhub-access-key'] = accessKey;
+    }
+
+    const request = http.request({
+      method: 'GET',
+      hostname: target.hostname,
+      port: Number(target.port || 80),
+      path: `${target.pathname}${target.search}`,
+      headers,
+      timeout: Math.max(250, Math.min(10_000, Number(timeoutMs || 0))),
+    }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+      response.on('end', () => {
+        resolve({
+          ok: true,
+          status: Number(response.statusCode || 0),
+          text: Buffer.concat(chunks).toString('utf8'),
+          contentType: safeString(response.headers?.['content-type']) || 'application/json; charset=utf-8',
+          sourceBaseURL: base,
+        });
+      });
+    });
+
+    request.on('error', (err) => {
+      resolve({
+        ok: false,
+        status: 503,
+        text: '',
+        error: safeString(err?.message) || 'rust_kernel_contract_unavailable',
+        sourceBaseURL: base,
+      });
+    });
+    request.on('timeout', () => {
+      request.destroy(new Error('rust_kernel_contract_timeout'));
+    });
+    request.end();
+  });
 }
 
 function sha256Hex(text) {
@@ -2551,6 +2666,10 @@ export function startPairingHTTPServer({
         tls_server_name: tlsServerName,
         pairing_profile_epoch: pairingRouteMetadata.pairing_profile_epoch,
         route_pack_version: pairingRouteMetadata.route_pack_version,
+        xt_contract_endpoint: XT_HUB_CONTRACT_ENDPOINT,
+        xt_contract_schema_version: XT_HUB_CONTRACT_SCHEMA_VERSION,
+        hub_product_boundary: HUB_PRODUCT_BOUNDARY,
+        rust_kernel_contract_bridge: true,
       };
       if (internetHostHint) payload.internet_host_hint = internetHostHint;
       const pairingWindowSec = positiveIntOrZero(process.env.HUB_PAIRING_WINDOW_SEC);
@@ -2559,6 +2678,42 @@ export function startPairingHTTPServer({
         payload.runtime_base_dir = resolveRuntimeBaseDir();
       }
       jsonResponse(res, 200, payload);
+      return;
+    }
+
+    // Swift shell public contract bridge: XT should see one Hub entrypoint
+    // (pairing/remote port) while the Rust kernel remains the source of truth.
+    if (method === 'GET' && (
+      pathname === '/xt/hub-contract'
+      || pathname === '/xt/contract'
+      || pathname === '/contract/xt'
+    )) {
+      const upstream = await fetchRustHubJSONPath(XT_HUB_CONTRACT_ENDPOINT);
+      if (!upstream.ok) {
+        jsonResponse(res, 503, {
+          schema_version: XT_HUB_CONTRACT_SCHEMA_VERSION,
+          ok: false,
+          error: 'rust_kernel_contract_unavailable',
+          message: upstream.error || 'rust_kernel_contract_unavailable',
+          source: 'swift_shell_pairing_proxy',
+        });
+        return;
+      }
+
+      let payload;
+      try {
+        payload = JSON.parse(upstream.text || '{}');
+      } catch {
+        jsonResponse(res, 502, {
+          schema_version: XT_HUB_CONTRACT_SCHEMA_VERSION,
+          ok: false,
+          error: 'rust_kernel_contract_invalid_json',
+          message: 'Rust kernel returned invalid Hub contract JSON',
+          source: 'swift_shell_pairing_proxy',
+        });
+        return;
+      }
+      jsonResponse(res, upstream.status || 502, payload);
       return;
     }
 

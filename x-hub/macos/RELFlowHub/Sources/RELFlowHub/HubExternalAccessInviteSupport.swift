@@ -29,6 +29,19 @@ enum HubExternalAccessInviteSupport {
         return trimmed
     }
 
+    static func normalizedSecureRemoteHost(_ raw: String?, allowPrivateVPNIP: Bool = false) -> String? {
+        let trimmed = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let stableHost = normalizedStableNamedExternalHost(trimmed) {
+            return stableHost
+        }
+        let lowered = trimmed.lowercased()
+        if isCarrierGradeNatIPv4Host(lowered) || (allowPrivateVPNIP && isPrivateIPv4Host(lowered)) {
+            return trimmed
+        }
+        return nil
+    }
+
     static func normalizedInviteHost(_ raw: String?) -> String? {
         let trimmed = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -110,10 +123,36 @@ enum HubExternalAccessInviteSupport {
     }
 
     private static func isIPv4Host(_ host: String) -> Bool {
+        ipv4Octets(host) != nil
+    }
+
+    private static func isCarrierGradeNatIPv4Host(_ host: String) -> Bool {
+        guard let octets = ipv4Octets(host) else { return false }
+        return octets[0] == 100 && (64...127).contains(octets[1])
+    }
+
+    private static func isPrivateIPv4Host(_ host: String) -> Bool {
+        guard let octets = ipv4Octets(host) else { return false }
+        let first = octets[0]
+        let second = octets[1]
+        if first == 10 {
+            return true
+        }
+        if first == 172 && (16...31).contains(second) {
+            return true
+        }
+        if first == 192 && second == 168 {
+            return true
+        }
+        return false
+    }
+
+    private static func ipv4Octets(_ host: String) -> [Int]? {
         let parts = host.split(separator: ".")
-        guard parts.count == 4 else { return false }
+        guard parts.count == 4 else { return nil }
         let octets = parts.compactMap { Int($0) }
-        guard octets.count == 4 else { return false }
-        return octets.allSatisfy { (0...255).contains($0) }
+        guard octets.count == 4 else { return nil }
+        guard octets.allSatisfy({ (0...255).contains($0) }) else { return nil }
+        return octets
     }
 }

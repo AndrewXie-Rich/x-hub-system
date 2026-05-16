@@ -890,6 +890,9 @@ final class AppModel: ObservableObject {
     private var lastHubNetworkPathFingerprint: HubNetworkPathFingerprint? = nil
     private var hubConnectivityIncidentSnapshot: XTHubConnectivityIncidentSnapshot? = nil
     private var hubRemotePrefsDoctorRefreshTask: Task<Void, Never>? = nil
+    private var hubContractDoctorRefreshTask: Task<Void, Never>? = nil
+    private var hubContractDoctorProjection: XTUnifiedDoctorHubContractProjection? = nil
+    private var nextHubContractDoctorRefreshAt: Date = .distantPast
     private var externalTerminalAccessDoctorRefreshTask: Task<Void, Never>? = nil
     private var externalTerminalAccessDoctorProjection: XTUnifiedDoctorExternalTerminalAccessProjection? =
         HubExternalTerminalAccessSnapshotStore.load(allowCompatibilityFallback: true)
@@ -7327,6 +7330,8 @@ final class AppModel: ObservableObject {
         }
 
         refreshExternalTerminalAccessDoctorProjectionIfNeeded(force: false)
+        refreshHubContractDoctorProjectionIfNeeded(force: false)
+        let hubContractDoctorProjection = self.hubContractDoctorProjection
         let externalTerminalAccessDoctorProjection = self.externalTerminalAccessDoctorProjection
             ?? HubExternalTerminalAccessSnapshotStore.load(allowCompatibilityFallback: true)
         if self.externalTerminalAccessDoctorProjection == nil {
@@ -7457,6 +7462,7 @@ final class AppModel: ObservableObject {
             calendarReminderSnapshot: calendarReminderSnapshot,
             skillsSnapshot: skillsCompatibilitySnapshot,
             skillDoctorTruthProjection: skillDoctorTruthProjection,
+            hubContractProjection: hubContractDoctorProjection,
             externalTerminalAccessProjection: externalTerminalAccessDoctorProjection,
             providerKeyImportSnapshot: HubProviderKeyImportSnapshotStore.load()
                 ?? HubProviderKeyImportSnapshotStore.load(allowCompatibilityFallback: true),
@@ -7490,6 +7496,48 @@ final class AppModel: ObservableObject {
         }
         nextUnifiedDoctorRefreshAt = now.addingTimeInterval(Self.backgroundUnifiedDoctorRefreshIntervalSec)
         traceOutcome = "updated sections=\(report.sections.count)"
+    }
+
+    private func refreshHubContractDoctorProjectionIfNeeded(force: Bool) {
+        guard hubInteractive else { return }
+
+        let now = Date()
+        if !force, now < nextHubContractDoctorRefreshAt {
+            return
+        }
+        guard hubContractDoctorRefreshTask == nil else { return }
+
+        nextHubContractDoctorRefreshAt = now.addingTimeInterval(30.0)
+        hubContractDoctorRefreshTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.hubContractDoctorRefreshTask = nil }
+
+            let result = await HubContractClient.fetchContract()
+            guard !Task.isCancelled else { return }
+
+            let projection: XTUnifiedDoctorHubContractProjection
+            if result.ok, let snapshot = result.snapshot {
+                projection = XTUnifiedDoctorHubContractProjection(
+                    snapshot: snapshot,
+                    observedAt: Date()
+                )
+            } else if let existing = self.hubContractDoctorProjection {
+                projection = existing.withFetchFailure(
+                    errorCode: result.errorCode,
+                    errorMessage: result.errorMessage.isEmpty ? result.errorCode : result.errorMessage,
+                    observedAt: Date()
+                )
+            } else {
+                projection = XTUnifiedDoctorHubContractProjection.fetchFailure(
+                    errorCode: result.errorCode,
+                    errorMessage: result.errorMessage.isEmpty ? result.errorCode : result.errorMessage,
+                    observedAt: Date()
+                )
+            }
+
+            self.hubContractDoctorProjection = projection
+            self.refreshUnifiedDoctorReport(force: true)
+        }
     }
 
     private func refreshExternalTerminalAccessDoctorProjectionIfNeeded(force: Bool) {

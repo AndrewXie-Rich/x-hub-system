@@ -49,6 +49,9 @@ struct SettingsSheetView: View {
     @State private var diagnosticsActionIsRunning: Bool = false
     @State private var diagnosticsActionResultText: String = ""
     @State private var diagnosticsActionErrorText: String = ""
+    @State private var rustHubRemoteEntryCandidates: RustHubRemoteEntryCandidates = .empty
+    @State private var rustHubRemoteEntryRefreshing: Bool = false
+    @State private var rustHubRemoteEntryLastRefreshAt: Date = .distantPast
 
     @State private var skillsIndex: HubSkillsStoreStorage.SkillsIndexSnapshot = HubSkillsStoreStorage.loadSkillsIndex()
     @State private var skillsPins: HubSkillsStoreStorage.SkillPinsSnapshot = HubSkillsStoreStorage.loadSkillPins()
@@ -91,8 +94,40 @@ struct SettingsSheetView: View {
             serverRunning: grpc.isServingAvailable,
             externalHost: grpc.xtTerminalInternetHost,
             hasInviteToken: grpc.hasExternalInviteToken,
-            keepSystemAwakeWhileServing: servingPower.keepSystemAwakeWhileServing
+            keepSystemAwakeWhileServing: servingPower.keepSystemAwakeWhileServing,
+            allowPrivateVPNIP: grpc.allowsPrivateVPNIPForSecureRemoteSetupPack
         )
+    }
+
+    private var noDomainPrivateRemoteHost: String? {
+        rustHubRemoteEntryCandidates.preferredNoDomainPrivateHost
+            ?? grpc.noDomainPrivateRemoteHost
+    }
+
+    private var noDomainPrivateRemoteHostSourceText: String {
+        if rustHubRemoteEntryCandidates.preferredNoDomainPrivateHost != nil {
+            return HubUIStrings.Settings.GRPC.noDomainRustCoreSource
+        }
+        return HubUIStrings.Settings.GRPC.noDomainSwiftFallbackSource
+    }
+
+    private var isUsingNoDomainPrivateRemoteHost: Bool {
+        grpc.isUsingNoDomainPrivateRemoteHost(noDomainPrivateRemoteHost)
+    }
+
+    private func refreshRustHubRemoteEntryCandidates(force: Bool = false) {
+        let now = Date()
+        if rustHubRemoteEntryRefreshing { return }
+        if !force && now.timeIntervalSince(rustHubRemoteEntryLastRefreshAt) < 10.0 { return }
+        rustHubRemoteEntryRefreshing = true
+        Task {
+            let candidates = await RustHubRuntimeSupport.loadRemoteEntryCandidates()
+            await MainActor.run {
+                rustHubRemoteEntryCandidates = candidates
+                rustHubRemoteEntryLastRefreshAt = Date()
+                rustHubRemoteEntryRefreshing = false
+            }
+        }
     }
 
     private func quitApp() {
@@ -119,6 +154,7 @@ struct SettingsSheetView: View {
         .padding(14)
         .frame(width: 620, height: 640)
         .onAppear {
+            refreshRustHubRemoteEntryCandidates(force: true)
             remoteRouteProbe.refresh(host: grpc.xtTerminalInternetHost)
             handleSettingsNavigationTarget(store.settingsNavigationTarget)
         }
@@ -136,6 +172,7 @@ struct SettingsSheetView: View {
             skillsSources = HubSkillsStoreStorage.loadSkillSources()
             reloadAXConstitutionStatus()
             Task { await reloadOperatorChannelProviderReadiness() }
+            refreshRustHubRemoteEntryCandidates()
             remoteRouteProbe.refresh(host: grpc.xtTerminalInternetHost)
         }
         .onReceive(NotificationCenter.default.publisher(for: .relflowhubRemoteModelsChanged)) { _ in
@@ -3973,6 +4010,40 @@ struct SettingsSheetView: View {
                 Text(HubUIStrings.Settings.GRPC.externalHostHint)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(HubUIStrings.Settings.GRPC.noDomainAccessTitle)
+                        .font(.caption.weight(.semibold))
+                    if let noDomainHost = noDomainPrivateRemoteHost {
+                        Text(HubUIStrings.Settings.GRPC.noDomainAccessDetected(noDomainHost))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        HStack(spacing: 10) {
+                            Button(isUsingNoDomainPrivateRemoteHost
+                                   ? HubUIStrings.Settings.GRPC.noDomainPrivateHostApplied
+                                   : HubUIStrings.Settings.GRPC.useNoDomainPrivateHost) {
+                                if grpc.applyNoDomainPrivateRemoteHost(noDomainHost) {
+                                    remoteRouteProbe.refresh(host: grpc.xtTerminalInternetHost, force: true)
+                                }
+                            }
+                            .disabled(isUsingNoDomainPrivateRemoteHost)
+                            Text(HubUIStrings.Settings.GRPC.noDomainAccessMTLSHint)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text(noDomainPrivateRemoteHostSourceText)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Button(HubUIStrings.Settings.FirstRun.refresh) {
+                                refreshRustHubRemoteEntryCandidates(force: true)
+                            }
+                            .disabled(rustHubRemoteEntryRefreshing)
+                        }
+                    } else {
+                        Text(HubUIStrings.Settings.GRPC.noDomainAccessMissing)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
 
             Divider()

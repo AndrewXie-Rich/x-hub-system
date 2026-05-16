@@ -578,6 +578,53 @@ Example audit event:
 
 ---
 
+## 11.5) XT Hub Contract (Machine-Readable Capability Registry)
+
+`GET /xt/hub-contract` returns `xhub.rust_hub.xt_contract.v1`. In the
+single-Hub product shape, XT should prefer the already paired Swift shell
+pairing/remote entrypoint for this route; the shell proxies the response from
+the Rust kernel so users do not need to know about a separate Rust HTTP port.
+The Rust kernel route remains the source of truth and is still available as a
+local fallback for diagnostics.
+
+`GET /pairing/discovery` advertises the shell bridge with
+`xt_contract_endpoint=/xt/hub-contract`,
+`xt_contract_schema_version=xhub.rust_hub.xt_contract.v1`,
+`hub_product_boundary=swift_shell_rust_kernel`, and
+`rust_kernel_contract_bridge=true`. These fields are discovery hints only; they
+do not carry secrets and they do not replace the contract response.
+
+XT and any AI agent updating XT MUST read this contract before adding or
+changing Hub-facing behavior. The contract is the migration-safe registry for
+which capabilities Hub provides, which component is authoritative, which
+endpoint XT should call, how long XT may cache the projection, and how XT must
+fail when Hub truth is missing or stale.
+
+Current contract capabilities:
+- `pairing`: Swift Hub pairing service and runtime mTLS channel.
+- `remote_entry`: Rust remote-entry candidates for domain, tunnel, and
+  no-domain private-network users.
+- `readiness`: Rust runtime readiness and cross-network auth posture.
+- `models` / `provider_route`: Hub-owned route decisions and provider-key
+  explainability; XT must not independently select paid-provider secrets.
+- `memory`: Hub owns durable memory. XT may consume projections and submit
+  write candidates, but local XT cache is never durable truth.
+- `skills`: Hub owns catalog, pin, grant, preflight, revocation, and audit.
+  XT or a sandbox runner may execute only with a fresh Hub preflight lease.
+- `grants`: Hub/Supervisor policy gate is the only grant authority.
+- `audit`: Hub owns append-only evidence refs; XT must not synthesize them.
+
+Skills execution boundary:
+- Hub stores, pins, grants, revokes, and audits skills.
+- Third-party skill code MUST NOT run inside the Hub trust root by default.
+- XT-local or sandbox-runner execution MUST carry a fresh `/skills/preflight`
+  decision bound to scope, skill id, requested capabilities, package hash/pin,
+  and revocation epoch.
+- Missing pin, missing grant, stale lease, hash drift, scope drift, or
+  revocation drift MUST fail closed.
+
+---
+
 ## 12) Memory (Threads + Working Set + Canonical) (Phase-2, but schema is reserved now)
 
 Goal: Hub owns durable memory. Clients keep only a short local context window and sync each turn to Hub.

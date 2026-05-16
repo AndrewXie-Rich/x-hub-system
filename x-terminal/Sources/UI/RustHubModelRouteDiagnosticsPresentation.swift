@@ -17,16 +17,16 @@ struct RustHubModelRouteDiagnosticsPresentation: Equatable {
         RustHubModelRouteDiagnosticsPresentation(
             title: XTL10n.text(
                 language,
-                zhHans: "Rust Hub 模型路由诊断",
-                en: "Rust Hub Model Route Diagnostics"
+                zhHans: "Hub 内核模型路由诊断",
+                en: "Hub Kernel Model Route Diagnostics"
             ),
             badgeText: XTL10n.text(language, zhHans: "读取中", en: "Loading"),
             tone: .unavailable,
             lines: [
                 XTL10n.text(
                     language,
-                    zhHans: "正在读取 Rust Hub 只读诊断状态。",
-                    en: "Reading Rust Hub read-only diagnostics status."
+                    zhHans: "正在读取 Hub 内核只读诊断状态。",
+                    en: "Reading Hub kernel read-only diagnostics status."
                 )
             ]
         )
@@ -40,16 +40,16 @@ struct RustHubModelRouteDiagnosticsPresentation: Equatable {
         return RustHubModelRouteDiagnosticsPresentation(
             title: XTL10n.text(
                 language,
-                zhHans: "Rust Hub 模型路由诊断",
-                en: "Rust Hub Model Route Diagnostics"
+                zhHans: "Hub 内核模型路由诊断",
+                en: "Hub Kernel Model Route Diagnostics"
             ),
             badgeText: XTL10n.text(language, zhHans: "未连接", en: "Offline"),
             tone: .unavailable,
             lines: [
                 XTL10n.text(
                     language,
-                    zhHans: "暂时读不到 Rust Hub 诊断端点；XT 继续使用现有模型设置和 Hub 路由。",
-                    en: "Rust Hub diagnostics is not reachable right now; XT keeps using the existing model settings and Hub route."
+                    zhHans: "暂时读不到 Hub 内核诊断端点；XT 继续使用现有模型设置和 Hub 路由。",
+                    en: "Hub kernel diagnostics is not reachable right now; XT keeps using the existing model settings and Hub route."
                 ),
                 XTL10n.text(
                     language,
@@ -126,8 +126,8 @@ struct RustHubModelRouteDiagnosticsPresentation: Equatable {
         return RustHubModelRouteDiagnosticsPresentation(
             title: XTL10n.text(
                 language,
-                zhHans: "Rust Hub 模型路由诊断",
-                en: "Rust Hub Model Route Diagnostics"
+                zhHans: "Hub 内核模型路由诊断",
+                en: "Hub Kernel Model Route Diagnostics"
             ),
             badgeText: badge,
             tone: tone,
@@ -143,8 +143,8 @@ struct RustHubModelRouteDiagnosticsPresentation: Equatable {
         guard snapshot.ok else {
             return XTL10n.text(
                 language,
-                zhHans: "Rust Hub 返回 ok=false；XT 不会采用这份诊断作为路由依据。",
-                en: "Rust Hub returned ok=false; XT will not use this diagnostics result as routing input."
+                zhHans: "Hub 内核返回 ok=false；XT 不会采用这份诊断作为路由依据。",
+                en: "Hub kernel returned ok=false; XT will not use this diagnostics result as routing input."
             )
         }
         guard boundaryOK else {

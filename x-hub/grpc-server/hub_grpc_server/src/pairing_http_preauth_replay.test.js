@@ -186,6 +186,83 @@ async function withPairingServer({
   });
 }
 
+async function withMockHTTPServer(handler, fn) {
+  const server = http.createServer(handler);
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  try {
+    await fn({ baseUrl });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
+await runAsync('Swift shell pairing port proxies XT Hub contract from Rust kernel', async () => {
+  let observedAuthorization = '';
+  await withMockHTTPServer((req, res) => {
+    if (req.url !== '/xt/hub-contract') {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'not_found' }));
+      return;
+    }
+    observedAuthorization = String(req.headers.authorization || '');
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({
+      schema_version: 'xhub.rust_hub.xt_contract.v1',
+      ok: true,
+      hub_product: {
+        kernel: 'rust_core',
+        shell: 'swift_macos',
+        xt_role: 'paired_deep_client',
+        source_of_truth: 'hub',
+      },
+      capabilities: {
+        memory: { canonical_writer: 'hub_only', durable_truth_in_xt: false },
+        skills: {
+          authority: 'hub_policy_gate',
+          lease_required: true,
+          lease_source_endpoint: '/skills/preflight',
+          third_party_code_in_hub_trust_root: false,
+        },
+        remote_entry: { supports_no_domain_users: true, requires_mtls: true },
+      },
+    }));
+  }, async ({ baseUrl: rustBaseUrl }) => {
+    await withPairingServer({
+      env: {
+        XHUB_RUST_HUB_HTTP_BASE_URL: rustBaseUrl,
+        XHUB_RUST_HTTP_ACCESS_KEY: 'rust-contract-key',
+      },
+    }, async ({ baseUrl }) => {
+      const out = await requestJson({ url: `${baseUrl}/xt/hub-contract` });
+      assert.equal(out.status, 200);
+      assert.equal(out.json?.schema_version, 'xhub.rust_hub.xt_contract.v1');
+      assert.equal(out.json?.hub_product?.source_of_truth, 'hub');
+      assert.equal(out.json?.capabilities?.memory?.canonical_writer, 'hub_only');
+      assert.equal(observedAuthorization, 'Bearer rust-contract-key');
+    });
+  });
+});
+
+await runAsync('Swift shell pairing port reports contract unavailable when Rust kernel is down', async () => {
+  await withPairingServer({
+    env: {
+      XHUB_RUST_HUB_HTTP_BASE_URL: 'http://127.0.0.1:9',
+    },
+  }, async ({ baseUrl }) => {
+    const out = await requestJson({ url: `${baseUrl}/xt/hub-contract` });
+    assert.equal(out.status, 503);
+    assert.equal(out.json?.schema_version, 'xhub.rust_hub.xt_contract.v1');
+    assert.equal(out.json?.ok, false);
+    assert.equal(out.json?.error, 'rust_kernel_contract_unavailable');
+    assert.equal(out.json?.source, 'swift_shell_pairing_proxy');
+  });
+});
+
 await runAsync('DPR-W1/client presence endpoint records authenticated remote heartbeat', async () => {
   const runtimeBaseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pairing_presence_runtime_'));
   try {
@@ -387,6 +464,10 @@ await runAsync('CRK-W1-19/pairing discovery keeps LAN host hint and exposes sepa
       assert.equal(String(out.json?.hub_host_hint || ''), '127.0.0.1');
       assert.equal(String(out.json?.internet_host_hint || ''), 'hub.tailnet.example');
       assert.notEqual(String(out.json?.internet_host_hint || ''), String(out.json?.lan_discovery_name || ''));
+      assert.equal(String(out.json?.xt_contract_endpoint || ''), '/xt/hub-contract');
+      assert.equal(String(out.json?.xt_contract_schema_version || ''), 'xhub.rust_hub.xt_contract.v1');
+      assert.equal(String(out.json?.hub_product_boundary || ''), 'swift_shell_rust_kernel');
+      assert.equal(out.json?.rust_kernel_contract_bridge, true);
     });
   } finally {
     try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch {}

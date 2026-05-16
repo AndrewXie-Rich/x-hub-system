@@ -1006,7 +1006,7 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.borderless)
                 .controlSize(.small)
-                .help("刷新 Rust Hub shadow 状态")
+                .help("刷新 Hub 内核状态")
             }
 
             ForEach(Array(presentation.lines.enumerated()), id: \.offset) { _, line in

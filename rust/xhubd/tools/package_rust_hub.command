@@ -53,6 +53,8 @@ cp "$ROOT_DIR/tools/skills_catalog_shadow_smoke.js" "$DIST_DIR/tools/skills_cata
 cp "$ROOT_DIR/tools/skills_catalog_shadow_smoke.command" "$DIST_DIR/tools/skills_catalog_shadow_smoke.command"
 cp "$ROOT_DIR/tools/skills_catalog_http_smoke.js" "$DIST_DIR/tools/skills_catalog_http_smoke.js"
 cp "$ROOT_DIR/tools/skills_catalog_http_smoke.command" "$DIST_DIR/tools/skills_catalog_http_smoke.command"
+cp "$ROOT_DIR/tools/xt_hub_contract_smoke.js" "$DIST_DIR/tools/xt_hub_contract_smoke.js"
+cp "$ROOT_DIR/tools/xt_hub_contract_smoke.command" "$DIST_DIR/tools/xt_hub_contract_smoke.command"
 cp "$ROOT_DIR/tools/xt_file_ipc_watcher_run_once_smoke.js" "$DIST_DIR/tools/xt_file_ipc_watcher_run_once_smoke.js"
 cp "$ROOT_DIR/tools/xt_file_ipc_watcher_run_once_smoke.command" "$DIST_DIR/tools/xt_file_ipc_watcher_run_once_smoke.command"
 cp "$ROOT_DIR/tools/xt_file_ipc_background_watcher_smoke.js" "$DIST_DIR/tools/xt_file_ipc_background_watcher_smoke.js"
@@ -196,6 +198,8 @@ chmod +x "$DIST_DIR/tools/run_rust_hub.command" \
   "$DIST_DIR/tools/skills_catalog_shadow_smoke.command" \
   "$DIST_DIR/tools/skills_catalog_http_smoke.js" \
   "$DIST_DIR/tools/skills_catalog_http_smoke.command" \
+  "$DIST_DIR/tools/xt_hub_contract_smoke.js" \
+  "$DIST_DIR/tools/xt_hub_contract_smoke.command" \
   "$DIST_DIR/tools/xt_file_ipc_watcher_run_once_smoke.js" \
   "$DIST_DIR/tools/xt_file_ipc_watcher_run_once_smoke.command" \
   "$DIST_DIR/tools/xt_file_ipc_background_watcher_smoke.js" \
