@@ -195,9 +195,10 @@ Contents:
 - X-Terminal-Runtime/: X-Terminal runtime bundle plus the Rust xtd sidecar
 
 Normal install:
-1) Drag X-Hub.app and X-Terminal.app to Applications.
-2) Launch X-Hub.app first.
-3) Launch X-Terminal.app and pair it with X-Hub.
+1) Quit any running X-Hub first.
+2) Drag X-Hub.app and X-Terminal.app to Applications, replacing older copies.
+3) Launch X-Hub.app from Applications first.
+4) Launch X-Terminal.app and pair it with X-Hub.
 
 Advanced Rust runtime fallback:
   Rust-Hub/bin/xhubd serve
@@ -257,9 +258,10 @@ What is included:
 How to run:
 
 1. Download and open the DMG.
-2. Drag \`X-Hub.app\` and \`X-Terminal.app\` to Applications.
-3. Control-click \`X-Hub.app\`, choose \`Open\`, and approve the developer preview warning once if macOS asks.
-4. Launch \`X-Terminal.app\` and pair it with X-Hub.
+2. Quit any running \`X-Hub.app\`; macOS can otherwise activate the old installed app because the bundle id is the same.
+3. Drag \`X-Hub.app\` and \`X-Terminal.app\` to Applications, replacing older copies.
+4. Control-click \`X-Hub.app\`, choose \`Open\`, and approve the developer preview warning once if macOS asks.
+5. Launch \`X-Terminal.app\` and pair it with X-Hub.
 
 Important:
 
