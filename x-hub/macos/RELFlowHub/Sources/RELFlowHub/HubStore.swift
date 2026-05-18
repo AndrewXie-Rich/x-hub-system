@@ -3192,7 +3192,6 @@ INSERT OR IGNORE INTO audit_events(
             }
         }
         refreshAIRuntimeStatus()
-        autoStartAIRuntimeIfNeeded()
     }
 
     private func refreshAIRuntimeStatus() {
@@ -3342,7 +3341,7 @@ INSERT OR IGNORE INTO audit_events(
                     appendAIRuntimeLogLine("Detected runtime version mismatch (running=\(st.runtimeVersion ?? "") expected=\(exp)); restarting")
                     stopAIRuntime()
                     // Start immediately (ignore backoff) because the runtime was already healthy.
-                    startAIRuntime()
+                    startAIRuntime(allowPythonAutoDetection: false)
                 }
             }
             return
@@ -3360,7 +3359,7 @@ INSERT OR IGNORE INTO audit_events(
         let exp = Double(min(6, max(0, aiRuntimeFailCount)))
         let delay = hasPendingRequests ? 0.0 : min(300.0, 15.0 * pow(2.0, exp))
         aiRuntimeNextStartAttemptAt = now + delay
-        startAIRuntime()
+        startAIRuntime(allowPythonAutoDetection: false)
     }
 
     func ensureAIRuntimeRunningIfNeeded() {
@@ -3406,7 +3405,7 @@ INSERT OR IGNORE INTO audit_events(
         return false
     }
 
-    func startAIRuntime() {
+    func startAIRuntime(allowPythonAutoDetection: Bool = true) {
         aiRuntimeLastError = ""
         aiRuntimeStopRequestedAt = 0
 
@@ -3509,13 +3508,14 @@ INSERT OR IGNORE INTO audit_events(
         let knownReadyPythonPath = knownReadyRuntimeSourcePythonPath(preferredProviderID: bootstrapProviderID)
         let preferredPythonSelection = preferredPythonPath(
             current: py,
-            preferredProviderID: bootstrapProviderID
+            preferredProviderID: bootstrapProviderID,
+            allowDetection: allowPythonAutoDetection
         )
         let exe: String
         var args: [String] = []
 
         appendAIRuntimeLogLine(
-            "Runtime python selection: configured=\(py.isEmpty ? "(auto)" : py) provider=\(bootstrapProviderID ?? "(none)") known_ready=\(knownReadyPythonPath ?? "(none)") preferred=\(preferredPythonSelection ?? "(none)")"
+            "Runtime python selection: configured=\(py.isEmpty ? "(auto)" : py) provider=\(bootstrapProviderID ?? "(none)") known_ready=\(knownReadyPythonPath ?? "(none)") preferred=\(preferredPythonSelection ?? "(none)") allow_detection=\(allowPythonAutoDetection ? 1 : 0)"
         )
 
         // Prefer a python that can actually satisfy the available local providers. If the stored
@@ -3726,7 +3726,11 @@ INSERT OR IGNORE INTO audit_events(
         return Set(paths.map { URL(fileURLWithPath: $0).standardizedFileURL.path })
     }
 
-    private func preferredPythonPath(current: String, preferredProviderID: String? = nil) -> String? {
+    private func preferredPythonPath(
+        current: String,
+        preferredProviderID: String? = nil,
+        allowDetection: Bool = true
+    ) -> String? {
         let trimmedCurrent = current.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedCurrent = trimmedCurrent.contains("/")
             ? URL(fileURLWithPath: (trimmedCurrent as NSString).expandingTildeInPath).standardizedFileURL.path
@@ -3734,8 +3738,11 @@ INSERT OR IGNORE INTO audit_events(
         let normalizedPreferredProviderID = preferredProviderID?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased() ?? ""
-        let best = knownReadyRuntimeSourcePythonPath(preferredProviderID: preferredProviderID)
-            ?? autoDetectPython(preferredProviderID: preferredProviderID)
+        let knownReady = knownReadyRuntimeSourcePythonPath(preferredProviderID: preferredProviderID)
+        if !allowDetection {
+            return normalizedCurrent.isEmpty ? knownReady : normalizedCurrent
+        }
+        let best = knownReady ?? autoDetectPython(preferredProviderID: preferredProviderID)
 
         guard !normalizedCurrent.isEmpty else {
             return best

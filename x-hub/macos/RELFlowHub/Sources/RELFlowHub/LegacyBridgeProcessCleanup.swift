@@ -9,6 +9,12 @@ enum LegacyBridgeProcessCleanup {
         "/X-Hub Dock Agent.app/Contents/MacOS/X-Hub Dock Agent",
     ]
 
+    static func terminateLegacyProcessesIfNeededInBackground() {
+        DispatchQueue.global(qos: .utility).async {
+            terminateLegacyProcessesIfNeeded()
+        }
+    }
+
     static func terminateLegacyProcessesIfNeeded() {
         let currentPID = getpid()
         let candidates = legacyProcessPIDs(excluding: currentPID)
@@ -53,7 +59,7 @@ enum LegacyBridgeProcessCleanup {
         return pids
     }
 
-    private static func processListOutput() -> String {
+    private static func processListOutput(timeout: TimeInterval = 0.8) -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/ps")
         process.arguments = ["ax", "-o", "pid=,command="]
@@ -69,7 +75,24 @@ enum LegacyBridgeProcessCleanup {
             return ""
         }
 
-        process.waitUntilExit()
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+
+        guard !process.isRunning else {
+            HubDiagnostics.log("legacy_bridge.cleanup ps_timeout timeout_s=\(timeout)")
+            process.terminate()
+            let terminationDeadline = Date().addingTimeInterval(0.2)
+            while process.isRunning && Date() < terminationDeadline {
+                Thread.sleep(forTimeInterval: 0.02)
+            }
+            if process.isRunning {
+                _ = kill(process.processIdentifier, SIGKILL)
+            }
+            return ""
+        }
+
         let data = (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
         return String(data: data, encoding: .utf8) ?? ""
     }

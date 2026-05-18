@@ -44,7 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NSApp.setActivationPolicy(.regular)
         HubDiagnostics.log("app.launch didFinishLaunching presentation=\(launchPresentationPolicy)")
 
-        LegacyBridgeProcessCleanup.terminateLegacyProcessesIfNeeded()
+        LegacyBridgeProcessCleanup.terminateLegacyProcessesIfNeededInBackground()
 
         activity = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical],
