@@ -26,17 +26,15 @@ struct XTControlSurfaceView: View {
         }
     }
 
-    @EnvironmentObject private var navigationFocusStore: XTNavigationFocusStore
+    @EnvironmentObject private var appModel: AppModel
+    @Environment(\.openWindow) private var openWindow
 
     let preferredSection: Section
-    @Binding var selectedSection: Section
+    @State private var selectedSection: Section = .overview
 
-    init(
-        preferredSection: Section = .overview,
-        selectedSection: Binding<Section>
-    ) {
+    init(preferredSection: Section = .overview) {
         self.preferredSection = preferredSection
-        _selectedSection = selectedSection
+        _selectedSection = State(initialValue: preferredSection)
     }
 
     var body: some View {
@@ -57,9 +55,9 @@ struct XTControlSurfaceView: View {
             Group {
                 switch selectedSection {
                 case .overview:
-                    XTControlOverviewSection(selectedSection: $selectedSection)
+                    overviewSection
                 case .hub:
-                    SettingsView(embeddedInControlCenter: true)
+                    SettingsView()
                 case .models:
                     ModelSettingsView(standaloneWindow: false)
                 case .skills:
@@ -77,13 +75,13 @@ struct XTControlSurfaceView: View {
         .onChange(of: preferredSection) { section in
             selectedSection = section
         }
-        .onChange(of: navigationFocusSnapshot.settingsFocusRequest?.nonce) { _ in
+        .onChange(of: appModel.settingsFocusRequest?.nonce) { _ in
             selectedSection = .hub
         }
-        .onChange(of: navigationFocusSnapshot.modelSettingsFocusRequest?.nonce) { _ in
+        .onChange(of: appModel.modelSettingsFocusRequest?.nonce) { _ in
             selectedSection = .models
         }
-        .onChange(of: navigationFocusSnapshot.supervisorSettingsFocusRequest?.nonce) { _ in
+        .onChange(of: appModel.supervisorSettingsFocusRequest?.nonce) { _ in
             selectedSection = .supervisor
         }
     }
@@ -101,33 +99,7 @@ struct XTControlSurfaceView: View {
         .padding(16)
     }
 
-    private var navigationFocusSnapshot: XTNavigationFocusSnapshot {
-        navigationFocusStore.snapshot
-    }
-
-    private func syncFocusedSection() {
-        if navigationFocusSnapshot.modelSettingsFocusRequest != nil {
-            selectedSection = .models
-        } else if navigationFocusSnapshot.supervisorSettingsFocusRequest != nil {
-            selectedSection = .supervisor
-        } else if navigationFocusSnapshot.settingsFocusRequest != nil {
-            selectedSection = .hub
-        } else {
-            selectedSection = preferredSection
-        }
-    }
-}
-
-private struct XTControlOverviewSection: View {
-    @Environment(\.xtAppModelReference) private var appModelReference
-    @EnvironmentObject private var hubConnectionStore: XTHubConnectionStore
-    @EnvironmentObject private var globalHomeStore: XTGlobalHomeStore
-    @EnvironmentObject private var controlSurfaceStore: XTControlSurfaceStore
-    @Environment(\.openWindow) private var openWindow
-
-    @Binding var selectedSection: XTControlSurfaceView.Section
-
-    var body: some View {
+    private var overviewSection: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 PrimaryActionRail(
@@ -149,13 +121,13 @@ private struct XTControlOverviewSection: View {
                         badge: hubStatusBadge,
                         summary: hubStatusHeadline,
                         detail: hubStatusDetail,
-                        actionTitle: hubConnectionSnapshot.interactive ? "查看连接" : "去连接",
+                        actionTitle: appModel.hubInteractive ? "查看连接" : "去连接",
                         systemImage: "link"
                     )
 
                     overviewCard(
                         title: "模型",
-                        badge: hubConnectionSnapshot.interactive ? "ready" : "pending",
+                        badge: appModel.hubInteractive ? "ready" : "pending",
                         summary: roleAssignmentSummary,
                         detail: "角色绑定、模型替换和路由修复都在模型页处理。",
                         actionTitle: "打开模型",
@@ -164,7 +136,7 @@ private struct XTControlOverviewSection: View {
 
                     overviewCard(
                         title: "技能",
-                        badge: "\(skillsSnapshot.installedSkillCount)",
+                        badge: "\(appModel.skillsCompatibilitySnapshot.installedSkillCount)",
                         summary: skillsHeadline,
                         detail: skillsDetail,
                         actionTitle: "打开技能",
@@ -189,11 +161,11 @@ private struct XTControlOverviewSection: View {
         [
             PrimaryActionRailAction(
                 id: "hub",
-                title: hubConnectionSnapshot.interactive ? "查看 Hub 与诊断" : "连接 Hub",
-                subtitle: hubConnectionSnapshot.interactive
+                title: appModel.hubInteractive ? "查看 Hub 与诊断" : "连接 Hub",
+                subtitle: appModel.hubInteractive
                     ? "Hub 已接入；连接、授权和诊断都收口在这里"
                     : "先走 Hub 配对 / 连接主链",
-                systemImage: hubConnectionSnapshot.interactive ? "link.circle.fill" : "link.badge.plus",
+                systemImage: appModel.hubInteractive ? "link.circle.fill" : "link.badge.plus",
                 style: .primary
             ),
             PrimaryActionRailAction(
@@ -221,48 +193,54 @@ private struct XTControlOverviewSection: View {
     }
 
     private var hubStatusBadge: String {
-        if hubConnectionSnapshot.localConnected {
+        if appModel.hubConnected {
             return "local"
         }
-        if hubConnectionSnapshot.remoteConnected {
+        if appModel.hubRemoteConnected {
             return "remote"
         }
-        if hubConnectionSnapshot.remoteLinking {
+        if appModel.hubRemoteLinking {
             return "linking"
         }
         return "off"
     }
 
     private var hubStatusHeadline: String {
-        if hubConnectionSnapshot.localConnected {
+        if appModel.hubConnected {
             return "Hub 当前走本机直连。"
         }
-        if hubConnectionSnapshot.remoteConnected {
+        if appModel.hubRemoteConnected {
             return "Hub 当前走远端已配对路径。"
         }
-        if hubConnectionSnapshot.remoteLinking {
+        if appModel.hubRemoteLinking {
             return "Hub 正在重连或恢复链路。"
         }
         return "Hub 还未接入，当前优先处理连接主链。"
     }
 
     private var hubStatusDetail: String {
-        let summary = hubConnectionSnapshot.remoteSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let summary = appModel.hubRemoteSummary.trimmingCharacters(in: .whitespacesAndNewlines)
         if !summary.isEmpty {
             return summary
         }
-        if hubConnectionSnapshot.interactive {
+        if appModel.hubInteractive {
             return "如果只是想确认端口、配对和链路状态，直接切到 Hub 页即可。"
         }
         return "如果你已经有 Hub 邀请或固定目标主机，也可以直接打开 Hub 向导。"
     }
 
     private var roleAssignmentSummary: String {
-        controlSurfaceSnapshot.roleAssignmentSummary
+        AXRole.allCases.map { role in
+            let raw = appModel.settingsStore.settings.assignment(for: role).model?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let value = raw.isEmpty ? "auto" : compactModelLabel(raw)
+            return "\(role.displayName): \(value)"
+        }
+        .joined(separator: " · ")
     }
 
     private var skillsHeadline: String {
-        let snapshot = skillsSnapshot
+        let snapshot = appModel.skillsCompatibilitySnapshot
         if snapshot.statusKind == .supported {
             return "Skills 兼容状态稳定。"
         }
@@ -276,7 +254,7 @@ private struct XTControlOverviewSection: View {
     }
 
     private var skillsDetail: String {
-        let snapshot = skillsSnapshot
+        let snapshot = appModel.skillsCompatibilitySnapshot
         let statusLine = snapshot.statusLine.trimmingCharacters(in: .whitespacesAndNewlines)
         if !statusLine.isEmpty {
             return statusLine
@@ -285,18 +263,18 @@ private struct XTControlOverviewSection: View {
     }
 
     private var diagnosticsBadge: String {
-        hubConnectionSnapshot.interactive ? "live" : "fix"
+        appModel.hubInteractive ? "live" : "fix"
     }
 
     private var diagnosticsHeadline: String {
-        if hubConnectionSnapshot.interactive {
+        if appModel.hubInteractive {
             return "诊断入口已与当前主链状态对齐。"
         }
         return "先修 Hub，再继续模型、授权和执行链路。"
     }
 
     private var diagnosticsDetail: String {
-        if controlSurfaceSnapshot.bridgeEnabled {
+        if appModel.bridgeEnabled {
             return "网络桥已启用；如果仍有异常，优先看 Hub 与诊断页的 failure code 和 repair entry。"
         }
         return "网络桥未启用或不可用时，不要在工作台猜原因，直接回 Hub / 诊断页处理。"
@@ -306,7 +284,7 @@ private struct XTControlOverviewSection: View {
         switch action.id {
         case "hub":
             selectedSection = .hub
-            if !hubConnectionSnapshot.interactive {
+            if !appModel.hubInteractive {
                 openWindow(id: "hub_setup")
             }
         case "models":
@@ -384,26 +362,21 @@ private struct XTControlOverviewSection: View {
         )
     }
 
-    private var appModel: AppModel {
-        guard let appModelReference else {
-            preconditionFailure("XTControlOverviewSection requires xtAppModelReference")
+    private func compactModelLabel(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > 24 else { return trimmed }
+        return String(trimmed.prefix(24)) + "…"
+    }
+
+    private func syncFocusedSection() {
+        if appModel.modelSettingsFocusRequest != nil {
+            selectedSection = .models
+        } else if appModel.supervisorSettingsFocusRequest != nil {
+            selectedSection = .supervisor
+        } else if appModel.settingsFocusRequest != nil {
+            selectedSection = .hub
+        } else {
+            selectedSection = preferredSection
         }
-        return appModelReference
-    }
-
-    private var hubConnectionSnapshot: XTHubConnectionSnapshot {
-        hubConnectionStore.snapshot
-    }
-
-    private var globalHomeSnapshot: XTGlobalHomeSnapshot {
-        globalHomeStore.snapshot
-    }
-
-    private var skillsSnapshot: XTGlobalHomeSkillsSnapshot {
-        globalHomeSnapshot.skills
-    }
-
-    private var controlSurfaceSnapshot: XTControlSurfaceSnapshot {
-        controlSurfaceStore.snapshot
     }
 }

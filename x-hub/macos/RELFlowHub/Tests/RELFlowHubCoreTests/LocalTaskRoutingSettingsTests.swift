@@ -60,4 +60,31 @@ final class LocalTaskRoutingSettingsTests: XCTestCase {
         XCTAssertEqual(settings.preferredModelIdByTask["embedding"], "hf-embed")
         XCTAssertNil(settings.devicePreferredModelIdByTaskKind["terminal_device"])
     }
+
+    func testLegacyRoleTaskKeysCollapseIntoThreePrimaryRoles() throws {
+        let json = """
+        {
+          "preferredModelIdByTask": {
+            "assist": "hub-coder",
+            "review": "hub-reviewer",
+            "advisor": "hub-supervisor"
+          },
+          "devicePreferredModelIdByTaskKind": {
+            "terminal_device": {
+              "x_terminal_refine": "device-coder"
+            }
+          }
+        }
+        """
+
+        let settings = try JSONDecoder().decode(LocalTaskRoutingSettings.self, from: Data(json.utf8))
+        XCTAssertEqual(settings.preferredModelIdByTask["coder"], "hub-coder")
+        XCTAssertEqual(settings.preferredModelIdByTask["reviewer"], "hub-reviewer")
+        XCTAssertEqual(settings.preferredModelIdByTask["supervisor"], "hub-supervisor")
+        XCTAssertEqual(settings.devicePreferredModelIdByTaskKind["terminal_device"]?["coder"], "device-coder")
+
+        let resolvedCoder = settings.resolvedModelId(taskKind: "coder", deviceId: "terminal_device")
+        XCTAssertEqual(resolvedCoder.modelId, "device-coder")
+        XCTAssertEqual(resolvedCoder.source, "device_override")
+    }
 }

@@ -59,7 +59,8 @@ Response times may be faster for clearly reproducible issues affecting the trust
 ## Scope Notes
 
 - Security-sensitive design intent is documented across `README.md`, `RELEASE.md`, and `docs/open-source/OSS_RELEASE_CHECKLIST_v1.md`.
-- X-Constitution and related policy-engine references are documented in `X_MEMORY.md`, `docs/xhub-constitution-l0-injection-v1.md`, `docs/xhub-constitution-l1-guidance-v1.md`, and `docs/xhub-constitution-policy-engine-checklist-v1.md`.
+- X-Constitution and related policy-engine references are documented in `X_MEMORY.md`, `docs/memory-new/xhub-constitution-l0-injection-v2.md`, `docs/xhub-constitution-l1-guidance-v1.md`, and `docs/xhub-constitution-policy-engine-checklist-v1.md`.
 - The intended model is Hub-side memory-backed constitutional guidance reinforced by policy controls, not terminal-only prompt text treated as a security boundary.
+- For memory control specifically, the user chooses which AI executes memory jobs in X-Hub, `Memory-Core` remains the governed rule layer, and durable writes still terminate through `Writer + Gate`.
 - Public capability claims remain limited to the validated release slice described in `README.md`.
 - If you are unsure whether something is security-relevant, report it anyway.

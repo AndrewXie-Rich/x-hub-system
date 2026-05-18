@@ -319,6 +319,127 @@ def compact_remote_snapshot_cache_snapshot(payload):
     }
 
 
+def compact_provider_key_candidate_decision(payload):
+    if not isinstance(payload, dict):
+        return None
+
+    availability_state = None
+    availability_reason_code = None
+    availability_retry_at_ms = None
+    availability = payload.get("availability")
+    if isinstance(availability, dict):
+        for state in ["ready", "cooldown", "blocked", "disabled", "stale"]:
+            if state not in availability:
+                continue
+            availability_state = state
+            details = availability.get(state)
+            if isinstance(details, dict):
+                availability_reason_code = details.get("reasonCode")
+                availability_retry_at_ms = details.get("retryAtMs")
+            break
+
+    return {
+        "account_key": payload.get("accountKey"),
+        "provider": payload.get("provider"),
+        "pool_id": payload.get("poolID"),
+        "wire_api": payload.get("wireAPI"),
+        "availability_state": availability_state,
+        "availability_reason_code": availability_reason_code,
+        "availability_retry_at_ms": availability_retry_at_ms,
+        "selected": payload.get("selected"),
+        "reason_code": payload.get("reasonCode"),
+        "retry_at_ms": payload.get("retryAtMs"),
+    }
+
+
+def compact_provider_key_selection_snapshot(payload):
+    if not isinstance(payload, dict):
+        return None
+
+    raw_candidates = payload.get("candidates") or []
+    compact_candidates = [
+        compact_provider_key_candidate_decision(candidate)
+        for candidate in raw_candidates
+        if isinstance(candidate, dict)
+    ]
+    compact_candidates = [candidate for candidate in compact_candidates if candidate is not None]
+
+    selected_candidate = next(
+        (candidate for candidate in compact_candidates if candidate.get("selected") is True),
+        None
+    )
+    blocked_candidate_count = sum(
+        1 for candidate in compact_candidates
+        if candidate.get("availability_state") == "blocked"
+    )
+    cooldown_candidate_count = sum(
+        1 for candidate in compact_candidates
+        if candidate.get("availability_state") == "cooldown"
+    )
+    stale_candidate_count = sum(
+        1 for candidate in compact_candidates
+        if candidate.get("availability_state") == "stale"
+    )
+    retry_candidates = [
+        candidate.get("availability_retry_at_ms") or candidate.get("retry_at_ms")
+        for candidate in compact_candidates
+        if isinstance(candidate.get("availability_retry_at_ms") or candidate.get("retry_at_ms"), (int, float))
+        and (candidate.get("availability_retry_at_ms") or candidate.get("retry_at_ms")) > 0
+    ]
+    next_retry_at_ms = min(retry_candidates) if retry_candidates else None
+
+    return {
+        "requested_provider": payload.get("requestedProvider"),
+        "requested_model_id": payload.get("requestedModelId"),
+        "strategy": payload.get("strategy"),
+        "selection_scope": payload.get("selectionScope"),
+        "selected_account_key": payload.get("selectedAccountKey"),
+        "fallback_reason_code": payload.get("fallbackReasonCode"),
+        "candidate_count": len(compact_candidates),
+        "blocked_candidate_count": blocked_candidate_count,
+        "cooldown_candidate_count": cooldown_candidate_count,
+        "stale_candidate_count": stale_candidate_count,
+        "next_retry_at_ms": next_retry_at_ms,
+        "selected_candidate": selected_candidate,
+        "candidate_preview": compact_candidates[:4],
+    }
+
+
+def compact_provider_key_import_issue(payload):
+    if not isinstance(payload, dict):
+        return None
+    return {
+        "kind": payload.get("kind"),
+        "state": payload.get("state"),
+        "source_ref": payload.get("sourceRef"),
+        "source_name": payload.get("sourceName"),
+        "error_code": payload.get("errorCode"),
+        "error_detail": payload.get("errorDetail"),
+    }
+
+
+def compact_provider_key_route_context_snapshot(payload):
+    if not isinstance(payload, dict):
+        return None
+
+    import_issues = payload.get("import_issues") or []
+    compact_import_issues = [
+        compact_provider_key_import_issue(issue)
+        for issue in import_issues
+        if isinstance(issue, dict)
+    ]
+    compact_import_issues = [issue for issue in compact_import_issues if issue is not None]
+    decision = payload.get("decision")
+
+    return {
+        "model_id": payload.get("model_id"),
+        "selected_account_key": decision.get("selectedAccountKey") if isinstance(decision, dict) else None,
+        "import_issue_count": len(compact_import_issues),
+        "primary_import_issue": compact_import_issues[0] if compact_import_issues else None,
+        "import_context_preview": (payload.get("import_context_lines") or [])[:3],
+    }
+
+
 def compact_connectivity_repair_ledger(payload):
     if not isinstance(payload, dict):
         return None
@@ -647,6 +768,36 @@ def compact_xt_pairing_repair_snapshot(payload):
     }
 
 
+def compact_xt_stale_profile_repair_snapshot(payload):
+    if not isinstance(payload, dict):
+        return None
+    cases = payload.get("cases") or []
+    compact_cases = []
+    for case in cases:
+        if not isinstance(case, dict):
+            continue
+        compact_cases.append({
+            "failure_code": case.get("failure_code"),
+            "mapped_issue": case.get("mapped_issue"),
+            "probe_stage": case.get("probe_stage"),
+            "probe_reason_code": case.get("probe_reason_code"),
+            "paired_route_readiness": case.get("paired_route_readiness"),
+            "paired_route_reason_code": case.get("paired_route_reason_code"),
+            "should_fail_closed_on_discovery": case.get("should_fail_closed_on_discovery"),
+            "should_skip_bootstrap_refresh_after_connect_failure": case.get("should_skip_bootstrap_refresh_after_connect_failure"),
+        })
+    discovery_codes = payload.get("discovery_fail_closed_reason_codes")
+    refresh_skip_codes = payload.get("connect_refresh_skip_reason_codes")
+    completion_codes = payload.get("completion_definition_failure_codes")
+    return {
+        "case_count": len(compact_cases),
+        "discovery_fail_closed_reason_codes": discovery_codes if isinstance(discovery_codes, list) else [],
+        "connect_refresh_skip_reason_codes": refresh_skip_codes if isinstance(refresh_skip_codes, list) else [],
+        "completion_definition_failure_codes": completion_codes if isinstance(completion_codes, list) else [],
+        "cases": compact_cases,
+    }
+
+
 def compact_xt_route_target_snapshot(payload):
     if not isinstance(payload, dict):
         return None
@@ -839,6 +990,7 @@ def compact_build_snapshot_inventory_report(payload):
 hub_local_service_snapshot_evidence_ref = os.path.join(report_dir, "xhub_doctor_hub_local_service_snapshot_smoke_evidence.v1.json")
 xt_smoke_evidence_ref = os.path.join(report_dir, "xhub_doctor_xt_source_smoke_evidence.v1.json")
 xt_pairing_repair_evidence_ref = os.path.join(report_dir, "xhub_doctor_xt_pairing_repair_smoke_evidence.v1.json")
+xt_stale_profile_repair_evidence_ref = os.path.join(report_dir, "xt_stale_profile_repair_evidence.v1.json")
 xt_memory_truth_closure_evidence_ref = os.path.join(report_dir, "xhub_doctor_xt_memory_truth_closure_smoke_evidence.v1.json")
 all_smoke_evidence_ref = os.path.join(report_dir, "xhub_doctor_all_source_smoke_evidence.v1.json")
 hub_pairing_launch_only_evidence_ref = os.path.join(report_dir, "xhub_background_launch_only_smoke_evidence.v1.json")
@@ -863,6 +1015,11 @@ xt_smoke_evidence = (
 )
 xt_pairing_repair_evidence = (
     load_json_if_exists(xt_pairing_repair_evidence_ref)
+    if xt_pairing_repair_status == "pass"
+    else None
+)
+xt_stale_profile_repair_evidence = (
+    load_json_if_exists(xt_stale_profile_repair_evidence_ref)
     if xt_pairing_repair_status == "pass"
     else None
 )
@@ -936,6 +1093,12 @@ payload = {
             "structured_heartbeat_governance_snapshot": compact_heartbeat_governance_snapshot(
                 xt_smoke_evidence.get("heartbeat_governance_snapshot") if xt_smoke_evidence else None
             ),
+            "structured_provider_key_selection_snapshot": compact_provider_key_selection_snapshot(
+                xt_smoke_evidence.get("provider_key_selection_snapshot") if xt_smoke_evidence else None
+            ),
+            "structured_provider_key_route_context_snapshot": compact_provider_key_route_context_snapshot(
+                xt_smoke_evidence.get("provider_key_route_context_snapshot") if xt_smoke_evidence else None
+            ),
             "structured_durable_candidate_mirror_snapshot": compact_durable_candidate_mirror_snapshot(
                 xt_smoke_evidence.get("durable_candidate_mirror_snapshot") if xt_smoke_evidence else None
             ),
@@ -967,6 +1130,10 @@ payload = {
             "structured_pairing_repair_snapshot": compact_xt_pairing_repair_snapshot(
                 xt_pairing_repair_evidence if xt_pairing_repair_evidence else None
             ),
+            "stale_profile_evidence_ref": os.path.realpath(xt_stale_profile_repair_evidence_ref) if xt_stale_profile_repair_evidence else "",
+            "structured_stale_profile_repair_snapshot": compact_xt_stale_profile_repair_snapshot(
+                xt_stale_profile_repair_evidence if xt_stale_profile_repair_evidence else None
+            ),
         },
         {
             "step_id": "xt_memory_truth_closure_smoke",
@@ -996,6 +1163,12 @@ payload = {
             ),
             "structured_heartbeat_governance_snapshot": compact_heartbeat_governance_snapshot(
                 all_smoke_evidence.get("xt_heartbeat_governance_snapshot") if all_smoke_evidence else None
+            ),
+            "structured_provider_key_selection_snapshot": compact_provider_key_selection_snapshot(
+                all_smoke_evidence.get("xt_provider_key_selection_snapshot") if all_smoke_evidence else None
+            ),
+            "structured_provider_key_route_context_snapshot": compact_provider_key_route_context_snapshot(
+                all_smoke_evidence.get("xt_provider_key_route_context_snapshot") if all_smoke_evidence else None
             ),
             "structured_durable_candidate_mirror_snapshot": compact_durable_candidate_mirror_snapshot(
                 all_smoke_evidence.get("xt_durable_candidate_mirror_snapshot") if all_smoke_evidence else None
@@ -1106,6 +1279,30 @@ payload = {
         ),
         "all_source_heartbeat_governance_snapshot": compact_heartbeat_governance_snapshot(
             all_smoke_evidence.get("xt_heartbeat_governance_snapshot") if all_smoke_evidence else None
+        ),
+    },
+    "provider_key_selection_support": {
+        "xt_source_smoke_evidence_ref": os.path.realpath(xt_smoke_evidence_ref) if xt_smoke_evidence else "",
+        "all_source_smoke_evidence_ref": os.path.realpath(all_smoke_evidence_ref) if all_smoke_evidence else "",
+        "xt_source_smoke_status": xt_smoke_status,
+        "all_source_smoke_status": all_smoke_status,
+        "xt_source_provider_key_selection_snapshot": compact_provider_key_selection_snapshot(
+            xt_smoke_evidence.get("provider_key_selection_snapshot") if xt_smoke_evidence else None
+        ),
+        "all_source_provider_key_selection_snapshot": compact_provider_key_selection_snapshot(
+            all_smoke_evidence.get("xt_provider_key_selection_snapshot") if all_smoke_evidence else None
+        ),
+    },
+    "provider_key_route_context_support": {
+        "xt_source_smoke_evidence_ref": os.path.realpath(xt_smoke_evidence_ref) if xt_smoke_evidence else "",
+        "all_source_smoke_evidence_ref": os.path.realpath(all_smoke_evidence_ref) if all_smoke_evidence else "",
+        "xt_source_smoke_status": xt_smoke_status,
+        "all_source_smoke_status": all_smoke_status,
+        "xt_source_provider_key_route_context_snapshot": compact_provider_key_route_context_snapshot(
+            xt_smoke_evidence.get("provider_key_route_context_snapshot") if xt_smoke_evidence else None
+        ),
+        "all_source_provider_key_route_context_snapshot": compact_provider_key_route_context_snapshot(
+            all_smoke_evidence.get("xt_provider_key_route_context_snapshot") if all_smoke_evidence else None
         ),
     },
     "supervisor_memory_policy_support": {
@@ -1259,6 +1456,13 @@ payload = {
         "xt_pairing_repair_smoke_status": xt_pairing_repair_status,
         "xt_pairing_repair_snapshot": compact_xt_pairing_repair_snapshot(
             xt_pairing_repair_evidence if xt_pairing_repair_evidence else None
+        ),
+    },
+    "xt_stale_profile_repair_support": {
+        "xt_pairing_repair_smoke_status": xt_pairing_repair_status,
+        "xt_stale_profile_repair_evidence_ref": os.path.realpath(xt_stale_profile_repair_evidence_ref) if xt_stale_profile_repair_evidence else "",
+        "xt_stale_profile_repair_snapshot": compact_xt_stale_profile_repair_snapshot(
+            xt_stale_profile_repair_evidence if xt_stale_profile_repair_evidence else None
         ),
     },
     "xt_memory_truth_closure_support": {

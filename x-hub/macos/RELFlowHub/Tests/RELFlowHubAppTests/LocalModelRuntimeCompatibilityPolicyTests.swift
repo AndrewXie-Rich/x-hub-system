@@ -357,6 +357,7 @@ final class LocalModelRuntimeCompatibilityPolicyTests: XCTestCase {
             modelPath: modelDir.path,
             backend: "transformers",
             taskKinds: ["vision_understand"],
+            catalogSnapshot: catalogSnapshot(models: []),
             providerPackSnapshot: .empty(),
             pythonPath: fakePython.path
         )
@@ -397,7 +398,24 @@ final class LocalModelRuntimeCompatibilityPolicyTests: XCTestCase {
             backend: "mlx",
             taskKinds: ["vision_understand"],
             executionProviderID: "mlx_vlm",
-            providerPackSnapshot: .empty(),
+            catalogSnapshot: catalogSnapshot(models: []),
+            providerPackSnapshot: providerPackSnapshot(
+                packs: [
+                    LocalProviderPackRegistryEntry(
+                        providerId: "mlx_vlm",
+                        engine: "mlx-vlm",
+                        version: "test-helper-override",
+                        runtimeRequirements: LocalProviderPackRegistryRuntimeRequirements(
+                            executionMode: "helper_binary_bridge",
+                            helperBinary: helperBinary.path
+                        ),
+                        installed: true,
+                        enabled: true,
+                        packState: "installed",
+                        reasonCode: "manual_test_override"
+                    ),
+                ]
+            ),
             helperBinaryPath: helperBinary.path,
             pythonPath: fakePython.path
         )
@@ -727,6 +745,7 @@ final class LocalModelRuntimeCompatibilityPolicyTests: XCTestCase {
         let message = LocalModelRuntimeCompatibilityPolicy.blockedActionMessage(
             action: "warmup",
             model: model,
+            catalogSnapshot: catalogSnapshot(models: []),
             providerPackSnapshot: .empty(),
             pythonPath: fakePython.path
         )
@@ -769,6 +788,7 @@ final class LocalModelRuntimeCompatibilityPolicyTests: XCTestCase {
         let message = LocalModelRuntimeCompatibilityPolicy.blockedActionMessage(
             action: "warmup",
             model: model,
+            catalogSnapshot: catalogSnapshot(models: []),
             providerPackSnapshot: .empty(),
             pythonPath: fakePython.path
         )
@@ -857,6 +877,16 @@ final class LocalModelRuntimeCompatibilityPolicyTests: XCTestCase {
 
     private func catalogSnapshot(models: [ModelCatalogEntry]) -> ModelCatalogSnapshot {
         ModelCatalogSnapshot(models: models, updatedAt: 0)
+    }
+
+    private func providerPackSnapshot(
+        packs: [LocalProviderPackRegistryEntry]
+    ) -> LocalProviderPackRegistrySnapshot {
+        LocalProviderPackRegistrySnapshot(
+            schemaVersion: LocalProviderPackRegistry.schemaVersion,
+            updatedAt: 0,
+            packs: packs
+        )
     }
 
     private func writeExecutable(_ content: String, to url: URL) throws {

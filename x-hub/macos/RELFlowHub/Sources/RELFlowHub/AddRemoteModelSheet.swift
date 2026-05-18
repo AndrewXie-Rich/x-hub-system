@@ -20,6 +20,9 @@ struct AddRemoteModelSheet: View {
     @State private var idPrefix: String = ""
     @State private var localIdSuffix: String = ""
     @State private var note: String = ""
+    @State private var importedCredentialVariants: [CodexProviderImportResolver.ResolvedCredentialVariant] = []
+    @State private var importedCredentialFingerprint: String = ""
+    @State private var importedProviderKeyImportSource: ProviderKeyImportSource?
 
     @State private var discoveredModelIds: [String] = []
     @State private var importAllDiscovered: Bool = false
@@ -137,6 +140,9 @@ struct AddRemoteModelSheet: View {
 
             HStack(spacing: 6) {
                 summaryTag(keyReferenceSummary)
+                if activeImportedCredentialVariantCount > 1 {
+                    summaryTag("同目录 key \(activeImportedCredentialVariantCount)")
+                }
                 summaryTag(HubUIStrings.Models.AddRemote.summaryContext(normalizedContextLengthText))
                 summaryTag(HubUIStrings.Models.AddRemote.summaryEnabled(enabled))
                 if !normalizedPrefix(idPrefix).isEmpty {
@@ -502,6 +508,10 @@ struct AddRemoteModelSheet: View {
         return "\(max(512, value))"
     }
 
+    private var activeImportedCredentialVariantCount: Int {
+        activeCredentialVariants().count
+    }
+
     private var importTargetSummary: String {
         if importAllDiscovered, !discoveredModelIds.isEmpty {
             return HubUIStrings.Models.AddRemote.importTargetAll(discoveredModelIds.count)
@@ -620,6 +630,18 @@ struct AddRemoteModelSheet: View {
             } else {
                 errorText = ""
             }
+            importedCredentialVariants = resolved.credentialVariants
+            importedCredentialFingerprint = credentialFingerprint(
+                backend: effectiveBackend,
+                baseURL: effectiveBase,
+                apiKey: imported.apiKey,
+                apiKeyRef: apiKeyRef,
+                wireAPI: importedWireAPI
+            )
+            importedProviderKeyImportSource = ProviderKeyImportSource(
+                kind: "auth_dir",
+                sourceRef: url.deletingLastPathComponent().path
+            )
         } catch {
             errorText = error.localizedDescription
         }
@@ -652,6 +674,18 @@ struct AddRemoteModelSheet: View {
             if let credentials = resolved.credentials {
                 apiKey = credentials.apiKey
             }
+            importedCredentialVariants = resolved.credentialVariants
+            importedCredentialFingerprint = credentialFingerprint(
+                backend: imported.backend,
+                baseURL: imported.baseURL,
+                apiKey: resolved.credentials?.apiKey ?? "",
+                apiKeyRef: imported.apiKeyRef,
+                wireAPI: normalizedWireAPI(imported.wireAPI)
+            )
+            importedProviderKeyImportSource = ProviderKeyImportSource(
+                kind: "config_path",
+                sourceRef: url.path
+            )
             errorText = ""
         } catch {
             errorText = error.localizedDescription
@@ -672,6 +706,28 @@ struct AddRemoteModelSheet: View {
         let noteText = note.trimmingCharacters(in: .whitespacesAndNewlines)
         let suffix = sanitizeSuffix(localIdSuffix)
         let normalizedWireAPIValue = normalizedStoredWireAPI()
+        let credentialVariants = activeCredentialVariants().isEmpty
+            ? [
+                CodexProviderImportResolver.ResolvedCredentialVariant(
+                    credentials: ProviderAuthImport.ImportedCredentials(
+                        backend: backend,
+                        apiKey: key,
+                        refreshToken: "",
+                        baseURL: base,
+                        apiKeyRef: ref,
+                        wireAPI: normalizedWireAPIValue ?? "",
+                        authType: "api_key",
+                        expiresAtMs: 0,
+                        email: "",
+                        accountID: "",
+                        oauthSourceKey: "",
+                        authIndex: 0,
+                        kind: .apiKey
+                    ),
+                    sourceURL: nil
+                )
+            ]
+            : activeCredentialVariants()
 
         let selectedUpstreamIds: [String] = {
             if importAllDiscovered, !discoveredModelIds.isEmpty {
@@ -688,30 +744,54 @@ struct AddRemoteModelSheet: View {
 
         var entries: [RemoteModelEntry] = []
         let customGroupName = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
-        for raw in selectedUpstreamIds {
-            let upstream = normalizeUpstreamModelId(raw)
-            if upstream.isEmpty { continue }
-            let baseId = makeLocalModelId(upstream: upstream)
-            let localId = suffix.isEmpty ? baseId : (baseId + suffix)
-            let entry = RemoteModelEntry(
-                id: localId,
-                name: upstream,
-                groupDisplayName: customGroupName.isEmpty ? nil : customGroupName,
-                backend: backend,
-                contextLength: max(512, ctx),
-                enabled: enabled,
-                baseURL: base.isEmpty ? nil : base,
-                apiKeyRef: ref,
-                upstreamModelId: upstream,
-                wireAPI: normalizedWireAPIValue,
-                apiKey: key,
-                note: noteText.isEmpty ? nil : noteText
-            )
-            entries.append(entry)
+        for credentialVariant in credentialVariants {
+            let credential = credentialVariant.credentials
+            let entryBackend = credential.backend.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? backend
+                : credential.backend
+            let entryBase = credential.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            let entryRef = credential.apiKeyRef.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? ref
+                : credential.apiKeyRef
+            let entryWireAPI = normalizedCredentialWireAPI(credential.wireAPI, fallback: normalizedWireAPIValue)
+
+            for raw in selectedUpstreamIds {
+                let upstream = normalizeUpstreamModelId(raw)
+                if upstream.isEmpty { continue }
+                let baseId = makeLocalModelId(upstream: upstream)
+                let localId = suffix.isEmpty ? baseId : (baseId + suffix)
+                let entry = RemoteModelEntry(
+                    id: localId,
+                    name: upstream,
+                    groupDisplayName: customGroupName.isEmpty ? nil : customGroupName,
+                    backend: entryBackend,
+                    contextLength: max(512, ctx),
+                    enabled: enabled,
+                    baseURL: entryBase.isEmpty ? (base.isEmpty ? nil : base) : entryBase,
+                    apiKeyRef: entryRef,
+                    upstreamModelId: upstream,
+                    wireAPI: entryWireAPI,
+                    apiKey: credential.apiKey,
+                    note: noteText.isEmpty ? nil : noteText
+                )
+                entries.append(entry)
+            }
         }
 
         guard !entries.isEmpty else {
             errorText = HubUIStrings.Models.AddRemote.noValidModelIDs
+            return
+        }
+
+        let providerKeySync = syncProviderKeyStore(
+            credentialVariants: credentialVariants,
+            selectedUpstreamIDs: selectedUpstreamIds,
+            noteText: noteText
+        )
+        guard providerKeySync.ok else {
+            errorText = providerKeySync.errors.isEmpty
+                ? "无法写入正式 Provider Key 存储。"
+                : providerKeySync.errors.joined(separator: "\n")
             return
         }
 
@@ -726,8 +806,8 @@ struct AddRemoteModelSheet: View {
         if b == "gemini" || b == "remote_catalog" {
             return RemoteProviderEndpoints.stripModelRef(trimmed)
         }
-        if b == "openai", trimmed.lowercased().hasPrefix("openai/") {
-            return String(trimmed.dropFirst("openai/".count))
+        if b == "openai" {
+            return RemoteProviderEndpoints.normalizedOpenAIModelID(trimmed)
         }
         if b == "anthropic", trimmed.lowercased().hasPrefix("anthropic/") {
             return String(trimmed.dropFirst("anthropic/".count))
@@ -779,6 +859,110 @@ struct AddRemoteModelSheet: View {
             let normalized = normalizedWireAPI(wireAPI)
             return normalized.isEmpty ? nil : normalized
         }
+    }
+
+    private func normalizedCredentialWireAPI(_ raw: String, fallback: String?) -> String? {
+        let normalized = normalizedWireAPI(raw)
+        if !normalized.isEmpty {
+            return normalized
+        }
+        return fallback
+    }
+
+    private func activeCredentialVariants() -> [CodexProviderImportResolver.ResolvedCredentialVariant] {
+        guard !importedCredentialVariants.isEmpty else { return [] }
+        guard credentialFingerprint() == importedCredentialFingerprint else { return [] }
+        return importedCredentialVariants
+    }
+
+    private func activeProviderKeyImportSource() -> ProviderKeyImportSource? {
+        guard !activeCredentialVariants().isEmpty else { return nil }
+        return importedProviderKeyImportSource
+    }
+
+    private func syncProviderKeyStore(
+        credentialVariants: [CodexProviderImportResolver.ResolvedCredentialVariant],
+        selectedUpstreamIDs: [String],
+        noteText: String
+    ) -> ProviderKeyImportSyncResult {
+        let inputs = credentialVariants.map { variant in
+            let credential = variant.credentials
+            let provider = providerKeyProvider(for: credential)
+            let trimmedSourceRef = variant.sourceURL?.path.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let sourceType = trimmedSourceRef.isEmpty ? "" : "auth_file"
+            let notes = noteText.isEmpty
+                ? "Imported via Add Remote Model"
+                : noteText
+            return ProviderKeyImportedAccountInput(
+                provider: provider,
+                email: credential.email,
+                apiKey: credential.apiKey,
+                refreshToken: credential.refreshToken,
+                baseURL: credential.baseURL,
+                proxyURL: "",
+                enabled: enabled,
+                authType: credential.authType,
+                wireAPI: credential.wireAPI,
+                expiresAtMs: credential.expiresAtMs,
+                tier: "",
+                customHeaders: [:],
+                models: selectedUpstreamIDs,
+                notes: notes,
+                priority: 0,
+                accountID: credential.accountID,
+                sourceType: sourceType,
+                sourceRef: trimmedSourceRef,
+                oauthSourceKey: credential.oauthSourceKey,
+                authIndex: credential.authIndex,
+                sourceOwners: []
+            )
+        }
+
+        return ProviderKeyStorage.syncImportedAccounts(
+            inputs,
+            importSource: activeProviderKeyImportSource()
+        )
+    }
+
+    private func providerKeyProvider(for credential: ProviderAuthImport.ImportedCredentials) -> String {
+        if credential.kind == .chatGPTTokenBundle {
+            return "codex"
+        }
+
+        switch RemoteProviderEndpoints.canonicalBackend(credential.backend) {
+        case "anthropic":
+            return "claude"
+        case "gemini":
+            return "gemini"
+        case "openai", "openai_compatible", "remote_catalog":
+            return "openai"
+        case "qwen":
+            return "qwen"
+        case "iflow":
+            return "iflow"
+        case "kimi":
+            return "kimi"
+        case "antigravity":
+            return "antigravity"
+        default:
+            return "custom"
+        }
+    }
+
+    private func credentialFingerprint(
+        backend: String? = nil,
+        baseURL: String? = nil,
+        apiKey: String? = nil,
+        apiKeyRef: String? = nil,
+        wireAPI: String? = nil
+    ) -> String {
+        [
+            RemoteProviderEndpoints.canonicalBackend(backend ?? self.backend),
+            (baseURL ?? self.baseURL).trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            (apiKey ?? self.apiKey).trimmingCharacters(in: .whitespacesAndNewlines),
+            (apiKeyRef ?? self.apiKeyRef).trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            normalizedWireAPI(wireAPI ?? self.wireAPI)
+        ].joined(separator: "\u{1F}")
     }
 
     private func defaultPrefix(for backend: String) -> String {

@@ -261,6 +261,87 @@ await runAsync('LPR-W1-05/legacy MLX generate path remains compatible after loca
   });
 });
 
+await runAsync('Rust local ML execution authority handles MLX generate without legacy file IPC', async () => {
+  const runtimeBaseDir = makeTmp('runtime_rust_execution');
+  const dbPath = makeTmp('db_rust_execution', '.db');
+  fs.mkdirSync(runtimeBaseDir, { recursive: true });
+
+  await withEnvAsync(baseEnv(runtimeBaseDir), async () => {
+    const db = new HubDB({ dbPath });
+    try {
+      writeModelsState(runtimeBaseDir, [
+        {
+          id: 'mlx/qwen2.5-7b-instruct',
+          name: 'Qwen Local',
+          backend: 'mlx',
+          modelPath: '/models/qwen',
+          state: 'available',
+        },
+      ]);
+      writeLegacyMLXStatus(runtimeBaseDir, { mlxOk: true });
+
+      const rustCalls = [];
+      const rustLocalMlExecutionBridge = {
+        config: { enabled: true },
+        async executeLocalTask(input) {
+          rustCalls.push(input);
+          return {
+            ok: true,
+            used: true,
+            auditRef: 'rust-local-ml-audit-test',
+            provider: 'mlx',
+            taskKind: 'text_generate',
+            modelId: 'mlx/qwen2.5-7b-instruct',
+            text: 'rust-local-ok',
+            usage: {
+              prompt_tokens: 7,
+              completion_tokens: 3,
+              total_tokens: 10,
+            },
+            latencyMs: 12,
+          };
+        },
+      };
+      const impl = makeServices({ db, bus: new HubEventBus(), rustLocalMlExecutionBridge });
+      const request_id = `rid_rust_local_ml_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+      const call = makeGenerateCall({
+        request_id,
+        model_id: 'mlx/qwen2.5-7b-instruct',
+        message: 'say hello through rust local execution',
+      });
+
+      await impl.HubAI.Generate(call);
+
+      assert.equal(rustCalls.length, 1);
+      assert.equal(rustCalls[0].runtimeBaseDir, runtimeBaseDir);
+      assert.equal(String(rustCalls[0].request?.request_id || ''), request_id);
+      assert.equal(String(rustCalls[0].request?.model_id || ''), 'mlx/qwen2.5-7b-instruct');
+      assert.equal(String(rustCalls[0].request?.task_kind || ''), 'text_generate');
+      assert.equal(call.ended, true);
+      assert.ok(call.writes.some((item) => item?.start?.request_id === request_id));
+      assert.ok(call.writes.some((item) => item?.delta?.text === 'rust-local-ok'));
+      const done = call.writes.find((item) => item?.done?.request_id === request_id);
+      assert.ok(done, 'expected done event');
+      assert.equal(done.done.ok, true);
+
+      const reqPath = path.join(runtimeBaseDir, 'ai_requests', `req_${request_id}.json`);
+      assert.equal(fs.existsSync(reqPath), false, 'Rust local execution should bypass legacy runtime request file');
+
+      const rows = auditRowsByRequestId(db, request_id);
+      const completed = rows.find((row) => String(row.event_type || '') === 'ai.generate.completed');
+      assert.ok(completed, 'expected completed audit event');
+      const ext = JSON.parse(String(completed.ext_json || '{}'));
+      assert.equal(String(ext.rust_local_ml_execution?.audit_ref || ''), 'rust-local-ml-audit-test');
+      assert.equal(String(ext.rust_local_ml_execution?.provider || ''), 'mlx');
+      assert.equal(String(ext.rust_local_ml_execution?.task_kind || ''), 'text_generate');
+    } finally {
+      db.close();
+      cleanupDbArtifacts(dbPath);
+      try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+});
+
 await runAsync('LPR-W1-05/provider-aware bridge still surfaces MLX import error without enqueueing runtime work', async () => {
   const runtimeBaseDir = makeTmp('runtime_import_error');
   const dbPath = makeTmp('db_import_error', '.db');

@@ -2,6 +2,24 @@ import XCTest
 @testable import RELFlowHub
 
 final class LocalModelRuntimeErrorPresentationTests: XCTestCase {
+    func testHumanizedMissingMLXRuntimeErrors() {
+        XCTAssertEqual(
+            LocalModelRuntimeErrorPresentation.humanized("missing_module:mlx"),
+            "当前 Python 运行时缺少 mlx。"
+        )
+        XCTAssertEqual(
+            LocalModelRuntimeErrorPresentation.humanized("missing_module:mlx_vlm"),
+            "当前 Python 运行时缺少 mlx_vlm。"
+        )
+        XCTAssertEqual(
+            LocalModelRuntimeErrorPresentation.detailHint(
+                for: "missing_module:mlx_vlm",
+                detail: ""
+            ),
+            "Hub 只有在 mlx_vlm 可用后才能加载这个 MLX 多模态模型。"
+        )
+    }
+
     func testHumanizedMissingTorchError() {
         XCTAssertEqual(
             LocalModelRuntimeErrorPresentation.humanized("missing_module:torch"),

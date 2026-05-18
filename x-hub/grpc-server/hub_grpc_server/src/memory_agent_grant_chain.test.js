@@ -8,7 +8,7 @@ import zlib from 'node:zlib';
 import { HubDB } from './db.js';
 import { HubEventBus } from './event_bus.js';
 import { makeServices } from './services.js';
-import { uploadSkillPackage } from './skills_store.js';
+import { setSkillPin, uploadSkillPackage } from './skills_store.js';
 import { nowMs } from './util.js';
 
 const TEST_FILTER = String(process.env.TEST_FILTER || '').trim();
@@ -296,6 +296,15 @@ function parseAuditExt(row) {
   } catch {
     return {};
   }
+}
+
+function assertAuditStringOrRedactedLength(value, expected) {
+  if (value && typeof value === 'object') {
+    assert.equal(String(value.type || ''), 'string');
+    assert.equal(Number(value.bytes || 0), String(expected || '').length);
+    return;
+  }
+  assert.equal(String(value || ''), String(expected || ''));
 }
 
 function percentileMs(rows = [], p = 95) {
@@ -3556,6 +3565,183 @@ run('CM-W3-19/approval identity mismatch emits deny audit', () => {
   try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
+run('SKC-W1-05/resolved low-risk skill gets Hub preauthorized lease for XT local execution', () => {
+  const runtimeBaseDir = makeTmp('runtime');
+  const dbPath = makeTmp('db', '.db');
+  fs.mkdirSync(runtimeBaseDir, { recursive: true });
+
+  withEnv(baseEnv(runtimeBaseDir, { HUB_SKILLS_DEVELOPER_MODE: 'true' }), () => {
+    const db = new HubDB({ dbPath });
+    try {
+      const skillId = 'skill.runner.preauthorized';
+      const uploaded = uploadUnsignedLowRiskSkill(runtimeBaseDir, {
+        skillId,
+        version: '1.0.0',
+      });
+      const packageSha = String(uploaded?.package_sha256 || '');
+      assert.equal(packageSha.length, 64);
+
+      const client = makeClient('proj-skill-runner-preauthorized');
+      const pin = setSkillPin(runtimeBaseDir, {
+        scope: 'global',
+        userId: client.user_id,
+        projectId: '',
+        skillId,
+        packageSha256: packageSha,
+        note: 'preauthorize low-risk local runner',
+      });
+      assert.equal(String(pin?.package_sha256 || ''), packageSha);
+
+      const impl = makeServices({ db, bus: new HubEventBus() });
+      const execArgv = [
+        'xt-skill-runner',
+        '--package-sha256',
+        packageSha,
+        '--skill-id',
+        skillId,
+      ];
+
+      const opened = openSession(impl, client, 'sess-open-skill-runner-preauthorized');
+      assert.equal(opened.err, null);
+      const sessionId = String(opened.res?.session_id || '');
+      assert.ok(sessionId);
+
+      const toolReq = requestTool(impl, client, {
+        request_id: 'tool-req-skill-runner-preauthorized',
+        session_id: sessionId,
+        tool_name: 'skills.run.runner',
+        tool_args_hash: 'hash-skill-runner-preauthorized',
+        risk_tier: 'medium',
+        required_grant_scope: 'readonly',
+        exec_argv: execArgv,
+        exec_cwd: runtimeBaseDir,
+      });
+      assert.equal(toolReq.err, null);
+      assert.equal(!!toolReq.res?.accepted, true);
+      assert.equal(String(toolReq.res?.decision || ''), 'approve');
+      assert.equal(String(toolReq.res?.deny_code || ''), '');
+      const toolRequestId = String(toolReq.res?.tool_request_id || '');
+      const grantId = String(toolReq.res?.grant_id || '');
+      assert.ok(toolRequestId);
+      assert.ok(grantId);
+      assert.ok(Number(toolReq.res?.expires_at_ms || 0) > nowMs());
+
+      const row = db.getAgentToolRequest({
+        tool_request_id: toolRequestId,
+        session_id: sessionId,
+        device_id: client.device_id,
+        user_id: client.user_id,
+        app_id: client.app_id,
+      });
+      assert.equal(String(row?.grant_decided_by || ''), 'hub_skill_preauthorization');
+      assert.equal(String(row?.grant_note || ''), 'resolved_skill_preauthorized');
+
+      const requestAudit = assertAuditEvent(db, {
+        device_id: client.device_id,
+        user_id: client.user_id,
+        request_id: 'tool-req-skill-runner-preauthorized',
+        event_type: 'agent.tool.requested',
+      });
+      const requestExt = JSON.parse(String(requestAudit?.ext_json || '{}'));
+      assert.equal(requestExt.skill_execution_gate_checked, true);
+      assert.equal(requestExt.skill_preauthorization?.preauthorization?.preauthorized, true);
+      assertAuditStringOrRedactedLength(requestExt?.preauthorized_lease?.package_sha256, packageSha);
+      assert.equal(String(requestExt?.preauthorized_lease?.grant_id || ''), grantId);
+
+      const out = executeTool(impl, client, {
+        request_id: 'exec-skill-runner-preauthorized',
+        session_id: sessionId,
+        tool_request_id: toolRequestId,
+        tool_name: 'skills.run.runner',
+        tool_args_hash: 'hash-skill-runner-preauthorized',
+        grant_id: grantId,
+        exec_argv: execArgv,
+        exec_cwd: runtimeBaseDir,
+      });
+      assert.equal(out.err, null);
+      assert.equal(!!out.res?.executed, true);
+      assert.equal(String(out.res?.deny_code || ''), '');
+      const result = JSON.parse(String(out.res?.result_json || '{}'));
+      assert.equal(result.preauthorized_lease?.schema_version, 'xhub.skills.preauthorized_lease.v1');
+      assert.equal(result.preauthorized_lease?.hub_authority, true);
+      assert.equal(String(result.preauthorized_lease?.skill_id || ''), skillId);
+      assert.equal(String(result.preauthorized_lease?.package_sha256 || ''), packageSha);
+      assert.equal(String(result.preauthorized_lease?.grant_id || ''), grantId);
+    } finally {
+      db.close();
+    }
+  });
+
+  cleanupDbArtifacts(dbPath);
+  try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch { /* ignore */ }
+});
+
+run('SKC-W1-05/unpinned low-risk skill requires Hub grant instead of local auto-approval', () => {
+  const runtimeBaseDir = makeTmp('runtime');
+  const dbPath = makeTmp('db', '.db');
+  fs.mkdirSync(runtimeBaseDir, { recursive: true });
+
+  withEnv(baseEnv(runtimeBaseDir, { HUB_SKILLS_DEVELOPER_MODE: 'true' }), () => {
+    const db = new HubDB({ dbPath });
+    try {
+      const skillId = 'skill.runner.unpinned';
+      const uploaded = uploadUnsignedLowRiskSkill(runtimeBaseDir, {
+        skillId,
+        version: '1.0.0',
+      });
+      const packageSha = String(uploaded?.package_sha256 || '');
+      assert.equal(packageSha.length, 64);
+
+      const impl = makeServices({ db, bus: new HubEventBus() });
+      const client = makeClient('proj-skill-runner-unpinned');
+      const opened = openSession(impl, client, 'sess-open-skill-runner-unpinned');
+      assert.equal(opened.err, null);
+      const sessionId = String(opened.res?.session_id || '');
+      assert.ok(sessionId);
+
+      const toolReq = requestTool(impl, client, {
+        request_id: 'tool-req-skill-runner-unpinned',
+        session_id: sessionId,
+        tool_name: 'skills.run.runner',
+        tool_args_hash: 'hash-skill-runner-unpinned',
+        risk_tier: 'medium',
+        required_grant_scope: 'readonly',
+        exec_argv: [
+          'xt-skill-runner',
+          '--package-sha256',
+          packageSha,
+          '--skill-id',
+          skillId,
+        ],
+        exec_cwd: runtimeBaseDir,
+      });
+      assert.equal(toolReq.err, null);
+      assert.equal(!!toolReq.res?.accepted, true);
+      assert.equal(String(toolReq.res?.decision || ''), 'pending');
+      assert.equal(String(toolReq.res?.deny_code || ''), 'grant_pending');
+      assert.equal(String(toolReq.res?.grant_id || ''), '');
+
+      const requestAudit = assertAuditEvent(db, {
+        device_id: client.device_id,
+        user_id: client.user_id,
+        request_id: 'tool-req-skill-runner-unpinned',
+        event_type: 'agent.tool.requested',
+      });
+      const requestExt = JSON.parse(String(requestAudit?.ext_json || '{}'));
+      assert.equal(requestExt.skill_preauthorization?.preauthorization?.preauthorized, false);
+      assertAuditStringOrRedactedLength(
+        requestExt.skill_preauthorization?.preauthorization?.reason_code,
+        'skill_not_preauthorized'
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  cleanupDbArtifacts(dbPath);
+  try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch { /* ignore */ }
+});
+
 run('SKC-W1-04/runner execute chain enforces skill execution gate with revoked deny_code', () => {
   const runtimeBaseDir = makeTmp('runtime');
   const dbPath = makeTmp('db', '.db');
@@ -3689,7 +3875,9 @@ run('SKC-W1-04/skills execute fail-closed when package sha binding is missing', 
         exec_cwd: runtimeBaseDir,
       });
       assert.equal(toolReq.err, null);
-      assert.equal(String(toolReq.res?.decision || ''), 'pending');
+      assert.equal(!!toolReq.res?.accepted, false);
+      assert.equal(String(toolReq.res?.decision || ''), 'deny');
+      assert.equal(String(toolReq.res?.deny_code || ''), 'missing_package_sha256');
       const toolRequestId = String(toolReq.res?.tool_request_id || '');
       assert.ok(toolRequestId);
 

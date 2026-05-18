@@ -24,4 +24,3 @@ CREATE TABLE IF NOT EXISTS rust_hub_scheduler_snapshots (
   queue_depth INTEGER NOT NULL,
   detail_json TEXT
 );
-

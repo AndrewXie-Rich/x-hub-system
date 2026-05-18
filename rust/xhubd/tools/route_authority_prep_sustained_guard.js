@@ -25,6 +25,8 @@ function parseArgs(argv) {
     modelRemoteRuns: 1,
     modelLocalRuns: 1,
     schedulerGateMode: 'skip',
+    allowMemorySkillsProduction: false,
+    requireMemorySkillsProduction: false,
     writeReport: true,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -70,6 +72,13 @@ function parseArgs(argv) {
         }
         i += 1;
         break;
+      case '--allow-memory-skills-production':
+        out.allowMemorySkillsProduction = true;
+        break;
+      case '--require-memory-skills-production':
+        out.allowMemorySkillsProduction = true;
+        out.requireMemorySkillsProduction = true;
+        break;
       case '--no-report':
         out.writeReport = false;
         break;
@@ -101,9 +110,17 @@ function usage() {
     '  --model-remote-runs <n>  Model route remote runs per cycle, default 1',
     '  --model-local-runs <n>   Model route local runs per cycle, default 1',
     '  --scheduler-gate-mode <mode> ready|applied|skip, default skip',
+    '  --allow-memory-skills-production Permit explicit Rust memory writer and skills execution authority',
+    '  --require-memory-skills-production Require both Rust memory writer and skills execution authority',
     '  --no-report              Print only; do not write reports/',
     '  --self-test              Validate reducer logic',
   ].join('\n');
+}
+
+function memorySkillsArgs(config) {
+  if (config.requireMemorySkillsProduction) return ['--require-memory-skills-production'];
+  if (config.allowMemorySkillsProduction) return ['--allow-memory-skills-production'];
+  return [];
 }
 
 function runJson(command, args, timeoutMs) {
@@ -188,6 +205,7 @@ function runCycle(config, cycleIndex) {
     String(config.timeoutMs),
     '--rust-hub-root',
     config.rustHubRoot,
+    ...memorySkillsArgs(config),
   ], config.timeoutMs + 140000);
   let scheduler = { payload: { ok: true, skipped: true }, exit_code: 0, parsed: true };
   if (config.schedulerGateMode === 'applied') {
@@ -198,6 +216,7 @@ function runCycle(config, cycleIndex) {
       config.rustHubRoot,
       '--max-slow-requests',
       String(config.maxSlowRequests),
+      ...memorySkillsArgs(config),
     ], 60000);
   }
   const elapsedMs = Date.now() - started;
@@ -278,6 +297,7 @@ function runDaemonOpsGate(config) {
     '100',
     '--max-report-age-days',
     '30',
+    ...memorySkillsArgs(config),
   ], 60000);
 }
 

@@ -12,6 +12,8 @@ enum BridgePathResolver {
 
     static func candidateBaseDirs() -> [URL] {
         var dirs: [URL] = []
+        let sandboxed = SharedPaths.isSandboxedProcess()
+        let hubContainer = SharedPaths.containerDataDirectory(bundleId: "com.rel.flowhub")
 
         if let group = SharedPaths.appGroupDirectory() {
             dirs.append(group)
@@ -21,13 +23,15 @@ enum BridgePathResolver {
             dirs.append(bridgeContainer.appendingPathComponent("RELFlowHub", isDirectory: true))
         }
 
-        if let hubContainer = SharedPaths.containerDataDirectory(bundleId: "com.rel.flowhub") {
+        if let hubContainer {
             dirs.append(hubContainer.appendingPathComponent("RELFlowHub", isDirectory: true))
         }
 
         dirs.append(URL(fileURLWithPath: "/private/tmp", isDirectory: true).appendingPathComponent("RELFlowHub", isDirectory: true))
-        dirs.append(SharedPaths.realHomeDirectory().appendingPathComponent("RELFlowHub", isDirectory: true))
         dirs.append(SharedPaths.sandboxHomeDirectory().appendingPathComponent("RELFlowHub", isDirectory: true))
+        if !sandboxed || hubContainer == nil {
+            dirs.append(SharedPaths.realHomeDirectory().appendingPathComponent("RELFlowHub", isDirectory: true))
+        }
 
         // Keep legacy fallback for older ad-hoc builds.
         dirs.append(SharedPaths.ensurePublicHubDirectory())

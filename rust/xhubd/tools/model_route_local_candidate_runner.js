@@ -756,6 +756,15 @@ async function main() {
       XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_PREP: null,
       XHUB_RUST_SCHEDULER_AUTHORITY: null,
       XHUB_RUST_SCHEDULER_STATUS_READ: null,
+      // This runner validates model-route candidate audits with its own local
+      // runtime file-IPC fixture. Keep Rust local ML execution out of this
+      // isolated check so the route guard does not depend on daemon access keys.
+      XHUB_RUST_ML_EXECUTION_AUTHORITY: null,
+      XHUB_RUST_LOCAL_ML_EXECUTION_AUTHORITY: null,
+      XHUB_ENABLE_RUST_ML_EXECUTION: null,
+      XHUB_RUST_ML_EXECUTION_HTTP_BASE_URL: null,
+      XHUB_RUST_ML_EXECUTION_FALLBACK_ON_ERROR: null,
+      XHUB_RUST_ML_EXECUTION_VERBOSE: null,
     }, async () => {
       db = new HubDB({ dbPath: nodeDbPath });
       insertLocalModel(db, config.modelId);

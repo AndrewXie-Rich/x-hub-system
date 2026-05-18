@@ -52,6 +52,22 @@ function makePacket(overrides = {}) {
           command_or_ref: "hub://settings/operator_channels",
         },
       },
+      provider_key_selection_focus: {
+        support_ready: true,
+        source: "xt_source_smoke",
+        requested_provider: "openai",
+        requested_model_id: "openai/gpt-5.4",
+        selected_account_key: "openai:primary",
+        selected_wire_api: "responses",
+        candidate_count: 3,
+        blocked_candidate_count: 0,
+        cooldown_candidate_count: 1,
+        stale_candidate_count: 1,
+        next_retry_at_ms: 1741300185000,
+        next_retry_at_iso: "2025-03-06T22:29:45.000Z",
+        next_retry_account_key: "openai:cooldown",
+        next_retry_reason_code: "provider_timeout",
+      },
       require_real_focus: {
         handoff_state: "blocked",
         blocker_class: "current_embedding_dirs_incompatible_with_native_transformers_load",
@@ -82,10 +98,15 @@ run("release support snippet keeps operator-channel wording in preview/support l
 
   assert.match(snippet.markdown, /preview-working rather than validated/);
   assert.match(snippet.markdown, /do not present it as a validated release claim/i);
+  assert.match(snippet.markdown, /do not expose selected account keys in public status wording/i);
   assert.match(snippet.markdown, /Channel action category: restore_channel_admin_surface/);
   assert.match(snippet.markdown, /Channel governance visibility gap: no/);
   assert.match(snippet.markdown, /Channel focus highlight: none/);
   assert.match(snippet.markdown, /Restore operator channel admin surface -> hub:\/\/settings\/operator_channels/);
+  assert.match(snippet.markdown, /Remote provider-key support ready: yes/);
+  assert.match(snippet.markdown, /Remote provider-key route: openai\/gpt-5\.4 -> openai:primary via responses/);
+  assert.match(snippet.markdown, /Remote provider-key next retry: openai:cooldown at 2025-03-06T22:29:45\.000Z reason=provider_timeout/);
+  assert.match(snippet.markdown, /Remote provider-key candidate health: total=3; cooldown=1; stale=1; blocked=0/);
   assert.match(snippet.markdown, /Sample1 blocker class: current_embedding_dirs_incompatible_with_native_transformers_load/);
   assert.match(snippet.markdown, /Local-service recovery and require-real closure remain the release-gating truth/);
 });
@@ -136,6 +157,7 @@ run("release support snippet fails soft when operator-channel support is absent"
       next_commands: [],
       runbook_refs: [],
       channel_onboarding_focus: null,
+      provider_key_selection_focus: null,
       require_real_focus: null,
     },
     release_handoff: {
@@ -154,6 +176,8 @@ run("release support snippet fails soft when operator-channel support is absent"
   assert.match(snippet.markdown, /Structured operator-channel onboarding recovery wording is not available/);
   assert.match(snippet.markdown, /Channel support ready: unknown/);
   assert.match(snippet.markdown, /Channel next action: not available/);
+  assert.match(snippet.markdown, /Remote provider-key support ready: unknown/);
+  assert.match(snippet.markdown, /Remote provider-key route: not available/);
   assert.match(snippet.markdown, /- none$/m);
 });
 

@@ -399,16 +399,31 @@ public enum RemoteModelStorage {
     public static func removeGroup(keyReference rawKeyReference: String) -> RemoteModelSnapshot {
         let groupKey = trimmed(rawKeyReference)
         guard !groupKey.isEmpty else { return load() }
+        let poolKey = keyPoolReference(forKeyReference: groupKey)
 
         var cur = load()
-        let removedAny = cur.models.contains { keyReference(for: $0) == groupKey }
+        let removedAccounts = Set(
+            cur.models
+                .map { keyReference(for: $0) }
+                .filter {
+                    keyPoolReference(forKeyReference: $0) == poolKey
+                }
+        )
+        let removedAny = !removedAccounts.isEmpty
         guard removedAny else { return cur }
 
-        cur.models.removeAll { keyReference(for: $0) == groupKey }
+        cur.models.removeAll {
+            keyPoolReference(for: $0) == poolKey
+        }
         save(cur)
 
         if KeychainStore.hasSharedAccessGroup {
-            _ = KeychainStore.delete(account: groupKey)
+            for account in removedAccounts {
+                let stillUsed = cur.models.contains { keyReference(for: $0) == account }
+                if !stillUsed {
+                    _ = KeychainStore.delete(account: account)
+                }
+            }
         }
 
         return load()
@@ -441,6 +456,16 @@ public enum RemoteModelStorage {
     public static func keyReference(for model: RemoteModelEntry?) -> String {
         guard let model else { return "" }
         return trimmed(model.apiKeyRef).isEmpty ? trimmed(model.id) : trimmed(model.apiKeyRef)
+    }
+
+    public static func keyPoolReference(for model: RemoteModelEntry?) -> String {
+        keyPoolReference(forKeyReference: keyReference(for: model))
+    }
+
+    public static func keyPoolReference(forKeyReference rawKeyReference: String) -> String {
+        let keyReference = trimmed(rawKeyReference)
+        guard !keyReference.isEmpty else { return "" }
+        return numericDisambiguationBase(keyReference)
     }
 
     private static func readableSnapshotURL() -> URL? {
@@ -513,26 +538,51 @@ public enum RemoteModelStorage {
         let healthByKey = Dictionary(
             uniqueKeysWithValues: (healthSnapshot?.records ?? []).map { ($0.keyReference, $0) }
         )
+        let pooledHealthByKey = RemoteKeyHealthSupport.pooledRecords(
+            from: healthSnapshot ?? .empty()
+        )
 
         return snap.models
             .filter(isExecutionReadyRemoteModel)
             .sorted { lhs, rhs in
                 let lhsKey = keyReference(for: lhs)
                 let rhsKey = keyReference(for: rhs)
-                let lhsHealth = healthByKey[lhsKey]
-                let rhsHealth = healthByKey[rhsKey]
+                let lhsPoolKey = keyPoolReference(forKeyReference: lhsKey)
+                let rhsPoolKey = keyPoolReference(forKeyReference: rhsKey)
+                let lhsHealth = pooledHealthByKey[lhsPoolKey]
+                let rhsHealth = pooledHealthByKey[rhsPoolKey]
                 let lhsPriority = RemoteKeyHealthSupport.sortPriority(for: lhsHealth)
                 let rhsPriority = RemoteKeyHealthSupport.sortPriority(for: rhsHealth)
                 if lhsPriority != rhsPriority {
                     return lhsPriority < rhsPriority
                 }
 
-                if (lhsHealth != nil || rhsHealth != nil), lhsKey != rhsKey {
+                if (lhsHealth != nil || rhsHealth != nil), lhsPoolKey != rhsPoolKey {
                     let lhsRecency = RemoteKeyHealthSupport.recency(for: lhsHealth)
                     let rhsRecency = RemoteKeyHealthSupport.recency(for: rhsHealth)
                     if lhsRecency != rhsRecency {
                         return lhsRecency > rhsRecency
                     }
+                    if lhsPoolKey.localizedCaseInsensitiveCompare(rhsPoolKey) != .orderedSame {
+                        return lhsPoolKey.localizedCaseInsensitiveCompare(rhsPoolKey) == .orderedAscending
+                    }
+                }
+
+                if lhsPoolKey == rhsPoolKey, lhsKey != rhsKey {
+                    let lhsSlotHealth = healthByKey[lhsKey]
+                    let rhsSlotHealth = healthByKey[rhsKey]
+                    let lhsSlotPriority = RemoteKeyHealthSupport.sortPriority(for: lhsSlotHealth)
+                    let rhsSlotPriority = RemoteKeyHealthSupport.sortPriority(for: rhsSlotHealth)
+                    if lhsSlotPriority != rhsSlotPriority {
+                        return lhsSlotPriority < rhsSlotPriority
+                    }
+
+                    let lhsSlotRecency = RemoteKeyHealthSupport.recency(for: lhsSlotHealth)
+                    let rhsSlotRecency = RemoteKeyHealthSupport.recency(for: rhsSlotHealth)
+                    if lhsSlotRecency != rhsSlotRecency {
+                        return lhsSlotRecency > rhsSlotRecency
+                    }
+
                     if lhsKey.localizedCaseInsensitiveCompare(rhsKey) != .orderedSame {
                         return lhsKey.localizedCaseInsensitiveCompare(rhsKey) == .orderedAscending
                     }

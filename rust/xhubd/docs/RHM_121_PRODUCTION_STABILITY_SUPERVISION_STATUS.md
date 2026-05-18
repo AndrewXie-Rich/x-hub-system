@@ -59,4 +59,3 @@ child into its final checks.
 - `node --check tools/production_live_stability_session.js`
 - `tools/production_live_stability_session.command --supervision-status`
 - packaged `tools/production_live_stability_session.command --supervision-status`
-

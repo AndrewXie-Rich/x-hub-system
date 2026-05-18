@@ -10,6 +10,436 @@ private struct RemoteModelSignalVisual: Identifiable {
     var id: String { title }
 }
 
+private enum ModelResourcePoolKind: Equatable {
+    case local
+    case provider
+}
+
+private struct ModelResourcePoolSummary: Identifiable {
+    let id: String
+    let kind: ModelResourcePoolKind
+    let vendorKey: String
+    let title: String
+    let subtitle: String
+    let statusText: String
+    let badgeText: String
+    let systemName: String
+    let tint: Color
+    let accountText: String
+    let quotaText: String
+    let modelText: String
+    let detailText: String
+    let models: [String]
+    let hiddenModelCount: Int
+    let usageWindows: [ProviderKeyUsageWindow]
+}
+
+private enum TerminalAccessExampleKind: String, CaseIterable, Identifiable {
+    case shell
+    case python
+    case node
+    case curl
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .shell:
+            return "Shell"
+        case .python:
+            return "Python"
+        case .node:
+            return "Node"
+        case .curl:
+            return "curl"
+        }
+    }
+
+    var blockTitle: String {
+        "\(title) 接入示例"
+    }
+
+    var copyButtonTitle: String {
+        "复制\(title)示例"
+    }
+
+    var tint: Color {
+        switch self {
+        case .shell:
+            return .teal
+        case .python:
+            return .blue
+        case .node:
+            return .orange
+        case .curl:
+            return .green
+        }
+    }
+}
+
+private enum RemoteQuotaConsumerFilter: String, CaseIterable, Identifiable {
+    case all
+    case xt
+    case terminal
+    case risk
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all:
+            return "全部"
+        case .xt:
+            return "XT"
+        case .terminal:
+            return "Terminal"
+        case .risk:
+            return "风险"
+        }
+    }
+}
+
+private enum RemoteQuotaVendorFilter: String, CaseIterable, Identifiable {
+    case all
+    case risk
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all:
+            return "全部"
+        case .risk:
+            return "风险"
+        }
+    }
+}
+
+private enum RemoteQuotaUserFilter: String, CaseIterable, Identifiable {
+    case all
+    case risk
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all:
+            return "全部"
+        case .risk:
+            return "风险"
+        }
+    }
+}
+
+private struct ProviderKeyVendorInventorySummary: Identifiable {
+    let vendorKey: String
+    let displayName: String
+    let pools: [ProviderKeyPoolSnapshot]
+    let spotlightUsers: [ProviderKeyVendorUserSpotlight]
+    let spotlightConsumers: [ProviderKeyVendorConsumerSpotlight]
+    let providerDisplayNames: [String]
+    let providerHosts: [String]
+    let familyKeys: [String]
+    let familyDisplayNames: [String]
+    let coveredUserCount: Int
+    let coveredConsumerCount: Int
+    let coveredUnlimitedConsumerCount: Int
+    let coveredFamilyCount: Int
+    let poolCount: Int
+    let totalAccounts: Int
+    let readyAccounts: Int
+    let cooldownAccounts: Int
+    let blockedAccounts: Int
+    let disabledAccounts: Int
+    let staleAccounts: Int
+    let totalDailyTokenCap: Int64
+    let totalDailyTokensUsed: Int64
+    let totalDailyTokensRemaining: Int64
+    let totalTokensUsed: Int64
+    let assignedDailyTokenBudget: Int64
+    let observedFamilyTokensUsed: Int64
+    let allocationHeadroom: Int64
+    let oversubscribedFamilyCount: Int
+    let hotPoolCount: Int
+
+    var id: String { vendorKey }
+}
+
+private struct ProviderKeyVendorUserSpotlight: Identifiable {
+    let user: RemoteQuotaCenterUserProjection
+    let vendorObservedDailyTokensUsed: Int64
+
+    var id: String { user.id }
+}
+
+private struct ProviderKeyVendorConsumerSpotlight: Identifiable {
+    let consumer: RemoteQuotaCenterClientProjection
+    let vendorObservedDailyTokensUsed: Int64
+
+    var id: String { consumer.id }
+}
+
+private struct ProviderKeyFamilyInventorySummary: Identifiable {
+    let familyProjection: RemoteQuotaCenterFamilyProjection
+    let coveredUserCount: Int
+    let assignedConsumers: [RemoteQuotaCenterClientProjection]
+    let assignedDailyTokenBudget: Int64
+    let unlimitedBudgetConsumerCount: Int
+    let connectedAssignedConsumerCount: Int
+    let observedDailyTokensUsed: Int64
+
+    var id: String { familyProjection.id }
+    var familyKey: String { familyProjection.familyKey }
+    var displayName: String { familyProjection.displayName }
+    var quotaPool: ProviderQuotaPoolSnapshot { familyProjection.quotaPool }
+    var combinedDailyTokenCap: Int64 { familyProjection.combinedDailyTokenCap }
+    var combinedDailyTokensUsed: Int64 { familyProjection.combinedDailyTokensUsed }
+    var combinedDailyTokensRemaining: Int64 { familyProjection.combinedDailyTokensRemaining }
+    var assignedClientCount: Int { assignedConsumers.count }
+    var assignedClients: [RemoteQuotaCenterClientProjection] { assignedConsumers }
+    var isOversubscribed: Bool {
+        combinedDailyTokenCap > 0 && assignedDailyTokenBudget > combinedDailyTokenCap
+    }
+}
+
+private struct ProviderKeyScopeOverview {
+    let focusedUser: RemoteQuotaCenterUserProjection?
+    let focusedVendorDisplayName: String?
+    let userCount: Int
+    let consumerCount: Int
+    let connectedConsumerCount: Int
+    let xtConsumerCount: Int
+    let terminalConsumerCount: Int
+    let allocatedDailyTokenBudget: Int64
+    let unlimitedBudgetConsumerCount: Int
+    let observedConsumerTokensUsed: Int64
+    let oversubscribedFamilyCount: Int
+}
+
+private struct ProviderKeySectionSnapshot {
+    let keyPools: [ProviderKeyPoolSnapshot]
+    let overview: RemoteQuotaCenterOverview
+    let totalFamilyCount: Int
+    let totalConsumerCount: Int
+    let consumerLedgerTotalCount: Int
+    let users: [RemoteQuotaCenterUserProjection]
+    let focusedUser: RemoteQuotaCenterUserProjection?
+    let scopedUsers: [RemoteQuotaCenterUserProjection]
+    let scopedConsumers: [RemoteQuotaCenterClientProjection]
+    let vendorSummaries: [ProviderKeyVendorInventorySummary]
+    let filteredVendors: [ProviderKeyVendorInventorySummary]
+    let filteredFamilies: [ProviderKeyFamilyInventorySummary]
+    let filteredUsers: [RemoteQuotaCenterUserProjection]
+    let filteredConsumers: [RemoteQuotaCenterClientProjection]
+    let focusedVendor: ProviderKeyVendorInventorySummary?
+    let flowChains: [ProviderKeyFlowChainSummary]
+    let scopeOverview: ProviderKeyScopeOverview
+    let riskVendorCount: Int
+    let riskFamilyCount: Int
+    let overallTrendCard: ProviderKeyTrendCardSummary?
+    let vendorTrendCards: [ProviderKeyTrendCardSummary]
+    let familyTrendCards: [ProviderKeyTrendCardSummary]
+    let userTrendCards: [ProviderKeyTrendCardSummary]
+    let consumerTrendCards: [ProviderKeyTrendCardSummary]
+    let trendCardCount: Int
+    let operationalTint: Color
+}
+
+private struct SettingsLocalModelSnapshot {
+    let models: [HubModel]
+    let loadedCount: Int
+
+    static let empty = SettingsLocalModelSnapshot(
+        models: [],
+        loadedCount: 0
+    )
+
+    static func build(from catalogModels: [HubModel]) -> SettingsLocalModelSnapshot {
+        let models = LocalModelRuntimeActionPlanner.localModels(from: catalogModels)
+        return SettingsLocalModelSnapshot(
+            models: models,
+            loadedCount: models.filter { $0.state == .loaded }.count
+        )
+    }
+}
+
+private struct ProviderKeyTrendCardSummary: Identifiable {
+    let id: String
+    let title: String
+    let subtitle: String
+    let footnote: String
+    let systemName: String
+    let tint: Color
+    let aggregate: RemoteQuotaTrendAggregate
+}
+
+private enum ProviderKeyFlowLinkKind: Int, Comparable {
+    case dedicated = 0
+    case shared = 1
+    case elastic = 2
+
+    static func < (lhs: ProviderKeyFlowLinkKind, rhs: ProviderKeyFlowLinkKind) -> Bool {
+        lhs.rawValue < rhs.rawValue
+    }
+
+    var title: String {
+        switch self {
+        case .dedicated:
+            return "专属链路"
+        case .shared:
+            return "共享链路"
+        case .elastic:
+            return "弹性全家族"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .dedicated:
+            return .green
+        case .shared:
+            return .blue
+        case .elastic:
+            return .orange
+        }
+    }
+}
+
+private struct ProviderKeyFlowChainSummary: Identifiable {
+    let vendor: ProviderKeyVendorInventorySummary
+    let user: RemoteQuotaCenterUserProjection
+    let consumer: RemoteQuotaCenterClientProjection
+    let linkKind: ProviderKeyFlowLinkKind
+    let matchedFamilyCount: Int
+    let vendorObservedDailyTokensUsed: Int64
+
+    var id: String {
+        "\(vendor.id)::\(user.id)::\(consumer.id)"
+    }
+}
+
+private struct RemoteQuotaBudgetEditorTarget: Identifiable, Equatable {
+    let consumerKind: RemoteQuotaCenterConsumerKind
+    let referenceID: String
+    let title: String
+    let subtitle: String
+    let currentDailyTokenLimit: Int
+    let todayUsed: Int64
+
+    var id: String { "\(consumerKind.rawValue):\(referenceID)" }
+}
+
+private enum HubSettingsPage: String, CaseIterable, Identifiable {
+    case overview
+    case access
+    case models
+    case runtime
+    case integrations
+    case diagnostics
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .overview:
+            return "总览"
+        case .access:
+            return "接入"
+        case .models:
+            return "模型与额度"
+        case .runtime:
+            return "运行时基础设施"
+        case .integrations:
+            return "集成"
+        case .diagnostics:
+            return "诊断与高级"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .overview:
+            return "先看 Hub 当前是否健康、是否可服务。"
+        case .access:
+            return "管理 XT、Terminal 和远程接入。"
+        case .models:
+            return "并排管理本地模型能力、付费模型能力与共享额度。"
+        case .runtime:
+            return "管理本地 runtime provider、队列、实例与任务路由。"
+        case .integrations:
+            return "管理 Operator、Skills 和扩展能力。"
+        case .diagnostics:
+            return "排障、导出、恢复与底层配置。"
+        }
+    }
+
+    var systemName: String {
+        switch self {
+        case .overview:
+            return "square.grid.2x2.fill"
+        case .access:
+            return "link.badge.plus"
+        case .models:
+            return "shippingbox.fill"
+        case .runtime:
+            return "cpu.fill"
+        case .integrations:
+            return "bolt.horizontal.circle.fill"
+        case .diagnostics:
+            return "stethoscope"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .overview:
+            return .blue
+        case .access:
+            return .teal
+        case .models:
+            return .indigo
+        case .runtime:
+            return .orange
+        case .integrations:
+            return .green
+        case .diagnostics:
+            return .red
+        }
+    }
+}
+
+private struct HubSettingsMetric: Identifiable {
+    let title: String
+    let value: String
+    let detail: String
+    let tint: Color
+
+    var id: String { "\(title)::\(value)::\(detail)" }
+}
+
+private enum CLIProxyOAuthInventoryState {
+    case ready
+    case cooling
+    case blocked
+    case disabled
+    case refreshing
+    case waiting
+}
+
+private struct CLIProxyOAuthProviderInventorySummary: Identifiable {
+    let providerKey: String
+    let displayName: String
+    let totalCount: Int
+    let readyCount: Int
+    let coolingCount: Int
+    let blockedCount: Int
+    let disabledCount: Int
+    let refreshingCount: Int
+    let waitingCount: Int
+
+    var id: String { providerKey }
+}
+
 struct SettingsSheetView: View {
     @EnvironmentObject var store: HubStore
     @Environment(\.dismiss) private var dismiss
@@ -20,6 +450,15 @@ struct SettingsSheetView: View {
     @ObservedObject private var remoteRouteProbe = HubRemoteAccessRouteProbe.shared
 
     @State private var remoteModels: [RemoteModelEntry] = sortedRemoteModels(RemoteModelStorage.load().models)
+    @State private var providerKeySnapshot: ProviderKeyStoreSnapshot = ProviderKeyStorage.load()
+    @State private var providerKeyDerivedSnapshot: ProviderKeyStoreDerivedSnapshot = ProviderKeyStorage.derivedSnapshot(
+        from: ProviderKeyStorage.load()
+    )
+    @State private var localModelSnapshot: SettingsLocalModelSnapshot = SettingsLocalModelSnapshot.build(
+        from: ModelStore.shared.snapshot.models
+    )
+    @State private var showDiscoverModels: Bool = false
+    @State private var showAddModel: Bool = false
     @State private var showAddRemoteModel: Bool = false
     @State private var showImportRemoteCatalog: Bool = false
     @State private var editingRemoteModelGroup: RemoteModelKeyGroup? = nil
@@ -49,9 +488,13 @@ struct SettingsSheetView: View {
     @State private var diagnosticsActionIsRunning: Bool = false
     @State private var diagnosticsActionResultText: String = ""
     @State private var diagnosticsActionErrorText: String = ""
-    @State private var rustHubRemoteEntryCandidates: RustHubRemoteEntryCandidates = .empty
-    @State private var rustHubRemoteEntryRefreshing: Bool = false
-    @State private var rustHubRemoteEntryLastRefreshAt: Date = .distantPast
+    @State private var settingsScrollTarget: String? = nil
+    @State private var highlightedProviderKeySourceRef: String? = nil
+    @State private var highlightedProviderKeyVendorKey: String? = nil
+    @State private var expandedProviderKeyPoolIssueIDs: Set<String> = []
+    @State private var expandedProviderKeyMemberIssueIDs: Set<String> = []
+    @State private var remoteQuotaActionText: String = ""
+    @State private var remoteQuotaErrorText: String = ""
 
     @State private var skillsIndex: HubSkillsStoreStorage.SkillsIndexSnapshot = HubSkillsStoreStorage.loadSkillsIndex()
     @State private var skillsPins: HubSkillsStoreStorage.SkillPinsSnapshot = HubSkillsStoreStorage.loadSkillPins()
@@ -69,6 +512,85 @@ struct SettingsSheetView: View {
     @State private var operatorChannelProviderReadinessError: String = ""
     @State private var operatorChannelProviderReadinessInFlight: Bool = false
     @State private var operatorChannelProviderReadinessActionText: String = ""
+    @State private var terminalAccessKeys: [HubTerminalAccessKey] = []
+    @State private var terminalAccessDraft: HubTerminalAccessKeyDraft = .init()
+    @State private var terminalAccessLastSecret: HubTerminalAccessKeySecretEnvelope? = nil
+    @State private var terminalAccessActionText: String = ""
+    @State private var terminalAccessErrorText: String = ""
+    @State private var terminalAccessReloadInFlight: Bool = false
+    @State private var terminalAccessMutationInFlight: Bool = false
+    @State private var terminalAccessPendingRevokeAccessKeyID: String = ""
+    @State private var terminalAccessExampleKind: TerminalAccessExampleKind = .python
+    @State private var cliproxyRuntimeSettings: CLIProxyRuntimeSupport.Settings = CLIProxyRuntimeSupport.loadSettings()
+    @State private var cliproxyRuntimeProbe: CLIProxyRuntimeSupport.Probe = .init()
+    @State private var cliproxyRuntimeRefreshing: Bool = false
+    @State private var cliproxyRuntimeLaunching: Bool = false
+    @State private var cliproxyRuntimeConfigApplying: Bool = false
+    @State private var cliproxyRuntimeKeyRotating: Bool = false
+    @State private var cliproxyRuntimeConfigAudit: CLIProxyRuntimeSupport.ConfigAudit = .empty
+    @State private var cliproxyRuntimeActionText: String = ""
+    @State private var cliproxyRuntimeErrorText: String = ""
+    @State private var cliproxyRuntimeLastProbeAtMs: Int64 = 0
+    @State private var cliproxyRuntimeFastProbeUntilMs: Int64 = 0
+    @State private var rustHubRuntimeSnapshot: RustHubRuntimeSnapshot = RustHubRuntimeSupport.localSnapshot()
+    @State private var rustHubRuntimeRefreshing: Bool = false
+    @State private var rustHubRuntimeLastRefreshAt: Date = .distantPast
+    @State private var rustHubRemoteEntryCandidates: RustHubRemoteEntryCandidates = .empty
+    @State private var rustHubRemoteEntryRefreshing: Bool = false
+    @State private var rustHubRemoteEntryLastRefreshAt: Date = .distantPast
+    @State private var cliproxyOAuthSettings: CLIProxyOAuthSourceSupport.Settings = CLIProxyOAuthSourceSupport.loadSettings()
+    @State private var cliproxyOAuthManagementKey: String = CLIProxyOAuthSourceSupport.loadManagementKey(
+        baseURL: CLIProxyOAuthSourceSupport.loadSettings().baseURL
+    )
+    @State private var cliproxyOAuthRemoteAuths: [CLIProxyOAuthSourceSupport.RemoteAuthFile] = []
+    @State private var cliproxyOAuthActionText: String = ""
+    @State private var cliproxyOAuthErrorText: String = ""
+    @State private var cliproxyOAuthRefreshing: Bool = false
+    @State private var cliproxyOAuthSyncing: Bool = false
+    @State private var cliproxyOAuthActiveState: String = ""
+    @State private var cliproxyOAuthActiveProvider: HubProviderOAuthHTTPClient.Provider? = nil
+    @State private var cliproxyOAuthLastRemoteFetchAtMs: Int64 = 0
+    @State private var cliproxyOAuthLastAutoSyncAtMs: Int64 = 0
+    @State private var remoteQuotaBudgetEditorTarget: RemoteQuotaBudgetEditorTarget? = nil
+    @State private var remoteQuotaFocusedUserGroupingKey: String = ""
+    @State private var remoteQuotaFocusedVendorKey: String = ""
+    @State private var remoteQuotaVendorFilter: RemoteQuotaVendorFilter = .all
+    @State private var remoteQuotaUserFilter: RemoteQuotaUserFilter = .all
+    @State private var remoteQuotaConsumerFilter: RemoteQuotaConsumerFilter = .all
+    @State private var selectedSettingsPage: HubSettingsPage = .overview
+    @State private var modelCatalogDetailsExpanded: Bool = false
+    @State private var modelsAutoScanExpanded: Bool = false
+    @State private var providerQuotaOperationsExpanded: Bool = false
+    @State private var runtimeRoutingExpanded: Bool = false
+    @State private var integrationsAuxExpanded: Bool = false
+    @State private var diagnosticsLaunchExpanded: Bool = false
+    @State private var diagnosticsNetworkExpanded: Bool = false
+    @State private var diagnosticsAdvancedExpanded: Bool = false
+    @State private var expandedGRPCClientDetailIDs: Set<String> = []
+    @State private var expandedTerminalAccessKeyDetailIDs: Set<String> = []
+    @State private var expandedProviderKeyVendorIDs: Set<String> = []
+    @State private var expandedProviderKeyPoolIDs: Set<String> = []
+    @State private var terminalAccessIssueExpanded: Bool = false
+    @State private var terminalAccessLastSecretExpanded: Bool = false
+    @State private var expandedRemoteModelGroupIDs: Set<String> = []
+    @State private var remoteModelCatalogExpanded: Bool = false
+    @State private var remoteModelGroupsSnapshot: [RemoteModelKeyGroup] = []
+    @State private var providerImportSourcesExpanded: Bool = false
+    @State private var providerVendorLedgerExpanded: Bool = false
+    @State private var providerFamilyLedgerExpanded: Bool = false
+    @State private var providerPhysicalPoolsExpanded: Bool = false
+    @State private var providerUserLedgerExpanded: Bool = false
+    @State private var providerConsumerLedgerExpanded: Bool = false
+    @State private var providerOAuthExpanded: Bool = false
+    @State private var providerFlowExpanded: Bool = false
+    @State private var providerTrendExpanded: Bool = false
+    @State private var remoteModelGroupsBuildTask: Task<Void, Never>? = nil
+    @State private var providerKeyReloadTask: Task<Void, Never>? = nil
+    @State private var remoteQuotaProjectionSnapshot: RemoteQuotaCenterProjection = Self.emptyRemoteQuotaProjection()
+    @State private var remoteQuotaProjectionBuildTask: Task<Void, Never>? = nil
+    @State private var providerKeySectionSnapshot: ProviderKeySectionSnapshot = Self.emptyProviderKeySectionSnapshot()
+    @State private var lastProviderKeyPeriodicRefreshAt: Date = .distantPast
+    @State private var lastRemoteQuotaProjectionPeriodicRefreshAt: Date = .distantPast
 
     private var axTrusted: Bool {
         DockBadgeReader.ensureAccessibilityTrusted(prompt: false)
@@ -115,19 +637,8 @@ struct SettingsSheetView: View {
         grpc.isUsingNoDomainPrivateRemoteHost(noDomainPrivateRemoteHost)
     }
 
-    private func refreshRustHubRemoteEntryCandidates(force: Bool = false) {
-        let now = Date()
-        if rustHubRemoteEntryRefreshing { return }
-        if !force && now.timeIntervalSince(rustHubRemoteEntryLastRefreshAt) < 10.0 { return }
-        rustHubRemoteEntryRefreshing = true
-        Task {
-            let candidates = await RustHubRuntimeSupport.loadRemoteEntryCandidates()
-            await MainActor.run {
-                rustHubRemoteEntryCandidates = candidates
-                rustHubRemoteEntryLastRefreshAt = Date()
-                rustHubRemoteEntryRefreshing = false
-            }
-        }
+    private var remoteQuotaProjection: RemoteQuotaCenterProjection {
+        remoteQuotaProjectionSnapshot
     }
 
     private func quitApp() {
@@ -146,23 +657,37 @@ struct SettingsSheetView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            header
-            formContent
-            Spacer(minLength: 0)
+        ZStack(alignment: .topLeading) {
+            LinearGradient(
+                colors: [
+                    Color(nsColor: .windowBackgroundColor),
+                    headerLaunchTint.opacity(0.08),
+                    Color(nsColor: .underPageBackgroundColor)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+
+            VStack(alignment: .leading, spacing: 14) {
+                header
+                formContent
+            }
+            .padding(.top, 4)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .padding(14)
-        .frame(width: 620, height: 640)
+        .padding(16)
+        .frame(
+            minWidth: 920,
+            idealWidth: 1088,
+            maxWidth: .infinity,
+            minHeight: 620,
+            idealHeight: 700,
+            maxHeight: .infinity,
+            alignment: .topLeading
+        )
         .onAppear {
-            refreshRustHubRemoteEntryCandidates(force: true)
-            remoteRouteProbe.refresh(host: grpc.xtTerminalInternetHost)
-            handleSettingsNavigationTarget(store.settingsNavigationTarget)
-        }
-        .onChange(of: store.settingsNavigationTarget) { target in
-            handleSettingsNavigationTarget(target)
-        }
-        .onReceive(Timer.publish(every: 2.0, on: .main, in: .common).autoconnect()) { _ in
-            // Lightweight status snapshot exported by Node server for device presence/quotas.
+            reloadSettingsSurfaceData()
             grpcDevicesStatus = GRPCDevicesStatusStorage.load()
             grpcDeniedAttempts = GRPCDeniedAttemptsStorage.load()
             hubLaunchStatus = HubLaunchStatusStorage.load()
@@ -170,18 +695,79 @@ struct SettingsSheetView: View {
             skillsIndex = HubSkillsStoreStorage.loadSkillsIndex()
             skillsPins = HubSkillsStoreStorage.loadSkillPins()
             skillsSources = HubSkillsStoreStorage.loadSkillSources()
-            reloadAXConstitutionStatus()
-            Task { await reloadOperatorChannelProviderReadiness() }
-            refreshRustHubRemoteEntryCandidates()
-            remoteRouteProbe.refresh(host: grpc.xtTerminalInternetHost)
+            handleSettingsNavigationTarget(store.settingsNavigationTarget)
+        }
+        .onChange(of: store.settingsNavigationTarget) { target in
+            handleSettingsNavigationTarget(target)
+        }
+        .onChange(of: selectedSettingsPage) { _ in
+            maybeRebuildProviderKeySectionSnapshot()
+            if selectedSettingsPage == .runtime {
+                refreshRustHubRuntimeSnapshot(force: true)
+            }
+            if selectedSettingsPage == .access || selectedSettingsPage == .overview {
+                refreshRustHubRemoteEntryCandidates(force: true)
+            }
+        }
+        .onChange(of: modelStore.snapshot.updatedAt) { _ in
+            rebuildLocalModelSnapshot()
+        }
+        .onChange(of: providerQuotaOperationsExpanded) { expanded in
+            guard expanded else { return }
+            rebuildRemoteQuotaProjectionSnapshot()
+        }
+        .onChange(of: remoteQuotaFocusedUserGroupingKey) { _ in
+            maybeRebuildProviderKeySectionSnapshot()
+        }
+        .onChange(of: remoteQuotaFocusedVendorKey) { _ in
+            maybeRebuildProviderKeySectionSnapshot()
+        }
+        .onChange(of: remoteQuotaVendorFilter) { _ in
+            maybeRebuildProviderKeySectionSnapshot()
+        }
+        .onChange(of: remoteQuotaUserFilter) { _ in
+            maybeRebuildProviderKeySectionSnapshot()
+        }
+        .onChange(of: remoteQuotaConsumerFilter) { _ in
+            maybeRebuildProviderKeySectionSnapshot()
+        }
+        .onChange(of: providerFlowExpanded) { _ in
+            maybeRebuildProviderKeySectionSnapshot()
+        }
+        .onChange(of: providerTrendExpanded) { _ in
+            maybeRebuildProviderKeySectionSnapshot()
+        }
+        .onChange(of: providerVendorLedgerExpanded) { _ in
+            maybeRebuildProviderKeySectionSnapshot()
+        }
+        .onReceive(Timer.publish(every: 2.0, on: .main, in: .common).autoconnect()) { _ in
+            refreshVisibleSettingsPageIfNeeded()
         }
         .onReceive(NotificationCenter.default.publisher(for: .relflowhubRemoteModelsChanged)) { _ in
             reloadRemoteModels()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .relflowhubRemoteKeyHealthChanged)) { _ in
+            rebuildRemoteModelGroupsSnapshot()
+            reloadProviderKeySnapshot()
+        }
+        .onDisappear {
+            remoteModelGroupsBuildTask?.cancel()
+            remoteModelGroupsBuildTask = nil
+            providerKeyReloadTask?.cancel()
+            providerKeyReloadTask = nil
+            remoteQuotaProjectionBuildTask?.cancel()
+            remoteQuotaProjectionBuildTask = nil
         }
         .sheet(isPresented: $showAddRemoteModel) {
             AddRemoteModelSheet { entries in
                 upsertRemoteModels(entries)
             }
+        }
+        .sheet(isPresented: $showDiscoverModels) {
+            DiscoverModelsSheet()
+        }
+        .sheet(isPresented: $showAddModel) {
+            AddModelSheet()
         }
         .sheet(isPresented: $showImportRemoteCatalog) {
             ImportRemoteCatalogSheet { result in
@@ -204,6 +790,11 @@ struct SettingsSheetView: View {
             AddGRPCClientSheet { deviceName in
                 let entry = grpc.createClient(name: deviceName)
                 grpc.copyConnectVars(for: entry)
+            }
+        }
+        .sheet(item: $remoteQuotaBudgetEditorTarget) { target in
+            RemoteQuotaBudgetEditorSheet(target: target) { dailyTokenLimit in
+                applyRemoteQuotaBudgetEdit(target, dailyTokenLimit: dailyTokenLimit)
             }
         }
         .sheet(
@@ -306,6 +897,7 @@ struct SettingsSheetView: View {
         guard let target else { return }
         switch target {
         case .pairedDevices(let deviceID, let capabilityKey):
+            selectedSettingsPage = .access
             grpcClientListFilter = .all
             if let normalizedDeviceID = deviceID?.trimmingCharacters(in: .whitespacesAndNewlines),
                !normalizedDeviceID.isEmpty {
@@ -318,7 +910,81 @@ struct SettingsSheetView: View {
                 editingGRPCClient = nil
             }
             store.consumeSettingsNavigationTarget(target)
+        case .providerKeys(let sourceRef):
+            selectedSettingsPage = .models
+            providerQuotaOperationsExpanded = true
+            let normalizedSourceRef = hubNormalizedProviderKeySourceRef(sourceRef)
+            highlightedProviderKeySourceRef = normalizedSourceRef
+            providerImportSourcesExpanded = true
+            let anchorID = providerKeyImportSourceAnchorID(sourceRef: normalizedSourceRef)
+                ?? providerKeySectionAnchorID
+            settingsScrollTarget = nil
+            DispatchQueue.main.async {
+                settingsScrollTarget = anchorID
+            }
+            scheduleProviderKeyHighlightClear(normalizedSourceRef)
+            store.consumeSettingsNavigationTarget(target)
         }
+    }
+
+    private func scrollToSettingsTargetIfNeeded(_ proxy: ScrollViewProxy) {
+        guard let settingsScrollTarget else { return }
+        DispatchQueue.main.async {
+            withAnimation(.easeInOut(duration: 0.18)) {
+                proxy.scrollTo(settingsScrollTarget, anchor: .top)
+            }
+        }
+    }
+
+    private func scheduleProviderKeyHighlightClear(_ sourceRef: String?) {
+        guard let sourceRef else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12) {
+            if highlightedProviderKeySourceRef == sourceRef {
+                highlightedProviderKeySourceRef = nil
+            }
+        }
+    }
+
+    private func scheduleProviderKeyVendorHighlightClear(_ vendorKey: String?) {
+        guard let vendorKey else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12) {
+            if highlightedProviderKeyVendorKey == vendorKey {
+                highlightedProviderKeyVendorKey = nil
+            }
+        }
+    }
+
+    private var providerKeySectionAnchorID: String {
+        "provider_keys_section"
+    }
+
+    private func providerKeyVendorAnchorID(_ vendorKey: String) -> String {
+        "provider_key_vendor_" + providerKeyCanonicalVendorKey(vendorKey)
+    }
+
+    private var providerKeyUserLedgerAnchorID: String {
+        "provider_key_user_ledger"
+    }
+
+    private var providerKeyConsumerLedgerAnchorID: String {
+        "provider_key_consumer_ledger"
+    }
+
+    private var terminalAccessSectionAnchorID: String {
+        "terminal_access_section"
+    }
+
+    private func providerKeyImportSourceAnchorID(
+        _ source: ProviderKeyImportSourceStatus
+    ) -> String {
+        providerKeyImportSourceAnchorID(
+            sourceRef: hubNormalizedProviderKeySourceRef(source.sourceRef)
+        ) ?? providerKeySectionAnchorID
+    }
+
+    private func providerKeyImportSourceAnchorID(sourceRef: String?) -> String? {
+        guard let normalizedSourceRef = hubNormalizedProviderKeySourceRef(sourceRef) else { return nil }
+        return "provider_key_source::\(normalizedSourceRef)"
     }
 
     private func presentGRPCClientEditor(
@@ -329,58 +995,2348 @@ struct SettingsSheetView: View {
         editingGRPCClient = client
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(HubUIStrings.Settings.title)
-                        .font(.headline)
-                    Text(HubUIStrings.Settings.subtitle)
+    private func presentRemoteQuotaConsumerManager(
+        _ consumer: RemoteQuotaCenterClientProjection
+    ) {
+        if let client = consumer.grpcClient {
+            selectedSettingsPage = .access
+            presentGRPCClientEditor(client, capabilityFocusKey: "ai.generate.paid")
+            return
+        }
+
+        guard let accessKey = consumer.terminalAccessKey else { return }
+        selectedSettingsPage = .access
+        terminalAccessErrorText = ""
+        terminalAccessActionText = "已定位到 \(accessKey.resolvedName)。可在这里轮换、撤销或重新签发普通 terminal API key。"
+        settingsScrollTarget = nil
+        DispatchQueue.main.async {
+            settingsScrollTarget = terminalAccessSectionAnchorID
+        }
+    }
+
+    private func presentRemoteQuotaUserManager(
+        _ user: RemoteQuotaCenterUserProjection
+    ) {
+        if user.consumers.count == 1, let consumer = user.consumers.first {
+            presentRemoteQuotaConsumerManager(consumer)
+            return
+        }
+
+        if user.xtConsumerCount == user.consumerCount {
+            remoteQuotaConsumerFilter = .xt
+        } else if user.terminalConsumerCount == user.consumerCount {
+            remoteQuotaConsumerFilter = .terminal
+        } else {
+            remoteQuotaConsumerFilter = .all
+        }
+
+        selectedSettingsPage = .models
+        providerQuotaOperationsExpanded = true
+        providerConsumerLedgerExpanded = true
+        settingsScrollTarget = nil
+        DispatchQueue.main.async {
+            settingsScrollTarget = providerKeyConsumerLedgerAnchorID
+        }
+    }
+
+    private func selectSettingsPage(_ page: HubSettingsPage) {
+        selectedSettingsPage = page
+        settingsScrollTarget = nil
+    }
+
+    private func openCLIProxyOAuthInventoryManager() {
+        let normalizedSourceRef = CLIProxyOAuthSourceSupport.normalizedBaseURLString(
+            cliproxyOAuthSettings.baseURL
+        )
+        let anchorID = providerKeyImportSourceAnchorID(sourceRef: normalizedSourceRef)
+            ?? providerKeySectionAnchorID
+        selectedSettingsPage = .models
+        providerQuotaOperationsExpanded = true
+        providerImportSourcesExpanded = true
+        settingsScrollTarget = nil
+        DispatchQueue.main.async {
+            settingsScrollTarget = anchorID
+        }
+    }
+
+    private func focusProviderKeyVendor(
+        _ rawVendorKey: String,
+        displayName: String? = nil
+    ) {
+        let vendorKey = providerKeyCanonicalVendorKey(rawVendorKey)
+        let normalizedDisplayName = displayName?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let vendorDisplayName = normalizedDisplayName.isEmpty
+            ? providerKeyVendorDisplayName(vendorKey)
+            : normalizedDisplayName
+        let hasVendor = providerKeyDerivedSnapshot.keyPools.contains { pool in
+            providerKeyCanonicalVendorKey(pool.supplierKey) == vendorKey
+        }
+
+        selectedSettingsPage = .models
+        providerQuotaOperationsExpanded = true
+        remoteQuotaVendorFilter = .all
+        remoteQuotaFocusedVendorKey = vendorKey
+        highlightedProviderKeyVendorKey = vendorKey
+        providerVendorLedgerExpanded = true
+        expandedProviderKeyVendorIDs.insert(vendorKey)
+        settingsScrollTarget = nil
+        remoteQuotaErrorText = ""
+        remoteQuotaActionText = hasVendor
+            ? "已定位到 \(vendorDisplayName) 厂家账本。这里可以继续看库存、覆盖预算和热点池。"
+            : "\(vendorDisplayName) 当前还没有同步进 Hub 厂家总账。先点“同步到 Hub”再看库存与额度分配。"
+
+        DispatchQueue.main.async {
+            settingsScrollTarget = hasVendor
+                ? providerKeyVendorAnchorID(vendorKey)
+                : providerKeySectionAnchorID
+        }
+        scheduleProviderKeyVendorHighlightClear(vendorKey)
+    }
+
+    private func focusProviderKeyVendorUser(
+        _ user: RemoteQuotaCenterUserProjection,
+        vendor: ProviderKeyVendorInventorySummary
+    ) {
+        let vendorKey = providerKeyCanonicalVendorKey(vendor.vendorKey)
+
+        selectedSettingsPage = .models
+        providerQuotaOperationsExpanded = true
+        remoteQuotaVendorFilter = .all
+        remoteQuotaUserFilter = .all
+        remoteQuotaConsumerFilter = .all
+        remoteQuotaFocusedVendorKey = vendorKey
+        remoteQuotaFocusedUserGroupingKey = user.groupingKey
+        highlightedProviderKeyVendorKey = vendorKey
+        providerVendorLedgerExpanded = true
+        providerUserLedgerExpanded = true
+        expandedProviderKeyVendorIDs.insert(vendorKey)
+        settingsScrollTarget = nil
+        remoteQuotaErrorText = ""
+        remoteQuotaActionText =
+            "已锁定 \(vendor.displayName) / \(user.displayName)。下面的家族、用户和消费者台账都会收窄到这条配额链路。"
+
+        DispatchQueue.main.async {
+            settingsScrollTarget = providerKeyUserLedgerAnchorID
+        }
+        scheduleProviderKeyVendorHighlightClear(vendorKey)
+    }
+
+    private func reloadSettingsSurfaceData() {
+        remoteRouteProbe.refresh(host: grpc.xtTerminalInternetHost)
+        rebuildLocalModelSnapshot()
+        reloadProviderKeySnapshot()
+        reloadRemoteModels()
+        reloadNetworkPolicies()
+        reloadCLIProxyRuntimeConfiguration()
+        reloadCLIProxyOAuthConfiguration()
+        reloadAXConstitutionStatus()
+        refreshRustHubRuntimeSnapshot(force: true)
+        refreshRustHubRemoteEntryCandidates(force: true)
+        Task { await reloadOperatorChannelProviderReadiness() }
+        Task { await reloadTerminalAccessKeys() }
+        Task { await refreshCLIProxyRuntimeStatus() }
+        Task { await refreshCLIProxyOAuthRemoteAuths() }
+    }
+
+    private func rebuildLocalModelSnapshot() {
+        localModelSnapshot = SettingsLocalModelSnapshot.build(
+            from: modelStore.snapshot.models
+        )
+    }
+
+    private func refreshVisibleSettingsPageIfNeeded(now: Date = Date()) {
+        switch selectedSettingsPage {
+        case .overview:
+            grpcDevicesStatus = GRPCDevicesStatusStorage.load()
+            grpcDeniedAttempts = GRPCDeniedAttemptsStorage.load()
+            hubLaunchStatus = HubLaunchStatusStorage.load()
+            remoteRouteProbe.refresh(host: grpc.xtTerminalInternetHost)
+            refreshRustHubRemoteEntryCandidates()
+            Task { await maybeAutoSyncCLIProxyOAuthAccounts() }
+        case .access:
+            grpcDevicesStatus = GRPCDevicesStatusStorage.load()
+            grpcDeniedAttempts = GRPCDeniedAttemptsStorage.load()
+            remoteRouteProbe.refresh(host: grpc.xtTerminalInternetHost)
+            refreshRustHubRemoteEntryCandidates()
+        case .models:
+            refreshModelsPageIfNeeded(now: now)
+            if providerOAuthExpanded || providerQuotaOperationsExpanded {
+                Task { await maybeAutoSyncCLIProxyOAuthAccounts() }
+            }
+        case .runtime:
+            hubLaunchStatus = HubLaunchStatusStorage.load()
+            refreshRustHubRuntimeSnapshot()
+            Task { await maybeRefreshCLIProxyRuntimeStatus() }
+        case .integrations:
+            skillsIndex = HubSkillsStoreStorage.loadSkillsIndex()
+            skillsPins = HubSkillsStoreStorage.loadSkillPins()
+            skillsSources = HubSkillsStoreStorage.loadSkillSources()
+            Task { await reloadOperatorChannelProviderReadiness() }
+        case .diagnostics:
+            grpcDeniedAttempts = GRPCDeniedAttemptsStorage.load()
+            hubLaunchStatus = HubLaunchStatusStorage.load()
+            hubLaunchHistory = HubLaunchHistoryStorage.load()
+            reloadAXConstitutionStatus()
+        }
+
+        if !cliproxyOAuthActiveState.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            Task { await pollCLIProxyOAuthLogin() }
+        }
+    }
+
+    private func refreshModelsPageIfNeeded(now: Date = Date()) {
+        guard selectedSettingsPage == .models else { return }
+
+        if now.timeIntervalSince(lastProviderKeyPeriodicRefreshAt) >= 12 {
+            lastProviderKeyPeriodicRefreshAt = now
+            reloadProviderKeySnapshot(rebuildProjection: providerQuotaOperationsExpanded)
+        }
+
+        guard providerQuotaOperationsExpanded else { return }
+        if now.timeIntervalSince(lastRemoteQuotaProjectionPeriodicRefreshAt) >= 6 {
+            lastRemoteQuotaProjectionPeriodicRefreshAt = now
+            grpcDevicesStatus = GRPCDevicesStatusStorage.load()
+            rebuildRemoteQuotaProjectionSnapshot()
+        }
+    }
+
+    private func refreshRustHubRuntimeSnapshot(force: Bool = false) {
+        let now = Date()
+        if rustHubRuntimeRefreshing { return }
+        if !force && now.timeIntervalSince(rustHubRuntimeLastRefreshAt) < 10.0 { return }
+        rustHubRuntimeRefreshing = true
+        Task {
+            let snapshot = await RustHubRuntimeSupport.loadSnapshot()
+            await MainActor.run {
+                rustHubRuntimeSnapshot = snapshot
+                rustHubRuntimeLastRefreshAt = Date()
+                rustHubRuntimeRefreshing = false
+            }
+        }
+    }
+
+    private func refreshRustHubRemoteEntryCandidates(force: Bool = false) {
+        let now = Date()
+        if rustHubRemoteEntryRefreshing { return }
+        if !force && now.timeIntervalSince(rustHubRemoteEntryLastRefreshAt) < 10.0 { return }
+        rustHubRemoteEntryRefreshing = true
+        Task {
+            let candidates = await RustHubRuntimeSupport.loadRemoteEntryCandidates()
+            await MainActor.run {
+                rustHubRemoteEntryCandidates = candidates
+                rustHubRemoteEntryLastRefreshAt = Date()
+                rustHubRemoteEntryRefreshing = false
+            }
+        }
+    }
+
+    private func maybeRebuildProviderKeySectionSnapshot() {
+        guard selectedSettingsPage == .models, providerQuotaOperationsExpanded else { return }
+        rebuildProviderKeySectionSnapshot()
+    }
+
+    private func rebuildProviderKeySectionSnapshot() {
+        providerKeySectionSnapshot = makeProviderKeySectionSnapshot()
+    }
+
+    private func makeProviderKeySectionSnapshot() -> ProviderKeySectionSnapshot {
+        let keyPools = providerKeyDerivedSnapshot.keyPools
+        let quotaProjection = remoteQuotaProjection
+        let users = quotaProjection.users
+        let focusedUser = providerKeyFocusedUser(users)
+        let focusedVendorFamilyKeys = providerKeyFocusedVendorFamilyKeys(quotaProjection)
+        let scopedUsers = providerKeyVendorScopedUsers(
+            providerKeyScopedUsers(users),
+            focusedVendorFamilyKeys: focusedVendorFamilyKeys
+        )
+        let scopedConsumers = providerKeyVendorScopedConsumers(
+            providerKeyScopedConsumers(quotaProjection),
+            focusedVendorFamilyKeys: focusedVendorFamilyKeys
+        )
+        let filteredFamilies = providerKeyFamilyInventorySummaries(
+            quotaProjection,
+            scopedUsers: scopedUsers,
+            scopedConsumers: scopedConsumers,
+            focusedVendorFamilyKeys: focusedVendorFamilyKeys
+        )
+        let vendorSummaries = providerKeyVendorInventorySummaries(
+            keyPools,
+            familySummaries: filteredFamilies,
+            scopedUsers: scopedUsers,
+            scopedConsumers: scopedConsumers,
+            includeSpotlights: providerVendorLedgerExpanded
+        )
+        let focusedVendor = providerKeyFocusedVendor(vendorSummaries)
+        let filteredVendors = providerKeyFilteredVendors(
+            vendorSummaries,
+            focusedVendor: focusedVendor
+        )
+        let filteredUsers = providerKeyFilteredUsers(
+            users,
+            focusedVendorFamilyKeys: focusedVendorFamilyKeys
+        )
+        let filteredConsumers = providerKeyFilteredConsumers(
+            quotaProjection,
+            focusedVendorFamilyKeys: focusedVendorFamilyKeys
+        )
+        let scopeOverview = providerKeyScopeOverview(
+            focusedUser: focusedUser,
+            focusedVendorDisplayName: focusedVendor?.displayName,
+            scopedUsers: scopedUsers,
+            scopedConsumers: scopedConsumers,
+            families: filteredFamilies
+        )
+        let riskVendorCount = filteredVendors.filter(providerKeyVendorAtRisk(_:)).count
+        let riskFamilyCount = filteredFamilies.filter(providerKeyFamilyAtRisk(_:)).count
+
+        let flowChains: [ProviderKeyFlowChainSummary] = {
+            guard providerFlowExpanded else { return [] }
+            let flowChainVendors = focusedVendor == nil ? vendorSummaries : filteredVendors
+            return providerKeyFlowChains(
+                vendors: flowChainVendors,
+                users: scopedUsers,
+                consumers: scopedConsumers,
+                focusedVendor: focusedVendor
+            )
+        }()
+
+        let overallTrendCard: ProviderKeyTrendCardSummary?
+        let vendorTrendCards: [ProviderKeyTrendCardSummary]
+        let familyTrendCards: [ProviderKeyTrendCardSummary]
+        let userTrendCards: [ProviderKeyTrendCardSummary]
+        let consumerTrendCards: [ProviderKeyTrendCardSummary]
+        let trendCardCount: Int
+
+        if providerTrendExpanded {
+            overallTrendCard = providerKeyOverallTrendCard(
+                scopeOverview: scopeOverview,
+                consumers: scopedConsumers,
+                focusedVendor: focusedVendor
+            )
+            vendorTrendCards = providerKeyVendorTrendCards(
+                vendorSummaries,
+                scopedConsumers: scopedConsumers,
+                focusedVendor: focusedVendor
+            )
+            familyTrendCards = providerKeyFamilyTrendCards(filteredFamilies)
+            userTrendCards = providerKeyUserTrendCards(
+                filteredUsers,
+                focusedVendor: focusedVendor
+            )
+            consumerTrendCards = providerKeyConsumerTrendCards(
+                filteredConsumers,
+                focusedVendor: focusedVendor
+            )
+            trendCardCount = providerKeyTrendCardCount(
+                overallTrendCard: overallTrendCard,
+                vendorTrendCards: vendorTrendCards,
+                familyTrendCards: familyTrendCards,
+                userTrendCards: userTrendCards,
+                consumerTrendCards: consumerTrendCards
+            )
+        } else {
+            overallTrendCard = nil
+            vendorTrendCards = []
+            familyTrendCards = []
+            userTrendCards = []
+            consumerTrendCards = []
+            trendCardCount = 0
+        }
+
+        return ProviderKeySectionSnapshot(
+            keyPools: keyPools,
+            overview: quotaProjection.overview,
+            totalFamilyCount: quotaProjection.families.count,
+            totalConsumerCount: quotaProjection.consumers.count,
+            consumerLedgerTotalCount: focusedUser == nil ? quotaProjection.consumers.count : scopedConsumers.count,
+            users: users,
+            focusedUser: focusedUser,
+            scopedUsers: scopedUsers,
+            scopedConsumers: scopedConsumers,
+            vendorSummaries: vendorSummaries,
+            filteredVendors: filteredVendors,
+            filteredFamilies: filteredFamilies,
+            filteredUsers: filteredUsers,
+            filteredConsumers: filteredConsumers,
+            focusedVendor: focusedVendor,
+            flowChains: flowChains,
+            scopeOverview: scopeOverview,
+            riskVendorCount: riskVendorCount,
+            riskFamilyCount: riskFamilyCount,
+            overallTrendCard: overallTrendCard,
+            vendorTrendCards: vendorTrendCards,
+            familyTrendCards: familyTrendCards,
+            userTrendCards: userTrendCards,
+            consumerTrendCards: consumerTrendCards,
+            trendCardCount: trendCardCount,
+            operationalTint: providerKeyOperationalTint(
+                focusedUser: focusedUser,
+                focusedVendor: focusedVendor,
+                riskVendorCount: riskVendorCount,
+                riskFamilyCount: riskFamilyCount
+            )
+        )
+    }
+
+    private var blockedCapabilityCount: Int {
+        hubLaunchStatus?.degraded.blockedCapabilities.count ?? 0
+    }
+
+    private var settingsIssueCount: Int {
+        var count = blockedCapabilityCount
+        if !grpc.lastError.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            count += 1
+        }
+        if !store.aiRuntimeLastError.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            count += 1
+        }
+        if !grpcDeniedAttempts.attempts.isEmpty {
+            count += 1
+        }
+        if !operatorChannelProviderReadinessError.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            count += 1
+        }
+        return count
+    }
+
+    private var readyRuntimeProviderCount: Int {
+        if let monitor = store.aiRuntimeStatusSnapshot?.monitorSnapshot {
+            return monitor.providers.filter(\.ok).count
+        }
+        return store.aiRuntimeStatusSnapshot?.providers.values.filter(\.ok).count ?? 0
+    }
+
+    private var totalRuntimeProviderCount: Int {
+        if let monitor = store.aiRuntimeStatusSnapshot?.monitorSnapshot {
+            return monitor.providers.count
+        }
+        return store.aiRuntimeStatusSnapshot?.providers.count ?? 0
+    }
+
+    private var loadedRuntimeInstanceCount: Int {
+        store.aiRuntimeStatusSnapshot?.monitorSnapshot?.loadedInstances.count ?? 0
+    }
+
+    private var localCatalogModels: [HubModel] {
+        localModelSnapshot.models
+    }
+
+    private var localCatalogModelCount: Int {
+        localCatalogModels.count
+    }
+
+    private var loadedLocalModelCount: Int {
+        localModelSnapshot.loadedCount
+    }
+
+    private var localModelHealthSummary: LocalModelHealthSectionSummaryPresentation? {
+        LocalModelHealthSectionSummarySupport.presentation(
+            models: localCatalogModels,
+            healthSnapshot: store.localModelHealthSnapshot,
+            scanningModelIDs: store.localModelHealthScanningModelIDs
+        )
+    }
+
+    private var localAvailableModelCount: Int {
+        localModelHealthSummary?.availableCount ?? 0
+    }
+
+    private var localReviewModelCount: Int {
+        localModelHealthSummary?.reviewCount ?? 0
+    }
+
+    private var localDiscouragedModelCount: Int {
+        localModelHealthSummary?.discouragedCount ?? 0
+    }
+
+    private var localUnscannedModelCount: Int {
+        localModelHealthSummary?.unscannedCount ?? 0
+    }
+
+    private var localScanningModelCount: Int {
+        localModelHealthSummary?.scanningCount ?? 0
+    }
+
+    private var localPendingModelCount: Int {
+        localReviewModelCount + localDiscouragedModelCount + localUnscannedModelCount
+    }
+
+    private var quotaPoolCount: Int {
+        providerKeyDerivedSnapshot.quotaPools.count
+    }
+
+    private var operatorReadyCount: Int {
+        operatorChannelProviderReadiness.filter(\.ready).count
+    }
+
+    private var runtimeHeartbeatText: String {
+        guard let status = store.aiRuntimeStatusSnapshot else {
+            return "等待心跳"
+        }
+        return status.isAlive(ttl: AIRuntimeStatus.recommendedHeartbeatTTL) ? "在线" : "心跳过期"
+    }
+
+    private var headerLaunchTint: Color {
+        switch hubLaunchStatus?.state {
+        case .serving:
+            return .green
+        case .degradedServing:
+            return .orange
+        case .failed:
+            return .red
+        default:
+            return .blue
+        }
+    }
+
+    private var cliproxyOAuthInventoryAuths: [CLIProxyOAuthSourceSupport.RemoteAuthFile] {
+        cliproxyOAuthRemoteAuths.filter { !$0.runtimeOnly }
+    }
+
+    private var cliproxyOAuthInventoryCount: Int {
+        cliproxyOAuthInventoryAuths.count
+    }
+
+    private var cliproxyOAuthRuntimeOnlyCount: Int {
+        cliproxyOAuthRemoteAuths.filter(\.runtimeOnly).count
+    }
+
+    private var cliproxyOAuthReadyCount: Int {
+        cliproxyOAuthInventoryAuths.filter {
+            cliproxyOAuthInventoryState($0) == .ready
+        }.count
+    }
+
+    private var cliproxyOAuthCoolingCount: Int {
+        cliproxyOAuthInventoryAuths.filter {
+            cliproxyOAuthInventoryState($0) == .cooling
+        }.count
+    }
+
+    private var cliproxyOAuthBlockedCount: Int {
+        cliproxyOAuthInventoryAuths.filter {
+            cliproxyOAuthInventoryState($0) == .blocked
+        }.count
+    }
+
+    private var cliproxyOAuthDisabledCount: Int {
+        cliproxyOAuthInventoryAuths.filter {
+            cliproxyOAuthInventoryState($0) == .disabled
+        }.count
+    }
+
+    private var cliproxyOAuthRefreshingCount: Int {
+        cliproxyOAuthInventoryAuths.filter {
+            cliproxyOAuthInventoryState($0) == .refreshing
+        }.count
+    }
+
+    private var cliproxyOAuthWaitingCount: Int {
+        cliproxyOAuthInventoryAuths.filter {
+            cliproxyOAuthInventoryState($0) == .waiting
+        }.count
+    }
+
+    private var cliproxyOAuthQuotaExceededCount: Int {
+        cliproxyOAuthInventoryAuths.filter(\.quota.exceeded).count
+    }
+
+    private var cliproxyOAuthProviderCount: Int {
+        cliproxyOAuthProviderSummaries.count
+    }
+
+    private var cliproxyOAuthNextRefreshAtMs: Int64 {
+        cliproxyOAuthInventoryAuths
+            .map(\.nextRefreshAtMs)
+            .filter { $0 > 0 }
+            .min() ?? 0
+    }
+
+    private var cliproxyOAuthNextRecoverAtMs: Int64 {
+        cliproxyOAuthInventoryAuths
+            .compactMap { auth in
+                minimumPositiveTimestamp(
+                    auth.nextRetryAtMs,
+                    auth.quota.nextRecoverAtMs
+                )
+            }
+            .min() ?? 0
+    }
+
+    private var cliproxyOAuthProviderSummaries: [CLIProxyOAuthProviderInventorySummary] {
+        Dictionary(grouping: cliproxyOAuthInventoryAuths) { auth in
+            cliproxyOAuthCanonicalProviderKey(auth.provider)
+        }
+        .map { providerKey, auths in
+            CLIProxyOAuthProviderInventorySummary(
+                providerKey: providerKey,
+                displayName: cliproxyOAuthProviderDisplayName(providerKey),
+                totalCount: auths.count,
+                readyCount: auths.filter { cliproxyOAuthInventoryState($0) == .ready }.count,
+                coolingCount: auths.filter { cliproxyOAuthInventoryState($0) == .cooling }.count,
+                blockedCount: auths.filter { cliproxyOAuthInventoryState($0) == .blocked }.count,
+                disabledCount: auths.filter { cliproxyOAuthInventoryState($0) == .disabled }.count,
+                refreshingCount: auths.filter { cliproxyOAuthInventoryState($0) == .refreshing }.count,
+                waitingCount: auths.filter { cliproxyOAuthInventoryState($0) == .waiting }.count
+            )
+        }
+        .sorted { lhs, rhs in
+            let leftOrder = cliproxyOAuthProviderSortIndex(lhs.providerKey)
+            let rightOrder = cliproxyOAuthProviderSortIndex(rhs.providerKey)
+            if leftOrder != rightOrder {
+                return leftOrder < rightOrder
+            }
+            if lhs.readyCount != rhs.readyCount {
+                return lhs.readyCount > rhs.readyCount
+            }
+            return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+        }
+    }
+
+    private var cliproxyOAuthProviderCoverageText: String {
+        let names = cliproxyOAuthProviderSummaries.map(\.displayName)
+        guard !names.isEmpty else {
+            return "还没有 OAuth 厂家库存"
+        }
+        if names.count <= 3 {
+            return names.joined(separator: " / ")
+        }
+        return names.prefix(3).joined(separator: " / ") + " +\(names.count - 3)"
+    }
+
+    private var cliproxyOAuthOverviewSummaryText: String {
+        var parts: [String] = []
+
+        if cliproxyOAuthRemoteAuths.isEmpty {
+            parts.append("当前还没有从 CLIProxy 拉到已认证账号")
+        } else {
+            parts.append("已发现 \(cliproxyOAuthRemoteAuths.count) 个认证文件")
+            if cliproxyOAuthInventoryCount > 0 {
+                parts.append("\(cliproxyOAuthInventoryCount) 个可并入 Hub")
+            }
+            if cliproxyOAuthRuntimeOnlyCount > 0 {
+                parts.append("\(cliproxyOAuthRuntimeOnlyCount) 个 runtime-only")
+            }
+            if cliproxyOAuthProviderCount > 0 {
+                parts.append("覆盖 \(cliproxyOAuthProviderCount) 家厂商")
+            }
+        }
+
+        if cliproxyOAuthSettings.lastSyncAtMs > 0 {
+            parts.append("上次同步 \(formattedProviderKeyImportSourceTime(cliproxyOAuthSettings.lastSyncAtMs))")
+        } else if cliproxyOAuthLastRemoteFetchAtMs > 0 {
+            parts.append("列表刷新 \(formattedProviderKeyImportSourceTime(cliproxyOAuthLastRemoteFetchAtMs))")
+        } else if cliproxyOAuthManagementKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append("填写 management key 后可自动并入 Hub 额度池")
+        } else {
+            parts.append("已连接 management key，等待第一次同步")
+        }
+
+        return HubUIStrings.Settings.RemoteModels.sectionSummary(parts)
+    }
+
+    private var cliproxyOAuthOverviewNoticeText: String {
+        let trimmedError = cliproxyOAuthErrorText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedError.isEmpty {
+            return trimmedError
+        }
+
+        if let provider = cliproxyOAuthActiveProvider,
+           !cliproxyOAuthActiveState.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "\(provider.title) OAuth 正在等待浏览器完成登录，完成后 Hub 会自动导入凭证并并入额度池。"
+        }
+
+        if cliproxyOAuthManagementKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "新账号可直接走 Hub 原生 OAuth；只有导入旧 CLIProxy 账号时才需要 management key。"
+        }
+
+        if cliproxyOAuthRemoteAuths.isEmpty {
+            return "CLIProxy 已接通，但还没有旧认证账号。新登录会直接进入 Hub Provider Key 额度池。"
+        }
+
+        if cliproxyOAuthInventoryCount == 0 && cliproxyOAuthRuntimeOnlyCount > 0 {
+            return "当前拉到的账号全部是 runtime-only，暂时不会并入 Hub 额度池。"
+        }
+
+        if cliproxyOAuthBlockedCount > 0 {
+            if cliproxyOAuthNextRecoverAtMs > 0 {
+                return "当前有 \(cliproxyOAuthBlockedCount) 个账号阻断，最早 \(formattedProviderKeyImportSourceTime(cliproxyOAuthNextRecoverAtMs)) 可恢复或重试。"
+            }
+            return "当前有 \(cliproxyOAuthBlockedCount) 个账号阻断，建议去模型页看具体 provider / key 状态。"
+        }
+
+        if cliproxyOAuthCoolingCount > 0 {
+            let limitedText = cliproxyOAuthQuotaExceededCount > 0
+                ? "\(cliproxyOAuthQuotaExceededCount) 个已触发免费额度上限"
+                : "\(cliproxyOAuthCoolingCount) 个正在冷却"
+            if cliproxyOAuthNextRecoverAtMs > 0 {
+                return "当前有 \(limitedText)，最早 \(formattedProviderKeyImportSourceTime(cliproxyOAuthNextRecoverAtMs)) 恢复。"
+            }
+            return "当前有 \(limitedText)，等待 CLIProxy 恢复可用额度。"
+        }
+
+        if cliproxyOAuthRefreshingCount > 0 || cliproxyOAuthWaitingCount > 0 {
+            var parts: [String] = []
+            if cliproxyOAuthRefreshingCount > 0 {
+                parts.append("刷新中 \(cliproxyOAuthRefreshingCount)")
+            }
+            if cliproxyOAuthWaitingCount > 0 {
+                parts.append("等待中 \(cliproxyOAuthWaitingCount)")
+            }
+            return "库存正在滚动维护：\(HubUIStrings.Settings.RemoteModels.sectionSummary(parts))。"
+        }
+
+        if cliproxyOAuthNextRefreshAtMs > 0 {
+            return "库存当前可用，下次刷新 \(formattedProviderKeyImportSourceTime(cliproxyOAuthNextRefreshAtMs))。"
+        }
+
+        return "库存当前可用，可以继续给 XT 或普通 terminal 分配 Hub access key + URL。"
+    }
+
+    private var cliproxyOAuthOverviewNoticeTint: Color {
+        let trimmedRuntimeError = cliproxyRuntimeErrorText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedRuntimeError.isEmpty {
+            return .red
+        }
+        let trimmedError = cliproxyOAuthErrorText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedError.isEmpty {
+            return .red
+        }
+        if cliproxyRuntimeLaunching || cliproxyRuntimeRefreshing {
+            return .blue
+        }
+        if !cliproxyOAuthActiveState.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return .blue
+        }
+        if cliproxyOAuthManagementKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || cliproxyOAuthRemoteAuths.isEmpty {
+            return .indigo
+        }
+        if cliproxyOAuthBlockedCount > 0 {
+            return .red
+        }
+        if cliproxyOAuthCoolingCount > 0 {
+            return .orange
+        }
+        if cliproxyOAuthRefreshingCount > 0 || cliproxyOAuthWaitingCount > 0 {
+            return .blue
+        }
+        return .green
+    }
+
+    private var cliproxyOAuthOverviewNoticeSystemName: String {
+        let trimmedError = cliproxyOAuthErrorText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedError.isEmpty {
+            return "exclamationmark.triangle"
+        }
+        if !cliproxyOAuthActiveState.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "person.badge.key"
+        }
+        if cliproxyOAuthManagementKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || cliproxyOAuthRemoteAuths.isEmpty {
+            return "info.circle"
+        }
+        if cliproxyOAuthBlockedCount > 0 {
+            return "xmark.octagon"
+        }
+        if cliproxyOAuthCoolingCount > 0 {
+            return "timer"
+        }
+        if cliproxyOAuthRefreshingCount > 0 || cliproxyOAuthWaitingCount > 0 {
+            return "arrow.triangle.2.circlepath"
+        }
+        return "checkmark.seal"
+    }
+
+    private var cliproxyOAuthOverviewMetrics: [HubSettingsMetric] {
+        let refreshValue: String
+        if cliproxyOAuthNextRefreshAtMs > 0 {
+            refreshValue = formattedProviderKeyImportSourceTime(cliproxyOAuthNextRefreshAtMs)
+        } else if cliproxyOAuthRefreshing || cliproxyOAuthSyncing {
+            refreshValue = "进行中"
+        } else if cliproxyOAuthSettings.lastSyncAtMs > 0 {
+            refreshValue = "已同步"
+        } else {
+            refreshValue = "待同步"
+        }
+
+        let refreshDetail: String
+        if cliproxyOAuthLastRemoteFetchAtMs > 0 {
+            refreshDetail = "列表刷新 \(formattedProviderKeyImportSourceTime(cliproxyOAuthLastRemoteFetchAtMs))"
+        } else if cliproxyOAuthSettings.lastSyncAtMs > 0 {
+            refreshDetail = "上次同步 \(formattedProviderKeyImportSourceTime(cliproxyOAuthSettings.lastSyncAtMs))"
+        } else {
+            refreshDetail = "还没有 CLIProxy 远端拉取记录"
+        }
+
+        return [
+            HubSettingsMetric(
+                title: "可用账号",
+                value: cliproxyOAuthInventoryCount == 0 ? "0" : "\(cliproxyOAuthReadyCount)/\(cliproxyOAuthInventoryCount)",
+                detail: cliproxyOAuthRuntimeOnlyCount > 0
+                    ? "另有 \(cliproxyOAuthRuntimeOnlyCount) 个 runtime-only 未并入 Hub"
+                    : "已就绪 / 可导入的 CLIProxy 账号",
+                tint: cliproxyOAuthReadyCount > 0 ? .green : .secondary
+            ),
+            HubSettingsMetric(
+                title: "冷却 / 恢复",
+                value: "\(cliproxyOAuthCoolingCount)",
+                detail: cliproxyOAuthNextRecoverAtMs > 0
+                    ? "最早恢复 \(formattedProviderKeyImportSourceTime(cliproxyOAuthNextRecoverAtMs))"
+                    : "当前没有额度冷却",
+                tint: cliproxyOAuthCoolingCount > 0 ? .orange : .green
+            ),
+            HubSettingsMetric(
+                title: "阻断 / 停用",
+                value: "\(cliproxyOAuthBlockedCount + cliproxyOAuthDisabledCount)",
+                detail: HubUIStrings.Settings.RemoteModels.sectionSummary([
+                    "阻断 \(cliproxyOAuthBlockedCount)",
+                    "停用 \(cliproxyOAuthDisabledCount)"
+                ]),
+                tint: cliproxyOAuthBlockedCount > 0 ? .red : (cliproxyOAuthDisabledCount > 0 ? .gray : .green)
+            ),
+            HubSettingsMetric(
+                title: "下次刷新",
+                value: refreshValue,
+                detail: refreshDetail,
+                tint: cliproxyOAuthRefreshing || cliproxyOAuthSyncing ? .blue : .indigo
+            ),
+            HubSettingsMetric(
+                title: "覆盖厂家",
+                value: cliproxyOAuthProviderCount == 0 ? "未接入" : "\(cliproxyOAuthProviderCount)",
+                detail: cliproxyOAuthProviderCoverageText,
+                tint: cliproxyOAuthProviderCount > 0 ? .teal : .secondary
+            )
+        ]
+    }
+
+    private var cliproxyOAuthHubRoutingStatusText: String {
+        let snapshot = providerKeySnapshot
+        let derived = providerKeyDerivedSnapshot
+        guard snapshot.totalAccounts > 0 else {
+            return "Hub 账号池为空：同步 CLIProxy OAuth 或发起 Hub OAuth 后会在这里显示可路由库存。"
+        }
+
+        let blockedLikeAccounts = derived.blockedAccounts
+            + derived.disabledPoolAccounts
+            + derived.staleAccounts
+        let strategies = Array(Set(derived.keyPools.map(\.routingStrategy).filter {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        })).sorted()
+        let strategyText = strategies.isEmpty
+            ? snapshot.globalRoutingStrategy
+            : strategies.joined(separator: " / ")
+
+        return HubUIStrings.Settings.RemoteModels.sectionSummary([
+            "Hub 账号池 \(derived.readyAccounts)/\(derived.totalAccounts) 可路由",
+            "\(derived.keyPools.count) 个物理池",
+            "\(derived.quotaPools.count) 个额度池",
+            derived.cooldownAccounts > 0 ? "冷却 \(derived.cooldownAccounts)" : "",
+            blockedLikeAccounts > 0 ? "阻断/停用/过期 \(blockedLikeAccounts)" : "",
+            "策略 \(strategyText)"
+        ])
+    }
+
+    private var cliproxyOAuthHubRoutingStatusTint: Color {
+        if providerKeyDerivedSnapshot.readyAccounts > 0 {
+            return providerKeyDerivedSnapshot.cooldownAccounts > 0 ? .orange : .green
+        }
+        if providerKeyDerivedSnapshot.totalAccounts > 0 {
+            return .red
+        }
+        return .indigo
+    }
+
+    private var cliproxyOAuthHubRoutingStatusSystemName: String {
+        if providerKeyDerivedSnapshot.readyAccounts > 0 {
+            return "point.3.connected.trianglepath.dotted"
+        }
+        if providerKeyDerivedSnapshot.totalAccounts > 0 {
+            return "exclamationmark.triangle"
+        }
+        return "tray.and.arrow.down"
+    }
+
+    private func cliproxyOAuthSyncActionText(
+        summary: CLIProxyOAuthSourceSupport.SyncSummary,
+        snapshot: ProviderKeyStoreSnapshot,
+        partial: Bool
+    ) -> String {
+        let blockedLikeAccounts = snapshot.blockedAccounts
+            + snapshot.disabledPoolAccounts
+            + snapshot.staleAccounts
+        var parts = ["写入 \(summary.importedCount) 个账号"]
+        if summary.prunedCount > 0 {
+            parts.append("清理 \(summary.prunedCount) 个旧账号")
+        }
+        if snapshot.totalAccounts > 0 {
+            parts.append("Hub 账号池 \(snapshot.readyAccounts)/\(snapshot.totalAccounts) 可路由")
+        }
+        if snapshot.keyPools.count > 0 {
+            parts.append("\(snapshot.keyPools.count) 个物理池")
+        }
+        if snapshot.quotaPools.count > 0 {
+            parts.append("\(snapshot.quotaPools.count) 个额度池")
+        }
+        if snapshot.cooldownAccounts > 0 {
+            parts.append("冷却 \(snapshot.cooldownAccounts)")
+        }
+        if blockedLikeAccounts > 0 {
+            parts.append("阻断/停用/过期 \(blockedLikeAccounts)")
+        }
+        if partial {
+            parts.append("\(summary.errorMessages.count) 个同步失败")
+            return "已部分同步：\(HubUIStrings.Settings.RemoteModels.sectionSummary(parts))，旧账号不会被误删。"
+        }
+        return "同步完成：\(HubUIStrings.Settings.RemoteModels.sectionSummary(parts))。"
+    }
+
+    private var cliproxyOAuthHeaderMetric: HubSettingsMetric {
+        let managementKey = cliproxyOAuthManagementKey.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let provider = cliproxyOAuthActiveProvider,
+           !cliproxyOAuthActiveState.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return HubSettingsMetric(
+                title: "CLIProxy OAuth",
+                value: "\(provider.title) 登录中",
+                detail: "浏览器完成后会自动同步到 Hub",
+                tint: .blue
+            )
+        }
+
+        if cliproxyOAuthInventoryCount > 0 {
+            return HubSettingsMetric(
+                title: "CLIProxy OAuth",
+                value: "\(cliproxyOAuthReadyCount)/\(cliproxyOAuthInventoryCount)",
+                detail: HubUIStrings.Settings.RemoteModels.sectionSummary([
+                    "\(cliproxyOAuthProviderCount) 家厂商",
+                    cliproxyOAuthCoolingCount > 0 ? "冷却 \(cliproxyOAuthCoolingCount)" : "",
+                    cliproxyOAuthBlockedCount > 0 ? "阻断 \(cliproxyOAuthBlockedCount)" : "",
+                    cliproxyOAuthRuntimeOnlyCount > 0 ? "runtime-only \(cliproxyOAuthRuntimeOnlyCount)" : ""
+                ]),
+                tint: cliproxyOAuthBlockedCount > 0 ? .red : (cliproxyOAuthCoolingCount > 0 ? .orange : .green)
+            )
+        }
+
+        if managementKey.isEmpty {
+            return HubSettingsMetric(
+                title: "CLIProxy OAuth",
+                value: "未接入",
+                detail: "接入后可把免费额度账号直接并入 Hub",
+                tint: .gray
+            )
+        }
+
+        if cliproxyOAuthRemoteAuths.isEmpty {
+            return HubSettingsMetric(
+                title: "CLIProxy OAuth",
+                value: "待登录",
+                detail: "CLIProxy 已连通，等待已认证账号",
+                tint: .indigo
+            )
+        }
+
+        return HubSettingsMetric(
+            title: "CLIProxy OAuth",
+            value: "0",
+            detail: cliproxyOAuthRuntimeOnlyCount > 0
+                ? "当前全是 runtime-only 账号"
+                : "等待 CLIProxy 返回可导入账号",
+            tint: .orange
+        )
+    }
+
+    private var headerMetrics: [HubSettingsMetric] {
+        [
+            HubSettingsMetric(
+                title: "Hub 状态",
+                value: currentLaunchStateLabel,
+                detail: settingsIssueCount > 0 ? "\(settingsIssueCount) 个待处理问题" : "当前服务链路稳定",
+                tint: headerLaunchTint
+            ),
+            HubSettingsMetric(
+                title: "XT 设备",
+                value: "\(grpc.allowedClients.count)",
+                detail: grpcDeniedAttempts.attempts.isEmpty ? "没有新的拒绝记录" : "最近有 \(grpcDeniedAttempts.attempts.count) 条拒绝记录",
+                tint: .teal
+            ),
+            HubSettingsMetric(
+                title: "远端模型",
+                value: "\(activeRemoteModelCount)",
+                detail: "\(providerKeyDerivedSnapshot.totalAccounts) 个 key · \(quotaPoolCount) 个额度池",
+                tint: .indigo
+            ),
+            cliproxyOAuthHeaderMetric,
+            HubSettingsMetric(
+                title: "本地运行时",
+                value: runtimeHeartbeatText,
+                detail: totalRuntimeProviderCount > 0
+                    ? "\(readyRuntimeProviderCount)/\(totalRuntimeProviderCount) 个 provider 就绪"
+                    : "等待 provider 心跳",
+                tint: .orange
+            )
+        ]
+    }
+
+    private var routingSummaryText: String {
+        let defaults = store.routingSettings.hubDefaultModelIdByTaskKind
+            .values
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .count
+        let overrides = store.routingSettings.devicePreferredModelIdByTaskKind
+            .values
+            .reduce(0) { partialResult, deviceMap in
+                partialResult + deviceMap.values.filter {
+                    !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                }.count
+            }
+
+        if defaults == 0 && overrides == 0 {
+            return "当前没有显式任务路由映射，Hub 会按默认模型解析。"
+        }
+        return "Hub 默认映射 \(defaults) 条，终端覆写 \(overrides) 条。这里只在你想强制指定任务模型时才需要展开。"
+    }
+
+    private var modelHealthAutoScanSummaryText: String {
+        [
+            autoScanScheduleSummaryText(
+                label: "本地",
+                schedule: store.localModelHealthAutoScanSchedule,
+                nextRunText: nextLocalModelHealthAutoScanText()
+            ),
+            autoScanScheduleSummaryText(
+                label: "远端",
+                schedule: store.remoteKeyHealthAutoScanSchedule,
+                nextRunText: nextRemoteKeyHealthAutoScanText()
+            )
+        ]
+        .joined(separator: " · ")
+    }
+
+    private var integrationsAuxSummaryText: String {
+        let operatorSummary = operatorChannelProviderReadiness.isEmpty
+            ? "Operator 待检测"
+            : "Operator \(operatorReadyCount)/\(operatorChannelProviderReadiness.count) 就绪"
+        return [
+            operatorSummary,
+            "\(skillsIndex.skills.count) 个 skills",
+            "日历 \(store.calendarStatus)",
+            "浮窗 \(store.floatingMode.title)"
+        ]
+        .joined(separator: " · ") + "。这些都属于低频维护项，默认折叠更利于扫读。"
+    }
+
+    private var diagnosticsLaunchSummaryText: String {
+        var parts: [String] = [currentLaunchStateLabel]
+        if blockedCapabilityCount > 0 {
+            parts.append("\(blockedCapabilityCount) 项 capability 受阻")
+        }
+        let rootCauseText = settingsSummarySnippet(renderRootCauseText(hubLaunchStatus?.rootCause), limit: 110)
+        if !rootCauseText.isEmpty {
+            parts.append(rootCauseText)
+        } else {
+            parts.append("这里可查看 root cause、provider 摘要和 launch history。")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var diagnosticsNetworkSummaryText: String {
+        var parts: [String] = []
+        if store.pendingNetworkRequests.isEmpty {
+            parts.append("当前没有待授权网络请求")
+        } else {
+            parts.append("\(store.pendingNetworkRequests.count) 个网络请求待处理")
+        }
+        parts.append(networkPolicies.isEmpty ? "没有项目级网络策略" : "\(networkPolicies.count) 条项目级网络策略")
+        parts.append(store.bridge.bridgeStatusText)
+        return parts.joined(separator: " · ")
+    }
+
+    private var diagnosticsAdvancedSummaryText: String {
+        let pythonText = settingsCompactPathDisplay(store.aiRuntimePython)
+        let constitutionVersion = axConstitutionVersion.trimmingCharacters(in: .whitespacesAndNewlines)
+        return [
+            store.aiRuntimeAutoStart ? "运行时自动启动" : "运行时手动启动",
+            pythonText.isEmpty ? "Python 走自动发现" : "Python \(pythonText)",
+            constitutionVersion.isEmpty ? "宪章版本未读取" : "宪章 \(constitutionVersion)"
+        ]
+        .joined(separator: " · ")
+    }
+
+    private func autoScanScheduleSummaryText(
+        label: String,
+        schedule: ModelHealthAutoScanSchedule,
+        nextRunText: String?
+    ) -> String {
+        let modeText: String
+        switch schedule.mode {
+        case .disabled:
+            modeText = "关闭"
+        case .interval:
+            modeText = "每 \(schedule.intervalHours) 小时"
+        case .dailyTime:
+            modeText = "每日 \(formattedClockTime(minuteOfDay: schedule.dailyMinuteOfDay))"
+        }
+
+        if let nextRunText, !nextRunText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "\(label) \(modeText) · 下次 \(nextRunText)"
+        }
+        return "\(label) \(modeText)"
+    }
+
+    private func formattedClockTime(minuteOfDay: Int) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale.autoupdatingCurrent
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
+        return formatter.string(from: clockDate(for: minuteOfDay))
+    }
+
+    private func settingsSummarySnippet(_ raw: String, limit: Int) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        guard trimmed.count > limit else { return trimmed }
+        let prefix = String(trimmed.prefix(max(0, limit - 1))).trimmingCharacters(in: .whitespacesAndNewlines)
+        return prefix + "…"
+    }
+
+    private func settingsCompactPathDisplay(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        let url = URL(fileURLWithPath: trimmed)
+        let last = url.lastPathComponent
+        let parent = url.deletingLastPathComponent().lastPathComponent
+        if parent.isEmpty {
+            return last
+        }
+        return "\(parent)/\(last)"
+    }
+
+    private func expansionBinding(
+        _ id: String,
+        in set: Binding<Set<String>>
+    ) -> Binding<Bool> {
+        Binding(
+            get: { set.wrappedValue.contains(id) },
+            set: { expanded in
+                var values = set.wrappedValue
+                if expanded {
+                    values.insert(id)
+                } else {
+                    values.remove(id)
+                }
+                set.wrappedValue = values
+            }
+        )
+    }
+
+    private func grpcClientDetailSummary(_ status: GRPCDeviceStatusEntry?) -> String {
+        guard let status else {
+            return "未收到设备状态快照"
+        }
+
+        var parts: [String] = [grpcClientPresencePillTitle(status)]
+        if status.dailyTokenCap > 0 {
+            parts.append("\(Int(max(0, status.dailyTokenUsed)))/\(Int(max(0, status.dailyTokenCap)))")
+        } else if status.dailyTokenUsed > 0 {
+            parts.append("今日已用 \(Int(max(0, status.dailyTokenUsed)))")
+        }
+        if status.requestsToday > 0 {
+            parts.append("请求 \(status.requestsToday)")
+        }
+        if status.blockedToday > 0 {
+            parts.append("阻断 \(status.blockedToday)")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func terminalAccessDetailSummary(
+        _ accessKey: HubTerminalAccessKey,
+        remaining: Int64,
+        hasSecret: Bool
+    ) -> String {
+        var parts: [String] = []
+        if accessKey.lastUsedAtMs > 0 {
+            parts.append("最近使用 \(formatEpochMs(accessKey.lastUsedAtMs))")
+        }
+        parts.append("轮换 \(accessKey.rotationCount)")
+        parts.append("剩余 \(terminalAccessIntText(remaining))")
+        parts.append(hasSecret ? "含最新 Secret" : "仅模板")
+        return parts.joined(separator: " · ")
+    }
+
+    private func providerKeyPoolMemberDisclosureSummary(_ pool: ProviderKeyPoolSnapshot) -> String {
+        let totalMembers = pool.members.count
+        let riskCount = pool.members.filter { member in
+            let state = member.state.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return state == "blocked" || state == "cooldown" || state == "stale"
+        }.count
+
+        var parts: [String] = ["\(totalMembers) 个成员"]
+        if riskCount > 0 {
+            parts.append("\(riskCount) 个需关注")
+        } else {
+            parts.append("当前成员整体稳定")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func remoteModelGroupDisclosureSummary(_ group: RemoteModelKeyGroup) -> String {
+        var parts: [String] = ["\(group.models.count) 个模型"]
+        if group.loadedCount > 0 {
+            parts.append("\(group.loadedCount) 已加载")
+        }
+        if group.availableCount > 0 {
+            parts.append("\(group.availableCount) 可执行")
+        }
+        if group.needsSetupCount > 0 {
+            parts.append("\(group.needsSetupCount) 待补齐")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func providerKeyImportSourcesSummaryText(
+        _ sources: [ProviderKeyImportSourceStatus]
+    ) -> String {
+        let readyCount = sources.filter { $0.state == "ready" }.count
+        let issueCount = sources.filter { $0.state != "ready" || $0.lastErrorCount > 0 }.count
+        let importedCount = sources.reduce(0) { $0 + max(0, $1.lastImportedCount) }
+        var parts: [String] = ["\(sources.count) 个来源"]
+        if readyCount > 0 {
+            parts.append("\(readyCount) 已同步")
+        }
+        if importedCount > 0 {
+            parts.append("导入 \(importedCount)")
+        }
+        if issueCount > 0 {
+            parts.append("\(issueCount) 需处理")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func providerKeyVendorLedgerSummaryText(
+        _ vendors: [ProviderKeyVendorInventorySummary],
+        focusedUser: RemoteQuotaCenterUserProjection?,
+        focusedVendor: ProviderKeyVendorInventorySummary?
+    ) -> String {
+        let readyAccounts = vendors.reduce(0) { $0 + max(0, $1.readyAccounts) }
+        let totalAccounts = vendors.reduce(0) { $0 + max(0, $1.totalAccounts) }
+        let riskCount = vendors.filter(providerKeyVendorAtRisk(_:)).count
+        var parts: [String] = ["\(vendors.count) 家厂家"]
+        if totalAccounts > 0 {
+            parts.append("\(readyAccounts)/\(totalAccounts) Ready")
+        }
+        if riskCount > 0 {
+            parts.append("\(riskCount) 家需关注")
+        }
+        if let focusedVendor {
+            parts.append("已锁定 \(focusedVendor.displayName)")
+        } else if let focusedUser {
+            parts.append("按 \(focusedUser.displayName) 视角重算")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func providerKeyFamilyLedgerSummaryText(
+        _ families: [ProviderKeyFamilyInventorySummary],
+        focusedUser: RemoteQuotaCenterUserProjection?
+    ) -> String {
+        let oversubscribedCount = families.filter(\.isOversubscribed).count
+        let readyCount = families.filter { family in
+            family.quotaPool.state == "ready" || family.quotaPool.state == "mixed"
+        }.count
+        var parts: [String] = ["\(families.count) 个家族"]
+        if readyCount > 0 {
+            parts.append("\(readyCount) 个可供路由")
+        }
+        if oversubscribedCount > 0 {
+            parts.append("\(oversubscribedCount) 个超配")
+        }
+        if let focusedUser {
+            parts.append("按 \(focusedUser.displayName) 视角重算")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func providerKeyPhysicalPoolsSummaryText(
+        _ keyPools: [ProviderKeyPoolSnapshot]
+    ) -> String {
+        let readyAccounts = keyPools.reduce(0) { $0 + max(0, $1.readyAccounts) }
+        let blockedAccounts = keyPools.reduce(0) { $0 + max(0, $1.blockedAccounts) }
+        let cooldownAccounts = keyPools.reduce(0) { $0 + max(0, $1.cooldownAccounts) }
+        var parts: [String] = ["\(keyPools.count) 个物理池"]
+        if readyAccounts > 0 {
+            parts.append("\(readyAccounts) 个就绪")
+        }
+        if blockedAccounts > 0 {
+            parts.append("\(blockedAccounts) 个阻塞")
+        }
+        if cooldownAccounts > 0 {
+            parts.append("\(cooldownAccounts) 个冷却")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var cliproxyOAuthDisclosureSummaryText: String {
+        let runtimeSegment = cliproxyRuntimeDisclosureSummarySegment.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = [
+            runtimeSegment,
+            cliproxyOAuthOverviewSummaryText,
+            cliproxyOAuthOverviewNoticeText
+        ].filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        return settingsSummarySnippet(
+            HubUIStrings.Settings.RemoteModels.sectionSummary(parts),
+            limit: 132
+        )
+    }
+
+    private func providerKeyUserLedgerDisclosureSummary(
+        _ users: [RemoteQuotaCenterUserProjection],
+        totalUsers: Int,
+        focusedUser: RemoteQuotaCenterUserProjection?
+    ) -> String {
+        let riskCount = users.filter(providerKeyUserAtRisk(_:)).count
+        let connectedCount = users.filter { $0.connectedConsumerCount > 0 }.count
+        var parts: [String] = ["\(users.count)/\(max(totalUsers, users.count)) 个用户"]
+        if riskCount > 0 {
+            parts.append("\(riskCount) 个风险")
+        }
+        if connectedCount > 0 {
+            parts.append("\(connectedCount) 个在线")
+        }
+        if let focusedUser {
+            parts.append("已锁定 \(focusedUser.displayName)")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func providerKeyFlowSummaryText(
+        flowChains: [ProviderKeyFlowChainSummary],
+        focusedUser: RemoteQuotaCenterUserProjection?,
+        focusedVendor: ProviderKeyVendorInventorySummary?
+    ) -> String {
+        guard !flowChains.isEmpty else {
+            if let focusedVendor, let focusedUser {
+                return "当前还没有 \(focusedVendor.displayName) -> \(focusedUser.displayName) 的清晰配额链路。"
+            }
+            if let focusedVendor {
+                return "当前还没有 \(focusedVendor.displayName) 的清晰配额链路。"
+            }
+            if let focusedUser {
+                return "当前还没有 \(focusedUser.displayName) 的清晰配额链路。"
+            }
+            return "当前还没有足够清晰的厂家 -> 用户 -> consumer 配额链路。"
+        }
+
+        let riskCount = flowChains.filter { chain in
+            providerKeyVendorAtRisk(chain.vendor)
+                || providerKeyUserAtRisk(chain.user)
+                || providerKeyConsumerAtRisk(chain.consumer)
+        }.count
+
+        var parts: [String] = ["\(flowChains.count) 条链路"]
+        if riskCount > 0 {
+            parts.append("\(riskCount) 条需关注")
+        }
+        if let focusedVendor {
+            parts.append("锁定 \(focusedVendor.displayName)")
+        }
+        if let focusedUser {
+            parts.append("锁定 \(focusedUser.displayName)")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func providerKeyTrendCardCount(
+        overallTrendCard: ProviderKeyTrendCardSummary?,
+        vendorTrendCards: [ProviderKeyTrendCardSummary],
+        familyTrendCards: [ProviderKeyTrendCardSummary],
+        userTrendCards: [ProviderKeyTrendCardSummary],
+        consumerTrendCards: [ProviderKeyTrendCardSummary]
+    ) -> Int {
+        (overallTrendCard == nil ? 0 : 1)
+            + vendorTrendCards.count
+            + familyTrendCards.count
+            + userTrendCards.count
+            + consumerTrendCards.count
+    }
+
+    private func providerKeyTrendSummaryText(
+        focusedUser: RemoteQuotaCenterUserProjection?,
+        focusedVendor: ProviderKeyVendorInventorySummary?,
+        overallTrendCard: ProviderKeyTrendCardSummary?,
+        vendorTrendCards: [ProviderKeyTrendCardSummary],
+        familyTrendCards: [ProviderKeyTrendCardSummary],
+        userTrendCards: [ProviderKeyTrendCardSummary],
+        consumerTrendCards: [ProviderKeyTrendCardSummary]
+    ) -> String {
+        let totalCardCount = providerKeyTrendCardCount(
+            overallTrendCard: overallTrendCard,
+            vendorTrendCards: vendorTrendCards,
+            familyTrendCards: familyTrendCards,
+            userTrendCards: userTrendCards,
+            consumerTrendCards: consumerTrendCards
+        )
+
+        guard totalCardCount > 0 else {
+            if let focusedVendor, let focusedUser {
+                return "当前还没有 \(focusedUser.displayName) 在 \(focusedVendor.displayName) 视角下的 5m 趋势数据。"
+            }
+            if let focusedVendor {
+                return "当前还没有 \(focusedVendor.displayName) 的 5m 趋势数据。"
+            }
+            if let focusedUser {
+                return "当前还没有 \(focusedUser.displayName) 的 5m 趋势数据。"
+            }
+            return "当前还没有足够的 5m token series 数据。"
+        }
+
+        var parts: [String] = ["\(totalCardCount) 张趋势图"]
+        if overallTrendCard != nil {
+            parts.append("含总曲线")
+        }
+        if let focusedVendor {
+            parts.append("围绕 \(focusedVendor.displayName)")
+        }
+        if let focusedUser {
+            parts.append("围绕 \(focusedUser.displayName)")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func providerKeyOperationalBadgeText(
+        focusedUser: RemoteQuotaCenterUserProjection?,
+        focusedVendor: ProviderKeyVendorInventorySummary?
+    ) -> String {
+        if focusedUser != nil && focusedVendor != nil {
+            return "叠加视角"
+        }
+        if focusedVendor != nil {
+            return "厂家视角"
+        }
+        if focusedUser != nil {
+            return "用户视角"
+        }
+        return "全局视角"
+    }
+
+    private func providerKeyOperationalSummaryText(
+        scopeOverview: ProviderKeyScopeOverview,
+        overview: RemoteQuotaCenterOverview,
+        focusedUser: RemoteQuotaCenterUserProjection?,
+        focusedVendor: ProviderKeyVendorInventorySummary?
+    ) -> String {
+        var parts: [String] = [
+            "\(scopeOverview.userCount) 用户 / \(scopeOverview.consumerCount) 消费者",
+            "\(overview.quotaPoolCount) 个额度池 / \(overview.keyPoolCount) 个物理池",
+            "Ready key \(overview.readyKeys)/\(overview.totalKeys)"
+        ]
+        if let focusedVendor {
+            parts.append("锁定 \(focusedVendor.displayName)")
+        }
+        if let focusedUser {
+            parts.append("锁定 \(focusedUser.displayName)")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func providerKeyOperationalTint(
+        focusedUser: RemoteQuotaCenterUserProjection?,
+        focusedVendor: ProviderKeyVendorInventorySummary?,
+        riskVendorCount: Int,
+        riskFamilyCount: Int
+    ) -> Color {
+        if riskVendorCount > 0 || riskFamilyCount > 0 {
+            return riskFamilyCount > 0 ? .red : .orange
+        }
+        if focusedVendor != nil {
+            return .indigo
+        }
+        if focusedUser != nil {
+            return .teal
+        }
+        return .blue
+    }
+
+    private func providerKeyConsumerLedgerDisclosureSummary(
+        _ consumers: [RemoteQuotaCenterClientProjection],
+        totalConsumers: Int,
+        focusedUser: RemoteQuotaCenterUserProjection?
+    ) -> String {
+        let xtCount = consumers.filter { $0.consumerKind == .pairedXT }.count
+        let terminalCount = consumers.filter { $0.consumerKind == .terminalAccess }.count
+        let riskCount = consumers.filter(providerKeyConsumerAtRisk(_:)).count
+        var parts: [String] = ["\(consumers.count)/\(max(totalConsumers, consumers.count)) 个消费者"]
+        if xtCount > 0 {
+            parts.append("XT \(xtCount)")
+        }
+        if terminalCount > 0 {
+            parts.append("Terminal \(terminalCount)")
+        }
+        if riskCount > 0 {
+            parts.append("\(riskCount) 个风险")
+        }
+        if let focusedUser {
+            parts.append("已锁定 \(focusedUser.displayName)")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var terminalAccessDraftSummaryText: String {
+        let name = terminalAccessDraft.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let userID = terminalAccessDraft.userID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let appID = terminalAccessDraft.appID.trimmingCharacters(in: .whitespacesAndNewlines)
+        var parts: [String] = []
+        parts.append(name.isEmpty ? "未命名 access key" : name)
+        if !userID.isEmpty {
+            parts.append("user \(userID)")
+        }
+        if !appID.isEmpty {
+            parts.append("app \(appID)")
+        }
+        parts.append("预算 \(terminalAccessIntText(Int64(max(1, terminalAccessDraft.dailyTokenLimit))))/day")
+        parts.append(terminalAccessDraft.ttlHours == 0 ? "不过期" : "TTL \(terminalAccessDraft.ttlHours)h")
+        parts.append(terminalAccessDraft.allowPaidModels ? "付费模型开" : "付费模型关")
+        parts.append(terminalAccessDraft.defaultWebFetchEnabled ? "web.fetch 开" : "web.fetch 关")
+        return parts.joined(separator: " · ")
+    }
+
+    private func terminalAccessLastSecretSummaryText(_ secret: HubTerminalAccessKeySecretEnvelope) -> String {
+        let deliveryPack = secret.deliveryPack
+        var parts: [String] = [secret.accessKey.resolvedName]
+        if !deliveryPack.authDisplayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append(deliveryPack.authDisplayText)
+        }
+        if !secret.openAIBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append(settingsSummarySnippet(secret.openAIBaseURL, limit: 42))
+        }
+        parts.append("离开此页前请先完成分发")
+        return parts.joined(separator: " · ")
+    }
+
+    @ViewBuilder
+    private func settingsActionChipLabel(
+        title: String,
+        systemName: String,
+        tint: Color,
+        disabled: Bool = false
+    ) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: systemName)
+                .imageScale(.small)
+            Text(title)
+                .lineLimit(1)
+        }
+        .font(.caption.weight(.medium))
+        .foregroundStyle(disabled ? .secondary : tint)
+        .padding(.horizontal, 10)
+        .frame(height: 32)
+        .background(tint.opacity(disabled ? 0.05 : 0.10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(tint.opacity(disabled ? 0.10 : 0.24), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func settingsOperationsPanelCard<Content: View>(
+        systemName: String,
+        title: String,
+        summary: String,
+        badge: String,
+        tint: Color,
+        @ViewBuilder content: @escaping () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    tint.opacity(0.18),
+                                    tint.opacity(0.08)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                    Image(systemName: systemName)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(tint)
+                }
+                .frame(width: 42, height: 42)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                        Text(badge)
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(tint)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(tint.opacity(0.10))
+                            .clipShape(Capsule())
+                    }
+
+                    Text(summary)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                Spacer()
-                Button(HubUIStrings.Settings.done) { dismiss() }
+
+                Spacer(minLength: 8)
             }
-            Text(HubUIStrings.Settings.validationChain)
-                .font(.caption.monospaced())
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(Color.secondary.opacity(0.12))
-                .clipShape(Capsule())
+
+            content()
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            tint.opacity(0.09),
+                            Color.primary.opacity(0.02)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(tint.opacity(0.16), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func settingsInlineDisclosureLabel(
+        systemName: String,
+        title: String,
+        summary: String,
+        badge: String,
+        tint: Color,
+        isExpanded: Bool
+    ) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(tint.opacity(0.12))
+                Image(systemName: isExpanded ? "chevron.down.circle.fill" : systemName)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(tint)
+            }
+            .frame(width: 36, height: 36)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text(badge)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(tint)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(tint.opacity(0.10))
+                        .clipShape(Capsule())
+                }
+                Text(summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(isExpanded ? "收起详情" : "展开详情")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(tint)
+            }
+
+            Spacer(minLength: 8)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(tint.opacity(0.07))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(tint.opacity(0.16), lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private func settingsInlineDisclosureGroup<Content: View>(
+        systemName: String,
+        title: String,
+        summary: String,
+        badge: String,
+        tint: Color,
+        isExpanded: Binding<Bool>,
+        @ViewBuilder content: @escaping () -> Content
+    ) -> some View {
+        DisclosureGroup(isExpanded: isExpanded) {
+            content()
+                .padding(.top, 6)
+        } label: {
+            settingsInlineDisclosureLabel(
+                systemName: systemName,
+                title: title,
+                summary: summary,
+                badge: badge,
+                tint: tint,
+                isExpanded: isExpanded.wrappedValue
+            )
         }
     }
 
     @ViewBuilder
+    private func settingsCollapsedSectionCard(
+        title: String,
+        summary: String,
+        badge: String,
+        tint: Color,
+        isExpanded: Binding<Bool>
+    ) -> some View {
+        Section {
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    isExpanded.wrappedValue.toggle()
+                }
+            } label: {
+                HStack(alignment: .top, spacing: 12) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(tint.opacity(0.12))
+                        Image(systemName: isExpanded.wrappedValue ? "chevron.down.circle.fill" : "chevron.right.circle.fill")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(tint)
+                    }
+                    .frame(width: 34, height: 34)
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(title)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.primary)
+                            Text(badge)
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(tint)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(tint.opacity(0.10))
+                                .clipShape(Capsule())
+                        }
+                        Text(summary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text(isExpanded.wrappedValue ? "收起详细配置" : "展开详细配置")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(tint)
+                    }
+
+                    Spacer(minLength: 8)
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(tint.opacity(0.07))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(tint.opacity(0.16), lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func settingsSidebarBadge(for page: HubSettingsPage) -> String {
+        switch page {
+        case .overview:
+            return currentLaunchStateLabel
+        case .access:
+            return "\(grpc.allowedClients.count) XT"
+        case .models:
+            if localCatalogModelCount == 0 && remoteModels.isEmpty && providerKeyDerivedSnapshot.totalAccounts == 0 {
+                return "未配置"
+            }
+            return "本地 \(localCatalogModelCount) · 付费 \(remoteModels.count)"
+        case .runtime:
+            return totalRuntimeProviderCount > 0 ? "\(readyRuntimeProviderCount)/\(totalRuntimeProviderCount) 就绪" : "等待心跳"
+        case .integrations:
+            return "\(skillsIndex.skills.count) skills"
+        case .diagnostics:
+            return settingsIssueCount > 0 ? "\(settingsIssueCount) 项" : "稳定"
+        }
+    }
+
+    private func settingsSidebarDetail(for page: HubSettingsPage) -> String {
+        switch page {
+        case .overview:
+            return "查看当前健康度、配置完成度和关键风险。"
+        case .access:
+            return "谁能连接 Hub，以及如何连接。"
+        case .models:
+            return "本地模型能力、付费模型能力与共享额度。"
+        case .runtime:
+            return "Provider、队列、实例与路由排障。"
+        case .integrations:
+            return "Operator、Skills、Calendar 与浮窗。"
+        case .diagnostics:
+            return "排障、日志、恢复动作与底层参数。"
+        }
+    }
+
+    private func settingsPageMetrics(for page: HubSettingsPage) -> [HubSettingsMetric] {
+        switch page {
+        case .overview:
+            return headerMetrics
+        case .access:
+            return [
+                HubSettingsMetric(
+                    title: "XT 设备",
+                    value: "\(grpc.allowedClients.count)",
+                    detail: grpc.statusText,
+                    tint: .teal
+                ),
+                HubSettingsMetric(
+                    title: "Terminal Key",
+                    value: terminalAccessKeys.isEmpty ? "未签发" : "\(terminalAccessReadyCount)/\(terminalAccessKeys.count)",
+                    detail: terminalAccessKeys.isEmpty ? "还没有普通 terminal key" : "可直接导出给普通 terminal",
+                    tint: .blue
+                ),
+                HubSettingsMetric(
+                    title: "远程接入",
+                    value: grpcRemoteAccessHealthSummary.badgeText,
+                    detail: grpcRemoteAccessHealthSummary.accessScopeText,
+                    tint: grpcRemoteAccessHealthSummary.state == .ready ? .green : .orange
+                ),
+                HubSettingsMetric(
+                    title: "Pairing",
+                    value: "\(grpc.xtTerminalPairingPort)",
+                    detail: grpc.xtTerminalInternetHost ?? "当前没有稳定外部地址",
+                    tint: .indigo
+                )
+            ]
+        case .models:
+            let providerDerived = providerKeyDerivedSnapshot
+            let importIssueCount = providerKeySnapshot.importSources.filter { source in
+                source.state != "ready" || source.lastErrorCount > 0
+            }.count
+            return [
+                HubSettingsMetric(
+                    title: "本地模型",
+                    value: localCatalogModelCount == 0 ? "未发现" : "\(loadedLocalModelCount)/\(localCatalogModelCount)",
+                    detail: localCatalogModelCount == 0
+                        ? "当前还没有发现可由 Hub 管理的本地模型"
+                        : "已加载 / 全部 · 预检可用 \(localAvailableModelCount) · 待复核 \(localPendingModelCount)",
+                    tint: localModelsCapabilityTint
+                ),
+                HubSettingsMetric(
+                    title: "付费模型",
+                    value: remoteModels.isEmpty
+                        ? (providerDerived.totalAccounts > 0 ? "待编目" : "未配置")
+                        : "\(loadedRemoteModelCount)/\(remoteModels.count)",
+                    detail: remoteModels.isEmpty
+                        ? (providerDerived.totalAccounts > 0
+                            ? "已导入 \(providerDerived.totalAccounts) 个 key，可继续编入可执行付费模型"
+                            : "当前还没有配置任何付费 / 远端模型")
+                        : "已加载 / 全部 · 可执行 \(availableRemoteModelCount) · 待补齐 \(needsSetupRemoteModelCount)",
+                    tint: needsSetupRemoteModelCount > 0 ? .orange : (loadedRemoteModelCount > 0 ? .green : .indigo)
+                ),
+                HubSettingsMetric(
+                    title: "Key 健康",
+                    value: "\(providerDerived.readyAccounts)/\(providerDerived.totalAccounts)",
+                    detail: importIssueCount > 0
+                        ? "就绪 / 全部 · 阻塞 \(providerDerived.blockedAccounts) · 导入源异常 \(importIssueCount)"
+                        : "就绪 / 全部 · 阻塞 \(providerDerived.blockedAccounts)",
+                    tint: providerDerived.blockedAccounts > 0 ? .orange : .green
+                ),
+                HubSettingsMetric(
+                    title: "额度池",
+                    value: "\(quotaPoolCount)",
+                    detail: "按模型家族聚合后的共享库存",
+                    tint: .blue
+                ),
+                HubSettingsMetric(
+                    title: "物理池",
+                    value: "\(providerDerived.keyPools.count)",
+                    detail: "冷却 \(providerDerived.cooldownAccounts) · 阻塞 \(providerDerived.blockedAccounts)",
+                    tint: .purple
+                ),
+                cliproxyOAuthHeaderMetric
+            ]
+        case .runtime:
+            return [
+                HubSettingsMetric(
+                    title: "Runtime",
+                    value: runtimeHeartbeatText,
+                    detail: totalRuntimeProviderCount > 0 ? "\(readyRuntimeProviderCount)/\(totalRuntimeProviderCount) 个 provider 可用" : "等待 runtime 状态上报",
+                    tint: runtimeHeartbeatText == "在线" ? .green : .orange
+                ),
+                HubSettingsMetric(
+                    title: "已加载模型",
+                    value: "\(loadedLocalModelCount)",
+                    detail: "本地模型库里当前标记为 loaded 的条目",
+                    tint: .orange
+                ),
+                HubSettingsMetric(
+                    title: "驻留实例",
+                    value: "\(loadedRuntimeInstanceCount)",
+                    detail: "当前 runtime 里可直接复用的实例",
+                    tint: .blue
+                ),
+                HubSettingsMetric(
+                    title: "默认路由",
+                    value: "\(store.routingSettings.hubDefaultModelIdByTaskKind.count)",
+                    detail: "Hub 级 task-kind 默认模型覆盖",
+                    tint: .indigo
+                )
+            ]
+        case .integrations:
+            return [
+                HubSettingsMetric(
+                    title: "Operator",
+                    value: operatorChannelProviderReadiness.isEmpty ? "待检测" : "\(operatorReadyCount)/\(operatorChannelProviderReadiness.count)",
+                    detail: operatorChannelProviderReadinessError.isEmpty ? "渠道投递 readiness 快照" : operatorChannelProviderReadinessError,
+                    tint: operatorChannelProviderReadinessError.isEmpty ? .green : .orange
+                ),
+                HubSettingsMetric(
+                    title: "Skills",
+                    value: "\(skillsIndex.skills.count)",
+                    detail: "当前可解析的技能包数量",
+                    tint: .green
+                ),
+                HubSettingsMetric(
+                    title: "Calendar",
+                    value: store.calendarStatus.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未配置" : store.calendarStatus,
+                    detail: "日历与本地提醒接入状态",
+                    tint: .blue
+                ),
+                HubSettingsMetric(
+                    title: "Floating",
+                    value: store.floatingMode.title,
+                    detail: "当前浮窗展示模式",
+                    tint: .teal
+                )
+            ]
+        case .diagnostics:
+            return [
+                HubSettingsMetric(
+                    title: "启动状态",
+                    value: currentLaunchStateLabel,
+                    detail: hubLaunchStatus?.rootCause?.errorCode ?? "没有 root cause",
+                    tint: headerLaunchTint
+                ),
+                HubSettingsMetric(
+                    title: "阻塞能力",
+                    value: "\(blockedCapabilityCount)",
+                    detail: blockedCapabilityCount == 0 ? "当前没有被降级的 capability" : "当前有 capability 被 fail-closed",
+                    tint: blockedCapabilityCount > 0 ? .orange : .green
+                ),
+                HubSettingsMetric(
+                    title: "拒绝记录",
+                    value: "\(grpcDeniedAttempts.attempts.count)",
+                    detail: grpcDeniedAttempts.attempts.isEmpty ? "最近没有新的 grant 拒绝" : "最近存在安全拒绝或权限问题",
+                    tint: grpcDeniedAttempts.attempts.isEmpty ? .green : .orange
+                ),
+                HubSettingsMetric(
+                    title: "诊断历史",
+                    value: "\(hubLaunchHistory.launches.count)",
+                    detail: "已保留的启动 / 降级历史条目",
+                    tint: .red
+                )
+            ]
+        }
+    }
+
+    private func settingsPageSections(for page: HubSettingsPage) -> some View {
+        Group {
+            switch page {
+            case .overview:
+                setupCenterSection
+                cliproxyOAuthOverviewSection
+                firstRunFastPathSection
+                quickTroubleshootSection
+            case .access:
+                grpcServerSection
+                terminalAccessSection
+            case .models:
+                modelResourcePoolsSection
+                settingsCollapsedSectionCard(
+                    title: "模型编目与运行明细",
+                    summary: "导入本地模型、维护付费模型目录、运行快速预检和健康扫描。",
+                    badge: modelCatalogDetailsExpanded
+                        ? "已展开"
+                        : "本地 \(localCatalogModelCount) · 付费 \(remoteModels.count)",
+                    tint: .indigo,
+                    isExpanded: $modelCatalogDetailsExpanded
+                )
+                if modelCatalogDetailsExpanded {
+                    localModelsCapabilitySection
+                    remoteModelsSection
+                }
+                settingsCollapsedSectionCard(
+                    title: "高级配额运营",
+                    summary: providerQuotaOperationsSummaryText,
+                    badge: providerQuotaOperationsExpanded ? "已展开" : providerQuotaOperationsBadgeText,
+                    tint: providerQuotaOperationsTint,
+                    isExpanded: $providerQuotaOperationsExpanded
+                )
+                if providerQuotaOperationsExpanded {
+                    providerKeySection
+                }
+                settingsCollapsedSectionCard(
+                    title: "自动扫描与保活策略",
+                    summary: modelHealthAutoScanSummaryText,
+                    badge: modelsAutoScanExpanded ? "已展开" : "低频项",
+                    tint: .indigo,
+                    isExpanded: $modelsAutoScanExpanded
+                )
+                if modelsAutoScanExpanded {
+                    modelHealthAutoScanSection
+                }
+            case .runtime:
+                rustHubKernelSection
+                runtimeMonitorSection
+                settingsCollapsedSectionCard(
+                    title: "任务路由映射",
+                    summary: routingSummaryText,
+                    badge: runtimeRoutingExpanded ? "已展开" : "按需配置",
+                    tint: .orange,
+                    isExpanded: $runtimeRoutingExpanded
+                )
+                if runtimeRoutingExpanded {
+                    routingSection
+                }
+            case .integrations:
+                operatorChannelReadinessSection
+                settingsCollapsedSectionCard(
+                    title: "扩展接入与低频维护",
+                    summary: integrationsAuxSummaryText,
+                    badge: integrationsAuxExpanded ? "已展开" : "低频项",
+                    tint: .green,
+                    isExpanded: $integrationsAuxExpanded
+                )
+                if integrationsAuxExpanded {
+                    operatorChannelOnboardingSection
+                    skillsSection
+                    calendarSection
+                    floatingModeSection
+                }
+            case .diagnostics:
+                doctorSection
+                settingsCollapsedSectionCard(
+                    title: "启动链路明细",
+                    summary: diagnosticsLaunchSummaryText,
+                    badge: currentLaunchStateLabel,
+                    tint: headerLaunchTint,
+                    isExpanded: $diagnosticsLaunchExpanded
+                )
+                if diagnosticsLaunchExpanded {
+                    diagnosticsSection
+                }
+                settingsCollapsedSectionCard(
+                    title: "网络授权与桥接",
+                    summary: diagnosticsNetworkSummaryText,
+                    badge: diagnosticsNetworkExpanded
+                        ? "已展开"
+                        : (store.pendingNetworkRequests.isEmpty ? "干净" : "\(store.pendingNetworkRequests.count) 待处理"),
+                    tint: store.pendingNetworkRequests.isEmpty ? .teal : .orange,
+                    isExpanded: $diagnosticsNetworkExpanded
+                )
+                if diagnosticsNetworkExpanded {
+                    networkPoliciesSection
+                    networkingSection
+                }
+                settingsCollapsedSectionCard(
+                    title: "高级参数",
+                    summary: diagnosticsAdvancedSummaryText,
+                    badge: diagnosticsAdvancedExpanded ? "已展开" : "专家项",
+                    tint: .secondary,
+                    isExpanded: $diagnosticsAdvancedExpanded
+                )
+                if diagnosticsAdvancedExpanded {
+                    advancedSection
+                }
+            }
+        }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 18) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(HubUIStrings.Settings.title)
+                        .font(.system(size: 28, weight: .semibold, design: .rounded))
+                    Text(HubUIStrings.Settings.subtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 10) {
+                    Text(HubUIStrings.Settings.validationChain)
+                        .font(.caption.monospaced())
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(headerLaunchTint.opacity(0.12))
+                        .foregroundStyle(headerLaunchTint)
+                        .clipShape(Capsule())
+                }
+            }
+
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 160), spacing: 10)],
+                alignment: .leading,
+                spacing: 10
+            ) {
+                ForEach(headerMetrics) { metric in
+                    settingsMetricCard(metric, compact: true)
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color(nsColor: .controlBackgroundColor),
+                            headerLaunchTint.opacity(0.10)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+        )
+    }
+
     private var formContent: some View {
-        Form {
-            setupCenterSection
-            firstRunFastPathSection
-            quickTroubleshootSection
-            grpcServerSection
-            operatorChannelReadinessSection
-            operatorChannelOnboardingSection
-            routingSection
-            remoteModelsSection
-            modelHealthAutoScanSection
-            calendarSection
-            doctorSection
-            runtimeMonitorSection
-            diagnosticsSection
-            networkPoliciesSection
-            networkingSection
-            floatingModeSection
-            skillsSection
-            advancedSection
-            quitSection
+        HStack(alignment: .top, spacing: 18) {
+            settingsSidebar
+            settingsPageSurface
         }
-        .formStyle(.grouped)
-        .onAppear {
-            reloadRemoteModels()
-            reloadNetworkPolicies()
-            reloadAXConstitutionStatus()
-            Task { await reloadOperatorChannelProviderReadiness() }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var settingsSidebar: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Control Center")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 4)
+
+            ForEach(HubSettingsPage.allCases) { page in
+                Button {
+                    selectSettingsPage(page)
+                } label: {
+                    settingsSidebarRow(page)
+                }
+                .buttonStyle(.plain)
+            }
+
+            Spacer(minLength: 12)
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("App")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                let ver = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? ""
+                let build = (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String) ?? ""
+                Text(HubUIStrings.Settings.Quit.version(ver, build))
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+
+                Button(HubUIStrings.Settings.Quit.quitApp) {
+                    quitApp()
+                }
+                .buttonStyle(.bordered)
+                .tint(.red)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.primary.opacity(0.035))
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
+        .padding(18)
+        .frame(width: 252, alignment: .topLeading)
+        .frame(maxHeight: .infinity, alignment: .topLeading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+        )
+    }
+
+    private func settingsSidebarRow(_ page: HubSettingsPage) -> some View {
+        let isSelected = selectedSettingsPage == page
+        return HStack(alignment: .top, spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(page.tint.opacity(isSelected ? 0.22 : 0.12))
+                Image(systemName: page.systemName)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(page.tint)
+            }
+            .frame(width: 34, height: 34)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(page.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Spacer(minLength: 8)
+                    Text(settingsSidebarBadge(for: page))
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(isSelected ? page.tint : .secondary)
+                }
+                Text(settingsSidebarDetail(for: page))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(isSelected ? page.tint.opacity(0.10) : Color.primary.opacity(0.03))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(isSelected ? page.tint.opacity(0.35) : Color.primary.opacity(0.05), lineWidth: 1)
+        )
+    }
+
+    private var settingsPageSurface: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    settingsPageHero(selectedSettingsPage)
+                    settingsPageSections(for: selectedSettingsPage)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(18)
+            }
+            .id(selectedSettingsPage.id)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .onAppear {
+                scrollToSettingsTargetIfNeeded(proxy)
+            }
+            .onChange(of: settingsScrollTarget) { _ in
+                scrollToSettingsTargetIfNeeded(proxy)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.92))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+        )
+    }
+
+    private func settingsPageHero(_ page: HubSettingsPage) -> some View {
+        let metrics = settingsPageMetrics(for: page)
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    page.tint.opacity(0.22),
+                                    page.tint.opacity(0.10)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                    Image(systemName: page.systemName)
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(page.tint)
+                }
+                .frame(width: 52, height: 52)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(page.title)
+                        .font(.title3.weight(.semibold))
+                    Text(page.subtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Text(settingsSidebarBadge(for: page))
+                    .font(.caption.monospaced())
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(page.tint.opacity(0.12))
+                    .foregroundStyle(page.tint)
+                    .clipShape(Capsule())
+            }
+
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 160), spacing: 10)],
+                alignment: .leading,
+                spacing: 10
+            ) {
+                ForEach(metrics) { metric in
+                    settingsMetricCard(metric, compact: false)
+                }
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            page.tint.opacity(0.12),
+                            Color.primary.opacity(0.025)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+        )
+    }
+
+    private func settingsMetricCard(_ metric: HubSettingsMetric, compact: Bool) -> some View {
+        VStack(alignment: .leading, spacing: compact ? 4 : 6) {
+            Text(metric.title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(metric.value)
+                .font(compact ? .subheadline.weight(.semibold) : .title3.weight(.semibold))
+            Text(metric.detail)
+                .font(compact ? .caption2 : .caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(compact ? 2 : 3)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(compact ? 12 : 14)
+        .background(metric.tint.opacity(compact ? 0.08 : 0.10))
+        .clipShape(RoundedRectangle(cornerRadius: compact ? 16 : 18, style: .continuous))
     }
 
     private var setupCenterSection: some View {
@@ -428,6 +3384,121 @@ struct SettingsSheetView: View {
                 badge: currentLaunchStateLabel,
                 highlights: HubUIStrings.Settings.Overview.Diagnostics.highlights
             )
+        }
+    }
+
+    private var cliproxyOAuthOverviewSection: some View {
+        Section("CLIProxy 库存雷达") {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("CLIProxy Free Tier Radar")
+                            .font(.headline)
+                        Text("把 CLIProxy 管理页里已经认证成功的账号，直接抬到总览层看库存健康、冷却恢复和厂家覆盖。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Spacer()
+
+                    Text(cliproxyOAuthStatusBadgeText)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(cliproxyOAuthStatusTint)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(cliproxyOAuthStatusTint.opacity(0.12))
+                        .clipShape(Capsule())
+                }
+
+                Text(cliproxyOAuthOverviewSummaryText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 168), spacing: 10)],
+                    alignment: .leading,
+                    spacing: 10
+                ) {
+                    ForEach(cliproxyOAuthOverviewMetrics) { metric in
+                        settingsMetricCard(metric, compact: false)
+                    }
+                }
+
+                terminalAccessFeedbackBanner(
+                    text: cliproxyOAuthOverviewNoticeText,
+                    tint: cliproxyOAuthOverviewNoticeTint,
+                    systemName: cliproxyOAuthOverviewNoticeSystemName
+                )
+
+                if !cliproxyOAuthProviderSummaries.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("厂家库存条带")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Text("点任一厂家可直达模型页对应的厂家经营总账。")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        LazyVGrid(
+                            columns: [GridItem(.adaptive(minimum: 180), spacing: 10)],
+                            alignment: .leading,
+                            spacing: 10
+                        ) {
+                            ForEach(cliproxyOAuthProviderSummaries) { summary in
+                                cliproxyOAuthProviderOverviewCard(summary)
+                            }
+                        }
+                    }
+                }
+
+                HStack(spacing: 8) {
+                    cliproxyOAuthActionButton(
+                        title: "管理库存",
+                        systemName: "slider.horizontal.3",
+                        tint: .indigo
+                    ) {
+                        openCLIProxyOAuthInventoryManager()
+                    }
+
+                    cliproxyOAuthActionButton(
+                        title: "打开管理页",
+                        systemName: "globe",
+                        tint: .teal
+                    ) {
+                        openCLIProxyOAuthManagementConsole()
+                    }
+
+                    cliproxyOAuthActionButton(
+                        title: cliproxyOAuthSyncing ? "同步中" : "同步到 Hub",
+                        systemName: "shippingbox.and.arrow.backward",
+                        tint: .green,
+                        disabled: cliproxyOAuthSyncing
+                    ) {
+                        Task { await syncCLIProxyOAuthAccounts(manual: true) }
+                    }
+                }
+            }
+            .padding(16)
+            .background(
+                LinearGradient(
+                    colors: [
+                        Color.teal.opacity(0.12),
+                        Color.blue.opacity(0.08),
+                        Color.mint.opacity(0.05)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(Color.teal.opacity(0.18), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
     }
 
@@ -532,6 +3603,348 @@ struct SettingsSheetView: View {
 
     private var activeRemoteModelCount: Int {
         remoteModels.filter { $0.enabled }.count
+    }
+
+    private var localModelsCapabilitySummaryText: String {
+        guard localCatalogModelCount > 0 else {
+            return "先扫描并导入本地模型。这里和付费模型并列管理本地文本、多模态、OCR 与 TTS 能力。"
+        }
+
+        var parts: [String] = ["\(localCatalogModelCount) 个模型", "\(loadedLocalModelCount) 已加载"]
+        if let summary = localModelHealthSummary?.text,
+           !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append(summary)
+        }
+        if totalRuntimeProviderCount > 0 {
+            parts.append("\(readyRuntimeProviderCount)/\(totalRuntimeProviderCount) 个 runtime provider 就绪")
+        } else {
+            parts.append("等待 runtime 心跳")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var localModelsCapabilityBadgeText: String {
+        guard localCatalogModelCount > 0 else { return "未发现" }
+        if store.localModelHealthScanInFlight || localScanningModelCount > 0 {
+            return "扫描中"
+        }
+        if runtimeHeartbeatText != "在线" && loadedLocalModelCount == 0 {
+            return "等待 runtime"
+        }
+        if loadedLocalModelCount > 0 {
+            return "\(loadedLocalModelCount) 已加载"
+        }
+        if localAvailableModelCount > 0 {
+            return "\(localAvailableModelCount) 可用"
+        }
+        if localPendingModelCount > 0 {
+            return "\(localPendingModelCount) 待复核"
+        }
+        return "待准备"
+    }
+
+    private var localModelsCapabilityTint: Color {
+        guard localCatalogModelCount > 0 else { return .secondary }
+        if runtimeHeartbeatText != "在线" && loadedLocalModelCount == 0 {
+            return .orange
+        }
+        if store.localModelHealthScanInFlight || localScanningModelCount > 0 {
+            return .teal
+        }
+        if loadedLocalModelCount > 0 {
+            return .green
+        }
+        if localAvailableModelCount > 0 {
+            return .indigo
+        }
+        if localPendingModelCount > 0 {
+            return .orange
+        }
+        return .secondary
+    }
+
+    private var localModelsCapabilityMetrics: [HubSettingsMetric] {
+        [
+            HubSettingsMetric(
+                title: "模型库",
+                value: "\(localCatalogModelCount)",
+                detail: localCatalogModelCount == 0 ? "当前没有本地模型" : "只统计本地模型，不含付费 / 远端入口",
+                tint: localCatalogModelCount > 0 ? .indigo : .secondary
+            ),
+            HubSettingsMetric(
+                title: "已加载",
+                value: "\(loadedLocalModelCount)",
+                detail: localCatalogModelCount == 0 ? "等待导入本地模型" : "当前可直接复用的本地加载态模型",
+                tint: loadedLocalModelCount > 0 ? .green : .secondary
+            ),
+            HubSettingsMetric(
+                title: "预检可用",
+                value: "\(localAvailableModelCount)",
+                detail: HubUIStrings.Settings.RemoteModels.sectionSummary([
+                    localReviewModelCount > 0 ? "复核 \(localReviewModelCount)" : nil,
+                    localDiscouragedModelCount > 0 ? "风险 \(localDiscouragedModelCount)" : nil,
+                    localUnscannedModelCount > 0 ? "未扫描 \(localUnscannedModelCount)" : nil
+                ].compactMap { $0 }.isEmpty
+                    ? ["当前没有待复核或未扫描模型"]
+                    : [
+                        localReviewModelCount > 0 ? "复核 \(localReviewModelCount)" : nil,
+                        localDiscouragedModelCount > 0 ? "风险 \(localDiscouragedModelCount)" : nil,
+                        localUnscannedModelCount > 0 ? "未扫描 \(localUnscannedModelCount)" : nil
+                    ].compactMap { $0 }),
+                tint: localAvailableModelCount > 0 ? .blue : .secondary
+            ),
+            HubSettingsMetric(
+                title: "Runtime",
+                value: totalRuntimeProviderCount == 0 ? "待连接" : "\(readyRuntimeProviderCount)/\(totalRuntimeProviderCount)",
+                detail: runtimeHeartbeatText == "在线"
+                    ? "provider 心跳正常，可继续承接本地任务"
+                    : "provider 心跳未就绪，本地任务可能无法稳定执行",
+                tint: runtimeHeartbeatText == "在线" ? .orange : .red
+            )
+        ]
+    }
+
+    private var localModelsCapabilityNoticeText: String? {
+        guard localCatalogModelCount > 0 else { return nil }
+        if runtimeHeartbeatText != "在线" {
+            return "当前本地 runtime \(runtimeHeartbeatText)，本地模型暂时不能稳定承接任务。先到“运行时基础设施”恢复 provider 心跳和实例。"
+        }
+        if localDiscouragedModelCount > 0 {
+            return "当前有 \(localDiscouragedModelCount) 个本地模型被标记为高风险，先修复兼容、依赖或快速评审结果，再给 XT 默认路由。"
+        }
+        if localUnscannedModelCount > 0 {
+            return "当前还有 \(localUnscannedModelCount) 个本地模型尚未做快速评审，建议先扫一轮再暴露给 XT。"
+        }
+        if loadedLocalModelCount == 0 && localAvailableModelCount > 0 {
+            return "当前没有常驻本地模型，但已有 \(localAvailableModelCount) 个模型通过快速评审，可按需自动加载。"
+        }
+        if loadedLocalModelCount > 0 {
+            return "当前已有 \(loadedLocalModelCount) 个本地模型处于加载态，可直接承接本地文本或多模态任务。"
+        }
+        return nil
+    }
+
+    private var localModelsCapabilityNoticeTint: Color {
+        if runtimeHeartbeatText != "在线" {
+            return .orange
+        }
+        if localDiscouragedModelCount > 0 || localUnscannedModelCount > 0 {
+            return .orange
+        }
+        if loadedLocalModelCount > 0 {
+            return .green
+        }
+        return .blue
+    }
+
+    private var localModelsCapabilityNoticeSystemName: String {
+        if runtimeHeartbeatText != "在线" {
+            return "exclamationmark.triangle"
+        }
+        if localDiscouragedModelCount > 0 || localUnscannedModelCount > 0 {
+            return "shield.lefthalf.filled.badge.exclamationmark"
+        }
+        if loadedLocalModelCount > 0 {
+            return "checkmark.seal"
+        }
+        return "sparkles"
+    }
+
+    private var loadedRemoteModelCount: Int {
+        remoteModelGroups.reduce(0) { $0 + $1.loadedCount }
+    }
+
+    private var availableRemoteModelCount: Int {
+        remoteModelGroups.reduce(0) { $0 + $1.availableCount }
+    }
+
+    private var needsSetupRemoteModelCount: Int {
+        remoteModelGroups.reduce(0) { $0 + $1.needsSetupCount }
+    }
+
+    private var remoteModelGroupCount: Int {
+        remoteModelGroups.count
+    }
+
+    private var remoteModelEndpointHostCount: Int {
+        Set(remoteModels.compactMap { remoteModelEndpointHost($0) }).count
+    }
+
+    private var remoteModelsSectionSummaryText: String {
+        guard !remoteModels.isEmpty else {
+            return "先接入可执行的 provider / model，再用这里统一管理远端文本、多模态和专用入口。"
+        }
+
+        var parts: [String] = ["\(remoteModelGroupCount) 个组"]
+        parts.append("\(loadedRemoteModelCount) 已加载")
+        if availableRemoteModelCount > 0 {
+            parts.append("\(availableRemoteModelCount) 可执行")
+        }
+        if needsSetupRemoteModelCount > 0 {
+            parts.append("\(needsSetupRemoteModelCount) 待补齐")
+        }
+        if remoteModelEndpointHostCount > 0 {
+            parts.append("\(remoteModelEndpointHostCount) 个 host")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var remoteModelsAttentionBannerText: String? {
+        guard !remoteModels.isEmpty else { return nil }
+        if needsSetupRemoteModelCount > 0 {
+            return "当前还有 \(needsSetupRemoteModelCount) 个远端模型待补齐 auth / 兼容 / provider 健康，修完后才适合给 XT 稳定路由。"
+        }
+        if loadedRemoteModelCount == 0 && availableRemoteModelCount > 0 {
+            return "当前没有已加载远端模型，但已有 \(availableRemoteModelCount) 个入口可直接执行。需要时可以在下面按组加载。"
+        }
+        if loadedRemoteModelCount > 0 {
+            return "当前已有 \(loadedRemoteModelCount) 个远端模型处于加载态，可直接复用；其余模型按需加载即可。"
+        }
+        return nil
+    }
+
+    private var remoteModelsOverviewBadgeText: String {
+        if remoteModels.isEmpty {
+            return "未配置"
+        }
+        if needsSetupRemoteModelCount > 0 {
+            return "\(needsSetupRemoteModelCount) 待补齐"
+        }
+        if loadedRemoteModelCount > 0 {
+            return "\(loadedRemoteModelCount) 已加载"
+        }
+        if availableRemoteModelCount > 0 {
+            return "\(availableRemoteModelCount) 可执行"
+        }
+        return "待加载"
+    }
+
+    private var remoteModelsOverviewTint: Color {
+        if needsSetupRemoteModelCount > 0 {
+            return .orange
+        }
+        if loadedRemoteModelCount > 0 {
+            return .green
+        }
+        if availableRemoteModelCount > 0 {
+            return .indigo
+        }
+        return .secondary
+    }
+
+    private var remoteModelsOverviewMetrics: [HubSettingsMetric] {
+        [
+            HubSettingsMetric(
+                title: "模型组",
+                value: "\(remoteModelGroupCount)",
+                detail: remoteModelGroupCount == 0 ? "还没有聚合出的远端执行组" : "按 provider / key 聚合后的入口",
+                tint: remoteModelGroupCount > 0 ? .indigo : .secondary
+            ),
+            HubSettingsMetric(
+                title: "已加载",
+                value: "\(loadedRemoteModelCount)",
+                detail: remoteModels.isEmpty ? "等待配置远端模型" : "当前可直接复用的远端入口",
+                tint: loadedRemoteModelCount > 0 ? .green : .secondary
+            ),
+            HubSettingsMetric(
+                title: "可执行",
+                value: "\(availableRemoteModelCount)",
+                detail: remoteModels.isEmpty ? "等待 provider / auth" : "已通过基础执行前置条件",
+                tint: availableRemoteModelCount > 0 ? .blue : .secondary
+            ),
+            HubSettingsMetric(
+                title: "执行面",
+                value: remoteModelEndpointHostCount == 0 ? "未接入" : "\(remoteModelEndpointHostCount) host",
+                detail: remoteModels.isEmpty ? "还没有远端 endpoint" : "启用 \(activeRemoteModelCount) 个入口 · 待补齐 \(needsSetupRemoteModelCount)",
+                tint: remoteModelEndpointHostCount > 0 ? .purple : .secondary
+            )
+        ]
+    }
+
+    private var remoteModelsAttentionBannerTint: Color {
+        if needsSetupRemoteModelCount > 0 {
+            return .orange
+        }
+        if loadedRemoteModelCount > 0 {
+            return .green
+        }
+        return .blue
+    }
+
+    private var remoteModelsAttentionBannerSystemName: String {
+        if needsSetupRemoteModelCount > 0 {
+            return "exclamationmark.triangle"
+        }
+        if loadedRemoteModelCount > 0 {
+            return "checkmark.seal"
+        }
+        return "sparkles"
+    }
+
+    private var providerQuotaOperationsImportIssueCount: Int {
+        providerKeySnapshot.importSources.filter { source in
+            source.state != "ready" || source.lastErrorCount > 0
+        }.count
+    }
+
+    private var providerQuotaOperationsSummaryText: String {
+        let derived = providerKeyDerivedSnapshot
+        if derived.totalAccounts == 0
+            && providerKeySnapshot.importSources.isEmpty
+            && derived.keyPools.isEmpty {
+            return "这里管理 provider key、共享额度池、导入源、CLIProxy OAuth 和各类配额台账。按需展开，避免切页时卡住。"
+        }
+
+        var parts: [String] = []
+        if derived.totalAccounts > 0 {
+            parts.append("\(derived.readyAccounts)/\(derived.totalAccounts) 个 key 就绪")
+        }
+        if quotaPoolCount > 0 {
+            parts.append("\(quotaPoolCount) 个额度池")
+        }
+        if !derived.keyPools.isEmpty {
+            parts.append("\(derived.keyPools.count) 个物理池")
+        }
+        if providerQuotaOperationsImportIssueCount > 0 {
+            parts.append("\(providerQuotaOperationsImportIssueCount) 个导入源异常")
+        }
+        if derived.blockedAccounts > 0 {
+            parts.append("\(derived.blockedAccounts) 个 key 阻塞")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var providerQuotaOperationsBadgeText: String {
+        let derived = providerKeyDerivedSnapshot
+        if !remoteQuotaErrorText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "异常"
+        }
+        if derived.totalAccounts == 0
+            && providerKeySnapshot.importSources.isEmpty
+            && derived.keyPools.isEmpty {
+            return "未配置"
+        }
+        if derived.blockedAccounts > 0 || providerQuotaOperationsImportIssueCount > 0 {
+            return "需处理"
+        }
+        if derived.readyAccounts > 0 {
+            return "\(derived.readyAccounts) 就绪"
+        }
+        return "按需展开"
+    }
+
+    private var providerQuotaOperationsTint: Color {
+        let derived = providerKeyDerivedSnapshot
+        if !remoteQuotaErrorText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return .red
+        }
+        if derived.blockedAccounts > 0 || providerQuotaOperationsImportIssueCount > 0 {
+            return .orange
+        }
+        if derived.readyAccounts > 0 || quotaPoolCount > 0 {
+            return .blue
+        }
+        return .secondary
     }
 
     private func launchStateLabel(_ state: HubLaunchState?) -> String {
@@ -978,6 +4391,1547 @@ struct SettingsSheetView: View {
             operatorChannelProviderReadinessActionText = HubUIStrings.Settings.OperatorChannels.restartedAndUpdated
         } else {
             operatorChannelProviderReadinessActionText = HubUIStrings.Settings.OperatorChannels.restartCompletedRefreshFailed
+        }
+    }
+
+    private var terminalAccessSection: some View {
+        Section("普通 Terminal Access Key + URL") {
+            VStack(alignment: .leading, spacing: 10) {
+                terminalAccessOverviewHero
+
+                DisclosureGroup(isExpanded: $terminalAccessIssueExpanded) {
+                    terminalAccessIssueCard
+                        .padding(.top, 6)
+                } label: {
+                    settingsInlineDisclosureLabel(
+                        systemName: "key.badge.plus",
+                        title: "签发新 Terminal Access Key",
+                        summary: terminalAccessDraftSummaryText,
+                        badge: terminalAccessIssueExpanded ? "编辑中" : "签发面板",
+                        tint: .orange,
+                        isExpanded: terminalAccessIssueExpanded
+                    )
+                }
+
+                if let lastSecret = terminalAccessLastSecret {
+                    DisclosureGroup(isExpanded: $terminalAccessLastSecretExpanded) {
+                        terminalAccessLastSecretCard(lastSecret)
+                            .padding(.top, 6)
+                    } label: {
+                        settingsInlineDisclosureLabel(
+                            systemName: "key.radiowaves.forward",
+                            title: "最近签发 / 轮换的 Secret",
+                            summary: terminalAccessLastSecretSummaryText(lastSecret),
+                            badge: terminalAccessLastSecretExpanded ? "已展开" : "待分发",
+                            tint: .teal,
+                            isExpanded: terminalAccessLastSecretExpanded
+                        )
+                    }
+                }
+
+                if !terminalAccessActionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    terminalAccessFeedbackBanner(
+                        text: terminalAccessActionText,
+                        tint: .blue,
+                        systemName: "checkmark.seal"
+                    )
+                }
+
+                if !terminalAccessErrorText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    terminalAccessFeedbackBanner(
+                        text: terminalAccessErrorText,
+                        tint: .red,
+                        systemName: "exclamationmark.triangle"
+                    )
+                }
+
+                if terminalAccessSortedKeys.isEmpty {
+                    Text("当前还没有给普通 terminal 签发 access key。签发后这里会直接展示 URL、额度、今日用量、轮换次数和导出模板。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(terminalAccessSortedKeys) { accessKey in
+                        terminalAccessKeyCard(accessKey)
+                    }
+                }
+            }
+            .confirmationDialog(
+                "确认撤销普通 terminal access key",
+                isPresented: terminalAccessRevokeDialogPresented,
+                titleVisibility: .visible
+            ) {
+                if let accessKey = terminalAccessPendingRevokeAccessKey {
+                    Button("撤销", role: .destructive) {
+                        Task { await revokeTerminalAccessKey(accessKey) }
+                    }
+                }
+                Button("取消", role: .cancel) {
+                    terminalAccessPendingRevokeAccessKeyID = ""
+                }
+            } message: {
+                if let accessKey = terminalAccessPendingRevokeAccessKey {
+                    Text("撤销后，现有的 `OPENAI_API_KEY` 会立即失效。目标：\(accessKey.resolvedName)")
+                } else {
+                    Text("撤销后，这把普通 terminal access key 将不能继续访问 Hub。")
+                }
+            }
+        }
+        .id(terminalAccessSectionAnchorID)
+    }
+
+    private var terminalAccessOverviewHero: some View {
+        let quotaTotal = terminalAccessOverviewQuotaTotal
+        let usedTotal = terminalAccessOverviewUsedTotal
+        let remainingTotal = terminalAccessOverviewRemainingTotal
+        let usageTotal = max(1, quotaTotal)
+        let usageValue = min(Double(max(0, usedTotal)), Double(usageTotal))
+        let summaryTint: Color = terminalAccessReadyCount == terminalAccessKeys.count && !terminalAccessKeys.isEmpty ? .green : .blue
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color(red: 0.13, green: 0.40, blue: 0.66),
+                                    Color(red: 0.07, green: 0.62, blue: 0.57),
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                    Image(systemName: "terminal.fill")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.white)
+                }
+                .frame(width: 44, height: 44)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("普通 Terminal Gateway")
+                        .font(.headline)
+                    Text("Hub 常驻时，可以持续给普通 terminal 发放独立的 OpenAI-compatible access key，并按 key / user / device 记账。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(terminalAccessSectionSummaryText)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+
+                Spacer()
+
+                VStack(alignment: .trailing, spacing: 8) {
+                    terminalAccessBadge(
+                        title: terminalAccessKeys.isEmpty ? "尚未签发" : "\(terminalAccessReadyCount)/\(terminalAccessKeys.count) 可用",
+                        tint: summaryTint
+                    )
+                    if terminalAccessLastSecret != nil {
+                        terminalAccessBadge(title: "待分发 Secret", tint: .teal)
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(terminalAccessCurrentBaseURL)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.primary)
+                        .textSelection(.enabled)
+                    Spacer()
+                }
+
+                HStack(spacing: 8) {
+                    terminalAccessMiniPill(title: "GET /v1/models", tint: .blue)
+                    terminalAccessMiniPill(title: "POST /v1/chat/completions", tint: .teal)
+                    terminalAccessMiniPill(title: "POST /v1/responses", tint: .orange)
+                    Spacer()
+                }
+            }
+
+            HStack(spacing: 10) {
+                terminalAccessOverviewMetric(
+                    title: "已签发",
+                    value: terminalAccessIntText(Int64(terminalAccessKeys.count)),
+                    subtitle: "所有外部 terminal key",
+                    tint: .blue
+                )
+                terminalAccessOverviewMetric(
+                    title: "今日已用",
+                    value: terminalAccessIntText(usedTotal),
+                    subtitle: "按已上报 usage 汇总",
+                    tint: .teal
+                )
+                terminalAccessOverviewMetric(
+                    title: "今日剩余",
+                    value: terminalAccessIntText(remainingTotal),
+                    subtitle: "可继续分配的预算",
+                    tint: remainingTotal > 0 ? .green : .orange
+                )
+            }
+
+            if quotaTotal > 0 {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("外部 Terminal 总额度")
+                            .font(.caption.weight(.semibold))
+                        Spacer()
+                        Text("\(terminalAccessIntText(usedTotal)) / \(terminalAccessIntText(quotaTotal))")
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    ProgressView(value: usageValue, total: Double(usageTotal))
+                        .progressViewStyle(.linear)
+                        .tint(remainingTotal > 0 ? .teal : .orange)
+                }
+            }
+
+            HStack(spacing: 10) {
+                Button(terminalAccessReloadInFlight ? "刷新中..." : "刷新视图") {
+                    Task { await reloadTerminalAccessKeys(forceMessage: true) }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(terminalAccessReloadInFlight || terminalAccessMutationInFlight)
+
+                Button("复制 Gateway URL") {
+                    terminalAccessCopyToPasteboard(
+                        terminalAccessCurrentBaseURL,
+                        successText: "已复制普通 terminal OpenAI 入口 URL。"
+                    )
+                }
+                .disabled(terminalAccessCurrentBaseURL.isEmpty || terminalAccessMutationInFlight)
+
+                Spacer()
+            }
+            .font(.caption)
+        }
+        .padding(14)
+        .background(
+            ZStack {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color(red: 0.97, green: 0.92, blue: 0.84),
+                                Color(red: 0.87, green: 0.93, blue: 0.97),
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(Color.white.opacity(0.35))
+            }
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.white.opacity(0.55), lineWidth: 1)
+        )
+    }
+
+    private func terminalAccessFeedbackBanner(text: String, tint: Color, systemName: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: systemName)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(tint)
+            Text(text)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(tint.opacity(0.10))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private var terminalAccessIssueCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("签发给普通 terminal")
+                        .font(.headline)
+                    Text("每把 key 都绑定独立 `user_id / app_id / 每日额度 / paid policy`，方便你分配给不同机器、脚本或团队成员。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                terminalAccessBadge(title: "Issue", tint: .orange)
+            }
+
+            HStack(spacing: 8) {
+                TextField("名称", text: $terminalAccessDraft.name)
+                    .textFieldStyle(.roundedBorder)
+                TextField("user_id", text: $terminalAccessDraft.userID)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            HStack(spacing: 8) {
+                TextField("app_id", text: $terminalAccessDraft.appID)
+                    .textFieldStyle(.roundedBorder)
+                TextField("备注", text: $terminalAccessDraft.note)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            HStack(spacing: 8) {
+                TextField(
+                    "每日 token 额度",
+                    value: $terminalAccessDraft.dailyTokenLimit,
+                    formatter: terminalAccessIntegerFormatter(minimum: 1, maximum: 1_000_000_000)
+                )
+                .textFieldStyle(.roundedBorder)
+
+                TextField(
+                    "TTL 小时，0=不过期",
+                    value: $terminalAccessDraft.ttlHours,
+                    formatter: terminalAccessIntegerFormatter(minimum: 0, maximum: 24 * 365 * 10)
+                )
+                .textFieldStyle(.roundedBorder)
+            }
+            .font(.caption)
+
+            Toggle("允许付费模型", isOn: $terminalAccessDraft.allowPaidModels)
+                .toggleStyle(.checkbox)
+                .font(.caption)
+
+            Toggle("默认允许 web.fetch", isOn: $terminalAccessDraft.defaultWebFetchEnabled)
+                .toggleStyle(.checkbox)
+                .font(.caption)
+
+            HStack(spacing: 8) {
+                terminalAccessMiniPill(
+                    title: terminalAccessDraft.allowPaidModels ? "付费模型已开启" : "仅按默认 paid policy",
+                    tint: terminalAccessDraft.allowPaidModels ? .orange : .gray
+                )
+                terminalAccessMiniPill(
+                    title: terminalAccessDraft.defaultWebFetchEnabled ? "web.fetch 默认开启" : "web.fetch 默认关闭",
+                    tint: terminalAccessDraft.defaultWebFetchEnabled ? .teal : .gray
+                )
+                terminalAccessMiniPill(
+                    title: "TTL \(terminalAccessDraft.ttlHours == 0 ? "无限" : "\(terminalAccessDraft.ttlHours)h")",
+                    tint: .blue
+                )
+                Spacer()
+            }
+
+            HStack(spacing: 10) {
+                Button(terminalAccessMutationInFlight ? "签发中..." : "签发并返回 Key + URL") {
+                    Task { await issueTerminalAccessKey() }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(terminalAccessMutationInFlight || terminalAccessReloadInFlight)
+
+                Button("复制当前 URL") {
+                    terminalAccessCopyToPasteboard(
+                        terminalAccessCurrentBaseURL,
+                        successText: "已复制普通 terminal OpenAI 入口 URL。"
+                    )
+                }
+                .disabled(terminalAccessCurrentBaseURL.isEmpty || terminalAccessMutationInFlight)
+
+                Spacer()
+            }
+            .font(.caption)
+
+            Text("普通 terminal 直接拿 `OPENAI_BASE_URL` + `OPENAI_API_KEY` 即可；Hub 内部仍按独立 device/user/account 记账。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.98, green: 0.95, blue: 0.90),
+                            Color(red: 0.95, green: 0.97, blue: 0.99),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.black.opacity(0.06), lineWidth: 1)
+        )
+    }
+
+    private func terminalAccessLastSecretCard(_ secret: HubTerminalAccessKeySecretEnvelope) -> some View {
+        let deliveryPack = secret.deliveryPack
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [.teal, .green],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                    Image(systemName: "key.radiowaves.forward")
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(.white)
+                }
+                .frame(width: 40, height: 40)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("最近签发 / 轮换")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(secret.accessKey.resolvedName)
+                        .font(.subheadline.weight(.semibold))
+                    if !secret.openAIBaseURL.isEmpty {
+                        Text(secret.openAIBaseURL)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 6) {
+                    terminalAccessStatusBadge(secret.accessKey)
+                    terminalAccessBadge(title: "可即刻交付", tint: .teal)
+                }
+            }
+
+            Text("这段 secret 只会在当前 Hub 界面里显示一次。确认目标 terminal 已保存后，再离开这一页。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 8) {
+                terminalAccessMiniPill(title: deliveryPack.authDisplayText, tint: .blue)
+                terminalAccessMiniPill(title: deliveryPack.baseURLEnvKey, tint: .teal)
+                terminalAccessMiniPill(title: deliveryPack.apiKeyEnvKey, tint: .orange)
+                if !deliveryPack.responsesURL.isEmpty {
+                    terminalAccessMiniPill(title: "/responses 已就绪", tint: .green)
+                }
+                Spacer()
+            }
+
+            if !deliveryPack.baseURL.isEmpty {
+                Text(deliveryPack.baseURL)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 10) {
+                    Button("复制接入包") {
+                        terminalAccessCopyToPasteboard(
+                            deliveryPack.setupPackText,
+                            successText: "已复制 \(secret.accessKey.resolvedName) 的 terminal 接入包。"
+                        )
+                    }
+                    .disabled(deliveryPack.setupPackText.isEmpty)
+
+                    Button("复制 shell export") {
+                        terminalAccessCopyToPasteboard(
+                            deliveryPack.shellExports,
+                            successText: "已复制 \(secret.accessKey.resolvedName) 的 shell export。"
+                        )
+                    }
+                    .disabled(deliveryPack.shellExports.isEmpty)
+
+                    Button("复制 API Key") {
+                        terminalAccessCopyToPasteboard(
+                            deliveryPack.apiKeyValue,
+                            successText: "已复制 \(secret.accessKey.resolvedName) 的 OpenAI API key。"
+                        )
+                    }
+                    .disabled(deliveryPack.apiKeyValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                    Spacer()
+                }
+
+                HStack(spacing: 10) {
+                    Button("复制 URL") {
+                        terminalAccessCopyToPasteboard(
+                            secret.openAIBaseURL,
+                            successText: "已复制普通 terminal OpenAI 入口 URL。"
+                        )
+                    }
+                    .disabled(secret.openAIBaseURL.isEmpty)
+
+                    Button("复制 smoke curl") {
+                        terminalAccessCopyToPasteboard(
+                            secret.smokeCurlCommand,
+                            successText: "已复制普通 terminal smoke curl。"
+                        )
+                    }
+                    .disabled(secret.smokeCurlCommand.isEmpty)
+
+                    Spacer()
+                }
+            }
+            .font(.caption)
+
+            if !deliveryPack.shellExports.isEmpty {
+                terminalAccessExportBlock(
+                    title: "Shell Export",
+                    text: deliveryPack.shellExports,
+                    minHeight: 56,
+                    maxHeight: 108
+                )
+            }
+
+            if !deliveryPack.setupPackText.isEmpty {
+                terminalAccessExportBlock(
+                    title: "Terminal 接入包",
+                    text: deliveryPack.setupPackText,
+                    minHeight: 126,
+                    maxHeight: 240
+                )
+            }
+
+            terminalAccessExampleShowcase(deliveryPack: deliveryPack)
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.86, green: 0.96, blue: 0.92),
+                            Color(red: 0.88, green: 0.95, blue: 0.97),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.white.opacity(0.55), lineWidth: 1)
+        )
+    }
+
+    private func terminalAccessKeyCard(_ accessKey: HubTerminalAccessKey) -> some View {
+        let deviceStatus = terminalAccessDeviceStatus(for: accessKey)
+        let hasSecret = terminalAccessSecretEnvelope(for: accessKey) != nil
+        let baseURL = terminalAccessBaseURL(for: accessKey)
+        let deliveryPack = terminalAccessDeliveryPack(for: accessKey)
+        let quotaLimit = terminalAccessQuotaLimit(for: accessKey, deviceStatus: deviceStatus)
+        let used = terminalAccessQuotaUsed(deviceStatus: deviceStatus)
+        let remaining = terminalAccessQuotaRemaining(limit: quotaLimit, used: used, deviceStatus: deviceStatus)
+        let statusTint = terminalAccessStatusTint(accessKey)
+        let statusIcon = terminalAccessStatusIcon(accessKey)
+        let detailBinding = expansionBinding(accessKey.accessKeyID, in: $expandedTerminalAccessKeyDetailIDs)
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(statusTint.opacity(0.16))
+                    Image(systemName: statusIcon)
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(statusTint)
+                }
+                .frame(width: 40, height: 40)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(accessKey.resolvedName)
+                        .font(.subheadline.weight(.semibold))
+                    Text("\(accessKey.accessKeyID) • \(accessKey.appID.isEmpty ? "external_terminal" : accessKey.appID)")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                Spacer()
+                terminalAccessStatusBadge(accessKey)
+            }
+
+            Text(terminalAccessSummaryLine(accessKey, quotaLimit: quotaLimit))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                terminalAccessMiniPill(
+                    title: accessKey.paidModelSelectionMode == .off ? "付费模型关闭" : "付费模型开启",
+                    tint: accessKey.paidModelSelectionMode == .off ? .gray : .orange
+                )
+                terminalAccessMiniPill(
+                    title: accessKey.defaultWebFetchEnabled ? "web.fetch 开启" : "web.fetch 关闭",
+                    tint: accessKey.defaultWebFetchEnabled ? .teal : .gray
+                )
+                terminalAccessMiniPill(
+                    title: accessKey.expiresAtMs > 0 ? "会过期" : "不过期",
+                    tint: accessKey.expiresAtMs > 0 ? .blue : .green
+                )
+                if hasSecret {
+                    terminalAccessMiniPill(title: "持有最新 Secret", tint: .teal)
+                }
+                Spacer()
+            }
+
+            if !accessKey.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(accessKey.note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if !baseURL.isEmpty {
+                Text(baseURL)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+
+            if !accessKey.statusReason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let statusReasonTint: Color = accessKey.status.lowercased() == "ready" ? .secondary : .orange
+                Text("状态原因: \(accessKey.statusReason)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(statusReasonTint)
+                    .textSelection(.enabled)
+            }
+
+            if quotaLimit > 0 {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("今日额度进度")
+                            .font(.caption.weight(.semibold))
+                        Spacer()
+                        Text("\(terminalAccessIntText(used)) / \(terminalAccessIntText(quotaLimit))")
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    ProgressView(value: min(Double(max(0, used)), Double(max(1, quotaLimit))), total: Double(max(1, quotaLimit)))
+                        .progressViewStyle(.linear)
+                        .tint(remaining > 0 ? statusTint : .orange)
+                    HStack(spacing: 8) {
+                        terminalAccessMiniPill(title: "剩余 \(terminalAccessIntText(remaining))", tint: remaining > 0 ? .green : .orange)
+                        if let deviceStatus {
+                            terminalAccessMiniPill(title: "请求 \(deviceStatus.requestsToday)", tint: .blue)
+                            terminalAccessMiniPill(title: "阻断 \(deviceStatus.blockedToday)", tint: deviceStatus.blockedToday > 0 ? .orange : .gray)
+                        }
+                        Spacer()
+                    }
+                }
+                .padding(10)
+                .background(Color.white.opacity(0.62))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+
+            if accessKey.supportsDirectBudgetAdjustment {
+                HStack(spacing: 8) {
+                    Text("预算快拨")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    terminalAccessQuickBudgetButton(accessKey, delta: -50_000, title: "-50k")
+                    terminalAccessQuickBudgetButton(accessKey, delta: 50_000, title: "+50k")
+                    terminalAccessQuickBudgetButton(accessKey, delta: 200_000, title: "+200k")
+                    Button("精确设置") {
+                        presentRemoteQuotaBudgetEditor(accessKey)
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.indigo)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Color.indigo.opacity(0.08))
+                    .clipShape(Capsule())
+                    .disabled(terminalAccessMutationInFlight)
+                    Spacer()
+                }
+            }
+
+            HStack(spacing: 10) {
+                Button("复制 URL") {
+                    terminalAccessCopyToPasteboard(
+                        baseURL,
+                        successText: "已复制 \(accessKey.resolvedName) 的 OpenAI 入口 URL。"
+                    )
+                }
+                .disabled(baseURL.isEmpty)
+
+                Button(hasSecret ? "复制接入包" : "复制模板包") {
+                    terminalAccessCopyToPasteboard(
+                        deliveryPack.setupPackText,
+                        successText: hasSecret
+                            ? "已复制 \(accessKey.resolvedName) 的 terminal 接入包。"
+                            : "已复制 \(accessKey.resolvedName) 的模板接入包。"
+                    )
+                }
+                .disabled(deliveryPack.setupPackText.isEmpty)
+
+                Button(terminalAccessMutationInFlight ? "轮换中..." : "轮换") {
+                    Task { await rotateTerminalAccessKey(accessKey) }
+                }
+                .disabled(terminalAccessMutationInFlight || accessKey.status.lowercased() == "revoked")
+
+                Button("撤销") {
+                    terminalAccessPendingRevokeAccessKeyID = accessKey.accessKeyID
+                }
+                .disabled(terminalAccessMutationInFlight || accessKey.status.lowercased() == "revoked")
+
+                Spacer()
+            }
+            .font(.caption)
+
+            DisclosureGroup(isExpanded: detailBinding) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
+                        GridRow {
+                            terminalAccessFact(title: "每日额度", value: terminalAccessIntText(quotaLimit))
+                            terminalAccessFact(title: "今日已用", value: terminalAccessIntText(used))
+                        }
+                        GridRow {
+                            terminalAccessFact(title: "今日剩余", value: terminalAccessIntText(remaining))
+                            terminalAccessFact(
+                                title: "到期时间",
+                                value: accessKey.expiresAtMs > 0 ? formatEpochMs(accessKey.expiresAtMs) : "不过期"
+                            )
+                        }
+                        GridRow {
+                            terminalAccessFact(
+                                title: "上次使用",
+                                value: accessKey.lastUsedAtMs > 0 ? formatEpochMs(accessKey.lastUsedAtMs) : "未记录"
+                            )
+                            terminalAccessFact(title: "轮换次数", value: terminalAccessIntText(Int64(accessKey.rotationCount)))
+                        }
+                    }
+                    .font(.caption)
+
+                    if let deviceStatus {
+                        Text(terminalAccessLiveUsageLine(deviceStatus))
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(remaining <= 0 ? .orange : .secondary)
+                            .textSelection(.enabled)
+
+                        if let lastActivity = deviceStatus.lastActivity, lastActivity.createdAtMs > 0 {
+                            let modelID = lastActivity.modelId.trimmingCharacters(in: .whitespacesAndNewlines)
+                            let activitySuffix = modelID.isEmpty ? "" : " • \(modelID)"
+                            Text("最近活动 \(formatEpochMs(lastActivity.createdAtMs))\(activitySuffix)")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                    }
+
+                    if accessKey.status.lowercased() == "ready" && !hasSecret {
+                        Text("Hub 现在只保留这把 key 的导出模板；如果要重新分发原始 `OPENAI_API_KEY`，请先轮换。")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    if !deliveryPack.baseURL.isEmpty || !deliveryPack.envBlock.isEmpty {
+                        terminalAccessDeliveryPanel(
+                            accessKey: accessKey,
+                            deliveryPack: deliveryPack,
+                            hasSecret: hasSecret
+                        )
+                    }
+                }
+                .padding(.top, 6)
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("预算 / 活动 / 交付包")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(terminalAccessDetailSummary(accessKey, remaining: remaining, hasSecret: hasSecret))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            statusTint.opacity(0.10),
+                            Color.white.opacity(0.92),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(statusTint.opacity(0.18), lineWidth: 1)
+        )
+    }
+
+    private func terminalAccessStatusBadge(_ accessKey: HubTerminalAccessKey) -> some View {
+        let label: String
+        let tint: Color
+        switch accessKey.status.lowercased() {
+        case "ready":
+            label = "可用"
+            tint = .green
+        case "revoked":
+            label = "已撤销"
+            tint = .red
+        case "expired":
+            label = "已过期"
+            tint = .orange
+        case "disabled":
+            label = "已禁用"
+            tint = .orange
+        case "invalid":
+            label = "无效"
+            tint = .red
+        default:
+            label = accessKey.status.isEmpty ? "未知" : accessKey.status
+            tint = .secondary
+        }
+
+        return Text(label)
+            .font(.caption.monospaced())
+            .foregroundStyle(tint)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(tint.opacity(0.12))
+            .clipShape(Capsule())
+    }
+
+    @ViewBuilder
+    private func terminalAccessQuickBudgetButton(
+        _ accessKey: HubTerminalAccessKey,
+        delta: Int,
+        title: String
+    ) -> some View {
+        let tint: Color = delta < 0 ? .orange : .indigo
+        Button(title) {
+            Task { await adjustTerminalAccessKeyDailyBudget(accessKey, delta: delta) }
+        }
+        .buttonStyle(.borderless)
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(tint)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(tint.opacity(0.12))
+        .clipShape(Capsule())
+        .disabled(terminalAccessMutationInFlight || !accessKey.supportsDirectBudgetAdjustment)
+    }
+
+    private func terminalAccessFact(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.caption)
+                .textSelection(.enabled)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(Color.white.opacity(0.72))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func terminalAccessExportBlock(
+        title: String,
+        text: String,
+        minHeight: CGFloat,
+        maxHeight: CGFloat
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            ScrollView {
+                Text(text)
+                    .font(.caption.monospaced())
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+            .frame(minHeight: minHeight, maxHeight: maxHeight)
+            .padding(10)
+            .background(Color.white.opacity(0.72))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+    }
+
+    private func terminalAccessDeliveryPanel(
+        accessKey: HubTerminalAccessKey,
+        deliveryPack: HubTerminalAccessDeliveryPack,
+        hasSecret: Bool
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(hasSecret ? "当前可直接下发" : "当前交付模板")
+                        .font(.caption.weight(.semibold))
+                    Text(
+                        hasSecret
+                            ? "这把 key 的最新 secret 还在当前页面，可直接把 URL + API key + shell export 发给目标 terminal。"
+                            : "Hub 目前只保留这把 key 的 URL 与模板。需要重新分发原始 secret 时，请先轮换。"
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                }
+                Spacer()
+                terminalAccessBadge(
+                    title: hasSecret ? "Secret 已就绪" : "仅模板",
+                    tint: hasSecret ? .teal : .orange
+                )
+            }
+
+            HStack(spacing: 8) {
+                terminalAccessMiniPill(title: deliveryPack.authDisplayText, tint: .blue)
+                terminalAccessMiniPill(title: deliveryPack.baseURLEnvKey, tint: .teal)
+                terminalAccessMiniPill(
+                    title: deliveryPack.apiKeyEnvKey,
+                    tint: hasSecret ? .orange : .gray
+                )
+                terminalAccessMiniPill(
+                    title: "示例 \(terminalAccessExampleKind.title)",
+                    tint: terminalAccessExampleKind.tint
+                )
+                if !deliveryPack.responsesURL.isEmpty {
+                    terminalAccessMiniPill(title: "/responses", tint: .green)
+                }
+                Spacer()
+            }
+
+            if !deliveryPack.baseURL.isEmpty {
+                Text(deliveryPack.baseURL)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+
+            HStack(spacing: 10) {
+                Button(hasSecret ? "复制接入包" : "复制模板包") {
+                    terminalAccessCopyToPasteboard(
+                        deliveryPack.setupPackText,
+                        successText: hasSecret
+                            ? "已复制 \(accessKey.resolvedName) 的 terminal 接入包。"
+                            : "已复制 \(accessKey.resolvedName) 的模板接入包。"
+                    )
+                }
+                .disabled(deliveryPack.setupPackText.isEmpty)
+
+                Button(hasSecret ? "复制 shell export" : "复制 shell 模板") {
+                    terminalAccessCopyToPasteboard(
+                        deliveryPack.shellExports,
+                        successText: hasSecret
+                            ? "已复制 \(accessKey.resolvedName) 的 shell export。"
+                            : "已复制 \(accessKey.resolvedName) 的 shell 模板。"
+                    )
+                }
+                .disabled(deliveryPack.shellExports.isEmpty)
+
+                Button(terminalAccessExampleKind.copyButtonTitle) {
+                    terminalAccessCopyToPasteboard(
+                        terminalAccessExampleText(for: deliveryPack),
+                        successText: "已复制 \(accessKey.resolvedName) 的 \(terminalAccessExampleKind.title) 示例。"
+                    )
+                }
+                .disabled(terminalAccessExampleText(for: deliveryPack).isEmpty)
+
+                if hasSecret {
+                    Button("复制 API Key") {
+                        terminalAccessCopyToPasteboard(
+                            deliveryPack.apiKeyValue,
+                            successText: "已复制 \(accessKey.resolvedName) 的 OpenAI API key。"
+                        )
+                    }
+                    .disabled(deliveryPack.apiKeyValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+
+                Spacer()
+            }
+            .font(.caption)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: hasSecret
+                            ? [
+                                Color(red: 0.87, green: 0.96, blue: 0.93),
+                                Color(red: 0.92, green: 0.97, blue: 0.98),
+                            ]
+                            : [
+                                Color(red: 0.98, green: 0.94, blue: 0.88),
+                                Color(red: 0.96, green: 0.97, blue: 0.99),
+                            ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(
+                    (hasSecret ? Color.teal : Color.orange).opacity(0.18),
+                    lineWidth: 1
+                )
+        )
+    }
+
+    private func terminalAccessExampleShowcase(deliveryPack: HubTerminalAccessDeliveryPack) -> some View {
+        let snippet = terminalAccessExampleText(for: deliveryPack)
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("SDK / CLI 快速接入")
+                        .font(.caption.weight(.semibold))
+                    Text("切换示例类型后，可直接复制给普通 terminal 用户。示例默认用 `MODEL_ID_HERE`，先看 `/v1/models` 再替换。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                terminalAccessBadge(
+                    title: terminalAccessExampleKind.title,
+                    tint: terminalAccessExampleKind.tint
+                )
+            }
+
+            Picker("接入示例", selection: $terminalAccessExampleKind) {
+                ForEach(TerminalAccessExampleKind.allCases) { kind in
+                    Text(kind.title).tag(kind)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+
+            HStack(spacing: 10) {
+                Button(terminalAccessExampleKind.copyButtonTitle) {
+                    terminalAccessCopyToPasteboard(
+                        snippet,
+                        successText: "已复制普通 terminal 的 \(terminalAccessExampleKind.title) 示例。"
+                    )
+                }
+                .disabled(snippet.isEmpty)
+
+                Spacer()
+            }
+            .font(.caption)
+
+            if !snippet.isEmpty {
+                terminalAccessExportBlock(
+                    title: terminalAccessExampleKind.blockTitle,
+                    text: snippet,
+                    minHeight: 104,
+                    maxHeight: 220
+                )
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.white.opacity(0.60))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(terminalAccessExampleKind.tint.opacity(0.16), lineWidth: 1)
+        )
+    }
+
+    private var terminalAccessSortedKeys: [HubTerminalAccessKey] {
+        terminalAccessKeys.sorted { left, right in
+            if left.updatedAtMs != right.updatedAtMs {
+                return left.updatedAtMs > right.updatedAtMs
+            }
+            if left.createdAtMs != right.createdAtMs {
+                return left.createdAtMs > right.createdAtMs
+            }
+            return left.resolvedName.localizedCaseInsensitiveCompare(right.resolvedName) == .orderedAscending
+        }
+    }
+
+    private var terminalAccessReadyCount: Int {
+        terminalAccessKeys.filter { $0.status.lowercased() == "ready" }.count
+    }
+
+    private var terminalAccessCurrentBaseURL: String {
+        if let resolved = terminalAccessKeys
+            .compactMap({ $0.openAICompat?.baseURL.trimmingCharacters(in: .whitespacesAndNewlines) })
+            .first(where: { !$0.isEmpty }) {
+            return resolved
+        }
+        let host = (grpc.xtTerminalInternetHost ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedHost = host.isEmpty ? "127.0.0.1" : host
+        let pairingPort = TerminalAccessKeyHTTPClient.pairingPort(grpcPort: grpc.port)
+        if resolvedHost.contains(":") {
+            return "http://\(resolvedHost)/v1"
+        }
+        return "http://\(resolvedHost):\(pairingPort)/v1"
+    }
+
+    private var terminalAccessSectionSummaryText: String {
+        let blocked = max(0, terminalAccessKeys.count - terminalAccessReadyCount)
+        let baseURL = terminalAccessCurrentBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "keys \(terminalAccessKeys.count) • ready \(terminalAccessReadyCount) • blocked \(blocked) • daily quota \(terminalAccessIntText(terminalAccessOverviewQuotaTotal)) • \(baseURL)"
+    }
+
+    private var terminalAccessOverviewQuotaTotal: Int64 {
+        terminalAccessSortedKeys.reduce(Int64(0)) { partialResult, item in
+            partialResult + terminalAccessQuotaLimit(for: item, deviceStatus: terminalAccessDeviceStatus(for: item))
+        }
+    }
+
+    private var terminalAccessOverviewUsedTotal: Int64 {
+        terminalAccessSortedKeys.reduce(Int64(0)) { partialResult, item in
+            partialResult + terminalAccessQuotaUsed(deviceStatus: terminalAccessDeviceStatus(for: item))
+        }
+    }
+
+    private var terminalAccessOverviewRemainingTotal: Int64 {
+        terminalAccessSortedKeys.reduce(Int64(0)) { partialResult, item in
+            let status = terminalAccessDeviceStatus(for: item)
+            let limit = terminalAccessQuotaLimit(for: item, deviceStatus: status)
+            let used = terminalAccessQuotaUsed(deviceStatus: status)
+            return partialResult + terminalAccessQuotaRemaining(limit: limit, used: used, deviceStatus: status)
+        }
+    }
+
+    private func terminalAccessBadge(title: String, tint: Color) -> some View {
+        Text(title)
+            .font(.caption.monospaced())
+            .foregroundStyle(tint)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(tint.opacity(0.12))
+            .clipShape(Capsule())
+    }
+
+    private func terminalAccessMiniPill(title: String, tint: Color) -> some View {
+        Text(title)
+            .font(.caption2.monospaced())
+            .foregroundStyle(tint)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(tint.opacity(0.10))
+            .clipShape(Capsule())
+    }
+
+    private func terminalAccessOverviewMetric(
+        title: String,
+        value: String,
+        subtitle: String,
+        tint: Color
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.primary)
+                .textSelection(.enabled)
+            Text(subtitle)
+                .font(.caption2)
+                .foregroundStyle(tint)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(Color.white.opacity(0.58))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private var terminalAccessPendingRevokeAccessKey: HubTerminalAccessKey? {
+        terminalAccessKeys.first { $0.accessKeyID == terminalAccessPendingRevokeAccessKeyID }
+    }
+
+    private var terminalAccessRevokeDialogPresented: Binding<Bool> {
+        Binding(
+            get: { !terminalAccessPendingRevokeAccessKeyID.isEmpty },
+            set: { presented in
+                if !presented {
+                    terminalAccessPendingRevokeAccessKeyID = ""
+                }
+            }
+        )
+    }
+
+    private func terminalAccessBaseURL(for accessKey: HubTerminalAccessKey) -> String {
+        accessKey.openAICompat?.baseURL.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private func terminalAccessStatusTint(_ accessKey: HubTerminalAccessKey) -> Color {
+        switch accessKey.status.lowercased() {
+        case "ready":
+            return .green
+        case "revoked":
+            return .red
+        case "expired", "disabled":
+            return .orange
+        default:
+            return .blue
+        }
+    }
+
+    private func terminalAccessStatusIcon(_ accessKey: HubTerminalAccessKey) -> String {
+        switch accessKey.status.lowercased() {
+        case "ready":
+            return "checkmark.shield.fill"
+        case "revoked":
+            return "xmark.shield.fill"
+        case "expired":
+            return "clock.badge.exclamationmark.fill"
+        case "disabled":
+            return "pause.circle.fill"
+        default:
+            return "key.fill"
+        }
+    }
+
+    private func terminalAccessSecretEnvelope(for accessKey: HubTerminalAccessKey) -> HubTerminalAccessKeySecretEnvelope? {
+        guard let lastSecret = terminalAccessLastSecret else { return nil }
+        return lastSecret.accessKey.accessKeyID == accessKey.accessKeyID ? lastSecret : nil
+    }
+
+    private func terminalAccessDeliveryPack(for accessKey: HubTerminalAccessKey) -> HubTerminalAccessDeliveryPack {
+        if let secret = terminalAccessSecretEnvelope(for: accessKey) {
+            return secret.deliveryPack
+        }
+        return accessKey.deliveryPack()
+    }
+
+    private func terminalAccessExampleText(for deliveryPack: HubTerminalAccessDeliveryPack) -> String {
+        switch terminalAccessExampleKind {
+        case .shell:
+            return deliveryPack.shellExports
+        case .python:
+            return deliveryPack.pythonSnippet
+        case .node:
+            return deliveryPack.nodeSnippet
+        case .curl:
+            return deliveryPack.curlCommand
+        }
+    }
+
+    private func terminalAccessDeviceStatus(for accessKey: HubTerminalAccessKey) -> GRPCDeviceStatusEntry? {
+        grpcDevicesStatus.devices.first { row in
+            row.deviceId.trimmingCharacters(in: .whitespacesAndNewlines) == accessKey.deviceID.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
+    private func terminalAccessQuotaLimit(
+        for accessKey: HubTerminalAccessKey,
+        deviceStatus: GRPCDeviceStatusEntry?
+    ) -> Int64 {
+        let snapshotLimit = max(0, deviceStatus?.dailyTokenLimit ?? 0)
+        if snapshotLimit > 0 {
+            return snapshotLimit
+        }
+        return Int64(max(0, accessKey.dailyTokenLimit))
+    }
+
+    private func terminalAccessQuotaUsed(deviceStatus: GRPCDeviceStatusEntry?) -> Int64 {
+        max(0, deviceStatus?.dailyTokenUsed ?? 0)
+    }
+
+    private func terminalAccessQuotaRemaining(
+        limit: Int64,
+        used: Int64,
+        deviceStatus: GRPCDeviceStatusEntry?
+    ) -> Int64 {
+        let explicitRemaining = max(
+            max(0, deviceStatus?.remainingDailyTokenBudget ?? 0),
+            max(0, deviceStatus?.dailyTokenRemaining ?? 0)
+        )
+        if explicitRemaining > 0 || (deviceStatus != nil && used > 0) {
+            return explicitRemaining
+        }
+        if limit <= 0 {
+            return 0
+        }
+        return max(0, limit - used)
+    }
+
+    private func terminalAccessSummaryLine(_ accessKey: HubTerminalAccessKey, quotaLimit: Int64) -> String {
+        let paidModelText = accessKey.paidModelSelectionMode == .off ? "paid off" : "paid on"
+        let webFetchText = accessKey.defaultWebFetchEnabled ? "web.fetch on" : "web.fetch off"
+        let userText = accessKey.userID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "anonymous" : accessKey.userID
+        return [
+            "user \(userText)",
+            "quota \(terminalAccessIntText(quotaLimit))/day",
+            paidModelText,
+            webFetchText,
+            accessKey.tokenRedacted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : accessKey.tokenRedacted,
+        ]
+        .compactMap { $0 }
+        .joined(separator: " • ")
+    }
+
+    private func terminalAccessLiveUsageLine(_ deviceStatus: GRPCDeviceStatusEntry) -> String {
+        let topModel = deviceStatus.topModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let topModelSuffix = topModel.isEmpty ? "" : " • top \(topModel)"
+        return [
+            deviceStatus.connected ? "connected" : "offline",
+            "requests \(deviceStatus.requestsToday)",
+            "blocked \(deviceStatus.blockedToday)",
+            "remaining \(terminalAccessIntText(max(0, deviceStatus.remainingDailyTokenBudget)))",
+        ].joined(separator: " • ") + topModelSuffix
+    }
+
+    private func terminalAccessIntText(_ value: Int64) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.groupingSeparator = ","
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        return formatter.string(from: NSNumber(value: max(0, value))) ?? String(max(0, value))
+    }
+
+    private func terminalAccessIntegerFormatter(minimum: Int, maximum: Int) -> NumberFormatter {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.allowsFloats = false
+        formatter.minimum = NSNumber(value: minimum)
+        formatter.maximum = NSNumber(value: maximum)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        return formatter
+    }
+
+    private func terminalAccessCopyToPasteboard(_ text: String, successText: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(trimmed, forType: .string)
+        terminalAccessErrorText = ""
+        terminalAccessActionText = successText
+    }
+
+    @MainActor
+    private func reloadTerminalAccessKeys(forceMessage: Bool = false) async {
+        if terminalAccessReloadInFlight { return }
+        terminalAccessReloadInFlight = true
+        defer { terminalAccessReloadInFlight = false }
+
+        do {
+            let rows = try await TerminalAccessKeyHTTPClient.list(
+                adminToken: grpc.localAdminToken(),
+                grpcPort: grpc.port
+            )
+            terminalAccessKeys = rows
+            rebuildRemoteQuotaProjectionSnapshot()
+            terminalAccessErrorText = ""
+            if forceMessage {
+                terminalAccessActionText = "已刷新普通 terminal access key 列表。"
+            }
+        } catch {
+            terminalAccessErrorText = error.localizedDescription
+            if forceMessage {
+                terminalAccessActionText = ""
+            }
+        }
+    }
+
+    @MainActor
+    private func issueTerminalAccessKey() async {
+        if terminalAccessMutationInFlight { return }
+        terminalAccessMutationInFlight = true
+        defer { terminalAccessMutationInFlight = false }
+
+        do {
+            let secret = try await TerminalAccessKeyHTTPClient.issue(
+                draft: terminalAccessDraft,
+                adminToken: grpc.localAdminToken(),
+                grpcPort: grpc.port
+            )
+            terminalAccessLastSecret = secret
+            terminalAccessIssueExpanded = false
+            terminalAccessLastSecretExpanded = true
+            terminalAccessErrorText = ""
+            terminalAccessActionText = "已签发 \(secret.accessKey.resolvedName)，已返回普通 terminal 的 URL + API key。"
+            await reloadTerminalAccessKeys(forceMessage: false)
+        } catch {
+            terminalAccessErrorText = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func rotateTerminalAccessKey(_ accessKey: HubTerminalAccessKey) async {
+        if terminalAccessMutationInFlight { return }
+        terminalAccessMutationInFlight = true
+        defer { terminalAccessMutationInFlight = false }
+
+        do {
+            let secret = try await TerminalAccessKeyHTTPClient.rotate(
+                accessKeyID: accessKey.accessKeyID,
+                note: accessKey.note,
+                adminToken: grpc.localAdminToken(),
+                grpcPort: grpc.port
+            )
+            terminalAccessLastSecret = secret
+            terminalAccessLastSecretExpanded = true
+            terminalAccessErrorText = ""
+            terminalAccessActionText = "已轮换 \(secret.accessKey.resolvedName)，新的普通 terminal API key 已返回。"
+            await reloadTerminalAccessKeys(forceMessage: false)
+        } catch {
+            terminalAccessErrorText = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func setTerminalAccessKeyDailyBudget(
+        _ accessKey: HubTerminalAccessKey,
+        dailyTokenLimit: Int
+    ) async {
+        guard accessKey.supportsDirectBudgetAdjustment else {
+            let message = "普通 terminal 预算设定只支持启用新策略档案且未撤销的 access key。"
+            terminalAccessActionText = ""
+            terminalAccessErrorText = message
+            remoteQuotaActionText = ""
+            remoteQuotaErrorText = message
+            return
+        }
+        if terminalAccessMutationInFlight { return }
+
+        let updatedLimit = max(1, dailyTokenLimit)
+
+        terminalAccessMutationInFlight = true
+        defer { terminalAccessMutationInFlight = false }
+
+        do {
+            let updated = try await TerminalAccessKeyHTTPClient.updateDailyBudget(
+                accessKeyID: accessKey.accessKeyID,
+                dailyTokenLimit: updatedLimit,
+                note: accessKey.note,
+                adminToken: grpc.localAdminToken(),
+                grpcPort: grpc.port
+            )
+
+            if let index = terminalAccessKeys.firstIndex(where: { $0.accessKeyID == updated.accessKeyID }) {
+                terminalAccessKeys[index] = updated
+            }
+            if let secret = terminalAccessLastSecret,
+               secret.accessKey.accessKeyID == updated.accessKeyID {
+                terminalAccessLastSecret = HubTerminalAccessKeySecretEnvelope(
+                    clientToken: secret.clientToken,
+                    accessKey: updated
+                )
+            }
+
+            let actionText = "\(updated.resolvedName) 日预算已调整为 \(terminalAccessIntText(Int64(updated.dailyTokenLimit))) tokens。"
+            terminalAccessErrorText = ""
+            terminalAccessActionText = actionText
+            remoteQuotaErrorText = ""
+            remoteQuotaActionText = actionText
+            await reloadTerminalAccessKeys(forceMessage: false)
+        } catch {
+            let message = error.localizedDescription
+            terminalAccessActionText = ""
+            terminalAccessErrorText = message
+            remoteQuotaActionText = ""
+            remoteQuotaErrorText = message
+        }
+    }
+
+    @MainActor
+    private func adjustTerminalAccessKeyDailyBudget(
+        _ accessKey: HubTerminalAccessKey,
+        delta: Int
+    ) async {
+        let currentLimit = max(1, accessKey.dailyTokenLimit)
+        let updatedLimit = max(1, currentLimit + delta)
+        guard updatedLimit != currentLimit else { return }
+        await setTerminalAccessKeyDailyBudget(accessKey, dailyTokenLimit: updatedLimit)
+    }
+
+    private func presentRemoteQuotaBudgetEditor(
+        _ consumer: RemoteQuotaCenterClientProjection
+    ) {
+        guard providerKeyCanQuickAdjustBudget(consumer) else {
+            remoteQuotaActionText = ""
+            remoteQuotaErrorText = "当前消费者还不支持精确设预算。"
+            return
+        }
+        remoteQuotaBudgetEditorTarget = RemoteQuotaBudgetEditorTarget(
+            consumerKind: consumer.consumerKind,
+            referenceID: consumer.referenceID,
+            title: consumer.name,
+            subtitle: providerKeyBudgetClientReferenceSummary(consumer),
+            currentDailyTokenLimit: max(1, Int(consumer.dailyTokenLimit)),
+            todayUsed: consumer.dailyTokenUsed
+        )
+    }
+
+    private func presentRemoteQuotaBudgetEditor(
+        _ accessKey: HubTerminalAccessKey
+    ) {
+        guard accessKey.supportsDirectBudgetAdjustment else {
+            remoteQuotaActionText = ""
+            remoteQuotaErrorText = "当前 terminal access key 还不支持精确设预算。"
+            return
+        }
+        let subtitle = [
+            "key \(accessKey.accessKeyID)",
+            accessKey.userID.isEmpty ? "" : "user \(accessKey.userID)",
+            accessKey.appID.isEmpty ? "" : "app \(accessKey.appID)",
+        ]
+        .filter { !$0.isEmpty }
+        .joined(separator: " • ")
+        remoteQuotaBudgetEditorTarget = RemoteQuotaBudgetEditorTarget(
+            consumerKind: .terminalAccess,
+            referenceID: accessKey.accessKeyID,
+            title: accessKey.resolvedName,
+            subtitle: subtitle,
+            currentDailyTokenLimit: max(1, accessKey.dailyTokenLimit),
+            todayUsed: Int64(max(0, terminalAccessQuotaUsed(deviceStatus: terminalAccessDeviceStatus(for: accessKey))))
+        )
+    }
+
+    private func applyRemoteQuotaBudgetEdit(
+        _ target: RemoteQuotaBudgetEditorTarget,
+        dailyTokenLimit: Int
+    ) {
+        let updatedLimit = max(1, dailyTokenLimit)
+        guard let consumer = remoteQuotaProjection.consumers.first(where: {
+            $0.consumerKind == target.consumerKind && $0.referenceID == target.referenceID
+        }) else {
+            remoteQuotaActionText = ""
+            remoteQuotaErrorText = "目标消费者已刷新，请重新打开预算设置。"
+            return
+        }
+
+        if let client = consumer.grpcClient {
+            grpcSetDailyBudget(client, dailyTokenLimit: updatedLimit)
+            return
+        }
+        guard let accessKey = consumer.terminalAccessKey else {
+            remoteQuotaActionText = ""
+            remoteQuotaErrorText = "当前 terminal access key 无法定位，请刷新后重试。"
+            return
+        }
+        Task { await setTerminalAccessKeyDailyBudget(accessKey, dailyTokenLimit: updatedLimit) }
+    }
+
+    @MainActor
+    private func revokeTerminalAccessKey(_ accessKey: HubTerminalAccessKey) async {
+        if terminalAccessMutationInFlight { return }
+        terminalAccessMutationInFlight = true
+        defer { terminalAccessMutationInFlight = false }
+
+        do {
+            _ = try await TerminalAccessKeyHTTPClient.revoke(
+                accessKeyID: accessKey.accessKeyID,
+                note: "revoked from hub settings",
+                adminToken: grpc.localAdminToken(),
+                grpcPort: grpc.port
+            )
+            if terminalAccessLastSecret?.accessKey.accessKeyID == accessKey.accessKeyID {
+                terminalAccessLastSecret = nil
+                terminalAccessLastSecretExpanded = false
+            }
+            terminalAccessPendingRevokeAccessKeyID = ""
+            terminalAccessErrorText = ""
+            terminalAccessActionText = "已撤销 \(accessKey.resolvedName)。"
+            await reloadTerminalAccessKeys(forceMessage: false)
+        } catch {
+            terminalAccessPendingRevokeAccessKeyID = ""
+            terminalAccessErrorText = error.localizedDescription
         }
     }
 
@@ -1530,6 +6484,118 @@ struct SettingsSheetView: View {
                 }
             }
         }
+    }
+
+    private var rustHubKernelSection: some View {
+        Section("Rust Hub Kernel") {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Label("Local Agent Control Kernel", systemImage: "cpu")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Text(rustHubRuntimeSnapshot.daemonStatusText)
+                        .font(.caption.monospaced())
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(rustHubKernelTint.opacity(0.14))
+                        .clipShape(Capsule())
+                }
+
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 150), spacing: 8)],
+                    alignment: .leading,
+                    spacing: 8
+                ) {
+                    runtimeMonitorMetricCard(
+                        title: "内置包",
+                        value: rustHubRuntimeSnapshot.embeddedStatusText,
+                        detail: rustHubEmbeddedPackageDetail
+                    )
+                    runtimeMonitorMetricCard(
+                        title: "Active root",
+                        value: rustHubRuntimeSnapshot.activeStatusText,
+                        detail: rustHubActivePackageDetail
+                    )
+                    runtimeMonitorMetricCard(
+                        title: "Node root",
+                        value: rustHubRuntimeSnapshot.selectedRootText,
+                        detail: rustHubSelectedPackageDetail
+                    )
+                    runtimeMonitorMetricCard(
+                        title: "Daemon",
+                        value: rustHubRuntimeSnapshot.daemonStatusText,
+                        detail: rustHubRuntimeSnapshot.endpointText
+                    )
+                    runtimeMonitorMetricCard(
+                        title: "Mode",
+                        value: rustHubRuntimeSnapshot.modeText,
+                        detail: "version \(rustHubRuntimeSnapshot.versionText)"
+                    )
+                    runtimeMonitorMetricCard(
+                        title: "Authority",
+                        value: "Shadow",
+                        detail: rustHubRuntimeSnapshot.authoritySummary
+                    )
+                }
+
+                if !rustHubRuntimeSnapshot.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(rustHubRuntimeSnapshot.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                HStack(spacing: 10) {
+                    HubNeutralActionChipButton(
+                        title: rustHubRuntimeRefreshing ? "刷新中" : "刷新",
+                        systemName: "arrow.clockwise",
+                        width: nil,
+                        help: nil
+                    ) {
+                        refreshRustHubRuntimeSnapshot(force: true)
+                    }
+                    Text(rustHubRuntimeSnapshot.updatedAtMs > 0 ? "更新 \(formatEpochMs(rustHubRuntimeSnapshot.updatedAtMs))" : "等待首次刷新")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var rustHubKernelTint: Color {
+        if rustHubRuntimeSnapshot.ready { return .green }
+        if rustHubRuntimeSnapshot.healthOK { return .orange }
+        return rustHubRuntimeSnapshot.embeddedPackage.valid ? .blue : .secondary
+    }
+
+    private var rustHubEmbeddedPackageDetail: String {
+        let package = rustHubRuntimeSnapshot.embeddedPackage
+        if package.valid {
+            let root = package.rootPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            return root.isEmpty ? "Resources/rust-hub" : root
+        }
+        if package.exists {
+            return "缺少 bin/xhubd 或 tools/run_rust_hub.command"
+        }
+        return "当前 App 包内没有 Resources/rust-hub"
+    }
+
+    private var rustHubActivePackageDetail: String {
+        let package = rustHubRuntimeSnapshot.activePackage
+        if package.valid {
+            return package.rootPath
+        }
+        if package.exists {
+            return "缺少 bin/xhubd 或 tools/run_rust_hub.command"
+        }
+        return "~/Library/Application Support/AX/rust-hub/current"
+    }
+
+    private var rustHubSelectedPackageDetail: String {
+        let package = rustHubRuntimeSnapshot.selectedPackage
+        if package.valid {
+            return package.rootPath
+        }
+        return "等待 embedded 或 active root"
     }
 
     private var runtimeMonitorSection: some View {
@@ -4344,15 +9410,38 @@ struct SettingsSheetView: View {
     @ViewBuilder
     private func grpcAllowedClientRow(_ client: HubGRPCClientEntry, status: GRPCDeviceStatusEntry?) -> some View {
         let network = grpcClientNetworkAccessSnapshot(client)
+        let detailBinding = expansionBinding(client.deviceId, in: $expandedGRPCClientDetailIDs)
 
         VStack(alignment: .leading, spacing: 6) {
             grpcAllowedClientRowHeader(client)
             grpcAllowedClientRowPills(client, network: network, status: status)
             grpcAllowedClientRowActions(client, network: network)
-            grpcAllowedClientRowMetadata(client)
-            grpcAllowedClientRowStatus(status)
+            DisclosureGroup(isExpanded: detailBinding) {
+                VStack(alignment: .leading, spacing: 6) {
+                    grpcAllowedClientRowMetadata(client)
+                    grpcAllowedClientRowStatus(status)
+                }
+                .padding(.top, 6)
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("诊断 / 用量 / 安全明细")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(grpcClientDetailSummary(status))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
         }
-        .padding(.vertical, 4)
+        .padding(12)
+        .background(Color.primary.opacity(0.035))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     @ViewBuilder
@@ -5155,6 +10244,41 @@ struct SettingsSheetView: View {
         grpc.upsertClient(updated)
     }
 
+    private func grpcSetDailyBudget(
+        _ client: HubGRPCClientEntry,
+        dailyTokenLimit: Int
+    ) {
+        guard client.policyMode == .newProfile, var profile = client.approvedTrustProfile else {
+            remoteQuotaActionText = ""
+            remoteQuotaErrorText = "预算设定当前只支持已启用新策略档案的 XT。"
+            return
+        }
+
+        let currentLimit = max(1, profile.budgetPolicy.dailyTokenLimit)
+        let updatedLimit = max(1, dailyTokenLimit)
+        guard updatedLimit != currentLimit else { return }
+
+        profile.budgetPolicy = HubPairedTerminalBudgetPolicy(
+            dailyTokenLimit: updatedLimit,
+            singleRequestTokenLimit: max(1, profile.budgetPolicy.singleRequestTokenLimit)
+        )
+
+        var updated = client
+        updated.approvedTrustProfile = profile
+        grpc.upsertClient(updated)
+
+        remoteQuotaErrorText = ""
+        remoteQuotaActionText = "\(client.name.isEmpty ? client.deviceId : client.name) 日预算已调整为 \(terminalAccessIntText(Int64(updatedLimit))) tokens。"
+    }
+
+    private func grpcAdjustDailyBudget(
+        _ client: HubGRPCClientEntry,
+        delta: Int
+    ) {
+        let currentLimit = max(1, client.approvedTrustProfile?.budgetPolicy.dailyTokenLimit ?? 1)
+        grpcSetDailyBudget(client, dailyTokenLimit: currentLimit + delta)
+    }
+
     private func grpcClientStatusSummary(_ st: GRPCDeviceStatusEntry) -> String {
         let ip = st.peerIp.trimmingCharacters(in: .whitespacesAndNewlines)
         let streams = max(0, st.activeEventSubscriptions)
@@ -5516,8 +10640,8 @@ struct SettingsSheetView: View {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(Self.routingTaskTypes, id: \.self) { t in
                     HStack {
-                        Text(t)
-                            .font(.caption.monospaced())
+                        Text(routingTaskTypeLabel(t))
+                            .font(.caption.weight(.medium))
                         Spacer()
                         TextField(HubUIStrings.Settings.Routing.modelIDPlaceholder, text: bindingRoutingModelId(t))
                             .textFieldStyle(.roundedBorder)
@@ -5532,34 +10656,7554 @@ struct SettingsSheetView: View {
         }
     }
 
-    private var remoteModelsSection: some View {
-        Section(HubUIStrings.Settings.RemoteModels.sectionTitle) {
-            HStack {
-                Text(HubUIStrings.Settings.RemoteModels.title)
-                Spacer()
-                Button(
-                    store.remoteKeyHealthScanInFlight
-                        ? HubUIStrings.Settings.RemoteModels.healthCheckingBadge
-                        : HubUIStrings.Settings.RemoteModels.scanAll
-                ) {
-                    store.scanAllRemoteKeyHealth()
+    @ViewBuilder
+    private var modelResourcePoolsSection: some View {
+        let pools = modelResourcePools
+        Section("资源池总览") {
+            VStack(alignment: .leading, spacing: 12) {
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .top, spacing: 12) {
+                        modelResourcePoolsHeadline(pools)
+                        Spacer(minLength: 12)
+                        modelResourcePoolsHeaderControls(pools)
+                    }
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        modelResourcePoolsHeadline(pools)
+                        modelResourcePoolsHeaderControls(pools)
+                    }
                 }
-                .disabled(store.remoteKeyHealthScanInFlight || remoteModels.isEmpty)
-                Button(HubUIStrings.Settings.RemoteModels.importCatalog) { showImportRemoteCatalog = true }
-                Button(HubUIStrings.Settings.RemoteModels.add) { showAddRemoteModel = true }
+
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 320), spacing: 12, alignment: .top)],
+                    alignment: .leading,
+                    spacing: 12
+                ) {
+                    ForEach(pools) { pool in
+                        modelResourcePoolCard(pool)
+                    }
+                }
+
+                Text("第一屏只回答“哪个池子能用、还剩多少、能跑哪些模型”。账号、消费者、物理 key 和配额链路放在下面的高级配额运营里。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private func modelResourcePoolsHeadline(_ pools: [ModelResourcePoolSummary]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("可用模型资源池")
+                .font(.headline)
+            Text(modelResourcePoolsSummaryText(pools))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func modelResourcePoolsHeaderControls(_ pools: [ModelResourcePoolSummary]) -> some View {
+        VStack(alignment: .trailing, spacing: 8) {
+            Text(modelResourcePoolsBadgeText(pools))
+                .font(.caption.monospaced())
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(modelResourcePoolsTint(pools).opacity(0.12))
+                .foregroundStyle(modelResourcePoolsTint(pools))
+                .clipShape(Capsule())
+
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    localModelEntryActions()
+                }
+
+                VStack(alignment: .trailing, spacing: 8) {
+                    localModelEntryActions()
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func localModelEntryActions() -> some View {
+        Button {
+            showDiscoverModels = true
+        } label: {
+            settingsActionChipLabel(title: "发现本地模型", systemName: "magnifyingglass", tint: .indigo)
+        }
+        .buttonStyle(.plain)
+
+        Button {
+            showAddModel = true
+        } label: {
+            settingsActionChipLabel(title: "添加本地模型", systemName: "plus", tint: .green)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func modelResourcePoolCard(_ pool: ModelResourcePoolSummary) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(pool.tint.opacity(0.14))
+                    Image(systemName: pool.systemName)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(pool.tint)
+                }
+                .frame(width: 42, height: 42)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(pool.title)
+                            .font(.headline)
+                        Text(pool.statusText)
+                            .font(.caption2.monospaced())
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(pool.tint.opacity(0.12))
+                            .foregroundStyle(pool.tint)
+                            .clipShape(Capsule())
+                    }
+                    Text(pool.subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 8)
+
+                Text(pool.badgeText)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(pool.tint)
+            }
+
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 118), spacing: 8, alignment: .top)],
+                alignment: .leading,
+                spacing: 8
+            ) {
+                modelResourcePoolMetric(title: "账号", value: pool.accountText, tint: pool.tint)
+                modelResourcePoolMetric(title: "额度", value: pool.quotaText, tint: modelResourcePoolQuotaTint(pool))
+                modelResourcePoolMetric(title: "模型", value: pool.modelText, tint: .indigo)
+            }
+
+            if !pool.usageWindows.isEmpty {
+                VStack(alignment: .leading, spacing: 7) {
+                    ForEach(Array(pool.usageWindows.enumerated()), id: \.offset) { _, window in
+                        modelResourcePoolQuotaRow(window)
+                    }
+                }
+            }
+
+            modelResourcePoolModelChips(pool)
+
+            Text(pool.detailText)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Divider()
+                .opacity(0.35)
+
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    modelResourcePoolActions(pool)
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    modelResourcePoolActions(pool)
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(pool.tint.opacity(0.07))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(pool.tint.opacity(0.20), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func modelResourcePoolMetric(title: String, value: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(tint)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tint.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private func modelResourcePoolQuotaRow(_ window: ProviderKeyUsageWindow) -> some View {
+        let tint = providerKeyUsageWindowTint(window)
+        let percent = providerKeyUsageWindowPercent(window)
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(providerKeyUsageWindowTitle(window))
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(providerKeyUsageWindowPercentText(window))
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(tint)
+            }
+            ProgressView(value: min(1.0, max(0.0, percent / 100.0)))
+                .tint(tint)
+            let resetText = providerKeyUsageWindowResetText(window)
+            if !resetText.isEmpty {
+                Text(resetText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func modelResourcePoolModelChips(_ pool: ModelResourcePoolSummary) -> some View {
+        if pool.models.isEmpty {
+            Text("还没有编入可展示模型")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        } else {
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 92), spacing: 6, alignment: .leading)],
+                alignment: .leading,
+                spacing: 6
+            ) {
+                ForEach(pool.models, id: \.self) { model in
+                    Text(model)
+                        .font(.caption2.weight(.semibold))
+                        .lineLimit(1)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(pool.tint.opacity(0.10))
+                        .foregroundStyle(pool.tint)
+                        .clipShape(Capsule())
+                }
+                if pool.hiddenModelCount > 0 {
+                    Text("+\(pool.hiddenModelCount)")
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(Color.secondary.opacity(0.10))
+                        .foregroundStyle(.secondary)
+                        .clipShape(Capsule())
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func modelResourcePoolActions(_ pool: ModelResourcePoolSummary) -> some View {
+        if pool.kind == .local {
+            Button {
+                modelCatalogDetailsExpanded = true
+                store.scanAllLocalModelHealth()
+            } label: {
+                settingsActionChipLabel(
+                    title: store.localModelHealthScanInFlight ? "扫描中" : "扫描健康",
+                    systemName: "waveform.path.ecg",
+                    tint: .teal,
+                    disabled: store.localModelHealthScanInFlight || localCatalogModels.isEmpty
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(store.localModelHealthScanInFlight || localCatalogModels.isEmpty)
+        } else {
+            Button {
+                reloadProviderKeySnapshot(rebuildProjection: providerQuotaOperationsExpanded)
+            } label: {
+                settingsActionChipLabel(title: "刷新额度", systemName: "arrow.clockwise", tint: .blue)
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                showAddRemoteModel = true
+            } label: {
+                settingsActionChipLabel(title: "添加模型", systemName: "plus", tint: .indigo)
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                focusProviderKeyVendor(pool.vendorKey, displayName: pool.title)
+            } label: {
+                settingsActionChipLabel(title: "管理账号", systemName: "person.badge.key", tint: .orange)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var modelResourcePools: [ModelResourcePoolSummary] {
+        [localModelResourcePool()] + providerModelResourcePools()
+    }
+
+    private func localModelResourcePool() -> ModelResourcePoolSummary {
+        let models = localCatalogModels.sorted { lhs, rhs in
+            if lhs.state != rhs.state {
+                return lhs.state == .loaded
+            }
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
+        let modelNames = modelResourcePoolPreviewModels(
+            models.map { model in
+                let name = model.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                return name.isEmpty ? model.id : name
+            }
+        )
+        let loadedCount = loadedLocalModelCount
+        let statusText: String
+        let tint: Color
+        if localCatalogModelCount == 0 {
+            statusText = "未导入"
+            tint = .secondary
+        } else if loadedCount > 0 {
+            statusText = "Ready"
+            tint = .green
+        } else if localAvailableModelCount > 0 {
+            statusText = "可按需加载"
+            tint = .teal
+        } else if runtimeHeartbeatText != "在线" {
+            statusText = "Runtime 待恢复"
+            tint = .orange
+        } else {
+            statusText = "待预检"
+            tint = .indigo
+        }
+
+        return ModelResourcePoolSummary(
+            id: "local",
+            kind: .local,
+            vendorKey: "local",
+            title: "Local",
+            subtitle: "本地模型池，不消耗付费账号额度，适合摘要、离线任务和低风险默认路由。",
+            statusText: statusText,
+            badgeText: localCatalogModelCount == 0 ? "未配置" : "\(loadedCount)/\(localCatalogModelCount) loaded",
+            systemName: "desktopcomputer",
+            tint: tint,
+            accountText: runtimeHeartbeatText,
+            quotaText: "免付费额度",
+            modelText: localCatalogModelCount == 0 ? "未导入" : "\(localCatalogModelCount) 个模型",
+            detailText: localCatalogModelCount == 0
+                ? "先发现或添加本地模型，Hub 会把可用任务类型、上下文和运行时状态编进资源池。"
+                : "\(localAvailableModelCount) 个预检可用 · \(localPendingModelCount) 个待复核 · \(loadedRuntimeInstanceCount) 个驻留实例",
+            models: modelNames.visible,
+            hiddenModelCount: modelNames.hidden,
+            usageWindows: []
+        )
+    }
+
+    private func providerModelResourcePools() -> [ModelResourcePoolSummary] {
+        let pools = providerKeyDerivedSnapshot.keyPools
+        let groupedPools = Dictionary(grouping: pools) { pool in
+            modelResourcePoolVendorKey(
+                supplierKey: pool.supplierKey,
+                provider: pool.provider
+            )
+        }
+        let supplierKeyByAccountKey = Dictionary(
+            uniqueKeysWithValues: pools.flatMap { pool in
+                pool.members.map { member in
+                    (member.account.accountKey, pool.supplierKey)
+                }
+            }
+        )
+        let groupedAccounts = Dictionary(grouping: providerKeySnapshot.allAccounts) { account in
+            modelResourceAccountVendorKey(account, supplierKeyByAccountKey: supplierKeyByAccountKey)
+        }
+        let groupedRemoteModels = Dictionary(grouping: remoteModels) { model in
+            modelResourceRemoteVendorKey(model)
+        }
+        let vendorKeys = Set(groupedPools.keys)
+            .union(groupedAccounts.keys)
+            .union(groupedRemoteModels.keys)
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0 != "local" }
+
+        return vendorKeys
+            .sorted(by: modelResourcePoolVendorSort(_:_:))
+            .map { vendorKey in
+                providerModelResourcePool(
+                    vendorKey: vendorKey,
+                    pools: groupedPools[vendorKey] ?? [],
+                    accounts: groupedAccounts[vendorKey] ?? [],
+                    remoteModels: groupedRemoteModels[vendorKey] ?? []
+                )
+            }
+    }
+
+    private func providerModelResourcePool(
+        vendorKey: String,
+        pools: [ProviderKeyPoolSnapshot],
+        accounts: [ProviderKeyAccount],
+        remoteModels: [RemoteModelEntry]
+    ) -> ModelResourcePoolSummary {
+        let title = modelResourcePoolDisplayName(vendorKey: vendorKey, pools: pools)
+        let totalAccounts = max(accounts.count, pools.reduce(0) { $0 + $1.totalAccounts })
+        let readyAccounts = pools.isEmpty
+            ? accounts.filter { $0.enabled && $0.errorState.status == "healthy" }.count
+            : pools.reduce(0) { $0 + $1.readyAccounts }
+        let cooldownAccounts = pools.reduce(0) { $0 + $1.cooldownAccounts }
+        let blockedAccounts = pools.reduce(0) { $0 + $1.blockedAccounts }
+        let disabledAccounts = pools.reduce(0) { $0 + $1.disabledAccounts }
+        let usageWindows = modelResourcePoolUsageWindows(accounts: accounts)
+        let allModelNames = modelResourceProviderModelNames(
+            vendorKey: vendorKey,
+            pools: pools,
+            accounts: accounts,
+            remoteModels: remoteModels
+        )
+        let preview = modelResourcePoolPreviewModels(allModelNames)
+        let totalDailyCap = pools.reduce(Int64(0)) { $0 + $1.totalDailyTokenCap }
+        let totalDailyRemaining = pools.reduce(Int64(0)) { $0 + $1.totalDailyTokensRemaining }
+
+        let statusText: String
+        let tint: Color
+        if readyAccounts > 0 {
+            statusText = "Ready"
+            tint = (blockedAccounts > 0 || cooldownAccounts > 0) ? .orange : .green
+        } else if blockedAccounts > 0 {
+            statusText = "阻断"
+            tint = .red
+        } else if cooldownAccounts > 0 {
+            statusText = "冷却"
+            tint = .orange
+        } else if totalAccounts == 0 && !remoteModels.isEmpty {
+            statusText = "待接账号"
+            tint = .orange
+        } else if totalAccounts == 0 {
+            statusText = "未配置"
+            tint = .secondary
+        } else if disabledAccounts >= totalAccounts {
+            statusText = "已禁用"
+            tint = .secondary
+        } else {
+            statusText = "待恢复"
+            tint = .orange
+        }
+
+        let quotaText: String = {
+            if let firstWindow = usageWindows.first {
+                return "\(providerKeyUsageWindowPercentText(firstWindow)) 已用"
+            }
+            if totalDailyCap > 0 {
+                return "剩余 \(HubUIStrings.Settings.ProviderKeys.tokenCount(totalDailyRemaining))"
+            }
+            return totalAccounts > 0 ? "等待刷新" : "无账号"
+        }()
+
+        let detailParts = modelResourceNonEmptyParts([
+            totalAccounts > 0 ? "\(readyAccounts)/\(totalAccounts) 个账号可用" : "",
+            cooldownAccounts > 0 ? "\(cooldownAccounts) 个冷却" : "",
+            blockedAccounts > 0 ? "\(blockedAccounts) 个阻断" : "",
+            remoteModels.isEmpty ? "" : "\(remoteModels.count) 个远端模型已编目",
+            totalDailyCap > 0 ? "daily 剩余 \(HubUIStrings.Settings.ProviderKeys.tokenCount(totalDailyRemaining))" : ""
+        ])
+
+        return ModelResourcePoolSummary(
+            id: "provider::\(vendorKey)",
+            kind: .provider,
+            vendorKey: vendorKey,
+            title: title,
+            subtitle: "厂商账号池，统一承载账号额度、可执行模型和默认路由候选。",
+            statusText: statusText,
+            badgeText: totalAccounts > 0 ? "\(readyAccounts)/\(totalAccounts) ready" : "未接账号",
+            systemName: modelResourcePoolSystemName(vendorKey),
+            tint: tint,
+            accountText: totalAccounts > 0 ? "\(readyAccounts)/\(totalAccounts) 可用" : "未配置",
+            quotaText: quotaText,
+            modelText: allModelNames.isEmpty ? "未编目" : "\(allModelNames.count) 个模型",
+            detailText: detailParts.isEmpty ? "先导入账号或添加远端模型，Hub 才能把这个厂商编入资源池。" : detailParts.joined(separator: " · "),
+            models: preview.visible,
+            hiddenModelCount: preview.hidden,
+            usageWindows: usageWindows
+        )
+    }
+
+    private func modelResourcePoolsSummaryText(_ pools: [ModelResourcePoolSummary]) -> String {
+        let readyCount = pools.filter { $0.statusText == "Ready" || $0.statusText == "可按需加载" }.count
+        let attentionCount = pools.filter { pool in
+            pool.statusText == "阻断" || pool.statusText == "冷却" || pool.statusText == "Runtime 待恢复" || pool.statusText == "待接账号"
+        }.count
+        return "\(pools.count) 个资源池 · \(readyCount) 个可用 · \(attentionCount) 个需要关注"
+    }
+
+    private func modelResourcePoolsBadgeText(_ pools: [ModelResourcePoolSummary]) -> String {
+        let readyCount = pools.filter { $0.statusText == "Ready" || $0.statusText == "可按需加载" }.count
+        return "\(readyCount)/\(pools.count) 可用"
+    }
+
+    private func modelResourcePoolsTint(_ pools: [ModelResourcePoolSummary]) -> Color {
+        if pools.contains(where: { $0.statusText == "阻断" }) {
+            return .red
+        }
+        if pools.contains(where: { $0.statusText == "冷却" || $0.statusText == "Runtime 待恢复" || $0.statusText == "待接账号" }) {
+            return .orange
+        }
+        return .green
+    }
+
+    private func modelResourcePoolQuotaTint(_ pool: ModelResourcePoolSummary) -> Color {
+        if let window = pool.usageWindows.first {
+            return providerKeyUsageWindowTint(window)
+        }
+        return pool.tint
+    }
+
+    private func modelResourcePoolUsageWindows(accounts: [ProviderKeyAccount]) -> [ProviderKeyUsageWindow] {
+        var selected: [Int: ProviderKeyUsageWindow] = [:]
+        for account in accounts where account.enabled {
+            for window in providerKeyDisplayUsageWindows(account) {
+                let rank = providerKeyUsageWindowRank(window)
+                if let existing = selected[rank] {
+                    if modelResourceWindowIsMoreConstrained(window, than: existing) {
+                        selected[rank] = window
+                    }
+                } else {
+                    selected[rank] = window
+                }
+            }
+        }
+        return selected.values.sorted {
+            let lhsRank = providerKeyUsageWindowRank($0)
+            let rhsRank = providerKeyUsageWindowRank($1)
+            if lhsRank != rhsRank { return lhsRank < rhsRank }
+            return $0.limitWindowSeconds < $1.limitWindowSeconds
+        }
+    }
+
+    private func modelResourceWindowIsMoreConstrained(
+        _ lhs: ProviderKeyUsageWindow,
+        than rhs: ProviderKeyUsageWindow
+    ) -> Bool {
+        if lhs.limited != rhs.limited {
+            return lhs.limited
+        }
+        return providerKeyUsageWindowPercent(lhs) > providerKeyUsageWindowPercent(rhs)
+    }
+
+    private func modelResourceProviderModelNames(
+        vendorKey: String,
+        pools: [ProviderKeyPoolSnapshot],
+        accounts: [ProviderKeyAccount],
+        remoteModels: [RemoteModelEntry]
+    ) -> [String] {
+        modelResourceUniqueStrings(
+            remoteModels.map(\.nestedDisplayName)
+                + modelResourceAccountModelNames(vendorKey: vendorKey, accounts: accounts)
+                + pools.flatMap(\.supportedFamilyDisplayNames)
+        )
+    }
+
+    private func modelResourcePoolPreviewModels(_ rawModels: [String]) -> (visible: [String], hidden: Int) {
+        let models = modelResourceUniqueStrings(rawModels)
+            .map(modelResourceCompactModelName(_:))
+        let visible = Array(models.prefix(6))
+        return (visible, max(0, models.count - visible.count))
+    }
+
+    private func modelResourcePoolVendorKey(supplierKey: String, provider: String) -> String {
+        let supplier = supplierKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !supplier.isEmpty {
+            return providerKeyCanonicalVendorKey(supplier)
+        }
+        return providerKeyCanonicalVendorKey(provider)
+    }
+
+    private func modelResourceAccountVendorKey(
+        _ account: ProviderKeyAccount,
+        supplierKeyByAccountKey: [String: String]
+    ) -> String {
+        let supplierKey = supplierKeyByAccountKey[account.accountKey] ?? account.provider
+        return modelResourcePoolVendorKey(supplierKey: supplierKey, provider: account.provider)
+    }
+
+    private func modelResourceRemoteVendorKey(_ model: RemoteModelEntry) -> String {
+        providerKeyCanonicalVendorKey(RemoteProviderEndpoints.canonicalBackend(model.backend))
+    }
+
+    private func modelResourceAccountModelNames(
+        vendorKey: String,
+        accounts: [ProviderKeyAccount]
+    ) -> [String] {
+        let canonicalVendor = providerKeyCanonicalVendorKey(vendorKey)
+        let shouldFilter = modelResourceVendorUsesStrictModelFamilies(canonicalVendor)
+
+        return accounts.flatMap { account in
+            account.models.filter { modelID in
+                guard shouldFilter else { return true }
+                let modelVendor = modelResourceModelVendorKey(modelID)
+                guard !modelVendor.isEmpty else { return true }
+                return providerKeyCanonicalVendorKey(modelVendor) == canonicalVendor
+            }
+        }
+    }
+
+    private func modelResourceVendorUsesStrictModelFamilies(_ vendorKey: String) -> Bool {
+        switch providerKeyCanonicalVendorKey(vendorKey) {
+        case "openai",
+             "claude",
+             "gemini",
+             "deepseek",
+             "qwen",
+             "glm",
+             "kimi",
+             "mistral",
+             "xai":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func modelResourceModelVendorKey(_ rawModelID: String) -> String {
+        let normalized = rawModelID
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !normalized.isEmpty else { return "" }
+        let modelID = normalized
+            .split(separator: "/")
+            .last
+            .map(String.init) ?? normalized
+
+        if modelID.hasPrefix("gpt")
+            || modelID.hasPrefix("o1")
+            || modelID.hasPrefix("o3")
+            || modelID.hasPrefix("o4")
+            || modelID.hasPrefix("chatgpt") {
+            return "openai"
+        }
+        if modelID.hasPrefix("claude") {
+            return "claude"
+        }
+        if modelID.hasPrefix("gemini") {
+            return "gemini"
+        }
+        if modelID.hasPrefix("deepseek") {
+            return "deepseek"
+        }
+        if modelID.hasPrefix("qwen")
+            || modelID.hasPrefix("qwq")
+            || modelID.hasPrefix("qvq")
+            || modelID.hasPrefix("tongyi") {
+            return "qwen"
+        }
+        if modelID.hasPrefix("glm") || modelID.hasPrefix("zhipu") {
+            return "glm"
+        }
+        if modelID.hasPrefix("kimi") || modelID.hasPrefix("moonshot") {
+            return "kimi"
+        }
+        if modelID.hasPrefix("mistral") {
+            return "mistral"
+        }
+        if modelID.hasPrefix("grok") || modelID.hasPrefix("xai") {
+            return "xai"
+        }
+        return ""
+    }
+
+    private func modelResourcePoolDisplayName(
+        vendorKey: String,
+        pools: [ProviderKeyPoolSnapshot]
+    ) -> String {
+        let display = pools
+            .map(\.supplierDisplayName)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+        return display ?? providerKeyVendorDisplayName(vendorKey)
+    }
+
+    private func modelResourcePoolSystemName(_ vendorKey: String) -> String {
+        switch providerKeyCanonicalVendorKey(vendorKey) {
+        case "openai":
+            return "sparkles"
+        case "claude":
+            return "text.bubble.fill"
+        case "gemini":
+            return "diamond.fill"
+        default:
+            return "cloud.fill"
+        }
+    }
+
+    private func modelResourcePoolVendorSort(_ lhs: String, _ rhs: String) -> Bool {
+        let order = ["openai", "claude", "gemini", "kimi"]
+        let lhsIndex = order.firstIndex(of: providerKeyCanonicalVendorKey(lhs)) ?? Int.max
+        let rhsIndex = order.firstIndex(of: providerKeyCanonicalVendorKey(rhs)) ?? Int.max
+        if lhsIndex != rhsIndex {
+            return lhsIndex < rhsIndex
+        }
+        return providerKeyVendorDisplayName(lhs).localizedCaseInsensitiveCompare(providerKeyVendorDisplayName(rhs)) == .orderedAscending
+    }
+
+    private func modelResourceCompactModelName(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > 26 else { return trimmed }
+        return String(trimmed.prefix(24)) + "..."
+    }
+
+    private func modelResourceUniqueStrings(_ values: [String]) -> [String] {
+        var out: [String] = []
+        var seen: Set<String> = []
+        for raw in values {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalized = trimmed.lowercased()
+            guard !trimmed.isEmpty, seen.insert(normalized).inserted else { continue }
+            out.append(trimmed)
+        }
+        return out
+    }
+
+    private func modelResourceNonEmptyParts(_ values: [String]) -> [String] {
+        values
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private var localModelsCapabilitySection: some View {
+        Section("本地模型能力") {
+            settingsOperationsPanelCard(
+                systemName: "internaldrive.fill",
+                title: "本地模型能力",
+                summary: localModelsCapabilitySummaryText,
+                badge: localModelsCapabilityBadgeText,
+                tint: localModelsCapabilityTint
+            ) {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 150), spacing: 10)],
+                    alignment: .leading,
+                    spacing: 10
+                ) {
+                    ForEach(localModelsCapabilityMetrics) { metric in
+                        settingsMetricCard(metric, compact: false)
+                    }
+                }
+
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) {
+                        Button {
+                            store.scanAllLocalModelHealth()
+                        } label: {
+                            settingsActionChipLabel(
+                                title: store.localModelHealthScanInFlight
+                                    ? HubUIStrings.Models.LocalHealth.scanningBadge
+                                    : HubUIStrings.Models.LocalHealth.scanAll,
+                                systemName: "waveform.path.ecg",
+                                tint: .teal,
+                                disabled: store.localModelHealthScanInFlight || localCatalogModels.isEmpty
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(store.localModelHealthScanInFlight || localCatalogModels.isEmpty)
+
+                        Button {
+                            modelStore.refresh()
+                        } label: {
+                            settingsActionChipLabel(
+                                title: "刷新目录",
+                                systemName: "arrow.clockwise",
+                                tint: .indigo,
+                                disabled: false
+                            )
+                        }
+                        .buttonStyle(.plain)
+
+                        Menu {
+                            Button("查看运行时基础设施") {
+                                selectSettingsPage(.runtime)
+                            }
+                            Button("查看任务路由") {
+                                runtimeRoutingExpanded = true
+                                selectSettingsPage(.runtime)
+                            }
+                            Button("自动扫描与保活策略") {
+                                modelsAutoScanExpanded = true
+                            }
+                        } label: {
+                            settingsActionChipLabel(
+                                title: "更多动作",
+                                systemName: "ellipsis.circle",
+                                tint: .secondary
+                            )
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 8) {
+                            Button {
+                                store.scanAllLocalModelHealth()
+                            } label: {
+                                settingsActionChipLabel(
+                                    title: store.localModelHealthScanInFlight
+                                        ? HubUIStrings.Models.LocalHealth.scanningBadge
+                                        : HubUIStrings.Models.LocalHealth.scanAll,
+                                    systemName: "waveform.path.ecg",
+                                    tint: .teal,
+                                    disabled: store.localModelHealthScanInFlight || localCatalogModels.isEmpty
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(store.localModelHealthScanInFlight || localCatalogModels.isEmpty)
+
+                            Button {
+                                modelStore.refresh()
+                            } label: {
+                                settingsActionChipLabel(
+                                    title: "刷新目录",
+                                    systemName: "arrow.clockwise",
+                                    tint: .indigo
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        Menu {
+                            Button("查看运行时基础设施") {
+                                selectSettingsPage(.runtime)
+                            }
+                            Button("查看任务路由") {
+                                runtimeRoutingExpanded = true
+                                selectSettingsPage(.runtime)
+                            }
+                            Button("自动扫描与保活策略") {
+                                modelsAutoScanExpanded = true
+                            }
+                        } label: {
+                            settingsActionChipLabel(
+                                title: "更多动作",
+                                systemName: "ellipsis.circle",
+                                tint: .secondary
+                            )
+                        }
+                    }
+                }
+
+                if let notice = localModelsCapabilityNoticeText {
+                    terminalAccessFeedbackBanner(
+                        text: notice,
+                        tint: localModelsCapabilityNoticeTint,
+                        systemName: localModelsCapabilityNoticeSystemName
+                    )
+                }
+            }
+
+            Text("本地模型页只回答“能不能在 Hub 本地稳定执行”；更底层的 provider 心跳、实例与队列请去“运行时基础设施”。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var remoteModelsSection: some View {
+        Section("付费模型能力") {
+            settingsOperationsPanelCard(
+                systemName: "antenna.radiowaves.left.and.right",
+                title: "付费模型能力",
+                summary: remoteModelsSectionSummaryText,
+                badge: remoteModelsOverviewBadgeText,
+                tint: remoteModelsOverviewTint
+            ) {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 150), spacing: 10)],
+                    alignment: .leading,
+                    spacing: 10
+                ) {
+                    ForEach(remoteModelsOverviewMetrics) { metric in
+                        settingsMetricCard(metric, compact: false)
+                    }
+                }
+
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) {
+                        Button {
+                            showAddRemoteModel = true
+                        } label: {
+                            settingsActionChipLabel(
+                                title: HubUIStrings.Settings.RemoteModels.add,
+                                systemName: "plus",
+                                tint: .indigo
+                            )
+                        }
+                        .buttonStyle(.plain)
+
+                        Button {
+                            store.quickScanAllRemoteKeyHealth()
+                        } label: {
+                            settingsActionChipLabel(
+                                title: store.remoteKeyHealthScanInFlight
+                                    ? HubUIStrings.Settings.RemoteModels.healthCheckingBadge
+                                    : HubUIStrings.Settings.RemoteModels.scanQuick,
+                                systemName: "bolt.badge.clock",
+                                tint: .teal,
+                                disabled: store.remoteKeyHealthScanInFlight || remoteModels.isEmpty
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(store.remoteKeyHealthScanInFlight || remoteModels.isEmpty)
+
+                        Menu {
+                            Button(HubUIStrings.Settings.RemoteModels.importCatalog) {
+                                showImportRemoteCatalog = true
+                            }
+                            Button(HubUIStrings.Settings.RemoteModels.scanFull) {
+                                store.fullScanAllRemoteKeyHealth()
+                            }
+                            .disabled(store.remoteKeyHealthScanInFlight || remoteModels.isEmpty)
+                        } label: {
+                            settingsActionChipLabel(
+                                title: "更多动作",
+                                systemName: "ellipsis.circle",
+                                tint: .secondary
+                            )
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 8) {
+                            Button {
+                                showAddRemoteModel = true
+                            } label: {
+                                settingsActionChipLabel(
+                                    title: HubUIStrings.Settings.RemoteModels.add,
+                                    systemName: "plus",
+                                    tint: .indigo
+                                )
+                            }
+                            .buttonStyle(.plain)
+
+                            Button {
+                                store.quickScanAllRemoteKeyHealth()
+                            } label: {
+                                settingsActionChipLabel(
+                                    title: store.remoteKeyHealthScanInFlight
+                                        ? HubUIStrings.Settings.RemoteModels.healthCheckingBadge
+                                        : HubUIStrings.Settings.RemoteModels.scanQuick,
+                                    systemName: "bolt.badge.clock",
+                                    tint: .teal,
+                                    disabled: store.remoteKeyHealthScanInFlight || remoteModels.isEmpty
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(store.remoteKeyHealthScanInFlight || remoteModels.isEmpty)
+                        }
+
+                        Menu {
+                            Button(HubUIStrings.Settings.RemoteModels.importCatalog) {
+                                showImportRemoteCatalog = true
+                            }
+                            Button(HubUIStrings.Settings.RemoteModels.scanFull) {
+                                store.fullScanAllRemoteKeyHealth()
+                            }
+                            .disabled(store.remoteKeyHealthScanInFlight || remoteModels.isEmpty)
+                        } label: {
+                            settingsActionChipLabel(
+                                title: "更多动作",
+                                systemName: "ellipsis.circle",
+                                tint: .secondary
+                            )
+                        }
+                    }
+                }
+
+                if let notice = remoteModelsAttentionBannerText {
+                    terminalAccessFeedbackBanner(
+                        text: notice,
+                        tint: remoteModelsAttentionBannerTint,
+                        systemName: remoteModelsAttentionBannerSystemName
+                    )
+                }
+            }
+
             if remoteModels.isEmpty {
                 Text(HubUIStrings.Settings.RemoteModels.empty)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(remoteModelGroups) { group in
-                    remoteModelGroupCard(group)
+                settingsCollapsedSectionCard(
+                    title: "付费模型组明细",
+                    summary: "按 provider / key 聚合后的执行明细。展开后可继续加载、卸载、改组名或删除模型组。",
+                    badge: remoteModelCatalogExpanded ? "已展开" : "\(remoteModelGroupCount) 个组",
+                    tint: remoteModelsOverviewTint,
+                    isExpanded: $remoteModelCatalogExpanded
+                )
+                if remoteModelCatalogExpanded {
+                    ForEach(remoteModelGroups) { group in
+                        remoteModelGroupCard(group)
+                    }
                 }
             }
             Text(HubUIStrings.Settings.RemoteModels.syncHint)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    private var providerKeySection: some View {
+        let snapshot = providerKeySectionSnapshot
+        let keyPools = snapshot.keyPools
+        let users = snapshot.users
+        let focusedUser = snapshot.focusedUser
+        let vendorSummaries = snapshot.vendorSummaries
+        let filteredVendors = snapshot.filteredVendors
+        let filteredFamilies = snapshot.filteredFamilies
+        let filteredUsers = snapshot.filteredUsers
+        let filteredConsumers = snapshot.filteredConsumers
+        let focusedVendor = snapshot.focusedVendor
+        let flowChains = snapshot.flowChains
+        let scopeOverview = snapshot.scopeOverview
+        let riskVendorCount = snapshot.riskVendorCount
+        let riskFamilyCount = snapshot.riskFamilyCount
+        let overallTrendCard = snapshot.overallTrendCard
+        let vendorTrendCards = snapshot.vendorTrendCards
+        let familyTrendCards = snapshot.familyTrendCards
+        let userTrendCards = snapshot.userTrendCards
+        let consumerTrendCards = snapshot.consumerTrendCards
+        let operationalTint = snapshot.operationalTint
+        return Section(HubUIStrings.Settings.ProviderKeys.sectionTitle) {
+            HStack {
+                Text(HubUIStrings.Settings.ProviderKeys.title)
+                Spacer()
+                Button(HubUIStrings.Settings.ProviderKeys.refresh) {
+                    reloadProviderKeySnapshot()
+                }
+            }
+
+            if !remoteQuotaActionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                terminalAccessFeedbackBanner(
+                    text: remoteQuotaActionText,
+                    tint: .blue,
+                    systemName: "slider.horizontal.3"
+                )
+            }
+
+            if !remoteQuotaErrorText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                terminalAccessFeedbackBanner(
+                    text: remoteQuotaErrorText,
+                    tint: .red,
+                    systemName: "exclamationmark.triangle"
+                )
+            }
+
+            settingsInlineDisclosureGroup(
+                systemName: "person.badge.key.fill",
+                title: "CLIProxy OAuth",
+                summary: cliproxyOAuthDisclosureSummaryText,
+                badge: providerOAuthExpanded ? "已展开" : cliproxyOAuthStatusBadgeText,
+                tint: cliproxyOAuthOverviewNoticeTint,
+                isExpanded: $providerOAuthExpanded
+            ) {
+                cliproxyOAuthSourceCard
+            }
+
+            if !providerKeySnapshot.importSources.isEmpty {
+                settingsInlineDisclosureGroup(
+                    systemName: "tray.and.arrow.down.fill",
+                    title: "导入源",
+                    summary: providerKeyImportSourcesSummaryText(providerKeySnapshot.importSources),
+                    badge: providerImportSourcesExpanded ? "已展开" : "按需查看",
+                    tint: .teal,
+                    isExpanded: $providerImportSourcesExpanded
+                ) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(providerKeySnapshot.importSources) { source in
+                            providerKeyImportSourceRow(source)
+                        }
+                    }
+                }
+            }
+
+            if keyPools.isEmpty && providerKeySnapshot.importSources.isEmpty {
+                Text(HubUIStrings.Settings.ProviderKeys.empty)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                settingsOperationsPanelCard(
+                    systemName: "shippingbox.and.arrow.forward",
+                    title: "配额运营总览",
+                    summary: providerKeyOperationalSummaryText(
+                        scopeOverview: scopeOverview,
+                        overview: snapshot.overview,
+                        focusedUser: focusedUser,
+                        focusedVendor: focusedVendor
+                    ),
+                    badge: providerKeyOperationalBadgeText(
+                        focusedUser: focusedUser,
+                        focusedVendor: focusedVendor
+                    ),
+                    tint: operationalTint
+                ) {
+                    HStack {
+                        Text(HubUIStrings.Settings.ProviderKeys.globalStrategy)
+                            .font(.caption)
+                        Spacer()
+                        Text(providerKeySnapshot.globalRoutingStrategy)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+
+                    providerKeyOverviewGrid(snapshot.overview, scopeOverview: scopeOverview)
+
+                    providerKeyScopeControlCard(users: users, vendors: vendorSummaries)
+
+                    terminalAccessFeedbackBanner(
+                        text: providerKeyScopeSummary(
+                            focusedUser: focusedUser,
+                            focusedVendor: focusedVendor,
+                            vendors: filteredVendors,
+                            families: filteredFamilies,
+                            users: filteredUsers,
+                            consumers: filteredConsumers
+                        ),
+                        tint: focusedVendor != nil ? .indigo : (focusedUser == nil ? .blue : .teal),
+                        systemName: focusedVendor != nil ? "building.2.crop.circle" : (focusedUser == nil ? "square.grid.2x2" : "person.crop.circle")
+                    )
+
+                    if riskVendorCount > 0 || riskFamilyCount > 0 {
+                        terminalAccessFeedbackBanner(
+                            text: "当前视角下 \(riskVendorCount) 家厂家、\(riskFamilyCount) 个家族存在明显风险，重点看超配、库存缓冲不足或 key 阻塞。",
+                            tint: riskFamilyCount > 0 ? .red : .orange,
+                            systemName: "exclamationmark.octagon"
+                        )
+                    }
+                }
+
+                settingsInlineDisclosureGroup(
+                    systemName: "point.3.connected.trianglepath.dotted",
+                    title: "配额流向地图",
+                    summary: providerFlowExpanded
+                        ? providerKeyFlowSummaryText(
+                            flowChains: flowChains,
+                            focusedUser: focusedUser,
+                            focusedVendor: focusedVendor
+                        )
+                        : "按需展开后再计算厂家 -> 用户 -> consumer 的真实链路。",
+                    badge: providerFlowExpanded
+                        ? "已展开"
+                        : "按需查看",
+                    tint: focusedVendor != nil ? .indigo : (focusedUser != nil ? .teal : .blue),
+                    isExpanded: $providerFlowExpanded
+                ) {
+                    providerKeyFlowSection(
+                        flowChains: flowChains,
+                        focusedUser: focusedUser,
+                        focusedVendor: focusedVendor
+                    )
+                }
+
+                settingsInlineDisclosureGroup(
+                    systemName: "chart.line.uptrend.xyaxis",
+                    title: "近 1 小时趋势",
+                    summary: providerTrendExpanded
+                        ? providerKeyTrendSummaryText(
+                            focusedUser: focusedUser,
+                            focusedVendor: focusedVendor,
+                            overallTrendCard: overallTrendCard,
+                            vendorTrendCards: vendorTrendCards,
+                            familyTrendCards: familyTrendCards,
+                            userTrendCards: userTrendCards,
+                            consumerTrendCards: consumerTrendCards
+                        )
+                        : "按需展开后再生成 5m token 趋势图。",
+                    badge: providerTrendExpanded
+                        ? "已展开"
+                        : "按需查看",
+                    tint: focusedVendor != nil ? .orange : (focusedUser != nil ? .teal : .purple),
+                    isExpanded: $providerTrendExpanded
+                ) {
+                    providerKeyTrendSection(
+                        focusedUser: focusedUser,
+                        focusedVendor: focusedVendor,
+                        overallTrendCard: overallTrendCard,
+                        vendorTrendCards: vendorTrendCards,
+                        familyTrendCards: familyTrendCards,
+                        userTrendCards: userTrendCards,
+                        consumerTrendCards: consumerTrendCards
+                    )
+                }
+
+                if !vendorSummaries.isEmpty {
+                    settingsInlineDisclosureGroup(
+                        systemName: "building.2.crop.circle.fill",
+                        title: "厂家经营总账",
+                        summary: providerKeyVendorLedgerSummaryText(
+                            filteredVendors,
+                            focusedUser: focusedUser,
+                            focusedVendor: focusedVendor
+                        ),
+                        badge: providerVendorLedgerExpanded ? "已展开" : "\(filteredVendors.count)/\(vendorSummaries.count) 厂家",
+                        tint: focusedVendor != nil ? .indigo : .blue,
+                        isExpanded: $providerVendorLedgerExpanded
+                    ) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            providerKeyLedgerSectionHeader(
+                                title: "厂家经营总账",
+                                summary: focusedUser == nil
+                                    ? "按厂家同时看上游库存、下游覆盖预算、今日家族用量和影响用户数。这里回答哪家还能继续发额度，哪家已经快顶住了。"
+                                    : "当前只显示与 \(focusedUser?.displayName ?? "") 相关的厂家。上游库存和 key 健康仍按厂家全局账展示，但覆盖预算与今日家族用量已经按该用户真实重算。"
+                            )
+
+                            Picker("厂家过滤", selection: $remoteQuotaVendorFilter) {
+                                ForEach(RemoteQuotaVendorFilter.allCases) { filter in
+                                    Text(filter.title).tag(filter)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+
+                            Text(
+                                providerKeyVendorFilterSummary(
+                                    filteredVendors,
+                                    totalVendors: vendorSummaries.count,
+                                    focusedUser: focusedUser,
+                                    focusedVendor: focusedVendor
+                                )
+                            )
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+
+                            if filteredVendors.isEmpty {
+                                Text("当前视角下没有匹配的厂家。")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                ForEach(filteredVendors) { vendor in
+                                    self.providerKeyVendorHeatCard(vendor)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if snapshot.totalFamilyCount > 0 {
+                    settingsInlineDisclosureGroup(
+                        systemName: "shippingbox.circle.fill",
+                        title: "库存总账",
+                        summary: providerKeyFamilyLedgerSummaryText(
+                            filteredFamilies,
+                            focusedUser: focusedUser
+                        ),
+                        badge: providerFamilyLedgerExpanded ? "已展开" : "\(filteredFamilies.count)/\(snapshot.totalFamilyCount) 家族",
+                        tint: focusedUser != nil ? .teal : .purple,
+                        isExpanded: $providerFamilyLedgerExpanded
+                    ) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            providerKeyLedgerSectionHeader(
+                                title: "库存总账",
+                                summary: focusedUser == nil
+                                    ? "先按模型家族看上游库存、覆盖预算和今日实际用量。这里回答每家模型现在还剩多少库存。"
+                                    : "当前只显示 \(focusedUser?.displayName ?? "") 可命中的家族。上游库存仍是家族全局池，但覆盖预算与今日用量已经按该用户真实重算。"
+                            )
+
+                            if filteredFamilies.isEmpty {
+                                Text("当前视角下没有匹配的模型家族。")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                ForEach(filteredFamilies) { family in
+                                    providerKeyQuotaFamilyCard(family)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                settingsInlineDisclosureGroup(
+                    systemName: "person.3.sequence.fill",
+                    title: "用户台账",
+                    summary: providerKeyUserLedgerDisclosureSummary(
+                        filteredUsers,
+                        totalUsers: users.count,
+                        focusedUser: focusedUser
+                    ),
+                    badge: providerUserLedgerExpanded ? "已展开" : "\(filteredUsers.count)/\(users.count) 用户",
+                    tint: focusedUser != nil ? .teal : .indigo,
+                    isExpanded: $providerUserLedgerExpanded
+                ) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        providerKeyLedgerSectionHeader(
+                            title: "用户台账",
+                            summary: "这里按 user_id 汇总预算、用量和剩余；如果终端没绑 user_id，会按单个 consumer 单独记账，避免不同终端混账。"
+                        )
+
+                        if users.isEmpty {
+                            Text("当前还没有任何用户获得远端付费模型预算。")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Picker("用户过滤", selection: $remoteQuotaUserFilter) {
+                                ForEach(RemoteQuotaUserFilter.allCases) { filter in
+                                    Text(filter.title).tag(filter)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+
+                            Text(
+                                providerKeyUserFilterSummary(
+                                    filteredUsers,
+                                    totalUsers: users.count,
+                                    focusedUser: focusedUser
+                                )
+                            )
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+
+                            if filteredUsers.isEmpty {
+                                Text("当前视角下没有匹配的用户主体。")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    ForEach(filteredUsers) { user in
+                                        providerKeyBudgetUserRow(user)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                .id(providerKeyUserLedgerAnchorID)
+
+                settingsInlineDisclosureGroup(
+                    systemName: "rectangle.3.group.bubble.left.fill",
+                    title: "统一消费者台账",
+                    summary: providerKeyConsumerLedgerDisclosureSummary(
+                        filteredConsumers,
+                        totalConsumers: snapshot.consumerLedgerTotalCount,
+                        focusedUser: focusedUser
+                    ),
+                    badge: providerConsumerLedgerExpanded
+                        ? "已展开"
+                        : "\(filteredConsumers.count)/\(snapshot.consumerLedgerTotalCount) 消费者",
+                    tint: focusedUser != nil ? .blue : .purple,
+                    isExpanded: $providerConsumerLedgerExpanded
+                ) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        providerKeyLedgerSectionHeader(
+                            title: "统一消费者台账",
+                            summary: "把 XT 和普通 terminal access key 放在同一张账上，看每个用户下面每个 consumer 具体拿了多少预算、用了多少、还剩多少。"
+                        )
+
+                        if snapshot.totalConsumerCount == 0 {
+                            Text("当前还没有任何 XT 或普通 terminal access key 获得远端付费模型预算。")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Picker("消费者过滤", selection: $remoteQuotaConsumerFilter) {
+                                ForEach(RemoteQuotaConsumerFilter.allCases) { filter in
+                                    Text(filter.title).tag(filter)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+
+                            Text(
+                                providerKeyConsumerFilterSummary(
+                                    filteredConsumers,
+                                    totalConsumers: snapshot.consumerLedgerTotalCount,
+                                    focusedUser: focusedUser
+                                )
+                            )
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+
+                            if filteredConsumers.isEmpty {
+                                Text("当前视角下没有匹配的消费者。")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    ForEach(filteredConsumers) { client in
+                                        providerKeyBudgetClientRow(client)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                .id(providerKeyConsumerLedgerAnchorID)
+
+                if keyPools.isEmpty {
+                    Text("当前还没有可路由的 Provider 账号，先修复上面的导入源即可。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else {
+                    settingsInlineDisclosureGroup(
+                        systemName: "key.radiowaves.forward.fill",
+                        title: "物理 Key 池",
+                        summary: providerKeyPhysicalPoolsSummaryText(keyPools),
+                        badge: providerPhysicalPoolsExpanded ? "已展开" : "\(keyPools.count) 个池",
+                        tint: .orange,
+                        isExpanded: $providerPhysicalPoolsExpanded
+                    ) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            providerKeyLedgerSectionHeader(
+                                title: "物理 Key 池",
+                                summary: focusedUser == nil
+                                    ? "当你需要下钻到具体厂商 key 时，在这里看每个池子和每把 key 的健康、额度、冷却与重试。"
+                                    : "物理 Key 池保持全局视角，方便你在按用户观察预算时，仍能直接回到具体厂商 key 排障。"
+                            )
+
+                            ForEach(keyPools) { pool in
+                                providerKeyPoolCard(pool)
+                            }
+                        }
+                    }
+
+                    Text(
+                        "共 \(snapshot.overview.quotaPoolCount) 个额度池 · \(keyPools.count) 个物理池 · \(providerKeyDerivedSnapshot.totalAccounts) 个 key · "
+                            + "\(providerKeyDerivedSnapshot.readyAccounts) 个就绪 · "
+                            + "\(providerKeyDerivedSnapshot.cooldownAccounts) 个冷却 · "
+                            + "\(providerKeyDerivedSnapshot.blockedAccounts) 个阻塞"
+                    )
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .id(providerKeySectionAnchorID)
+    }
+
+    @ViewBuilder
+    private func providerKeyOverviewGrid(
+        _ overview: RemoteQuotaCenterOverview,
+        scopeOverview: ProviderKeyScopeOverview
+    ) -> some View {
+        let upstreamUsage = providerKeyUsageFraction(
+            used: overview.totalDailyTokensUsed,
+            cap: overview.totalDailyTokenCap
+        )
+        let upstreamTint: Color = upstreamUsage >= 0.85 ? .orange : .blue
+        let allocatedTint: Color = scopeOverview.allocatedDailyTokenBudget > 0 ? .purple : .gray
+        let observedTint: Color = scopeOverview.observedConsumerTokensUsed > 0 ? .teal : .gray
+        let downstreamRemaining = max(Int64(0), scopeOverview.allocatedDailyTokenBudget - scopeOverview.observedConsumerTokensUsed)
+        let downstreamRemainingTint: Color = scopeOverview.allocatedDailyTokenBudget > 0
+            ? (downstreamRemaining <= max(Int64(50_000), scopeOverview.allocatedDailyTokenBudget / 10) ? .orange : .green)
+            : .gray
+        let allocationHeadroom = overview.totalDailyTokenCap > 0
+            ? overview.totalDailyTokenCap - scopeOverview.allocatedDailyTokenBudget
+            : 0
+        let riskTint: Color = scopeOverview.oversubscribedFamilyCount > 0
+            ? .red
+            : (overview.blockedKeys > 0 ? .orange : .green)
+        let downstreamRemainingValue: String = {
+            guard scopeOverview.allocatedDailyTokenBudget > 0 else {
+                return scopeOverview.unlimitedBudgetConsumerCount > 0 ? "弹性" : "0"
+            }
+            let base = HubUIStrings.Settings.ProviderKeys.tokenCount(downstreamRemaining)
+            return scopeOverview.unlimitedBudgetConsumerCount > 0 ? "\(base) +" : base
+        }()
+        let unlimitedBudgetSuffix = scopeOverview.unlimitedBudgetConsumerCount > 0
+            ? " · 未设上限 \(scopeOverview.unlimitedBudgetConsumerCount)"
+            : ""
+
+        LazyVGrid(
+            columns: [
+                GridItem(.flexible(minimum: 150), spacing: 8, alignment: .top),
+                GridItem(.flexible(minimum: 150), spacing: 8, alignment: .top),
+                GridItem(.flexible(minimum: 150), spacing: 8, alignment: .top)
+            ],
+            spacing: 8
+        ) {
+            providerKeyOverviewCard(
+                title: "上游剩余库存",
+                value: overview.totalDailyTokenCap > 0
+                    ? HubUIStrings.Settings.ProviderKeys.tokenCount(overview.totalDailyTokensRemaining)
+                    : HubUIStrings.Settings.ProviderKeys.tokenCount(overview.totalDailyTokensUsed),
+                detail: overview.totalDailyTokenCap > 0
+                    ? "今日已用 \(HubUIStrings.Settings.ProviderKeys.tokenCount(overview.totalDailyTokensUsed)) / \(HubUIStrings.Settings.ProviderKeys.tokenCount(overview.totalDailyTokenCap))"
+                    : "尚未拿到统一 cap，已识别额度 \(overview.knownQuotaKeys)/\(overview.totalKeys) 个 key",
+                tint: upstreamTint
+            )
+
+            providerKeyOverviewCard(
+                title: "下游已分配",
+                value: scopeOverview.allocatedDailyTokenBudget > 0
+                    ? HubUIStrings.Settings.ProviderKeys.tokenCount(scopeOverview.allocatedDailyTokenBudget)
+                    : "弹性分配",
+                detail: scopeOverview.allocatedDailyTokenBudget > 0
+                    ? (
+                        {
+                            if let focusedUser = scopeOverview.focusedUser,
+                               let focusedVendor = scopeOverview.focusedVendorDisplayName {
+                                return "\(focusedUser.displayName) 在 \(focusedVendor) 视角下的覆盖预算\(unlimitedBudgetSuffix)"
+                            }
+                            if let focusedVendor = scopeOverview.focusedVendorDisplayName {
+                                return "\(focusedVendor) 相关固定 daily budget 合计\(unlimitedBudgetSuffix)"
+                            }
+                            if let focusedUser = scopeOverview.focusedUser {
+                                return "\(focusedUser.displayName) 当前覆盖预算\(unlimitedBudgetSuffix)"
+                            }
+                            return "当前全局固定 daily budget 合计\(unlimitedBudgetSuffix)"
+                        }()
+                    )
+                    : (scopeOverview.unlimitedBudgetConsumerCount > 0 ? "当前视角主要受上游库存约束" : "当前主要受上游库存约束"),
+                tint: allocatedTint
+            )
+
+            providerKeyOverviewCard(
+                title: "下游今日已用",
+                value: HubUIStrings.Settings.ProviderKeys.tokenCount(scopeOverview.observedConsumerTokensUsed),
+                detail: overview.totalDailyTokensUsed > 0
+                    ? (
+                        {
+                            if let focusedUser = scopeOverview.focusedUser,
+                               let focusedVendor = scopeOverview.focusedVendorDisplayName {
+                                return "\(focusedUser.displayName) 在 \(focusedVendor) 视角下已用，对比上游总账 \(HubUIStrings.Settings.ProviderKeys.tokenCount(overview.totalDailyTokensUsed))"
+                            }
+                            if let focusedVendor = scopeOverview.focusedVendorDisplayName {
+                                return "\(focusedVendor) 相关下游已用，对比上游总账 \(HubUIStrings.Settings.ProviderKeys.tokenCount(overview.totalDailyTokensUsed))"
+                            }
+                            if scopeOverview.focusedUser == nil {
+                                return "上游账本已用 \(HubUIStrings.Settings.ProviderKeys.tokenCount(overview.totalDailyTokensUsed))"
+                            }
+                            return "当前用户已用，对比上游总账 \(HubUIStrings.Settings.ProviderKeys.tokenCount(overview.totalDailyTokensUsed))"
+                        }()
+                    )
+                    : "来自 XT / Terminal 消费者账本",
+                tint: observedTint
+            )
+
+            providerKeyOverviewCard(
+                title: "下游剩余预算",
+                value: downstreamRemainingValue,
+                detail: scopeOverview.allocatedDailyTokenBudget > 0
+                    ? (
+                        scopeOverview.unlimitedBudgetConsumerCount > 0
+                            ? "固定预算剩余 + 弹性额度"
+                            : "按当前视角的已分配预算减去今日已用"
+                    )
+                    : "无固定 hard cap",
+                tint: downstreamRemainingTint
+            )
+
+            providerKeyOverviewCard(
+                title: "覆盖主体",
+                value: "\(scopeOverview.userCount) 用户 / \(scopeOverview.consumerCount) 消费者",
+                detail: "XT \(scopeOverview.xtConsumerCount) · Terminal \(scopeOverview.terminalConsumerCount) · 在线 \(scopeOverview.connectedConsumerCount)",
+                tint: .indigo
+            )
+
+            providerKeyOverviewCard(
+                title: "风险态势",
+                value: overview.totalDailyTokenCap > 0
+                    ? providerKeySignedTokenCount(allocationHeadroom)
+                    : "\(scopeOverview.oversubscribedFamilyCount) 个家族风险",
+                detail: scopeOverview.allocatedDailyTokenBudget > 0
+                    ? "当前视角缓冲 · 超配家族 \(scopeOverview.oversubscribedFamilyCount) · 阻塞 key \(overview.blockedKeys)"
+                    : "家族池 \(overview.quotaPoolCount) · 物理池 \(overview.keyPoolCount) · Ready key \(overview.readyKeys)",
+                tint: riskTint
+            )
+        }
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private func providerKeyScopeControlCard(
+        users: [RemoteQuotaCenterUserProjection],
+        vendors: [ProviderKeyVendorInventorySummary]
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("运营视角")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text("可叠加用户视角和厂家视角。切到某个厂家后，趋势、家族、用户和消费者台账会一起收窄到相关流量；物理 key 池仍保持全局。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                HStack(spacing: 8) {
+                    Picker("用户视角", selection: $remoteQuotaFocusedUserGroupingKey) {
+                        Text("全局用户").tag("")
+                        ForEach(users) { user in
+                            Text(providerKeyFocusUserTitle(user)).tag(user.groupingKey)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .disabled(users.isEmpty)
+
+                    Picker("厂家视角", selection: $remoteQuotaFocusedVendorKey) {
+                        Text("全部厂家").tag("")
+                        ForEach(vendors) { vendor in
+                            Text(providerKeyFocusVendorTitle(vendor))
+                                .tag(providerKeyCanonicalVendorKey(vendor.vendorKey))
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .disabled(vendors.isEmpty)
+                    .onChange(of: remoteQuotaFocusedVendorKey) { newValue in
+                        let normalized = providerKeyCanonicalVendorKey(newValue)
+                        guard !normalized.isEmpty else {
+                            highlightedProviderKeyVendorKey = nil
+                            return
+                        }
+                        highlightedProviderKeyVendorKey = normalized
+                        if let focusedVendor = providerKeyFocusedVendor(vendors) {
+                            expandedProviderKeyVendorIDs.insert(focusedVendor.id)
+                        }
+                    }
+
+                    if !remoteQuotaFocusedUserGroupingKey.isEmpty || providerKeyHasFocusedVendor {
+                        Button("清除视角") {
+                            remoteQuotaFocusedUserGroupingKey = ""
+                            remoteQuotaFocusedVendorKey = ""
+                            highlightedProviderKeyVendorKey = nil
+                        }
+                        .buttonStyle(.borderless)
+                        .font(.caption.weight(.semibold))
+                    }
+                }
+            }
+
+            if providerKeyFocusedUser(users) != nil || providerKeyHasFocusedVendor {
+                HStack(spacing: 8) {
+                    if let focusedUser = providerKeyFocusedUser(users) {
+                        Text("当前用户")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text(providerKeyFocusUserTitle(focusedUser))
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.teal)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.teal.opacity(0.12))
+                            .clipShape(Capsule())
+                    }
+                    if let focusedVendor = providerKeyFocusedVendor(vendors) {
+                        Text("当前厂家")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text(providerKeyFocusVendorTitle(focusedVendor))
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.indigo)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.indigo.opacity(0.12))
+                            .clipShape(Capsule())
+                    } else if providerKeyHasFocusedVendor {
+                        Text("当前厂家")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text(providerKeyVendorDisplayName(providerKeyNormalizedFocusedVendorKey))
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.indigo)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.indigo.opacity(0.12))
+                            .clipShape(Capsule())
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.blue.opacity(0.05))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.blue.opacity(0.14), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func providerKeyOverviewCard(
+        title: String,
+        value: String,
+        detail: String,
+        tint: Color
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Text(value)
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(tint)
+
+            Text(detail)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            tint.opacity(0.14),
+                            tint.opacity(0.05)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(tint.opacity(0.18), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func providerKeyFlowLinkKind(
+        _ consumer: RemoteQuotaCenterClientProjection,
+        vendorFamilyKeys: Set<String>,
+        matchedFamilyCount: Int
+    ) -> ProviderKeyFlowLinkKind {
+        if consumer.allowsAllFamilies {
+            return .elastic
+        }
+        let consumerFamilyKeys = Set(consumer.familyKeys)
+        if matchedFamilyCount > 0 && consumerFamilyKeys.isSubset(of: vendorFamilyKeys) {
+            return .dedicated
+        }
+        return .shared
+    }
+
+    private func providerKeyFlowChains(
+        vendors: [ProviderKeyVendorInventorySummary],
+        users: [RemoteQuotaCenterUserProjection],
+        consumers: [RemoteQuotaCenterClientProjection],
+        focusedVendor: ProviderKeyVendorInventorySummary?
+    ) -> [ProviderKeyFlowChainSummary] {
+        let userByConsumerID = Dictionary(
+            uniqueKeysWithValues: users.flatMap { user in
+                user.consumers.map { consumer in
+                    (consumer.id, user)
+                }
+            }
+        )
+
+        func makeChains(relaxed: Bool) -> [ProviderKeyFlowChainSummary] {
+            var chains: [ProviderKeyFlowChainSummary] = []
+
+            for vendor in vendors {
+                let vendorFamilyKeys = Set(vendor.familyKeys)
+                guard !vendorFamilyKeys.isEmpty else { continue }
+
+                for consumer in consumers {
+                    let matchedFamilyCount: Int = {
+                        if consumer.allowsAllFamilies {
+                            return vendorFamilyKeys.count
+                        }
+                        return Set(consumer.familyKeys).intersection(vendorFamilyKeys).count
+                    }()
+
+                    guard matchedFamilyCount > 0 else { continue }
+                    guard let user = userByConsumerID[consumer.id] else { continue }
+
+                    let linkKind = providerKeyFlowLinkKind(
+                        consumer,
+                        vendorFamilyKeys: vendorFamilyKeys,
+                        matchedFamilyCount: matchedFamilyCount
+                    )
+                    let vendorObservedDailyTokensUsed = providerKeyVendorObservedDailyTokensUsed(
+                        consumer,
+                        familyKeys: vendorFamilyKeys
+                    )
+                    let hasBudgetSignal = consumer.dailyTokenLimit > 0 || user.allocatedDailyTokenBudget > 0
+                    let hasRiskSignal = providerKeyConsumerAtRisk(consumer) || providerKeyUserAtRisk(user)
+                    let shouldInclude: Bool = {
+                        if vendorObservedDailyTokensUsed > 0 { return true }
+                        if hasRiskSignal { return true }
+                        if linkKind == .dedicated && hasBudgetSignal { return true }
+                        if relaxed && hasBudgetSignal { return true }
+                        if relaxed && focusedVendor != nil { return true }
+                        return false
+                    }()
+
+                    guard shouldInclude else { continue }
+
+                    chains.append(
+                        ProviderKeyFlowChainSummary(
+                            vendor: vendor,
+                            user: user,
+                            consumer: consumer,
+                            linkKind: linkKind,
+                            matchedFamilyCount: matchedFamilyCount,
+                            vendorObservedDailyTokensUsed: vendorObservedDailyTokensUsed
+                        )
+                    )
+                }
+            }
+
+            return chains.sorted { lhs, rhs in
+                let leftRisk = providerKeyVendorAtRisk(lhs.vendor)
+                    || providerKeyUserAtRisk(lhs.user)
+                    || providerKeyConsumerAtRisk(lhs.consumer)
+                let rightRisk = providerKeyVendorAtRisk(rhs.vendor)
+                    || providerKeyUserAtRisk(rhs.user)
+                    || providerKeyConsumerAtRisk(rhs.consumer)
+                if leftRisk != rightRisk {
+                    return leftRisk && !rightRisk
+                }
+                if lhs.vendorObservedDailyTokensUsed != rhs.vendorObservedDailyTokensUsed {
+                    return lhs.vendorObservedDailyTokensUsed > rhs.vendorObservedDailyTokensUsed
+                }
+                if lhs.linkKind != rhs.linkKind {
+                    return lhs.linkKind < rhs.linkKind
+                }
+                if lhs.matchedFamilyCount != rhs.matchedFamilyCount {
+                    return lhs.matchedFamilyCount > rhs.matchedFamilyCount
+                }
+                if lhs.vendor.allocationHeadroom != rhs.vendor.allocationHeadroom {
+                    return lhs.vendor.allocationHeadroom < rhs.vendor.allocationHeadroom
+                }
+                if lhs.consumer.dailyTokenLimit != rhs.consumer.dailyTokenLimit {
+                    return lhs.consumer.dailyTokenLimit > rhs.consumer.dailyTokenLimit
+                }
+                return lhs.id.localizedCaseInsensitiveCompare(rhs.id) == .orderedAscending
+            }
+        }
+
+        let preferred = makeChains(relaxed: false)
+        if !preferred.isEmpty {
+            return Array(preferred.prefix(6))
+        }
+        return Array(makeChains(relaxed: true).prefix(6))
+    }
+
+    @ViewBuilder
+    private func providerKeyFlowSection(
+        flowChains: [ProviderKeyFlowChainSummary],
+        focusedUser: RemoteQuotaCenterUserProjection?,
+        focusedVendor: ProviderKeyVendorInventorySummary?
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            providerKeyLedgerSectionHeader(
+                title: "配额流向地图",
+                summary: {
+                    if let focusedVendor, let focusedUser {
+                        return "把 \(focusedVendor.displayName) 的上游库存、\(focusedUser.displayName) 的用户预算，以及它下面的终端 consumer 放在同一张链路图里。"
+                    }
+                    if let focusedVendor {
+                        return "直接看 \(focusedVendor.displayName) 的库存主要流向了哪些用户和终端，便于判断还能继续发给谁。"
+                    }
+                    if let focusedUser {
+                        return "直接看 \(focusedUser.displayName) 当前把预算拆给了哪些 XT / Terminal，以及这些 consumer 主要命中了哪些厂家。"
+                    }
+                    return "把上游厂家库存、下游用户预算和最终 consumer 放在同一张关系图里，回答额度现在流向了谁、谁还剩多少。"
+                }()
+            )
+
+            if flowChains.isEmpty {
+                Text("当前还没有足够清晰的厂家-用户-consumer 链路。先给 XT 或普通 terminal 挂上远端额度，或等产生一点真实用量后这里会更直观。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible(minimum: 280), spacing: 10, alignment: .top),
+                        GridItem(.flexible(minimum: 280), spacing: 10, alignment: .top),
+                    ],
+                    spacing: 10
+                ) {
+                    ForEach(flowChains) { chain in
+                        providerKeyFlowChainCard(chain)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func providerKeyFlowChainCard(
+        _ chain: ProviderKeyFlowChainSummary
+    ) -> some View {
+        let vendorUsageFraction = providerKeyUsageFraction(
+            used: chain.vendor.totalDailyTokensUsed,
+            cap: chain.vendor.totalDailyTokenCap
+        )
+        let vendorTint = providerKeyUsageHeatTint(
+            fraction: vendorUsageFraction,
+            hasBlockingRisk: chain.vendor.blockedAccounts > 0
+        )
+        let userTint = providerKeyUserAtRisk(chain.user) ? Color.orange : providerKeyUserTint(chain.user)
+        let consumerTint = providerKeyConsumerAtRisk(chain.consumer) ? Color.orange : providerKeyConsumerKindColor(chain.consumer.consumerKind)
+
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(chain.vendor.displayName)
+                    .font(.callout.weight(.semibold))
+                    .lineLimit(1)
+
+                Text(chain.linkKind.title)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(chain.linkKind.tint)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(chain.linkKind.tint.opacity(0.12))
+                    .clipShape(Capsule())
+
+                if providerKeyVendorAtRisk(chain.vendor) || providerKeyUserAtRisk(chain.user) || providerKeyConsumerAtRisk(chain.consumer) {
+                    Text("需关注")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Color.orange.opacity(0.12))
+                        .clipShape(Capsule())
+                }
+
+                Spacer(minLength: 6)
+
+                Text("命中已用 \(HubUIStrings.Settings.ProviderKeys.tokenCount(chain.vendorObservedDailyTokensUsed))")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(vendorTint)
+            }
+
+            providerKeyFlowNodeRow(
+                title: "上游厂家",
+                name: chain.vendor.displayName,
+                detail: chain.vendor.totalDailyTokenCap > 0
+                    ? "库存剩余 \(HubUIStrings.Settings.ProviderKeys.tokenCount(chain.vendor.totalDailyTokensRemaining)) / \(HubUIStrings.Settings.ProviderKeys.tokenCount(chain.vendor.totalDailyTokenCap)) · 覆盖预算 \(HubUIStrings.Settings.ProviderKeys.tokenCount(chain.vendor.assignedDailyTokenBudget))"
+                    : "已观测今日已用 \(HubUIStrings.Settings.ProviderKeys.tokenCount(chain.vendor.totalDailyTokensUsed)) · \(chain.vendor.poolCount) 个池 / \(chain.vendor.totalAccounts) 把 key",
+                tint: vendorTint,
+                systemName: "shippingbox.fill"
+            )
+
+            providerKeyFlowArrow(tint: vendorTint)
+
+            providerKeyFlowNodeRow(
+                title: "用户预算",
+                name: chain.user.displayName,
+                detail: "总剩余 \(providerKeyUserRemainingBudgetPreviewText(chain.user)) · 今日已用 \(HubUIStrings.Settings.ProviderKeys.tokenCount(chain.user.observedDailyTokensUsed)) · \(chain.user.consumerCount) 个 consumer",
+                tint: userTint,
+                systemName: chain.user.isStandaloneConsumer ? "person.crop.circle.badge.questionmark" : "person.crop.circle.fill"
+            )
+
+            providerKeyFlowArrow(tint: userTint)
+
+            providerKeyFlowNodeRow(
+                title: chain.consumer.kindTitle,
+                name: chain.consumer.name,
+                detail: chain.consumer.dailyTokenLimit > 0
+                    ? "剩余 \(providerKeyConsumerRemainingBudgetPreviewText(chain.consumer)) · 今日已用 \(HubUIStrings.Settings.ProviderKeys.tokenCount(chain.consumer.dailyTokenUsed)) · 预算 \(HubUIStrings.Settings.ProviderKeys.tokenCount(chain.consumer.dailyTokenLimit))"
+                    : "弹性预算 · 今日已用 \(HubUIStrings.Settings.ProviderKeys.tokenCount(chain.consumer.dailyTokenUsed)) · 主要受上游库存约束",
+                tint: consumerTint,
+                systemName: chain.consumer.isTerminalAccess ? "terminal.fill" : "display.2"
+            )
+
+            HStack(spacing: 6) {
+                providerKeyVendorSpotlightMetric("命中家族 \(chain.matchedFamilyCount) 个", tint: chain.linkKind.tint)
+                providerKeyVendorSpotlightMetric(
+                    chain.consumer.connected ? "在线" : "未在线",
+                    tint: chain.consumer.connected ? .green : .gray
+                )
+                if chain.vendor.hotPoolCount > 0 {
+                    providerKeyVendorSpotlightMetric("\(chain.vendor.hotPoolCount) 个热点池", tint: .orange)
+                }
+            }
+
+            let activitySummary = providerKeyBudgetClientActivitySummary(chain.consumer)
+            if !activitySummary.isEmpty {
+                Text(activitySummary)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: 8) {
+                Button("锁定链路") {
+                    focusProviderKeyVendorUser(chain.user, vendor: chain.vendor)
+                }
+                .buttonStyle(.borderless)
+                .font(.caption.weight(.semibold))
+
+                Button(chain.consumer.managementTitle) {
+                    presentRemoteQuotaConsumerManager(chain.consumer)
+                }
+                .buttonStyle(.borderless)
+                .font(.caption.weight(.semibold))
+
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            vendorTint.opacity(0.14),
+                            chain.linkKind.tint.opacity(0.08),
+                            Color.white.opacity(0.02)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(vendorTint.opacity(0.20), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func providerKeyFlowNodeRow(
+        title: String,
+        name: String,
+        detail: String,
+        tint: Color,
+        systemName: String
+    ) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(tint.opacity(0.12))
+                Image(systemName: systemName)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(tint)
+            }
+            .frame(width: 30, height: 30)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(name)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .background(tint.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func providerKeyFlowArrow(
+        tint: Color
+    ) -> some View {
+        HStack(spacing: 8) {
+            Capsule()
+                .fill(tint.opacity(0.24))
+                .frame(width: 2, height: 10)
+            Image(systemName: "arrow.down")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(tint.opacity(0.8))
+            Capsule()
+                .fill(tint.opacity(0.24))
+                .frame(width: 2, height: 10)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.leading, 14)
+    }
+
+    @ViewBuilder
+    private func providerKeyTrendSection(
+        focusedUser: RemoteQuotaCenterUserProjection?,
+        focusedVendor: ProviderKeyVendorInventorySummary?,
+        overallTrendCard: ProviderKeyTrendCardSummary?,
+        vendorTrendCards: [ProviderKeyTrendCardSummary],
+        familyTrendCards: [ProviderKeyTrendCardSummary],
+        userTrendCards: [ProviderKeyTrendCardSummary],
+        consumerTrendCards: [ProviderKeyTrendCardSummary]
+    ) -> some View {
+        let hasTrendData = overallTrendCard != nil
+            || !vendorTrendCards.isEmpty
+            || !familyTrendCards.isEmpty
+            || !userTrendCards.isEmpty
+            || !consumerTrendCards.isEmpty
+
+        VStack(alignment: .leading, spacing: 10) {
+            providerKeyLedgerSectionHeader(
+                title: "近 1 小时趋势",
+                summary: {
+                    if let focusedVendor, let focusedUser {
+                        return "当前叠加 \(focusedUser.displayName) + \(focusedVendor.displayName) 视角，趋势只看这个用户最近把压力打到这家厂商的哪些家族与 consumer。"
+                    }
+                    if let focusedVendor {
+                        return "当前锁定 \(focusedVendor.displayName) 厂家视角。家族 / 用户曲线会围绕这家厂商相关 family 估算，方便判断它是否还能继续发额度。"
+                    }
+                    if let focusedUser {
+                        return "当前按 \(focusedUser.displayName) 视角观察最近 1 小时走势。家族曲线按今日 family 命中占比估算，方便你看到这个用户最近把压力打到了哪些池。"
+                    }
+                    return "每 5 分钟一个桶，看最近 1 小时的远端消费压力。厂家 / 家族曲线会按今日 family 命中占比估算，用来判断热度变化，不当作结算账。"
+                }()
+            )
+
+            if !hasTrendData {
+                Text("当前还没有足够的 5m token series 数据，等 XT 或 Terminal 连上并产生远端流量后，这里会开始出趋势。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                if let overallTrendCard {
+                    providerKeyTrendCard(overallTrendCard, prominent: true)
+                }
+
+                if let focusedVendor {
+                    providerKeyTrendGroup(
+                        title: "热点家族",
+                        summary: "看 \(focusedVendor.displayName) 下面哪些模型家族最近正在升温。",
+                        cards: familyTrendCards
+                    )
+                    if focusedUser == nil {
+                        providerKeyTrendGroup(
+                            title: "热点用户",
+                            summary: "看最近 1 小时谁持续命中 \(focusedVendor.displayName)，方便回到用户台账继续调配。",
+                            cards: userTrendCards
+                        )
+                    } else {
+                        providerKeyTrendGroup(
+                            title: "热点 Consumer",
+                            summary: "直接看该用户下面哪台 XT / 哪个 Terminal 最近正在吃 \(focusedVendor.displayName) 的额度。",
+                            cards: consumerTrendCards
+                        )
+                    }
+                } else if focusedUser == nil {
+                    providerKeyTrendGroup(
+                        title: "热点厂家",
+                        summary: "按近 15 分钟热度排序，优先看哪家正在快速升温。",
+                        cards: vendorTrendCards
+                    )
+                    providerKeyTrendGroup(
+                        title: "热点用户",
+                        summary: "看最近 1 小时内谁在持续消耗预算，方便回到用户台账继续调配。",
+                        cards: userTrendCards
+                    )
+                } else {
+                    providerKeyTrendGroup(
+                        title: "热点家族",
+                        summary: "看这个用户最近 1 小时把负载压到了哪些模型家族。",
+                        cards: familyTrendCards
+                    )
+                    providerKeyTrendGroup(
+                        title: "热点 Consumer",
+                        summary: "直接看该用户下面哪台 XT / 哪个 Terminal 最近正在吃额度。",
+                        cards: consumerTrendCards
+                    )
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func providerKeyTrendGroup(
+        title: String,
+        summary: String,
+        cards: [ProviderKeyTrendCardSummary]
+    ) -> some View {
+        if !cards.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                providerKeyLedgerSectionHeader(title: title, summary: summary)
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible(minimum: 220), spacing: 10, alignment: .top),
+                        GridItem(.flexible(minimum: 220), spacing: 10, alignment: .top),
+                    ],
+                    spacing: 10
+                ) {
+                    ForEach(Array(cards.prefix(4))) { card in
+                        providerKeyTrendCard(card, prominent: false)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func providerKeyTrendCard(
+        _ card: ProviderKeyTrendCardSummary,
+        prominent: Bool
+    ) -> some View {
+        let momentumText = providerKeyTrendMomentumText(card.aggregate)
+        let momentumColor = providerKeyTrendMomentumColor(card.aggregate)
+
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(card.tint.opacity(0.12))
+                    Image(systemName: card.systemName)
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(card.tint)
+                }
+                .frame(width: 34, height: 34)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(card.title)
+                            .font(prominent ? .callout.weight(.semibold) : .caption.weight(.semibold))
+                            .lineLimit(1)
+
+                        if card.aggregate.estimatedConsumerCount > 0 {
+                            Text("估算")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.orange)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(Color.orange.opacity(0.12))
+                                .clipShape(Capsule())
+                        }
+                    }
+
+                    Text(card.subtitle)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 8)
+
+                Text(providerKeyTrendWindowSummary(card.aggregate))
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(Color.secondary.opacity(0.1))
+                    .clipShape(Capsule())
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                TokenSparkline(
+                    points: card.aggregate.points,
+                    strokeColor: card.tint,
+                    lineWidth: prominent ? 2.2 : 1.8
+                )
+                .frame(height: prominent ? 42 : 30)
+                .padding(.horizontal, 2)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(card.tint.opacity(0.08))
+                )
+
+                HStack(spacing: 8) {
+                    providerKeyLedgerMetricTile(
+                        title: "近 15m",
+                        value: HubUIStrings.Settings.ProviderKeys.tokenCount(card.aggregate.recentTokens15m),
+                        detail: "\(card.aggregate.contributingConsumerCount) 个活跃 consumer",
+                        tint: card.tint
+                    )
+                    providerKeyLedgerMetricTile(
+                        title: "1h 累计",
+                        value: HubUIStrings.Settings.ProviderKeys.tokenCount(card.aggregate.totalTokens1h),
+                        detail: "最近 1 小时总用量",
+                        tint: .teal
+                    )
+                    providerKeyLedgerMetricTile(
+                        title: "峰值 / 5m",
+                        value: HubUIStrings.Settings.ProviderKeys.tokenCount(card.aggregate.peakBucketTokens),
+                        detail: "单桶最高负载",
+                        tint: .orange
+                    )
+                }
+            }
+
+            Text(momentumText)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(momentumColor)
+
+            if !card.footnote.isEmpty {
+                Text(card.footnote)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(prominent ? 12 : 11)
+        .background(card.tint.opacity(prominent ? 0.09 : 0.07))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(card.tint.opacity(0.18), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func providerKeyScopeOverview(
+        focusedUser: RemoteQuotaCenterUserProjection?,
+        focusedVendorDisplayName: String?,
+        scopedUsers: [RemoteQuotaCenterUserProjection],
+        scopedConsumers: [RemoteQuotaCenterClientProjection],
+        families: [ProviderKeyFamilyInventorySummary]
+    ) -> ProviderKeyScopeOverview {
+        ProviderKeyScopeOverview(
+            focusedUser: focusedUser,
+            focusedVendorDisplayName: focusedVendorDisplayName,
+            userCount: scopedUsers.count,
+            consumerCount: scopedConsumers.count,
+            connectedConsumerCount: scopedConsumers.filter(\.connected).count,
+            xtConsumerCount: scopedConsumers.filter { $0.consumerKind == .pairedXT }.count,
+            terminalConsumerCount: scopedConsumers.filter { $0.consumerKind == .terminalAccess }.count,
+            allocatedDailyTokenBudget: scopedConsumers.reduce(Int64(0)) { $0 + max(Int64(0), $1.dailyTokenLimit) },
+            unlimitedBudgetConsumerCount: scopedConsumers.filter { $0.dailyTokenLimit <= 0 }.count,
+            observedConsumerTokensUsed: scopedConsumers.reduce(Int64(0)) { $0 + max(Int64(0), $1.dailyTokenUsed) },
+            oversubscribedFamilyCount: families.filter(\.isOversubscribed).count
+        )
+    }
+
+    private func providerKeyFamilyInventorySummaries(
+        _ projection: RemoteQuotaCenterProjection,
+        scopedUsers: [RemoteQuotaCenterUserProjection],
+        scopedConsumers: [RemoteQuotaCenterClientProjection],
+        focusedVendorFamilyKeys: Set<String>
+    ) -> [ProviderKeyFamilyInventorySummary] {
+        let scopedConsumerIDs = Set(scopedConsumers.map(\.id))
+        let focusedUser = providerKeyFocusedUser(projection.users)
+        let summaries = projection.families.map { family in
+            let assignedConsumers = focusedUser == nil
+                ? family.assignedConsumers
+                : family.assignedConsumers.filter { scopedConsumerIDs.contains($0.id) }
+            let assignedConsumerIDs = Set(assignedConsumers.map(\.id))
+            let coveredUserCount = scopedUsers.filter { user in
+                user.consumers.contains(where: { assignedConsumerIDs.contains($0.id) })
+            }.count
+            let observedDailyTokensUsed = scopedConsumers.reduce(Int64(0)) { partial, consumer in
+                partial + consumer.observedDailyTokens(for: family.familyKey)
+            }
+            return ProviderKeyFamilyInventorySummary(
+                familyProjection: family,
+                coveredUserCount: coveredUserCount,
+                assignedConsumers: assignedConsumers,
+                assignedDailyTokenBudget: assignedConsumers.reduce(Int64(0)) { partial, consumer in
+                    partial + max(Int64(0), consumer.dailyTokenLimit)
+                },
+                unlimitedBudgetConsumerCount: assignedConsumers.filter { $0.dailyTokenLimit <= 0 }.count,
+                connectedAssignedConsumerCount: assignedConsumers.filter(\.connected).count,
+                observedDailyTokensUsed: observedDailyTokensUsed
+            )
+        }
+
+        let visibleSummaries: [ProviderKeyFamilyInventorySummary]
+        if providerKeyHasFocusedVendor {
+            visibleSummaries = summaries.filter { summary in
+                focusedVendorFamilyKeys.contains(summary.familyKey)
+                    && (!summary.assignedConsumers.isEmpty || summary.observedDailyTokensUsed > 0 || focusedUser == nil)
+            }
+        } else if focusedUser != nil {
+            visibleSummaries = summaries.filter { !$0.assignedConsumers.isEmpty || $0.observedDailyTokensUsed > 0 }
+        } else {
+            visibleSummaries = summaries
+        }
+
+        return visibleSummaries.sorted(by: providerKeySortFamilyInventorySummary(_:_:))
+    }
+
+    private func providerKeyOverallTrendCard(
+        scopeOverview: ProviderKeyScopeOverview,
+        consumers: [RemoteQuotaCenterClientProjection],
+        focusedVendor: ProviderKeyVendorInventorySummary?
+    ) -> ProviderKeyTrendCardSummary? {
+        if let focusedVendor {
+            guard let aggregate = RemoteQuotaTrendSupport.aggregateEstimatedFamilyTrend(
+                consumers: consumers,
+                familyKeys: Set(focusedVendor.familyKeys)
+            ) else {
+                return nil
+            }
+
+            let title = scopeOverview.focusedUser == nil
+                ? "\(focusedVendor.displayName) 下游趋势"
+                : "\(scopeOverview.focusedUser?.displayName ?? "") · \(focusedVendor.displayName)"
+            let subtitle = scopeOverview.focusedUser == nil
+                ? "最近 1 小时命中该厂家家族的下游用量"
+                : "当前用户最近 1 小时命中该厂家家族的用量"
+            let footnote = aggregate.estimatedConsumerCount > 0
+                ? "其中 \(aggregate.estimatedConsumerCount) 个 multi-family consumer 按今日家族命中占比估算，只用于判断 \(focusedVendor.displayName) 的热度变化。"
+                : "这张总曲线只看 \(focusedVendor.displayName) 相关家族，便于判断这家现在是否还能继续发额度。"
+
+            return ProviderKeyTrendCardSummary(
+                id: "overall.vendor.\(focusedVendor.id)",
+                title: title,
+                subtitle: subtitle,
+                footnote: footnote,
+                systemName: scopeOverview.focusedUser == nil ? "building.2.crop.circle.fill" : "person.crop.circle.badge.clock",
+                tint: providerKeyVendorAtRisk(focusedVendor) ? .orange : .indigo,
+                aggregate: aggregate
+            )
+        }
+
+        guard let aggregate = RemoteQuotaTrendSupport.aggregateConsumers(consumers) else {
+            return nil
+        }
+
+        let title = scopeOverview.focusedUser == nil
+            ? "全局下游趋势"
+            : "\(scopeOverview.focusedUser?.displayName ?? "") 用量趋势"
+        let subtitle = scopeOverview.focusedUser == nil
+            ? "全部 XT / Terminal 最近 1 小时远端用量"
+            : "当前用户相关 XT / Terminal 最近 1 小时远端用量"
+        let footnote = scopeOverview.focusedUser == nil
+            ? "这张总曲线只看下游消费者的真实 5m usage 桶，便于判断全局发额度的节奏。"
+            : "先看这个用户整体是否在放量，再往下看家族和具体 consumer。"
+
+        return ProviderKeyTrendCardSummary(
+            id: "overall",
+            title: title,
+            subtitle: subtitle,
+            footnote: footnote,
+            systemName: scopeOverview.focusedUser == nil ? "waveform.path.ecg" : "person.crop.circle.badge.clock",
+            tint: scopeOverview.focusedUser == nil ? .indigo : .teal,
+            aggregate: aggregate
+        )
+    }
+
+    private func providerKeyVendorTrendCards(
+        _ vendors: [ProviderKeyVendorInventorySummary],
+        scopedConsumers: [RemoteQuotaCenterClientProjection],
+        focusedVendor: ProviderKeyVendorInventorySummary?
+    ) -> [ProviderKeyTrendCardSummary] {
+        guard focusedVendor == nil else { return [] }
+        return vendors.compactMap { vendor in
+            guard let aggregate = RemoteQuotaTrendSupport.aggregateEstimatedFamilyTrend(
+                consumers: scopedConsumers,
+                familyKeys: Set(vendor.familyKeys)
+            ) else {
+                return nil
+            }
+
+            let budgetSummary = vendor.assignedDailyTokenBudget > 0
+                ? "覆盖预算 \(HubUIStrings.Settings.ProviderKeys.tokenCount(vendor.assignedDailyTokenBudget))"
+                : (vendor.coveredUnlimitedConsumerCount > 0 ? "含弹性 consumer \(vendor.coveredUnlimitedConsumerCount)" : "当前无固定预算")
+            let footnote = aggregate.estimatedConsumerCount > 0
+                ? "其中 \(aggregate.estimatedConsumerCount) 个 multi-family consumer 按今日家族命中占比分摊到厂家，只用于判断热度变化。"
+                : "全部来自该厂家相关 consumer 的真实 5m usage 桶。"
+
+            return ProviderKeyTrendCardSummary(
+                id: "vendor:\(vendor.id)",
+                title: vendor.displayName,
+                subtitle: "\(vendor.coveredUserCount) 用户 / \(vendor.coveredConsumerCount) consumer · \(budgetSummary)",
+                footnote: footnote,
+                systemName: "building.2.crop.circle",
+                tint: providerKeyVendorAtRisk(vendor) ? .orange : .indigo,
+                aggregate: aggregate
+            )
+        }
+        .sorted(by: providerKeySortTrendCardSummary(_:_:))
+    }
+
+    private func providerKeyFamilyTrendCards(
+        _ families: [ProviderKeyFamilyInventorySummary]
+    ) -> [ProviderKeyTrendCardSummary] {
+        return families.compactMap { family in
+            guard let aggregate = RemoteQuotaTrendSupport.aggregateEstimatedFamilyTrend(
+                consumers: family.assignedConsumers,
+                familyKeys: [family.familyKey]
+            ) else {
+                return nil
+            }
+
+            let budgetSummary = family.assignedDailyTokenBudget > 0
+                ? "覆盖预算 \(HubUIStrings.Settings.ProviderKeys.tokenCount(family.assignedDailyTokenBudget))"
+                : (family.unlimitedBudgetConsumerCount > 0 ? "含弹性 consumer \(family.unlimitedBudgetConsumerCount)" : "当前无固定预算")
+            let footnote = aggregate.estimatedConsumerCount > 0
+                ? "其中 \(aggregate.estimatedConsumerCount) 个 multi-family consumer 按今日家族命中占比估算，适合用来看池子升温。"
+                : "全部来自这个家族相关 consumer 的真实 5m usage 桶。"
+
+            return ProviderKeyTrendCardSummary(
+                id: "family:\(family.id)",
+                title: family.displayName,
+                subtitle: "\(family.coveredUserCount) 用户 / \(family.assignedClientCount) consumer · \(budgetSummary)",
+                footnote: footnote,
+                systemName: "square.stack.3d.up.fill",
+                tint: providerKeyPoolStateColor(family.quotaPool.state),
+                aggregate: aggregate
+            )
+        }
+        .sorted(by: providerKeySortTrendCardSummary(_:_:))
+    }
+
+    private func providerKeyUserTrendCards(
+        _ users: [RemoteQuotaCenterUserProjection],
+        focusedVendor: ProviderKeyVendorInventorySummary?
+    ) -> [ProviderKeyTrendCardSummary] {
+        return users.compactMap { user -> ProviderKeyTrendCardSummary? in
+            let focusedVendorName = focusedVendor?.displayName ?? ""
+            let aggregate: RemoteQuotaTrendAggregate?
+            if let focusedVendor {
+                aggregate = RemoteQuotaTrendSupport.aggregateEstimatedFamilyTrend(
+                    consumers: user.consumers,
+                    familyKeys: Set(focusedVendor.familyKeys)
+                )
+            } else {
+                aggregate = RemoteQuotaTrendSupport.aggregateConsumers(user.consumers)
+            }
+
+            guard let aggregate else {
+                return nil
+            }
+
+            let remainingText: String = {
+                if user.allocatedDailyTokenBudget > 0 {
+                    let base = HubUIStrings.Settings.ProviderKeys.tokenCount(max(Int64(0), user.remainingDailyTokenBudget))
+                    return user.hasUnlimitedBudget ? "\(base) +" : base
+                }
+                return user.hasUnlimitedBudget ? "弹性" : "0"
+            }()
+
+            return ProviderKeyTrendCardSummary(
+                id: "user:\(user.id)",
+                title: user.displayName,
+                subtitle: focusedVendor == nil
+                    ? "\(user.consumerCount) consumer · 剩余 \(remainingText)"
+                    : "\(user.consumerCount) consumer · \(focusedVendorName) 相关剩余 \(remainingText)",
+                footnote: focusedVendor == nil
+                    ? providerKeyBudgetUserScopeSummary(user)
+                    : providerKeyBudgetUserScopeSummary(user) + " · 趋势仅统计 \(focusedVendorName) 相关家族",
+                systemName: user.isStandaloneConsumer ? "person.crop.circle.badge.questionmark" : "person.crop.circle",
+                tint: providerKeyUserAtRisk(user) ? .orange : providerKeyUserTint(user),
+                aggregate: aggregate
+            )
+        }
+        .sorted(by: providerKeySortTrendCardSummary(_:_:))
+    }
+
+    private func providerKeyConsumerTrendCards(
+        _ consumers: [RemoteQuotaCenterClientProjection],
+        focusedVendor: ProviderKeyVendorInventorySummary?
+    ) -> [ProviderKeyTrendCardSummary] {
+        return consumers.compactMap { consumer -> ProviderKeyTrendCardSummary? in
+            let focusedVendorName = focusedVendor?.displayName ?? ""
+            let aggregate: RemoteQuotaTrendAggregate?
+            if let focusedVendor {
+                aggregate = RemoteQuotaTrendSupport.aggregateEstimatedFamilyTrend(
+                    consumers: [consumer],
+                    familyKeys: Set(focusedVendor.familyKeys)
+                )
+            } else {
+                aggregate = RemoteQuotaTrendSupport.aggregateConsumers([consumer])
+            }
+
+            guard let aggregate else {
+                return nil
+            }
+
+            let budgetText = consumer.dailyTokenLimit > 0
+                ? "预算 \(HubUIStrings.Settings.ProviderKeys.tokenCount(consumer.dailyTokenLimit))"
+                : "弹性预算"
+            let familyText = consumer.familyDisplayNames.isEmpty
+                ? "当前未解析到家族"
+                : "家族 \(providerKeyPreviewList(consumer.familyDisplayNames))"
+
+            return ProviderKeyTrendCardSummary(
+                id: "consumer:\(consumer.id)",
+                title: consumer.name,
+                subtitle: focusedVendor == nil
+                    ? "\(consumer.kindTitle) · \(budgetText)"
+                    : "\(consumer.kindTitle) · \(focusedVendorName) 相关 · \(budgetText)",
+                footnote: focusedVendor == nil
+                    ? "\(familyText) · \(providerKeyBudgetClientReferenceSummary(consumer))"
+                    : "\(familyText) · \(providerKeyBudgetClientReferenceSummary(consumer)) · 仅统计 \(focusedVendorName) 命中",
+                systemName: consumer.isTerminalAccess ? "terminal.fill" : "display.2",
+                tint: providerKeyConsumerAtRisk(consumer) ? .orange : providerKeyConsumerKindColor(consumer.consumerKind),
+                aggregate: aggregate
+            )
+        }
+        .sorted(by: providerKeySortTrendCardSummary(_:_:))
+    }
+
+    private func providerKeySortTrendCardSummary(
+        _ lhs: ProviderKeyTrendCardSummary,
+        _ rhs: ProviderKeyTrendCardSummary
+    ) -> Bool {
+        let leftRecent = lhs.aggregate.recentTokens15m
+        let rightRecent = rhs.aggregate.recentTokens15m
+        if leftRecent != rightRecent {
+            return leftRecent > rightRecent
+        }
+        if lhs.aggregate.totalTokens1h != rhs.aggregate.totalTokens1h {
+            return lhs.aggregate.totalTokens1h > rhs.aggregate.totalTokens1h
+        }
+        if lhs.aggregate.peakBucketTokens != rhs.aggregate.peakBucketTokens {
+            return lhs.aggregate.peakBucketTokens > rhs.aggregate.peakBucketTokens
+        }
+        return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+    }
+
+    private func providerKeyVendorObservedDailyTokensUsed(
+        _ consumer: RemoteQuotaCenterClientProjection,
+        familyKeys: Set<String>
+    ) -> Int64 {
+        guard !familyKeys.isEmpty else { return 0 }
+        return familyKeys.reduce(Int64(0)) { partial, familyKey in
+            partial + max(Int64(0), consumer.observedDailyTokens(for: familyKey))
+        }
+    }
+
+    private func providerKeyVendorObservedDailyTokensUsed(
+        _ user: RemoteQuotaCenterUserProjection,
+        familyKeys: Set<String>
+    ) -> Int64 {
+        user.consumers.reduce(Int64(0)) { partial, consumer in
+            partial + providerKeyVendorObservedDailyTokensUsed(consumer, familyKeys: familyKeys)
+        }
+    }
+
+    private func providerKeyVendorSpotlightUsers(
+        _ users: [RemoteQuotaCenterUserProjection],
+        familyKeys: Set<String>
+    ) -> [ProviderKeyVendorUserSpotlight] {
+        let spotlight = users.map { user in
+            ProviderKeyVendorUserSpotlight(
+                user: user,
+                vendorObservedDailyTokensUsed: providerKeyVendorObservedDailyTokensUsed(
+                    user,
+                    familyKeys: familyKeys
+                )
+            )
+        }
+        let sorted = spotlight.sorted { lhs, rhs in
+            let leftRisk = providerKeyUserAtRisk(lhs.user)
+            let rightRisk = providerKeyUserAtRisk(rhs.user)
+            if leftRisk != rightRisk {
+                return leftRisk && !rightRisk
+            }
+            if lhs.vendorObservedDailyTokensUsed != rhs.vendorObservedDailyTokensUsed {
+                return lhs.vendorObservedDailyTokensUsed > rhs.vendorObservedDailyTokensUsed
+            }
+            if lhs.user.allocatedDailyTokenBudget != rhs.user.allocatedDailyTokenBudget {
+                return lhs.user.allocatedDailyTokenBudget > rhs.user.allocatedDailyTokenBudget
+            }
+            if lhs.user.connectedConsumerCount != rhs.user.connectedConsumerCount {
+                return lhs.user.connectedConsumerCount > rhs.user.connectedConsumerCount
+            }
+            return lhs.user.displayName.localizedCaseInsensitiveCompare(rhs.user.displayName) == .orderedAscending
+        }
+
+        let preferred = sorted.filter { spotlight in
+            spotlight.vendorObservedDailyTokensUsed > 0
+                || spotlight.user.allocatedDailyTokenBudget > 0
+                || spotlight.user.hasUnlimitedBudget
+                || providerKeyUserAtRisk(spotlight.user)
+        }
+        return Array((preferred.isEmpty ? sorted : preferred).prefix(3))
+    }
+
+    private func providerKeyVendorSpotlightConsumers(
+        _ consumers: [RemoteQuotaCenterClientProjection],
+        familyKeys: Set<String>
+    ) -> [ProviderKeyVendorConsumerSpotlight] {
+        let spotlight = consumers.map { consumer in
+            ProviderKeyVendorConsumerSpotlight(
+                consumer: consumer,
+                vendorObservedDailyTokensUsed: providerKeyVendorObservedDailyTokensUsed(
+                    consumer,
+                    familyKeys: familyKeys
+                )
+            )
+        }
+        let sorted = spotlight.sorted { lhs, rhs in
+            let leftRisk = providerKeyConsumerAtRisk(lhs.consumer)
+            let rightRisk = providerKeyConsumerAtRisk(rhs.consumer)
+            if leftRisk != rightRisk {
+                return leftRisk && !rightRisk
+            }
+            if lhs.vendorObservedDailyTokensUsed != rhs.vendorObservedDailyTokensUsed {
+                return lhs.vendorObservedDailyTokensUsed > rhs.vendorObservedDailyTokensUsed
+            }
+            if lhs.consumer.dailyTokenLimit != rhs.consumer.dailyTokenLimit {
+                return lhs.consumer.dailyTokenLimit > rhs.consumer.dailyTokenLimit
+            }
+            if lhs.consumer.connected != rhs.consumer.connected {
+                return lhs.consumer.connected && !rhs.consumer.connected
+            }
+            return lhs.consumer.name.localizedCaseInsensitiveCompare(rhs.consumer.name) == .orderedAscending
+        }
+
+        let preferred = sorted.filter { spotlight in
+            spotlight.vendorObservedDailyTokensUsed > 0
+                || spotlight.consumer.dailyTokenLimit > 0
+                || spotlight.consumer.allowsAllFamilies
+                || providerKeyConsumerAtRisk(spotlight.consumer)
+        }
+        return Array((preferred.isEmpty ? sorted : preferred).prefix(3))
+    }
+
+    private func providerKeyVendorInventorySummaries(
+        _ pools: [ProviderKeyPoolSnapshot],
+        familySummaries: [ProviderKeyFamilyInventorySummary],
+        scopedUsers: [RemoteQuotaCenterUserProjection],
+        scopedConsumers: [RemoteQuotaCenterClientProjection],
+        includeSpotlights: Bool = true
+    ) -> [ProviderKeyVendorInventorySummary] {
+        let grouped = Dictionary(grouping: pools) { pool in
+            providerKeyCanonicalVendorKey(pool.supplierKey)
+        }
+
+        return grouped.compactMap { vendorKey, vendorPools in
+            guard let firstPool = vendorPools.first else { return nil }
+            let sortedVendorPools = vendorPools.sorted(by: providerKeySortVendorPools(_:_:))
+            let distinctSupplierKeys = providerKeyDistinctPreviewStrings(vendorPools.map(\.supplierKey))
+            let supplierDisplayName = firstPool.supplierDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let displayName = distinctSupplierKeys.count > 1
+                ? providerKeyVendorDisplayName(vendorKey)
+                : (supplierDisplayName.isEmpty ? providerKeyVendorDisplayName(vendorKey) : supplierDisplayName)
+            let familyKeys = providerKeyDistinctPreviewStrings(vendorPools.flatMap(\.supportedFamilyKeys))
+            let familyKeySet = Set(familyKeys)
+            let relatedFamilies = familySummaries.filter { familyKeySet.contains($0.familyKey) }
+            let coveredConsumers = scopedConsumers.filter { consumer in
+                consumer.allowsAllFamilies || !familyKeySet.isDisjoint(with: Set(consumer.familyKeys))
+            }
+            let coveredConsumerIDs = Set(coveredConsumers.map(\.id))
+            let coveredUsers = scopedUsers.filter { user in
+                user.consumers.contains(where: { coveredConsumerIDs.contains($0.id) })
+            }
+            let spotlightUsers = includeSpotlights
+                ? providerKeyVendorSpotlightUsers(coveredUsers, familyKeys: familyKeySet)
+                : []
+            let spotlightConsumers = includeSpotlights
+                ? providerKeyVendorSpotlightConsumers(coveredConsumers, familyKeys: familyKeySet)
+                : []
+            let assignedDailyTokenBudget = relatedFamilies.reduce(Int64(0)) { partial, family in
+                partial + max(Int64(0), family.assignedDailyTokenBudget)
+            }
+            let observedFamilyTokensUsed = relatedFamilies.reduce(Int64(0)) { partial, family in
+                partial + max(Int64(0), family.observedDailyTokensUsed)
+            }
+            let totalDailyTokenCap = vendorPools.reduce(Int64(0)) { $0 + max(Int64(0), $1.totalDailyTokenCap) }
+            return ProviderKeyVendorInventorySummary(
+                vendorKey: vendorKey,
+                displayName: displayName,
+                pools: sortedVendorPools,
+                spotlightUsers: spotlightUsers,
+                spotlightConsumers: spotlightConsumers,
+                providerDisplayNames: providerKeyDistinctPreviewStrings(vendorPools.map(\.providerDisplayName)),
+                providerHosts: providerKeyDistinctPreviewStrings(vendorPools.map(\.providerHost)),
+                familyKeys: familyKeys,
+                familyDisplayNames: providerKeyDistinctPreviewStrings(
+                    relatedFamilies.isEmpty
+                        ? vendorPools.flatMap(\.supportedFamilyDisplayNames)
+                        : relatedFamilies.map(\.displayName)
+                ),
+                coveredUserCount: coveredUsers.count,
+                coveredConsumerCount: coveredConsumers.count,
+                coveredUnlimitedConsumerCount: coveredConsumers.filter { $0.dailyTokenLimit <= 0 }.count,
+                coveredFamilyCount: relatedFamilies.count,
+                poolCount: vendorPools.count,
+                totalAccounts: vendorPools.reduce(0) { $0 + $1.totalAccounts },
+                readyAccounts: vendorPools.reduce(0) { $0 + $1.readyAccounts },
+                cooldownAccounts: vendorPools.reduce(0) { $0 + $1.cooldownAccounts },
+                blockedAccounts: vendorPools.reduce(0) { $0 + $1.blockedAccounts },
+                disabledAccounts: vendorPools.reduce(0) { $0 + $1.disabledAccounts },
+                staleAccounts: vendorPools.reduce(0) { $0 + $1.staleAccounts },
+                totalDailyTokenCap: totalDailyTokenCap,
+                totalDailyTokensUsed: vendorPools.reduce(Int64(0)) { $0 + max(Int64(0), $1.totalDailyTokensUsed) },
+                totalDailyTokensRemaining: vendorPools.reduce(Int64(0)) { $0 + max(Int64(0), $1.totalDailyTokensRemaining) },
+                totalTokensUsed: vendorPools.reduce(Int64(0)) { $0 + max(Int64(0), $1.totalTokensUsed) },
+                assignedDailyTokenBudget: assignedDailyTokenBudget,
+                observedFamilyTokensUsed: observedFamilyTokensUsed,
+                allocationHeadroom: totalDailyTokenCap > 0 ? (totalDailyTokenCap - assignedDailyTokenBudget) : 0,
+                oversubscribedFamilyCount: relatedFamilies.filter(\.isOversubscribed).count,
+                hotPoolCount: vendorPools.filter(providerKeyPoolNeedsAttention(_:)).count
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.oversubscribedFamilyCount != rhs.oversubscribedFamilyCount {
+                return lhs.oversubscribedFamilyCount > rhs.oversubscribedFamilyCount
+            }
+            if lhs.blockedAccounts != rhs.blockedAccounts {
+                return lhs.blockedAccounts > rhs.blockedAccounts
+            }
+            if lhs.assignedDailyTokenBudget != rhs.assignedDailyTokenBudget {
+                return lhs.assignedDailyTokenBudget > rhs.assignedDailyTokenBudget
+            }
+            if lhs.totalAccounts != rhs.totalAccounts {
+                return lhs.totalAccounts > rhs.totalAccounts
+            }
+            return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+        }
+    }
+
+    @ViewBuilder
+    private func providerKeyVendorHeatCard(_ vendor: ProviderKeyVendorInventorySummary) -> some View {
+        let canonicalVendorKey = providerKeyCanonicalVendorKey(vendor.vendorKey)
+        let isHighlighted = highlightedProviderKeyVendorKey == canonicalVendorKey
+        let detailBinding = expansionBinding(vendor.id, in: $expandedProviderKeyVendorIDs)
+        let usageFraction = providerKeyUsageFraction(
+            used: vendor.totalDailyTokensUsed,
+            cap: vendor.totalDailyTokenCap
+        )
+        let coverageFraction = providerKeyUsageFraction(
+            used: vendor.assignedDailyTokenBudget,
+            cap: vendor.totalDailyTokenCap
+        )
+        let usageTint = providerKeyUsageHeatTint(
+            fraction: usageFraction,
+            hasBlockingRisk: vendor.blockedAccounts > 0
+        )
+        let coverageTint: Color = vendor.allocationHeadroom < 0
+            ? .red
+            : (coverageFraction >= 0.85 ? .orange : .purple)
+        let readinessFraction = vendor.totalAccounts > 0
+            ? Double(vendor.readyAccounts) / Double(max(1, vendor.totalAccounts))
+            : 0
+        let remainingValue = vendor.totalDailyTokenCap > 0
+            ? HubUIStrings.Settings.ProviderKeys.tokenCount(vendor.totalDailyTokensRemaining)
+            : HubUIStrings.Settings.ProviderKeys.tokenCount(vendor.totalDailyTokensUsed)
+        let headroomTint: Color = {
+            guard vendor.totalDailyTokenCap > 0 else { return .gray }
+            if vendor.allocationHeadroom < 0 { return .red }
+            if vendor.allocationHeadroom <= max(Int64(50_000), vendor.totalDailyTokenCap / 10) { return .orange }
+            return .green
+        }()
+
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(vendor.displayName)
+                            .font(.callout.weight(.semibold))
+
+                        Text("\(vendor.readyAccounts)/\(vendor.totalAccounts) Ready")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(vendor.blockedAccounts > 0 ? Color.orange : Color.green)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background((vendor.blockedAccounts > 0 ? Color.orange : Color.green).opacity(0.12))
+                            .clipShape(Capsule())
+
+                        if vendor.hotPoolCount > 0 {
+                            Text("\(vendor.hotPoolCount) 热点池")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.orange)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(Color.orange.opacity(0.12))
+                                .clipShape(Capsule())
+                        }
+
+                        if vendor.oversubscribedFamilyCount > 0 {
+                            Text("\(vendor.oversubscribedFamilyCount) 超配家族")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.red)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(Color.red.opacity(0.12))
+                                .clipShape(Capsule())
+                        }
+                    }
+
+                    Text(providerKeyVendorSummaryText(vendor))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 8)
+
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text("库存热度")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(usageFraction > 0 ? "\(Int(usageFraction * 100))%" : "低")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(usageTint)
+                }
+            }
+
+            HStack(spacing: 8) {
+                providerKeyLedgerMetricTile(
+                    title: "剩余库存",
+                    value: remainingValue,
+                    detail: vendor.totalDailyTokenCap > 0
+                        ? "今日总上限 \(HubUIStrings.Settings.ProviderKeys.tokenCount(vendor.totalDailyTokenCap))"
+                        : "仅统计到今日已用",
+                    tint: usageTint
+                )
+                providerKeyLedgerMetricTile(
+                    title: "覆盖预算",
+                    value: vendor.assignedDailyTokenBudget > 0
+                        ? HubUIStrings.Settings.ProviderKeys.tokenCount(vendor.assignedDailyTokenBudget)
+                        : (vendor.coveredConsumerCount > 0 ? "弹性" : "未覆盖"),
+                    detail: vendor.coveredUnlimitedConsumerCount > 0
+                        ? "\(vendor.coveredConsumerCount) 个 consumer · 弹性 \(vendor.coveredUnlimitedConsumerCount)"
+                        : "\(vendor.coveredConsumerCount) 个 consumer",
+                    tint: coverageTint
+                )
+            }
+
+            HStack(spacing: 8) {
+                providerKeyLedgerMetricTile(
+                    title: "家族今日已用",
+                    value: HubUIStrings.Settings.ProviderKeys.tokenCount(vendor.observedFamilyTokensUsed),
+                    detail: vendor.totalTokensUsed > 0
+                        ? "累计 \(HubUIStrings.Settings.ProviderKeys.tokenCount(vendor.totalTokensUsed))"
+                        : "\(vendor.coveredFamilyCount) 个家族账本",
+                    tint: .teal
+                )
+                providerKeyLedgerMetricTile(
+                    title: "预算缓冲",
+                    value: vendor.totalDailyTokenCap > 0
+                        ? providerKeySignedTokenCount(vendor.allocationHeadroom)
+                        : "\(vendor.coveredUserCount) 个用户",
+                    detail: vendor.totalDailyTokenCap > 0
+                        ? "上游 cap - 下游覆盖预算"
+                        : "\(vendor.coveredUserCount) 个用户主体 / \(vendor.poolCount) 个池",
+                    tint: headroomTint
+                )
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("额度热力")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(vendor.totalDailyTokenCap > 0
+                        ? "\(HubUIStrings.Settings.ProviderKeys.tokenCount(vendor.totalDailyTokensUsed)) / \(HubUIStrings.Settings.ProviderKeys.tokenCount(vendor.totalDailyTokenCap))"
+                        : HubUIStrings.Settings.ProviderKeys.tokenCount(vendor.totalDailyTokensUsed))
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+                providerKeyHeatStrip(value: usageFraction, tint: usageTint)
+
+                HStack {
+                    Text("覆盖压力")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(vendor.totalDailyTokenCap > 0
+                        ? "\(HubUIStrings.Settings.ProviderKeys.tokenCount(vendor.assignedDailyTokenBudget)) / \(HubUIStrings.Settings.ProviderKeys.tokenCount(vendor.totalDailyTokenCap))"
+                        : (vendor.assignedDailyTokenBudget > 0 ? HubUIStrings.Settings.ProviderKeys.tokenCount(vendor.assignedDailyTokenBudget) : "弹性"))
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+                providerKeyHeatStrip(value: coverageFraction, tint: coverageTint)
+
+                HStack {
+                    Text("可用度")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("\(vendor.readyAccounts) / \(vendor.totalAccounts)")
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+                providerKeyHeatStrip(value: readinessFraction, tint: vendor.blockedAccounts > 0 ? .orange : .green)
+            }
+
+            providerKeyVendorCoverageSpotlights(vendor)
+
+            DisclosureGroup(isExpanded: detailBinding) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("这里继续展开到每个池子 / 每把 key，可直接看剩余额度、下次刷新、恢复时间和失败原因。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if vendor.pools.isEmpty {
+                        Text("当前厂家还没有可展示的物理池。")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(vendor.pools) { pool in
+                            providerKeyPoolCard(pool)
+                        }
+                    }
+                }
+                .padding(.top, 6)
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("池子与单 Key 明细")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(providerKeyVendorPoolDisclosureSummary(vendor))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .padding(12)
+        .background(isHighlighted ? usageTint.opacity(0.12) : usageTint.opacity(0.07))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(
+                    isHighlighted ? usageTint.opacity(0.52) : usageTint.opacity(0.16),
+                    lineWidth: isHighlighted ? 1.6 : 1
+                )
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .id(providerKeyVendorAnchorID(canonicalVendorKey))
+    }
+
+    @ViewBuilder
+    private func providerKeyVendorCoverageSpotlights(
+        _ vendor: ProviderKeyVendorInventorySummary
+    ) -> some View {
+        if !vendor.spotlightUsers.isEmpty || !vendor.spotlightConsumers.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("下游分配热点")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("\(vendor.coveredUserCount) 个用户 / \(vendor.coveredConsumerCount) 个 consumer")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                if !vendor.spotlightUsers.isEmpty && !vendor.spotlightConsumers.isEmpty {
+                    HStack(alignment: .top, spacing: 8) {
+                        providerKeyVendorUserSpotlightPanel(vendor)
+                        providerKeyVendorConsumerSpotlightPanel(vendor)
+                    }
+                } else if !vendor.spotlightUsers.isEmpty {
+                    providerKeyVendorUserSpotlightPanel(vendor)
+                } else {
+                    providerKeyVendorConsumerSpotlightPanel(vendor)
+                }
+
+                Text("锁定用户会把当前厂家与该用户视角叠起来；管理 consumer 可直接去调 XT 或 Terminal 配额。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func providerKeyVendorUserSpotlightPanel(
+        _ vendor: ProviderKeyVendorInventorySummary
+    ) -> some View {
+        let hiddenCount = max(0, vendor.coveredUserCount - vendor.spotlightUsers.count)
+
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("重点用户")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("\(vendor.spotlightUsers.count) / \(vendor.coveredUserCount)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+
+            ForEach(vendor.spotlightUsers) { spotlight in
+                providerKeyVendorUserSpotlightRow(spotlight, vendor: vendor)
+            }
+
+            if hiddenCount > 0 {
+                Text("另外 \(hiddenCount) 个用户主体在下方用户台账。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(Color.indigo.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func providerKeyVendorUserSpotlightRow(
+        _ spotlight: ProviderKeyVendorUserSpotlight,
+        vendor: ProviderKeyVendorInventorySummary
+    ) -> some View {
+        let user = spotlight.user
+        let userTint = providerKeyUserAtRisk(user) ? Color.orange : providerKeyUserTint(user)
+        let identitySummary = providerKeyBudgetUserIdentitySummary(user)
+
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(user.displayName)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+
+                Text(user.groupingKind.title)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(userTint)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(userTint.opacity(0.12))
+                    .clipShape(Capsule())
+
+                if providerKeyUserAtRisk(user) {
+                    Text("预算吃紧")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.orange.opacity(0.12))
+                        .clipShape(Capsule())
+                }
+
+                Spacer(minLength: 6)
+
+                Button("锁定用户") {
+                    focusProviderKeyVendorUser(user, vendor: vendor)
+                }
+                .buttonStyle(.borderless)
+                .font(.caption2.weight(.semibold))
+            }
+
+            if !identitySummary.isEmpty {
+                Text(identitySummary)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+
+            HStack(spacing: 6) {
+                providerKeyVendorSpotlightMetric(
+                    "命中已用 \(HubUIStrings.Settings.ProviderKeys.tokenCount(spotlight.vendorObservedDailyTokensUsed))",
+                    tint: .teal
+                )
+                providerKeyVendorSpotlightMetric(
+                    "总剩余 \(providerKeyUserRemainingBudgetPreviewText(user))",
+                    tint: providerKeyUserAtRisk(user) ? .orange : .green
+                )
+                providerKeyVendorSpotlightMetric(
+                    "\(user.consumerCount) 个 consumer",
+                    tint: userTint
+                )
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(userTint.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func providerKeyVendorConsumerSpotlightPanel(
+        _ vendor: ProviderKeyVendorInventorySummary
+    ) -> some View {
+        let hiddenCount = max(0, vendor.coveredConsumerCount - vendor.spotlightConsumers.count)
+
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("热点 Consumer")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("\(vendor.spotlightConsumers.count) / \(vendor.coveredConsumerCount)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+
+            ForEach(vendor.spotlightConsumers) { spotlight in
+                providerKeyVendorConsumerSpotlightRow(spotlight)
+            }
+
+            if hiddenCount > 0 {
+                Text("另外 \(hiddenCount) 个 consumer 在下方统一消费者台账。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(Color.teal.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func providerKeyVendorConsumerSpotlightRow(
+        _ spotlight: ProviderKeyVendorConsumerSpotlight
+    ) -> some View {
+        let consumer = spotlight.consumer
+        let consumerTint = providerKeyConsumerAtRisk(consumer) ? Color.orange : providerKeyConsumerKindColor(consumer.consumerKind)
+        let referenceSummary = providerKeyBudgetClientReferenceSummary(consumer)
+        let activitySummary = providerKeyBudgetClientActivitySummary(consumer)
+
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(consumer.name)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+
+                Text(consumer.kindTitle)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(consumerTint)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(consumerTint.opacity(0.12))
+                    .clipShape(Capsule())
+
+                if providerKeyConsumerAtRisk(consumer) {
+                    Text("逼近上限")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.orange.opacity(0.12))
+                        .clipShape(Capsule())
+                }
+
+                Spacer(minLength: 6)
+
+                Button(consumer.managementTitle) {
+                    presentRemoteQuotaConsumerManager(consumer)
+                }
+                .buttonStyle(.borderless)
+                .font(.caption2.weight(.semibold))
+            }
+
+            if !referenceSummary.isEmpty {
+                Text(referenceSummary)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+
+            HStack(spacing: 6) {
+                providerKeyVendorSpotlightMetric(
+                    "命中已用 \(HubUIStrings.Settings.ProviderKeys.tokenCount(spotlight.vendorObservedDailyTokensUsed))",
+                    tint: .teal
+                )
+                providerKeyVendorSpotlightMetric(
+                    consumer.dailyTokenLimit > 0
+                        ? "总剩余 \(providerKeyConsumerRemainingBudgetPreviewText(consumer))"
+                        : "弹性预算",
+                    tint: providerKeyConsumerAtRisk(consumer) ? .orange : .green
+                )
+                providerKeyVendorSpotlightMetric(
+                    consumer.dailyTokenLimit > 0
+                        ? "预算 \(HubUIStrings.Settings.ProviderKeys.tokenCount(consumer.dailyTokenLimit))"
+                        : "由上游库存约束",
+                    tint: consumerTint
+                )
+            }
+
+            if !activitySummary.isEmpty {
+                Text(activitySummary)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(consumerTint.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func providerKeyVendorSpotlightMetric(
+        _ title: String,
+        tint: Color
+    ) -> some View {
+        Text(title)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(tint.opacity(0.10))
+            .clipShape(Capsule())
+    }
+
+    private func providerKeyUserRemainingBudgetPreviewText(
+        _ user: RemoteQuotaCenterUserProjection
+    ) -> String {
+        if user.allocatedDailyTokenBudget > 0 {
+            let base = HubUIStrings.Settings.ProviderKeys.tokenCount(user.remainingDailyTokenBudget)
+            return user.hasUnlimitedBudget ? "\(base) +" : base
+        }
+        return user.hasUnlimitedBudget ? "弹性" : "0"
+    }
+
+    private func providerKeyConsumerRemainingBudgetPreviewText(
+        _ consumer: RemoteQuotaCenterClientProjection
+    ) -> String {
+        consumer.dailyTokenLimit > 0
+            ? HubUIStrings.Settings.ProviderKeys.tokenCount(consumer.remainingDailyTokenBudget)
+            : "弹性"
+    }
+
+    @ViewBuilder
+    private func providerKeyHeatStrip(
+        value: Double,
+        tint: Color,
+        segments: Int = 14
+    ) -> some View {
+        let normalized = max(0, min(1, value))
+        HStack(spacing: 4) {
+            ForEach(0..<segments, id: \.self) { index in
+                let threshold = Double(index + 1) / Double(segments)
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(threshold <= normalized ? tint.opacity(0.9) : tint.opacity(0.12))
+                    .frame(maxWidth: .infinity, minHeight: 8, maxHeight: 8)
+            }
+        }
+    }
+
+    private func providerKeyUsageHeatTint(
+        fraction: Double,
+        hasBlockingRisk: Bool
+    ) -> Color {
+        if hasBlockingRisk {
+            return .red
+        }
+        switch fraction {
+        case let value where value >= 0.9:
+            return .orange
+        case let value where value >= 0.65:
+            return .yellow
+        case let value where value > 0:
+            return .blue
+        default:
+            return .green
+        }
+    }
+
+    private func providerKeyPoolNeedsAttention(
+        _ pool: ProviderKeyPoolSnapshot
+    ) -> Bool {
+        if pool.blockedAccounts > 0 || pool.cooldownAccounts > 0 || !pool.issueSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return true
+        }
+        return providerKeyUsageFraction(
+            used: pool.totalDailyTokensUsed,
+            cap: pool.totalDailyTokenCap
+        ) >= 0.8
+    }
+
+    private func providerKeySortVendorPools(
+        _ lhs: ProviderKeyPoolSnapshot,
+        _ rhs: ProviderKeyPoolSnapshot
+    ) -> Bool {
+        let leftHot = providerKeyPoolNeedsAttention(lhs)
+        let rightHot = providerKeyPoolNeedsAttention(rhs)
+        if leftHot != rightHot {
+            return leftHot && !rightHot
+        }
+        if lhs.blockedAccounts != rhs.blockedAccounts {
+            return lhs.blockedAccounts > rhs.blockedAccounts
+        }
+        if lhs.cooldownAccounts != rhs.cooldownAccounts {
+            return lhs.cooldownAccounts > rhs.cooldownAccounts
+        }
+        if lhs.totalAccounts != rhs.totalAccounts {
+            return lhs.totalAccounts > rhs.totalAccounts
+        }
+        return providerKeyPoolTitle(lhs).localizedCaseInsensitiveCompare(providerKeyPoolTitle(rhs)) == .orderedAscending
+    }
+
+    private func providerKeyVendorPoolDisclosureSummary(
+        _ vendor: ProviderKeyVendorInventorySummary
+    ) -> String {
+        var parts: [String] = [
+            "\(vendor.pools.count) 个池",
+            "\(vendor.totalAccounts) 把 key"
+        ]
+
+        if vendor.cooldownAccounts > 0 {
+            parts.append("冷却 \(vendor.cooldownAccounts)")
+        }
+        if vendor.blockedAccounts > 0 {
+            parts.append("阻断 \(vendor.blockedAccounts)")
+        }
+
+        let earliestRetryAtMs = vendor.pools
+            .map(\.earliestRetryAtMs)
+            .filter { $0 > 0 }
+            .min() ?? 0
+        if earliestRetryAtMs > 0 {
+            parts.append("最早重试 \(formattedProviderKeyImportSourceTime(earliestRetryAtMs))")
+        }
+        return HubUIStrings.Settings.RemoteModels.sectionSummary(parts)
+    }
+
+    private func providerKeyDistinctPreviewStrings(
+        _ values: [String]
+    ) -> [String] {
+        var out: [String] = []
+        var seen: Set<String> = []
+        for value in values {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalized = trimmed.lowercased()
+            guard !trimmed.isEmpty, seen.insert(normalized).inserted else { continue }
+            out.append(trimmed)
+        }
+        return out
+    }
+
+    private func providerKeyCanonicalVendorKey(_ rawVendorKey: String) -> String {
+        let normalized = rawVendorKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch normalized {
+        case "chatgpt", "codex", "openai_compatible":
+            return "openai"
+        case "anthropic":
+            return "claude"
+        case "moonshot":
+            return "kimi"
+        default:
+            return normalized
+        }
+    }
+
+    private func providerKeyVendorDisplayName(_ vendorKey: String) -> String {
+        switch providerKeyCanonicalVendorKey(vendorKey) {
+        case "openai":
+            return "OpenAI / Codex"
+        case "claude":
+            return "Claude"
+        case "gemini":
+            return "Gemini"
+        case "antigravity":
+            return "Antigravity"
+        case "kimi":
+            return "Kimi"
+        default:
+            let normalized = providerKeyCanonicalVendorKey(vendorKey)
+            return normalized.isEmpty ? "Unknown" : normalized.capitalized
+        }
+    }
+
+    private func providerKeyVendorSummaryText(
+        _ vendor: ProviderKeyVendorInventorySummary
+    ) -> String {
+        var parts: [String] = []
+        if !vendor.familyDisplayNames.isEmpty {
+            parts.append("家族 \(providerKeyPreviewList(vendor.familyDisplayNames))")
+        }
+        if !vendor.providerHosts.isEmpty {
+            parts.append("host \(providerKeyPreviewList(vendor.providerHosts, maxCount: 2))")
+        } else if !vendor.providerDisplayNames.isEmpty {
+            parts.append(providerKeyPreviewList(vendor.providerDisplayNames))
+        }
+        parts.append("\(vendor.coveredUserCount) 个用户 / \(vendor.coveredConsumerCount) 个 consumer")
+        parts.append("\(vendor.poolCount) 个池 / \(vendor.totalAccounts) 把 key")
+        return HubUIStrings.Settings.RemoteModels.sectionSummary(parts)
+    }
+
+    @ViewBuilder
+    private func providerKeyQuotaFamilyCard(_ family: ProviderKeyFamilyInventorySummary) -> some View {
+        let poolTint = providerKeyPoolStateColor(family.quotaPool.state)
+        let inventoryValue = family.combinedDailyTokenCap > 0
+            ? HubUIStrings.Settings.ProviderKeys.tokenCount(family.combinedDailyTokensRemaining)
+            : HubUIStrings.Settings.ProviderKeys.tokenCount(family.combinedDailyTokensUsed)
+        let inventoryDetail = family.combinedDailyTokenCap > 0
+            ? "剩余 / 上限 \(HubUIStrings.Settings.ProviderKeys.tokenCount(family.combinedDailyTokenCap))"
+            : "仅观测到今日已用"
+        let assignedValue = family.assignedDailyTokenBudget > 0
+            ? HubUIStrings.Settings.ProviderKeys.tokenCount(family.assignedDailyTokenBudget)
+            : (family.assignedClientCount > 0 ? "不限" : "未分配")
+        let assignedDetail = family.assignedClientCount > 0
+            ? (
+                family.unlimitedBudgetConsumerCount > 0
+                    ? "\(family.coveredUserCount) 个用户 / \(family.assignedClientCount) 个消费者 · 弹性 \(family.unlimitedBudgetConsumerCount)"
+                    : "\(family.coveredUserCount) 个用户 / \(family.assignedClientCount) 个消费者"
+            )
+            : "当前没有消费者"
+        let observedDetail = family.connectedAssignedConsumerCount > 0
+            ? "在线 \(family.connectedAssignedConsumerCount) 个消费者"
+            : "来自当前视角消费账本"
+
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(family.displayName)
+                            .font(.callout.weight(.semibold))
+
+                        Text(providerKeyPoolStateText(family.quotaPool.state))
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(poolTint)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(poolTint.opacity(0.12))
+                            .clipShape(Capsule())
+                    }
+
+                    Text(
+                        HubUIStrings.Settings.ProviderKeys.familyQuotaPoolSummary(
+                            sources: family.quotaPool.totalSources,
+                            dedicated: family.quotaPool.dedicatedSources,
+                            shared: family.quotaPool.sharedSources,
+                            total: family.quotaPool.totalAccounts,
+                            ready: family.quotaPool.readyAccounts,
+                            cooldown: family.quotaPool.cooldownAccounts,
+                            blocked: family.quotaPool.blockedAccounts,
+                            stale: family.quotaPool.staleAccounts
+                        )
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 8)
+
+                Text(providerKeyFamilyRetrySummary(family))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
+            }
+
+            HStack(spacing: 8) {
+                providerKeyLedgerMetricTile(
+                    title: "上游库存",
+                    value: inventoryValue,
+                    detail: inventoryDetail,
+                    tint: poolTint
+                )
+                providerKeyLedgerMetricTile(
+                    title: "覆盖预算",
+                    value: assignedValue,
+                    detail: assignedDetail,
+                    tint: .purple
+                )
+                providerKeyLedgerMetricTile(
+                    title: "今日用量",
+                    value: HubUIStrings.Settings.ProviderKeys.tokenCount(family.observedDailyTokensUsed),
+                    detail: observedDetail,
+                    tint: .teal
+                )
+            }
+
+            if family.combinedDailyTokenCap > 0 {
+                ProgressView(value: Double(family.combinedDailyTokensUsed), total: Double(family.combinedDailyTokenCap))
+                    .progressViewStyle(.linear)
+                    .tint(poolTint)
+            }
+
+            Text(providerKeyFamilyQuotaSummary(family))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            Text(providerKeyFamilyBudgetSummary(family))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if family.isOversubscribed {
+                Text("覆盖预算超过当前已知上游上限，建议给这个池补 key 或下调对应消费者预算。")
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            let clientsPreview = providerKeyFamilyClientPreview(family)
+            if !clientsPreview.isEmpty {
+                Text(clientsPreview)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
+        .padding(12)
+        .background(poolTint.opacity(0.07))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(poolTint.opacity(0.18), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func providerKeyBudgetClientRow(_ clientProjection: RemoteQuotaCenterClientProjection) -> some View {
+        let status = clientProjection.deviceStatus
+        let kindTint = providerKeyConsumerKindColor(clientProjection.consumerKind)
+        let usageTint = providerKeyConsumerAtRisk(clientProjection) ? Color.orange : kindTint
+        let remainingTint = clientProjection.dailyTokenLimit > 0 && clientProjection.remainingDailyTokenBudget <= 0
+            ? Color.orange
+            : Color.green
+
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 8) {
+                Circle()
+                    .fill(grpcClientPresencePillColor(status))
+                    .frame(width: 8, height: 8)
+                    .padding(.top, 4)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(clientProjection.name)
+                            .font(.callout.weight(.semibold))
+                            .lineLimit(1)
+
+                        Text(clientProjection.kindTitle)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(kindTint)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(kindTint.opacity(0.12))
+                            .clipShape(Capsule())
+
+                        Text(grpcClientPresencePillTitle(status))
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(grpcClientPresencePillColor(status))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(grpcClientPresencePillColor(status).opacity(0.12))
+                            .clipShape(Capsule())
+
+                        Text(clientProjection.paidPolicyTitle)
+                            .font(.caption2)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.purple.opacity(0.12))
+                            .clipShape(Capsule())
+
+                        if clientProjection.defaultWebFetchEnabled {
+                            Text("Web")
+                                .font(.caption2)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.teal.opacity(0.12))
+                                .clipShape(Capsule())
+                        }
+                    }
+
+                    let referenceSummary = providerKeyBudgetClientReferenceSummary(clientProjection)
+                    if !referenceSummary.isEmpty {
+                        Text(referenceSummary)
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+
+                    Text(providerKeyBudgetClientScopeSummary(clientProjection))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 8)
+
+                Button(clientProjection.managementTitle) {
+                    presentRemoteQuotaConsumerManager(clientProjection)
+                }
+                .buttonStyle(.borderless)
+                .font(.caption.weight(.semibold))
+            }
+
+            HStack(spacing: 8) {
+                providerKeyLedgerMetricTile(
+                    title: "预算",
+                    value: clientProjection.dailyTokenLimit > 0
+                        ? HubUIStrings.Settings.ProviderKeys.tokenCount(clientProjection.dailyTokenLimit)
+                        : "不限",
+                    detail: clientProjection.dailyTokenLimit > 0 ? "每日硬上限" : "由上游库存约束",
+                    tint: .purple
+                )
+                providerKeyLedgerMetricTile(
+                    title: "已用",
+                    value: HubUIStrings.Settings.ProviderKeys.tokenCount(clientProjection.dailyTokenUsed),
+                    detail: status != nil ? "今日实时账本" : "已记录 usage",
+                    tint: usageTint
+                )
+                providerKeyLedgerMetricTile(
+                    title: "剩余",
+                    value: clientProjection.dailyTokenLimit > 0
+                        ? HubUIStrings.Settings.ProviderKeys.tokenCount(clientProjection.remainingDailyTokenBudget)
+                        : "上游池",
+                    detail: clientProjection.dailyTokenLimit > 0 ? "今日还能分配" : "无固定硬上限",
+                    tint: remainingTint
+                )
+            }
+
+            if clientProjection.dailyTokenLimit > 0 {
+                ProgressView(
+                    value: Double(clientProjection.dailyTokenUsed),
+                    total: Double(clientProjection.dailyTokenLimit)
+                )
+                .progressViewStyle(.linear)
+                .tint(usageTint)
+
+                Text(
+                    HubUIStrings.Settings.GRPC.DeviceList.dailyTokenUsage(
+                        day: status?.quotaDay ?? "unknown",
+                        used: Int(clientProjection.dailyTokenUsed),
+                        cap: Int(clientProjection.dailyTokenLimit),
+                        remaining: Int(clientProjection.remainingDailyTokenBudget)
+                    )
+                )
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            } else {
+                Text(
+                    clientProjection.dailyTokenUsed > 0
+                        ? "今日已用 \(HubUIStrings.Settings.ProviderKeys.tokenCount(clientProjection.dailyTokenUsed)) tokens，当前没有单独硬上限。"
+                        : "当前没有单独硬上限，主要受上游家族池库存约束。"
+                )
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            }
+
+            let activitySummary = providerKeyBudgetClientActivitySummary(clientProjection)
+            if !activitySummary.isEmpty {
+                Text(activitySummary)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if providerKeyCanQuickAdjustBudget(clientProjection) {
+                HStack(spacing: 8) {
+                    Text("快速调预算")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    providerKeyQuickBudgetButton(clientProjection, delta: -50_000, title: "-50k")
+                    providerKeyQuickBudgetButton(clientProjection, delta: 50_000, title: "+50k")
+                    providerKeyQuickBudgetButton(clientProjection, delta: 200_000, title: "+200k")
+                    Button("精确设置") {
+                        presentRemoteQuotaBudgetEditor(clientProjection)
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.indigo.opacity(0.08))
+                    .clipShape(Capsule())
+                    .disabled((clientProjection.isTerminalAccess && terminalAccessMutationInFlight) || !providerKeyCanQuickAdjustBudget(clientProjection))
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .padding(12)
+        .background((providerKeyConsumerAtRisk(clientProjection) ? Color.orange : kindTint).opacity(0.08))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke((providerKeyConsumerAtRisk(clientProjection) ? Color.orange : kindTint).opacity(0.2), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func providerKeyBudgetUserRow(_ userProjection: RemoteQuotaCenterUserProjection) -> some View {
+        let userTint = providerKeyUserTint(userProjection)
+        let usageTint = providerKeyUserAtRisk(userProjection) ? Color.orange : userTint
+        let remainingValue: String = {
+            if userProjection.allocatedDailyTokenBudget > 0 {
+                let base = HubUIStrings.Settings.ProviderKeys.tokenCount(userProjection.remainingDailyTokenBudget)
+                return userProjection.hasUnlimitedBudget ? "\(base) +" : base
+            }
+            return userProjection.hasUnlimitedBudget ? "弹性" : "0"
+        }()
+        let remainingDetail: String = {
+            if userProjection.hasUnlimitedBudget && userProjection.allocatedDailyTokenBudget > 0 {
+                return "固定预算剩余 + 弹性"
+            }
+            if userProjection.hasUnlimitedBudget {
+                return "由上游库存约束"
+            }
+            return "今日还能分配"
+        }()
+
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 8) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(userTint.opacity(0.12))
+                    Image(systemName: userProjection.isStandaloneConsumer ? "person.crop.circle.badge.questionmark" : "person.crop.circle.fill")
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(userTint)
+                }
+                .frame(width: 34, height: 34)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(userProjection.displayName)
+                            .font(.callout.weight(.semibold))
+                            .lineLimit(1)
+
+                        Text(userProjection.groupingKind.title)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(userTint)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(userTint.opacity(0.12))
+                            .clipShape(Capsule())
+
+                        if userProjection.hasUnlimitedBudget {
+                            Text("含弹性额度")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.orange)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.orange.opacity(0.12))
+                                .clipShape(Capsule())
+                        }
+
+                        if userProjection.connectedConsumerCount > 0 {
+                            Text("\(userProjection.connectedConsumerCount) 在线")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.green)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.green.opacity(0.12))
+                                .clipShape(Capsule())
+                        }
+                    }
+
+                    Text(providerKeyBudgetUserIdentitySummary(userProjection))
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Text(providerKeyBudgetUserScopeSummary(userProjection))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 8)
+
+                Button(userProjection.consumerCount == 1 ? userProjection.consumers[0].managementTitle : "查看消费者") {
+                    presentRemoteQuotaUserManager(userProjection)
+                }
+                .buttonStyle(.borderless)
+                .font(.caption.weight(.semibold))
+            }
+
+            HStack(spacing: 8) {
+                providerKeyLedgerMetricTile(
+                    title: "分配预算",
+                    value: userProjection.allocatedDailyTokenBudget > 0
+                        ? HubUIStrings.Settings.ProviderKeys.tokenCount(userProjection.allocatedDailyTokenBudget)
+                        : (userProjection.hasUnlimitedBudget ? "不限" : "0"),
+                    detail: "\(userProjection.consumerCount) 个消费者 · XT \(userProjection.xtConsumerCount) · Terminal \(userProjection.terminalConsumerCount)",
+                    tint: .purple
+                )
+                providerKeyLedgerMetricTile(
+                    title: "今日已用",
+                    value: HubUIStrings.Settings.ProviderKeys.tokenCount(userProjection.observedDailyTokensUsed),
+                    detail: "该用户名下所有 consumer 合计",
+                    tint: usageTint
+                )
+                providerKeyLedgerMetricTile(
+                    title: "今日剩余",
+                    value: remainingValue,
+                    detail: remainingDetail,
+                    tint: providerKeyUserAtRisk(userProjection) ? .orange : .green
+                )
+            }
+
+            if userProjection.allocatedDailyTokenBudget > 0 {
+                ProgressView(
+                    value: Double(userProjection.observedDailyTokensUsed),
+                    total: Double(max(Int64(1), userProjection.allocatedDailyTokenBudget))
+                )
+                .progressViewStyle(.linear)
+                .tint(usageTint)
+            }
+
+            let consumerPreview = providerKeyBudgetUserConsumerPreview(userProjection)
+            if !consumerPreview.isEmpty {
+                Text(consumerPreview)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if userProjection.consumers.count == 1, let consumer = userProjection.consumers.first, providerKeyCanQuickAdjustBudget(consumer) {
+                HStack(spacing: 8) {
+                    Text("快速调预算")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    providerKeyQuickBudgetButton(consumer, delta: -50_000, title: "-50k")
+                    providerKeyQuickBudgetButton(consumer, delta: 50_000, title: "+50k")
+                    providerKeyQuickBudgetButton(consumer, delta: 200_000, title: "+200k")
+                    Button("精确设置") {
+                        presentRemoteQuotaBudgetEditor(consumer)
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.indigo.opacity(0.08))
+                    .clipShape(Capsule())
+                    .disabled((consumer.isTerminalAccess && terminalAccessMutationInFlight) || !providerKeyCanQuickAdjustBudget(consumer))
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .padding(12)
+        .background((providerKeyUserAtRisk(userProjection) ? Color.orange : userTint).opacity(0.08))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke((providerKeyUserAtRisk(userProjection) ? Color.orange : userTint).opacity(0.2), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func providerKeyLedgerSectionHeader(
+        title: String,
+        summary: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Text(summary)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private func providerKeyLedgerMetricTile(
+        title: String,
+        value: String,
+        detail: String,
+        tint: Color
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Text(value)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(tint)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+
+            Text(detail)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
+        .background(tint.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func providerKeyQuickBudgetButton(
+        _ consumer: RemoteQuotaCenterClientProjection,
+        delta: Int,
+        title: String
+    ) -> some View {
+        Button(title) {
+            if let client = consumer.grpcClient {
+                grpcAdjustDailyBudget(client, delta: delta)
+                return
+            }
+            guard let accessKey = consumer.terminalAccessKey else { return }
+            Task { await adjustTerminalAccessKeyDailyBudget(accessKey, delta: delta) }
+        }
+        .buttonStyle(.borderless)
+        .font(.caption2.weight(.semibold))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color.indigo.opacity(0.10))
+        .clipShape(Capsule())
+        .disabled((consumer.isTerminalAccess && terminalAccessMutationInFlight) || !providerKeyCanQuickAdjustBudget(consumer))
+    }
+
+    private func providerKeyCanQuickAdjustBudget(
+        _ consumer: RemoteQuotaCenterClientProjection
+    ) -> Bool {
+        if let client = consumer.grpcClient {
+            return client.policyMode == .newProfile && client.approvedTrustProfile != nil
+        }
+        if let accessKey = consumer.terminalAccessKey {
+            return accessKey.supportsDirectBudgetAdjustment
+        }
+        return false
+    }
+
+    private func providerKeyFocusUserTitle(
+        _ user: RemoteQuotaCenterUserProjection
+    ) -> String {
+        if user.isStandaloneConsumer {
+            return "\(user.displayName) · 单 consumer"
+        }
+        return "\(user.displayName) · \(user.consumerCount) consumer"
+    }
+
+    private func providerKeyFocusVendorTitle(
+        _ vendor: ProviderKeyVendorInventorySummary
+    ) -> String {
+        "\(vendor.displayName) · \(vendor.readyAccounts)/\(vendor.totalAccounts) Ready"
+    }
+
+    private func providerKeyFocusedUser(
+        _ users: [RemoteQuotaCenterUserProjection]
+    ) -> RemoteQuotaCenterUserProjection? {
+        let focusKey = remoteQuotaFocusedUserGroupingKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !focusKey.isEmpty else { return nil }
+        return users.first(where: { $0.groupingKey == focusKey })
+    }
+
+    private var providerKeyNormalizedFocusedVendorKey: String {
+        let focusKey = remoteQuotaFocusedVendorKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !focusKey.isEmpty else { return "" }
+        return providerKeyCanonicalVendorKey(focusKey)
+    }
+
+    private var providerKeyHasFocusedVendor: Bool {
+        !providerKeyNormalizedFocusedVendorKey.isEmpty
+    }
+
+    private func providerKeyFocusedVendor(
+        _ vendors: [ProviderKeyVendorInventorySummary]
+    ) -> ProviderKeyVendorInventorySummary? {
+        let focusKey = providerKeyNormalizedFocusedVendorKey
+        guard !focusKey.isEmpty else { return nil }
+        return vendors.first { vendor in
+            providerKeyCanonicalVendorKey(vendor.vendorKey) == focusKey
+        }
+    }
+
+    private func providerKeyFocusedVendorFamilyKeys(
+        _ projection: RemoteQuotaCenterProjection
+    ) -> Set<String> {
+        let focusKey = providerKeyNormalizedFocusedVendorKey
+        guard !focusKey.isEmpty else { return [] }
+
+        let familyKeysFromProjection = projection.families.compactMap { family -> String? in
+            let supplierKeys = Set(family.quotaPool.supplierKeys.map(providerKeyCanonicalVendorKey(_:)))
+            return supplierKeys.contains(focusKey) ? family.familyKey : nil
+        }
+
+        if !familyKeysFromProjection.isEmpty {
+            return Set(familyKeysFromProjection)
+        }
+
+        let fallbackFamilyKeys = providerKeyDerivedSnapshot.keyPools
+            .filter { pool in
+                providerKeyCanonicalVendorKey(pool.supplierKey) == focusKey
+            }
+            .flatMap(\.supportedFamilyKeys)
+        return Set(fallbackFamilyKeys)
+    }
+
+    private func providerKeyConsumerMatchesFocusedVendor(
+        _ consumer: RemoteQuotaCenterClientProjection,
+        focusedVendorFamilyKeys: Set<String>
+    ) -> Bool {
+        guard providerKeyHasFocusedVendor else { return true }
+        guard !focusedVendorFamilyKeys.isEmpty else { return false }
+        if consumer.allowsAllFamilies {
+            return true
+        }
+        return !focusedVendorFamilyKeys.isDisjoint(with: Set(consumer.familyKeys))
+    }
+
+    private func providerKeyUserMatchesFocusedVendor(
+        _ user: RemoteQuotaCenterUserProjection,
+        focusedVendorFamilyKeys: Set<String>
+    ) -> Bool {
+        guard providerKeyHasFocusedVendor else { return true }
+        guard !focusedVendorFamilyKeys.isEmpty else { return false }
+        if !focusedVendorFamilyKeys.isDisjoint(with: Set(user.familyKeys)) {
+            return true
+        }
+        return user.consumers.contains { consumer in
+            providerKeyConsumerMatchesFocusedVendor(
+                consumer,
+                focusedVendorFamilyKeys: focusedVendorFamilyKeys
+            )
+        }
+    }
+
+    private func providerKeyVendorScopedUsers(
+        _ users: [RemoteQuotaCenterUserProjection],
+        focusedVendorFamilyKeys: Set<String>
+    ) -> [RemoteQuotaCenterUserProjection] {
+        guard providerKeyHasFocusedVendor else { return users }
+        return users.filter { user in
+            providerKeyUserMatchesFocusedVendor(
+                user,
+                focusedVendorFamilyKeys: focusedVendorFamilyKeys
+            )
+        }
+    }
+
+    private func providerKeyVendorScopedConsumers(
+        _ consumers: [RemoteQuotaCenterClientProjection],
+        focusedVendorFamilyKeys: Set<String>
+    ) -> [RemoteQuotaCenterClientProjection] {
+        guard providerKeyHasFocusedVendor else { return consumers }
+        return consumers.filter { consumer in
+            providerKeyConsumerMatchesFocusedVendor(
+                consumer,
+                focusedVendorFamilyKeys: focusedVendorFamilyKeys
+            )
+        }
+    }
+
+    private func providerKeyScopedUsers(
+        _ users: [RemoteQuotaCenterUserProjection]
+    ) -> [RemoteQuotaCenterUserProjection] {
+        if let focused = providerKeyFocusedUser(users) {
+            return [focused]
+        }
+        return users
+    }
+
+    private func providerKeyScopedConsumers(
+        _ projection: RemoteQuotaCenterProjection
+    ) -> [RemoteQuotaCenterClientProjection] {
+        let scopedUsers = providerKeyScopedUsers(projection.users)
+        let scopedConsumerIDs = Set(scopedUsers.flatMap { $0.consumers.map(\.id) })
+        guard providerKeyFocusedUser(projection.users) != nil, !scopedConsumerIDs.isEmpty else {
+            return projection.consumers
+        }
+        return projection.consumers.filter { scopedConsumerIDs.contains($0.id) }
+    }
+
+    private func providerKeyFilteredUsers(
+        _ users: [RemoteQuotaCenterUserProjection],
+        focusedVendorFamilyKeys: Set<String>
+    ) -> [RemoteQuotaCenterUserProjection] {
+        let scoped = providerKeyVendorScopedUsers(
+            providerKeyScopedUsers(users),
+            focusedVendorFamilyKeys: focusedVendorFamilyKeys
+        )
+        switch remoteQuotaUserFilter {
+        case .all:
+            return scoped
+        case .risk:
+            return scoped.filter(providerKeyUserAtRisk(_:))
+        }
+    }
+
+    private func providerKeyFilteredFamilies(
+        _ families: [ProviderKeyFamilyInventorySummary],
+        focusedVendorFamilyKeys: Set<String>
+    ) -> [ProviderKeyFamilyInventorySummary] {
+        guard providerKeyHasFocusedVendor else { return families }
+        guard !focusedVendorFamilyKeys.isEmpty else { return [] }
+        return families.filter { family in
+            focusedVendorFamilyKeys.contains(family.familyKey)
+        }
+    }
+
+    private func providerKeyFilteredVendors(
+        _ vendors: [ProviderKeyVendorInventorySummary],
+        focusedVendor: ProviderKeyVendorInventorySummary?
+    ) -> [ProviderKeyVendorInventorySummary] {
+        if providerKeyHasFocusedVendor, focusedVendor == nil {
+            return []
+        }
+        if let focusedVendor {
+            return [focusedVendor]
+        }
+        switch remoteQuotaVendorFilter {
+        case .all:
+            return vendors
+        case .risk:
+            return vendors.filter(providerKeyVendorAtRisk(_:))
+        }
+    }
+
+    private func providerKeySortFamilyInventorySummary(
+        _ lhs: ProviderKeyFamilyInventorySummary,
+        _ rhs: ProviderKeyFamilyInventorySummary
+    ) -> Bool {
+        if lhs.isOversubscribed != rhs.isOversubscribed {
+            return lhs.isOversubscribed && !rhs.isOversubscribed
+        }
+        if lhs.quotaPool.blockedAccounts != rhs.quotaPool.blockedAccounts {
+            return lhs.quotaPool.blockedAccounts > rhs.quotaPool.blockedAccounts
+        }
+        if lhs.assignedDailyTokenBudget != rhs.assignedDailyTokenBudget {
+            return lhs.assignedDailyTokenBudget > rhs.assignedDailyTokenBudget
+        }
+        if lhs.observedDailyTokensUsed != rhs.observedDailyTokensUsed {
+            return lhs.observedDailyTokensUsed > rhs.observedDailyTokensUsed
+        }
+        if lhs.combinedDailyTokenCap != rhs.combinedDailyTokenCap {
+            return lhs.combinedDailyTokenCap > rhs.combinedDailyTokenCap
+        }
+        return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+    }
+
+    private func providerKeyVendorAtRisk(
+        _ vendor: ProviderKeyVendorInventorySummary
+    ) -> Bool {
+        if vendor.oversubscribedFamilyCount > 0 || vendor.blockedAccounts > 0 {
+            return true
+        }
+        if vendor.allocationHeadroom < 0 {
+            return true
+        }
+        if vendor.cooldownAccounts > 0 && vendor.totalAccounts <= max(1, vendor.readyAccounts) {
+            return true
+        }
+        guard vendor.totalDailyTokenCap > 0 else { return vendor.hotPoolCount > 0 }
+        return vendor.totalDailyTokensRemaining <= max(Int64(50_000), vendor.totalDailyTokenCap / 10)
+    }
+
+    private func providerKeyFamilyAtRisk(
+        _ family: ProviderKeyFamilyInventorySummary
+    ) -> Bool {
+        if family.isOversubscribed || family.quotaPool.blockedAccounts > 0 {
+            return true
+        }
+        if family.quotaPool.cooldownAccounts > 0 && family.quotaPool.readyAccounts <= 1 {
+            return true
+        }
+        guard family.combinedDailyTokenCap > 0 else { return false }
+        return family.combinedDailyTokensRemaining <= max(Int64(50_000), family.combinedDailyTokenCap / 10)
+    }
+
+    private func providerKeyScopeSummary(
+        focusedUser: RemoteQuotaCenterUserProjection?,
+        focusedVendor: ProviderKeyVendorInventorySummary?,
+        vendors: [ProviderKeyVendorInventorySummary],
+        families: [ProviderKeyFamilyInventorySummary],
+        users: [RemoteQuotaCenterUserProjection],
+        consumers: [RemoteQuotaCenterClientProjection]
+    ) -> String {
+        let allocatedBudget = consumers.reduce(Int64(0)) { $0 + max(Int64(0), $1.dailyTokenLimit) }
+        let observedUsage = consumers.reduce(Int64(0)) { $0 + max(Int64(0), $1.dailyTokenUsed) }
+        let unlimitedCount = consumers.filter { $0.dailyTokenLimit <= 0 }.count
+        var parts: [String] = []
+        if let focusedUser {
+            parts.append("当前按 \(focusedUser.displayName) 视角查看")
+        } else {
+            parts.append("当前是全局视角")
+        }
+        if let focusedVendor {
+            parts.append("已锁定 \(focusedVendor.displayName) 厂家")
+        } else if providerKeyHasFocusedVendor {
+            parts.append("已锁定 \(providerKeyVendorDisplayName(providerKeyNormalizedFocusedVendorKey)) 厂家")
+        }
+        parts.append("厂家 \(vendors.count)")
+        parts.append("家族 \(families.count)")
+        parts.append("用户 \(users.count)")
+        parts.append("消费者 \(consumers.count)")
+        if allocatedBudget > 0 {
+            parts.append("覆盖预算 \(HubUIStrings.Settings.ProviderKeys.tokenCount(allocatedBudget))")
+            let remainingBudget = HubUIStrings.Settings.ProviderKeys.tokenCount(max(Int64(0), allocatedBudget - observedUsage))
+            parts.append(unlimitedCount > 0 ? "剩余 \(remainingBudget) +" : "剩余 \(remainingBudget)")
+        } else if unlimitedCount > 0 {
+            parts.append("弹性 consumer \(unlimitedCount)")
+        }
+        if observedUsage > 0 {
+            parts.append("今日已用 \(HubUIStrings.Settings.ProviderKeys.tokenCount(observedUsage))")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func providerKeyVendorFilterSummary(
+        _ vendors: [ProviderKeyVendorInventorySummary],
+        totalVendors: Int,
+        focusedUser: RemoteQuotaCenterUserProjection?,
+        focusedVendor: ProviderKeyVendorInventorySummary?
+    ) -> String {
+        if let focusedVendor {
+            if let focusedUser {
+                return "当前已锁定 \(focusedVendor.displayName) 厂家，并叠加 \(focusedUser.displayName) 视角。这里只看这位用户实际命中的 \(vendors.count)/\(totalVendors) 家厂家。"
+            }
+            return "当前已锁定 \(focusedVendor.displayName) 厂家。这里保留该厂家全局库存与覆盖预算，便于继续往下看家族与热点用户。"
+        } else if providerKeyHasFocusedVendor {
+            return "当前已锁定 \(providerKeyVendorDisplayName(providerKeyNormalizedFocusedVendorKey)) 厂家，但 Hub 账本里还没有这家可展示的库存。先同步后再看。"
+        }
+        switch remoteQuotaVendorFilter {
+        case .all:
+            if let focusedUser {
+                return "当前只显示与 \(focusedUser.displayName) 相关的 \(vendors.count)/\(totalVendors) 家厂家。上游库存与 key 健康仍是厂家全局账，覆盖预算和今日用量已按当前用户重算。"
+            }
+            return "显示全部 \(vendors.count) 家厂家，覆盖库存、预算缓冲和健康态势。"
+        case .risk:
+            return vendors.isEmpty
+                ? "当前视角下没有库存缓冲偏低、超配或阻塞明显的厂家。"
+                : "风险视图共 \(vendors.count)/\(totalVendors) 家，按超配、缓冲不足或 key 阻塞筛出。"
+        }
+    }
+
+    private func providerKeyUserFilterSummary(
+        _ users: [RemoteQuotaCenterUserProjection],
+        totalUsers: Int,
+        focusedUser: RemoteQuotaCenterUserProjection?
+    ) -> String {
+        switch remoteQuotaUserFilter {
+        case .all:
+            if let focusedUser {
+                return "当前只显示 \(focusedUser.displayName) 这一位用户主体。"
+            }
+            return providerKeyUserLedgerSummary(users)
+        case .risk:
+            return users.isEmpty
+                ? "当前视角下没有逼近上限、已触顶或出现阻断记录的用户主体。"
+                : "风险用户共 \(users.count)/\(totalUsers) 个，按 consumer 风险和剩余额度偏低筛出。"
+        }
+    }
+
+    private func providerKeyUserLedgerSummary(
+        _ users: [RemoteQuotaCenterUserProjection]
+    ) -> String {
+        let standaloneCount = users.filter(\.isStandaloneConsumer).count
+        let riskCount = users.filter(providerKeyUserAtRisk(_:)).count
+        var parts: [String] = ["共 \(users.count) 个用户主体"]
+        if riskCount > 0 {
+            parts.append("\(riskCount) 个存在预算风险")
+        }
+        if standaloneCount > 0 {
+            parts.append("\(standaloneCount) 个未绑定 user_id，已按单 consumer 独立记账")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func providerKeyUserTint(
+        _ user: RemoteQuotaCenterUserProjection
+    ) -> Color {
+        if user.isStandaloneConsumer {
+            return .gray
+        }
+        return user.terminalConsumerCount > 0 && user.xtConsumerCount > 0 ? .blue : .indigo
+    }
+
+    private func providerKeyUserAtRisk(
+        _ user: RemoteQuotaCenterUserProjection
+    ) -> Bool {
+        if user.consumers.contains(where: providerKeyConsumerAtRisk(_:)) {
+            return true
+        }
+        guard user.allocatedDailyTokenBudget > 0 else { return false }
+        return user.remainingDailyTokenBudget <= max(Int64(5_000), user.allocatedDailyTokenBudget / 10)
+    }
+
+    private func providerKeyBudgetUserIdentitySummary(
+        _ user: RemoteQuotaCenterUserProjection
+    ) -> String {
+        var parts: [String] = []
+        switch user.groupingKind {
+        case .userID:
+            parts.append("user_id \(user.groupingValue)")
+        case .standaloneConsumer:
+            parts.append("未设置 user_id，按单个 consumer 独立记账")
+        }
+        if !user.appIds.isEmpty {
+            parts.append("app \(providerKeyPreviewList(user.appIds))")
+        }
+        return parts.joined(separator: " • ")
+    }
+
+    private func providerKeyBudgetUserScopeSummary(
+        _ user: RemoteQuotaCenterUserProjection
+    ) -> String {
+        var parts: [String] = []
+        if !user.familyDisplayNames.isEmpty {
+            parts.append("家族 \(providerKeyPreviewList(user.familyDisplayNames))")
+        } else {
+            parts.append("当前还没有解析到模型家族")
+        }
+        parts.append("\(user.consumerCount) 个消费者")
+        if user.connectedConsumerCount > 0 {
+            parts.append("在线 \(user.connectedConsumerCount)")
+        }
+        return HubUIStrings.Settings.RemoteModels.sectionSummary(parts)
+    }
+
+    private func providerKeyBudgetUserConsumerPreview(
+        _ user: RemoteQuotaCenterUserProjection
+    ) -> String {
+        let preview = user.consumers.prefix(3).map { consumer in
+            "\(consumer.name)(\(consumer.kindTitle))"
+        }
+        guard !preview.isEmpty else { return "" }
+        let suffix = user.consumerCount > preview.count
+            ? " 等另外 \(user.consumerCount - preview.count) 个"
+            : ""
+        return "消费者：\(preview.joined(separator: "、"))\(suffix)"
+    }
+
+    private func providerKeyPreviewList(
+        _ values: [String],
+        maxCount: Int = 3
+    ) -> String {
+        let trimmed = values
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !trimmed.isEmpty else { return "" }
+        let preview = Array(trimmed.prefix(maxCount))
+        let suffix = trimmed.count > preview.count ? " 等 \(trimmed.count) 项" : ""
+        return preview.joined(separator: " / ") + suffix
+    }
+
+    private func providerKeyFilteredConsumers(
+        _ projection: RemoteQuotaCenterProjection,
+        focusedVendorFamilyKeys: Set<String>
+    ) -> [RemoteQuotaCenterClientProjection] {
+        let scopedUsers = providerKeyScopedUsers(projection.users)
+        let scopedConsumerIDs = Set(scopedUsers.flatMap { $0.consumers.map(\.id) })
+        let baseConsumers: [RemoteQuotaCenterClientProjection]
+        if providerKeyFocusedUser(projection.users) != nil, !scopedConsumerIDs.isEmpty {
+            baseConsumers = projection.consumers.filter { scopedConsumerIDs.contains($0.id) }
+        } else {
+            baseConsumers = projection.consumers
+        }
+
+        let vendorScopedConsumers = providerKeyVendorScopedConsumers(
+            baseConsumers,
+            focusedVendorFamilyKeys: focusedVendorFamilyKeys
+        )
+
+        return vendorScopedConsumers.filter { consumer in
+            switch remoteQuotaConsumerFilter {
+            case .all:
+                return true
+            case .xt:
+                return consumer.consumerKind == .pairedXT
+            case .terminal:
+                return consumer.consumerKind == .terminalAccess
+            case .risk:
+                return providerKeyConsumerAtRisk(consumer)
+            }
+        }
+    }
+
+    private func providerKeyConsumerFilterSummary(
+        _ consumers: [RemoteQuotaCenterClientProjection],
+        totalConsumers: Int,
+        focusedUser: RemoteQuotaCenterUserProjection?
+    ) -> String {
+        let xtCount = consumers.filter { $0.consumerKind == .pairedXT }.count
+        let terminalCount = consumers.filter { $0.consumerKind == .terminalAccess }.count
+
+        switch remoteQuotaConsumerFilter {
+        case .all:
+            if let focusedUser {
+                return "当前显示 \(focusedUser.displayName) 相关的全部 \(consumers.count)/\(totalConsumers) 个消费者，其中 XT \(xtCount) 个，Terminal \(terminalCount) 个。"
+            }
+            return "显示全部 \(consumers.count) 个消费者，其中 XT \(xtCount) 个，Terminal \(terminalCount) 个。"
+        case .xt:
+            return "显示 \(consumers.count)/\(totalConsumers) 个 XT 消费者。"
+        case .terminal:
+            return "显示 \(consumers.count)/\(totalConsumers) 个普通 terminal access key 消费者。"
+        case .risk:
+            return consumers.isEmpty
+                ? "当前没有逼近上限或出现阻断的消费者。"
+                : "风险视图共 \(consumers.count) 个，按剩余额度偏低、已触顶或有阻断记录筛出。"
+        }
+    }
+
+    private func providerKeyConsumerKindColor(
+        _ kind: RemoteQuotaCenterConsumerKind
+    ) -> Color {
+        switch kind {
+        case .pairedXT:
+            return .indigo
+        case .terminalAccess:
+            return .teal
+        }
+    }
+
+    private func providerKeyConsumerAtRisk(
+        _ consumer: RemoteQuotaCenterClientProjection
+    ) -> Bool {
+        if let status = consumer.deviceStatus, status.blockedToday > 0 {
+            return true
+        }
+        guard consumer.dailyTokenLimit > 0 else { return false }
+        if consumer.dailyTokenUsed >= consumer.dailyTokenLimit {
+            return true
+        }
+        return consumer.remainingDailyTokenBudget <= max(Int64(5_000), consumer.dailyTokenLimit / 10)
+    }
+
+    private func providerKeyBudgetClientReferenceSummary(
+        _ clientProjection: RemoteQuotaCenterClientProjection
+    ) -> String {
+        var parts: [String] = []
+        if clientProjection.isTerminalAccess {
+            parts.append("key \(clientProjection.referenceID)")
+        } else {
+            parts.append("device \(clientProjection.deviceId)")
+        }
+        if !clientProjection.appId.isEmpty {
+            parts.append("app \(clientProjection.appId)")
+        }
+        if !clientProjection.userId.isEmpty {
+            parts.append("user \(clientProjection.userId)")
+        }
+        return parts.joined(separator: " • ")
+    }
+
+    private func reloadCLIProxyRuntimeConfiguration() {
+        cliproxyRuntimeSettings = CLIProxyRuntimeSupport.loadSettings()
+        cliproxyRuntimeConfigAudit = CLIProxyRuntimeSupport.auditConfig(settings: cliproxyRuntimeSettings)
+    }
+
+    private func persistCLIProxyRuntimeConfiguration() {
+        cliproxyRuntimeSettings = cliproxyRuntimeSettings.normalized()
+        _ = CLIProxyRuntimeSupport.saveSettings(cliproxyRuntimeSettings)
+        cliproxyRuntimeConfigAudit = CLIProxyRuntimeSupport.auditConfig(settings: cliproxyRuntimeSettings)
+    }
+
+    private func detectCLIProxyRuntimePackage() {
+        if let detectedURL = CLIProxyRuntimeSupport.detectPackageDirectoryURL() {
+            cliproxyRuntimeSettings.packageDirectoryPath = detectedURL.path
+            cliproxyRuntimeSettings.preferDetectedPackage = true
+            persistCLIProxyRuntimeConfiguration()
+            cliproxyRuntimeActionText = "已自动定位 CLIProxy 发行包：\(settingsSummarySnippet(detectedURL.path, limit: 62))"
+            cliproxyRuntimeErrorText = ""
+            Task { await refreshCLIProxyRuntimeStatus(manual: false) }
+            return
+        }
+
+        cliproxyRuntimeErrorText = "自动探测没有找到 CLIProxy 发行包。默认会查找 ~/Documents/AX/source/CLIProxyAPI-main。"
+    }
+
+    @MainActor
+    private func refreshCLIProxyRuntimeStatus(manual: Bool = false) async {
+        guard !cliproxyRuntimeRefreshing else { return }
+
+        cliproxyRuntimeRefreshing = true
+        persistCLIProxyRuntimeConfiguration()
+        if manual {
+            cliproxyRuntimeActionText = "正在检查本地 CLIProxy 节点…"
+            cliproxyRuntimeErrorText = ""
+        }
+
+        defer {
+            cliproxyRuntimeRefreshing = false
+        }
+
+        let probe = await CLIProxyRuntimeSupport.probe(
+            baseURL: cliproxyOAuthSettings.baseURL,
+            managementKey: cliproxyOAuthManagementKey,
+            settings: cliproxyRuntimeSettings
+        )
+        cliproxyRuntimeConfigAudit = CLIProxyRuntimeSupport.auditConfig(settings: cliproxyRuntimeSettings)
+        cliproxyRuntimeProbe = probe
+        cliproxyRuntimeLastProbeAtMs = probe.probedAtMs
+
+        guard manual else { return }
+
+        let trimmedSummary = cliproxyRuntimeSummaryText.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch probe.packageStatus {
+        case .notFound where !probe.serviceRunning:
+            cliproxyRuntimeErrorText = "还没有发现 CLIProxy 发行包目录。可点“自动探测”，或手动填写发行包目录。"
+            cliproxyRuntimeActionText = ""
+        case .missingExecutable:
+            cliproxyRuntimeErrorText = "选中的目录里缺少 cli-proxy-api 可执行文件。"
+            cliproxyRuntimeActionText = ""
+        case .missingConfig:
+            cliproxyRuntimeErrorText = "选中的目录里缺少 config.yaml。"
+            cliproxyRuntimeActionText = ""
+        default:
+            switch probe.managementStatus {
+            case .keyInvalid:
+                cliproxyRuntimeErrorText = "CLIProxy 已运行，但 management key 不正确。"
+                cliproxyRuntimeActionText = ""
+            case .unavailable:
+                cliproxyRuntimeErrorText = "CLIProxy 服务已启动，但管理接口当前不可用。"
+                cliproxyRuntimeActionText = ""
+            case .error(let detail):
+                cliproxyRuntimeErrorText = detail.isEmpty
+                    ? "CLIProxy 管理接口检查失败。"
+                    : "CLIProxy 管理接口检查失败：\(detail)"
+                cliproxyRuntimeActionText = ""
+            default:
+                cliproxyRuntimeActionText = trimmedSummary
+                cliproxyRuntimeErrorText = ""
+            }
+        }
+    }
+
+    @MainActor
+    private func maybeRefreshCLIProxyRuntimeStatus() async {
+        guard selectedSettingsPage == .models else { return }
+        guard !cliproxyRuntimeRefreshing, !cliproxyRuntimeLaunching, !cliproxyRuntimeKeyRotating else { return }
+
+        let nowMs = Int64((Date().timeIntervalSince1970 * 1000.0).rounded())
+        let intervalMs: Int64 = nowMs < cliproxyRuntimeFastProbeUntilMs ? 4_000 : 20_000
+        guard cliproxyRuntimeLastProbeAtMs == 0 || nowMs - cliproxyRuntimeLastProbeAtMs >= intervalMs else {
+            return
+        }
+
+        await refreshCLIProxyRuntimeStatus(manual: false)
+    }
+
+    @MainActor
+    private func startCLIProxyRuntime() async {
+        guard !cliproxyRuntimeLaunching else { return }
+
+        persistCLIProxyRuntimeConfiguration()
+        persistCLIProxyOAuthConfiguration()
+        cliproxyRuntimeLaunching = true
+        cliproxyRuntimeActionText = "正在启动本地 CLIProxy 节点…"
+        cliproxyRuntimeErrorText = ""
+
+        defer {
+            cliproxyRuntimeLaunching = false
+        }
+
+        do {
+            let result = try await CLIProxyRuntimeSupport.startServer(
+                baseURL: cliproxyOAuthSettings.baseURL,
+                settings: cliproxyRuntimeSettings
+            )
+            cliproxyRuntimeFastProbeUntilMs = Int64((Date().timeIntervalSince1970 * 1000.0).rounded()) + 20_000
+            await refreshCLIProxyRuntimeStatus(manual: false)
+
+            if result.alreadyRunning {
+                cliproxyRuntimeActionText = "CLIProxy 已在运行，Hub 已切换到托管检查模式。"
+            } else if result.healthConfirmed {
+                cliproxyRuntimeActionText = "本地 CLIProxy 已启动（pid \(result.pid)），Hub 已探测到服务。"
+            } else {
+                cliproxyRuntimeActionText = "CLIProxy 启动请求已发出（pid \(result.pid)），服务仍在预热，Hub 会继续探测。"
+            }
+
+            if !cliproxyOAuthManagementKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                await refreshCLIProxyOAuthRemoteAuths(manual: false)
+                if cliproxyOAuthSettings.autoSync {
+                    await syncCLIProxyOAuthAccounts(manual: false)
+                }
+            }
+        } catch {
+            cliproxyRuntimeErrorText = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func applyCLIProxyRuntimeConfigRecommendations() async {
+        guard !cliproxyRuntimeConfigApplying else { return }
+
+        persistCLIProxyRuntimeConfiguration()
+        cliproxyRuntimeConfigApplying = true
+        cliproxyRuntimeActionText = "正在把推荐项写入 CLIProxy config.yaml…"
+        cliproxyRuntimeErrorText = ""
+
+        defer {
+            cliproxyRuntimeConfigApplying = false
+        }
+
+        do {
+            let result = try CLIProxyRuntimeSupport.applyRecommendedConfigFixes(settings: cliproxyRuntimeSettings)
+            cliproxyRuntimeConfigAudit = CLIProxyRuntimeSupport.auditConfig(settings: cliproxyRuntimeSettings)
+
+            if result.changedCount == 0 {
+                cliproxyRuntimeActionText = "config.yaml 已经符合当前推荐项，没有额外改动。"
+            } else {
+                let updatedTitles = result.updatedKinds.map(\.title).joined(separator: "、")
+                let restartHint = cliproxyRuntimeProbe.serviceRunning ? "CLIProxy 当前正在运行，重启后这些改动会完全生效。" : "下次从 Hub 启动本地节点时会直接按新配置运行。"
+                let backupHint = result.backupPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? ""
+                    : " 已生成备份：\(settingsSummarySnippet(result.backupPath, limit: 54))。"
+                cliproxyRuntimeActionText =
+                    "已修正 \(result.changedCount) 项：\(updatedTitles)。\(restartHint)\(backupHint)"
+            }
+
+            await refreshCLIProxyRuntimeStatus(manual: false)
+        } catch {
+            cliproxyRuntimeErrorText = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func rotateCLIProxyRuntimeManagementKey() async {
+        guard !cliproxyRuntimeKeyRotating else { return }
+
+        persistCLIProxyRuntimeConfiguration()
+        persistCLIProxyOAuthConfiguration()
+        cliproxyRuntimeKeyRotating = true
+        cliproxyRuntimeActionText = "正在轮换 CLIProxy management key…"
+        cliproxyRuntimeErrorText = ""
+        cliproxyOAuthErrorText = ""
+
+        defer {
+            cliproxyRuntimeKeyRotating = false
+        }
+
+        do {
+            let result = try CLIProxyRuntimeSupport.rotateManagementKey(settings: cliproxyRuntimeSettings)
+            cliproxyOAuthManagementKey = result.newKey
+            persistCLIProxyOAuthConfiguration()
+            cliproxyRuntimeFastProbeUntilMs = Int64((Date().timeIntervalSince1970 * 1000.0).rounded()) + 20_000
+            cliproxyRuntimeConfigAudit = CLIProxyRuntimeSupport.auditConfig(settings: cliproxyRuntimeSettings)
+
+            let backupHint = result.backupPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? ""
+                : " 已生成备份：\(settingsSummarySnippet(result.backupPath, limit: 54))。"
+
+            if cliproxyRuntimeProbe.serviceRunning {
+                let activated = await waitForCLIProxyRuntimeManagementKeyActivation(result.newKey)
+                if activated {
+                    cliproxyRuntimeActionText =
+                        "已轮换 management key，Hub 和运行中 CLIProxy 已完成切换。\(backupHint)"
+                    await refreshCLIProxyOAuthRemoteAuths(manual: false)
+                    if cliproxyOAuthSettings.autoSync {
+                        await syncCLIProxyOAuthAccounts(manual: false)
+                    }
+                } else {
+                    cliproxyRuntimeActionText =
+                        "新 management key 已写入 config.yaml 并同步到 Hub keychain；运行中 CLIProxy 还在切换，若稍后仍未接通可重启本地节点。\(backupHint)"
+                }
+            } else {
+                cliproxyRuntimeActionText =
+                    "已轮换 management key。下次从 Hub 启动本地节点时会直接使用新 key。\(backupHint)"
+                await refreshCLIProxyRuntimeStatus(manual: false)
+            }
+        } catch {
+            cliproxyRuntimeErrorText = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func waitForCLIProxyRuntimeManagementKeyActivation(
+        _ managementKey: String,
+        timeoutSec: Double = 8.0
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeoutSec)
+        while Date() < deadline {
+            let probe = await CLIProxyRuntimeSupport.probe(
+                baseURL: cliproxyOAuthSettings.baseURL,
+                managementKey: managementKey,
+                settings: cliproxyRuntimeSettings
+            )
+            cliproxyRuntimeProbe = probe
+            cliproxyRuntimeLastProbeAtMs = probe.probedAtMs
+            cliproxyRuntimeConfigAudit = CLIProxyRuntimeSupport.auditConfig(settings: cliproxyRuntimeSettings)
+
+            guard probe.serviceRunning else { return false }
+
+            switch probe.managementStatus {
+            case .keyValid:
+                return true
+            case .keyInvalid, .waitingForKey, .unavailable, .unknown, .error:
+                break
+            }
+
+            try? await Task.sleep(nanoseconds: 400_000_000)
+        }
+
+        return false
+    }
+
+    private func openCLIProxyRuntimePackageDirectory() {
+        let settings = cliproxyRuntimeSettings
+        let packageURL = CLIProxyRuntimeSupport.packageDirectoryURL(for: settings)
+        guard let packageURL else {
+            cliproxyRuntimeErrorText = "还没有可打开的 CLIProxy 发行包目录。"
+            return
+        }
+        _ = NSWorkspace.shared.open(packageURL)
+    }
+
+    private func openCLIProxyRuntimeConfigFile() {
+        let settings = cliproxyRuntimeSettings
+        guard let configURL = CLIProxyRuntimeSupport.configURL(for: settings) else {
+            cliproxyRuntimeErrorText = "还没有找到可打开的 CLIProxy config.yaml。"
+            return
+        }
+        _ = NSWorkspace.shared.open(configURL)
+    }
+
+    private func reloadCLIProxyOAuthConfiguration() {
+        let settings = CLIProxyOAuthSourceSupport.loadSettings()
+        cliproxyOAuthSettings = settings
+        cliproxyOAuthManagementKey = CLIProxyOAuthSourceSupport.loadManagementKey(baseURL: settings.baseURL)
+    }
+
+    private func persistCLIProxyOAuthConfiguration() {
+        cliproxyOAuthSettings.baseURL = CLIProxyOAuthSourceSupport.normalizedBaseURLString(
+            cliproxyOAuthSettings.baseURL
+        )
+        _ = CLIProxyOAuthSourceSupport.saveSettings(cliproxyOAuthSettings)
+        _ = CLIProxyOAuthSourceSupport.saveManagementKey(
+            cliproxyOAuthManagementKey,
+            baseURL: cliproxyOAuthSettings.baseURL
+        )
+    }
+
+    @MainActor
+    private func refreshCLIProxyOAuthRemoteAuths(manual: Bool = false) async {
+        guard !cliproxyOAuthRefreshing, !cliproxyOAuthSyncing else { return }
+
+        persistCLIProxyOAuthConfiguration()
+        let managementKey = cliproxyOAuthManagementKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if managementKey.isEmpty {
+            if manual {
+                cliproxyOAuthErrorText = "请先填写 CLIProxy management key。"
+            }
+            return
+        }
+
+        cliproxyOAuthRefreshing = true
+        if manual {
+            cliproxyOAuthActionText = "正在读取 CLIProxy 已认证账号列表…"
+            cliproxyOAuthErrorText = ""
+        }
+
+        defer {
+            cliproxyOAuthRefreshing = false
+        }
+
+        do {
+            let auths = try await CLIProxyOAuthSourceSupport.listRemoteAuths(
+                baseURL: cliproxyOAuthSettings.baseURL,
+                managementKey: managementKey
+            )
+            cliproxyOAuthRemoteAuths = auths
+            cliproxyOAuthLastRemoteFetchAtMs = Int64((Date().timeIntervalSince1970 * 1000.0).rounded())
+            if manual {
+                cliproxyOAuthActionText = auths.isEmpty
+                    ? "CLIProxy 当前还没有已认证账号。"
+                    : "已刷新 \(auths.count) 个 CLIProxy OAuth 账号。"
+            }
+        } catch {
+            if manual || cliproxyOAuthRemoteAuths.isEmpty {
+                cliproxyOAuthErrorText = error.localizedDescription
+            }
+        }
+    }
+
+    @MainActor
+    private func syncCLIProxyOAuthAccounts(manual: Bool = true) async {
+        guard !cliproxyOAuthSyncing else { return }
+
+        persistCLIProxyOAuthConfiguration()
+        let managementKey = cliproxyOAuthManagementKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if managementKey.isEmpty {
+            cliproxyOAuthErrorText = "请先填写 CLIProxy management key。"
+            return
+        }
+
+        cliproxyOAuthSyncing = true
+        cliproxyOAuthErrorText = ""
+        cliproxyOAuthActionText = manual
+            ? "正在把 CLIProxy OAuth 账号同步进 Hub 额度池…"
+            : "CLIProxy OAuth 自动同步中…"
+
+        defer {
+            cliproxyOAuthSyncing = false
+        }
+
+        do {
+            let summary = try await CLIProxyOAuthSourceSupport.syncAccounts(
+                baseURL: cliproxyOAuthSettings.baseURL,
+                managementKey: managementKey
+            )
+            cliproxyOAuthRemoteAuths = summary.remoteAuths
+            cliproxyOAuthLastRemoteFetchAtMs = Int64((Date().timeIntervalSince1970 * 1000.0).rounded())
+            cliproxyOAuthLastAutoSyncAtMs = cliproxyOAuthLastRemoteFetchAtMs
+            let snapshot = await Task.detached(priority: .utility) {
+                await Self.loadProviderKeySnapshotWithBootstrapBackground()
+            }.value
+            providerKeySnapshot = snapshot
+            lastProviderKeyPeriodicRefreshAt = Date()
+            rebuildRemoteQuotaProjectionSnapshot()
+            if summary.errorMessages.isEmpty {
+                cliproxyOAuthSettings.lastSyncAtMs = CLIProxyOAuthSourceSupport.loadSettings().lastSyncAtMs
+                cliproxyOAuthActionText = cliproxyOAuthSyncActionText(
+                    summary: summary,
+                    snapshot: snapshot,
+                    partial: false
+                )
+            } else {
+                cliproxyOAuthActionText = cliproxyOAuthSyncActionText(
+                    summary: summary,
+                    snapshot: snapshot,
+                    partial: true
+                )
+                cliproxyOAuthErrorText = summary.errorMessages.prefix(3).joined(separator: " | ")
+            }
+        } catch {
+            cliproxyOAuthErrorText = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func startCLIProxyOAuth(_ provider: HubProviderOAuthHTTPClient.Provider) async {
+        guard cliproxyOAuthActiveState.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            cliproxyOAuthErrorText = "已有 Provider OAuth 登录在进行中。"
+            return
+        }
+
+        cliproxyOAuthErrorText = ""
+        cliproxyOAuthActionText = "正在向 Hub 发起 \(provider.title) OAuth…"
+
+        do {
+            let launch = try await HubProviderOAuthHTTPClient.startLogin(
+                provider: provider,
+                adminToken: grpc.localAdminToken(),
+                grpcPort: grpc.port
+            )
+            guard let authURL = URL(string: launch.authURL),
+                  let redirectURL = URL(string: launch.redirectURI) else {
+                throw HubProviderOAuthHTTPClient.ClientError.apiError("invalid_oauth_login_payload")
+            }
+
+            let callbackServer = try HubProviderOAuthLoopbackCallbackServer(redirectURI: redirectURL)
+            cliproxyOAuthActiveState = launch.state
+            cliproxyOAuthActiveProvider = provider
+            cliproxyOAuthActionText = "\(provider.title) OAuth 已打开浏览器，等待登录回调…"
+
+            async let callbackURL = callbackServer.waitForCallback(
+                timeout: oauthCallbackTimeoutSeconds(launch.expiresAtMs)
+            )
+            guard NSWorkspace.shared.open(authURL) else {
+                cliproxyOAuthActiveState = ""
+                cliproxyOAuthActiveProvider = nil
+                throw HubProviderOAuthHTTPClient.ClientError.apiError("failed_to_open_browser")
+            }
+
+            let returnedURL = try await callbackURL
+            cliproxyOAuthActionText = "Hub 正在导入 \(provider.title) OAuth 凭证…"
+            let submit = try await HubProviderOAuthHTTPClient.submitCallback(
+                provider: launch.provider.isEmpty ? provider.rawValue : launch.provider,
+                state: launch.state,
+                redirectURL: returnedURL.absoluteString,
+                adminToken: grpc.localAdminToken(),
+                grpcPort: grpc.port
+            )
+            guard submit.ok else {
+                throw HubProviderOAuthHTTPClient.ClientError.apiError(submit.error)
+            }
+            await pollCLIProxyOAuthLogin()
+        } catch {
+            cliproxyOAuthErrorText = error.localizedDescription
+            cliproxyOAuthActionText = ""
+            cliproxyOAuthActiveState = ""
+            cliproxyOAuthActiveProvider = nil
+        }
+    }
+
+    @MainActor
+    private func pollCLIProxyOAuthLogin() async {
+        let activeState = cliproxyOAuthActiveState.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !activeState.isEmpty else { return }
+
+        do {
+            let status = try await HubProviderOAuthHTTPClient.status(
+                state: activeState,
+                adminToken: grpc.localAdminToken(),
+                grpcPort: grpc.port
+            )
+            switch status.status {
+            case "pending", "processing":
+                break
+            case "ok":
+                let providerTitle = cliproxyOAuthActiveProvider?.title ?? "Hub"
+                cliproxyOAuthActiveState = ""
+                cliproxyOAuthActiveProvider = nil
+                let detail = [status.email, status.accountKey]
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                    .joined(separator: " · ")
+                cliproxyOAuthActionText = detail.isEmpty
+                    ? "\(providerTitle) OAuth 已完成并导入 Hub 额度池。"
+                    : "\(providerTitle) OAuth 已完成并导入 Hub 额度池：\(detail)"
+                reloadProviderKeySnapshot()
+            case "error", "expired", "unknown":
+                let providerTitle = cliproxyOAuthActiveProvider?.title ?? "Hub"
+                cliproxyOAuthActiveState = ""
+                cliproxyOAuthActiveProvider = nil
+                let message = status.error.isEmpty
+                    ? (status.statusMessage.isEmpty ? status.status : status.statusMessage)
+                    : status.error
+                cliproxyOAuthErrorText = "\(providerTitle) OAuth 失败：\(message)"
+            default:
+                break
+            }
+        } catch {
+            cliproxyOAuthErrorText = error.localizedDescription
+            cliproxyOAuthActiveState = ""
+            cliproxyOAuthActiveProvider = nil
+        }
+    }
+
+    private func oauthCallbackTimeoutSeconds(_ expiresAtMs: Int64) -> TimeInterval {
+        guard expiresAtMs > 0 else { return 300 }
+        let remaining = max(15, (Double(expiresAtMs) / 1000.0) - Date().timeIntervalSince1970)
+        return min(remaining, 600)
+    }
+
+    @MainActor
+    private func maybeAutoSyncCLIProxyOAuthAccounts() async {
+        guard cliproxyOAuthSettings.autoSync else { return }
+        guard cliproxyOAuthActiveState.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard !cliproxyOAuthSyncing, !cliproxyOAuthRefreshing else { return }
+        guard !cliproxyOAuthManagementKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
+        let nowMs = Int64((Date().timeIntervalSince1970 * 1000.0).rounded())
+        let baseline = max(cliproxyOAuthLastAutoSyncAtMs, cliproxyOAuthSettings.lastSyncAtMs)
+        guard baseline == 0 || nowMs - baseline >= 60_000 else { return }
+        cliproxyOAuthLastAutoSyncAtMs = nowMs
+        await syncCLIProxyOAuthAccounts(manual: false)
+    }
+
+    private func openCLIProxyOAuthManagementConsole() {
+        persistCLIProxyOAuthConfiguration()
+        guard cliproxyRuntimeProbe.serviceRunning else {
+            cliproxyOAuthErrorText = "CLIProxy 管理页当前没有运行。Hub 原生 OAuth 可直接用“发起 OAuth”，不需要打开 CLIProxy 管理页；如果要维护旧 CLIProxy 账号，请先启动本地节点。"
+            return
+        }
+        guard let url = CLIProxyOAuthSourceSupport.managementConsoleURL(
+            baseURL: cliproxyOAuthSettings.baseURL
+        ) else {
+            cliproxyOAuthErrorText = "CLIProxy 地址无效。"
+            return
+        }
+        _ = NSWorkspace.shared.open(url)
+    }
+
+    @ViewBuilder
+    private var cliproxyOAuthSourceCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Hub OAuth")
+                        .font(.subheadline.weight(.semibold))
+                    Text("直接从 Hub 发起 Codex / Claude / Gemini / Antigravity OAuth，登录完成后凭证会进入 Hub Provider Key 额度池。CLIProxy 只保留为旧账号导入来源。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer()
+
+                Text(cliproxyOAuthStatusBadgeText)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(cliproxyOAuthStatusTint)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(cliproxyOAuthStatusTint.opacity(0.12))
+                    .clipShape(Capsule())
+            }
+
+            cliproxyRuntimeControlPanel
+
+            Rectangle()
+                .fill(Color.indigo.opacity(0.08))
+                .frame(height: 1)
+
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("CLIProxy 地址")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextField("http://127.0.0.1:8317", text: $cliproxyOAuthSettings.baseURL)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Management Key")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    SecureField("Bearer 管理 key", text: $cliproxyOAuthManagementKey)
+                        .textFieldStyle(.roundedBorder)
+                }
+            }
+
+            HStack(spacing: 12) {
+                Toggle("自动同步", isOn: $cliproxyOAuthSettings.autoSync)
+                    .toggleStyle(.switch)
+
+                if cliproxyOAuthSettings.lastSyncAtMs > 0 {
+                    Text("上次成功同步 \(formattedProviderKeyImportSourceTime(cliproxyOAuthSettings.lastSyncAtMs))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("还没有成功同步记录")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+            }
+
+            terminalAccessFeedbackBanner(
+                text: cliproxyOAuthHubRoutingStatusText,
+                tint: cliproxyOAuthHubRoutingStatusTint,
+                systemName: cliproxyOAuthHubRoutingStatusSystemName
+            )
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("常用动作")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) {
+                        cliproxyOAuthActionButton(
+                            title: "保存",
+                            systemName: "square.and.arrow.down",
+                            tint: .blue
+                        ) {
+                            persistCLIProxyRuntimeConfiguration()
+                            persistCLIProxyOAuthConfiguration()
+                            cliproxyOAuthActionText = "CLIProxy 接入设置已保存。"
+                            cliproxyOAuthErrorText = ""
+                        }
+
+                        cliproxyOAuthActionButton(
+                            title: cliproxyOAuthSyncing ? "同步中" : "同步到 Hub",
+                            systemName: "shippingbox.and.arrow.backward",
+                            tint: .green,
+                            disabled: cliproxyOAuthSyncing
+                        ) {
+                            Task { await syncCLIProxyOAuthAccounts(manual: true) }
+                        }
+
+                        Menu {
+                            ForEach(HubProviderOAuthHTTPClient.Provider.allCases) { provider in
+                                Button(provider.title) {
+                                    Task { await startCLIProxyOAuth(provider) }
+                                }
+                            }
+                        } label: {
+                            settingsActionChipLabel(
+                                title: "发起 OAuth",
+                                systemName: "person.badge.key",
+                                tint: .indigo,
+                                disabled: cliproxyOAuthSyncing
+                            )
+                        }
+                        .disabled(cliproxyOAuthSyncing)
+
+                        Menu {
+                            Button("打开管理页") {
+                                openCLIProxyOAuthManagementConsole()
+                            }
+                            Button(cliproxyOAuthRefreshing ? "刷新中" : "刷新账号") {
+                                Task { await refreshCLIProxyOAuthRemoteAuths(manual: true) }
+                            }
+                            .disabled(cliproxyOAuthRefreshing || cliproxyOAuthSyncing)
+                        } label: {
+                            settingsActionChipLabel(
+                                title: "维护",
+                                systemName: "ellipsis.circle",
+                                tint: .secondary
+                            )
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 8) {
+                            cliproxyOAuthActionButton(
+                                title: "保存",
+                                systemName: "square.and.arrow.down",
+                                tint: .blue
+                            ) {
+                                persistCLIProxyRuntimeConfiguration()
+                                persistCLIProxyOAuthConfiguration()
+                                cliproxyOAuthActionText = "CLIProxy 接入设置已保存。"
+                                cliproxyOAuthErrorText = ""
+                            }
+
+                            cliproxyOAuthActionButton(
+                                title: cliproxyOAuthSyncing ? "同步中" : "同步到 Hub",
+                                systemName: "shippingbox.and.arrow.backward",
+                                tint: .green,
+                                disabled: cliproxyOAuthSyncing
+                            ) {
+                                Task { await syncCLIProxyOAuthAccounts(manual: true) }
+                            }
+                        }
+
+                        HStack(spacing: 8) {
+                            Menu {
+                                ForEach(HubProviderOAuthHTTPClient.Provider.allCases) { provider in
+                                    Button(provider.title) {
+                                        Task { await startCLIProxyOAuth(provider) }
+                                    }
+                                }
+                            } label: {
+                                settingsActionChipLabel(
+                                    title: "发起 OAuth",
+                                    systemName: "person.badge.key",
+                                    tint: .indigo,
+                                    disabled: cliproxyOAuthSyncing
+                                )
+                            }
+                            .disabled(cliproxyOAuthSyncing)
+
+                            Menu {
+                                Button("打开管理页") {
+                                    openCLIProxyOAuthManagementConsole()
+                                }
+                                Button(cliproxyOAuthRefreshing ? "刷新中" : "刷新账号") {
+                                    Task { await refreshCLIProxyOAuthRemoteAuths(manual: true) }
+                                }
+                                .disabled(cliproxyOAuthRefreshing || cliproxyOAuthSyncing)
+                            } label: {
+                                settingsActionChipLabel(
+                                    title: "维护",
+                                    systemName: "ellipsis.circle",
+                                    tint: .secondary
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Text("新登录直接由 Hub 接管；保存、同步、刷新和管理页只用于旧 CLIProxy 账号导入。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            if !cliproxyOAuthActionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                terminalAccessFeedbackBanner(
+                    text: cliproxyOAuthActionText,
+                    tint: .blue,
+                    systemName: "person.crop.circle.badge.checkmark"
+                )
+            }
+
+            if !cliproxyOAuthErrorText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                terminalAccessFeedbackBanner(
+                    text: cliproxyOAuthErrorText,
+                    tint: .red,
+                    systemName: "exclamationmark.triangle"
+                )
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("已认证账号")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    Spacer()
+
+                    if cliproxyOAuthLastRemoteFetchAtMs > 0 {
+                        Text("列表刷新 \(formattedProviderKeyImportSourceTime(cliproxyOAuthLastRemoteFetchAtMs))")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if cliproxyOAuthRemoteAuths.isEmpty {
+                    Text("当前还没有旧 CLIProxy 已认证账号。新账号直接点上面的 OAuth 按钮由 Hub 接管。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(cliproxyOAuthRemoteAuths) { auth in
+                        cliproxyOAuthAuthRow(auth)
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .background(
+            LinearGradient(
+                colors: [
+                    Color.indigo.opacity(0.10),
+                    Color.blue.opacity(0.05)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.indigo.opacity(0.18), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private var cliproxyOAuthStatusBadgeText: String {
+        if cliproxyOAuthSyncing {
+            return "同步中"
+        }
+        if cliproxyOAuthRefreshing {
+            return "刷新中"
+        }
+        if let provider = cliproxyOAuthActiveProvider,
+           !cliproxyOAuthActiveState.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "\(provider.title) 登录中"
+        }
+        if cliproxyOAuthSettings.autoSync {
+            return "自动同步开"
+        }
+        return "手动同步"
+    }
+
+    private var cliproxyOAuthStatusTint: Color {
+        if cliproxyOAuthSyncing || cliproxyOAuthRefreshing {
+            return .blue
+        }
+        if !cliproxyOAuthActiveState.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return .orange
+        }
+        return cliproxyOAuthSettings.autoSync ? .green : .secondary
+    }
+
+    @ViewBuilder
+    private var cliproxyRuntimeControlPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("本地节点托管")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text("Hub 可以直接接管本机的 CLIProxy 发行包：自动探测目录、检查 8317 状态，并从这里一键启动。默认会带 `--local-model` 降低后台负担。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer()
+
+                Text(cliproxyRuntimeStatusBadgeText)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(cliproxyRuntimeStatusTint)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(cliproxyRuntimeStatusTint.opacity(0.12))
+                    .clipShape(Capsule())
+            }
+
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("发行包目录")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextField(
+                        "~/Documents/AX/source/CLIProxyAPI-main/CLIProxyAPI_6.9.30_darwin_amd64",
+                        text: $cliproxyRuntimeSettings.packageDirectoryPath
+                    )
+                    .textFieldStyle(.roundedBorder)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Toggle("低负担模式 (--local-model)", isOn: $cliproxyRuntimeSettings.useLocalModel)
+                        .toggleStyle(.switch)
+                    Toggle("优先使用自动探测目录", isOn: $cliproxyRuntimeSettings.preferDetectedPackage)
+                        .toggleStyle(.switch)
+
+                    if cliproxyRuntimeLastProbeAtMs > 0 {
+                        Text("上次检查 \(formattedProviderKeyImportSourceTime(cliproxyRuntimeLastProbeAtMs))")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("还没有本地节点检查记录")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(maxWidth: 250, alignment: .leading)
+            }
+
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    cliproxyOAuthActionButton(
+                        title: "自动探测",
+                        systemName: "scope",
+                        tint: .indigo,
+                        disabled: cliproxyRuntimeControlBusy
+                    ) {
+                        detectCLIProxyRuntimePackage()
+                    }
+
+                    cliproxyOAuthActionButton(
+                        title: cliproxyRuntimeRefreshing ? "检查中" : "检查节点",
+                        systemName: "bolt.horizontal.circle",
+                        tint: .blue,
+                        disabled: cliproxyRuntimeControlBusy
+                    ) {
+                        Task { await refreshCLIProxyRuntimeStatus(manual: true) }
+                    }
+
+                    cliproxyOAuthActionButton(
+                        title: cliproxyRuntimeLaunching ? "启动中" : "启动本地节点",
+                        systemName: "play.circle",
+                        tint: .green,
+                        disabled: cliproxyRuntimeControlBusy
+                    ) {
+                        Task { await startCLIProxyRuntime() }
+                    }
+
+                    Menu {
+                        Button("打开发行包目录") {
+                            openCLIProxyRuntimePackageDirectory()
+                        }
+                        Button("打开 config.yaml") {
+                            openCLIProxyRuntimeConfigFile()
+                        }
+                        Button("打开管理页") {
+                            openCLIProxyOAuthManagementConsole()
+                        }
+                    } label: {
+                        settingsActionChipLabel(
+                            title: "更多",
+                            systemName: "ellipsis.circle",
+                            tint: .secondary,
+                            disabled: cliproxyRuntimeControlBusy
+                        )
+                    }
+                    .disabled(cliproxyRuntimeControlBusy)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        cliproxyOAuthActionButton(
+                            title: "自动探测",
+                            systemName: "scope",
+                            tint: .indigo,
+                            disabled: cliproxyRuntimeControlBusy
+                        ) {
+                            detectCLIProxyRuntimePackage()
+                        }
+
+                        cliproxyOAuthActionButton(
+                            title: cliproxyRuntimeRefreshing ? "检查中" : "检查节点",
+                            systemName: "bolt.horizontal.circle",
+                            tint: .blue,
+                            disabled: cliproxyRuntimeControlBusy
+                        ) {
+                            Task { await refreshCLIProxyRuntimeStatus(manual: true) }
+                        }
+                    }
+
+                    HStack(spacing: 8) {
+                        cliproxyOAuthActionButton(
+                            title: cliproxyRuntimeLaunching ? "启动中" : "启动本地节点",
+                            systemName: "play.circle",
+                            tint: .green,
+                            disabled: cliproxyRuntimeControlBusy
+                        ) {
+                            Task { await startCLIProxyRuntime() }
+                        }
+
+                        Menu {
+                            Button("打开发行包目录") {
+                                openCLIProxyRuntimePackageDirectory()
+                            }
+                            Button("打开 config.yaml") {
+                                openCLIProxyRuntimeConfigFile()
+                            }
+                            Button("打开管理页") {
+                                openCLIProxyOAuthManagementConsole()
+                            }
+                        } label: {
+                            settingsActionChipLabel(
+                                title: "更多",
+                                systemName: "ellipsis.circle",
+                                tint: .secondary,
+                                disabled: cliproxyRuntimeControlBusy
+                            )
+                        }
+                        .disabled(cliproxyRuntimeControlBusy)
+                    }
+                }
+            }
+
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    cliproxyRuntimeStateChip(
+                        title: "发行包",
+                        value: cliproxyRuntimePackageChipText,
+                        tint: cliproxyRuntimePackageChipTint,
+                        systemName: "shippingbox"
+                    )
+                    cliproxyRuntimeStateChip(
+                        title: "服务",
+                        value: cliproxyRuntimeServiceChipText,
+                        tint: cliproxyRuntimeServiceChipTint,
+                        systemName: "dot.radiowaves.left.and.right"
+                    )
+                    cliproxyRuntimeStateChip(
+                        title: "管理端",
+                        value: cliproxyRuntimeManagementChipText,
+                        tint: cliproxyRuntimeManagementChipTint,
+                        systemName: "lock.shield"
+                    )
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    cliproxyRuntimeStateChip(
+                        title: "发行包",
+                        value: cliproxyRuntimePackageChipText,
+                        tint: cliproxyRuntimePackageChipTint,
+                        systemName: "shippingbox"
+                    )
+                    cliproxyRuntimeStateChip(
+                        title: "服务",
+                        value: cliproxyRuntimeServiceChipText,
+                        tint: cliproxyRuntimeServiceChipTint,
+                        systemName: "dot.radiowaves.left.and.right"
+                    )
+                    cliproxyRuntimeStateChip(
+                        title: "管理端",
+                        value: cliproxyRuntimeManagementChipText,
+                        tint: cliproxyRuntimeManagementChipTint,
+                        systemName: "lock.shield"
+                    )
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("配置建议")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text(cliproxyRuntimeConfigSummaryText)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Spacer()
+
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 8) {
+                            cliproxyOAuthActionButton(
+                                title: cliproxyRuntimeKeyRotating ? "轮换中" : "轮换管理 Key",
+                                systemName: "key.horizontal.fill",
+                                tint: .indigo,
+                                disabled: cliproxyRuntimeControlBusy
+                            ) {
+                                Task { await rotateCLIProxyRuntimeManagementKey() }
+                            }
+
+                            cliproxyOAuthActionButton(
+                                title: cliproxyRuntimeConfigApplying ? "写入中" : "应用推荐修正",
+                                systemName: "wand.and.stars",
+                                tint: .orange,
+                                disabled: cliproxyRuntimeControlBusy || cliproxyRuntimeConfigAudit.unresolvedCount == 0
+                            ) {
+                                Task { await applyCLIProxyRuntimeConfigRecommendations() }
+                            }
+                        }
+
+                        VStack(alignment: .trailing, spacing: 8) {
+                            cliproxyOAuthActionButton(
+                                title: cliproxyRuntimeKeyRotating ? "轮换中" : "轮换管理 Key",
+                                systemName: "key.horizontal.fill",
+                                tint: .indigo,
+                                disabled: cliproxyRuntimeControlBusy
+                            ) {
+                                Task { await rotateCLIProxyRuntimeManagementKey() }
+                            }
+
+                            cliproxyOAuthActionButton(
+                                title: cliproxyRuntimeConfigApplying ? "写入中" : "应用推荐修正",
+                                systemName: "wand.and.stars",
+                                tint: .orange,
+                                disabled: cliproxyRuntimeControlBusy || cliproxyRuntimeConfigAudit.unresolvedCount == 0
+                            ) {
+                                Task { await applyCLIProxyRuntimeConfigRecommendations() }
+                            }
+                        }
+                    }
+                }
+
+                if cliproxyRuntimeConfigAudit.recommendations.isEmpty {
+                    Text("定位到 config.yaml 后，这里会显示低负担和安全相关的推荐项。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(cliproxyRuntimeConfigAudit.recommendations) { recommendation in
+                        cliproxyRuntimeConfigRecommendationRow(recommendation)
+                    }
+                }
+            }
+
+            Text(cliproxyRuntimeSummaryText)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if !cliproxyRuntimeActionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                terminalAccessFeedbackBanner(
+                    text: cliproxyRuntimeActionText,
+                    tint: .blue,
+                    systemName: "bolt.horizontal.circle"
+                )
+            }
+
+            if !cliproxyRuntimeErrorText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                terminalAccessFeedbackBanner(
+                    text: cliproxyRuntimeErrorText,
+                    tint: .red,
+                    systemName: "exclamationmark.triangle"
+                )
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.white.opacity(0.46))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.indigo.opacity(0.10), lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private func cliproxyRuntimeStateChip(
+        title: String,
+        value: String,
+        tint: Color,
+        systemName: String
+    ) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: systemName)
+                .imageScale(.small)
+                .foregroundStyle(tint)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text(value)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(tint)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(tint.opacity(0.08))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(tint.opacity(0.18), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func cliproxyRuntimeConfigRecommendationRow(
+        _ recommendation: CLIProxyRuntimeSupport.ConfigRecommendation
+    ) -> some View {
+        let tint = cliproxyRuntimeRecommendationTint(recommendation)
+
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: recommendation.satisfied ? "checkmark.seal.fill" : "wrench.and.screwdriver.fill")
+                .imageScale(.small)
+                .foregroundStyle(tint)
+                .frame(width: 16, height: 16)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(recommendation.kind.title)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.primary)
+
+                    Text(recommendation.satisfied ? "已满足" : "建议修正")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(tint)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(tint.opacity(0.10))
+                        .clipShape(Capsule())
+                }
+
+                Text(recommendation.kind.detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text("当前 \(recommendation.currentValueDisplay) -> 推荐 \(recommendation.recommendedValueDisplay)")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(tint)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(tint.opacity(0.06))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(tint.opacity(0.16), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private var cliproxyRuntimeControlBusy: Bool {
+        cliproxyRuntimeRefreshing
+            || cliproxyRuntimeLaunching
+            || cliproxyRuntimeConfigApplying
+            || cliproxyRuntimeKeyRotating
+    }
+
+    private var cliproxyRuntimeStatusBadgeText: String {
+        if cliproxyRuntimeLaunching {
+            return "启动中"
+        }
+        if cliproxyRuntimeRefreshing {
+            return "检查中"
+        }
+        if cliproxyRuntimeKeyRotating {
+            return "轮换 key"
+        }
+        if cliproxyRuntimeConfigApplying {
+            return "写入配置"
+        }
+        if cliproxyRuntimeConfigAudit.unresolvedCount > 0 {
+            return "待修配置"
+        }
+        if cliproxyRuntimeProbe.serviceRunning {
+            return "节点在线"
+        }
+        if cliproxyRuntimeProbe.packageStatus == .detected {
+            return "待启动"
+        }
+        return "待接入"
+    }
+
+    private var cliproxyRuntimeStatusTint: Color {
+        if cliproxyRuntimeLaunching
+            || cliproxyRuntimeRefreshing
+            || cliproxyRuntimeConfigApplying
+            || cliproxyRuntimeKeyRotating {
+            return .blue
+        }
+        if !cliproxyRuntimeErrorText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return .red
+        }
+        if cliproxyRuntimeConfigAudit.unresolvedCount > 0 {
+            return .orange
+        }
+        if cliproxyRuntimeProbe.serviceRunning {
+            switch cliproxyRuntimeProbe.managementStatus {
+            case .keyInvalid, .unavailable, .error:
+                return .orange
+            default:
+                return .green
+            }
+        }
+        return cliproxyRuntimeProbe.packageStatus == .detected ? .indigo : .secondary
+    }
+
+    private var cliproxyRuntimeConfigSummaryText: String {
+        guard !cliproxyRuntimeConfigAudit.recommendations.isEmpty else {
+            return "config.yaml 就位后，这里会给出低负担和安全建议。"
+        }
+        if cliproxyRuntimeConfigAudit.unresolvedCount == 0 {
+            return "当前 \(cliproxyRuntimeConfigAudit.recommendations.count) 项推荐都已满足，适合常驻给 Hub 做本地 OAuth 汇聚节点。"
+        }
+        return "还有 \(cliproxyRuntimeConfigAudit.unresolvedCount) 项建议未处理。Hub 只会修正本地监听、管理面板和轻量运行相关项。"
+    }
+
+    private func cliproxyRuntimeRecommendationTint(
+        _ recommendation: CLIProxyRuntimeSupport.ConfigRecommendation
+    ) -> Color {
+        recommendation.satisfied ? .green : .orange
+    }
+
+    private var cliproxyRuntimePackageChipText: String {
+        switch cliproxyRuntimeProbe.packageStatus {
+        case .detected:
+            return cliproxyRuntimeProbe.usedDetectedPackage ? "已发现" : "已选定"
+        case .notFound:
+            return "未找到"
+        case .missingExecutable:
+            return "缺可执行文件"
+        case .missingConfig:
+            return "缺 config"
+        }
+    }
+
+    private var cliproxyRuntimePackageChipTint: Color {
+        switch cliproxyRuntimeProbe.packageStatus {
+        case .detected:
+            return .indigo
+        case .notFound, .missingExecutable, .missingConfig:
+            return .red
+        }
+    }
+
+    private var cliproxyRuntimeServiceChipText: String {
+        cliproxyRuntimeProbe.serviceRunning ? "8317 在线" : "未启动"
+    }
+
+    private var cliproxyRuntimeServiceChipTint: Color {
+        cliproxyRuntimeProbe.serviceRunning ? .green : .secondary
+    }
+
+    private var cliproxyRuntimeManagementChipText: String {
+        switch cliproxyRuntimeProbe.managementStatus {
+        case .unknown:
+            return cliproxyRuntimeProbe.serviceRunning ? "待检查" : "离线"
+        case .waitingForKey:
+            return "待填 key"
+        case .keyValid(let authCount):
+            return authCount > 0 ? "已验证 · \(authCount) 账号" : "已验证"
+        case .keyInvalid:
+            return "key 错误"
+        case .unavailable:
+            return "不可用"
+        case .error:
+            return "检查失败"
+        }
+    }
+
+    private var cliproxyRuntimeManagementChipTint: Color {
+        switch cliproxyRuntimeProbe.managementStatus {
+        case .unknown:
+            return .secondary
+        case .waitingForKey:
+            return .orange
+        case .keyValid:
+            return .green
+        case .keyInvalid, .unavailable, .error:
+            return .red
+        }
+    }
+
+    private var cliproxyRuntimeSummaryText: String {
+        switch cliproxyRuntimeProbe.packageStatus {
+        case .notFound where !cliproxyRuntimeProbe.serviceRunning:
+            return "当前还没有定位到 CLIProxy 发行包。自动探测默认会看 ~/Documents/AX/source/CLIProxyAPI-main，也可以直接粘贴发行包目录。"
+        case .missingExecutable:
+            return "目录存在，但不是可直接启动的发行包：缺少 cli-proxy-api 可执行文件。"
+        case .missingConfig:
+            return "目录存在，但不是完整发行包：缺少 config.yaml。"
+        default:
+            break
+        }
+
+        if cliproxyRuntimeProbe.serviceRunning {
+            switch cliproxyRuntimeProbe.managementStatus {
+            case .waitingForKey:
+                return "本地 CLIProxy 已运行。填好 management key 后，Hub 就能验证账号列表并把已认证免费额度同步进库存池。"
+            case .keyValid(let authCount):
+                return authCount > 0
+                    ? "本地 CLIProxy 已连通，management key 已验证，当前看到 \(authCount) 个已认证账号。可以继续发起 OAuth，或直接同步到 Hub。"
+                    : "本地 CLIProxy 已连通，management key 已验证，但当前还没有已认证账号。可直接打开管理页做 OAuth 登录。"
+            case .keyInvalid:
+                return "本地 CLIProxy 已运行，但 Hub 里保存的 management key 不正确。修正后再检查即可。"
+            case .unavailable:
+                return "CLIProxy 服务已启动，但管理端接口当前不可用。请确认 config.yaml 里的 remote-management.secret-key 已设置。"
+            case .error(let detail):
+                return detail.isEmpty ? "CLIProxy 管理端探测失败。" : "CLIProxy 管理端探测失败：\(detail)"
+            case .unknown:
+                return "CLIProxy 服务已运行，Hub 会继续做轻量探测。"
+            }
+        }
+
+        if cliproxyRuntimeProbe.packageStatus == .detected {
+            return "发行包已经就位。点“启动本地节点”后，Hub 会直接接管这颗 CLIProxy，并在服务起来后继续验证 management key 与账号列表。"
+        }
+
+        return "本机节点尚未接入。"
+    }
+
+    private var cliproxyRuntimeDisclosureSummarySegment: String {
+        if cliproxyRuntimeLaunching {
+            return "本地节点启动中"
+        }
+        if cliproxyRuntimeKeyRotating {
+            return "正在轮换管理 key"
+        }
+        if cliproxyRuntimeConfigApplying {
+            return "正在写入本地配置"
+        }
+        if cliproxyRuntimeConfigAudit.unresolvedCount > 0 {
+            return "本地配置待修 \(cliproxyRuntimeConfigAudit.unresolvedCount) 项"
+        }
+        if cliproxyRuntimeProbe.serviceRunning {
+            switch cliproxyRuntimeProbe.managementStatus {
+            case .keyValid(let authCount):
+                return authCount > 0 ? "本地节点在线 · \(authCount) 账号" : "本地节点在线"
+            case .waitingForKey:
+                return "本地节点在线 · 待填 key"
+            case .keyInvalid:
+                return "本地节点在线 · key 错误"
+            case .unavailable:
+                return "本地节点在线 · 管理端不可用"
+            case .error:
+                return "本地节点在线 · 检查失败"
+            case .unknown:
+                return "本地节点在线"
+            }
+        }
+        if cliproxyRuntimeProbe.packageStatus == .detected {
+            return "本地节点待启动"
+        }
+        return ""
+    }
+
+    private func cliproxyOAuthProviderTint(
+        _ provider: CLIProxyOAuthSourceSupport.OAuthProvider
+    ) -> Color {
+        switch provider {
+        case .claude:
+            return .orange
+        case .codex:
+            return .blue
+        case .gemini:
+            return .mint
+        case .antigravity:
+            return .purple
+        case .kimi:
+            return .red
+        }
+    }
+
+    private func cliproxyOAuthActionButton(
+        title: String,
+        systemName: String,
+        tint: Color,
+        disabled: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            settingsActionChipLabel(
+                title: title,
+                systemName: systemName,
+                tint: tint,
+                disabled: disabled
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+    }
+
+    private func cliproxyOAuthProviderOverviewCard(
+        _ summary: CLIProxyOAuthProviderInventorySummary
+    ) -> some View {
+        let tint = cliproxyOAuthProviderSummaryTint(summary)
+        let readyFraction = summary.totalCount > 0
+            ? CGFloat(summary.readyCount) / CGFloat(summary.totalCount)
+            : 0
+
+        return Button {
+            focusProviderKeyVendor(
+                cliproxyOAuthProviderVendorKey(summary.providerKey),
+                displayName: summary.displayName
+            )
+        } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(summary.displayName)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+
+                    Spacer(minLength: 0)
+
+                    Text("\(summary.readyCount)/\(summary.totalCount)")
+                        .font(.caption2.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(tint)
+                }
+
+                GeometryReader { proxy in
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(tint.opacity(0.14))
+
+                        Capsule()
+                            .fill(tint.opacity(0.78))
+                            .frame(
+                                width: readyFraction > 0
+                                    ? max(12, proxy.size.width * readyFraction)
+                                    : 0
+                            )
+                    }
+                }
+                .frame(height: 7)
+
+                Text(cliproxyOAuthProviderSummaryText(summary))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .padding(12)
+        .background(tint.opacity(0.08))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(tint.opacity(0.18), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .buttonStyle(.plain)
+    }
+
+    private func cliproxyOAuthProviderSummaryTint(
+        _ summary: CLIProxyOAuthProviderInventorySummary
+    ) -> Color {
+        if summary.blockedCount > 0 {
+            return .red
+        }
+        if summary.coolingCount > 0 {
+            return .orange
+        }
+        if summary.readyCount > 0 {
+            return cliproxyOAuthProviderTintKey(summary.providerKey)
+        }
+        if summary.disabledCount == summary.totalCount {
+            return .gray
+        }
+        return .secondary
+    }
+
+    private func cliproxyOAuthProviderSummaryText(
+        _ summary: CLIProxyOAuthProviderInventorySummary
+    ) -> String {
+        HubUIStrings.Settings.RemoteModels.sectionSummary([
+            summary.readyCount > 0 ? "可用 \(summary.readyCount)" : "",
+            summary.coolingCount > 0 ? "冷却 \(summary.coolingCount)" : "",
+            summary.blockedCount > 0 ? "阻断 \(summary.blockedCount)" : "",
+            summary.refreshingCount > 0 ? "刷新 \(summary.refreshingCount)" : "",
+            summary.waitingCount > 0 ? "等待 \(summary.waitingCount)" : "",
+            summary.disabledCount > 0 ? "停用 \(summary.disabledCount)" : ""
+        ])
+    }
+
+    private func cliproxyOAuthInventoryState(
+        _ auth: CLIProxyOAuthSourceSupport.RemoteAuthFile
+    ) -> CLIProxyOAuthInventoryState {
+        if auth.disabled {
+            return .disabled
+        }
+        if auth.quota.exceeded || auth.nextRetryAtMs > 0 {
+            return .cooling
+        }
+        if auth.unavailable {
+            return .blocked
+        }
+
+        let normalized = auth.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch normalized {
+        case "active", "ok", "ready":
+            return .ready
+        case "refreshing":
+            return .refreshing
+        case "pending", "wait":
+            return .waiting
+        case "error", "blocked", "failed":
+            return .blocked
+        default:
+            if normalized.contains("refresh") {
+                return .refreshing
+            }
+            if normalized.contains("wait") || normalized.contains("pending") {
+                return .waiting
+            }
+            if normalized.contains("error")
+                || normalized.contains("block")
+                || normalized.contains("fail") {
+                return .blocked
+            }
+            return normalized.isEmpty ? .waiting : .blocked
+        }
+    }
+
+    private func cliproxyOAuthCanonicalProviderKey(_ rawProvider: String) -> String {
+        let normalized = rawProvider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch normalized {
+        case "anthropic", "claude":
+            return "claude"
+        case "chatgpt", "openai", "codex", "openai_compatible":
+            return "codex"
+        case "gemini", "gemini-cli", "google":
+            return "gemini"
+        case "antigravity":
+            return "antigravity"
+        case "kimi", "moonshot":
+            return "kimi"
+        default:
+            return normalized.isEmpty ? "unknown" : normalized
+        }
+    }
+
+    private func cliproxyOAuthProviderVendorKey(_ providerKey: String) -> String {
+        switch cliproxyOAuthCanonicalProviderKey(providerKey) {
+        case "codex":
+            return "openai"
+        default:
+            return cliproxyOAuthCanonicalProviderKey(providerKey)
+        }
+    }
+
+    private func cliproxyOAuthProviderDisplayName(_ providerKey: String) -> String {
+        switch providerKey {
+        case "claude":
+            return "Claude"
+        case "codex":
+            return "Codex"
+        case "gemini":
+            return "Gemini"
+        case "antigravity":
+            return "Antigravity"
+        case "kimi":
+            return "Kimi"
+        default:
+            return providerKey.isEmpty ? "Unknown" : providerKey.capitalized
+        }
+    }
+
+    private func cliproxyOAuthProviderSortIndex(_ providerKey: String) -> Int {
+        switch providerKey {
+        case "claude":
+            return 0
+        case "codex":
+            return 1
+        case "gemini":
+            return 2
+        case "antigravity":
+            return 3
+        case "kimi":
+            return 4
+        default:
+            return 99
+        }
+    }
+
+    private func cliproxyOAuthProviderTintKey(_ providerKey: String) -> Color {
+        switch providerKey {
+        case "claude":
+            return .orange
+        case "codex":
+            return .blue
+        case "gemini":
+            return .mint
+        case "antigravity":
+            return .purple
+        case "kimi":
+            return .red
+        default:
+            return .secondary
+        }
+    }
+
+    private func minimumPositiveTimestamp(_ lhs: Int64, _ rhs: Int64) -> Int64? {
+        let values = [lhs, rhs].filter { $0 > 0 }
+        return values.min()
+    }
+
+    @ViewBuilder
+    private func cliproxyOAuthAuthRow(
+        _ auth: CLIProxyOAuthSourceSupport.RemoteAuthFile
+    ) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Circle()
+                .fill(cliproxyOAuthAuthStateColor(auth))
+                .frame(width: 8, height: 8)
+                .padding(.top, 4)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(cliproxyOAuthAuthTitle(auth))
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+
+                    Text(cliproxyOAuthAuthStateText(auth))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(cliproxyOAuthAuthStateColor(auth))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(cliproxyOAuthAuthStateColor(auth).opacity(0.12))
+                        .clipShape(Capsule())
+
+                    if auth.quota.exceeded {
+                        Text("额度受限")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.orange)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.orange.opacity(0.12))
+                            .clipShape(Capsule())
+                    }
+
+                    if auth.runtimeOnly {
+                        Text("runtime-only")
+                            .font(.caption2)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.secondary.opacity(0.12))
+                            .clipShape(Capsule())
+                    }
+                }
+
+                Text(cliproxyOAuthAuthMetaText(auth))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                let timingText = cliproxyOAuthAuthTimingText(auth)
+                if !timingText.isEmpty {
+                    Text(timingText)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if !auth.statusMessage.isEmpty && auth.statusMessage != auth.quota.reason {
+                    Text(auth.statusMessage)
+                        .font(.caption2)
+                        .foregroundStyle(cliproxyOAuthAuthStateColor(auth))
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if !auth.quota.reason.isEmpty {
+                    Text(auth.quota.reason)
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Spacer()
+        }
+        .padding(10)
+        .background(Color.white.opacity(0.05))
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .stroke(cliproxyOAuthAuthStateColor(auth).opacity(0.16), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+    }
+
+    private func cliproxyOAuthAuthTitle(
+        _ auth: CLIProxyOAuthSourceSupport.RemoteAuthFile
+    ) -> String {
+        if !auth.email.isEmpty {
+            return auth.email
+        }
+        if !auth.label.isEmpty {
+            return auth.label
+        }
+        return auth.name
+    }
+
+    private func cliproxyOAuthAuthStateText(
+        _ auth: CLIProxyOAuthSourceSupport.RemoteAuthFile
+    ) -> String {
+        if auth.disabled {
+            return "禁用"
+        }
+        if auth.quota.exceeded || auth.nextRetryAtMs > 0 {
+            return "冷却中"
+        }
+
+        switch auth.status.lowercased() {
+        case "active", "ok", "ready":
+            return "可用"
+        case "refreshing":
+            return "刷新中"
+        case "pending", "wait":
+            return "等待中"
+        case "error":
+            return "异常"
+        default:
+            return auth.status.isEmpty ? "未知" : auth.status
+        }
+    }
+
+    private func cliproxyOAuthAuthStateColor(
+        _ auth: CLIProxyOAuthSourceSupport.RemoteAuthFile
+    ) -> Color {
+        if auth.disabled {
+            return .gray
+        }
+        if auth.quota.exceeded || auth.nextRetryAtMs > 0 {
+            return .orange
+        }
+        switch auth.status.lowercased() {
+        case "active", "ok", "ready":
+            return .green
+        case "refreshing":
+            return .blue
+        case "pending", "wait":
+            return .yellow
+        case "error":
+            return .red
+        default:
+            return .secondary
+        }
+    }
+
+    private func cliproxyOAuthAuthMetaText(
+        _ auth: CLIProxyOAuthSourceSupport.RemoteAuthFile
+    ) -> String {
+        HubUIStrings.Settings.RemoteModels.sectionSummary([
+            auth.provider.uppercased(),
+            !auth.accountType.isEmpty && !auth.account.isEmpty ? "\(auth.accountType) \(auth.account)" : "",
+            !auth.accountType.isEmpty && auth.account.isEmpty ? auth.accountType : "",
+            !auth.account.isEmpty && auth.accountType.isEmpty ? auth.account : "",
+            !auth.runtimeAuthIndex.isEmpty ? "runtime \(String(auth.runtimeAuthIndex.prefix(10)))" : "",
+            auth.name
+        ])
+    }
+
+    private func cliproxyOAuthAuthTimingText(
+        _ auth: CLIProxyOAuthSourceSupport.RemoteAuthFile
+    ) -> String {
+        var parts: [String] = []
+        if auth.lastRefreshAtMs > 0 {
+            parts.append("上次刷新 \(formattedProviderKeyImportSourceTime(auth.lastRefreshAtMs))")
+        }
+        if auth.nextRefreshAtMs > 0 {
+            parts.append("下次刷新 \(formattedProviderKeyImportSourceTime(auth.nextRefreshAtMs))")
+        }
+        if auth.nextRetryAtMs > 0 {
+            parts.append("重试 \(formattedProviderKeyImportSourceTime(auth.nextRetryAtMs))")
+        }
+        if auth.quota.nextRecoverAtMs > 0 {
+            parts.append("额度恢复 \(formattedProviderKeyImportSourceTime(auth.quota.nextRecoverAtMs))")
+        }
+        return HubUIStrings.Settings.RemoteModels.sectionSummary(parts)
+    }
+
+    @ViewBuilder
+    private func providerKeyImportSourceRow(_ source: ProviderKeyImportSourceStatus) -> some View {
+        let isHighlighted = providerKeyImportSourceIsHighlighted(source)
+        HStack(alignment: .top, spacing: 8) {
+            Circle()
+                .fill(providerKeyImportSourceStateColor(source))
+                .frame(width: 8, height: 8)
+                .padding(.top, 4)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(providerKeyImportSourceTitle(source))
+                        .font(.caption.weight(.medium))
+                    Text(providerKeyImportSourceStateText(source))
+                        .font(.caption2.monospaced())
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(providerKeyImportSourceStateColor(source).opacity(0.12))
+                        .clipShape(Capsule())
+                }
+
+                Text(providerKeyImportSourceDisplayRef(source))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                Text(providerKeyImportSourceSummary(source))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                if let error = providerKeyImportSourceErrorDescription(source) {
+                    Text(error)
+                        .font(.caption2)
+                        .foregroundStyle(providerKeyImportSourceStateColor(source))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Spacer()
+        }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(
+                    isHighlighted
+                        ? providerKeyImportSourceStateColor(source).opacity(0.1)
+                        : Color.clear
+                )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(
+                    isHighlighted
+                        ? providerKeyImportSourceStateColor(source).opacity(0.45)
+                        : Color.clear,
+                    lineWidth: isHighlighted ? 1 : 0
+                )
+        )
+        .id(providerKeyImportSourceAnchorID(source))
+    }
+
+    @ViewBuilder
+    private func providerKeyPoolCard(_ pool: ProviderKeyPoolSnapshot) -> some View {
+        let detailBinding = expansionBinding(pool.id, in: $expandedProviderKeyPoolIDs)
+        let usageWindows = providerKeyPoolDisplayUsageWindows(pool)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(providerKeyPoolTitle(pool))
+                            .font(.callout.weight(.semibold))
+
+                        Text(providerKeyPoolStateText(pool.state))
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(providerKeyPoolStateColor(pool.state))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(providerKeyPoolStateColor(pool.state).opacity(0.12))
+                            .clipShape(Capsule())
+                    }
+
+                    Text(providerKeyPoolDetail(pool))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+
+                    Text(
+                        HubUIStrings.Settings.ProviderKeys.keyPoolSummary(
+                            total: pool.totalAccounts,
+                            ready: pool.readyAccounts,
+                            cooldown: pool.cooldownAccounts,
+                            blocked: pool.blockedAccounts,
+                            disabled: pool.disabledAccounts,
+                            stale: pool.staleAccounts
+                        )
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                    if !usageWindows.isEmpty {
+                        providerKeyUsageWindowRows(usageWindows)
+
+                        if pool.totalTokensUsed > 0 {
+                            Text("累计 \(HubUIStrings.Settings.ProviderKeys.tokenCount(pool.totalTokensUsed))")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if pool.hasQuotaData {
+                        Text(providerKeyPoolQuotaSummary(pool))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+
+                        if pool.totalDailyTokenCap > 0 {
+                            ProgressView(
+                                value: Double(pool.totalDailyTokensUsed),
+                                total: Double(pool.totalDailyTokenCap)
+                            )
+                            .progressViewStyle(.linear)
+                            .tint(providerKeyPoolStateColor(pool.state))
+                        }
+
+                        let remainingText = providerKeyPoolRemainingSummary(pool)
+                        if !remainingText.isEmpty {
+                            Text(remainingText)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    providerKeyPoolIssueSummaryView(pool)
+                }
+
+                Spacer(minLength: 8)
+
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text(pool.routingStrategy)
+                        .font(.caption2.monospaced())
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color.secondary.opacity(0.12))
+                        .clipShape(Capsule())
+
+                    Text(providerKeyPoolRetrySummary(pool))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.trailing)
+                }
+            }
+
+            DisclosureGroup(isExpanded: detailBinding) {
+                VStack(spacing: 0) {
+                    ForEach(Array(pool.members.enumerated()), id: \.element.id) { index, member in
+                        if index > 0 {
+                            Divider()
+                                .padding(.leading, 8)
+                        }
+                        providerKeyPoolMemberRow(member)
+                            .padding(.top, index == 0 ? 2 : 8)
+                            .padding(.bottom, 6)
+                    }
+                }
+                .padding(.top, 6)
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("成员与单 Key 状态")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(providerKeyPoolMemberDisclosureSummary(pool))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .padding(10)
+        .background(Color.secondary.opacity(0.05))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(providerKeyPoolStateColor(pool.state).opacity(0.18), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func providerKeyPoolMemberRow(_ member: ProviderKeyPoolMemberState) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Circle()
+                .fill(providerKeyMemberStateColor(member))
+                .frame(width: 8, height: 8)
+                .padding(.top, 4)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(providerKeyMemberTitle(member))
+                        .font(.caption.weight(.medium))
+                        .lineLimit(1)
+
+                    Text(providerKeyPoolStateText(member.state))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(providerKeyMemberStateColor(member))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(providerKeyMemberStateColor(member).opacity(0.12))
+                        .clipShape(Capsule())
+
+                    if !member.account.tier.isEmpty {
+                        Text(member.account.tier)
+                            .font(.caption2)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(Color.purple.opacity(0.15))
+                            .clipShape(Capsule())
+                    }
+
+                    if member.account.errorState.autoDisabled {
+                        Text(HubUIStrings.Settings.ProviderKeys.autoDisabled)
+                            .font(.caption2)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(Color.red.opacity(0.15))
+                            .clipShape(Capsule())
+                    }
+                }
+
+                let sourceText = providerKeyMemberSourceText(member.account)
+                if !sourceText.isEmpty {
+                    Text(sourceText)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                let quotaText = providerKeyMemberQuotaText(member.account)
+                if !quotaText.isEmpty {
+                    Text(quotaText)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                if let retryText = providerKeyMemberRetryText(member) {
+                    Text(retryText)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                let usageWindows = providerKeyDisplayUsageWindows(member.account)
+                if !usageWindows.isEmpty {
+                    providerKeyUsageWindowRows(usageWindows)
+                } else if member.account.quota.dailyTokenCap > 0 {
+                    ProgressView(
+                        value: Double(member.account.quota.dailyTokensUsed),
+                        total: Double(member.account.quota.dailyTokenCap)
+                    )
+                    .progressViewStyle(.linear)
+                    .tint(providerKeyMemberStateColor(member))
+
+                    HStack(spacing: 6) {
+                        providerKeyMiniStatusPill(
+                            title: providerKeyMemberHeatLabel(member.account),
+                            tint: providerKeyUsageHeatTint(
+                                fraction: providerKeyUsageFraction(
+                                    used: member.account.quota.dailyTokensUsed,
+                                    cap: member.account.quota.dailyTokenCap
+                                ),
+                                hasBlockingRisk: member.state == "blocked"
+                            )
+                        )
+                        providerKeyMiniStatusPill(
+                            title: "剩余 \(HubUIStrings.Settings.ProviderKeys.tokenCount(max(Int64(0), member.account.quota.dailyTokensRemaining)))",
+                            tint: member.account.quota.dailyTokensRemaining > 0 ? .green : .orange
+                        )
+                    }
+                }
+
+                let usageMeta = providerKeyMemberUsageMetaText(member.account)
+                if !usageMeta.isEmpty {
+                    Text(usageMeta)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                providerKeyMemberIssueSummaryView(member)
+            }
+
+            Spacer(minLength: 8)
+        }
+    }
+
+    @ViewBuilder
+    private func providerKeyMiniStatusPill(
+        title: String,
+        tint: Color
+    ) -> some View {
+        Text(title)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(tint.opacity(0.12))
+            .clipShape(Capsule())
+    }
+
+    @ViewBuilder
+    private func providerKeyUsageWindowRows(_ windows: [ProviderKeyUsageWindow]) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(windows, id: \.key) { window in
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(providerKeyUsageWindowTitle(window))
+                            .font(.caption2.weight(.semibold))
+                            .lineLimit(1)
+
+                        let resetText = providerKeyUsageWindowResetText(window)
+                        if !resetText.isEmpty {
+                            Text(resetText)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+
+                        Spacer(minLength: 6)
+
+                        Text(providerKeyUsageWindowPercentText(window))
+                            .font(.caption2)
+                            .monospacedDigit()
+                            .foregroundStyle(providerKeyUsageWindowTint(window))
+                            .lineLimit(1)
+                    }
+
+                    ProgressView(
+                        value: Double(max(0, min(10_000, window.usedBasisPoints))),
+                        total: 10_000
+                    )
+                    .progressViewStyle(.linear)
+                    .tint(providerKeyUsageWindowTint(window))
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func providerKeyGroupCard(_ group: ProviderKeyProviderGroup) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(group.provider.uppercased())
+                    .font(.callout.weight(.semibold))
+                Spacer()
+                Text(group.routingStrategy)
+                    .font(.caption.monospaced())
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.secondary.opacity(0.12))
+                    .clipShape(Capsule())
+            }
+
+            ForEach(group.accounts) { account in
+                providerKeyAccountRow(account)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private func providerKeyAccountRow(_ account: ProviderKeyAccount) -> some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(accountStatusColor(account))
+                .frame(width: 8, height: 8)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Text(account.email.isEmpty ? account.apiKeyRedacted : account.email)
+                        .font(.caption.weight(.medium))
+                        .lineLimit(1)
+
+                    if !account.tier.isEmpty {
+                        Text(account.tier)
+                            .font(.caption2)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Color.purple.opacity(0.15))
+                            .clipShape(Capsule())
+                    }
+
+                    if account.errorState.autoDisabled {
+                        Text(HubUIStrings.Settings.ProviderKeys.autoDisabled)
+                            .font(.caption2)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Color.red.opacity(0.15))
+                            .clipShape(Capsule())
+                    }
+                }
+
+                let usageWindows = providerKeyDisplayUsageWindows(account)
+                if !usageWindows.isEmpty {
+                    providerKeyUsageWindowRows(usageWindows)
+                } else {
+                    HStack(spacing: 12) {
+                        if account.quota.dailyTokensUsed > 0 || account.quota.dailyTokenCap > 0 {
+                            Text(HubUIStrings.Settings.ProviderKeys.dailyUsageText(
+                                used: account.quota.dailyTokensUsed,
+                                cap: account.quota.dailyTokenCap
+                            ))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        }
+
+                        if account.quota.totalTokensUsed > 0 {
+                            Text("累计 \(HubUIStrings.Settings.ProviderKeys.tokenCount(account.quota.totalTokensUsed))")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                if account.errorState.status != "healthy" {
+                    Text(errorStateDescription(account.errorState))
+                        .font(.caption2)
+                        .foregroundStyle(accountStatusColor(account))
+                }
+            }
+
+            Spacer()
+
+            if !account.enabled {
+                Text(HubUIStrings.Settings.ProviderKeys.disabled)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func providerKeyPoolTitle(_ pool: ProviderKeyPoolSnapshot) -> String {
+        if pool.providerHost.isEmpty {
+            return pool.supplierDisplayName
+        }
+        return "\(pool.supplierDisplayName) · \(pool.providerHost)"
+    }
+
+    private func providerKeyPoolDetail(_ pool: ProviderKeyPoolSnapshot) -> String {
+        HubUIStrings.Settings.RemoteModels.sectionSummary([
+            pool.poolID,
+            pool.wireAPI == "default" ? "" : pool.wireAPI,
+            pool.lastRefreshAtMs > 0 ? "上次刷新 \(formattedProviderKeyImportSourceTime(pool.lastRefreshAtMs))" : ""
+        ])
+    }
+
+    private func providerKeyPoolQuotaSummary(_ pool: ProviderKeyPoolSnapshot) -> String {
+        HubUIStrings.Settings.RemoteModels.sectionSummary([
+            HubUIStrings.Settings.ProviderKeys.dailyUsageText(
+                used: pool.totalDailyTokensUsed,
+                cap: pool.totalDailyTokenCap
+            ),
+            pool.totalTokensUsed > 0
+                ? "累计 \(HubUIStrings.Settings.ProviderKeys.tokenCount(pool.totalTokensUsed))"
+                : ""
+        ])
+    }
+
+    @ViewBuilder
+    private func providerKeyPoolIssueSummaryView(_ pool: ProviderKeyPoolSnapshot) -> some View {
+        let summary = pool.issueSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let detail = pool.issueDetail.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isExpanded = expandedProviderKeyPoolIssueIDs.contains(pool.id)
+        let tint = providerKeyPoolStateColor(pool.state)
+
+        if !summary.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .top, spacing: 6) {
+                    Text(summary)
+                        .font(.caption2)
+                        .foregroundStyle(tint)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if !detail.isEmpty {
+                        Button {
+                            if isExpanded {
+                                expandedProviderKeyPoolIssueIDs.remove(pool.id)
+                            } else {
+                                expandedProviderKeyPoolIssueIDs.insert(pool.id)
+                            }
+                        } label: {
+                            Image(systemName: isExpanded ? "chevron.up.circle.fill" : "info.circle")
+                                .imageScale(.small)
+                                .foregroundStyle(tint)
+                        }
+                        .buttonStyle(.plain)
+                        .help(isExpanded ? "收起详细错误" : "展开详细错误")
+                    }
+                }
+
+                if isExpanded && !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private func providerKeyPoolRetrySummary(_ pool: ProviderKeyPoolSnapshot) -> String {
+        if let retryText = pool.members
+            .map({ $0.account.errorState.retryAtText.trimmingCharacters(in: .whitespacesAndNewlines) })
+            .first(where: { !$0.isEmpty }) {
+            return HubUIStrings.Settings.ProviderKeys.nextRetry(retryText)
+        }
+        guard pool.earliestRetryAtMs > 0 else {
+            return HubUIStrings.Settings.ProviderKeys.nextRetryUnknown
+        }
+        return HubUIStrings.Settings.ProviderKeys.nextRetry(
+            formattedProviderKeyImportSourceTime(pool.earliestRetryAtMs)
+        )
+    }
+
+    private func providerKeyPoolStateColor(_ state: String) -> Color {
+        switch state {
+        case "ready":
+            return .green
+        case "cooldown":
+            return .orange
+        case "blocked":
+            return .red
+        case "disabled":
+            return .gray
+        case "mixed":
+            return .yellow
+        default:
+            return .secondary
+        }
+    }
+
+    private func providerKeyPoolStateText(_ state: String) -> String {
+        switch state {
+        case "ready":
+            return HubUIStrings.Settings.ProviderKeys.ready
+        case "cooldown":
+            return HubUIStrings.Settings.ProviderKeys.cooldown
+        case "blocked":
+            return HubUIStrings.Settings.ProviderKeys.blocked
+        case "disabled":
+            return HubUIStrings.Settings.ProviderKeys.disabled
+        case "stale":
+            return HubUIStrings.Settings.ProviderKeys.stale
+        case "degraded":
+            return HubUIStrings.Settings.ProviderKeys.degraded
+        case "mixed":
+            return HubUIStrings.Settings.ProviderKeys.mixed
+        default:
+            return state
+        }
+    }
+
+    private func providerKeyMemberStateColor(_ member: ProviderKeyPoolMemberState) -> Color {
+        switch member.state {
+        case "ready":
+            return .green
+        case "degraded":
+            return .yellow
+        case "cooldown":
+            return .orange
+        case "blocked":
+            return .red
+        case "stale":
+            return .red.opacity(0.75)
+        case "disabled":
+            return .gray
+        default:
+            return .secondary
+        }
+    }
+
+    private func providerKeyMemberTitle(_ member: ProviderKeyPoolMemberState) -> String {
+        let account = member.account
+        return account.email.isEmpty ? account.apiKeyRedacted : account.email
+    }
+
+    private func providerKeyMemberSourceText(_ account: ProviderKeyAccount) -> String {
+        let sourceRef = account.sourceRef.isEmpty ? "" : URL(fileURLWithPath: account.sourceRef).lastPathComponent
+        return HubUIStrings.Settings.RemoteModels.sectionSummary([
+            !account.accountId.isEmpty ? "id \(account.accountId)" : "",
+            !account.sourceType.isEmpty ? account.sourceType : "",
+            !sourceRef.isEmpty ? sourceRef : "",
+            !account.runtimeAuthIndex.isEmpty ? "runtime \(String(account.runtimeAuthIndex.prefix(10)))" : "",
+            account.authType == "oauth" && account.expiresAtMs > 0
+                ? "过期 \(formattedProviderKeyImportSourceTime(account.expiresAtMs))"
+                : ""
+        ])
+    }
+
+    private func providerKeyDisplayUsageWindows(_ account: ProviderKeyAccount) -> [ProviderKeyUsageWindow] {
+        let windows = account.quota.usageWindows
+        guard !windows.isEmpty else { return [] }
+
+        let rateLimitWindows = windows.filter {
+            $0.source.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "rate_limit"
+        }
+        let preferredRateLimitWindows = rateLimitWindows.filter {
+            $0.limitWindowSeconds == 5 * 60 * 60 || $0.limitWindowSeconds == 7 * 24 * 60 * 60
+        }
+        let selected: [ProviderKeyUsageWindow]
+        if !preferredRateLimitWindows.isEmpty {
+            selected = preferredRateLimitWindows
+        } else if !rateLimitWindows.isEmpty {
+            selected = Array(rateLimitWindows.prefix(2))
+        } else {
+            selected = Array(windows.prefix(2))
+        }
+
+        return selected.sorted {
+            let lhsRank = providerKeyUsageWindowRank($0)
+            let rhsRank = providerKeyUsageWindowRank($1)
+            if lhsRank != rhsRank { return lhsRank < rhsRank }
+            return $0.limitWindowSeconds < $1.limitWindowSeconds
+        }
+    }
+
+    private func providerKeyPoolDisplayUsageWindows(_ pool: ProviderKeyPoolSnapshot) -> [ProviderKeyUsageWindow] {
+        var groupedWindows: [String: ProviderKeyUsageWindow] = [:]
+
+        for member in pool.members {
+            for window in providerKeyDisplayUsageWindows(member.account) {
+                let groupKey = providerKeyUsageWindowGroupKey(window)
+                var normalizedWindow = window
+                normalizedWindow.key = "pool:\(pool.id):\(groupKey)"
+
+                guard var existingWindow = groupedWindows[groupKey] else {
+                    groupedWindows[groupKey] = normalizedWindow
+                    continue
+                }
+
+                var selectedWindow = providerKeyMoreConstrainedUsageWindow(
+                    existingWindow,
+                    normalizedWindow
+                )
+                selectedWindow.key = "pool:\(pool.id):\(groupKey)"
+                selectedWindow.limited = existingWindow.limited || normalizedWindow.limited || selectedWindow.limited
+                selectedWindow.resetAtMs = providerKeyEarliestPositiveTimestamp(
+                    existingWindow.resetAtMs,
+                    normalizedWindow.resetAtMs
+                )
+                selectedWindow.updatedAtMs = max(existingWindow.updatedAtMs, normalizedWindow.updatedAtMs)
+                existingWindow = selectedWindow
+                groupedWindows[groupKey] = existingWindow
+            }
+        }
+
+        return groupedWindows.values.sorted {
+            let lhsRank = providerKeyUsageWindowRank($0)
+            let rhsRank = providerKeyUsageWindowRank($1)
+            if lhsRank != rhsRank { return lhsRank < rhsRank }
+            if $0.limitWindowSeconds != $1.limitWindowSeconds {
+                return $0.limitWindowSeconds < $1.limitWindowSeconds
+            }
+            return $0.key < $1.key
+        }
+    }
+
+    private func providerKeyUsageWindowGroupKey(_ window: ProviderKeyUsageWindow) -> String {
+        let source = window.source.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let windowKey = window.windowKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedSource = source.isEmpty ? "usage" : source
+        let normalizedWindowKey = windowKey.isEmpty ? "window" : windowKey
+
+        if window.limitWindowSeconds > 0 {
+            return "\(normalizedSource):\(normalizedWindowKey):\(window.limitWindowSeconds)"
+        }
+
+        let rawKey = window.key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return "\(normalizedSource):\(normalizedWindowKey):\(rawKey.isEmpty ? "unknown" : rawKey)"
+    }
+
+    private func providerKeyMoreConstrainedUsageWindow(
+        _ lhs: ProviderKeyUsageWindow,
+        _ rhs: ProviderKeyUsageWindow
+    ) -> ProviderKeyUsageWindow {
+        if lhs.limited != rhs.limited {
+            return rhs.limited ? rhs : lhs
+        }
+
+        let lhsPercent = providerKeyUsageWindowPercent(lhs)
+        let rhsPercent = providerKeyUsageWindowPercent(rhs)
+        if lhsPercent != rhsPercent {
+            return rhsPercent > lhsPercent ? rhs : lhs
+        }
+
+        if lhs.resetAtMs != rhs.resetAtMs {
+            return providerKeyEarliestPositiveTimestamp(lhs.resetAtMs, rhs.resetAtMs) == rhs.resetAtMs ? rhs : lhs
+        }
+        return lhs.key <= rhs.key ? lhs : rhs
+    }
+
+    private func providerKeyEarliestPositiveTimestamp(_ lhs: Int64, _ rhs: Int64) -> Int64 {
+        if lhs <= 0 { return max(0, rhs) }
+        if rhs <= 0 { return lhs }
+        return min(lhs, rhs)
+    }
+
+    private func providerKeyUsageWindowRank(_ window: ProviderKeyUsageWindow) -> Int {
+        switch window.limitWindowSeconds {
+        case 5 * 60 * 60:
+            return 0
+        case 7 * 24 * 60 * 60:
+            return 1
+        default:
+            return 10
+        }
+    }
+
+    private func providerKeyUsageWindowTitle(_ window: ProviderKeyUsageWindow) -> String {
+        switch window.limitWindowSeconds {
+        case 5 * 60 * 60:
+            return "5 小时额度"
+        case 7 * 24 * 60 * 60:
+            return "7 天额度"
+        case let seconds where seconds >= 24 * 60 * 60:
+            let days = max(1, Int((Double(seconds) / Double(24 * 60 * 60)).rounded()))
+            return "\(days) 天额度"
+        case let seconds where seconds >= 60 * 60:
+            let hours = max(1, Int((Double(seconds) / Double(60 * 60)).rounded()))
+            return "\(hours) 小时额度"
+        default:
+            let label = window.label.trimmingCharacters(in: .whitespacesAndNewlines)
+            return label.isEmpty ? "额度窗口" : label
+        }
+    }
+
+    private func providerKeyUsageWindowPercent(_ window: ProviderKeyUsageWindow) -> Double {
+        let percent = window.usedPercent > 0
+            ? window.usedPercent
+            : Double(max(0, min(10_000, window.usedBasisPoints))) / 100.0
+        return max(0, min(100, percent))
+    }
+
+    private func providerKeyUsageWindowPercentText(_ window: ProviderKeyUsageWindow) -> String {
+        String(format: "%.1f%%", providerKeyUsageWindowPercent(window))
+    }
+
+    private func providerKeyUsageWindowResetText(_ window: ProviderKeyUsageWindow) -> String {
+        guard window.resetAtMs > 0 else { return "" }
+        return "重置 \(formattedProviderKeyImportSourceTime(window.resetAtMs))"
+    }
+
+    private func providerKeyUsageWindowTint(_ window: ProviderKeyUsageWindow) -> Color {
+        if window.limited {
+            return .red
+        }
+        switch providerKeyUsageWindowPercent(window) {
+        case let value where value >= 95:
+            return .red
+        case let value where value >= 80:
+            return .orange
+        case let value where value >= 45:
+            return .yellow
+        default:
+            return .green
+        }
+    }
+
+    private func providerKeyMemberQuotaText(_ account: ProviderKeyAccount) -> String {
+        var parts: [String] = []
+        if account.quota.usageWindows.isEmpty,
+           account.quota.dailyTokensUsed > 0 || account.quota.dailyTokenCap > 0 {
+            parts.append(
+                HubUIStrings.Settings.ProviderKeys.dailyUsageText(
+                    used: account.quota.dailyTokensUsed,
+                    cap: account.quota.dailyTokenCap
+                )
+            )
+        }
+        if account.quota.totalTokensUsed > 0 {
+            parts.append("累计 \(HubUIStrings.Settings.ProviderKeys.tokenCount(account.quota.totalTokensUsed))")
+        }
+        if !account.quota.reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append(account.quota.reason)
+        }
+        if let nextRecover = providerKeyTimestampSummary(
+            max(account.quota.nextRecoverAtMs, account.quota.cooldownUntilMs),
+            prefix: "恢复"
+        ) {
+            parts.append(nextRecover)
+        }
+        if let nextRefresh = providerKeyTimestampSummary(
+            account.refreshState.nextRefreshAtMs,
+            prefix: "下次刷新"
+        ) {
+            parts.append(nextRefresh)
+        }
+        return HubUIStrings.Settings.RemoteModels.sectionSummary(parts)
+    }
+
+    private func providerKeyMemberHeatLabel(_ account: ProviderKeyAccount) -> String {
+        let fraction = providerKeyUsageFraction(
+            used: account.quota.dailyTokensUsed,
+            cap: account.quota.dailyTokenCap
+        )
+        switch fraction {
+        case let value where value >= 0.95:
+            return "热度 见底"
+        case let value where value >= 0.8:
+            return "热度 高"
+        case let value where value >= 0.45:
+            return "热度 中"
+        case let value where value > 0:
+            return "热度 低"
+        default:
+            return "热度 空闲"
+        }
+    }
+
+    private func providerKeyPoolRemainingSummary(_ pool: ProviderKeyPoolSnapshot) -> String {
+        var parts: [String] = []
+        if pool.totalDailyTokenCap > 0 {
+            parts.append(
+                "剩余 \(HubUIStrings.Settings.ProviderKeys.tokenCount(max(Int64(0), pool.totalDailyTokensRemaining))) / \(HubUIStrings.Settings.ProviderKeys.tokenCount(pool.totalDailyTokenCap)) tokens"
+            )
+        } else if pool.totalDailyTokensRemaining > 0 {
+            parts.append("剩余 \(HubUIStrings.Settings.ProviderKeys.tokenCount(pool.totalDailyTokensRemaining)) tokens")
+        }
+        if let lastUsed = providerKeyTimestampSummary(
+            pool.members.map(\.account.quota.lastUsedAtMs).max() ?? 0,
+            prefix: "最近使用"
+        ) {
+            parts.append(lastUsed)
+        }
+        return HubUIStrings.Settings.RemoteModels.sectionSummary(parts)
+    }
+
+    private func providerKeyMemberUsageMetaText(_ account: ProviderKeyAccount) -> String {
+        var parts: [String] = []
+        if account.quota.usageWindows.isEmpty {
+            if account.quota.dailyTokenCap > 0 {
+                parts.append(
+                    "剩余 \(HubUIStrings.Settings.ProviderKeys.tokenCount(max(Int64(0), account.quota.dailyTokensRemaining))) / \(HubUIStrings.Settings.ProviderKeys.tokenCount(account.quota.dailyTokenCap)) tokens"
+                )
+            } else if account.quota.dailyTokensRemaining > 0 {
+                parts.append("剩余 \(HubUIStrings.Settings.ProviderKeys.tokenCount(account.quota.dailyTokensRemaining)) tokens")
+            }
+        }
+        if let lastUsed = providerKeyTimestampSummary(account.quota.lastUsedAtMs, prefix: "最近使用") {
+            parts.append(lastUsed)
+        }
+        if let lastRefresh = providerKeyTimestampSummary(
+            max(account.lastRefreshAtMs, account.refreshState.lastSuccessAtMs),
+            prefix: "上次刷新"
+        ) {
+            parts.append(lastRefresh)
+        }
+        if account.refreshState.failureCount > 0 {
+            parts.append("刷新失败 \(account.refreshState.failureCount) 次")
+        }
+        if !account.refreshState.status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           account.refreshState.status != "idle" {
+            parts.append("刷新状态 \(account.refreshState.status)")
+        }
+        return HubUIStrings.Settings.RemoteModels.sectionSummary(parts)
+    }
+
+    private func providerKeyFamilyQuotaSummary(_ family: ProviderKeyFamilyInventorySummary) -> String {
+        var parts: [String] = []
+        if family.combinedDailyTokenCap > 0 {
+            parts.append(
+                "上游今日 \(HubUIStrings.Settings.ProviderKeys.tokenCount(family.combinedDailyTokensUsed)) / \(HubUIStrings.Settings.ProviderKeys.tokenCount(family.combinedDailyTokenCap)) tokens"
+            )
+            parts.append("剩余 \(HubUIStrings.Settings.ProviderKeys.tokenCount(family.combinedDailyTokensRemaining))")
+        } else if family.combinedDailyTokensUsed > 0 {
+            parts.append("上游今日已用 \(HubUIStrings.Settings.ProviderKeys.tokenCount(family.combinedDailyTokensUsed)) tokens")
+        }
+        if family.quotaPool.sharedSources > 0 {
+            parts.append(
+                HubUIStrings.Settings.ProviderKeys.sharedSourceSummary(
+                    count: family.quotaPool.sharedSources,
+                    sharedFamilies: family.quotaPool.sharedWithFamilyDisplayNames.joined(separator: ", ")
+                )
+            )
+        }
+        return HubUIStrings.Settings.RemoteModels.sectionSummary(parts)
+    }
+
+    private func providerKeyFamilyBudgetSummary(_ family: ProviderKeyFamilyInventorySummary) -> String {
+        var parts: [String] = []
+        if family.assignedClientCount > 0 {
+            parts.append("覆盖 \(family.coveredUserCount) 个用户 / \(family.assignedClientCount) 个消费者")
+        }
+        if family.connectedAssignedConsumerCount > 0 {
+            parts.append("在线 \(family.connectedAssignedConsumerCount)")
+        }
+        if family.assignedDailyTokenBudget > 0 {
+            parts.append("覆盖预算 \(HubUIStrings.Settings.ProviderKeys.tokenCount(family.assignedDailyTokenBudget))")
+        }
+        if family.unlimitedBudgetConsumerCount > 0 {
+            parts.append("\(family.unlimitedBudgetConsumerCount) 个未设硬预算")
+        }
+        if family.observedDailyTokensUsed > 0 {
+            parts.append("今日已用 \(HubUIStrings.Settings.ProviderKeys.tokenCount(family.observedDailyTokensUsed))")
+        }
+        if parts.isEmpty {
+            parts.append("当前还没有消费者显式使用这个家族")
+        }
+        return HubUIStrings.Settings.RemoteModels.sectionSummary(parts)
+    }
+
+    private func providerKeyFamilyClientPreview(_ family: ProviderKeyFamilyInventorySummary) -> String {
+        let previewNames = family.assignedClients.prefix(3).map(\.name)
+        guard !previewNames.isEmpty else { return "" }
+        let suffix = family.assignedClients.count > previewNames.count
+            ? " 等另外 \(family.assignedClients.count - previewNames.count) 个"
+            : ""
+        return "消费者：\(previewNames.joined(separator: "、"))\(suffix)"
+    }
+
+    private func providerKeyFamilyRetrySummary(_ family: ProviderKeyFamilyInventorySummary) -> String {
+        if let retryText = family.quotaPool.sources
+            .flatMap(\.members)
+            .map({ $0.account.errorState.retryAtText.trimmingCharacters(in: .whitespacesAndNewlines) })
+            .first(where: { !$0.isEmpty }) {
+            return HubUIStrings.Settings.ProviderKeys.nextRetry(retryText)
+        }
+        guard family.quotaPool.earliestRetryAtMs > 0 else {
+            return HubUIStrings.Settings.ProviderKeys.nextRetryUnknown
+        }
+        return HubUIStrings.Settings.ProviderKeys.nextRetry(
+            formattedProviderKeyImportSourceTime(family.quotaPool.earliestRetryAtMs)
+        )
+    }
+
+    private func providerKeyBudgetClientScopeSummary(_ clientProjection: RemoteQuotaCenterClientProjection) -> String {
+        var parts: [String] = []
+        if clientProjection.allowsAllFamilies {
+            parts.append("允许所有已知付费家族")
+        } else if !clientProjection.familyDisplayNames.isEmpty {
+            parts.append("家族 \(clientProjection.familyDisplayNames.joined(separator: " / "))")
+        } else {
+            parts.append("当前还没有解析到模型家族")
+        }
+        if clientProjection.paidModelCount > 0 {
+            parts.append("模型白名单 \(clientProjection.paidModelCount) 个")
+        }
+        if !clientProjection.appId.isEmpty {
+            parts.append("app \(clientProjection.appId)")
+        }
+        return HubUIStrings.Settings.RemoteModels.sectionSummary(parts)
+    }
+
+    private func providerKeyBudgetClientActivitySummary(_ clientProjection: RemoteQuotaCenterClientProjection) -> String {
+        var parts: [String] = []
+        if !clientProjection.topModel.isEmpty {
+            parts.append(HubUIStrings.Settings.GRPC.DeviceList.topModel(clientProjection.topModel))
+        }
+        if let status = clientProjection.deviceStatus {
+            if status.requestsToday > 0 {
+                parts.append(HubUIStrings.Settings.GRPC.DeviceList.requests(status.requestsToday))
+            }
+            if status.blockedToday > 0 {
+                parts.append(HubUIStrings.Settings.GRPC.DeviceList.blocked(status.blockedToday))
+            }
+            if let lastUsed = providerKeyTimestampSummary(
+                status.modelBreakdown.map(\.lastUsedAtMs).max() ?? 0,
+                prefix: "最近命中"
+                ) {
+                parts.append(lastUsed)
+            }
+        } else if let accessKey = clientProjection.terminalAccessKey {
+            if let lastUsed = providerKeyTimestampSummary(accessKey.lastUsedAtMs, prefix: "最近使用") {
+                parts.append(lastUsed)
+            }
+        }
+        return HubUIStrings.Settings.RemoteModels.sectionSummary(parts)
+    }
+
+    private func providerKeyUsageFraction(used: Int64, cap: Int64) -> Double {
+        guard cap > 0 else { return 0 }
+        let normalizedUsed = max(Double(used), 0)
+        let normalizedCap = max(Double(cap), 1)
+        return max(0, min(1, normalizedUsed / normalizedCap))
+    }
+
+    private func providerKeySignedTokenCount(_ value: Int64) -> String {
+        let magnitude = HubUIStrings.Settings.ProviderKeys.tokenCount(abs(value))
+        if value > 0 { return "+\(magnitude)" }
+        if value < 0 { return "-\(magnitude)" }
+        return magnitude
+    }
+
+    private func providerKeyTrendWindowSummary(
+        _ aggregate: RemoteQuotaTrendAggregate
+    ) -> String {
+        let bucketMinutes = max(Int64(1), aggregate.bucketMs / (60 * 1000))
+        let windowMinutes = max(Int64(1), aggregate.windowMs / (60 * 1000))
+        if windowMinutes >= 60 {
+            return "1h / \(bucketMinutes)m"
+        }
+        return "\(windowMinutes)m / \(bucketMinutes)m"
+    }
+
+    private func providerKeyTrendMomentumText(
+        _ aggregate: RemoteQuotaTrendAggregate
+    ) -> String {
+        if aggregate.recentTokens15m <= 0 && aggregate.previousTokens15m <= 0 {
+            return "近 30 分钟基本无明显远端流量。"
+        }
+        if aggregate.previousTokens15m <= 0 {
+            return "最近 15 分钟刚开始放量。"
+        }
+        guard let momentum = aggregate.momentumRatio else {
+            return "最近 30 分钟流量稳定。"
+        }
+        let percent = Int((abs(momentum) * 100).rounded())
+        if percent < 8 {
+            return "较前 15 分钟基本持平。"
+        }
+        if momentum > 0 {
+            return "较前 15 分钟提升 \(percent)%。"
+        }
+        return "较前 15 分钟回落 \(percent)%。"
+    }
+
+    private func providerKeyTrendMomentumColor(
+        _ aggregate: RemoteQuotaTrendAggregate
+    ) -> Color {
+        guard let momentum = aggregate.momentumRatio else {
+            return aggregate.recentTokens15m > 0 ? .teal : .secondary
+        }
+        if abs(momentum) < 0.08 {
+            return .secondary
+        }
+        return momentum > 0 ? .orange : .teal
+    }
+
+    private func providerKeyTimestampSummary(_ timestampMs: Int64, prefix: String) -> String? {
+        guard timestampMs > 0 else { return nil }
+        return "\(prefix) \(formattedProviderKeyImportSourceTime(timestampMs))"
+    }
+
+    @ViewBuilder
+    private func providerKeyMemberIssueSummaryView(_ member: ProviderKeyPoolMemberState) -> some View {
+        let summary = member.reasonMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        let detail = member.detailMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isExpanded = expandedProviderKeyMemberIssueIDs.contains(member.id)
+        let tint = providerKeyMemberStateColor(member)
+
+        if !summary.isEmpty && member.state != "ready" {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .top, spacing: 6) {
+                    Text(summary)
+                        .font(.caption2)
+                        .foregroundStyle(tint)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if !detail.isEmpty {
+                        Button {
+                            if isExpanded {
+                                expandedProviderKeyMemberIssueIDs.remove(member.id)
+                            } else {
+                                expandedProviderKeyMemberIssueIDs.insert(member.id)
+                            }
+                        } label: {
+                            Image(systemName: isExpanded ? "chevron.up.circle.fill" : "info.circle")
+                                .imageScale(.small)
+                                .foregroundStyle(tint)
+                        }
+                        .buttonStyle(.plain)
+                        .help(isExpanded ? "收起详细错误" : "展开详细错误")
+                    }
+                }
+
+                if isExpanded && !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private func providerKeyMemberRetryText(_ member: ProviderKeyPoolMemberState) -> String? {
+        let explicitText = member.account.errorState.retryAtText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !explicitText.isEmpty {
+            return HubUIStrings.Settings.ProviderKeys.nextRetry(explicitText)
+        }
+        guard member.nextRetryAtMs > 0 else { return nil }
+        return HubUIStrings.Settings.ProviderKeys.nextRetry(
+            formattedProviderKeyImportSourceTime(member.nextRetryAtMs)
+        )
+    }
+
+    private func accountStatusColor(_ account: ProviderKeyAccount) -> Color {
+        if !account.enabled { return .gray }
+        switch account.errorState.status {
+        case "healthy": return .green
+        case "degraded": return .yellow
+        case "rate_limited": return .orange
+        case "auth_failed": return .red
+        case "disabled": return .gray
+        default: return .secondary
+        }
+    }
+
+    private func providerKeyImportSourceTitle(_ source: ProviderKeyImportSourceStatus) -> String {
+        let ref = providerKeyImportSourceDisplayName(source)
+        switch source.kind {
+        case "auth_dir":
+            return "Auth 目录 · \(ref)"
+        case "config_path":
+            return "配置文件 · \(ref)"
+        case "cliproxy_oauth":
+            return "CLIProxy OAuth · \(ref)"
+        default:
+            return "\(source.kind) · \(ref)"
+        }
+    }
+
+    private func providerKeyImportSourceDisplayName(_ source: ProviderKeyImportSourceStatus) -> String {
+        if source.kind == "cliproxy_oauth",
+           let url = URL(string: source.sourceRef),
+           let host = url.host?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !host.isEmpty {
+            if let port = url.port {
+                return "\(host):\(port)"
+            }
+            return host
+        }
+        let isDirectory = source.kind == "auth_dir"
+        let url = URL(fileURLWithPath: source.sourceRef, isDirectory: isDirectory)
+        let candidate = url.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+        return candidate.isEmpty ? source.sourceRef : candidate
+    }
+
+    private func providerKeyImportSourceDisplayRef(_ source: ProviderKeyImportSourceStatus) -> String {
+        source.sourceRef
+    }
+
+    private func providerKeyImportSourceStateText(_ source: ProviderKeyImportSourceStatus) -> String {
+        switch source.state {
+        case "ready":
+            return "ready"
+        case "missing":
+            return "missing"
+        case "sync_failed":
+            return "sync_failed"
+        default:
+            return "pending"
+        }
+    }
+
+    private func providerKeyImportSourceStateColor(_ source: ProviderKeyImportSourceStatus) -> Color {
+        switch source.state {
+        case "ready":
+            return .green
+        case "missing":
+            return .orange
+        case "sync_failed":
+            return .red
+        default:
+            return .secondary
+        }
+    }
+
+    private func providerKeyImportSourceIsHighlighted(_ source: ProviderKeyImportSourceStatus) -> Bool {
+        guard let highlightedProviderKeySourceRef else { return false }
+        return hubNormalizedProviderKeySourceRef(source.sourceRef) == highlightedProviderKeySourceRef
+    }
+
+    private func providerKeyImportSourceSummary(_ source: ProviderKeyImportSourceStatus) -> String {
+        var parts: [String] = [
+            "owned \(source.ownedAccountCount)",
+            "导入 \(source.lastImportedCount)"
+        ]
+        if source.lastSyncAtMs > 0 {
+            parts.insert("上次同步 \(formattedProviderKeyImportSourceTime(source.lastSyncAtMs))", at: 0)
+        } else {
+            parts.insert("还没有成功同步记录", at: 0)
+        }
+        if source.lastErrorCount > 0 {
+            parts.append("错误 \(source.lastErrorCount)")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func providerKeyImportSourceErrorDescription(_ source: ProviderKeyImportSourceStatus) -> String? {
+        guard let rawError = source.lastErrors.first?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawError.isEmpty else {
+            return nil
+        }
+
+        let normalized = rawError.lowercased()
+        if normalized.hasPrefix("source_path_missing") {
+            return "源路径已经不存在；恢复目录或文件后再次刷新。"
+        }
+        if normalized.contains("missing management key") {
+            return "CLIProxy management key 缺失；填好后重新同步。"
+        }
+        if normalized.contains("invalid management key") {
+            return "CLIProxy management key 不正确；请确认 Hub 里填写的是管理端口对应的 key。"
+        }
+        if normalized.contains("cli proxy") || normalized.contains("cliproxy") {
+            return rawError
+        }
+        if normalized.hasPrefix("unsupported_toml_config") {
+            return "当前 TOML 结构不在 Hub 支持范围内；请改用支持的 Codex CLI TOML / YAML，或直接导入 auth 目录。"
+        }
+        if normalized.hasPrefix("toml_read_failed") {
+            return "TOML 读取失败：\(trimmedProviderKeyImportErrorDetail(rawError))"
+        }
+        if normalized.hasPrefix("yaml_parse_failed") {
+            return "YAML 解析失败：\(trimmedProviderKeyImportErrorDetail(rawError))"
+        }
+        if normalized.hasPrefix("invalid_config") {
+            return "配置文件内容无效，当前还不能生成可导入账号。"
+        }
+        if normalized.hasSuffix("duplicate_api_key") || normalized.hasPrefix("duplicate_api_key") {
+            return "导入的 key 与当前池中已有 key 冲突；请去重后再导入。"
+        }
+        if normalized.hasSuffix("invalid_account") || normalized.hasPrefix("invalid_account") {
+            return "导入内容缺少 provider 或 credential 等必要字段。"
+        }
+        if normalized.hasSuffix("max_accounts_reached") || normalized.hasPrefix("max_accounts_reached") {
+            return "这个 provider 的账号数已经达到上限；先清理旧账号。"
+        }
+        if normalized.contains("save_failed") {
+            return "Hub 本地状态保存失败；请重试并检查共享目录是否可写。"
+        }
+        return rawError
+    }
+
+    private func trimmedProviderKeyImportErrorDetail(_ raw: String) -> String {
+        guard let separator = raw.firstIndex(of: ":") else { return raw }
+        let suffix = raw[raw.index(after: separator)...].trimmingCharacters(in: .whitespacesAndNewlines)
+        return suffix.isEmpty ? raw : suffix
+    }
+
+    private func formattedProviderKeyImportSourceTime(_ timestampMs: Int64) -> String {
+        guard timestampMs > 0 else { return "未知" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale.autoupdatingCurrent
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        return formatter.string(from: Date(timeIntervalSince1970: TimeInterval(timestampMs) / 1000.0))
+    }
+
+    private func errorStateDescription(_ state: ProviderKeyErrorState) -> String {
+        switch state.status {
+        case "healthy": return HubUIStrings.Settings.ProviderKeys.healthy
+        case "degraded": return HubUIStrings.Settings.ProviderKeys.degraded
+        case "rate_limited":
+            if state.lastErrorCode == "429" {
+                return HubUIStrings.Settings.ProviderKeys.rateLimited
+            }
+            return "\(HubUIStrings.Settings.ProviderKeys.rateLimited) (\(state.lastErrorCode))"
+        case "auth_failed":
+            return "\(HubUIStrings.Settings.ProviderKeys.authFailed) (\(state.lastErrorCode))"
+        case "disabled":
+            return HubUIStrings.Settings.ProviderKeys.disabled
+        default: return state.status
         }
     }
 
@@ -5738,7 +18382,7 @@ struct SettingsSheetView: View {
 
     private func nextLocalModelHealthAutoScanText() -> String? {
         guard store.localModelHealthAutoScanSchedule.isEnabled else { return nil }
-        let localModels = modelStore.snapshot.models.filter { !LocalModelRuntimeActionPlanner.isRemoteModel($0) }
+        let localModels = localModelSnapshot.models
         guard !localModels.isEmpty else { return nil }
 
         let healthByModelID = Dictionary(
@@ -5807,6 +18451,8 @@ struct SettingsSheetView: View {
     private func remoteModelGroupCard(_ group: RemoteModelKeyGroup) -> some View {
         let usageLimitNotice = remoteKeyUsageLimitNotice(for: group)
         let healthPresentation = remoteKeyHealthPresentation(for: group, usageLimitNotice: usageLimitNotice)
+        let slotPresentations = remoteKeySlotPresentations(for: group)
+        let detailBinding = expansionBinding(group.id, in: $expandedRemoteModelGroupIDs)
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 10) {
                 VStack(alignment: .leading, spacing: 3) {
@@ -5831,6 +18477,9 @@ struct SettingsSheetView: View {
                             .foregroundStyle(healthPresentation.tint)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                    if !slotPresentations.isEmpty {
+                        remoteKeySlotStatusList(slotPresentations)
+                    }
                     keychainStatusLine(model: group.primaryModel)
                 }
                 Spacer()
@@ -5851,32 +18500,44 @@ struct SettingsSheetView: View {
                         .disabled(group.enabledModelIDs.isEmpty)
                     }
 
-                    HStack(spacing: 8) {
+                    Menu {
                         Button(HubUIStrings.Settings.RemoteModels.rescan) {
-                            store.scanRemoteKeyHealth(for: [group.keyReference])
+                            store.quickScanRemoteKeyHealth(for: [group.keyReference])
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
                         .disabled(store.remoteKeyHealthScanInFlight)
 
                         Button(group.renameActionTitle) {
                             editingRemoteModelGroup = group
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
 
-                        Button(HubUIStrings.Settings.RemoteModels.removeKeyGroup) {
+                        Divider()
+
+                        Button(HubUIStrings.Settings.RemoteModels.removeKeyGroup, role: .destructive) {
                             removeRemoteModelGroup(group)
                         }
-                        .buttonStyle(.bordered)
-                        .tint(.red)
-                        .controlSize(.small)
+                    } label: {
+                        settingsActionChipLabel(
+                            title: "管理",
+                            systemName: "slider.horizontal.3",
+                            tint: .secondary
+                        )
                     }
                 }
             }
 
-            ForEach(group.models) { model in
-                remoteModelRow(model)
+            settingsInlineDisclosureGroup(
+                systemName: "square.stack.3d.up.fill",
+                title: "组内模型明细",
+                summary: remoteModelGroupDisclosureSummary(group),
+                badge: detailBinding.wrappedValue ? "已展开" : "折叠中",
+                tint: .indigo,
+                isExpanded: detailBinding
+            ) {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(group.models) { model in
+                        remoteModelRow(model)
+                    }
+                }
             }
         }
         .padding(12)
@@ -5886,6 +18547,26 @@ struct SettingsSheetView: View {
                 .stroke(Color.white.opacity(0.08), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func remoteKeySlotStatusList(_ slots: [RemoteKeySlotHealthPresentation]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(slots) { slot in
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(slot.keyReference)
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                        remoteModelStatusBadge(slot.badgeText, tint: slot.tint)
+                    }
+                    Text(slot.detailText)
+                        .font(.caption2)
+                        .foregroundStyle(slot.tint)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -6441,14 +19122,23 @@ struct SettingsSheetView: View {
     }
 
     private static let routingTaskTypes: [String] = [
-        "assist",
-        "review",
-        "advisor",
-        "x_terminal_coarse",
-        "x_terminal_refine",
-        "ax_coder_coarse",
-        "ax_coder_refine",
+        "supervisor",
+        "coder",
+        "reviewer",
     ]
+
+    private func routingTaskTypeLabel(_ taskType: String) -> String {
+        switch taskType {
+        case "supervisor":
+            return HubUIStrings.Models.TaskType.supervisor
+        case "coder":
+            return HubUIStrings.Models.TaskType.coder
+        case "reviewer":
+            return HubUIStrings.Models.TaskType.reviewer
+        default:
+            return taskType
+        }
+    }
 
     private func bindingRoutingModelId(_ taskType: String) -> Binding<String> {
         Binding(
@@ -6464,8 +19154,200 @@ struct SettingsSheetView: View {
         RemoteModelPresentationSupport.sorted(models)
     }
 
+    nonisolated private static func emptyRemoteQuotaProjection() -> RemoteQuotaCenterProjection {
+        RemoteQuotaCenterProjection(
+            overview: RemoteQuotaCenterOverview(
+                quotaPoolCount: 0,
+                keyPoolCount: 0,
+                totalKeys: 0,
+                readyKeys: 0,
+                cooldownKeys: 0,
+                blockedKeys: 0,
+                knownQuotaKeys: 0,
+                totalDailyTokenCap: 0,
+                totalDailyTokensUsed: 0,
+                totalDailyTokensRemaining: 0,
+                userCount: 0,
+                consumerCount: 0,
+                connectedConsumerCount: 0,
+                xtConsumerCount: 0,
+                terminalConsumerCount: 0,
+                allocatedDailyTokenBudget: 0,
+                unlimitedBudgetConsumerCount: 0,
+                observedConsumerTokensUsed: 0,
+                oversubscribedFamilyCount: 0
+            ),
+            users: [],
+            families: [],
+            consumers: []
+        )
+    }
+
+    nonisolated private static func emptyProviderKeySectionSnapshot() -> ProviderKeySectionSnapshot {
+        ProviderKeySectionSnapshot(
+            keyPools: [],
+            overview: Self.emptyRemoteQuotaProjection().overview,
+            totalFamilyCount: 0,
+            totalConsumerCount: 0,
+            consumerLedgerTotalCount: 0,
+            users: [],
+            focusedUser: nil,
+            scopedUsers: [],
+            scopedConsumers: [],
+            vendorSummaries: [],
+            filteredVendors: [],
+            filteredFamilies: [],
+            filteredUsers: [],
+            filteredConsumers: [],
+            focusedVendor: nil,
+            flowChains: [],
+            scopeOverview: ProviderKeyScopeOverview(
+                focusedUser: nil,
+                focusedVendorDisplayName: nil,
+                userCount: 0,
+                consumerCount: 0,
+                connectedConsumerCount: 0,
+                xtConsumerCount: 0,
+                terminalConsumerCount: 0,
+                allocatedDailyTokenBudget: 0,
+                unlimitedBudgetConsumerCount: 0,
+                observedConsumerTokensUsed: 0,
+                oversubscribedFamilyCount: 0
+            ),
+            riskVendorCount: 0,
+            riskFamilyCount: 0,
+            overallTrendCard: nil,
+            vendorTrendCards: [],
+            familyTrendCards: [],
+            userTrendCards: [],
+            consumerTrendCards: [],
+            trendCardCount: 0,
+            operationalTint: .blue
+        )
+    }
+
+    nonisolated private static func loadProviderKeySnapshotWithBootstrapBackground() async -> ProviderKeyStoreSnapshot {
+        RemoteProviderKeyBootstrapper.bootstrapIfNeeded()
+        if let rustSnapshot = await RustProviderKeySnapshotSupport.loadSnapshot() {
+            return rustSnapshot
+        }
+        return ProviderKeyStorage.load()
+    }
+
+    nonisolated private static func loadProviderKeyStateWithBootstrapBackground() async -> (
+        snapshot: ProviderKeyStoreSnapshot,
+        derived: ProviderKeyStoreDerivedSnapshot
+    ) {
+        let snapshot = await loadProviderKeySnapshotWithBootstrapBackground()
+        return (
+            snapshot: snapshot,
+            derived: ProviderKeyStorage.derivedSnapshot(from: snapshot)
+        )
+    }
+
+    nonisolated private static func makeRemoteQuotaProjectionSnapshot(
+        providerKeySnapshot: ProviderKeyStoreSnapshot,
+        remoteModels: [RemoteModelEntry],
+        clients: [HubGRPCClientEntry],
+        terminalAccessKeys: [HubTerminalAccessKey],
+        deviceStatusSnapshot: GRPCDevicesStatusSnapshot
+    ) -> RemoteQuotaCenterProjection {
+        RemoteQuotaCenterSupport.projection(
+            providerKeySnapshot: providerKeySnapshot,
+            remoteModels: remoteModels,
+            clients: clients,
+            terminalAccessKeys: terminalAccessKeys,
+            deviceStatusSnapshot: deviceStatusSnapshot
+        )
+    }
+
+    nonisolated private static func makeRemoteModelGroupsSnapshot(
+        from models: [RemoteModelEntry],
+        healthSnapshot: RemoteKeyHealthSnapshot
+    ) -> [RemoteModelKeyGroup] {
+        RemoteModelPresentationSupport.groups(
+            from: models,
+            healthSnapshot: healthSnapshot
+        )
+        .map { group in
+            RemoteModelKeyGroup(
+                id: group.id,
+                keyReference: group.keyReference,
+                title: group.title,
+                detail: group.detail,
+                models: group.models,
+                loadedCount: group.loadedCount,
+                availableCount: group.availableCount,
+                needsSetupCount: group.needsSetupCount,
+                enabledCount: group.enabledCount
+            )
+        }
+    }
+
+    private func rebuildRemoteModelGroupsSnapshot() {
+        let models = remoteModels
+        let healthSnapshot = store.remoteKeyHealthSnapshot
+        remoteModelGroupsBuildTask?.cancel()
+        remoteModelGroupsBuildTask = Task { @MainActor in
+            let groups = await Task.detached(priority: .utility) {
+                Self.makeRemoteModelGroupsSnapshot(
+                    from: models,
+                    healthSnapshot: healthSnapshot
+                )
+            }.value
+            guard !Task.isCancelled else { return }
+            remoteModelGroupsSnapshot = groups
+        }
+    }
+
+    private func reloadProviderKeySnapshot(rebuildProjection: Bool? = nil) {
+        providerKeyReloadTask?.cancel()
+        providerKeyReloadTask = Task { @MainActor in
+            let state = await Task.detached(priority: .utility) {
+                await Self.loadProviderKeyStateWithBootstrapBackground()
+            }.value
+            guard !Task.isCancelled else { return }
+            providerKeySnapshot = state.snapshot
+            providerKeyDerivedSnapshot = state.derived
+            lastProviderKeyPeriodicRefreshAt = Date()
+            let shouldRebuildProjection = rebuildProjection
+                ?? (selectedSettingsPage == .models && providerQuotaOperationsExpanded)
+            if shouldRebuildProjection {
+                rebuildRemoteQuotaProjectionSnapshot()
+            }
+        }
+    }
+
+    private func rebuildRemoteQuotaProjectionSnapshot() {
+        let providerKeySnapshot = providerKeySnapshot
+        let remoteModels = remoteModels
+        let clients = grpc.allowedClients
+        let terminalAccessKeys = terminalAccessKeys
+        let deviceStatusSnapshot = grpcDevicesStatus
+        remoteQuotaProjectionBuildTask?.cancel()
+        remoteQuotaProjectionBuildTask = Task { @MainActor in
+            let projection = await Task.detached(priority: .utility) {
+                Self.makeRemoteQuotaProjectionSnapshot(
+                    providerKeySnapshot: providerKeySnapshot,
+                    remoteModels: remoteModels,
+                    clients: clients,
+                    terminalAccessKeys: terminalAccessKeys,
+                    deviceStatusSnapshot: deviceStatusSnapshot
+                )
+            }.value
+            guard !Task.isCancelled else { return }
+            remoteQuotaProjectionSnapshot = projection
+            lastRemoteQuotaProjectionPeriodicRefreshAt = Date()
+            maybeRebuildProviderKeySectionSnapshot()
+        }
+    }
+
     private func reloadRemoteModels() {
         remoteModels = Self.sortedRemoteModels(RemoteModelStorage.load().models)
+        rebuildRemoteModelGroupsSnapshot()
+        if selectedSettingsPage == .models && providerQuotaOperationsExpanded {
+            rebuildRemoteQuotaProjectionSnapshot()
+        }
     }
 
     private func upsertRemoteModel(_ entry: RemoteModelEntry) {
@@ -6478,18 +19360,21 @@ struct SettingsSheetView: View {
             _ = RemoteModelStorage.upsert(entry)
         }
         remoteModels = Self.sortedRemoteModels(RemoteModelStorage.load().models)
+        rebuildRemoteModelGroupsSnapshot()
         ModelStore.shared.refresh()
     }
 
     private func removeRemoteModel(id: String) {
         let snap = RemoteModelStorage.remove(id: id)
         remoteModels = Self.sortedRemoteModels(snap.models)
+        rebuildRemoteModelGroupsSnapshot()
         ModelStore.shared.refresh()
     }
 
     private func removeRemoteModelGroup(_ group: RemoteModelKeyGroup) {
         let snap = RemoteModelStorage.remove(ids: group.models.map(\.id))
         remoteModels = Self.sortedRemoteModels(snap.models)
+        rebuildRemoteModelGroupsSnapshot()
         ModelStore.shared.refresh()
     }
 
@@ -6502,6 +19387,7 @@ struct SettingsSheetView: View {
             remoteModels[index].groupDisplayName = normalized.isEmpty ? nil : normalized
         }
         remoteModels = Self.sortedRemoteModels(remoteModels)
+        rebuildRemoteModelGroupsSnapshot()
         persistRemoteModels()
     }
 
@@ -6526,6 +19412,7 @@ struct SettingsSheetView: View {
 
         guard changed else { return }
         remoteModels = Self.sortedRemoteModels(updated)
+        rebuildRemoteModelGroupsSnapshot()
         persistRemoteModels()
     }
 
@@ -6592,6 +19479,7 @@ struct SettingsSheetView: View {
             }
         }
         remoteModels = Self.sortedRemoteModels(updated)
+        rebuildRemoteModelGroupsSnapshot()
         persistRemoteModels()
     }
 
@@ -6989,24 +19877,155 @@ struct SettingsSheetView: View {
         )
     }
 
-    private var remoteModelGroups: [RemoteModelKeyGroup] {
-        RemoteModelPresentationSupport.groups(
-            from: remoteModels,
-            healthSnapshot: store.remoteKeyHealthSnapshot
+    private func remoteKeySlotPresentations(for group: RemoteModelKeyGroup) -> [RemoteKeySlotHealthPresentation] {
+        RemoteKeyHealthPresentationSupport.slotPresentations(
+            models: group.models,
+            healthSnapshot: store.remoteKeyHealthSnapshot,
+            isScanning: { keyReference in
+                store.isRemoteKeyHealthScanInProgress(for: keyReference)
+            }
         )
-            .map { group in
-                RemoteModelKeyGroup(
-                    id: group.id,
-                    keyReference: group.keyReference,
-                    title: group.title,
-                    detail: group.detail,
-                    models: group.models,
-                    loadedCount: group.loadedCount,
-                    availableCount: group.availableCount,
-                    needsSetupCount: group.needsSetupCount,
-                    enabledCount: group.enabledCount
+    }
+
+    private var remoteModelGroups: [RemoteModelKeyGroup] {
+        remoteModelGroupsSnapshot
+    }
+}
+
+private struct RemoteQuotaBudgetEditorSheet: View {
+    let target: RemoteQuotaBudgetEditorTarget
+    let onSave: (Int) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var draftLimit: Int
+
+    init(target: RemoteQuotaBudgetEditorTarget, onSave: @escaping (Int) -> Void) {
+        self.target = target
+        self.onSave = onSave
+        _draftLimit = State(initialValue: max(1, target.currentDailyTokenLimit))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("精确设置日预算")
+                .font(.headline)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(target.title)
+                    .font(.callout.weight(.semibold))
+                if !target.subtitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(target.subtitle)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
+
+            HStack(spacing: 8) {
+                metricCard(
+                    title: "当前额度",
+                    value: Self.tokenFormatter.string(from: NSNumber(value: target.currentDailyTokenLimit)) ?? "\(target.currentDailyTokenLimit)",
+                    tint: .purple
+                )
+                metricCard(
+                    title: "今日已用",
+                    value: Self.tokenFormatter.string(from: NSNumber(value: target.todayUsed)) ?? "\(target.todayUsed)",
+                    tint: .teal
                 )
             }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("目标 daily budget")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                TextField(
+                    "每日 token 额度",
+                    value: $draftLimit,
+                    formatter: Self.tokenFormatter
+                )
+                .textFieldStyle(.roundedBorder)
+
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible(minimum: 72), spacing: 8),
+                        GridItem(.flexible(minimum: 72), spacing: 8),
+                        GridItem(.flexible(minimum: 72), spacing: 8),
+                        GridItem(.flexible(minimum: 72), spacing: 8),
+                    ],
+                    spacing: 8
+                ) {
+                    presetButton(100_000, title: "100k")
+                    presetButton(200_000, title: "200k")
+                    presetButton(500_000, title: "500k")
+                    presetButton(1_000_000, title: "1M")
+                }
+            }
+
+            Text("保存后会立刻刷新 Hub 台账；XT 和普通 terminal 共用这套 daily budget 语义。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            Spacer()
+
+            HStack(spacing: 10) {
+                Button("取消") {
+                    dismiss()
+                }
+
+                Spacer()
+
+                Button("保存额度") {
+                    onSave(max(1, draftLimit))
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(draftLimit < 1 || draftLimit == target.currentDailyTokenLimit)
+            }
+        }
+        .padding(16)
+        .frame(width: 420, height: 300)
+    }
+
+    private static let tokenFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.usesGroupingSeparator = true
+        formatter.maximumFractionDigits = 0
+        return formatter
+    }()
+
+    @ViewBuilder
+    private func metricCard(
+        title: String,
+        value: String,
+        tint: Color
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(tint)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(tint.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func presetButton(_ value: Int, title: String) -> some View {
+        Button(title) {
+            draftLimit = value
+        }
+        .buttonStyle(.borderless)
+        .font(.caption.weight(.semibold))
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 6)
+        .background((draftLimit == value ? Color.indigo : Color.gray).opacity(draftLimit == value ? 0.14 : 0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 

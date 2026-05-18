@@ -60,6 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         embeddedBridge.start()
         embeddedBridgeRunner = embeddedBridge
 
+        RemoteProviderKeyBootstrapper.bootstrapIfNeeded()
         RemoteModelStorage.syncEnabledRemoteModelsIntoModelState()
 
         let store = HubStore.shared
@@ -144,6 +145,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func application(_ application: NSApplication, open urls: [URL]) {
         guard !urls.isEmpty else { return }
         ensureForegroundPresentation(reason: "open_url")
+        let store = HubStore.shared
+        for url in urls {
+            _ = store.openLocalActionURL(url)
+            if Self.isSettingsURL(url) {
+                HubSettingsWindowPresenter.shared.show(store: store)
+            }
+        }
+    }
+
+    private static func isSettingsURL(_ url: URL) -> Bool {
+        (url.scheme ?? "").lowercased() == "relflowhub"
+            && (url.host ?? "").lowercased() == "settings"
     }
 
     nonisolated func userNotificationCenter(

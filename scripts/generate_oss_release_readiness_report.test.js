@@ -32,7 +32,7 @@ function spawnOrThrow(command, args, root) {
   assert.equal(result.status, 0, result.stderr || result.stdout);
 }
 
-run("oss readiness carries doctor heartbeat governance, durable candidate mirror, and local store write support through release surfaces", () => {
+run("oss readiness carries doctor heartbeat governance, provider key routing, durable candidate mirror, and local store write support through release surfaces", () => {
   const root = createReleaseSurfaceFixture();
 
   try {
@@ -53,6 +53,10 @@ run("oss readiness carries doctor heartbeat governance, durable candidate mirror
       readiness.checks.reproducibility.doctor_source_gate.project_remote_snapshot_cache_support;
     const heartbeatSupport =
       readiness.checks.reproducibility.doctor_source_gate.heartbeat_governance_support;
+    const providerKeySelectionSupport =
+      readiness.checks.reproducibility.doctor_source_gate.provider_key_selection_support;
+    const providerKeyRouteContextSupport =
+      readiness.checks.reproducibility.doctor_source_gate.provider_key_route_context_support;
     const supervisorMemoryPolicySupport =
       readiness.checks.reproducibility.doctor_source_gate.supervisor_memory_policy_support;
     const supervisorMemoryAssemblyResolutionSupport =
@@ -71,6 +75,10 @@ run("oss readiness carries doctor heartbeat governance, durable candidate mirror
       readiness.checks.reproducibility.doctor_source_gate.build_snapshot_inventory_support;
     const scrubHeartbeatSupport =
       scrubReport.truth_source_boundary.doctor_source_gate.heartbeat_governance_support;
+    const scrubProviderKeySelectionSupport =
+      scrubReport.truth_source_boundary.doctor_source_gate.provider_key_selection_support;
+    const scrubProviderKeyRouteContextSupport =
+      scrubReport.truth_source_boundary.doctor_source_gate.provider_key_route_context_support;
     const scrubProjectRemoteSnapshotCacheSupport =
       scrubReport.truth_source_boundary.doctor_source_gate.project_remote_snapshot_cache_support;
     const scrubMirrorSupport =
@@ -135,6 +143,168 @@ run("oss readiness carries doctor heartbeat governance, durable candidate mirror
       age_ms: 6000,
       ttl_remaining_ms: 9000,
     });
+    assert.deepEqual(providerKeySelectionSupport.xt_source_provider_key_selection_snapshot, {
+      requested_provider: "openai",
+      requested_model_id: "openai/gpt-5.4",
+      strategy: "pool_priority",
+      selection_scope: "provider=openai model=openai/gpt-5.4",
+      selected_account_key: "openai:primary",
+      fallback_reason_code: null,
+      candidate_count: 3,
+      blocked_candidate_count: 0,
+      cooldown_candidate_count: 1,
+      stale_candidate_count: 1,
+      next_retry_at_ms: 1741300185000,
+      selected_candidate: {
+        account_key: "openai:primary",
+        provider: "openai",
+        pool_id: "openai",
+        wire_api: "responses",
+        availability_state: "ready",
+        availability_reason_code: null,
+        availability_retry_at_ms: null,
+        selected: true,
+        reason_code: "selected",
+        retry_at_ms: null,
+      },
+      candidate_preview: [
+        {
+          account_key: "openai:primary",
+          provider: "openai",
+          pool_id: "openai",
+          wire_api: "responses",
+          availability_state: "ready",
+          availability_reason_code: null,
+          availability_retry_at_ms: null,
+          selected: true,
+          reason_code: "selected",
+          retry_at_ms: null,
+        },
+        {
+          account_key: "openai:cooldown",
+          provider: "openai",
+          pool_id: "openai",
+          wire_api: "responses",
+          availability_state: "cooldown",
+          availability_reason_code: "provider_timeout",
+          availability_retry_at_ms: 1741300185000,
+          selected: false,
+          reason_code: "cooldown_active",
+          retry_at_ms: 1741300185000,
+        },
+        {
+          account_key: "openai:stale",
+          provider: "openai",
+          pool_id: "openai",
+          wire_api: "responses",
+          availability_state: "stale",
+          availability_reason_code: "runtime_stale",
+          availability_retry_at_ms: null,
+          selected: false,
+          reason_code: "runtime_stale",
+          retry_at_ms: null,
+        },
+      ],
+    });
+    assert.deepEqual(providerKeyRouteContextSupport.xt_source_provider_key_route_context_snapshot, {
+      model_id: "openai/gpt-5.4",
+      selected_account_key: "openai:primary",
+      import_issue_count: 1,
+      primary_import_issue: {
+        kind: "config_path",
+        state: "sync_failed",
+        source_ref: "/Users/test/config149.toml",
+        source_name: "config149.toml",
+        error_code: "unsupported_toml_config",
+        error_detail: "missing auth entries",
+      },
+      import_context_preview: [
+        "配置文件 config149.toml 最近一次同步失败",
+        "auth19.json 最近一次同步失败，等待 OAuth refresh metadata",
+      ],
+    });
+    assert.deepEqual(scrubProviderKeySelectionSupport.all_source_provider_key_selection_snapshot, {
+      requested_provider: "openai",
+      requested_model_id: "openai/gpt-5.4",
+      strategy: "pool_priority",
+      selection_scope: "provider=openai model=openai/gpt-5.4",
+      selected_account_key: "openai:primary",
+      fallback_reason_code: null,
+      candidate_count: 3,
+      blocked_candidate_count: 0,
+      cooldown_candidate_count: 1,
+      stale_candidate_count: 1,
+      next_retry_at_ms: 1741300185000,
+      selected_candidate: {
+        account_key: "openai:primary",
+        provider: "openai",
+        pool_id: "openai",
+        wire_api: "responses",
+        availability_state: "ready",
+        availability_reason_code: null,
+        availability_retry_at_ms: null,
+        selected: true,
+        reason_code: "selected",
+        retry_at_ms: null,
+      },
+      candidate_preview: [
+        {
+          account_key: "openai:primary",
+          provider: "openai",
+          pool_id: "openai",
+          wire_api: "responses",
+          availability_state: "ready",
+          availability_reason_code: null,
+          availability_retry_at_ms: null,
+          selected: true,
+          reason_code: "selected",
+          retry_at_ms: null,
+        },
+        {
+          account_key: "openai:cooldown",
+          provider: "openai",
+          pool_id: "openai",
+          wire_api: "responses",
+          availability_state: "cooldown",
+          availability_reason_code: "provider_timeout",
+          availability_retry_at_ms: 1741300185000,
+          selected: false,
+          reason_code: "cooldown_active",
+          retry_at_ms: 1741300185000,
+        },
+        {
+          account_key: "openai:stale",
+          provider: "openai",
+          pool_id: "openai",
+          wire_api: "responses",
+          availability_state: "stale",
+          availability_reason_code: "runtime_stale",
+          availability_retry_at_ms: null,
+          selected: false,
+          reason_code: "runtime_stale",
+          retry_at_ms: null,
+        },
+      ],
+    });
+    assert.deepEqual(
+      scrubProviderKeyRouteContextSupport.all_source_provider_key_route_context_snapshot,
+      {
+        model_id: "openai/gpt-5.4",
+        selected_account_key: "openai:primary",
+        import_issue_count: 1,
+        primary_import_issue: {
+          kind: "config_path",
+          state: "sync_failed",
+          source_ref: "/Users/test/config149.toml",
+          source_name: "config149.toml",
+          error_code: "unsupported_toml_config",
+          error_detail: "missing auth entries",
+        },
+        import_context_preview: [
+          "配置文件 config149.toml 最近一次同步失败",
+        ],
+      }
+    );
     assert.deepEqual(heartbeatSupport.xt_source_heartbeat_governance_snapshot, {
       project_id: "project-alpha",
       project_name: "Alpha",

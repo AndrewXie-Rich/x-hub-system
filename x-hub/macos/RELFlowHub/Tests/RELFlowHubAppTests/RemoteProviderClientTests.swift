@@ -41,10 +41,12 @@ final class RemoteProviderClientTests: XCTestCase {
         XCTAssertEqual(imported.baseURL, "https://api.openai.com/v1")
         XCTAssertEqual(imported.apiKeyRef, "openai:api.openai.com")
         XCTAssertEqual(imported.wireAPI, "")
+        XCTAssertEqual(imported.refreshToken, "")
+        XCTAssertEqual(imported.authType, "api_key")
         XCTAssertEqual(imported.kind, .apiKey)
     }
 
-    func testProviderAuthImportReadsChatGPTTokenBundleAsOpenAIResponsesCredentials() throws {
+    func testProviderAuthImportReadsChatGPTTokenBundleAsOpenAIChatCompletionsCredentials() throws {
         let data = Data(#"""
         {
           "auth_mode": "chatgpt",
@@ -61,8 +63,159 @@ final class RemoteProviderClientTests: XCTestCase {
         XCTAssertEqual(imported.apiKey, "ey-test-access-token")
         XCTAssertEqual(imported.baseURL, "https://api.openai.com/v1")
         XCTAssertEqual(imported.apiKeyRef, "openai:api.openai.com")
-        XCTAssertEqual(imported.wireAPI, "responses")
+        XCTAssertEqual(imported.wireAPI, "chat_completions")
+        XCTAssertEqual(imported.authType, "api_key")
         XCTAssertEqual(imported.kind, .chatGPTTokenBundle)
+    }
+
+    func testProviderAuthImportReadsWrappedChatGPTTokenBundleFromDataEnvelope() throws {
+        let data = Data(#"""
+        {
+          "data": {
+            "auth_mode": "chatgpt",
+            "tokens": {
+              "access_token": "ey-wrapped-access-token"
+            }
+          }
+        }
+        """#.utf8)
+
+        let imported = try ProviderAuthImport.parse(data: data)
+
+        XCTAssertEqual(imported.backend, "openai")
+        XCTAssertEqual(imported.apiKey, "ey-wrapped-access-token")
+        XCTAssertEqual(imported.baseURL, "https://api.openai.com/v1")
+        XCTAssertEqual(imported.apiKeyRef, "openai:api.openai.com")
+        XCTAssertEqual(imported.wireAPI, "chat_completions")
+        XCTAssertEqual(imported.authType, "api_key")
+        XCTAssertEqual(imported.kind, .chatGPTTokenBundle)
+    }
+
+    func testProviderAuthImportKeepsRefreshTokenAndAccountMetadataForChatGPTBundle() throws {
+        let idTokenPayload = Data(#"{"email":"person@example.com","chatgpt_account_id":"acct-42","exp":4102444800}"#.utf8)
+            .base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        let idToken = "eyJhbGciOiJub25lIn0.\(idTokenPayload)."
+        let data = Data(
+            """
+            {
+              "auth_mode": "chatgpt",
+              "tokens": {
+                "id_token": "\(idToken)",
+                "access_token": "ey-live-access-token",
+                "refresh_token": "refresh-live-token",
+                "account_id": "acct-42"
+              }
+            }
+            """.utf8
+        )
+
+        let imported = try ProviderAuthImport.parse(data: data)
+
+        XCTAssertEqual(imported.apiKey, "ey-live-access-token")
+        XCTAssertEqual(imported.refreshToken, "refresh-live-token")
+        XCTAssertEqual(imported.authType, "oauth")
+        XCTAssertEqual(imported.email, "person@example.com")
+        XCTAssertEqual(imported.accountID, "acct-42")
+        XCTAssertEqual(imported.oauthSourceKey, "chatgpt")
+        XCTAssertGreaterThan(imported.expiresAtMs, 0)
+    }
+
+    func testProviderAuthImportReadsLegacyCodexTokenFile() throws {
+        let data = Data(#"""
+        {
+          "type": "codex",
+          "access_token": "ey-legacy-access-token",
+          "base_url": "https://api.openai.com/v1"
+        }
+        """#.utf8)
+
+        let imported = try ProviderAuthImport.parse(data: data)
+
+        XCTAssertEqual(imported.backend, "openai")
+        XCTAssertEqual(imported.apiKey, "ey-legacy-access-token")
+        XCTAssertEqual(imported.baseURL, "https://api.openai.com/v1")
+        XCTAssertEqual(imported.apiKeyRef, "openai:api.openai.com")
+        XCTAssertEqual(imported.wireAPI, "chat_completions")
+        XCTAssertEqual(imported.kind, .chatGPTTokenBundle)
+    }
+
+    func testProviderAuthImportReadsClaudeOAuthBundle() throws {
+        let data = Data(#"""
+        {
+          "type": "claude",
+          "access_token": "claude-access-token",
+          "refresh_token": "claude-refresh-token",
+          "email": "claude-user@example.com",
+          "expired": "2026-05-01T00:00:00Z"
+        }
+        """#.utf8)
+
+        let imported = try ProviderAuthImport.parse(data: data)
+
+        XCTAssertEqual(imported.backend, "anthropic")
+        XCTAssertEqual(imported.apiKey, "claude-access-token")
+        XCTAssertEqual(imported.refreshToken, "claude-refresh-token")
+        XCTAssertEqual(imported.baseURL, "https://api.anthropic.com/v1")
+        XCTAssertEqual(imported.apiKeyRef, "anthropic:api.anthropic.com")
+        XCTAssertEqual(imported.authType, "oauth")
+        XCTAssertEqual(imported.email, "claude-user@example.com")
+        XCTAssertEqual(imported.oauthSourceKey, "claude")
+        XCTAssertGreaterThan(imported.expiresAtMs, 0)
+    }
+
+    func testProviderAuthImportReadsGeminiOAuthBundleFromNestedToken() throws {
+        let data = Data(#"""
+        {
+          "type": "gemini",
+          "email": "gemini-user@example.com",
+          "project_id": "proj-123",
+          "token": {
+            "access_token": "ya29.nested-access-token",
+            "refresh_token": "gemini-refresh-token",
+            "expires_at": 4102444800
+          }
+        }
+        """#.utf8)
+
+        let imported = try ProviderAuthImport.parse(data: data)
+
+        XCTAssertEqual(imported.backend, "gemini")
+        XCTAssertEqual(imported.apiKey, "ya29.nested-access-token")
+        XCTAssertEqual(imported.refreshToken, "gemini-refresh-token")
+        XCTAssertEqual(imported.baseURL, "https://generativelanguage.googleapis.com/v1beta")
+        XCTAssertEqual(imported.apiKeyRef, "gemini:generativelanguage.googleapis.com")
+        XCTAssertEqual(imported.authType, "oauth")
+        XCTAssertEqual(imported.email, "gemini-user@example.com")
+        XCTAssertEqual(imported.accountID, "proj-123")
+        XCTAssertEqual(imported.oauthSourceKey, "gemini")
+        XCTAssertGreaterThan(imported.expiresAtMs, 0)
+    }
+
+    func testProviderAuthImportReadsKimiOAuthBundle() throws {
+        let data = Data(#"""
+        {
+          "type": "kimi",
+          "access_token": "kimi-access-token",
+          "refresh_token": "kimi-refresh-token",
+          "device_id": "device-42",
+          "expired": "2026-05-02T00:00:00Z"
+        }
+        """#.utf8)
+
+        let imported = try ProviderAuthImport.parse(data: data)
+
+        XCTAssertEqual(imported.backend, "kimi")
+        XCTAssertEqual(imported.apiKey, "kimi-access-token")
+        XCTAssertEqual(imported.refreshToken, "kimi-refresh-token")
+        XCTAssertEqual(imported.baseURL, "https://api.moonshot.cn/v1")
+        XCTAssertEqual(imported.apiKeyRef, "kimi:api.moonshot.cn")
+        XCTAssertEqual(imported.authType, "oauth")
+        XCTAssertEqual(imported.accountID, "device-42")
+        XCTAssertEqual(imported.oauthSourceKey, "kimi")
+        XCTAssertGreaterThan(imported.expiresAtMs, 0)
     }
 
     func testProviderConfigImportPrefersConfiguredModelProvider() throws {
@@ -231,6 +384,8 @@ final class RemoteProviderClientTests: XCTestCase {
 
         let credentials = try XCTUnwrap(resolved.credentials)
         let providerConfig = try XCTUnwrap(resolved.providerConfig)
+        XCTAssertEqual(resolved.credentialVariants.count, 1)
+        XCTAssertEqual(resolved.credentialVariants.first?.sourceURL?.lastPathComponent, "auth.json")
         XCTAssertEqual(credentials.kind, .apiKey)
         XCTAssertEqual(credentials.apiKey, "sk-import-123")
         XCTAssertEqual(credentials.backend, "openai_compatible")
@@ -238,6 +393,106 @@ final class RemoteProviderClientTests: XCTestCase {
         XCTAssertEqual(credentials.apiKeyRef, "openai_compatible:wxs.lat")
         XCTAssertEqual(credentials.wireAPI, "responses")
         XCTAssertEqual(providerConfig.preferredModelID, "gpt-5.4")
+    }
+
+    func testCodexProviderImportResolverKeepsChatGPTCompatWireAPIForFallbackConfigImport() throws {
+        let codexHome = try makeTempCodexHome()
+        setenv("XHUB_CODEX_HOME_OVERRIDE", codexHome.path, 1)
+        defer {
+            unsetenv("XHUB_CODEX_HOME_OVERRIDE")
+        }
+
+        let importRoot = try makeTempImportDir()
+        try """
+        {
+          "auth_mode": "chatgpt",
+          "OPENAI_API_KEY": null,
+          "tokens": {
+            "access_token": "ey-test-access-token"
+          }
+        }
+        """.write(
+            to: importRoot.appendingPathComponent("auth.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try """
+        model = "gpt-5.4"
+        model_reasoning_effort = "xhigh"
+        """.write(
+            to: importRoot.appendingPathComponent("config.toml"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let resolved = try CodexProviderImportResolver.resolveConfigImport(
+            from: importRoot.appendingPathComponent("config.toml")
+        )
+
+        let credentials = try XCTUnwrap(resolved.credentials)
+        let providerConfig = try XCTUnwrap(resolved.providerConfig)
+        XCTAssertEqual(resolved.credentialVariants.count, 1)
+        XCTAssertEqual(resolved.credentialVariants.first?.sourceURL?.lastPathComponent, "auth.json")
+        XCTAssertEqual(credentials.kind, .chatGPTTokenBundle)
+        XCTAssertEqual(providerConfig.source, .fallbackOpenAI)
+        XCTAssertEqual(providerConfig.wireAPI, "responses")
+        XCTAssertEqual(credentials.wireAPI, "chat_completions")
+    }
+
+    func testCodexProviderImportResolverLoadsNewestSiblingAuthFileDuringConfigImport() throws {
+        let importRoot = try makeTempImportDir()
+        try """
+        {
+          "auth_mode": "chatgpt",
+          "tokens": {
+            "access_token": "ey-auth17-access-token"
+          }
+        }
+        """.write(
+            to: importRoot.appendingPathComponent("auth17.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try """
+        {
+          "auth_mode": "chatgpt",
+          "tokens": {
+            "access_token": "ey-auth19-access-token"
+          }
+        }
+        """.write(
+            to: importRoot.appendingPathComponent("auth19.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try """
+        model = "gpt-5.4"
+        model_reasoning_effort = "xhigh"
+        """.write(
+            to: importRoot.appendingPathComponent("config149.toml"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let resolved = try CodexProviderImportResolver.resolveConfigImport(
+            from: importRoot.appendingPathComponent("config149.toml")
+        )
+
+        let credentials = try XCTUnwrap(resolved.credentials)
+        XCTAssertEqual(
+            resolved.credentialVariants.map { $0.credentials.apiKey },
+            ["ey-auth19-access-token", "ey-auth17-access-token"]
+        )
+        XCTAssertEqual(
+            resolved.credentialVariants.map { $0.credentials.authIndex },
+            [19, 17]
+        )
+        XCTAssertEqual(
+            resolved.credentialVariants.map { $0.sourceURL?.lastPathComponent ?? "" },
+            ["auth19.json", "auth17.json"]
+        )
+        XCTAssertEqual(credentials.kind, .chatGPTTokenBundle)
+        XCTAssertEqual(credentials.apiKey, "ey-auth19-access-token")
     }
 
     func testRemoteProviderClientFallsBackToCodexCatalogWhenModelReadScopeMissing() throws {
@@ -272,6 +527,31 @@ final class RemoteProviderClientTests: XCTestCase {
         )
 
         XCTAssertEqual(ids, ["gpt-5.4", "gpt-5.3-codex"])
+    }
+
+    func testRemoteProviderClientFallsBackToCodexCatalogForChatGPTOAuthBackendAlias() throws {
+        let codexHome = try makeTempCodexHome()
+        let modelsCache = """
+        {
+          "models": [
+            {"slug": "gpt-5.5", "supported_in_api": true},
+            {"slug": "gpt-5.4-mini", "supported_in_api": true}
+          ]
+        }
+        """
+        try modelsCache.write(to: codexHome.appendingPathComponent("models_cache.json"), atomically: true, encoding: .utf8)
+        setenv("XHUB_CODEX_HOME_OVERRIDE", codexHome.path, 1)
+
+        let ids = RemoteProviderClient.fallbackModelIdsIfApplicable(
+            backend: "codex",
+            baseURL: "https://api.openai.com/v1",
+            error: RemoteProviderClient.ProviderError.httpError(
+                status: 403,
+                body: #"{"error":"Provider permissions insufficient. Missing scopes: api.model.read"}"#
+            )
+        )
+
+        XCTAssertEqual(ids, ["gpt-5.5", "gpt-5.4-mini"])
     }
 
     func testCodexModelCatalogFallbackPrefersConfiguredModelBeforeCachedModels() throws {

@@ -58,4 +58,3 @@ enum XTPerformanceTrace {
         }
     }
 }
-

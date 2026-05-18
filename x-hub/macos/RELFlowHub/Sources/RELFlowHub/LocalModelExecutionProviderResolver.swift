@@ -147,13 +147,11 @@ enum LocalModelExecutionProviderResolver {
         taskKinds: [String],
         helperBinaryPath: String
     ) -> Bool {
+        _ = helperBinaryPath
         guard normalizedBackend(backend) == "mlx" else {
             return false
         }
         guard !modelPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return false
-        }
-        guard !helperBinaryPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return false
         }
         let normalizedTaskKinds = Set(

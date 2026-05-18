@@ -8,6 +8,7 @@ from typing import Any
 
 PROVIDER_PACK_REGISTRY_SCHEMA_VERSION = "xhub.provider_pack_registry.v1"
 PROVIDER_PACK_REGISTRY_FILENAME = "provider_pack_registry.json"
+AUTO_MANAGED_HELPER_NOTE = "auto_local_helper_bridge"
 
 
 def _safe_str(value: Any) -> str:
@@ -146,12 +147,13 @@ DEFAULT_PROVIDER_PACKS: dict[str, ProviderPackManifest] = {
     "mlx_vlm": ProviderPackManifest(
         provider_id="mlx_vlm",
         engine="mlx-vlm",
-        version="builtin-2026-03-24",
+        version="builtin-2026-04-14-native-v1",
         supported_formats=["mlx"],
         supported_domains=["vision", "ocr"],
         runtime_requirements=ProviderPackRuntimeRequirements(
-            execution_mode="helper_binary_bridge",
-            notes=["offline_only", "helper_bridge_required_for_mlx_multimodal"],
+            execution_mode="builtin_python",
+            python_modules=["mlx", "mlx_lm", "mlx_vlm", "transformers", "PIL"],
+            notes=["offline_only", "native_mlx_multimodal_runtime"],
         ),
         min_hub_version="2026.03",
     ),
@@ -228,6 +230,26 @@ def _normalize_registry_entry(raw: Any) -> dict[str, Any] | None:
     }
 
 
+def _is_legacy_auto_managed_mlx_vlm_helper_override(entry: dict[str, Any]) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    if _safe_str(entry.get("providerId") or entry.get("provider_id")).lower() != "mlx_vlm":
+        return False
+    if _safe_str(entry.get("note")) != AUTO_MANAGED_HELPER_NOTE:
+        return False
+    runtime_requirements = (
+        entry.get("runtimeRequirements")
+        if isinstance(entry.get("runtimeRequirements"), dict)
+        else entry.get("runtime_requirements")
+        if isinstance(entry.get("runtime_requirements"), dict)
+        else {}
+    )
+    execution_mode = _safe_str(
+        runtime_requirements.get("executionMode") or runtime_requirements.get("execution_mode")
+    ).lower()
+    return execution_mode == "helper_binary_bridge"
+
+
 def load_provider_pack_registry(base_dir: str) -> dict[str, Any]:
     path = provider_pack_registry_path(base_dir)
     payload = {
@@ -252,7 +274,7 @@ def load_provider_pack_registry(base_dir: str) -> dict[str, Any]:
             _normalize_registry_entry(item)
             for item in (raw_packs if isinstance(raw_packs, list) else [])
         )
-        if isinstance(entry, dict)
+        if isinstance(entry, dict) and not _is_legacy_auto_managed_mlx_vlm_helper_override(entry)
     ]
     return {
         "schemaVersion": _safe_str(raw.get("schemaVersion") or raw.get("schema_version")) or PROVIDER_PACK_REGISTRY_SCHEMA_VERSION,

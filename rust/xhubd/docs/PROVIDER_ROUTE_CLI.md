@@ -25,6 +25,7 @@ bash "tools/provider_route_generate_observe_runner.command" --runs 5 --concurren
 bash "tools/provider_route_generate_observe_runner.command" --runs 3 --concurrency 1 --enable-candidate-audit --expect-candidate-ready --min-candidate-audits 3 --observe-throttle-ms 0 --observe-max-in-flight 2 --max-generate-ms 3000
 bash "tools/provider_route_cutover_readiness_runner.command" --shadow-runs 3 --candidate-runs 3 --expect-ready
 bash "tools/provider_route_authority_plan_runner.command" --shadow-runs 3 --candidate-runs 3 --expect-ready
+bash "tools/provider_codex_oauth_refresh_smoke.command"
 bash "tools/provider_route_smoke.command" --model-id openai/gpt5.5
 ```
 
@@ -36,6 +37,8 @@ cargo run --bin xhubd -- provider route --model-id gpt-4o --runtime-base-dir /pa
 cargo run --bin xhubd -- provider compare --node-decision-json '{"requested_provider":"openai","requested_model_id":"gpt-4o","selected_account_key":"","fallback_reason_code":"no_keys_for_provider","available_count":0,"total_count":0,"candidates":[]}'
 cargo run --bin xhubd -- provider reports --limit 20
 cargo run --bin xhubd -- provider readiness --min-compare-reports 10 --max-mismatches 0
+cargo run --bin xhubd -- provider plan-codex-oauth-refresh --runtime-base-dir /path/to/runtime --include-skipped
+cargo run --bin xhubd -- provider refresh-codex-oauth --runtime-base-dir /path/to/runtime --account-key codex:example
 ```
 
 Daemon HTTP form:
@@ -46,6 +49,8 @@ curl -fsS "http://127.0.0.1:50151/provider/route?model_id=gpt-4o&provider=openai
 curl -fsS -X POST "http://127.0.0.1:50151/provider/compare" -H "content-type: application/json" --data '{"model_id":"gpt-4o","provider":"openai","node_decision":{"requested_provider":"openai","requested_model_id":"gpt-4o","selected_account_key":"","fallback_reason_code":"no_keys_for_provider","available_count":0,"total_count":0,"candidates":[]}}'
 curl -fsS "http://127.0.0.1:50151/provider/reports?limit=20"
 curl -fsS "http://127.0.0.1:50151/provider/readiness?min_compare_reports=10&max_mismatches=0&limit=20"
+curl -fsS -X POST "http://127.0.0.1:50151/provider/oauth-refresh/codex/plan" -H "content-type: application/json" --data '{"runtime_base_dir":"/path/to/runtime","include_skipped":true}'
+curl -fsS -X POST "http://127.0.0.1:50151/provider/oauth-refresh/codex" -H "content-type: application/json" --data '{"runtime_base_dir":"/path/to/runtime","account_key":"codex:example"}'
 ```
 
 `GET /provider/route`, `POST /provider/compare`, `GET /provider/reports`, and
@@ -146,6 +151,26 @@ reports` summarizes that evidence, and `provider readiness` returns
 The command intentionally does not return secret key material. Production
 request payload construction remains in Node until provider authority cutover is
 explicitly gated.
+
+## Codex OAuth Refresh
+
+`provider plan-codex-oauth-refresh` and
+`POST /provider/oauth-refresh/codex/plan` are read-only planner surfaces for
+Codex/OpenAI OAuth accounts in `hub_provider_keys.json`. They return due
+account keys and reason codes such as `token_expired`, `expires_soon`,
+`retry_due`, `auth_missing`, and `not_due`; they do not return access tokens,
+refresh tokens, or provider request payloads.
+
+`provider refresh-codex-oauth` and `POST /provider/oauth-refresh/codex` perform
+one account refresh through the OpenAI/Codex token endpoint and then delegate
+all store mutation to the OAuth apply/failure writers. Terminal provider
+failures such as `invalid_grant` and `refresh_token_reused` fail closed with no
+retry, while retryable transport failures keep `retry_at_source=refresh` and a
+cooldown. The mock smoke for this flow is:
+
+```bash
+bash "tools/provider_codex_oauth_refresh_smoke.command"
+```
 
 ## Generate Hot-Path Evidence
 

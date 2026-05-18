@@ -147,6 +147,8 @@ final class LocalModelManagedStorageTests: XCTestCase {
                 baseDir.appendingPathComponent("models", isDirectory: true).path
             )
         )
+        let bookmarks = LocalModelAccessBookmarkStore.load(baseDir: baseDir)
+        XCTAssertEqual(bookmarks.records.first?.path, sourceModel.standardizedFileURL.path)
     }
 
     private func makeTempDir() throws -> URL {

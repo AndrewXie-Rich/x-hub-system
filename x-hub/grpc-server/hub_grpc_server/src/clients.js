@@ -1,5 +1,9 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+
+const CLIENTS_SCHEMA_VERSION = 'hub_grpc_clients.v2';
+const DEFAULT_USAGE_WRITE_INTERVAL_MS = 30_000;
 
 function safeString(value) {
   return String(value ?? '').trim();
@@ -43,6 +47,66 @@ function safeStringArray(value) {
 
 function asObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function readJsonSafe(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(String(filePath || ''), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function writeJsonAtomic(dirPath, fileName, obj) {
+  const dir = safeString(dirPath);
+  if (!dir) return false;
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch {
+    // ignore
+  }
+  const outPath = path.join(dir, fileName);
+  const tmpPath = path.join(dir, `.${fileName}.tmp_${process.pid}_${Math.random().toString(16).slice(2)}`);
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(obj, null, 2) + '\n', 'utf8');
+    fs.renameSync(tmpPath, outPath);
+    return true;
+  } catch {
+    try {
+      fs.unlinkSync(tmpPath);
+    } catch {
+      // ignore
+    }
+    return false;
+  }
+}
+
+function normalizeClientAuthKind(value, fallback = 'paired_client') {
+  const raw = safeString(value).toLowerCase();
+  if (raw === 'hub_access_key' || raw === 'access_key' || raw === 'service_token') return 'hub_access_key';
+  if (raw === 'paired_client' || raw === 'paired_terminal' || raw === 'device_pairing') return 'paired_client';
+  return fallback;
+}
+
+export function redactClientToken(value) {
+  const token = safeString(value);
+  if (!token) return '';
+  if (token.length <= 8) return '****';
+  return `${token.slice(0, 8)}...${token.slice(-4)}`;
+}
+
+export function generateClientToken() {
+  const bytes = crypto.randomBytes(32);
+  const b64 = bytes
+    .toString('base64')
+    .replaceAll('+', '-')
+    .replaceAll('/', '_')
+    .replaceAll('=', '');
+  return `axhub_client_${b64}`;
+}
+
+export function generateAccessKeyId() {
+  return `hak_${crypto.randomBytes(12).toString('hex')}`;
 }
 
 function normalizeClientTrustProfileFields(raw, { device_id, name, capabilities }) {
@@ -213,6 +277,50 @@ function normalizeClientTrustProfileFields(raw, { device_id, name, capabilities 
   };
 }
 
+function normalizeSnapshotClients(parsed) {
+  const arr = Array.isArray(parsed?.clients)
+    ? parsed.clients
+    : Array.isArray(parsed?.devices)
+      ? parsed.devices
+      : null;
+
+  if (Array.isArray(arr)) {
+    return arr.map((item) => {
+      if (typeof item === 'string') return { token: item };
+      return item && typeof item === 'object' ? { ...item } : null;
+    }).filter(Boolean);
+  }
+
+  if (parsed && typeof parsed === 'object' && parsed.devices && typeof parsed.devices === 'object') {
+    const rows = [];
+    for (const [deviceId, value] of Object.entries(parsed.devices)) {
+      if (typeof value === 'string') {
+        rows.push({ device_id: deviceId, token: value, enabled: true });
+        continue;
+      }
+      if (value && typeof value === 'object') {
+        rows.push({ device_id: deviceId, ...value });
+      }
+    }
+    return rows;
+  }
+
+  return [];
+}
+
+export function readClientsSnapshot(runtimeBaseDir) {
+  const filePath = clientsConfigPath(runtimeBaseDir);
+  const parsed = readJsonSafe(filePath);
+  if (!parsed || typeof parsed !== 'object') {
+    return { schema_version: CLIENTS_SCHEMA_VERSION, updated_at_ms: 0, clients: [] };
+  }
+  return {
+    schema_version: safeString(parsed.schema_version) || CLIENTS_SCHEMA_VERSION,
+    updated_at_ms: safeInt(parsed.updated_at_ms, 0),
+    clients: normalizeSnapshotClients(parsed),
+  };
+}
+
 let cache = {
   loaded_at_ms: 0,
   mtime_ms: 0,
@@ -220,32 +328,202 @@ let cache = {
   clients: null,
 };
 
+export function invalidateClientsCache() {
+  cache = {
+    loaded_at_ms: 0,
+    mtime_ms: 0,
+    file_path: '',
+    clients: null,
+  };
+}
+
 export function clientsConfigPath(runtimeBaseDir) {
   const base = safeString(runtimeBaseDir);
   if (!base) return '';
   return path.join(base, 'hub_grpc_clients.json');
 }
 
-function normalizeClientEntry(raw, fallbackDeviceId = '') {
+export function writeClientsSnapshot(runtimeBaseDir, snapshot) {
+  const base = safeString(runtimeBaseDir);
+  if (!base) return false;
+  const rows = Array.isArray(snapshot?.clients)
+    ? snapshot.clients.map((item) => (item && typeof item === 'object' ? { ...item } : null)).filter(Boolean)
+    : [];
+  const payload = {
+    schema_version: safeString(snapshot?.schema_version) || CLIENTS_SCHEMA_VERSION,
+    updated_at_ms: safeInt(snapshot?.updated_at_ms, 0) || Date.now(),
+    clients: rows,
+  };
+  const ok = writeJsonAtomic(base, 'hub_grpc_clients.json', payload);
+  if (ok) invalidateClientsCache();
+  return ok;
+}
+
+function resolveEntryIdentity(entry = {}) {
+  const deviceId = safeString(entry.device_id || entry.id);
+  const accessKeyId = safeString(entry.access_key_id || entry.accessKeyId || entry.client_id || entry.clientId)
+    || deviceId;
+  return { deviceId, accessKeyId };
+}
+
+export function upsertClientInSnapshot(snapshot, entry) {
+  const out = snapshot && typeof snapshot === 'object'
+    ? {
+        schema_version: safeString(snapshot.schema_version) || CLIENTS_SCHEMA_VERSION,
+        updated_at_ms: safeInt(snapshot.updated_at_ms, 0),
+        clients: Array.isArray(snapshot.clients)
+          ? snapshot.clients.map((item) => (item && typeof item === 'object' ? { ...item } : null)).filter(Boolean)
+          : [],
+      }
+    : {
+        schema_version: CLIENTS_SCHEMA_VERSION,
+        updated_at_ms: 0,
+        clients: [],
+      };
+
+  const rawEntry = entry && typeof entry === 'object' ? { ...entry } : null;
+  const { deviceId, accessKeyId } = resolveEntryIdentity(rawEntry || {});
+  if (!rawEntry || (!deviceId && !accessKeyId)) return out;
+
+  const nextEntry = { ...rawEntry };
+  if (!nextEntry.device_id && deviceId) nextEntry.device_id = deviceId;
+  if (!nextEntry.access_key_id && accessKeyId) nextEntry.access_key_id = accessKeyId;
+
+  let replaced = false;
+  out.clients = out.clients.map((current) => {
+    const currentIdentity = resolveEntryIdentity(current);
+    const accessKeyMatch = accessKeyId && currentIdentity.accessKeyId === accessKeyId;
+    const deviceMatch = deviceId && currentIdentity.deviceId === deviceId;
+    if (!accessKeyMatch && !deviceMatch) return current;
+    replaced = true;
+    return {
+      ...(current && typeof current === 'object' ? current : {}),
+      ...nextEntry,
+    };
+  });
+  if (!replaced) out.clients.push(nextEntry);
+  out.updated_at_ms = Date.now();
+  return out;
+}
+
+function computeClientAuthStatus(client, nowMs = Date.now()) {
+  if (!client || typeof client !== 'object') {
+    return {
+      status: 'invalid',
+      reason_code: 'invalid_token',
+      usable: false,
+    };
+  }
+  if (safeInt(client.revoked_at_ms, 0) > 0) {
+    return {
+      status: 'revoked',
+      reason_code: 'token_revoked',
+      usable: false,
+    };
+  }
+  if (!safeBool(client.enabled, true)) {
+    return {
+      status: 'disabled',
+      reason_code: 'client_disabled',
+      usable: false,
+    };
+  }
+  const expiresAtMs = safeInt(client.expires_at_ms, 0);
+  if (expiresAtMs > 0 && expiresAtMs <= Math.max(0, Number(nowMs || 0))) {
+    return {
+      status: 'expired',
+      reason_code: 'token_expired',
+      usable: false,
+    };
+  }
+  return {
+    status: 'ready',
+    reason_code: '',
+    usable: true,
+  };
+}
+
+export function getClientAuthStatus(client, nowMs = Date.now()) {
+  return computeClientAuthStatus(client, nowMs);
+}
+
+export function isClientAuthUsable(client, nowMs = Date.now()) {
+  return computeClientAuthStatus(client, nowMs).usable === true;
+}
+
+function normalizeClientEntry(raw, fallbackDeviceId = '', nowMs = Date.now()) {
   const src = asObject(raw);
-  const device_id = safeString(src.device_id || src.id || fallbackDeviceId);
+  const hintedAccessKeyId = safeString(src.access_key_id || src.accessKeyId || src.client_id || src.clientId || src.key_id || src.keyId);
+  const device_id = safeString(src.device_id || src.id || fallbackDeviceId || hintedAccessKeyId);
   const token = safeString(src.token || src.client_token || src.clientToken);
   if (!device_id || !token) return null;
 
-  const name = safeString(src.name || src.device_name || src.deviceName);
+  const name = safeString(src.name || src.label || src.access_key_label || src.device_name || src.deviceName);
   const capabilities = uniqueStrings(src.capabilities || src.caps || src.allowed_capabilities || src.allowedCapabilities || []);
+  const auth_kind = normalizeClientAuthKind(
+    src.auth_kind || src.authKind,
+    hintedAccessKeyId && hintedAccessKeyId !== device_id ? 'hub_access_key' : 'paired_client'
+  );
+  const access_key_id = hintedAccessKeyId || device_id;
+  const scopes = safeStringArray(
+    src.scopes
+      || src.allowed_scopes
+      || src.allowedScopes
+      || capabilities
+  );
+  const updated_at_ms = safeInt(
+    src.updated_at_ms
+      || src.updatedAtMs
+      || src.last_rotated_at_ms
+      || src.lastRotatedAtMs
+      || src.last_used_at_ms
+      || src.lastUsedAtMs
+      || src.created_at_ms
+      || src.createdAtMs,
+    0
+  );
+  const expires_at_ms = safeInt(src.expires_at_ms || src.expiresAtMs, 0);
+  const last_used_at_ms = safeInt(src.last_used_at_ms || src.lastUsedAtMs, 0);
+  const revoked_at_ms = safeInt(src.revoked_at_ms || src.revokedAtMs, 0);
+  const status = computeClientAuthStatus({
+    enabled: safeBool(src.enabled, true),
+    revoked_at_ms,
+    expires_at_ms,
+  }, nowMs);
 
   return {
     device_id,
+    access_key_id,
+    auth_kind,
     user_id: safeString(src.user_id || src.userId) || device_id,
     app_id: safeString(src.app_id || src.appId || src.application_id || src.applicationId),
     name,
+    label: name,
+    note: safeString(src.note || src.description || src.comment),
     token,
+    token_redacted: redactClientToken(token),
     enabled: safeBool(src.enabled, true),
     created_at_ms: safeInt(src.created_at_ms || src.createdAtMs, 0),
-    capabilities,
+    updated_at_ms,
+    expires_at_ms,
+    last_used_at_ms,
+    last_used_peer_ip: safeString(src.last_used_peer_ip || src.lastUsedPeerIp),
+    last_used_transport: safeString(src.last_used_transport || src.lastUsedTransport),
+    revoked_at_ms,
+    revoke_reason: safeString(src.revoke_reason || src.revokeReason),
+    revoked_by_user_id: safeString(src.revoked_by_user_id || src.revokedByUserId),
+    revoked_via: safeString(src.revoked_via || src.revokedVia),
+    created_by_user_id: safeString(src.created_by_user_id || src.createdByUserId),
+    created_by_app_id: safeString(src.created_by_app_id || src.createdByAppId),
+    created_via: safeString(src.created_via || src.createdVia),
+    last_rotated_at_ms: safeInt(src.last_rotated_at_ms || src.lastRotatedAtMs, 0),
+    rotation_count: safeInt(src.rotation_count || src.rotationCount, 0),
     allowed_cidrs: safeStringArray(src.allowed_cidrs || src.allowedCidrs || src.allowed_ip_cidrs || src.allowedIpCidrs),
+    scopes,
+    capabilities,
     cert_sha256: safeString(src.cert_sha256 || src.certSha256 || src.cert_fingerprint_sha256 || src.certFingerprintSha256),
+    status: status.status,
+    status_reason: status.reason_code,
     ...normalizeClientTrustProfileFields(src, { device_id, name, capabilities }),
   };
 }
@@ -269,38 +547,18 @@ export function loadClients(runtimeBaseDir, maxAgeMs = 1200) {
     && cache.mtime_ms === mtimeMs
     && now - cache.loaded_at_ms <= Math.max(200, Number(maxAgeMs || 0))
   ) {
-    return cache.clients;
+    return cache.clients.map((item) => ({
+      ...item,
+      ...computeClientAuthStatus(item, Date.now()),
+      status_reason: computeClientAuthStatus(item, Date.now()).reason_code,
+    }));
   }
 
-  let parsed = null;
-  try {
-    parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  } catch {
-    parsed = null;
-  }
-
+  const snapshot = readClientsSnapshot(runtimeBaseDir);
   const clients = [];
-  const arr = Array.isArray(parsed?.clients)
-    ? parsed.clients
-    : Array.isArray(parsed?.devices)
-      ? parsed.devices
-      : null;
-
-  if (Array.isArray(arr)) {
-    for (const item of arr) {
-      const normalized = normalizeClientEntry(item);
-      if (normalized) clients.push(normalized);
-    }
-  } else if (parsed && typeof parsed === 'object' && parsed.devices && typeof parsed.devices === 'object') {
-    for (const [deviceId, value] of Object.entries(parsed.devices)) {
-      if (typeof value === 'string') {
-        const normalized = normalizeClientEntry({ device_id: deviceId, token: value, enabled: true }, deviceId);
-        if (normalized) clients.push(normalized);
-        continue;
-      }
-      const normalized = normalizeClientEntry(value, deviceId);
-      if (normalized) clients.push(normalized);
-    }
+  for (const item of snapshot.clients) {
+    const normalized = normalizeClientEntry(item, '', now);
+    if (normalized) clients.push(normalized);
   }
 
   cache = { loaded_at_ms: now, mtime_ms: mtimeMs, file_path: filePath, clients };
@@ -311,8 +569,59 @@ export function findClientByToken(runtimeBaseDir, token) {
   const wantedToken = safeString(token);
   if (!wantedToken) return null;
   for (const client of loadClients(runtimeBaseDir)) {
-    if (!client?.enabled) continue;
     if (safeString(client.token) === wantedToken) return client;
   }
   return null;
+}
+
+export function findClientByAccessKeyId(runtimeBaseDir, accessKeyId) {
+  const wanted = safeString(accessKeyId);
+  if (!wanted) return null;
+  for (const client of loadClients(runtimeBaseDir)) {
+    if (safeString(client.access_key_id) === wanted) return client;
+    if (safeString(client.device_id) === wanted) return client;
+  }
+  return null;
+}
+
+export function touchClientUsageByToken(runtimeBaseDir, token, fields = {}, options = {}) {
+  const wantedToken = safeString(token);
+  if (!wantedToken) return null;
+
+  const now = Date.now();
+  const minIntervalMs = Math.max(
+    0,
+    safeInt(options.min_interval_ms || options.minIntervalMs, DEFAULT_USAGE_WRITE_INTERVAL_MS)
+  );
+  const snapshot = readClientsSnapshot(runtimeBaseDir);
+  if (!Array.isArray(snapshot.clients) || snapshot.clients.length === 0) return null;
+
+  let touched = null;
+  let changed = false;
+  snapshot.clients = snapshot.clients.map((item) => {
+    const src = item && typeof item === 'object' ? { ...item } : null;
+    if (!src) return item;
+    const currentToken = safeString(src.token || src.client_token || src.clientToken);
+    if (currentToken !== wantedToken) return item;
+
+    const previousUsedAtMs = safeInt(src.last_used_at_ms || src.lastUsedAtMs, 0);
+    if (previousUsedAtMs > 0 && now - previousUsedAtMs < minIntervalMs) {
+      touched = normalizeClientEntry(src, '', now);
+      return src;
+    }
+
+    src.last_used_at_ms = now;
+    if (fields.peer_ip != null) src.last_used_peer_ip = safeString(fields.peer_ip);
+    if (fields.transport != null) src.last_used_transport = safeString(fields.transport);
+    src.updated_at_ms = now;
+    touched = normalizeClientEntry(src, '', now);
+    changed = true;
+    return src;
+  });
+
+  if (changed) {
+    snapshot.updated_at_ms = now;
+    writeClientsSnapshot(runtimeBaseDir, snapshot);
+  }
+  return touched;
 }

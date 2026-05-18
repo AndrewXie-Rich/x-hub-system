@@ -4,6 +4,38 @@ import crypto from 'node:crypto';
 
 import { nowMs, uuid, estimateTokens, requireHttpsUrl, chunkText } from './util.js';
 import { requireAdminAuth, requireClientAuth, requireOperatorChannelConnectorAuth } from './auth.js';
+import {
+  addProviderKey,
+  removeProviderKey,
+  removeProviderKeys,
+  updateProviderKey,
+  listProviderKeys,
+  listProviderKeysFull,
+  listProviderKeyPools,
+  listProviderKeyImportSourceStatuses,
+  setProviderRoutingStrategy,
+  getProviderRoutingStrategy,
+  importAuthDir,
+  importProxyConfig,
+  providerKeyStoreSummary,
+  selectProviderKey,
+  invalidateProviderKeyCache,
+  reportKeyUsage,
+  reportKeyError,
+  getKeyUsage,
+  resetKeyErrorState,
+} from './provider_key_store.js';
+import {
+  resolveProviderKeyForModel,
+  buildProviderKeyRouteDecision,
+  resolveProviderKeyWithFallback,
+  inferProviderFromModelId,
+} from './provider_key_router.js';
+import { recordProviderKeyRuntimeEvent } from './provider_key_usage_events.js';
+import { createProviderOAuthManager } from './provider_key_oauth_manager.js';
+import { createSchedulerAuthorityBridge } from './rust_scheduler_authority_bridge.js';
+import { createSchedulerLeaseShadowBridge } from './rust_scheduler_lease_shadow_bridge.js';
+import { createSchedulerStatusBridge } from './rust_scheduler_bridge.js';
 import { loadClients } from './clients.js';
 import {
   devicePresenceTTLms,
@@ -41,6 +73,7 @@ import {
 import {
   evaluateSkillExecutionGate,
   getAgentImportRecord,
+  getSkillPackageMeta,
   getSkillManifest,
   listResolvedSkills,
   normalizeSkillStoreError,
@@ -121,6 +154,12 @@ import {
   buildGovernanceRuntimeReadinessProjection,
   buildSupervisorRouteGovernanceRuntimeReadinessProjection,
 } from './governance_runtime_readiness_projection.js';
+import { createSchedulerShadowComparer } from './rust_scheduler_shadow_compare.js';
+import { createProviderRouteShadowComparer } from './rust_provider_route_shadow_compare.js';
+import { createProviderRouteAuthorityBridge } from './rust_provider_route_authority_bridge.js';
+import { createModelRouteAuthorityBridge } from './rust_model_route_authority_bridge.js';
+import { createRustLocalMlExecutionBridge } from './rust_local_ml_execution_bridge.js';
+import { createRustProviderKeySnapshotBridge } from './rust_provider_key_snapshot_bridge.js';
 
 
 function safeStringList(values) {
@@ -4002,6 +4041,203 @@ function extractSkillExecutionGateBinding(execArgv) {
   };
 }
 
+function normalizeResolvedSkillScope(scope) {
+  const raw = String(scope || '').trim();
+  if (!raw) return '';
+  if (raw === 'SKILL_PIN_SCOPE_PROJECT') return 'project';
+  if (raw === 'SKILL_PIN_SCOPE_GLOBAL') return 'global';
+  if (raw === 'SKILL_PIN_SCOPE_MEMORY_CORE') return 'memory_core';
+  return raw.toLowerCase();
+}
+
+function resolvedSkillForPackage(runtimeBaseDir, {
+  user_id,
+  project_id,
+  skill_id,
+  package_sha256,
+} = {}) {
+  const sid = String(skill_id || '').trim();
+  const sha = normalizeSkillPackageSha(package_sha256);
+  if (!sid || !sha) return null;
+  const rows = listResolvedSkills(runtimeBaseDir, {
+    userId: String(user_id || '').trim(),
+    projectId: String(project_id || '').trim(),
+  });
+  return rows.find((row) => (
+    String(row?.skill?.skill_id || '').trim() === sid
+    && String(row?.skill?.package_sha256 || '').trim().toLowerCase() === sha
+  )) || null;
+}
+
+function skillRunnerPreauthorizationDecision({
+  runtimeBaseDir,
+  execArgv,
+  user_id,
+  project_id,
+  risk_tier,
+  required_grant_scope,
+} = {}) {
+  const binding = extractSkillExecutionGateBinding(execArgv);
+  const packageSha = normalizeSkillPackageSha(binding.package_sha256);
+  const skillId = String(binding.skill_id || '').trim();
+  if (!packageSha) {
+    return {
+      decision: 'deny',
+      deny_code: 'missing_package_sha256',
+      binding,
+      gate: {
+        allowed: false,
+        deny_code: 'missing_package_sha256',
+        detail: { reason: 'skill_execution_package_sha_missing' },
+      },
+      preauthorization: {
+        source: 'hub_skill_preauthorization',
+        preauthorized: false,
+        reason_code: 'missing_package_sha256',
+      },
+    };
+  }
+
+  let gate = null;
+  try {
+    gate = evaluateSkillExecutionGate(runtimeBaseDir, {
+      packageSha256: packageSha,
+      skillId,
+    });
+  } catch {
+    gate = {
+      allowed: false,
+      deny_code: 'runtime_error',
+      detail: { reason: 'skill_execution_gate_runtime_error' },
+    };
+  }
+  if (!gate || !gate.allowed) {
+    const denyCode = String(gate?.deny_code || 'runtime_error');
+    return {
+      decision: 'deny',
+      deny_code: denyCode,
+      binding,
+      gate,
+      preauthorization: {
+        source: 'hub_skill_preauthorization',
+        preauthorized: false,
+        reason_code: denyCode,
+      },
+    };
+  }
+
+  const gateSkillId = String(gate?.detail?.skill_id || '').trim();
+  if (skillId && gateSkillId && skillId !== gateSkillId) {
+    return {
+      decision: 'deny',
+      deny_code: 'skill_package_mismatch',
+      binding,
+      gate,
+      preauthorization: {
+        source: 'hub_skill_preauthorization',
+        preauthorized: false,
+        reason_code: 'skill_package_mismatch',
+        skill_id: skillId,
+        package_skill_id: gateSkillId,
+      },
+    };
+  }
+
+  const effectiveSkillId = skillId || gateSkillId;
+  const resolved = resolvedSkillForPackage(runtimeBaseDir, {
+    user_id,
+    project_id,
+    skill_id: effectiveSkillId,
+    package_sha256: packageSha,
+  });
+  const meta = resolved?.skill || getSkillPackageMeta(runtimeBaseDir, packageSha) || {};
+  const riskLevel = String(meta?.risk_level || '').trim().toLowerCase();
+  const requiresGrant = !!meta?.requires_grant;
+  const highRisk = isHighRiskTier(risk_tier)
+    || isHighRiskTier(riskLevel)
+    || String(required_grant_scope || '').trim().toLowerCase().includes('manual_approval');
+  const preauthorized = !!resolved && !requiresGrant && !highRisk;
+  const reasonCode = preauthorized
+    ? ''
+    : (!resolved
+      ? 'skill_not_preauthorized'
+      : (requiresGrant ? 'skill_requires_grant' : 'skill_high_risk'));
+
+  return {
+    decision: preauthorized ? 'approve' : 'pending',
+    deny_code: preauthorized ? '' : 'grant_pending',
+    grant_ttl_ms: 5 * 60 * 1000,
+    binding,
+    gate,
+    preauthorization: {
+      schema_version: 'xhub.skills.preauthorization.v1',
+      source: 'hub_skill_preauthorization',
+      preauthorized,
+      reason_code: reasonCode,
+      skill_id: effectiveSkillId,
+      package_sha256: packageSha,
+      resolved_scope: normalizeResolvedSkillScope(resolved?.scope),
+      risk_level: riskLevel,
+      requires_grant: requiresGrant,
+      execution_surface: 'xt_local',
+      hub_authority: true,
+      hub_executes_third_party_code: false,
+    },
+  };
+}
+
+function skillPreauthorizationAuditValue(skillPreflight) {
+  if (!skillPreflight || typeof skillPreflight !== 'object') return null;
+  const binding = skillPreflight.binding || null;
+  const gate = skillPreflight.gate || null;
+  const preauthorization = skillPreflight.preauthorization || null;
+  return compactObject({
+    checked: true,
+    binding: binding ? compactObject({
+      package_sha256: String(binding.package_sha256 || ''),
+      package_sha256_source: String(binding.package_sha256_source || ''),
+      skill_id: String(binding.skill_id || ''),
+      skill_id_source: String(binding.skill_id_source || ''),
+    }) : null,
+    gate: gate ? compactObject({
+      allowed: gate.allowed === true,
+      deny_code: String(gate.deny_code || ''),
+      detail: gate.detail && typeof gate.detail === 'object' ? gate.detail : null,
+    }) : null,
+    preauthorization: preauthorization ? compactObject(preauthorization) : null,
+  });
+}
+
+function buildSkillPreauthorizedLease(toolReq, skillPreflight) {
+  if (!toolReq || !skillPreflight || !skillPreflight.preauthorization?.preauthorized) return null;
+  const grantId = String(toolReq.grant_id || '').trim();
+  const expiresAtMs = Math.max(0, Number(toolReq.grant_expires_at_ms || 0));
+  if (!grantId || expiresAtMs <= nowMs()) return null;
+  const issuedAtMs = Math.max(0, Number(toolReq.grant_decided_at_ms || toolReq.created_at_ms || 0));
+  const preauth = skillPreflight.preauthorization;
+  return compactObject({
+    schema_version: 'xhub.skills.preauthorized_lease.v1',
+    source: 'hub_skill_preauthorization',
+    hub_authority: true,
+    lease_id: grantId,
+    grant_id: grantId,
+    skill_id: String(preauth.skill_id || ''),
+    package_sha256: String(preauth.package_sha256 || ''),
+    scope_key: String(toolReq.project_id || '')
+      ? `project:${String(toolReq.project_id || '')}`
+      : `user:${String(toolReq.user_id || '')}`,
+    resolved_scope: String(preauth.resolved_scope || ''),
+    execution_surface: 'xt_local',
+    granted_capabilities: [`skill.execute:${String(preauth.skill_id || '')}`],
+    risk_tier: String(toolReq.risk_tier || ''),
+    issued_at_ms: issuedAtMs,
+    expires_at_ms: expiresAtMs,
+    ttl_ms: Math.max(0, expiresAtMs - (issuedAtMs || nowMs())),
+    audit_ref: String(toolReq.tool_request_id || ''),
+    hub_executes_third_party_code: false,
+  });
+}
+
 function resolveCanonicalExecutionCwd(rawCwd) {
   const input = String(rawCwd ?? '');
   if (!input || input.includes('\u0000') || input.length > 4096) {
@@ -4130,6 +4366,17 @@ function withMemoryMetricsExt(baseExt, metricsInput) {
   return attachMemoryMetrics(baseExt, metricsInput);
 }
 
+function findProviderKeyAccountByKey(runtimeBaseDir, accountKey) {
+  const target = safeString(accountKey);
+  if (!target) return null;
+  try {
+    return (listProviderKeysFull(runtimeBaseDir) || [])
+      .find((account) => safeString(account?.account_key) === target) || null;
+  } catch {
+    return null;
+  }
+}
+
 function buildMetricsScope({
   scope_kind = '',
   device_id = '',
@@ -4149,9 +4396,143 @@ function buildMetricsScope({
   return compactObject(out);
 }
 
-export function makeServices({ db, bus }) {
+function buildRustProviderRouteCandidateAuditExt({
+  providerKeyRoute = null,
+  candidate = null,
+  modelId = '',
+  provider = '',
+} = {}) {
+  const decision = candidate?.decision || {};
+  const nodeSelectedAccount = safeString(providerKeyRoute?.account?.account_key);
+  const rustSelectedAccount = safeString(candidate?.selectedAccountKey || decision?.selectedAccountKey);
+  const rustFallbackReason = safeString(
+    decision?.fallbackReasonCode
+    || decision?.fallback_reason_code
+    || candidate?.error_code
+  );
+  const matchKnown = !!nodeSelectedAccount && !!rustSelectedAccount;
+  const selectedAccountMatch = matchKnown && nodeSelectedAccount === rustSelectedAccount;
+  return compactObject({
+    schema_version: 'xhub.rust_provider_route_candidate.audit.v1',
+    component: 'provider_route',
+    mode: 'rust_authority_candidate',
+    requested_model_id: safeString(modelId),
+    requested_provider: safeString(provider || providerKeyRoute?.provider || providerKeyRoute?.account?.provider),
+    node: compactObject({
+      selected_account: nodeSelectedAccount,
+      provider: safeString(providerKeyRoute?.provider || providerKeyRoute?.account?.provider),
+      has_account: !!providerKeyRoute?.account,
+      fallback_reason_code: safeString(providerKeyRoute?.fallback_reason_code || providerKeyRoute?.reason_code),
+    }),
+    rust: compactObject({
+      used: candidate?.used === true,
+      fallback: candidate?.fallback === true,
+      selected: candidate?.selected === true,
+      selected_account: rustSelectedAccount,
+      error_code: safeString(candidate?.error_code),
+      fallback_reason_code: rustFallbackReason,
+      requested_provider: safeString(decision?.requestedProvider || decision?.requested_provider),
+      requested_model_id: safeString(decision?.requestedModelId || decision?.requested_model_id),
+      resolved_provider: safeString(decision?.resolvedProvider || decision?.resolved_provider),
+      strategy: safeString(decision?.strategy),
+      selection_scope: safeString(decision?.selectionScope || decision?.selection_scope),
+      available_count: Number(decision?.availableCount ?? decision?.available_count ?? 0),
+      total_count: Number(decision?.totalCount ?? decision?.total_count ?? 0),
+      candidate_count: Array.isArray(decision?.candidates) ? decision.candidates.length : 0,
+    }),
+    match: compactObject({
+      selected_account_match: matchKnown ? selectedAccountMatch : null,
+      match_known: matchKnown,
+      mismatch_reason_code: matchKnown && !selectedAccountMatch
+        ? 'rust_provider_route_candidate_account_mismatch'
+        : '',
+    }),
+  });
+}
+
+function buildRustModelRouteCandidateAuditExt({
+  candidate = null,
+  requestedModelId = '',
+  nodeModelId = '',
+  nodeRouteKind = '',
+  taskType = 'text_generate',
+  privacyMode = '',
+  costPreference = '',
+} = {}) {
+  const decision = candidate?.decision || {};
+  const rustSelectedModel = safeString(candidate?.selectedModelId || decision?.selectedModelId);
+  const rustRouteKind = safeString(candidate?.selectedRouteKind || decision?.selectedRouteKind);
+  const nodeSelectedModel = safeString(nodeModelId);
+  const nodeSelectedRouteKind = safeString(nodeRouteKind);
+  const modelMatchKnown = !!nodeSelectedModel && !!rustSelectedModel;
+  const routeKindMatchKnown = !!nodeSelectedRouteKind && !!rustRouteKind;
+  const modelMatch = modelMatchKnown && nodeSelectedModel === rustSelectedModel;
+  const routeKindMatch = routeKindMatchKnown && nodeSelectedRouteKind === rustRouteKind;
+  const mismatchReason = modelMatchKnown && !modelMatch
+    ? 'rust_model_route_candidate_model_mismatch'
+    : (routeKindMatchKnown && !routeKindMatch ? 'rust_model_route_candidate_route_kind_mismatch' : '');
+  return compactObject({
+    schema_version: 'xhub.rust_model_route_candidate.audit.v1',
+    component: 'model_route',
+    mode: 'rust_authority_candidate',
+    requested_model_id: safeString(requestedModelId),
+    task_type: safeString(taskType),
+    node: compactObject({
+      selected_model_id: nodeSelectedModel,
+      selected_route_kind: nodeSelectedRouteKind,
+      privacy_mode: safeString(privacyMode),
+      cost_preference: safeString(costPreference),
+    }),
+    rust: compactObject({
+      used: candidate?.used === true,
+      fallback: candidate?.fallback === true,
+      selected: candidate?.selected === true,
+      selected_model_id: rustSelectedModel,
+      selected_route_kind: rustRouteKind,
+      error_code: safeString(candidate?.error_code),
+      blocking_reason_code: safeString(decision?.blockingReasonCode || decision?.blocking_reason_code),
+      requested_model_id: safeString(decision?.requestedModelId || decision?.requested_model_id),
+      requested_task_type: safeString(decision?.requestedTaskType || decision?.requested_task_type),
+      privacy_mode: safeString(decision?.privacyMode || decision?.privacy_mode),
+      cost_preference: safeString(decision?.costPreference || decision?.cost_preference),
+      remote_candidate_count: Number(decision?.remoteCandidateCount ?? decision?.remote_candidate_count ?? 0),
+      local_candidate_count: Number(decision?.localCandidateCount ?? decision?.local_candidate_count ?? 0),
+    }),
+    match: compactObject({
+      selected_model_match: modelMatchKnown ? modelMatch : null,
+      route_kind_match: routeKindMatchKnown ? routeKindMatch : null,
+      match_known: modelMatchKnown || routeKindMatchKnown,
+      mismatch_reason_code: mismatchReason,
+    }),
+  });
+}
+
+export function makeServices({
+  db,
+  bus,
+  providerOAuthManagerOptions = {},
+  schedulerAuthorityBridge: providedSchedulerAuthorityBridge = null,
+  schedulerLeaseShadowBridge: providedSchedulerLeaseShadowBridge = null,
+  schedulerShadowComparer: providedSchedulerShadowComparer = null,
+  schedulerStatusBridge: providedSchedulerStatusBridge = null,
+  providerRouteShadowComparer: providedProviderRouteShadowComparer = null,
+  providerRouteAuthorityBridge: providedProviderRouteAuthorityBridge = null,
+  modelRouteAuthorityBridge: providedModelRouteAuthorityBridge = null,
+  rustLocalMlExecutionBridge: providedRustLocalMlExecutionBridge = null,
+  providerKeySnapshotBridge: providedProviderKeySnapshotBridge = null,
+} = {}) {
   // In-flight cancellation map.
   const cancels = new Map(); // request_id -> { canceled: bool }
+  const providerOAuthManager = createProviderOAuthManager(providerOAuthManagerOptions);
+  const schedulerAuthorityBridge = providedSchedulerAuthorityBridge || createSchedulerAuthorityBridge();
+  const schedulerLeaseShadowBridge = providedSchedulerLeaseShadowBridge || createSchedulerLeaseShadowBridge();
+  const schedulerShadowComparer = providedSchedulerShadowComparer || createSchedulerShadowComparer();
+  const schedulerStatusBridge = providedSchedulerStatusBridge || createSchedulerStatusBridge();
+  const providerRouteShadowComparer = providedProviderRouteShadowComparer || createProviderRouteShadowComparer();
+  const providerRouteAuthorityBridge = providedProviderRouteAuthorityBridge || createProviderRouteAuthorityBridge();
+  const modelRouteAuthorityBridge = providedModelRouteAuthorityBridge || createModelRouteAuthorityBridge();
+  const rustLocalMlExecutionBridge = providedRustLocalMlExecutionBridge || createRustLocalMlExecutionBridge();
+  const providerKeySnapshotBridge = providedProviderKeySnapshotBridge || createRustProviderKeySnapshotBridge();
 
   // Track "device connected" presence for HubEvents.Subscribe (streaming) sessions.
   // This is the most reliable signal that a client is "actively connected" without
@@ -4203,12 +4584,16 @@ export function makeServices({ db, bus }) {
     }
   }
 
-  function makePaidAISlotRelease(scopeKey) {
+  function makePaidAISlotRelease(scopeKey, requestId = '') {
     let released = false;
     return () => {
       if (released) return;
       released = true;
       paidAIReleaseScope(scopeKey);
+      schedulerLeaseShadowBridge.mirrorRelease({
+        requestId,
+        outcome: 'completed',
+      });
       paidAIDrainQueue();
     };
   }
@@ -4251,6 +4636,10 @@ export function makeServices({ db, bus }) {
         if (!item || item.settled) continue;
         if (item.shouldAbort && item.shouldAbort()) {
           paidAIRemoveQueueEntry(item);
+          schedulerLeaseShadowBridge.mirrorCancel({
+            requestId: item.requestId,
+            reason: 'canceled',
+          });
           try {
             item.reject(new Error('canceled'));
           } catch {
@@ -4276,6 +4665,10 @@ export function makeServices({ db, bus }) {
       if (!entry || entry.settled) continue;
       if (entry.shouldAbort && entry.shouldAbort()) {
         entry.settled = true;
+        schedulerLeaseShadowBridge.mirrorCancel({
+          requestId: entry.requestId,
+          reason: 'canceled',
+        });
         try {
           entry.reject(new Error('canceled'));
         } catch {
@@ -4285,10 +4678,13 @@ export function makeServices({ db, bus }) {
       }
 
       paidAIAcquireScope(entry.scopeKey);
+      schedulerLeaseShadowBridge.mirrorAcquire({
+        requestId: entry.requestId,
+      });
       try {
         entry.settled = true;
         entry.resolve({
-          release: makePaidAISlotRelease(entry.scopeKey),
+          release: makePaidAISlotRelease(entry.scopeKey, entry.requestId),
           queuedMs: Math.max(0, nowMs() - Number(entry.enqueuedAtMs || nowMs())),
         });
       } catch {
@@ -4303,6 +4699,10 @@ export function makeServices({ db, bus }) {
     const entry = paidAIQueuedByRequestId.get(rid);
     if (!entry || entry.settled) return false;
     paidAIRemoveQueueEntry(entry);
+    schedulerLeaseShadowBridge.mirrorCancel({
+      requestId: rid,
+      reason,
+    });
     try {
       entry.reject(new Error(String(reason || 'canceled')));
     } catch {
@@ -4325,10 +4725,38 @@ export function makeServices({ db, bus }) {
 
     if (shouldStop()) throw new Error('canceled');
 
+    if (
+      schedulerAuthorityBridge?.config?.enabled
+      && typeof schedulerAuthorityBridge.acquireSlot === 'function'
+    ) {
+      const authoritySlot = await schedulerAuthorityBridge.acquireSlot({
+        requestId: rid,
+        scopeKey,
+        project_id,
+        device_id,
+        waitMs,
+        shouldAbort: shouldStop,
+        onQueued,
+      });
+      if (authoritySlot?.used === true && authoritySlot?.fallback !== true) {
+        return {
+          release: authoritySlot.release,
+          queuedMs: Number(authoritySlot.queuedMs || 0),
+          authority: 'rust',
+        };
+      }
+    }
+
     if (paidAIHasCapacityForScope(scopeKey)) {
       paidAIAcquireScope(scopeKey);
+      schedulerLeaseShadowBridge.mirrorImmediateAcquire({
+        requestId: rid,
+        scopeKey,
+        project_id,
+        device_id,
+      });
       return {
-        release: makePaidAISlotRelease(scopeKey),
+        release: makePaidAISlotRelease(scopeKey, rid),
         queuedMs: 0,
       };
     }
@@ -4351,11 +4779,21 @@ export function makeServices({ db, bus }) {
 
       paidAIQueue.push(entry);
       if (rid) paidAIQueuedByRequestId.set(rid, entry);
+      schedulerLeaseShadowBridge.mirrorEnqueue({
+        requestId: rid,
+        scopeKey,
+        project_id,
+        device_id,
+      });
 
       const timeoutMs = parseIntInRange(waitMs, paidAIQueueTimeoutMs, 1000, 300000);
       entry.timer = setTimeout(() => {
         if (entry.settled) return;
         paidAIRemoveQueueEntry(entry);
+        schedulerLeaseShadowBridge.mirrorCancel({
+          requestId: rid,
+          reason: 'hub_ai_queue_timeout',
+        });
         try {
           reject(new Error('hub_ai_queue_timeout'));
         } catch {
@@ -7633,39 +8071,6 @@ function effectiveClientIdentity(raw, auth) {
       }
     }
 
-    if (isPaid && executionRemoteMode && trustedPaidAccess?.trust_profile_present) {
-      let usageSummary = null;
-      try {
-        usageSummary = db.getTerminalUsageSummaryDaily({ device_id, day_bucket: quota_day });
-      } catch {
-        usageSummary = null;
-      }
-      const requestedTotalTokensEstimate = Math.max(0, estimateTokens(promptText)) + Math.max(0, Number(max_tokens || 0));
-      trustedPaidAccess = resolvePaidModelRuntimeAccess({
-        runtimeClient: runtimeClientConfig,
-        capabilityAllowed,
-        modelId: model_id,
-        requestedTotalTokensEstimate,
-        usedTokensToday: usageSummary?.total_tokens || 0,
-      });
-      quotaCap = nonNegativeInt(trustedPaidAccess.daily_token_limit, quotaCap);
-      if (!trustedPaidAccess.allow) {
-        denyPaidModelWithContext({
-          code: trustedPaidAccess.deny_code,
-          message: `${deviceDisplayName}: ${trustedPaidAccess.deny_code} for ${model_id}`,
-          ruleIds: [String(trustedPaidAccess.deny_code || 'trusted_profile_denied')],
-          phase: 'execute',
-          optionsPresented: false,
-          extraExt: {
-            ...trustedPaidAccess,
-            projected_tokens_today: Math.max(0, Number(trustedPaidAccess.used_tokens_today || 0))
-              + Math.max(0, Number(trustedPaidAccess.requested_total_tokens_estimate || 0)),
-          },
-        });
-        return;
-      }
-    }
-
     const denyLocalExecution = ({ code, message, extraExt = {} } = {}) => {
       const error = {
         code: String(code || 'local_runtime_unavailable'),
@@ -7728,6 +8133,210 @@ function effectiveClientIdentity(raw, auth) {
       bus.emitHubEvent(bus.requestStatus({ request_id, status: 'failed', error, client }));
       cancels.delete(request_id);
     };
+
+    const buildModelRouteAuthorityInput = () => ({
+      runtimeBaseDir,
+      taskType: 'text_generate',
+      modelId: executionModelId || model_id || requested_model_id || 'auto',
+      requiredCapabilities: ['text.generate'],
+      privacyMode: executionRemoteMode ? 'remote-only' : 'local-only',
+      costPreference: 'balanced',
+      nodeModelId: executionModelId || model_id || '',
+      nodeRouteKind: executionRemoteMode ? 'remote' : 'local',
+    });
+
+    if (modelRouteAuthorityBridge?.config?.productionAuthority === true) {
+      const authorityInput = buildModelRouteAuthorityInput();
+      try {
+        if (typeof modelRouteAuthorityBridge.route !== 'function') {
+          throw new Error('rust_model_route_authority_route_missing');
+        }
+        const authority = await modelRouteAuthorityBridge.route({
+          ...authorityInput,
+          requireNodeMatch: false,
+        });
+        const selectedModelId = safeString(authority?.selectedModelId || authority?.decision?.selectedModelId);
+        const selectedRouteKind = safeString(authority?.selectedRouteKind || authority?.decision?.selectedRouteKind || authorityInput.nodeRouteKind);
+        const currentRouteKind = executionRemoteMode ? 'remote' : 'local';
+        if (authority?.used !== true || authority?.selected !== true || authority?.fallback === true || !selectedModelId) {
+          denyPaidModelWithContext({
+            code: safeString(authority?.error_code) || 'rust_model_route_authority_no_selection',
+            message: safeString(authority?.error_message) || safeString(authority?.error_code) || 'rust_model_route_authority_no_selection',
+            ruleIds: ['rust_model_route_authority'],
+            phase: 'route_authority',
+            extraExt: {
+              rust_model_route_authority: {
+                requested_model_id: authorityInput.modelId,
+                node_route_kind: authorityInput.nodeRouteKind,
+                selected_model_id: selectedModelId,
+                selected_route_kind: selectedRouteKind,
+                fallback: authority?.fallback === true,
+                error_code: safeString(authority?.error_code),
+              },
+            },
+          });
+          return;
+        }
+        if (selectedRouteKind && selectedRouteKind !== currentRouteKind) {
+          denyPaidModelWithContext({
+            code: 'rust_model_route_authority_route_kind_change_blocked',
+            message: `rust_model_route_authority_route_kind_change_blocked:${currentRouteKind}->${selectedRouteKind}`,
+            ruleIds: ['rust_model_route_authority_route_kind_stability'],
+            phase: 'route_authority',
+            extraExt: {
+              rust_model_route_authority: {
+                requested_model_id: authorityInput.modelId,
+                selected_model_id: selectedModelId,
+                node_route_kind: currentRouteKind,
+                selected_route_kind: selectedRouteKind,
+              },
+            },
+          });
+          return;
+        }
+        const selectedResolvedModel = resolveServiceModelMeta({ db, runtimeBaseDir, modelId: selectedModelId });
+        const selectedModelMeta = selectedResolvedModel?.model || null;
+        const selectedCanonicalModelId = safeString(selectedResolvedModel?.resolved_model_id) || selectedModelId;
+        if (!selectedModelMeta) {
+          denyPaidModelWithContext({
+            code: 'rust_model_route_authority_model_not_found',
+            message: `rust_model_route_authority_model_not_found:${selectedModelId}`,
+            ruleIds: ['rust_model_route_authority_model_exists'],
+            phase: 'route_authority',
+            extraExt: {
+              rust_model_route_authority: {
+                requested_model_id: authorityInput.modelId,
+                selected_model_id: selectedModelId,
+                selected_route_kind: selectedRouteKind,
+              },
+            },
+          });
+          return;
+        }
+        if (isPaidModelMeta(selectedModelMeta) !== isPaid) {
+          denyPaidModelWithContext({
+            code: 'rust_model_route_authority_model_class_change_blocked',
+            message: `rust_model_route_authority_model_class_change_blocked:${authorityInput.modelId}->${selectedCanonicalModelId}`,
+            ruleIds: ['rust_model_route_authority_model_class_stability'],
+            phase: 'route_authority',
+            extraExt: {
+              rust_model_route_authority: {
+                requested_model_id: authorityInput.modelId,
+                selected_model_id: selectedCanonicalModelId,
+                selected_route_kind: selectedRouteKind,
+              },
+            },
+          });
+          return;
+        }
+        if (isPaid && trustedPaidAccess?.trust_profile_present) {
+          trustedPaidAccess = resolvePaidModelRuntimeAccess({
+            runtimeClient: runtimeClientConfig,
+            capabilityAllowed,
+            capabilityDenyCode: capabilityDenyCode(auth),
+            modelId: selectedCanonicalModelId,
+            requestedTotalTokensEstimate: 0,
+            usedTokensToday: 0,
+          });
+          if (!trustedPaidAccess.allow) {
+            denyPaidModelWithContext({
+              code: trustedPaidAccess.deny_code,
+              message: `${deviceDisplayName}: ${trustedPaidAccess.deny_code} for ${selectedCanonicalModelId}`,
+              ruleIds: [String(trustedPaidAccess.deny_code || 'trusted_profile_denied')],
+              phase: 'route_authority',
+              extraExt: {
+                ...trustedPaidAccess,
+                rust_model_route_authority: {
+                  requested_model_id: authorityInput.modelId,
+                  selected_model_id: selectedCanonicalModelId,
+                  selected_route_kind: selectedRouteKind,
+                },
+              },
+            });
+            return;
+          }
+        }
+        executionModelId = selectedCanonicalModelId;
+        responseRuntimeProvider = executionRemoteMode ? 'Hub (Remote)' : 'Hub (Local)';
+        responseExecutionPath = executionRemoteMode ? 'remote_model' : 'local_runtime';
+        try {
+          db.appendAudit({
+            event_type: 'ai.generate.model_route_authority',
+            created_at_ms: nowMs(),
+            severity: 'info',
+            device_id,
+            user_id: client.user_id ? String(client.user_id) : null,
+            app_id,
+            project_id: project_id || null,
+            session_id: client.session_id ? String(client.session_id) : null,
+            request_id,
+            capability,
+            model_id: executionModelId || null,
+            network_allowed: executionRemoteMode,
+            ok: true,
+            error_code: null,
+            error_message: null,
+            ext_json: JSON.stringify({
+              schema_version: 'xhub.rust_model_route_authority.audit.v1',
+              requested_model_id: authorityInput.modelId,
+              node_route_kind: authorityInput.nodeRouteKind,
+              selected_model_id: executionModelId,
+              selected_route_kind: selectedRouteKind || authorityInput.nodeRouteKind,
+            }),
+          });
+        } catch {
+          // authority audit must not block an otherwise valid selected model
+        }
+      } catch (error) {
+        denyPaidModelWithContext({
+          code: 'rust_model_route_authority_failed',
+          message: String(error?.message || error || 'rust_model_route_authority_failed'),
+          ruleIds: ['rust_model_route_authority'],
+          phase: 'route_authority',
+          extraExt: {
+            rust_model_route_authority: {
+              requested_model_id: authorityInput.modelId,
+              node_route_kind: authorityInput.nodeRouteKind,
+            },
+          },
+        });
+        return;
+      }
+    }
+
+    if (isPaid && executionRemoteMode && trustedPaidAccess?.trust_profile_present) {
+      let usageSummary = null;
+      try {
+        usageSummary = db.getTerminalUsageSummaryDaily({ device_id, day_bucket: quota_day });
+      } catch {
+        usageSummary = null;
+      }
+      const selectedPolicyModelId = executionModelId || model_id;
+      const requestedTotalTokensEstimate = Math.max(0, estimateTokens(promptText)) + Math.max(0, Number(max_tokens || 0));
+      trustedPaidAccess = resolvePaidModelRuntimeAccess({
+        runtimeClient: runtimeClientConfig,
+        capabilityAllowed,
+        modelId: selectedPolicyModelId,
+        requestedTotalTokensEstimate,
+        usedTokensToday: usageSummary?.total_tokens || 0,
+      });
+      quotaCap = nonNegativeInt(trustedPaidAccess.daily_token_limit, quotaCap);
+      if (!trustedPaidAccess.allow) {
+        denyPaidModelWithContext({
+          code: trustedPaidAccess.deny_code,
+          message: `${deviceDisplayName}: ${trustedPaidAccess.deny_code} for ${selectedPolicyModelId}`,
+          ruleIds: [String(trustedPaidAccess.deny_code || 'trusted_profile_denied')],
+          phase: 'execute',
+          optionsPresented: false,
+          extraExt: {
+            ...trustedPaidAccess,
+            projected_tokens_today: Math.max(0, Number(trustedPaidAccess.used_tokens_today || 0))
+              + Math.max(0, Number(trustedPaidAccess.requested_total_tokens_estimate || 0)),
+          },
+        });
+        return;
+      }
+    }
 
     if (!executionRemoteMode) {
       const localTaskKind = 'text_generate';
@@ -7812,6 +8421,61 @@ function effectiveClientIdentity(raw, auth) {
         });
         return;
       }
+    }
+
+    const modelRouteAuthorityInput = buildModelRouteAuthorityInput();
+    const modelRouteCandidateAuditEnabled = (
+      modelRouteAuthorityBridge?.config?.candidateEnabled === true
+      && typeof modelRouteAuthorityBridge.candidateRoute === 'function'
+    );
+    try {
+      if (modelRouteCandidateAuditEnabled) {
+        Promise.resolve(modelRouteAuthorityBridge.candidateRoute(modelRouteAuthorityInput))
+          .then((candidate) => {
+            if (!candidate || candidate.used !== true) return;
+            const ext = buildRustModelRouteCandidateAuditExt({
+              candidate,
+              requestedModelId: requested_model_id || model_id || '',
+              nodeModelId: modelRouteAuthorityInput.nodeModelId,
+              nodeRouteKind: modelRouteAuthorityInput.nodeRouteKind,
+              taskType: modelRouteAuthorityInput.taskType,
+              privacyMode: modelRouteAuthorityInput.privacyMode,
+              costPreference: modelRouteAuthorityInput.costPreference,
+            });
+            const modelMatch = ext?.match?.selected_model_match !== false;
+            const routeKindMatch = ext?.match?.route_kind_match !== false;
+            const mismatch = ext?.match?.mismatch_reason_code
+              || (candidate?.fallback === true ? safeString(candidate?.error_code) : '');
+            db.appendAudit({
+              event_type: 'ai.generate.model_route_candidate',
+              created_at_ms: nowMs(),
+              severity: mismatch ? 'warn' : 'info',
+              device_id,
+              user_id: client.user_id ? String(client.user_id) : null,
+              app_id,
+              project_id: project_id || null,
+              session_id: client.session_id ? String(client.session_id) : null,
+              request_id,
+              capability,
+              model_id: modelRouteAuthorityInput.nodeModelId || null,
+              network_allowed: executionRemoteMode,
+              ok: modelMatch && routeKindMatch && candidate?.fallback !== true,
+              error_code: mismatch || null,
+              error_message: mismatch || null,
+              ext_json: JSON.stringify(ext),
+            });
+          })
+          .catch(() => {
+            // candidate-only audit must never affect Node model routing
+          });
+      } else if (
+        modelRouteAuthorityBridge?.config?.prepEnabled === true
+        && typeof modelRouteAuthorityBridge.prepRoute === 'function'
+      ) {
+        modelRouteAuthorityBridge.prepRoute(modelRouteAuthorityInput);
+      }
+    } catch {
+      // prep-only authority check must never affect Node model routing
     }
 
     // Paid/remote models are served via Bridge (network-capable helper). The local runtime
@@ -8101,18 +8765,205 @@ function effectiveClientIdentity(raw, auth) {
       let errText = '';
       let usageObj = null;
 
+      let providerKeyRoute = null;
+      const providerRouteModelId = executionModelId || model_id || '';
+      try {
+        providerKeyRoute = resolveProviderKeyForModel(runtimeBaseDir, providerRouteModelId);
+      } catch { /* ignore */ }
+      const providerRouteCandidateAuditEnabled = (
+        providerRouteAuthorityBridge?.config?.candidateEnabled === true
+        && typeof providerRouteAuthorityBridge.candidateRoute === 'function'
+      );
+      try {
+        if (!providerRouteCandidateAuditEnabled) providerRouteAuthorityBridge.observeRoute?.({
+          runtimeBaseDir,
+          modelId: providerRouteModelId,
+          provider: providerKeyRoute?.provider || providerKeyRoute?.account?.provider || '',
+          nodeAccountKey: providerKeyRoute?.account?.account_key || '',
+        });
+      } catch {
+        // observe-only hook must never affect Node provider routing
+      }
+      try {
+        if (providerRouteCandidateAuditEnabled) {
+          Promise.resolve(providerRouteAuthorityBridge.candidateRoute({
+            runtimeBaseDir,
+            modelId: providerRouteModelId,
+            provider: providerKeyRoute?.provider || providerKeyRoute?.account?.provider || '',
+            nodeAccountKey: providerKeyRoute?.account?.account_key || '',
+          }))
+            .then((candidate) => {
+              if (!candidate || candidate.used !== true) return;
+              const ext = buildRustProviderRouteCandidateAuditExt({
+                providerKeyRoute,
+                candidate,
+                modelId: providerRouteModelId,
+                provider: providerKeyRoute?.provider || providerKeyRoute?.account?.provider || '',
+              });
+              const selectedMatch = ext?.match?.selected_account_match === true;
+              const mismatch = ext?.match?.mismatch_reason_code
+                || (candidate?.fallback === true ? safeString(candidate?.error_code) : '');
+              db.appendAudit({
+                event_type: 'ai.generate.provider_route_candidate',
+                created_at_ms: nowMs(),
+                severity: mismatch ? 'warn' : 'info',
+                device_id,
+                user_id: client.user_id ? String(client.user_id) : null,
+                app_id,
+                project_id: project_id || null,
+                session_id: client.session_id ? String(client.session_id) : null,
+                request_id,
+                capability,
+                model_id: model_id || null,
+                network_allowed: true,
+                ok: selectedMatch || (!ext?.match?.match_known && candidate?.fallback !== true),
+                error_code: mismatch || null,
+                error_message: mismatch || null,
+                ext_json: JSON.stringify(ext),
+              });
+            })
+            .catch(() => {
+              // candidate-only audit must never affect Node provider routing
+            });
+        }
+      } catch {
+        // candidate-only audit must never affect Node provider routing
+      }
+
+      if (providerRouteAuthorityBridge?.config?.productionAuthority === true) {
+        try {
+          if (typeof providerRouteAuthorityBridge.route !== 'function') {
+            throw new Error('rust_provider_route_authority_route_missing');
+          }
+          const authority = await providerRouteAuthorityBridge.route({
+            runtimeBaseDir,
+            modelId: providerRouteModelId,
+            provider: providerKeyRoute?.provider || providerKeyRoute?.account?.provider || '',
+            nodeAccountKey: providerKeyRoute?.account?.account_key || '',
+            requireNodeMatch: false,
+          });
+          const selectedAccountKey = safeString(authority?.selectedAccountKey || authority?.decision?.selectedAccountKey);
+          if (authority?.used !== true || authority?.selected !== true || authority?.fallback === true || !selectedAccountKey) {
+            denyPaidModelWithContext({
+              code: safeString(authority?.error_code) || 'rust_provider_route_authority_no_selection',
+              message: safeString(authority?.error_message) || safeString(authority?.error_code) || 'rust_provider_route_authority_no_selection',
+              ruleIds: ['rust_provider_route_authority'],
+              phase: 'route_authority',
+              extraExt: {
+                rust_provider_route_authority: {
+                  model_id: providerRouteModelId,
+                  node_account_key: safeString(providerKeyRoute?.account?.account_key),
+                  selected_account_key: selectedAccountKey,
+                  fallback: authority?.fallback === true,
+                  error_code: safeString(authority?.error_code),
+                },
+              },
+            });
+            return;
+          }
+          const selectedAccount = findProviderKeyAccountByKey(runtimeBaseDir, selectedAccountKey);
+          if (!selectedAccount || !safeString(selectedAccount.api_key)) {
+            denyPaidModelWithContext({
+              code: 'rust_provider_route_authority_account_unavailable',
+              message: `rust_provider_route_authority_account_unavailable:${selectedAccountKey}`,
+              ruleIds: ['rust_provider_route_authority_account_available'],
+              phase: 'route_authority',
+              extraExt: {
+                rust_provider_route_authority: {
+                  model_id: providerRouteModelId,
+                  node_account_key: safeString(providerKeyRoute?.account?.account_key),
+                  selected_account_key: selectedAccountKey,
+                  account_found: !!selectedAccount,
+                  has_api_key: !!safeString(selectedAccount?.api_key),
+                },
+              },
+            });
+            return;
+          }
+          providerKeyRoute = {
+            ...(providerKeyRoute || {}),
+            provider: selectedAccount.provider || providerKeyRoute?.provider || '',
+            account: selectedAccount,
+            rust_authority_selected: true,
+            rust_authority_decision: authority?.decision || null,
+          };
+          try {
+            db.appendAudit({
+              event_type: 'ai.generate.provider_route_authority',
+              created_at_ms: nowMs(),
+              severity: 'info',
+              device_id,
+              user_id: client.user_id ? String(client.user_id) : null,
+              app_id,
+              project_id: project_id || null,
+              session_id: client.session_id ? String(client.session_id) : null,
+              request_id,
+              capability,
+              model_id: providerRouteModelId || null,
+              network_allowed: true,
+              ok: true,
+              error_code: null,
+              error_message: null,
+              ext_json: JSON.stringify({
+                schema_version: 'xhub.rust_provider_route_authority.audit.v1',
+                model_id: providerRouteModelId,
+                node_account_key: safeString(authority?.nodeAccountKey || authority?.decision?.nodeAccountKey),
+                selected_account_key: selectedAccountKey,
+                provider: safeString(selectedAccount.provider),
+              }),
+            });
+          } catch {
+            // authority audit must not block an otherwise valid provider selection
+          }
+        } catch (error) {
+          denyPaidModelWithContext({
+            code: 'rust_provider_route_authority_failed',
+            message: String(error?.message || error || 'rust_provider_route_authority_failed'),
+            ruleIds: ['rust_provider_route_authority'],
+            phase: 'route_authority',
+            extraExt: {
+              rust_provider_route_authority: {
+                model_id: providerRouteModelId,
+                node_account_key: safeString(providerKeyRoute?.account?.account_key),
+              },
+            },
+          });
+          return;
+        }
+      }
+
+      const providerKeyPayload = (providerKeyRoute?.account && providerKeyRoute.account.api_key)
+        ? {
+            provider_key: {
+              account_key: providerKeyRoute.account.account_key || '',
+              provider: providerKeyRoute.account.provider || '',
+              base_url: providerKeyRoute.account.base_url || '',
+              proxy_url: providerKeyRoute.account.proxy_url || '',
+              auth_type: providerKeyRoute.account.auth_type || 'api_key',
+              refresh_token: providerKeyRoute.account.refresh_token || '',
+              account_id: providerKeyRoute.account.account_id || '',
+              oauth_source_key: providerKeyRoute.account.oauth_source_key || '',
+              auth_index: providerKeyRoute.account.auth_index || 0,
+              source_type: providerKeyRoute.account.source_type || '',
+              source_ref: providerKeyRoute.account.source_ref || '',
+              custom_headers: providerKeyRoute.account.custom_headers || {},
+            },
+          }
+        : {};
+
       try {
         enqueueBridgeAIGenerate(bridgeBaseDir, {
           request_id,
           app_id,
           project_id,
           queued_at_ms: nowMs(),
-          model_id,
+          model_id: executionModelId || model_id,
           prompt: promptText,
           max_tokens,
           temperature,
           top_p,
           timeout_sec: timeoutSec,
+          ...providerKeyPayload,
         });
         const resp = await waitBridgeAIGenerateResult(bridgeBaseDir, request_id, timeoutSec * 1000 + 5000);
         ok = !!resp?.ok;
@@ -8265,6 +9116,26 @@ function effectiveClientIdentity(raw, auth) {
           // ignore
         }
       }
+
+      if (providerKeyRoute?.account?.account_key) {
+        try {
+          recordProviderKeyRuntimeEvent(runtimeBaseDir, {
+            account_key: providerKeyRoute.account.account_key,
+            provider: providerKeyRoute.account.provider || '',
+            model_id: executionModelId || model_id || '',
+            outcome: ok ? 'success' : '',
+            http_status: status,
+            reason_code: ok ? '' : String(status || errText || 'bridge_failed'),
+            status_message: ok ? '' : String(errText || (status ? `http_${status}` : 'bridge_failed')),
+            tokens_used: ok ? total_tokens : 0,
+            cost_usd: ok ? (usage.cost_usd_estimate || 0) : 0,
+            latency_ms: Math.max(0, finished_at_ms - started_at_ms),
+            occurred_at_ms: finished_at_ms,
+          });
+        } catch {
+          // ignore
+        }
+      }
       if (ok && isPaid && executionRemoteMode) {
         try {
           db.recordTerminalModelUsageDaily({
@@ -8359,7 +9230,7 @@ function effectiveClientIdentity(raw, auth) {
       } finally {
         if (typeof releasePaidAISlot === 'function') {
           try {
-            releasePaidAISlot();
+            await releasePaidAISlot();
           } catch {
             // ignore
           }
@@ -8367,7 +9238,255 @@ function effectiveClientIdentity(raw, auth) {
       }
     }
 
+    const writeStartIfNeeded = (modelIdForStart) => {
+      if (startedSent) return;
+      startedSent = true;
+      try {
+        call.write({ start: { request_id, model_id: String(modelIdForStart || executionModelId || ''), started_at_ms } });
+      } catch {
+        // ignore
+      }
+    };
+
     bus.emitHubEvent(bus.requestStatus({ request_id, status: 'running', error: null, client }));
+
+    if (
+      !executionRemoteMode
+      && rustLocalMlExecutionBridge?.config?.enabled === true
+      && typeof rustLocalMlExecutionBridge.executeLocalTask === 'function'
+    ) {
+      const rustStartedAtMs = nowMs();
+      started_at_ms = rustStartedAtMs;
+      const rustRequest = {
+        request_id,
+        created_at_ms,
+        app_id,
+        model_id: executionModelId,
+        task_type: 'text_generate',
+        task_kind: 'text_generate',
+        taskKind: 'text_generate',
+        preferred_model_id: '',
+        prompt: promptText,
+        max_tokens,
+        maxTokens: max_tokens,
+        temperature,
+        top_p,
+        auto_load: auto_load && !executionRemoteMode,
+      };
+      let rustResult = null;
+      try {
+        writeStartIfNeeded(executionModelId);
+        rustResult = await rustLocalMlExecutionBridge.executeLocalTask({
+          runtimeBaseDir,
+          request: rustRequest,
+          requestId: request_id,
+          timeoutMs,
+        });
+      } catch (error) {
+        rustResult = {
+          ok: false,
+          used: true,
+          fallback: false,
+          errorCode: 'rust_local_ml_execution_failed',
+          errorMessage: String(error?.message || error || 'rust_local_ml_execution_failed'),
+        };
+      }
+
+      if (rustResult?.ok === true) {
+        const text = String(rustResult.text || '');
+        const finished_at_ms = nowMs();
+        if (text) {
+          completionCharCount += text.length;
+          assistantText += text;
+          try {
+            call.write({ delta: { request_id, seq: 1, text } });
+          } catch {
+            // ignore
+          }
+        }
+        let prompt_tokens = Number(rustResult.usage?.prompt_tokens || 0);
+        let completion_tokens = Number(rustResult.usage?.completion_tokens || 0);
+        if (!prompt_tokens) prompt_tokens = estimateTokens(promptText);
+        if (!completion_tokens) completion_tokens = Math.max(0, Math.ceil(completionCharCount / 3.2));
+        const total_tokens = prompt_tokens + completion_tokens;
+        const usage = { prompt_tokens, completion_tokens, total_tokens, cost_usd_estimate: 0 };
+
+        if (thread_id && text.trim()) {
+          try {
+            db.appendTurns({
+              thread_id,
+              request_id,
+              turns: [{ role: 'assistant', content: text.trim(), is_private: 0, created_at_ms: finished_at_ms }],
+            });
+          } catch {
+            // ignore
+          }
+        }
+
+        try {
+          db.addQuotaUsageDaily(quota_scope, quota_day, total_tokens);
+          try {
+            const usedNow = db.getQuotaUsageDaily(quota_scope, quota_day);
+            bus.emitHubEvent(bus.quotaUpdated({ scope: quota_scope, daily_token_cap: quotaCap, daily_token_used: usedNow }));
+          } catch {
+            // ignore
+          }
+        } catch {
+          // ignore
+        }
+
+        const completionAuditRef = db.appendAudit({
+          event_type: 'ai.generate.completed',
+          created_at_ms: finished_at_ms,
+          severity: 'info',
+          device_id,
+          user_id: client.user_id ? String(client.user_id) : null,
+          app_id,
+          project_id: project_id || null,
+          session_id: client.session_id ? String(client.session_id) : null,
+          request_id,
+          capability,
+          model_id: executionModelId || null,
+          prompt_tokens,
+          completion_tokens,
+          total_tokens,
+          network_allowed: false,
+          ok: true,
+          error_code: null,
+          error_message: null,
+          duration_ms: Math.max(0, finished_at_ms - started_at_ms),
+          ext_json: JSON.stringify(withMemoryMetricsExt(
+            {
+              created_at_ms,
+              runtime_base_dir: runtimeBaseDir,
+              runtime_alive: runtimeAlive,
+              thread_id: thread_id || '',
+              rust_local_ml_execution: {
+                audit_ref: safeString(rustResult.auditRef),
+                provider: safeString(rustResult.provider),
+                task_kind: safeString(rustResult.taskKind),
+                latency_ms: Number(rustResult.latencyMs || 0),
+              },
+            },
+            {
+              event_kind: 'ai.generate.completed',
+              op: 'generate',
+              job_type: 'ai_generate',
+              channel: 'local',
+              remote_mode: false,
+              scope: buildMetricsScope({
+                scope_kind: thread_id ? 'thread' : 'project',
+                device_id,
+                user_id: client.user_id ? String(client.user_id) : '',
+                app_id,
+                project_id,
+                thread_id,
+              }),
+              latency: {
+                duration_ms: Math.max(0, finished_at_ms - started_at_ms),
+              },
+              cost: {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                cost_usd_estimate: usage.cost_usd_estimate,
+              },
+              security: {
+                blocked: false,
+                deny_code: '',
+              },
+            }
+          )),
+        });
+        updateGenerateRouteContext({
+          modelId: executionModelId || model_id || '',
+          runtimeProvider: 'Hub (Local)',
+          executionPath: 'rust_local_ml_execution',
+          fallbackReasonCode: '',
+          auditRef: safeString(rustResult.auditRef) || completionAuditRef,
+          denyCode: '',
+        });
+        finishGenerate({
+          ok: true,
+          reason: 'eos',
+          usage,
+          finished_at_ms,
+          auditRef: safeString(rustResult.auditRef) || completionAuditRef,
+        });
+        bus.emitHubEvent(bus.requestStatus({ request_id, status: 'done', error: null, client }));
+        cancels.delete(request_id);
+        return;
+      }
+
+      if (rustResult?.fallback !== true) {
+        const finished_at_ms = nowMs();
+        const code = safeString(rustResult?.errorCode || rustResult?.error_code) || 'rust_local_ml_execution_failed';
+        const message = safeString(rustResult?.errorMessage || rustResult?.error_message) || code;
+        const error = { code, message, retryable: true };
+        const auditRef = db.appendAudit({
+          event_type: 'ai.generate.failed',
+          created_at_ms: finished_at_ms,
+          severity: 'error',
+          device_id,
+          user_id: client.user_id ? String(client.user_id) : null,
+          app_id,
+          project_id: project_id || null,
+          session_id: client.session_id ? String(client.session_id) : null,
+          request_id,
+          capability,
+          model_id: executionModelId || null,
+          network_allowed: false,
+          ok: false,
+          error_code: code,
+          error_message: message,
+          duration_ms: Math.max(0, finished_at_ms - started_at_ms),
+          ext_json: JSON.stringify(withMemoryMetricsExt(
+            {
+              created_at_ms,
+              runtime_base_dir: runtimeBaseDir,
+              rust_local_ml_execution: {
+                audit_ref: safeString(rustResult?.auditRef),
+                error_code: code,
+              },
+            },
+            {
+              event_kind: 'ai.generate.failed',
+              op: 'generate',
+              job_type: 'ai_generate',
+              channel: 'local',
+              remote_mode: false,
+              scope: buildMetricsScope({
+                scope_kind: thread_id ? 'thread' : 'project',
+                device_id,
+                user_id: client.user_id ? String(client.user_id) : '',
+                app_id,
+                project_id,
+                thread_id,
+              }),
+              latency: {
+                duration_ms: Math.max(0, finished_at_ms - started_at_ms),
+              },
+              security: {
+                blocked: false,
+                deny_code: code,
+              },
+            }
+          )),
+        });
+        updateGenerateRouteContext({
+          modelId: executionModelId || model_id || '',
+          runtimeProvider: 'Hub (Local)',
+          executionPath: 'rust_local_ml_execution',
+          fallbackReasonCode: code,
+          auditRef,
+          denyCode: code,
+        });
+        emitGenerateError({ error, auditRef, denyCode: code });
+        bus.emitHubEvent(bus.requestStatus({ request_id, status: 'failed', error, client }));
+        cancels.delete(request_id);
+        return;
+      }
+    }
 
     const startedWriteAtMs = nowMs();
     try {
@@ -8442,16 +9561,6 @@ function effectiveClientIdentity(raw, auth) {
       cancels.delete(request_id);
       return;
     }
-
-    const writeStartIfNeeded = (modelIdForStart) => {
-      if (startedSent) return;
-      startedSent = true;
-      try {
-        call.write({ start: { request_id, model_id: String(modelIdForStart || executionModelId || ''), started_at_ms } });
-      } catch {
-        // ignore
-      }
-    };
 
     const finish = ({ ok, reason, usage, finished_at_ms }) => {
       finishGenerate({ ok, reason, usage, finished_at_ms });
@@ -10448,7 +11557,7 @@ function effectiveClientIdentity(raw, auth) {
     };
   }
 
-  function GetSchedulerStatus(call, callback) {
+  async function GetSchedulerStatus(call, callback) {
     const auth = requireClientAuth(call);
     if (!auth.ok) {
       callback(new Error(auth.message));
@@ -10462,11 +11571,29 @@ function effectiveClientIdentity(raw, auth) {
     const req = call.request || {};
     const includeQueueItems = req.include_queue_items !== false;
     const queueItemsLimit = parseIntInRange(req.queue_items_limit, 100, 1, 500);
-    const paid_ai = buildPaidAISchedulerSnapshot({
+    const nodePaidAI = buildPaidAISchedulerSnapshot({
       includeQueueItems,
       queueItemsLimit,
     });
+    let statusBridgeResult = null;
+    try {
+      statusBridgeResult = await schedulerStatusBridge.maybeReadStatus({
+        includeQueueItems,
+        queueItemsLimit,
+        fallback: nodePaidAI,
+      });
+    } catch (error) {
+      statusBridgeResult = {
+        ok: false,
+        used: false,
+        error_code: 'rust_scheduler_status_bridge_unhandled_error',
+        error_message: String(error?.message || error),
+        paid_ai: nodePaidAI,
+      };
+    }
+    const paid_ai = statusBridgeResult?.paid_ai || nodePaidAI;
     callback(null, { paid_ai });
+    schedulerShadowComparer.maybeCompare(nodePaidAI);
   }
 
   function GetPendingGrantRequests(call, callback) {
@@ -15449,6 +16576,17 @@ function effectiveClientIdentity(raw, auth) {
     });
     const hintedRiskTier = parseAgentRiskTier(req.risk_tier);
     const riskFloorApplied = !!hintedRiskTier && agentRiskTierRank(risk_tier) > agentRiskTierRank(hintedRiskTier);
+    const skillRunnerTool = isSkillRunnerToolName(tool_name);
+    const skillPreflight = skillRunnerTool
+      ? skillRunnerPreauthorizationDecision({
+        runtimeBaseDir: resolveRuntimeBaseDir(),
+        execArgv,
+        user_id,
+        project_id: bindingProjectId,
+        risk_tier,
+        required_grant_scope,
+      })
+      : null;
 
     let policy = null;
     let policyFailedClosed = false;
@@ -15490,6 +16628,23 @@ function effectiveClientIdentity(raw, auth) {
     } else if (!denyCode && decision === 'downgrade') {
       denyCode = 'downgrade_to_local';
     }
+    if (skillPreflight) {
+      if (String(skillPreflight.decision || '') === 'deny') {
+        decision = 'deny';
+        denyCode = String(skillPreflight.deny_code || 'policy_denied');
+      } else if (decision === 'approve' && String(skillPreflight.decision || '') === 'pending') {
+        decision = 'pending';
+        denyCode = 'grant_pending';
+      } else if (decision === 'approve' && String(skillPreflight.decision || '') === 'approve') {
+        denyCode = '';
+        policy = {
+          ...(policy && typeof policy === 'object' ? policy : {}),
+          grant_ttl_ms: Number(skillPreflight.grant_ttl_ms || policy?.grant_ttl_ms || (5 * 60 * 1000)),
+        };
+      }
+    }
+    const skillPreauthorized = skillPreflight?.preauthorization?.preauthorized === true
+      && decision === 'approve';
 
     let createOut;
     try {
@@ -15513,8 +16668,12 @@ function effectiveClientIdentity(raw, auth) {
         policy_decision: decision,
         deny_code: denyCode,
         grant_ttl_ms: Number(policy?.grant_ttl_ms || 0),
-        grant_decided_by: policyFailedClosed ? 'fail_closed' : 'policy_engine',
-        grant_note: policyFailedClosed ? 'policy_gateway_failed' : '',
+        grant_decided_by: policyFailedClosed
+          ? 'fail_closed'
+          : (skillPreauthorized ? 'hub_skill_preauthorization' : 'policy_engine'),
+        grant_note: policyFailedClosed
+          ? 'policy_gateway_failed'
+          : (skillPreauthorized ? 'resolved_skill_preauthorized' : ''),
       });
     } catch {
       createOut = {
@@ -15555,6 +16714,9 @@ function effectiveClientIdentity(raw, auth) {
       grant_expires_at_ms: grantExpiresAtMs,
       capability_token: buildAgentToolCapabilityTokenAudit(toolReq, { required: isHighRiskTier(risk_tier) }),
       policy_fail_closed: policyFailedClosed,
+      skill_execution_gate_checked: skillRunnerTool,
+      skill_preauthorization: skillPreflight ? skillPreauthorizationAuditValue(skillPreflight) : null,
+      preauthorized_lease: buildSkillPreauthorizedLease(toolReq, skillPreflight),
       ingress: true,
       risk_classified: true,
       policy_evaluated: true,
@@ -16066,6 +17228,17 @@ function effectiveClientIdentity(raw, auth) {
         }
       }
 
+      const skillPreauthorizedLease = !denyCode && skillRunnerTool
+        && String(toolReq?.grant_decided_by || '') === 'hub_skill_preauthorization'
+        ? buildSkillPreauthorizedLease(toolReq, {
+          preauthorization: {
+            preauthorized: true,
+            skill_id: String(skillExecutionGate?.detail?.skill_id || skillExecutionBinding?.skill_id || ''),
+            package_sha256: String(skillExecutionBinding?.package_sha256 || ''),
+            resolved_scope: '',
+          },
+        })
+        : null;
       const execResult = denyCode
         ? null
         : {
@@ -16074,6 +17247,7 @@ function effectiveClientIdentity(raw, auth) {
             grant_id: String(toolReq?.grant_id || grant_id || ''),
             executed_by: 'hub_grant_chain',
             skill_execution_gate_checked: skillRunnerTool,
+            preauthorized_lease: skillPreauthorizedLease,
           };
       const executionBindingHash = String(toolReq?.approval_identity_hash || '')
         || computeApprovalIdentityHash({
@@ -16156,6 +17330,7 @@ function effectiveClientIdentity(raw, auth) {
                 ? skillExecutionGate.detail
                 : null,
             }) : null,
+            preauthorized_lease: skillPreauthorizedLease,
           }),
         });
       } catch {
@@ -20037,6 +21212,806 @@ function effectiveClientIdentity(raw, auth) {
     call.end();
   }
 
+  // -------------------- HubProviderKeys --------------------
+  function requireProviderKeyReadAuth(call) {
+    const admin = requireAdminAuth(call);
+    if (admin.ok) return admin;
+    return requireClientAuth(call);
+  }
+
+  function providerModelStateMapPayload(rawStates) {
+    const states = rawStates && typeof rawStates === 'object' ? rawStates : {};
+    return Object.fromEntries(
+      Object.entries(states).map(([modelID, state]) => [
+        modelID,
+        {
+          status: state?.status || '',
+          reason_code: state?.reason_code || '',
+          status_message: state?.status_message || '',
+          next_retry_at_ms: state?.next_retry_at_ms || 0,
+          retry_at_source: state?.retry_at_source || '',
+          last_error_code: state?.last_error_code || '',
+          last_error_at_ms: state?.last_error_at_ms || 0,
+          updated_at_ms: state?.updated_at_ms || 0,
+        },
+      ])
+    );
+  }
+
+  function providerQuotaUsageWindowPayload(rawWindow) {
+    const window = rawWindow && typeof rawWindow === 'object' ? rawWindow : {};
+    const usedPercent = Number(window.used_percent || 0);
+    return {
+      key: safeString(window.key),
+      source: safeString(window.source),
+      window_key: safeString(window.window_key),
+      label: safeString(window.label),
+      limit_window_seconds: nonNegativeInt(window.limit_window_seconds, 0),
+      used_percent: Number.isFinite(usedPercent) ? Math.max(0, Math.min(100, usedPercent)) : 0,
+      used_basis_points: nonNegativeInt(window.used_basis_points, 0),
+      remaining_basis_points: nonNegativeInt(window.remaining_basis_points, 0),
+      limited: !!window.limited,
+      reset_at_ms: nonNegativeInt(window.reset_at_ms, 0),
+      updated_at_ms: nonNegativeInt(window.updated_at_ms, 0),
+    };
+  }
+
+  function providerQuotaPayload(rawQuota) {
+    const quota = rawQuota && typeof rawQuota === 'object' ? rawQuota : {};
+    return {
+      daily_token_cap: quota.daily_token_cap || 0,
+      daily_tokens_used: quota.daily_tokens_used || 0,
+      daily_tokens_remaining: quota.daily_tokens_remaining || 0,
+      total_tokens_used: quota.total_tokens_used || 0,
+      last_used_at_ms: quota.last_used_at_ms || 0,
+      last_error_at_ms: quota.last_error_at_ms || 0,
+      consecutive_errors: quota.consecutive_errors || 0,
+      cooldown_until_ms: quota.cooldown_until_ms || 0,
+      usage_windows: Array.isArray(quota.usage_windows)
+        ? quota.usage_windows.map(providerQuotaUsageWindowPayload).filter((window) => window.key || window.label || window.limit_window_seconds > 0)
+        : [],
+    };
+  }
+
+  function providerErrorStatePayload(rawErrorState) {
+    const errorState = rawErrorState && typeof rawErrorState === 'object' ? rawErrorState : {};
+    return {
+      status: errorState.status || 'healthy',
+      last_error_code: errorState.last_error_code || '',
+      last_error_at_ms: errorState.last_error_at_ms || 0,
+      auto_disabled: !!errorState.auto_disabled,
+      status_message: errorState.status_message || '',
+      reason_code: errorState.reason_code || '',
+      next_retry_at_ms: errorState.next_retry_at_ms || 0,
+      retry_at_source: errorState.retry_at_source || '',
+    };
+  }
+
+  function providerRefreshStatePayload(rawRefreshState) {
+    const refreshState = rawRefreshState && typeof rawRefreshState === 'object' ? rawRefreshState : {};
+    return {
+      status: refreshState.status || 'idle',
+      last_attempt_at_ms: refreshState.last_attempt_at_ms || 0,
+      last_success_at_ms: refreshState.last_success_at_ms || 0,
+      next_refresh_at_ms: refreshState.next_refresh_at_ms || 0,
+      failure_count: refreshState.failure_count || 0,
+      last_error_code: refreshState.last_error_code || '',
+      last_error_message: refreshState.last_error_message || '',
+    };
+  }
+
+  function requiredRefreshMetadataPayload(account) {
+    if (safeString(account?.auth_type).toLowerCase() !== 'oauth') return [];
+
+    const source = safeString(account?.oauth_source_key || account?.provider).toLowerCase();
+    let requiredFields = [];
+    switch (source) {
+      case 'gemini':
+      case 'gemini-cli':
+      case 'google':
+      case 'antigravity':
+        requiredFields = ['client_id', 'client_secret', 'token_uri'];
+        break;
+      default:
+        requiredFields = [];
+        break;
+    }
+    if (requiredFields.length === 0) return [];
+
+    const refreshConfig = account?.oauth_refresh_config && typeof account.oauth_refresh_config === 'object'
+      ? account.oauth_refresh_config
+      : {};
+    const presentFields = new Set(
+      Object.keys(refreshConfig).map((key) => safeString(key).toLowerCase().replace(/-/g, '_'))
+    );
+    return requiredFields.filter((field) => !presentFields.has(field));
+  }
+
+  function providerImportSourceStatusPayload(status) {
+    return {
+      source_key: status?.source_key || '',
+      kind: status?.kind || '',
+      source_ref: status?.source_ref || '',
+      state: status?.state || 'pending',
+      last_sync_at_ms: status?.last_sync_at_ms || 0,
+      last_imported_count: status?.last_imported_count || 0,
+      owned_account_count: status?.owned_account_count || 0,
+      last_error_count: status?.last_error_count || 0,
+      last_errors: Array.isArray(status?.last_errors) ? status.last_errors : [],
+      updated_at_ms: status?.updated_at_ms || 0,
+    };
+  }
+
+  function ListProviderKeys(call, callback) {
+    const auth = requireProviderKeyReadAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    const req = call.request || {};
+    const provider = String(req.provider || '').trim() || undefined;
+    const runtimeBaseDir = resolveRuntimeBaseDir();
+    const accounts = listProviderKeys(runtimeBaseDir, provider);
+    const strategy = provider ? getProviderRoutingStrategy(runtimeBaseDir, provider) : 'fill-first';
+    callback(null, {
+      accounts: accounts.map(a => ({
+        account_key: a.account_key || '',
+        provider: a.provider || '',
+        email: a.email || '',
+        auth_type: a.auth_type || 'api_key',
+        enabled: a.enabled !== false,
+        tier: a.tier || '',
+        base_url: a.base_url || '',
+        proxy_url: a.proxy_url || '',
+        account_id: a.account_id || '',
+        source_type: a.source_type || '',
+        source_ref: a.source_ref || '',
+        oauth_source_key: a.oauth_source_key || '',
+        auth_index: a.auth_index || 0,
+        pool_id: a.pool_id || '',
+        provider_host: a.provider_host || '',
+        wire_api: a.wire_api || '',
+        last_refresh_at_ms: a.last_refresh_at_ms || 0,
+        model_states: providerModelStateMapPayload(a.model_states),
+        notes: a.notes || '',
+        priority: a.priority || 0,
+        expires_at_ms: a.expires_at_ms || 0,
+        created_at_ms: a.created_at_ms || 0,
+        updated_at_ms: a.updated_at_ms || 0,
+        models: a.models || [],
+        api_key_redacted: a.api_key || '',
+      })),
+      routing_strategy: strategy,
+    });
+  }
+
+  function ListProviderKeyPools(call, callback) {
+    const auth = requireProviderKeyReadAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    const req = call.request || {};
+    const provider = String(req.provider || '').trim() || undefined;
+    const modelID = String(req.model_id || '').trim();
+    const runtimeBaseDir = resolveRuntimeBaseDir();
+    Promise.resolve().then(async () => {
+      let pools;
+      let strategy;
+      let updatedAtMs;
+      if (
+        providerKeySnapshotBridge?.config?.enabled === true
+        && typeof providerKeySnapshotBridge.listProviderKeyPools === 'function'
+      ) {
+        const rustSnapshot = await providerKeySnapshotBridge.listProviderKeyPools({
+          runtimeBaseDir,
+          provider,
+          modelId: modelID,
+          includeMembers: req.include_members === true,
+          nowMs: nowMs(),
+        });
+        if (rustSnapshot?.ok === true && rustSnapshot.used === true) {
+          pools = rustSnapshot.pools || [];
+          strategy = rustSnapshot.routing_strategy || 'fill-first';
+          updatedAtMs = rustSnapshot.updated_at_ms || nowMs();
+        } else if (rustSnapshot?.fallback !== true) {
+          throw new Error(rustSnapshot?.error_message || rustSnapshot?.error_code || 'rust_provider_key_snapshot_failed');
+        }
+      }
+      if (!pools) {
+        pools = listProviderKeyPools(runtimeBaseDir, {
+          provider,
+          model_id: modelID,
+          include_members: req.include_members === true,
+        });
+        strategy = provider ? getProviderRoutingStrategy(runtimeBaseDir, provider) : 'fill-first';
+        updatedAtMs = nowMs();
+      }
+      callback(null, {
+        pools: pools.map((pool) => ({
+          pool_id: pool.pool_id || '',
+          capability_pool_id: pool.capability_pool_id || '',
+          provider: pool.provider || '',
+          provider_host: pool.provider_host || '',
+          wire_api: pool.wire_api || '',
+          model_id: pool.model_id || '',
+          model_family: pool.model_family || '',
+          state: pool.state || 'empty',
+          source_providers: pool.source_providers || [],
+          total_accounts: pool.total_accounts || 0,
+          enabled_accounts: pool.enabled_accounts || 0,
+          ready_accounts: pool.ready_accounts || 0,
+          cooldown_accounts: pool.cooldown_accounts || 0,
+          blocked_accounts: pool.blocked_accounts || 0,
+          expired_accounts: pool.expired_accounts || 0,
+          disabled_accounts: pool.disabled_accounts || 0,
+          stale_accounts: pool.stale_accounts || 0,
+          auth_failed_accounts: pool.auth_failed_accounts || 0,
+          free_accounts: pool.free_accounts || 0,
+          paid_accounts: pool.paid_accounts || 0,
+          unknown_tier_accounts: pool.unknown_tier_accounts || 0,
+          removable_accounts: pool.removable_accounts || 0,
+          known_quota_accounts: pool.known_quota_accounts || 0,
+          daily_token_cap: pool.daily_token_cap || 0,
+          daily_tokens_used: pool.daily_tokens_used || 0,
+          daily_tokens_remaining: pool.daily_tokens_remaining || 0,
+          total_tokens_used: pool.total_tokens_used || 0,
+          next_retry_at_ms: pool.next_retry_at_ms || 0,
+          last_used_at_ms: pool.last_used_at_ms || 0,
+          last_refresh_at_ms: pool.last_refresh_at_ms || 0,
+          blocker_reason_codes: pool.blocker_reason_codes || [],
+          members: (pool.members || []).map((member) => ({
+            account_key: member.account_key || '',
+            provider: member.provider || '',
+            email: member.email || '',
+            tier: member.tier || '',
+            enabled: member.enabled !== false,
+            auth_type: member.auth_type || '',
+            account_id: member.account_id || '',
+            source_ref: member.source_ref || '',
+            oauth_source_key: member.oauth_source_key || '',
+            pool_id: member.pool_id || '',
+            state: member.state || 'empty',
+            reason_code: member.reason_code || '',
+            status_message: member.status_message || '',
+            retry_at_ms: member.retry_at_ms || 0,
+            expires_at_ms: member.expires_at_ms || 0,
+            last_refresh_at_ms: member.last_refresh_at_ms || 0,
+            last_used_at_ms: member.last_used_at_ms || 0,
+            daily_token_cap: member.daily_token_cap || 0,
+            daily_tokens_used: member.daily_tokens_used || 0,
+            daily_tokens_remaining: member.daily_tokens_remaining || 0,
+            total_tokens_used: member.total_tokens_used || 0,
+            removable: !!member.removable,
+            removal_reason: member.removal_reason || '',
+            api_key_redacted: member.api_key_redacted || '',
+          })),
+        })),
+        updated_at_ms: updatedAtMs || nowMs(),
+        routing_strategy: strategy || 'fill-first',
+      });
+    }).catch((error) => callback(error));
+  }
+
+  function GetProviderKeyRuntimeSnapshot(call, callback) {
+    const auth = requireProviderKeyReadAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    const req = call.request || {};
+    const provider = String(req.provider || '').trim() || undefined;
+    const runtimeBaseDir = resolveRuntimeBaseDir();
+    Promise.resolve().then(async () => {
+      let snapshot = null;
+      if (
+        providerKeySnapshotBridge?.config?.enabled === true
+        && typeof providerKeySnapshotBridge.getProviderKeyRuntimeSnapshot === 'function'
+      ) {
+        const rustSnapshot = await providerKeySnapshotBridge.getProviderKeyRuntimeSnapshot({
+          runtimeBaseDir,
+          provider,
+        });
+        if (rustSnapshot?.ok === true && rustSnapshot.used === true) {
+          snapshot = rustSnapshot;
+        } else if (rustSnapshot?.fallback !== true) {
+          throw new Error(rustSnapshot?.error_message || rustSnapshot?.error_code || 'rust_provider_key_runtime_snapshot_failed');
+        }
+      }
+      if (snapshot) {
+        callback(null, {
+          accounts: (snapshot.accounts || []).map((account) => ({
+            account_key: account.account_key || '',
+            provider: account.provider || '',
+            email: account.email || '',
+            enabled: account.enabled !== false,
+            auth_type: account.auth_type || 'api_key',
+            tier: account.tier || '',
+            base_url: account.base_url || '',
+            proxy_url: account.proxy_url || '',
+            pool_id: account.pool_id || '',
+            provider_host: account.provider_host || '',
+            wire_api: account.wire_api || '',
+            account_id: account.account_id || '',
+            source_type: account.source_type || '',
+            source_ref: account.source_ref || '',
+            oauth_source_key: account.oauth_source_key || '',
+            auth_index: account.auth_index || 0,
+            expires_at_ms: account.expires_at_ms || 0,
+            created_at_ms: account.created_at_ms || 0,
+            updated_at_ms: account.updated_at_ms || 0,
+            last_refresh_at_ms: account.last_refresh_at_ms || 0,
+            models: account.models || [],
+            source_owners: account.source_owners || [],
+            required_refresh_metadata: account.required_refresh_metadata || [],
+            quota: providerQuotaPayload(account.quota),
+            error_state: providerErrorStatePayload(account.error_state),
+            refresh_state: providerRefreshStatePayload(account.refresh_state),
+            model_states: providerModelStateMapPayload(account.model_states),
+            api_key_redacted: account.api_key_redacted || '',
+            notes: account.notes || '',
+            priority: account.priority || 0,
+          })),
+          import_source_statuses: (snapshot.import_source_statuses || []).map(providerImportSourceStatusPayload),
+          updated_at_ms: snapshot.updated_at_ms || 0,
+          global_routing_strategy: snapshot.global_routing_strategy || 'fill-first',
+          providers: (snapshot.providers || []).map((row) => ({
+            provider: row.provider || '',
+            total_accounts: row.total_accounts || 0,
+            enabled_accounts: row.enabled_accounts || 0,
+            routing_strategy: row.routing_strategy || 'fill-first',
+          })),
+        });
+        return;
+      }
+
+      const summary = providerKeyStoreSummary(runtimeBaseDir);
+      const accounts = listProviderKeysFull(runtimeBaseDir, provider);
+      const redactedByAccountKey = new Map(
+        listProviderKeys(runtimeBaseDir, provider).map((account) => [
+          account.account_key || '',
+          account.api_key || '',
+        ])
+      );
+      const importStatuses = listProviderKeyImportSourceStatuses(runtimeBaseDir);
+      callback(null, {
+        accounts: accounts.map((account) => ({
+          account_key: account.account_key || '',
+          provider: account.provider || '',
+          email: account.email || '',
+          enabled: account.enabled !== false,
+          auth_type: account.auth_type || 'api_key',
+          tier: account.tier || '',
+          base_url: account.base_url || '',
+          proxy_url: account.proxy_url || '',
+          pool_id: account.pool_id || '',
+          provider_host: account.provider_host || '',
+          wire_api: account.wire_api || '',
+          account_id: account.account_id || '',
+          source_type: account.source_type || '',
+          source_ref: account.source_ref || '',
+          oauth_source_key: account.oauth_source_key || '',
+          auth_index: account.auth_index || 0,
+          expires_at_ms: account.expires_at_ms || 0,
+          created_at_ms: account.created_at_ms || 0,
+          updated_at_ms: account.updated_at_ms || 0,
+          last_refresh_at_ms: account.last_refresh_at_ms || 0,
+          models: account.models || [],
+          source_owners: account.source_owners || [],
+          required_refresh_metadata: requiredRefreshMetadataPayload(account),
+          quota: providerQuotaPayload(account.quota),
+          error_state: providerErrorStatePayload(account.error_state),
+          refresh_state: providerRefreshStatePayload(account.refresh_state),
+          model_states: providerModelStateMapPayload(account.model_states),
+          api_key_redacted: redactedByAccountKey.get(account.account_key || '') || '',
+          notes: account.notes || '',
+          priority: account.priority || 0,
+        })),
+        import_source_statuses: importStatuses.map(providerImportSourceStatusPayload),
+        updated_at_ms: summary.updated_at_ms || 0,
+        global_routing_strategy: summary.global_routing_strategy || 'fill-first',
+        providers: (summary.providers || [])
+          .filter((row) => !provider || row.provider === provider)
+          .map((row) => ({
+            provider: row.provider || '',
+            total_accounts: row.total_accounts || 0,
+            enabled_accounts: row.enabled_accounts || 0,
+            routing_strategy: row.routing_strategy || 'fill-first',
+          })),
+      });
+    }).catch((error) => callback(error));
+  }
+
+  function GetProviderKeyRouteDecision(call, callback) {
+    const auth = requireProviderKeyReadAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    const req = call.request || {};
+    const runtimeBaseDir = resolveRuntimeBaseDir();
+    const decision = buildProviderKeyRouteDecision(
+      runtimeBaseDir,
+      String(req.model_id || ''),
+      String(req.provider || '')
+    );
+    callback(null, {
+      decision: {
+        requested_provider: decision.requested_provider || '',
+        requested_model_id: decision.requested_model_id || '',
+        resolved_provider: decision.resolved_provider || '',
+        strategy: decision.strategy || 'fill-first',
+        selection_scope: decision.selection_scope || '',
+        selected_account_key: decision.selected_account_key || '',
+        fallback_reason_code: decision.fallback_reason_code || '',
+        available_count: decision.available_count || 0,
+        total_count: decision.total_count || 0,
+        candidates: (decision.candidates || []).map((candidate) => ({
+          account_key: candidate.account_key || '',
+          provider: candidate.provider || '',
+          provider_group: candidate.provider_group || '',
+          pool_id: candidate.pool_id || '',
+          provider_host: candidate.provider_host || '',
+          wire_api: candidate.wire_api || '',
+          state: candidate.state || 'blocked',
+          reason_code: candidate.reason_code || '',
+          status_message: candidate.status_message || '',
+          retry_at_ms: candidate.retry_at_ms || 0,
+          retry_at_source: candidate.retry_at_source || '',
+          score: candidate.score || 0,
+          selected: candidate.selected === true,
+          models: candidate.models || [],
+          source_owners: candidate.source_owners || [],
+          required_refresh_metadata: candidate.required_refresh_metadata || [],
+          model_state_key: candidate.model_state_key || '',
+        })),
+        updated_at_ms: decision.updated_at_ms || 0,
+      },
+    });
+    providerRouteShadowComparer.maybeCompare({
+      runtimeBaseDir,
+      modelId: String(req.model_id || ''),
+      provider: String(req.provider || ''),
+      nodeDecision: decision,
+    });
+    try {
+      if (
+        providerRouteAuthorityBridge?.config?.prepEnabled === true
+      ) {
+        const prepInput = {
+          runtimeBaseDir,
+          modelId: String(req.model_id || ''),
+          provider: String(req.provider || ''),
+          nodeAccountKey: decision.selected_account_key || '',
+        };
+        if (typeof providerRouteAuthorityBridge.prepRoute === 'function') {
+          providerRouteAuthorityBridge.prepRoute(prepInput);
+        } else if (typeof providerRouteAuthorityBridge.route === 'function') {
+          Promise.resolve(providerRouteAuthorityBridge.route(prepInput)).catch(() => {
+            // prep-only authority check must never affect Node provider routing
+          });
+        }
+      }
+    } catch {
+      // prep-only authority check must never affect Node provider routing
+    }
+  }
+
+  function AddProviderKey(call, callback) {
+    const auth = requireAdminAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    const req = call.request || {};
+    const runtimeBaseDir = resolveRuntimeBaseDir();
+    const result = addProviderKey(runtimeBaseDir, {
+      provider: req.provider,
+      email: req.email,
+      api_key: req.api_key,
+      refresh_token: req.refresh_token,
+      base_url: req.base_url,
+      proxy_url: req.proxy_url,
+      auth_type: req.auth_type,
+      tier: req.tier,
+      notes: req.notes,
+      priority: req.priority,
+      custom_headers: req.custom_headers,
+      models: req.models,
+      wire_api: req.wire_api,
+    });
+    callback(null, { ok: result.ok, account_key: result.account_key || '', error: result.error || '' });
+  }
+
+  function RemoveProviderKey(call, callback) {
+    const auth = requireAdminAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    const req = call.request || {};
+    const runtimeBaseDir = resolveRuntimeBaseDir();
+    const result = removeProviderKey(runtimeBaseDir, req.account_key);
+    callback(null, { ok: result.ok, error: result.error || '' });
+  }
+
+  function RemoveProviderKeys(call, callback) {
+    const auth = requireAdminAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    const req = call.request || {};
+    const runtimeBaseDir = resolveRuntimeBaseDir();
+    const result = removeProviderKeys(runtimeBaseDir, req.account_keys || []);
+    callback(null, {
+      ok: result.ok,
+      removed: result.removed || 0,
+      missing_account_keys: result.missing_account_keys || [],
+      error: result.error || '',
+    });
+  }
+
+  function UpdateProviderKey(call, callback) {
+    const auth = requireAdminAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    const req = call.request || {};
+    const runtimeBaseDir = resolveRuntimeBaseDir();
+    const result = updateProviderKey(runtimeBaseDir, req.account_key, {
+      email: req.email,
+      api_key: req.api_key,
+      refresh_token: req.refresh_token,
+      base_url: req.base_url,
+      proxy_url: req.proxy_url,
+      enabled: req.enabled,
+      tier: req.tier,
+      notes: req.notes,
+      priority: req.priority,
+      auth_type: req.auth_type,
+      custom_headers: req.custom_headers,
+      models: req.models,
+      wire_api: req.wire_api,
+    });
+    callback(null, { ok: result.ok, error: result.error || '' });
+  }
+
+  function SetProviderRoutingStrategy(call, callback) {
+    const auth = requireAdminAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    const req = call.request || {};
+    const runtimeBaseDir = resolveRuntimeBaseDir();
+    const result = setProviderRoutingStrategy(runtimeBaseDir, req.provider, req.strategy);
+    callback(null, { ok: result.ok, error: result.error || '' });
+  }
+
+  function ImportProviderKeys(call, callback) {
+    const auth = requireAdminAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    const req = call.request || {};
+    const runtimeBaseDir = resolveRuntimeBaseDir();
+    const authDir = String(req.auth_dir || '').trim();
+    const configPath = String(req.config_path || '').trim();
+    let overallOk = true;
+    let totalImported = 0;
+    const allErrors = [];
+
+    if (!authDir && !configPath) {
+      callback(null, { ok: false, imported: 0, errors: ['missing_import_path'] });
+      return;
+    }
+
+    if (authDir) {
+      const result = importAuthDir(runtimeBaseDir, authDir);
+      overallOk = overallOk && result.ok !== false;
+      totalImported += result.imported;
+      allErrors.push(...(result.errors || []));
+    }
+
+    if (configPath) {
+      const result = importProxyConfig(runtimeBaseDir, configPath);
+      overallOk = overallOk && result.ok !== false;
+      totalImported += result.imported;
+      allErrors.push(...(result.errors || []));
+    }
+
+    callback(null, { ok: overallOk && allErrors.length === 0, imported: totalImported, errors: allErrors });
+  }
+
+  function GetProviderKeySummary(call, callback) {
+    const auth = requireProviderKeyReadAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    const runtimeBaseDir = resolveRuntimeBaseDir();
+    const summary = providerKeyStoreSummary(runtimeBaseDir);
+    callback(null, {
+      schema_version: summary.schema_version || '',
+      updated_at_ms: summary.updated_at_ms || 0,
+      global_routing_strategy: summary.global_routing_strategy || 'fill-first',
+      providers: (summary.providers || []).map(p => ({
+        provider: p.provider || '',
+        total_accounts: p.total_accounts || 0,
+        enabled_accounts: p.enabled_accounts || 0,
+        routing_strategy: p.routing_strategy || 'fill-first',
+      })),
+    });
+  }
+
+  function ReportKeyUsage(call, callback) {
+    const auth = requireProviderKeyReadAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    const req = call.request || {};
+    const runtimeBaseDir = resolveRuntimeBaseDir();
+    const result = reportKeyUsage(runtimeBaseDir, req.account_key, {
+      tokens_used: req.tokens_used,
+      cost_usd: req.cost_usd,
+      model_id: req.model_id,
+      latency_ms: req.latency_ms,
+      occurred_at_ms: req.occurred_at_ms,
+    });
+    callback(null, { ok: result.ok, error: result.error || '' });
+  }
+
+  function ReportKeyError(call, callback) {
+    const auth = requireProviderKeyReadAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    const req = call.request || {};
+    const runtimeBaseDir = resolveRuntimeBaseDir();
+    const result = reportKeyError(runtimeBaseDir, req.account_key, {
+      error_code: req.error_code,
+      model_id: req.model_id,
+      outcome: req.outcome,
+      http_status: req.http_status,
+      reason_code: req.reason_code,
+      status_message: req.status_message,
+      latency_ms: req.latency_ms,
+      occurred_at_ms: req.occurred_at_ms,
+      next_retry_at_ms: req.next_retry_at_ms,
+      retry_at_source: req.retry_at_source,
+    });
+    callback(null, { ok: result.ok, error: result.error || '', auto_disabled: !!result.auto_disabled });
+  }
+
+  function GetKeyUsage(call, callback) {
+    const auth = requireProviderKeyReadAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    const req = call.request || {};
+    const runtimeBaseDir = resolveRuntimeBaseDir();
+    const usage = getKeyUsage(runtimeBaseDir, req.account_key);
+    if (!usage) {
+      callback(null, {
+        account_key: String(req.account_key || ''),
+        provider: '',
+        quota: {
+          daily_token_cap: 0, daily_tokens_used: 0, daily_tokens_remaining: 0,
+          total_tokens_used: 0, last_used_at_ms: 0, last_error_at_ms: 0,
+          consecutive_errors: 0, cooldown_until_ms: 0,
+        },
+      error_state: {
+        ...providerErrorStatePayload(null),
+      },
+      model_states: {},
+      });
+      return;
+    }
+    const q = usage.quota || {};
+    const e = usage.error_state || {};
+    callback(null, {
+      account_key: usage.account_key || '',
+      provider: usage.provider || '',
+      quota: providerQuotaPayload(q),
+      error_state: providerErrorStatePayload(e),
+      model_states: providerModelStateMapPayload(usage.model_states),
+    });
+  }
+
+  function ResetKeyErrorState(call, callback) {
+    const auth = requireAdminAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    const req = call.request || {};
+    const runtimeBaseDir = resolveRuntimeBaseDir();
+    const result = resetKeyErrorState(runtimeBaseDir, req.account_key);
+    callback(null, { ok: result.ok, error: result.error || '' });
+  }
+
+  function StartProviderOAuthLogin(call, callback) {
+    const auth = requireProviderKeyReadAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    const req = call.request || {};
+    const runtimeBaseDir = resolveRuntimeBaseDir();
+    const result = providerOAuthManager.startLogin(runtimeBaseDir, {
+      provider: req.provider,
+      redirect_uri: req.redirect_uri,
+    });
+    callback(null, {
+      ok: result.ok,
+      error: result.error || '',
+      provider: result.provider || '',
+      state: result.state || '',
+      auth_url: result.auth_url || '',
+      redirect_uri: result.redirect_uri || '',
+      status: result.status || 'error',
+      expires_at_ms: result.expires_at_ms || 0,
+    });
+  }
+
+  function SubmitProviderOAuthCallback(call, callback) {
+    const auth = requireProviderKeyReadAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    const req = call.request || {};
+    const runtimeBaseDir = resolveRuntimeBaseDir();
+    const result = providerOAuthManager.submitCallback(runtimeBaseDir, {
+      provider: req.provider,
+      state: req.state,
+      code: req.code,
+      redirect_url: req.redirect_url,
+      error: req.error,
+    });
+    callback(null, {
+      ok: result.ok,
+      error: result.error || '',
+      provider: result.provider || '',
+      state: result.state || '',
+      status: result.status || 'error',
+    });
+  }
+
+  function GetProviderOAuthLoginStatus(call, callback) {
+    const auth = requireProviderKeyReadAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    const req = call.request || {};
+    const result = providerOAuthManager.getStatus({
+      state: req.state,
+    });
+    callback(null, {
+      ok: result.ok,
+      error: result.error || '',
+      provider: result.provider || '',
+      state: result.state || '',
+      status: result.status || 'unknown',
+      expires_at_ms: result.expires_at_ms || 0,
+      updated_at_ms: result.updated_at_ms || 0,
+      auth_url: result.auth_url || '',
+      redirect_uri: result.redirect_uri || '',
+      status_message: result.status_message || '',
+      account_key: result.account_key || '',
+      email: result.email || '',
+      auth_file_path: result.auth_file_path || '',
+      imported: result.imported || 0,
+    });
+  }
+
   // -------------------- HubAdmin --------------------
   function SetKillSwitch(call, callback) {
     const auth = requireAdminAuth(call);
@@ -20233,5 +22208,25 @@ function effectiveClientIdentity(raw, auth) {
       DownloadSkillPackage,
     },
     HubAdmin: { SetKillSwitch, GetKillSwitch },
+    HubProviderKeys: {
+      ListProviderKeys,
+      ListProviderKeyPools,
+      GetProviderKeyRuntimeSnapshot,
+      GetProviderKeyRouteDecision,
+      AddProviderKey,
+      RemoveProviderKey,
+      RemoveProviderKeys,
+      UpdateProviderKey,
+      SetProviderRoutingStrategy,
+      ImportProviderKeys,
+      GetProviderKeySummary,
+      ReportKeyUsage,
+      ReportKeyError,
+      GetKeyUsage,
+      ResetKeyErrorState,
+      StartProviderOAuthLogin,
+      SubmitProviderOAuthCallback,
+      GetProviderOAuthLoginStatus,
+    },
   };
 }

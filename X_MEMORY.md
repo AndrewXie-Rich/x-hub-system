@@ -196,6 +196,9 @@
     - `XTUnifiedDoctor` 的 `session_runtime_readiness` 已显示 `Project Context` 摘要卡
     - `XTUnifiedDoctor` 的 `session_runtime_readiness` 现在也会带一等结构化 `hubMemoryPromptProjection`，明确 Hub 最终这轮 prompt 装配里带了多少 canonical items、working-set turns、governed coding runtime truth items，以及这些 runtime truth 来自哪些 `source_kind`
     - `XTUnifiedDoctor` 的 `session_runtime_readiness` 现在也会带一等结构化 `heartbeatGovernanceProjection`，明确当前 project heartbeat 的 `latestQualityBand / openAnomalyTypes / configured-recommended-effective cadence / nextReviewDue / recoveryDecision`
+    - `XTUnifiedDoctor` 的 `model_route_readiness` 现在也会带一等结构化 `providerKeySelectionProjection`，明确最近一次真实远端 key 调度的 `requestedProvider / requestedModelId / selectedAccountKey / candidates / retry window`
+    - 同一个 section 现在也会带 `providerKeyRouteContextProjection`，把 `modelId / pool / decision / importContextLines / importIssues` 收到一份稳定快照里，避免 doctor / troubleshoot / export 各自反解 `detailLines`
+    - `TroubleshootPanel` 现在应把这份 route context 当成 provider-key 主输入；旧的 split provider-key troubleshoot 入参仅保留兼容 wrapper，不再继续扩展语义
     - `XTUnifiedDoctor` 的 `model_route_readiness` 已带一等结构化 `memoryRouteTruthProjection`
     - `XTUnifiedDoctor` 的 `session_runtime_readiness` 现在也会带一等结构化 `durableCandidateMirrorProjection`，明确 `mirrored_to_hub | local_only | hub_mirror_failed`
     - `XTUnifiedDoctor` 的 `session_runtime_readiness` 现在也会带一等结构化 `localStoreWriteProjection`，明确 XT 本地 personal memory / cross-link / personal review 最近一次写入 provenance 是 `manual_edit_buffer_commit | after_turn_cache_refresh | derived_refresh` 这类本地路径，而不是 durable writer 主权
@@ -206,11 +209,14 @@
     - 通用导出 `xhub_doctor_output_xt.json` 现在也会在 `session_runtime_readiness` 下附带结构化 `hub_memory_prompt_projection`，显式带 `projection_source / canonical_item_count / working_set_turn_count / runtime_truth_item_count / runtime_truth_source_kinds`；这只是 Hub prompt 装配 explainability，不是 XT 本地 prompt authority
     - 通用导出 `xhub_doctor_output_xt.json` 现在也会在 `session_runtime_readiness` 下附带结构化 `project_remote_snapshot_cache_snapshot / supervisor_remote_snapshot_cache_snapshot`，显式带 `source / freshness / cache_hit / scope / cached_at / age / ttl_remaining`
     - 通用导出 `xhub_doctor_output_xt.json` 现在也会在 `session_runtime_readiness` 下附带结构化 `heartbeat_governance_snapshot`；这只是 review explainability，不会覆盖 normal chat / project memory resolver，也不会升级成 policy truth
+    - 通用导出 `xhub_doctor_output_xt.json` 现在也会在 `model_route_readiness` 下附带结构化 `provider_key_selection_snapshot`；这只是远端 key 调度 explainability，不代表 XT 取得 scheduler authority、scope grant 或 key 状态修改权
+    - 同时还会附带 `provider_key_route_context_snapshot`，把目标 model、最新 key 选择、pool 状态和 import blocker 放进同一份机器可读快照；这仍然只是 explainability，不代表 XT 拥有 scheduler / import mutation / auth approval authority
+    - XT 读取 provider-key runtime/import/route 时也要优先走 Hub RPC + 本地缓存；`hub_provider_keys.json` 只保留显式兼容兜底，不再作为默认主链路
     - 通用导出 `xhub_doctor_output_xt.json` 现在也会在 `session_runtime_readiness` 下附带结构化 `durable_candidate_mirror_snapshot`；这只是 XT handoff evidence，不代表 Hub durable promotion 或 read-source cutover 已完成
     - 通用导出 `xhub_doctor_output_xt.json` 现在也会在 `session_runtime_readiness` 下附带结构化 `local_store_write_snapshot`；这只是 XT local cache/fallback/edit-buffer provenance，不代表 XT 已变成 durable writer
     - 通用导出 `xhub_doctor_output_xt.json` 现在也会在 `skills_compatibility_readiness` 下附带结构化 `skill_doctor_truth_snapshot`，显式带 project effective profile、grant/approval/blocked 计数和代表性技能 preview
     - 通用导出 `xhub_doctor_output_xt.json` 现在也会在 `model_route_readiness` 下附带结构化 `memory_route_truth_snapshot`，显式带 `projection_source / completeness`；结构化 truth 优先，`detail_lines` 仅兼容兜底
-    - repo-level `xhub_doctor_source_gate_summary.v1.json` 现在同时保留 `project_context_summary_support`、`heartbeat_governance_support` 和 `durable_candidate_mirror_support`；其中 heartbeat support 会保留 `latest_quality_band / open_anomaly_types / review_pulse_effective_seconds / next_review_kind / next_review_due`，下游 release/operator 证据不需要再回退解析 raw `detail_lines`
+    - repo-level `xhub_doctor_source_gate_summary.v1.json` 现在同时保留 `project_context_summary_support`、`heartbeat_governance_support`、`provider_key_selection_support` 和 `durable_candidate_mirror_support`；其中 provider-key support 会保留 `requested_provider / requested_model_id / selected_account_key / next_retry_at_ms`，下游 release/operator 证据不需要再回退解析 raw `detail_lines`
 
 - XT device-local calendar reminders：
   - 产品边界已冻结为 `Hub 不再读取个人日历；X-Terminal 是唯一默认宿主；Supervisor 在 XT 本机做语音提醒 + 本地通知兜底`。

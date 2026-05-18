@@ -79,7 +79,8 @@ final class LocalLibraryRuntimeReadinessResolverTests: XCTestCase {
         let readiness = LocalLibraryRuntimeReadinessResolver.readiness(
             for: makeTextModel(),
             commandLaunchConfigResolver: { _ in true },
-            compatibilityEvaluator: { _, _ in nil }
+            compatibilityEvaluator: { _, _ in nil },
+            trialSurfaceEvaluator: { _, _ in nil }
         )
 
         XCTAssertEqual(readiness, LocalLibraryRuntimeReadiness.ready("已导入，可用于 Hub 本地执行。"))
@@ -96,7 +97,8 @@ final class LocalLibraryRuntimeReadinessResolverTests: XCTestCase {
                     pythonPath: "/opt/homebrew/bin/python3"
                 )
             },
-            compatibilityEvaluator: { _, _ in nil }
+            compatibilityEvaluator: { _, _ in nil },
+            trialSurfaceEvaluator: { _, _ in nil }
         )
 
         let first = session.readiness(for: makeTextModel(id: "mlx/qwen"))
@@ -105,6 +107,22 @@ final class LocalLibraryRuntimeReadinessResolverTests: XCTestCase {
         XCTAssertEqual(first, LocalLibraryRuntimeReadiness.ready("已导入，可用于 Hub 本地执行。"))
         XCTAssertEqual(second, LocalLibraryRuntimeReadiness.ready("已导入，可用于 Hub 本地执行。"))
         XCTAssertEqual(providerProbeCalls["mlx"], 1)
+    }
+
+    func testLocalVisionModelUnavailableWhenTrialSurfaceCannotRun() {
+        let readiness = LocalLibraryRuntimeReadinessResolver.readiness(
+            for: makeVisionModel(),
+            commandLaunchConfigResolver: { _ in true },
+            compatibilityEvaluator: { _, _ in nil },
+            trialSurfaceEvaluator: { _, _ in
+                "当前 Python 运行时缺少 torch。Hub 只有在 torch 可用后才能加载这个 Transformers 模型。"
+            }
+        )
+
+        XCTAssertEqual(
+            readiness,
+            LocalLibraryRuntimeReadiness.unavailable("当前 Python 运行时缺少 torch。Hub 只有在 torch 可用后才能加载这个 Transformers 模型。")
+        )
     }
 
     private func makeVoiceModel() -> HubModel {
@@ -132,6 +150,20 @@ final class LocalLibraryRuntimeReadinessResolverTests: XCTestCase {
             state: .available,
             modelPath: "/tmp/qwen3",
             taskKinds: ["text_generate"]
+        )
+    }
+
+    private func makeVisionModel() -> HubModel {
+        HubModel(
+            id: "trl/tiny-qwen2.5-vl",
+            name: "Tiny Qwen2.5 VL",
+            backend: "transformers",
+            quant: "bf16",
+            contextLength: 32768,
+            paramsB: 0.5,
+            state: .available,
+            modelPath: "/tmp/tiny-qwen2.5-vl",
+            taskKinds: ["vision_understand", "ocr"]
         )
     }
 }

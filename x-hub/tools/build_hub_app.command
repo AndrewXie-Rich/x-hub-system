@@ -101,7 +101,7 @@ configure_swift_build_args() {
     --package-path "$PKG_DIR"
   )
 
-  MAIN_BUILD_ARGS=("${COMMON_ARGS[@]}" --product RELFlowHub)
+  MAIN_BUILD_ARGS=("${COMMON_ARGS[@]}" --product XHub)
 }
 
 is_retryable_swift_build_failure() {
@@ -123,11 +123,27 @@ reset_swift_build_state() {
 
 run_swift_build_once() {
   local attempt_log="$1"
+  local attempt_pipe=""
+  local tee_pid=""
+  local build_rc=0
   : > "$attempt_log"
 
+  attempt_pipe="$(mktemp -u -t xhub_swift_build_pipe)"
+  rm -f "$attempt_pipe"
+  mkfifo "$attempt_pipe"
+  tee "$attempt_log" < "$attempt_pipe" &
+  tee_pid=$!
+
+  set +e
   run_with_heartbeat "[1/4] swift build" \
     env HOME="$PKG_DIR/.sandbox_home" TMPDIR="$PKG_DIR/.sandbox_tmp" \
-    swift build "${MAIN_BUILD_ARGS[@]}" > >(tee "$attempt_log") 2>&1
+    swift build "${MAIN_BUILD_ARGS[@]}" > "$attempt_pipe" 2>&1
+  build_rc=$?
+  set -e
+
+  wait "$tee_pid" 2>/dev/null || true
+  rm -f "$attempt_pipe"
+  return "$build_rc"
 }
 
 build_swift_package() {
@@ -204,8 +220,10 @@ echo "[LOG] Writing build log to: $LOG_FILE"
 
 stop_replaced_app_processes() {
   local targets=(
+    "$APP_DIR/Contents/MacOS/XHub"
     "$APP_DIR/Contents/MacOS/RELFlowHub"
     "$APP_DIR/Contents/MacOS/relflowhub_node"
+    "$APP_DIR/Contents/Resources/relflowhub_node"
     "$OUT_DIR/RELFlowHubBridge.app/Contents/MacOS/RELFlowHubBridge"
     "$OUT_DIR/RELFlowHubDockAgent.app/Contents/MacOS/RELFlowHubDockAgent"
     "$OUT_DIR/X-Hub Bridge.app/Contents/MacOS/X-Hub Bridge"
@@ -260,7 +278,7 @@ configure_swift_build_args
 build_swift_package
 
 BIN_DIR=$(env HOME="$PKG_DIR/.sandbox_home" TMPDIR="$PKG_DIR/.sandbox_tmp" swift build "${COMMON_ARGS[@]}" --show-bin-path)
-BIN_PATH="$BIN_DIR/RELFlowHub"
+BIN_PATH="$BIN_DIR/XHub"
 if [ -z "$BIN_PATH" ] || [ ! -f "$BIN_PATH" ]; then
   echo "Build output not found at: $BIN_PATH" >&2
   exit 1
@@ -280,8 +298,8 @@ do
 done
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 
-cp -f "$BIN_PATH" "$APP_DIR/Contents/MacOS/RELFlowHub"
-chmod +x "$APP_DIR/Contents/MacOS/RELFlowHub"
+cp -f "$BIN_PATH" "$APP_DIR/Contents/MacOS/XHub"
+chmod +x "$APP_DIR/Contents/MacOS/XHub"
 
 cp -f "$TPL_DIR/Info.plist" "$APP_DIR/Contents/Info.plist"
 
@@ -410,6 +428,80 @@ if [ -d "$PROTO_SRC" ]; then
     "$PROTO_SRC/" \
     "$APP_DIR/Contents/Resources/protocol/"
 fi
+
+resolve_rust_hub_package_dir() {
+  if [ -n "${XHUB_RUST_HUB_PACKAGE_DIR:-}" ]; then
+    if [ -d "$XHUB_RUST_HUB_PACKAGE_DIR" ]; then
+      cd "$XHUB_RUST_HUB_PACKAGE_DIR" && pwd
+      return 0
+    fi
+    return 1
+  fi
+
+  local default_rust_source_root="$SOURCE_ROOT/rust/xhubd"
+  if [ ! -d "$default_rust_source_root" ] && [ -d "$SOURCE_ROOT/../rust/rust hub" ]; then
+    default_rust_source_root="$SOURCE_ROOT/../rust/rust hub"
+  fi
+  local rust_source_root="${XHUB_RUST_HUB_SOURCE_ROOT:-$default_rust_source_root}"
+  local dist_root="$rust_source_root/dist"
+  if [ ! -d "$dist_root" ]; then
+    return 1
+  fi
+
+  local latest=""
+  latest="$(find "$dist_root" -maxdepth 1 -type d -name 'rust-hub-*' 2>/dev/null | sort | tail -n 1)"
+  if [ -n "$latest" ] && [ -d "$latest" ]; then
+    cd "$latest" && pwd
+    return 0
+  fi
+
+  return 1
+}
+
+embed_rust_hub_package() {
+  local mode="${XHUB_EMBED_RUST_HUB:-auto}"
+  case "$mode" in
+    1|true|TRUE|yes|YES|auto|AUTO) ;;
+    *) return 0 ;;
+  esac
+
+  local package_dir=""
+  if ! package_dir="$(resolve_rust_hub_package_dir)"; then
+    if [ "$mode" = "auto" ] || [ "$mode" = "AUTO" ]; then
+      echo "[RUST] No Rust Hub package found; continuing without embedded Rust Hub." >&2
+      return 0
+    fi
+    echo "[RUST] Missing Rust Hub package. Set XHUB_RUST_HUB_PACKAGE_DIR or run rust/xhubd/tools/package_rust_hub.command first." >&2
+    exit 1
+  fi
+
+  if [ ! -f "$package_dir/bin/xhubd" ] || [ ! -f "$package_dir/tools/run_rust_hub.command" ]; then
+    echo "[RUST] Invalid Rust Hub package: $package_dir" >&2
+    echo "[RUST] Expected bin/xhubd and tools/run_rust_hub.command." >&2
+    exit 1
+  fi
+
+  local dest="$APP_DIR/Contents/Resources/rust-hub"
+  echo "[RUST] Embedding Rust Hub package into app Resources…"
+  echo "[RUST] Source: $package_dir"
+  echo "[RUST] Target: $dest"
+  rm -rf "$dest"
+  mkdir -p "$dest"
+  rsync -a --delete \
+    --exclude '.DS_Store' \
+    "$package_dir/" \
+    "$dest/"
+
+  cat > "$dest/embedded_manifest.json" <<EOF
+{
+  "schema_version": "xhub.embedded_rust_hub.v1",
+  "source_package_dir": "$package_dir",
+  "embedded_at_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+}
+
+embed_rust_hub_package
 
 # Bundle a Node runtime so sandboxed Hub builds can start the gRPC server without relying on system Node.
 find_node_bin() {
@@ -636,6 +728,10 @@ if [ -f "$APP_DIR/Contents/Resources/relflowhub_node" ]; then
   echo "[3a/4] Codesigning embedded node runtime…"
   codesign --force --sign "$IDENTITY" "$APP_DIR/Contents/Resources/relflowhub_node"
 fi
+if [ -f "$APP_DIR/Contents/Resources/rust-hub/bin/xhubd" ]; then
+  echo "[3b/4] Codesigning embedded Rust Hub daemon…"
+  codesign --force --sign "$IDENTITY" "$APP_DIR/Contents/Resources/rust-hub/bin/xhubd"
+fi
 
 # Sign the bundle in one shot, so the main executable keeps the entitlements.
 codesign --force --sign "$IDENTITY" --entitlements "$ENT_TO_USE" "$APP_DIR"
@@ -644,6 +740,9 @@ echo "[4/4] Verifying signature…"
 codesign --verify --verbose=4 "$APP_DIR"
 if [ -f "$APP_DIR/Contents/Resources/relflowhub_node" ]; then
   codesign --verify --verbose=4 "$APP_DIR/Contents/Resources/relflowhub_node"
+fi
+if [ -f "$APP_DIR/Contents/Resources/rust-hub/bin/xhubd" ]; then
+  codesign --verify --verbose=4 "$APP_DIR/Contents/Resources/rust-hub/bin/xhubd"
 fi
 
 echo
@@ -658,3 +757,8 @@ echo "- This build enables App Sandbox and grants network client entitlement (si
 echo "- It also grants network server entitlement to accept local AF_UNIX IPC connections."
 echo "- Calendar access was removed from X-Hub; device-local meeting reminders now belong on X-Terminal."
 echo "- Standalone Bridge.app and Dock Agent.app were removed; X-Hub now ships as a single app bundle."
+echo "- Scope boundary: this command packages current x-hub/ + protocol/ into X-Hub.app only."
+echo "- Rust Hub embedding defaults to auto; set XHUB_EMBED_RUST_HUB=0 to skip or XHUB_EMBED_RUST_HUB=1 to require a package."
+echo "- To install the built app, run: \"$SOURCE_ROOT/x-hub/tools/install_hub_app.command\"; it writes /Applications/X-Hub.app only."
+echo "- If you also changed X-Terminal surfaces (for example doctor / troubleshoot / model-settings UI), rebuild active refactored XT separately with: \"$SOURCE_ROOT/../rust/rust xt/commands/build_xt.command\""
+echo "- To rebuild both apps together, run: \"$SOURCE_ROOT/scripts/build_hub_and_xt_apps.command\""

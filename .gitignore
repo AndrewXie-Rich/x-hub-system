@@ -22,10 +22,10 @@ build/
 *.sqlite3
 *.sqlite3-shm
 *.sqlite3-wal
-*.db
 x-terminal/.ax-test-cache/
 x-terminal/skills/_projects/
 x-terminal/voice_supervisor_smoke_project/
+x-hub-system/
 
 # Project-local state that may include user content or secrets
 .axcoder/
@@ -69,27 +69,7 @@ in_progress*/
 *.tmp
 *.temp
 GITHUB_RELEASE_BOUNDARY.local.md
+*.local.md
 Scheduler
 Worker
 Writer
-
-# Rust
-target/
-rust/**/target/
-rust/**/data/
-rust/**/dist/
-rust/**/logs/
-rust/**/run/
-rust/**/reports/
-rust/**/config/*.local.json
-!rust/xhubd/config/daemon_profile.local.json
-
-# x-terminal work orders (not ready for public)
-x-terminal/work-orders/
-
-# Generated dist/ folders except official-agent-skills/dist
-dist/
-!official-agent-skills/dist/
-
-# Website
-website/node_modules/

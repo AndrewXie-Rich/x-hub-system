@@ -17,6 +17,8 @@ ROOT = (
 REPORT_DIR = ROOT / "build" / "reports"
 REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
+ACTIVE_XT_RELEASE_GATE_COMMAND = 'bash "/Users/andrew.xie/Documents/AX/rust/rust xt/swift-xterminal/scripts/ci/xt_release_gate.sh"'
+
 ALLOWLIST_DIRS = [
     ".github",
     "specs",
@@ -386,6 +388,184 @@ def compact_heartbeat_recovery_decision(decision: dict | None) -> dict | None:
         compacted["requires_user_action"] = requires_user_action
 
     return compacted or None
+
+
+def compact_provider_key_candidate_decision(candidate: dict | None) -> dict | None:
+    if not isinstance(candidate, dict):
+        return None
+
+    availability_state = candidate.get("availability_state")
+    availability_reason_code = candidate.get("availability_reason_code")
+    availability_retry_at_ms = candidate.get("availability_retry_at_ms")
+    availability = candidate.get("availability")
+    if not availability_state and isinstance(availability, dict):
+        for state in ["ready", "cooldown", "blocked", "disabled", "stale"]:
+            if state not in availability:
+                continue
+            availability_state = state
+            details = availability.get(state)
+            if isinstance(details, dict):
+                availability_reason_code = details.get("reasonCode")
+                availability_retry_at_ms = details.get("retryAtMs")
+            break
+
+    return {
+        "account_key": candidate.get("account_key", candidate.get("accountKey")),
+        "provider": candidate.get("provider"),
+        "pool_id": candidate.get("pool_id", candidate.get("poolID")),
+        "wire_api": candidate.get("wire_api", candidate.get("wireAPI")),
+        "availability_state": availability_state,
+        "availability_reason_code": availability_reason_code,
+        "availability_retry_at_ms": availability_retry_at_ms,
+        "selected": candidate.get("selected"),
+        "reason_code": candidate.get("reason_code", candidate.get("reasonCode")),
+        "retry_at_ms": candidate.get("retry_at_ms", candidate.get("retryAtMs")),
+    }
+
+
+def compact_provider_key_selection_snapshot(snapshot: dict | None) -> dict | None:
+    if not isinstance(snapshot, dict):
+        return None
+
+    raw_candidate_preview = (
+        snapshot.get("candidate_preview")
+        if isinstance(snapshot.get("candidate_preview"), list)
+        else snapshot.get("candidates")
+        if isinstance(snapshot.get("candidates"), list)
+        else []
+    )
+    candidate_preview = [
+        compact_provider_key_candidate_decision(candidate)
+        for candidate in raw_candidate_preview
+        if isinstance(candidate, dict)
+    ]
+    candidate_preview = [candidate for candidate in candidate_preview if candidate is not None][:4]
+
+    selected_candidate = compact_provider_key_candidate_decision(snapshot.get("selected_candidate"))
+    if selected_candidate is None:
+        selected_candidate = next(
+            (candidate for candidate in candidate_preview if candidate.get("selected") is True),
+            None,
+        )
+
+    blocked_candidate_count = snapshot.get("blocked_candidate_count")
+    if not isinstance(blocked_candidate_count, (int, float)):
+        blocked_candidate_count = sum(
+            1 for candidate in candidate_preview if candidate.get("availability_state") == "blocked"
+        )
+
+    cooldown_candidate_count = snapshot.get("cooldown_candidate_count")
+    if not isinstance(cooldown_candidate_count, (int, float)):
+        cooldown_candidate_count = sum(
+            1 for candidate in candidate_preview if candidate.get("availability_state") == "cooldown"
+        )
+
+    stale_candidate_count = snapshot.get("stale_candidate_count")
+    if not isinstance(stale_candidate_count, (int, float)):
+        stale_candidate_count = sum(
+            1 for candidate in candidate_preview if candidate.get("availability_state") == "stale"
+        )
+
+    retry_candidates = [
+        retry_at_ms
+        for retry_at_ms in (
+            (candidate.get("availability_retry_at_ms") or candidate.get("retry_at_ms"))
+            for candidate in candidate_preview
+        )
+        if isinstance(retry_at_ms, (int, float)) and retry_at_ms > 0
+    ]
+    next_retry_at_ms = snapshot.get("next_retry_at_ms")
+    if not isinstance(next_retry_at_ms, (int, float)):
+        next_retry_at_ms = min(retry_candidates) if retry_candidates else None
+
+    candidate_count = snapshot.get("candidate_count")
+    if not isinstance(candidate_count, (int, float)):
+        candidate_count = len(candidate_preview)
+
+    return {
+        "requested_provider": snapshot.get("requested_provider", snapshot.get("requestedProvider")),
+        "requested_model_id": snapshot.get("requested_model_id", snapshot.get("requestedModelId")),
+        "strategy": snapshot.get("strategy"),
+        "selection_scope": snapshot.get("selection_scope", snapshot.get("selectionScope")),
+        "selected_account_key": snapshot.get("selected_account_key", snapshot.get("selectedAccountKey")),
+        "fallback_reason_code": snapshot.get("fallback_reason_code", snapshot.get("fallbackReasonCode")),
+        "candidate_count": candidate_count,
+        "blocked_candidate_count": blocked_candidate_count,
+        "cooldown_candidate_count": cooldown_candidate_count,
+        "stale_candidate_count": stale_candidate_count,
+        "next_retry_at_ms": next_retry_at_ms,
+        "selected_candidate": selected_candidate,
+        "candidate_preview": candidate_preview,
+    }
+
+
+def compact_provider_key_import_issue(snapshot: dict | None) -> dict | None:
+    if not isinstance(snapshot, dict):
+        return None
+    return {
+        "kind": snapshot.get("kind"),
+        "state": snapshot.get("state"),
+        "source_ref": snapshot.get("source_ref", snapshot.get("sourceRef")),
+        "source_name": snapshot.get("source_name", snapshot.get("sourceName")),
+        "error_code": snapshot.get("error_code", snapshot.get("errorCode")),
+        "error_detail": snapshot.get("error_detail", snapshot.get("errorDetail")),
+    }
+
+
+def compact_provider_key_route_context_snapshot(snapshot: dict | None) -> dict | None:
+    if not isinstance(snapshot, dict):
+        return None
+
+    raw_import_issues = snapshot.get("import_issues")
+    if not isinstance(raw_import_issues, list):
+        raw_import_issues = snapshot.get("importIssues")
+    if not isinstance(raw_import_issues, list):
+        raw_import_issues = []
+
+    compact_import_issues = [
+        compact_provider_key_import_issue(issue)
+        for issue in raw_import_issues
+        if isinstance(issue, dict)
+    ]
+    compact_import_issues = [issue for issue in compact_import_issues if issue is not None]
+
+    primary_import_issue = compact_provider_key_import_issue(
+        snapshot.get("primary_import_issue")
+        or snapshot.get("primaryImportIssue")
+        or (compact_import_issues[0] if compact_import_issues else None)
+    )
+
+    raw_import_context_preview = snapshot.get("import_context_preview")
+    if not isinstance(raw_import_context_preview, list):
+        raw_import_context_preview = snapshot.get("import_context_lines")
+    if not isinstance(raw_import_context_preview, list):
+        raw_import_context_preview = snapshot.get("importContextLines")
+    if not isinstance(raw_import_context_preview, list):
+        raw_import_context_preview = []
+
+    decision = snapshot.get("decision")
+    import_issue_count = snapshot.get("import_issue_count")
+    if not isinstance(import_issue_count, (int, float)):
+        import_issue_count = len(compact_import_issues)
+
+    return {
+        "model_id": snapshot.get("model_id", snapshot.get("modelId")),
+        "selected_account_key": (
+            snapshot.get("selected_account_key")
+            or snapshot.get("selectedAccountKey")
+            or (
+                decision.get("selected_account_key") or decision.get("selectedAccountKey")
+                if isinstance(decision, dict)
+                else None
+            )
+        ),
+        "import_issue_count": import_issue_count,
+        "primary_import_issue": primary_import_issue,
+        "import_context_preview": [
+            line for line in raw_import_context_preview
+            if isinstance(line, str) and line.strip()
+        ][:3],
+    }
 
 
 def compact_local_store_write_snapshot(snapshot: dict | None) -> dict | None:
@@ -1050,6 +1230,8 @@ def main() -> None:
     doctor_project_memory_assembly_resolution_support = doctor_source_gate.get("project_memory_assembly_resolution_support", {}) if doctor_source_gate else {}
     doctor_project_remote_snapshot_cache_support = doctor_source_gate.get("project_remote_snapshot_cache_support", {}) if doctor_source_gate else {}
     doctor_heartbeat_governance_support = doctor_source_gate.get("heartbeat_governance_support", {}) if doctor_source_gate else {}
+    doctor_provider_key_selection_support = doctor_source_gate.get("provider_key_selection_support", {}) if doctor_source_gate else {}
+    doctor_provider_key_route_context_support = doctor_source_gate.get("provider_key_route_context_support", {}) if doctor_source_gate else {}
     doctor_supervisor_memory_policy_support = doctor_source_gate.get("supervisor_memory_policy_support", {}) if doctor_source_gate else {}
     doctor_supervisor_memory_assembly_resolution_support = doctor_source_gate.get("supervisor_memory_assembly_resolution_support", {}) if doctor_source_gate else {}
     doctor_supervisor_remote_snapshot_cache_support = doctor_source_gate.get("supervisor_remote_snapshot_cache_support", {}) if doctor_source_gate else {}
@@ -1065,6 +1247,8 @@ def main() -> None:
         or doctor_project_memory_assembly_resolution_support.get("xt_source_smoke_evidence_ref")
         or doctor_project_remote_snapshot_cache_support.get("xt_source_smoke_evidence_ref")
         or doctor_heartbeat_governance_support.get("xt_source_smoke_evidence_ref")
+        or doctor_provider_key_selection_support.get("xt_source_smoke_evidence_ref")
+        or doctor_provider_key_route_context_support.get("xt_source_smoke_evidence_ref")
         or doctor_supervisor_memory_policy_support.get("xt_source_smoke_evidence_ref")
         or doctor_supervisor_memory_assembly_resolution_support.get("xt_source_smoke_evidence_ref")
         or doctor_supervisor_remote_snapshot_cache_support.get("xt_source_smoke_evidence_ref")
@@ -1076,6 +1260,8 @@ def main() -> None:
         or doctor_project_memory_assembly_resolution_support.get("all_source_smoke_evidence_ref")
         or doctor_project_remote_snapshot_cache_support.get("all_source_smoke_evidence_ref")
         or doctor_heartbeat_governance_support.get("all_source_smoke_evidence_ref")
+        or doctor_provider_key_selection_support.get("all_source_smoke_evidence_ref")
+        or doctor_provider_key_route_context_support.get("all_source_smoke_evidence_ref")
         or doctor_supervisor_memory_policy_support.get("all_source_smoke_evidence_ref")
         or doctor_supervisor_memory_assembly_resolution_support.get("all_source_smoke_evidence_ref")
         or doctor_supervisor_remote_snapshot_cache_support.get("all_source_smoke_evidence_ref")
@@ -1180,6 +1366,38 @@ def main() -> None:
                 "all_source_smoke_evidence_ref": doctor_heartbeat_governance_support.get("all_source_smoke_evidence_ref"),
             }
             if doctor_source_gate is not None and doctor_heartbeat_governance_support
+            else None
+        ),
+        "provider_key_selection_support": (
+            {
+                "xt_source_smoke_status": doctor_provider_key_selection_support.get("xt_source_smoke_status"),
+                "all_source_smoke_status": doctor_provider_key_selection_support.get("all_source_smoke_status"),
+                "xt_source_provider_key_selection_snapshot": compact_provider_key_selection_snapshot(
+                    doctor_provider_key_selection_support.get("xt_source_provider_key_selection_snapshot")
+                ),
+                "all_source_provider_key_selection_snapshot": compact_provider_key_selection_snapshot(
+                    doctor_provider_key_selection_support.get("all_source_provider_key_selection_snapshot")
+                ),
+                "xt_source_smoke_evidence_ref": doctor_provider_key_selection_support.get("xt_source_smoke_evidence_ref"),
+                "all_source_smoke_evidence_ref": doctor_provider_key_selection_support.get("all_source_smoke_evidence_ref"),
+            }
+            if doctor_source_gate is not None and doctor_provider_key_selection_support
+            else None
+        ),
+        "provider_key_route_context_support": (
+            {
+                "xt_source_smoke_status": doctor_provider_key_route_context_support.get("xt_source_smoke_status"),
+                "all_source_smoke_status": doctor_provider_key_route_context_support.get("all_source_smoke_status"),
+                "xt_source_provider_key_route_context_snapshot": compact_provider_key_route_context_snapshot(
+                    doctor_provider_key_route_context_support.get("xt_source_provider_key_route_context_snapshot")
+                ),
+                "all_source_provider_key_route_context_snapshot": compact_provider_key_route_context_snapshot(
+                    doctor_provider_key_route_context_support.get("all_source_provider_key_route_context_snapshot")
+                ),
+                "xt_source_smoke_evidence_ref": doctor_provider_key_route_context_support.get("xt_source_smoke_evidence_ref"),
+                "all_source_smoke_evidence_ref": doctor_provider_key_route_context_support.get("all_source_smoke_evidence_ref"),
+            }
+            if doctor_source_gate is not None and doctor_provider_key_route_context_support
             else None
         ),
         "supervisor_memory_policy_support": (
@@ -1459,7 +1677,7 @@ def main() -> None:
     gates = {
         "OSS-G0": "PASS" if all(item["ok"] for item in governance_checks) else "FAIL",
         "OSS-G1": "PASS" if scrub_report["pass"] and scrub_report["build_artifacts_committed"] == 0 and scrub_report["runtime_artifacts_committed"] == 0 else "FAIL",
-        "OSS-G2": "PASS" if ("## Quick Start" in readme_text and "bash x-terminal/scripts/ci/xt_release_gate.sh" in readme_text and xt_gate_index.get("release_decision") == "GO") else "FAIL",
+        "OSS-G2": "PASS" if ("## Quick Start" in readme_text and ACTIVE_XT_RELEASE_GATE_COMMAND in readme_text and xt_gate_index.get("release_decision") == "GO") else "FAIL",
         "OSS-G3": "PASS" if (xt_ready_report.get("ok") is True and xt_ready_report.get("require_real_audit_source") is True and xt_ready_source.get("selected_source") != "sample_fixture" and connector_snapshot.get("source_used") == "audit" and connector_snapshot.get("snapshot", {}).get("pass") is True and provenance.get("summary", {}).get("release_stance") == "release_ready") else "FAIL",
         "OSS-G4": "PASS" if (all(item["ok"] for item in community_checks) and all(item["ok"] for item in governance_checks)) else "FAIL",
         "OSS-G5": "PASS" if ("## 6) Rollback" in release_text and xt_rollback_verify.get("status") == "pass" and competitive_rollback.get("rollback_ready") is True and global_pass_lines.get("release_decision") == "GO") else "FAIL",
@@ -1513,7 +1731,7 @@ def main() -> None:
             },
             "reproducibility": {
                 "readme_quick_start_present": "## Quick Start" in readme_text,
-                "smoke_command": "bash x-terminal/scripts/ci/xt_release_gate.sh",
+                "smoke_command": ACTIVE_XT_RELEASE_GATE_COMMAND,
                 "smoke_report_index_ref": "x-terminal/.axcoder/reports/xt-report-index.json",
                 "smoke_release_decision": xt_gate_index.get("release_decision"),
                 "smoke_generated_at": xt_gate_index.get("generated_at"),

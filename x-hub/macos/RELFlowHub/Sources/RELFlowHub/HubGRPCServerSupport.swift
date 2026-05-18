@@ -393,6 +393,13 @@ enum HubLocalRuntimeWatchdog {
 // don't require a Terminal command to start LAN access.
 @MainActor
 final class HubGRPCServerSupport: ObservableObject {
+    private struct BundledServerProcessRecord: Codable {
+        var pid: Int32
+        var nodeExecutablePath: String
+        var serverJSPath: String
+        var recordedAtMs: Int64
+    }
+
     static let shared = HubGRPCServerSupport()
 
     @Published var autoStart: Bool = UserDefaults.standard.bool(forKey: HubGRPCServerSupport.autoStartKey) {
@@ -690,7 +697,58 @@ final class HubGRPCServerSupport: ObservableObject {
             return
         }
 
-        // If the configured port is already occupied, avoid crash-looping the embedded Node server.
+        let base = SharedPaths.ensureHubDirectory()
+        let logURL = base.appendingPathComponent("hub_grpc.log")
+        if !FileManager.default.fileExists(atPath: logURL.path) {
+            FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        }
+
+        do {
+            let h = try FileHandle(forWritingTo: logURL)
+            try h.seekToEnd()
+            logHandle = h
+        } catch {
+            // Non-fatal: still start without file logging.
+            logHandle = nil
+        }
+
+        guard let nodeLaunch = autoDetectNodeLaunch() else {
+            lastError = HubUIStrings.Settings.GRPC.Runtime.missingNode
+            statusText = HubUIStrings.Settings.GRPC.Runtime.statusMissingNode
+            failCount += 1
+            _ = scheduleRetryAfterFailure(now: Date().timeIntervalSince1970)
+            return
+        }
+
+        guard let serverJS = bundledServerJSURL() else {
+            lastError = HubUIStrings.Settings.GRPC.Runtime.missingServerJS
+            statusText = HubUIStrings.Settings.GRPC.Runtime.statusMissingServerJS
+            failCount += 1
+            _ = scheduleRetryAfterFailure(now: Date().timeIntervalSince1970)
+            return
+        }
+
+        // If the configured port is occupied by an older bundled Hub gRPC server process,
+        // terminate it first so the current app instance always starts the current bundle.
+        if Self.isTCPPortInUse(port) {
+            let cleanedRecorded = Self.terminateRecordedBundledServerProcessIfNeeded(
+                baseDir: base,
+                nodeExecutablePath: nodeLaunch.exePath,
+                excluding: [getpid()]
+            )
+            let cleanedScanned = Self.terminateBundledServerProcessesIfNeeded(
+                nodeExecutablePath: nodeLaunch.exePath,
+                serverJSPath: serverJS.path,
+                excluding: [getpid()]
+            )
+            let cleaned = cleanedRecorded + cleanedScanned
+            if cleaned > 0 {
+                appendLogLine("gRPC stale bundled server cleanup count=\(cleaned) port=\(port)")
+                HubDiagnostics.log("hub_grpc.stale_bundled_server_cleanup count=\(cleaned) port=\(port)")
+            }
+        }
+
+        // If the configured port is still occupied, avoid crash-looping the embedded Node server.
         // This happens when another Hub instance (or a different process) is already listening on the same port.
         if Self.isTCPPortInUse(port) {
             // If the FlowHub pairing port is healthy, treat it as an already-running server instance.
@@ -727,37 +785,6 @@ final class HubGRPCServerSupport: ObservableObject {
             return
         }
 
-        let base = SharedPaths.ensureHubDirectory()
-        let logURL = base.appendingPathComponent("hub_grpc.log")
-        if !FileManager.default.fileExists(atPath: logURL.path) {
-            FileManager.default.createFile(atPath: logURL.path, contents: nil)
-        }
-
-        do {
-            let h = try FileHandle(forWritingTo: logURL)
-            try h.seekToEnd()
-            logHandle = h
-        } catch {
-            // Non-fatal: still start without file logging.
-            logHandle = nil
-        }
-
-        guard let nodeLaunch = autoDetectNodeLaunch() else {
-            lastError = HubUIStrings.Settings.GRPC.Runtime.missingNode
-            statusText = HubUIStrings.Settings.GRPC.Runtime.statusMissingNode
-            failCount += 1
-            _ = scheduleRetryAfterFailure(now: Date().timeIntervalSince1970)
-            return
-        }
-
-        guard let serverJS = bundledServerJSURL() else {
-            lastError = HubUIStrings.Settings.GRPC.Runtime.missingServerJS
-            statusText = HubUIStrings.Settings.GRPC.Runtime.statusMissingServerJS
-            failCount += 1
-            _ = scheduleRetryAfterFailure(now: Date().timeIntervalSince1970)
-            return
-        }
-
         // Ensure tokens exist (stable across restarts so other machines stay connected).
         let clientToken = HubGRPCTokens.getOrCreateClientToken()
         let adminToken = HubGRPCTokens.getOrCreateAdminToken()
@@ -775,9 +802,6 @@ final class HubGRPCServerSupport: ObservableObject {
         p.currentDirectoryURL = serverJS.deletingLastPathComponent().deletingLastPathComponent()
 
         var env = RustHubRuntimeSupport.nodeSidecarBaseEnvironment(ProcessInfo.processInfo.environment)
-        for (key, value) in RustHubRuntimeSupport.nodeSidecarEnvironmentAdditions(baseEnvironment: env) {
-            env[key] = value
-        }
         env["HUB_HOST"] = "0.0.0.0"
         env["HUB_PORT"] = String(port)
         env["HUB_DB_PATH"] = dbURL.path
@@ -798,6 +822,9 @@ final class HubGRPCServerSupport: ObservableObject {
         // not be writable). EmbeddedBridgeRunner uses the same base dir choice.
         env["HUB_BRIDGE_BASE_DIR"] = base.path
         env["HUB_AI_AUTO_LOAD"] = "1"
+        for (key, value) in RustHubRuntimeSupport.nodeSidecarEnvironmentAdditions(baseEnvironment: env) {
+            env[key] = value
+        }
         // X-Terminal/Supervisor should not silently downgrade paid remote requests to a local model.
         // If the remote export gate blocks egress, fail closed and surface the deny code instead.
         if (env["HUB_REMOTE_EXPORT_ON_BLOCK"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -851,6 +878,7 @@ final class HubGRPCServerSupport: ObservableObject {
         p.terminationHandler = { [weak self] proc in
             Task { @MainActor in
                 guard let self else { return }
+                Self.removeBundledServerProcessRecord(baseDir: base, pid: proc.processIdentifier)
 
                 // Avoid clobbering a newer process if we restarted quickly.
                 if let cur = self.proc, cur !== proc {
@@ -908,6 +936,12 @@ final class HubGRPCServerSupport: ObservableObject {
         do {
             try p.run()
             proc = p
+            Self.saveBundledServerProcessRecord(
+                baseDir: base,
+                pid: p.processIdentifier,
+                nodeExecutablePath: nodeLaunch.exePath,
+                serverJSPath: serverJS.path
+            )
             lastProcessLaunchAt = Date().timeIntervalSince1970
             resetLocalRuntimeHealth(clearLaunchAt: false)
             refresh()
@@ -1991,6 +2025,190 @@ HUB_CLIENT_TOKEN='\(tok)'
 
     private func waitForProcessExit(_ p: Process, timeoutSec: Double) -> Bool {
         ProcessWaitSupport.waitForExit(p, timeoutSec: timeoutSec)
+    }
+
+    private static func bundledServerProcessRecordURL(baseDir: URL) -> URL {
+        baseDir.appendingPathComponent("hub_grpc_process.json")
+    }
+
+    private static func loadBundledServerProcessRecord(baseDir: URL) -> BundledServerProcessRecord? {
+        let url = bundledServerProcessRecordURL(baseDir: baseDir)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(BundledServerProcessRecord.self, from: data)
+    }
+
+    private static func saveBundledServerProcessRecord(
+        baseDir: URL,
+        pid: pid_t,
+        nodeExecutablePath: String,
+        serverJSPath: String
+    ) {
+        guard pid > 0 else { return }
+        let record = BundledServerProcessRecord(
+            pid: Int32(pid),
+            nodeExecutablePath: nodeExecutablePath,
+            serverJSPath: serverJSPath,
+            recordedAtMs: Int64(Date().timeIntervalSince1970 * 1000.0)
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(record),
+              let text = String(data: data, encoding: .utf8),
+              let out = (text + "\n").data(using: .utf8) else {
+            return
+        }
+        let url = bundledServerProcessRecordURL(baseDir: baseDir)
+        try? out.write(to: url, options: .atomic)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    private static func removeBundledServerProcessRecord(baseDir: URL, pid: pid_t? = nil) {
+        let url = bundledServerProcessRecordURL(baseDir: baseDir)
+        guard let expectedPID = pid else {
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
+
+        if let existing = loadBundledServerProcessRecord(baseDir: baseDir),
+           existing.pid != Int32(expectedPID) {
+            return
+        }
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    static func bundledServerProcessPIDs(
+        processListOutput: String,
+        nodeExecutablePath: String,
+        serverJSPath: String,
+        excluding excludedPIDs: Set<pid_t> = []
+    ) -> [pid_t] {
+        let expectedNodePath = nodeExecutablePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let expectedServerPath = serverJSPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !expectedNodePath.isEmpty, !expectedServerPath.isEmpty else { return [] }
+
+        var pids: [pid_t] = []
+        for rawLine in processListOutput.split(whereSeparator: \.isNewline) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+
+            let parts = line.split(maxSplits: 1, whereSeparator: \.isWhitespace)
+            guard parts.count == 2, let pid = pid_t(parts[0]), !excludedPIDs.contains(pid) else {
+                continue
+            }
+
+            let command = String(parts[1])
+            guard command.contains(expectedNodePath), command.contains(expectedServerPath) else {
+                continue
+            }
+            pids.append(pid)
+        }
+
+        return pids
+    }
+
+    private static func terminateBundledServerProcessesIfNeeded(
+        nodeExecutablePath: String,
+        serverJSPath: String,
+        excluding excludedPIDs: Set<pid_t> = []
+    ) -> Int {
+        let candidates = bundledServerProcessPIDs(
+            processListOutput: processListOutput(),
+            nodeExecutablePath: nodeExecutablePath,
+            serverJSPath: serverJSPath,
+            excluding: excludedPIDs
+        )
+        guard !candidates.isEmpty else { return 0 }
+
+        for pid in candidates {
+            _ = kill(pid, SIGTERM)
+        }
+
+        let deadline = Date().addingTimeInterval(1.2)
+        while Date() < deadline {
+            let survivors = candidates.filter { processExists($0) }
+            if survivors.isEmpty {
+                return candidates.count
+            }
+            usleep(100_000)
+        }
+
+        for pid in candidates where processExists(pid) {
+            _ = kill(pid, SIGKILL)
+        }
+
+        return candidates.count
+    }
+
+    private static func terminateRecordedBundledServerProcessIfNeeded(
+        baseDir: URL,
+        nodeExecutablePath: String,
+        excluding excludedPIDs: Set<pid_t> = []
+    ) -> Int {
+        guard let record = loadBundledServerProcessRecord(baseDir: baseDir) else {
+            return 0
+        }
+
+        let pid = pid_t(record.pid)
+        guard pid > 0, !excludedPIDs.contains(pid) else {
+            removeBundledServerProcessRecord(baseDir: baseDir)
+            return 0
+        }
+        guard processExists(pid) else {
+            removeBundledServerProcessRecord(baseDir: baseDir)
+            return 0
+        }
+
+        let expectedNodePath = nodeExecutablePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let recordedNodePath = record.nodeExecutablePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !expectedNodePath.isEmpty, recordedNodePath == expectedNodePath else {
+            removeBundledServerProcessRecord(baseDir: baseDir)
+            return 0
+        }
+
+        _ = kill(pid, SIGTERM)
+        let deadline = Date().addingTimeInterval(1.2)
+        while Date() < deadline {
+            if !processExists(pid) {
+                removeBundledServerProcessRecord(baseDir: baseDir, pid: pid)
+                return 1
+            }
+            usleep(100_000)
+        }
+
+        if processExists(pid) {
+            _ = kill(pid, SIGKILL)
+        }
+        removeBundledServerProcessRecord(baseDir: baseDir, pid: pid)
+        return 1
+    }
+
+    private static func processListOutput() -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["ax", "-o", "pid=,command="]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+        } catch {
+            HubDiagnostics.log("hub_grpc.process_list_failed error=\(error.localizedDescription)")
+            return ""
+        }
+
+        process.waitUntilExit()
+        let data = (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+
+    private static func processExists(_ pid: pid_t) -> Bool {
+        guard pid > 0 else { return false }
+        if kill(pid, 0) == 0 {
+            return true
+        }
+        return errno == EPERM
     }
 
     private static func pairingPort(grpcPort: Int) -> Int {

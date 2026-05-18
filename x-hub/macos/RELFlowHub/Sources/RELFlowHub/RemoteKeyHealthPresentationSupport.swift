@@ -8,6 +8,15 @@ struct RemoteKeyHealthPresentation {
     let tint: Color
 }
 
+struct RemoteKeySlotHealthPresentation: Identifiable {
+    let keyReference: String
+    let badgeText: String
+    let detailText: String
+    let tint: Color
+
+    var id: String { keyReference }
+}
+
 enum RemoteKeyHealthPresentationSupport {
     static func presentation(
         health: RemoteKeyHealthRecord?,
@@ -42,6 +51,47 @@ enum RemoteKeyHealthPresentationSupport {
         }
 
         return nil
+    }
+
+    static func slotPresentations(
+        models: [RemoteModelEntry],
+        healthSnapshot: RemoteKeyHealthSnapshot,
+        isScanning: (String) -> Bool
+    ) -> [RemoteKeySlotHealthPresentation] {
+        var orderedKeys: [String] = []
+        var seen: Set<String> = []
+        for model in models {
+            let keyReference = RemoteModelStorage.keyReference(for: model)
+            guard !keyReference.isEmpty, seen.insert(keyReference).inserted else { continue }
+            orderedKeys.append(keyReference)
+        }
+
+        return orderedKeys.map { keyReference in
+            if isScanning(keyReference) {
+                return RemoteKeySlotHealthPresentation(
+                    keyReference: keyReference,
+                    badgeText: HubUIStrings.Settings.RemoteModels.healthCheckingBadge,
+                    detailText: "正在检测这把 key。",
+                    tint: .secondary
+                )
+            }
+
+            guard let health = healthSnapshot.records.first(where: { $0.keyReference == keyReference }) else {
+                return RemoteKeySlotHealthPresentation(
+                    keyReference: keyReference,
+                    badgeText: HubUIStrings.Settings.RemoteModels.healthStaleBadge,
+                    detailText: "这把 key 还没有检测结果。",
+                    tint: .secondary
+                )
+            }
+
+            return RemoteKeySlotHealthPresentation(
+                keyReference: keyReference,
+                badgeText: badgeText(for: health.state),
+                detailText: slotDetailText(for: health),
+                tint: tint(for: health.state)
+            )
+        }
     }
 
     private static func badgeText(for state: RemoteKeyHealthState) -> String {
@@ -90,12 +140,39 @@ enum RemoteKeyHealthPresentationSupport {
         if !detail.isEmpty {
             parts.append(detail)
         }
+        if health.state != .healthy,
+           let retryAtText = health.retryAtText?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !retryAtText.isEmpty {
+            parts.append("预计下次可用：\(retryAtText)")
+        }
         parts.append(recommendationDetail(for: health))
         if health.state == .healthy, let lastSuccessAt = timestampText(health.lastSuccessAt) {
             parts.append(HubUIStrings.Settings.RemoteModels.healthLastSuccess(lastSuccessAt))
         } else if let lastCheckedAt = timestampText(health.lastCheckedAt) {
             parts.append(HubUIStrings.Settings.RemoteModels.healthLastChecked(lastCheckedAt))
         }
+        return HubUIStrings.Settings.RemoteModels.detailSummary(parts)
+    }
+
+    private static func slotDetailText(for health: RemoteKeyHealthRecord) -> String {
+        var parts: [String] = []
+        let detail = health.detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !detail.isEmpty {
+            parts.append(detail)
+        }
+
+        switch health.state {
+        case .healthy:
+            parts.append("当前可用")
+        default:
+            if let retryAtText = health.retryAtText?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !retryAtText.isEmpty {
+                parts.append("预计下次可用：\(retryAtText)")
+            } else {
+                parts.append("预计下次可用：未知")
+            }
+        }
+
         return HubUIStrings.Settings.RemoteModels.detailSummary(parts)
     }
 

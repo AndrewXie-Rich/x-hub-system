@@ -992,7 +992,7 @@ struct HubPairingCoordinatorTests {
     @Test
     func authoritativeFormalBootstrapSkipsDiscoveryWhenStableNamedHostAndInviteTokenExist() {
         let skipped = HubPairingCoordinator.shouldSkipDiscoveryForAuthoritativeBootstrapForTesting(
-            configuredInternetHost: "hub.xhubsystem.com",
+            configuredInternetHost: "hub.example.com",
             inviteToken: "axhub_invite_test_123",
             hasAuthoritativeLocalProfile: false
         )
@@ -1011,14 +1011,14 @@ struct HubPairingCoordinatorTests {
         )
         #expect(
             HubPairingCoordinator.shouldSkipDiscoveryForAuthoritativeBootstrapForTesting(
-                configuredInternetHost: "hub.xhubsystem.com",
+                configuredInternetHost: "hub.example.com",
                 inviteToken: "",
                 hasAuthoritativeLocalProfile: false
             ) == false
         )
         #expect(
             HubPairingCoordinator.shouldSkipDiscoveryForAuthoritativeBootstrapForTesting(
-                configuredInternetHost: "hub.xhubsystem.com",
+                configuredInternetHost: "hub.example.com",
                 inviteToken: "axhub_invite_test_123",
                 hasAuthoritativeLocalProfile: true
             ) == false

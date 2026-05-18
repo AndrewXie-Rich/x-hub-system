@@ -51,6 +51,37 @@ final class HubRemoteAccessHealthSummaryBuilderTests: XCTestCase {
         XCTAssertEqual(summary.operatorHintText, HubUIStrings.Settings.GRPC.RemoteHealth.hintRawIP)
     }
 
+    func testBuildTreatsTailscaleIPAsFormalRemoteHost() {
+        let summary = HubRemoteAccessHealthSummaryBuilder.build(
+            autoStartEnabled: true,
+            serverRunning: true,
+            externalHost: "100.96.10.8",
+            hasInviteToken: true,
+            keepSystemAwakeWhileServing: true
+        )
+
+        XCTAssertEqual(summary.state, .ready)
+        XCTAssertEqual(summary.badgeText, HubUIStrings.Settings.GRPC.RemoteHealth.badgeReady)
+        XCTAssertTrue(summary.detail.contains("100.96.10.8"))
+        XCTAssertEqual(summary.accessScopeText, HubUIStrings.Settings.GRPC.RemoteHealth.scopeRemoteReady)
+        XCTAssertEqual(summary.operatorHintText, HubUIStrings.Settings.GRPC.RemoteHealth.hintReady)
+    }
+
+    func testBuildTreatsAllowedPrivateVPNIPAsFormalRemoteHost() {
+        let summary = HubRemoteAccessHealthSummaryBuilder.build(
+            autoStartEnabled: true,
+            serverRunning: true,
+            externalHost: "10.7.0.12",
+            hasInviteToken: true,
+            keepSystemAwakeWhileServing: true,
+            allowPrivateVPNIP: true
+        )
+
+        XCTAssertEqual(summary.state, .ready)
+        XCTAssertTrue(summary.detail.contains("10.7.0.12"))
+        XCTAssertEqual(summary.accessScopeText, HubUIStrings.Settings.GRPC.RemoteHealth.scopeRemoteReady)
+    }
+
     func testBuildReturnsNeedsTokenSummaryForStableHostWithoutInviteToken() {
         let summary = HubRemoteAccessHealthSummaryBuilder.build(
             autoStartEnabled: true,

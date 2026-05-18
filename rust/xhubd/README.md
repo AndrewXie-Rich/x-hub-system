@@ -90,6 +90,12 @@ Current slice:
   `skills policy-events`, `skills policy-events-prune`,
   `skills policy-readiness`, `skills preflight`, `skills audit`, and
   `skills audit-prune` policy-gate CLI.
+- `xhubd skills preflight` emits Hub-authoritative XT-local skill
+  preauthorization metadata: resolved pinned low/medium-risk skills with all
+  required capability grants and no manifest `requires_grant` flag receive a
+  short TTL `xhub.skills.preauthorized_lease.v1`; unpinned, missing-grant,
+  high-risk, revoked, blocked, or grant-required skills stay pending/denied and
+  cannot become XT-local durable authority.
 - `xhubd serve` HTTP endpoints for Rust model inventory, compare reports, and
   readiness gates.
 - `xhubd serve` HTTP `GET/POST /model/route` for read-only model route
@@ -664,6 +670,8 @@ rollback commands without executing them.
 Domain / tunnel profile:
 
 ```bash
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/cross_network_remote_route_gate.command" --public-base-url https://hub.your-domain.com
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/cross_network_remote_route_doctor.command" --public-base-url https://hub.your-domain.com --no-network
 bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/cross_network_domain_activation_plan.command" --public-base-url https://hub.your-domain.com --access-key-file secrets/xhubd_domain_access_key --require-memory-skills-production
 bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/xhubd_daemon.command" access-key-init --profile domain --public-base-url https://hub.example.com --public-endpoint
 bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/cross_network_readiness_gate.command" --profile domain --public-base-url https://hub.example.com --public-endpoint
@@ -675,41 +683,39 @@ Use the domain profile for Cloudflare Tunnel, Tailscale, Headscale, or a VPS
 reverse tunnel. The daemon may still bind `127.0.0.1`, but
 `--public-endpoint` forces HTTP access-key auth and lets `/ready` report
 cross-network readiness once the public URL and key file are configured.
+`cross_network_remote_route_gate.command` validates the remote entry semantics
+before activation: stable HTTPS DNS and tailnet DNS pass; loopback, LAN-only
+names, link-local hosts, and raw public IPs are blocked; raw VPN/tailnet/private
+IPs require `--allow-vpn-raw-host` so they are not misrepresented as a domain.
+`cross_network_remote_route_doctor.command` adds read-only diagnostics on top of
+that gate: DNS A/AAAA visibility, local tailnet interface presence, public
+`/health`, unauthenticated `/ready`, and optional authenticated `/ready` when an
+access-key file is supplied. Use `--no-network` for planning evidence before the
+tunnel is live; use `--require-live-http --require-auth-ready` after the public
+endpoint is supposed to work.
 `cross_network_domain_activation_plan.command` is the safest starting point for
-the real cutover: it rejects placeholder domains, prints the exact access-key,
-launchd, watchdog, pairing, smoke, and rollback commands, and does not mutate
-state by itself.
+the real cutover: it embeds the remote-route gate, rejects placeholder or unsafe
+remote entries, prints the exact access-key, launchd, watchdog, pairing, smoke,
+and rollback commands, and does not mutate state by itself.
 `cross_network_pairing_export.command` writes a `0600` XT pairing bundle that
 contains the access key; the command output never prints the key. The domain
 smoke must reject unauthenticated `/ready` and pass authenticated `/ready`
 before XT should use the domain outside the first LAN setup.
 
-XT Hub capability contract:
+Swift-shell remote entry authority:
 
 ```bash
-bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" xt contract
-curl -fsS http://127.0.0.1:50151/xt/hub-contract
-bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/xt_hub_contract_smoke.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" network remote-entry-candidates
+curl -fsS "http://127.0.0.1:50151/network/remote-entry-candidates"
 ```
 
-`GET /xt/hub-contract` returns `xhub.rust_hub.xt_contract.v1`, the
-machine-readable contract XT and XT-updating agents should read before adding
-memory, skills, model-route, provider-route, grant, or remote-entry behavior.
-It lists each Hub-owned capability, the authority path, endpoints, XT role,
-cache policy, and fail-closed fallback policy. The contract makes the current
-boundary explicit: XT may cache projections for speed, but Hub remains the
-source of truth for memory, route decisions, policy, grants, and audit refs.
-
-The skills entry in this contract intentionally uses a lease model:
-Hub owns catalog/pin/grant/preflight/revocation/audit, while XT or a sandbox
-runner executes skill code only after `/skills/preflight` returns an allowed,
-fresh decision for the requested scope and capabilities. Third-party skill code
-must not run inside the Hub trust root by default. `/skills/execute` exists for
-guarded/opt-in runner authority only and stays fail-closed unless all production
-execution flags are explicitly enabled.
-The live smoke starts a temporary daemon and verifies `/xt/hub-contract`,
-`/xt/contract`, and `/contract/xt` all preserve the same memory, skills,
-grant, audit, provider-route, and no-domain remote-entry boundaries.
+`network remote-entry-candidates` and `/network/remote-entry-candidates` emit
+`xhub.rust_hub.remote_entry_candidates.v1`. This is the Rust-core decision that
+the Swift Hub settings shell should present: stable HTTPS domain/tunnel first,
+then no-domain private-network entries such as MagicDNS, Tailscale/Headscale
+`100.64.0.0/10`, WireGuard, or ZeroTier-style tunnel addresses. Normal LAN
+addresses, loopback, wildcard binds, `.local` names, and raw public IPs are not
+presented as stable remote entries.
 
 Memory retrieval shadow path:
 
@@ -1390,16 +1396,16 @@ initialize the key, update the existing local daemon label into public-endpoint
 mode, install the watchdog, export the XT pairing bundle, smoke the public URL,
 and roll back to local mode.
 
-`RHM-136` makes Rust Hub the authority for Swift shell remote-entry selection.
-`network remote-entry-candidates` and `GET /network/remote-entry-candidates`
-emit `xhub.rust_hub.remote_entry_candidates.v1`: stable HTTPS domain/tunnel
-first, then no-domain private-network candidates such as MagicDNS,
-Tailscale/Headscale `100.64.0.0/10`, WireGuard, or ZeroTier-style tunnel
-addresses. Normal LAN addresses, loopback, wildcard binds, `.local` names, and
-raw public IPs are not presented as stable remote entries.
-`RHM-137` adds `xhubd xt contract` and `GET /xt/hub-contract` as the
-machine-readable Hub capability registry XT and XT-updating agents must read
-before changing Hub-facing behavior.
+`RHM-132` adds a cross-network remote route semantics gate and wires it into the
+domain activation plan. Stable HTTPS DNS and tailnet DNS are accepted, raw
+VPN/tailnet/private IPs require an explicit allowance, and raw public IP,
+loopback, LAN-only, link-local, and wildcard entries are blocked before the
+daemon or XT pairing bundle can be activated as remote-ready.
+
+`RHM-133` adds the cross-network remote route doctor. It reuses the route gate
+and adds non-mutating DNS, tailnet, public `/health`, unauthorized `/ready`, and
+optional authenticated `/ready` diagnostics, with planning-safe `--no-network`
+mode and strict post-activation `--require-live-http --require-auth-ready` mode.
 
 Bridge command details: `docs/SCHEDULER_BRIDGE_CLI.md`.
 Provider route command details: `docs/PROVIDER_ROUTE_CLI.md`.

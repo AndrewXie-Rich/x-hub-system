@@ -54,6 +54,7 @@ enum LocalModelImportDetector {
         }
 
         let lowerFolderName = directory.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let hasMLXPathSignal = directoryPathContainsMLXSignal(directory)
         let fileNames = lowercasedDirectoryEntries(at: directory)
 
         if hasGGUFModelSignal(fileNames) {
@@ -72,14 +73,17 @@ enum LocalModelImportDetector {
             )
         }
 
-        if lowerFolderName.contains("mlx"),
+        if hasMLXPathSignal,
            (fileNames.contains("model.safetensors.index.json")
+                || fileNames.contains("model.safetensors")
                 || fileNames.contains("consolidated.safetensors.index.json")
                 || fileNames.contains("weights.npz")
                 || fileNames.contains("params.json")) {
             return LocalModelImportBackendDetection(
                 backend: "mlx",
-                sourceSummary: "backend mlx folder heuristic"
+                sourceSummary: lowerFolderName.contains("mlx")
+                    ? "backend mlx folder heuristic"
+                    : "backend mlx path heuristic"
             )
         }
 
@@ -92,10 +96,12 @@ enum LocalModelImportDetector {
             )
         }
 
-        if lowerFolderName.contains("mlx") {
+        if hasMLXPathSignal {
             return LocalModelImportBackendDetection(
                 backend: "mlx",
-                sourceSummary: "backend name heuristic"
+                sourceSummary: lowerFolderName.contains("mlx")
+                    ? "backend name heuristic"
+                    : "backend path heuristic"
             )
         }
 
@@ -145,6 +151,9 @@ enum LocalModelImportDetector {
 
         switch normalizedBackend {
         case "mlx":
+            if let inferred = inferMLXCapabilities(for: directory, config: config) {
+                return inferred
+            }
             let modelFormat = LocalModelCapabilityDefaults.defaultModelFormat(forBackend: normalizedBackend)
             let taskKinds = LocalModelCapabilityDefaults.defaultTaskKinds(forBackend: normalizedBackend)
             return LocalModelImportCapabilityDetection(
@@ -241,6 +250,22 @@ enum LocalModelImportDetector {
             return true
         }
         return false
+    }
+
+    private static func directoryPathContainsMLXSignal(_ directory: URL) -> Bool {
+        let components = directory.standardizedFileURL.pathComponents.map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
+        return components.contains { component in
+            guard !component.isEmpty else { return false }
+            return component == "mlx"
+                || component == "mlx-community"
+                || component.hasPrefix("mlx-")
+                || component.hasSuffix("-mlx")
+                || component.contains("-mlx-")
+                || component.contains("_mlx")
+                || component.contains("mlx_")
+        }
     }
 
     private static func hasExplicitTransformersMultimodalSignal(_ config: [String: Any]?) -> Bool {
@@ -385,6 +410,84 @@ enum LocalModelImportDetector {
                     featureExtractorRequired: false
                 ),
                 sourceSummary: "inferred: config/embedding"
+            )
+        }
+
+        return nil
+    }
+
+    private static func inferMLXCapabilities(
+        for directory: URL,
+        config: [String: Any]?
+    ) -> LocalModelImportCapabilityDetection? {
+        let folderName = directory.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+        let architectures = stringList(config?["architectures"]).joined(separator: " ").lowercased()
+        let modelType = stringValue(config?["model_type"]).lowercased()
+        let textConfig = config?["text_config"] as? [String: Any]
+        let visionConfig = config?["vision_config"] as? [String: Any]
+        let textModelType = stringValue(textConfig?["model_type"]).lowercased()
+        let visionModelType = stringValue(visionConfig?["model_type"]).lowercased()
+        let nameSignal = folderName.lowercased()
+        let haystack = [
+            architectures,
+            modelType,
+            textModelType,
+            visionModelType,
+            nameSignal,
+        ]
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        let modelFormat = LocalModelCapabilityDefaults.defaultModelFormat(forBackend: "mlx")
+
+        if hasExplicitTransformersMultimodalSignal(config)
+            || containsAny(haystack, keywords: [
+                "glm4v",
+                "glm-4.6v",
+                "glm_ocr",
+                "qwen2_vl",
+                "qwen2-vl",
+                "qwen3_vl",
+                "qwen3_vl_moe",
+                "qwen3-vl",
+                "qwen3vl",
+                "llava",
+                "pixtral",
+                "florence",
+                "minicpm-v",
+                "minicpm_v",
+                "paligemma",
+                "idefics",
+                "aya_vision",
+                "molmo",
+                "vision",
+                "ocr",
+            ]) {
+            return LocalModelImportCapabilityDetection(
+                modelFormat: modelFormat,
+                taskKinds: ["vision_understand", "ocr"],
+                inputModalities: ["image"],
+                outputModalities: ["text", "spans"],
+                processorRequirements: ModelProcessorRequirements(
+                    tokenizerRequired: true,
+                    processorRequired: true,
+                    featureExtractorRequired: true
+                ),
+                sourceSummary: "inferred: mlx/vision"
+            )
+        }
+
+        if containsAny(haystack, keywords: ["bge", "gte", "jina", "embed", "embedding"]) {
+            return LocalModelImportCapabilityDetection(
+                modelFormat: modelFormat,
+                taskKinds: ["embedding"],
+                inputModalities: ["text"],
+                outputModalities: ["embedding"],
+                processorRequirements: ModelProcessorRequirements(
+                    tokenizerRequired: true,
+                    processorRequired: false,
+                    featureExtractorRequired: false
+                ),
+                sourceSummary: "inferred: mlx/embedding"
             )
         }
 

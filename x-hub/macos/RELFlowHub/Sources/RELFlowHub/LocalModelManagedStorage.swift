@@ -70,18 +70,29 @@ enum LocalModelManagedStorage {
         }
 
         let sourceURL = URL(fileURLWithPath: trimmedPath)
-        guard fileManager.fileExists(atPath: sourceURL.path) else {
-            throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: sourceURL.path])
-        }
-
-        try fileManager.createDirectory(
-            at: destination.deletingLastPathComponent(),
-            withIntermediateDirectories: true
+        LocalModelAccessBookmarkStore.persistBookmarkIfPossible(
+            for: sourceURL,
+            baseDir: baseDir,
+            fileManager: fileManager
         )
-        if fileManager.fileExists(atPath: destination.path) {
-            try fileManager.removeItem(at: destination)
+        try LocalModelAccessBookmarkStore.withScopedAccess(
+            to: sourceURL,
+            baseDir: baseDir,
+            fileManager: fileManager
+        ) {
+            guard fileManager.fileExists(atPath: sourceURL.path) else {
+                throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: sourceURL.path])
+            }
+
+            try fileManager.createDirectory(
+                at: destination.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            if fileManager.fileExists(atPath: destination.path) {
+                try fileManager.removeItem(at: destination)
+            }
+            try fileManager.copyItem(at: sourceURL, to: destination)
         }
-        try fileManager.copyItem(at: sourceURL, to: destination)
 
         updated.modelPath = destination.path
         updated.note = managedNote

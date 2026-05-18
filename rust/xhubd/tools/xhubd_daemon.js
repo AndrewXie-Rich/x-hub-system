@@ -127,6 +127,23 @@ function readJsonFile(filePath) {
   }
 }
 
+function readLaunchdEnvironmentVariables(plistPath) {
+  const resolved = safeString(plistPath) ? path.resolve(plistPath) : '';
+  if (process.platform !== 'darwin' || !resolved || !fs.existsSync(resolved)) return {};
+  try {
+    const result = spawnSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', resolved], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    if (result.status !== 0) return {};
+    const parsed = JSON.parse(result.stdout || '{}');
+    const env = parsed?.EnvironmentVariables;
+    return env && typeof env === 'object' && !Array.isArray(env) ? env : {};
+  } catch {
+    return {};
+  }
+}
+
 function resolveProfileFile(args = {}, env = process.env) {
   const explicit = safeString(args['profile-file'] || env.XHUB_RUST_DAEMON_PROFILE_FILE);
   if (explicit) return path.resolve(explicit);
@@ -142,6 +159,15 @@ function firstValue(values) {
     if (value !== undefined && value !== null && safeString(value) !== '') return value;
   }
   return undefined;
+}
+
+function firstValueWithSource(entries) {
+  for (const [source, value] of entries) {
+    if (value !== undefined && value !== null && safeString(value) !== '') {
+      return { source, value };
+    }
+  }
+  return { source: '', value: undefined };
 }
 
 function resolveConfig(args = {}, env = process.env) {
@@ -182,19 +208,46 @@ function resolveConfig(args = {}, env = process.env) {
   const runtimeBaseDir = path.resolve(pathFromRoot(firstValue([args['runtime-base-dir'], env.HUB_RUNTIME_BASE_DIR, profileConfig.runtime_base_dir, profileConfig.runtimeBaseDir])) || path.join(ROOT_DIR, 'runtime'));
   const memoryDir = path.resolve(pathFromRoot(firstValue([args['memory-dir'], env.XHUB_RUST_MEMORY_DIR, profileConfig.memory_dir, profileConfig.memoryDir])) || path.join(ROOT_DIR, 'data', 'memory'));
   const skillsDir = path.resolve(pathFromRoot(firstValue([args['skills-dir'], env.XHUB_RUST_SKILLS_DIR, profileConfig.skills_dir, profileConfig.skillsDir])) || path.join(ROOT_DIR, 'skills'));
-  const accessKeyFileRaw = firstValue([
-    args['access-key-file'],
-    env.XHUB_RUST_HTTP_ACCESS_KEY_FILE,
-    env.XHUB_RUST_HUB_ACCESS_KEY_FILE,
-    profileConfig.access_key_file,
-    profileConfig.accessKeyFile,
+  const launchdLabelForEnv = safeString(firstValue([
+    args['launchd-label'],
+    env.XHUB_RUST_LAUNCHD_LABEL,
+    profileConfig.launchd_label,
+    profileConfig.launchdLabel,
+  ])) || `com.ax.xhubd.${profile}`;
+  const launchdInstallPlistPathForEnv = path.resolve(
+    pathFromRoot(firstValue([
+      args['install-plist-path'],
+      env.XHUB_RUST_LAUNCHD_INSTALL_PLIST_PATH,
+      profileConfig.launchd_install_plist_path,
+      profileConfig.launchdInstallPlistPath,
+    ])) || path.join(os.homedir(), 'Library', 'LaunchAgents', `${launchdLabelForEnv}.plist`)
+  );
+  const launchdEnv = readLaunchdEnvironmentVariables(launchdInstallPlistPathForEnv);
+  const defaultLaunchdRuntimeRoot = path.join(os.homedir(), 'Library', 'Application Support', 'AX', 'rust-hub', profile);
+  const launchdRuntimeRoot = path.resolve(pathFromRoot(firstValue([
+    args['launchd-runtime-root'],
+    env.XHUB_RUST_LAUNCHD_RUNTIME_ROOT,
+    profileConfig.launchd_runtime_root,
+    profileConfig.launchdRuntimeRoot,
+  ])) || defaultLaunchdRuntimeRoot);
+  const accessKeyCandidate = firstValueWithSource([
+    ['args', args['access-key-file']],
+    ['env:XHUB_RUST_HTTP_ACCESS_KEY_FILE', env.XHUB_RUST_HTTP_ACCESS_KEY_FILE],
+    ['env:XHUB_RUST_HUB_ACCESS_KEY_FILE', env.XHUB_RUST_HUB_ACCESS_KEY_FILE],
+    ['launchd:XHUB_RUST_HTTP_ACCESS_KEY_FILE', launchdEnv.XHUB_RUST_HTTP_ACCESS_KEY_FILE],
+    ['launchd:XHUB_RUST_HUB_ACCESS_KEY_FILE', launchdEnv.XHUB_RUST_HUB_ACCESS_KEY_FILE],
+    ['profile:access_key_file', profileConfig.access_key_file],
+    ['profile:accessKeyFile', profileConfig.accessKeyFile],
   ]);
+  const accessKeyFileRaw = accessKeyCandidate.value;
   const accessKeyFile = safeString(accessKeyFileRaw)
     ? path.resolve(pathFromRoot(accessKeyFileRaw))
     : '';
+  const accessKeyFileSource = accessKeyCandidate.source;
   const httpRequireAccessKey = publicEndpoint || parseBool(firstValue([
     args['require-access-key'],
     env.XHUB_RUST_HTTP_REQUIRE_ACCESS_KEY,
+    launchdEnv.XHUB_RUST_HTTP_REQUIRE_ACCESS_KEY,
     profileConfig.http_require_access_key,
     profileConfig.httpRequireAccessKey,
   ]), false);
@@ -220,13 +273,6 @@ function resolveConfig(args = {}, env = process.env) {
     pathFromRoot(launchdInstallPlistPathRaw)
       || path.join(os.homedir(), 'Library', 'LaunchAgents', `${launchdLabel}.plist`)
   );
-  const defaultLaunchdRuntimeRoot = path.join(os.homedir(), 'Library', 'Application Support', 'AX', 'rust-hub', profile);
-  const launchdRuntimeRoot = path.resolve(pathFromRoot(firstValue([
-    args['launchd-runtime-root'],
-    env.XHUB_RUST_LAUNCHD_RUNTIME_ROOT,
-    profileConfig.launchd_runtime_root,
-    profileConfig.launchdRuntimeRoot,
-  ])) || defaultLaunchdRuntimeRoot);
   const defaultBinarySource = fs.existsSync(path.join(ROOT_DIR, 'target', 'release', 'xhubd'))
     ? path.join(ROOT_DIR, 'target', 'release', 'xhubd')
     : path.join(ROOT_DIR, 'target', 'debug', 'xhubd');
@@ -317,6 +363,7 @@ function resolveConfig(args = {}, env = process.env) {
     memoryDir,
     skillsDir,
     accessKeyFile,
+    accessKeyFileSource,
     httpRequireAccessKey,
     runner,
     waitMs,
@@ -383,6 +430,36 @@ function collectAccessKeyFileState(config) {
   return out;
 }
 
+function pathEqualOrInside(child, parent) {
+  const childPath = safeString(child) ? path.resolve(child) : '';
+  const parentPath = safeString(parent) ? path.resolve(parent) : '';
+  if (!childPath || !parentPath) return false;
+  const relative = path.relative(parentPath, childPath);
+  return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function defaultAccessKeyFileName(profile) {
+  const normalized = safeString(profile) || 'local';
+  if (normalized === 'domain') return 'xhubd_domain_access_key';
+  if (normalized === 'lan') return 'xhubd_lan_access_key';
+  return 'xhubd_http_access_key';
+}
+
+function launchdRuntimeAccessKeyFile(config, runtimeRoot) {
+  const current = safeString(config.accessKeyFile);
+  const basename = current ? path.basename(current) : defaultAccessKeyFileName(config.profile);
+  return path.join(runtimeRoot, 'config', basename || defaultAccessKeyFileName(config.profile));
+}
+
+function shouldUseLaunchdRuntimeAccessKeyFile(config, runtimeRoot) {
+  const current = safeString(config.accessKeyFile);
+  if (!current) return config.httpRequireAccessKey === true;
+  if (pathEqualOrInside(current, runtimeRoot)) return false;
+  if (safeString(config.accessKeyFileSource) === 'args') return false;
+  if (safeString(config.accessKeyFileSource).startsWith('profile:')) return true;
+  return pathEqualOrInside(current, path.join(config.rootDir, 'secrets'));
+}
+
 function readPid(pidFile) {
   try {
     const value = Number.parseInt(String(fs.readFileSync(pidFile, 'utf8')).trim(), 10);
@@ -446,6 +523,8 @@ function redactHttpDiagnostic(value) {
 }
 
 function readAccessKeyForProbe(config) {
+  const raw = safeString(process.env.XHUB_RUST_HTTP_ACCESS_KEY || process.env.XHUB_RUST_HUB_ACCESS_KEY);
+  if (raw) return raw;
   if (!safeString(config.accessKeyFile)) return '';
   try {
     return safeString(fs.readFileSync(config.accessKeyFile, 'utf8'));
@@ -492,7 +571,7 @@ async function readHealth(config) {
 }
 
 async function readReady(config) {
-  const readiness = await httpGetJson(`${config.baseUrl}/ready`, 1000, readAccessKeyForProbe(config));
+  const readiness = await httpGetJson(`${config.baseUrl}/ready`, 5000, readAccessKeyForProbe(config));
   return { ok: readiness?.ready === true, readiness };
 }
 
@@ -886,6 +965,7 @@ function plistKeyString(key, value) {
 }
 
 const LAUNCHD_PASSTHROUGH_ENV_KEYS = [
+  'XHUB_SYSTEM_ROOT',
   'XHUB_RUST_XT_FILE_IPC_PRODUCTION_CUTOVER',
   'XHUB_RUST_XT_FILE_IPC_BASE_DIR',
   'XHUB_RUST_XT_CLASSIC_COMPAT',
@@ -913,6 +993,30 @@ const LAUNCHD_PASSTHROUGH_ENV_KEYS = [
   'XHUB_RUST_SKILLS_EXECUTION_PRODUCTION',
   'XHUB_RUST_SKILLS_RUNNER_PRODUCTION_AUTHORITY',
   'XHUB_RUST_SKILLS_ALLOWED_RUNNERS',
+  'XHUB_ENABLE_RUST_PROVIDER_KEY_SNAPSHOT',
+  'XHUB_RUST_PROVIDER_KEY_SNAPSHOT',
+  'XHUB_RUST_PROVIDER_KEY_SNAPSHOT_HTTP',
+  'XHUB_RUST_PROVIDER_KEY_SNAPSHOT_HTTP_BASE_URL',
+  'XHUB_RUST_PROVIDER_KEY_SNAPSHOT_FALLBACK_ON_ERROR',
+  'XHUB_ENABLE_RUST_PROVIDER_QUOTA_APPLY',
+  'XHUB_RUST_PROVIDER_QUOTA_APPLY',
+  'XHUB_RUST_PROVIDER_QUOTA_APPLY_HTTP',
+  'XHUB_RUST_PROVIDER_QUOTA_APPLY_HTTP_BASE_URL',
+  'XHUB_RUST_PROVIDER_QUOTA_APPLY_FALLBACK_ON_ERROR',
+  'XHUB_ENABLE_RUST_PROVIDER_QUOTA_SCHEDULER',
+  'XHUB_ENABLE_RUST_PROVIDER_QUOTA_PLAN',
+  'XHUB_ENABLE_RUST_PROVIDER_QUOTA_FAILURE',
+  'XHUB_RUST_PROVIDER_QUOTA_PLAN',
+  'XHUB_RUST_PROVIDER_QUOTA_FAILURE',
+  'XHUB_RUST_ML_EXECUTION_AUTHORITY',
+  'XHUB_RUST_LOCAL_ML_EXECUTION_AUTHORITY',
+  'XHUB_ENABLE_RUST_ML_EXECUTION',
+  'XHUB_RUST_LOCAL_RUNTIME_SCRIPT',
+  'XHUB_LOCAL_RUNTIME_SCRIPT',
+  'RELFLOWHUB_LOCAL_RUNTIME_SCRIPT',
+  'RELFLOWHUB_AI_RUNTIME_PYTHON',
+  'REL_FLOW_HUB_RUNTIME_PYTHON',
+  'X_HUB_LOCAL_RUNTIME_PYTHON',
 ];
 
 function launchctlGetenv(key) {
@@ -990,6 +1094,10 @@ ${envLines}
 
 function launchdRuntimeConfig(config) {
   const root = config.launchdRuntimeRoot;
+  const useRuntimeAccessKey = shouldUseLaunchdRuntimeAccessKeyFile(config, root);
+  const accessKeyFile = useRuntimeAccessKey
+    ? launchdRuntimeAccessKeyFile(config, root)
+    : config.accessKeyFile;
   return {
     ...config,
     rootDir: root,
@@ -1001,6 +1109,8 @@ function launchdRuntimeConfig(config) {
     runtimeBaseDir: path.join(root, 'runtime'),
     memoryDir: path.join(root, 'data', 'memory'),
     skillsDir: path.join(root, 'skills'),
+    accessKeyFile,
+    accessKeyFileSource: useRuntimeAccessKey ? 'launchd_runtime' : config.accessKeyFileSource,
   };
 }
 
@@ -1038,6 +1148,37 @@ function signLaunchdRunner(runnerPath) {
   return result;
 }
 
+function seedLaunchdRuntimeAccessKey(config, serviceConfig, deployment) {
+  const target = safeString(serviceConfig.accessKeyFile);
+  const source = safeString(config.accessKeyFile);
+  deployment.access_key_file_source = source;
+  deployment.access_key_file_runtime = target;
+  deployment.access_key_file_relocated = !!target && !!source && path.resolve(target) !== path.resolve(source);
+  deployment.access_key_file_seeded = false;
+  deployment.access_key_file_mode = target ? fileModeOctal(target) : '';
+  deployment.access_key_file_seed_skipped_reason = target ? '' : 'not_configured';
+  if (!target) return;
+
+  ensureDir(path.dirname(target));
+  if (source && path.resolve(source) !== path.resolve(target) && fs.existsSync(source) && !fs.existsSync(target)) {
+    fs.copyFileSync(source, target);
+    fs.chmodSync(target, 0o600);
+    deployment.access_key_file_seeded = true;
+    deployment.access_key_file_mode = fileModeOctal(target);
+    deployment.access_key_file_seed_skipped_reason = '';
+    return;
+  }
+  if (fs.existsSync(target)) {
+    try {
+      fs.chmodSync(target, 0o600);
+    } catch {}
+    deployment.access_key_file_mode = fileModeOctal(target);
+    deployment.access_key_file_seed_skipped_reason = deployment.access_key_file_relocated ? 'runtime_already_exists' : 'already_exists';
+    return;
+  }
+  deployment.access_key_file_seed_skipped_reason = source ? 'source_missing' : 'source_not_configured';
+}
+
 function prepareLaunchdRuntime(config, options = {}) {
   const serviceConfig = launchdRuntimeConfig(config);
   const deployment = {
@@ -1055,8 +1196,17 @@ function prepareLaunchdRuntime(config, options = {}) {
     data_seeded: false,
     skills_seeded: false,
     skills_synced: false,
+    access_key_file_source: config.accessKeyFile || '',
+    access_key_file_runtime: serviceConfig.accessKeyFile || '',
+    access_key_file_relocated: false,
+    access_key_file_seeded: false,
+    access_key_file_mode: '',
+    access_key_file_seed_skipped_reason: options.dryRun ? 'dry_run' : '',
   };
   if (options.dryRun) {
+    deployment.access_key_file_relocated = !!serviceConfig.accessKeyFile
+      && !!config.accessKeyFile
+      && path.resolve(serviceConfig.accessKeyFile) !== path.resolve(config.accessKeyFile);
     return { serviceConfig, deployment };
   }
   if (!fs.existsSync(config.launchdBinarySource)) {
@@ -1084,6 +1234,7 @@ function prepareLaunchdRuntime(config, options = {}) {
   deployment.data_seeded = copyDirectoryIfPresent(path.join(config.rootDir, 'data'), path.join(serviceConfig.rootDir, 'data'), { onlyIfMissing: true });
   deployment.skills_seeded = copyDirectoryIfPresent(path.join(config.rootDir, 'skills'), path.join(serviceConfig.rootDir, 'skills'), { onlyIfMissing: true });
   deployment.skills_synced = copyDirectoryIfPresent(path.join(config.rootDir, 'skills'), path.join(serviceConfig.rootDir, 'skills'));
+  seedLaunchdRuntimeAccessKey(config, serviceConfig, deployment);
   return { serviceConfig, deployment };
 }
 
@@ -1432,6 +1583,10 @@ function watchdogLaunchdProgramArgs(config) {
     config.host,
     '--port',
     String(config.port),
+    '--public-host',
+    config.publicHost,
+    '--public-base-url',
+    config.publicBaseUrl,
     '--launchd-label',
     config.launchdLabel,
     '--launchd-runtime-root',
@@ -1444,7 +1599,10 @@ function watchdogLaunchdProgramArgs(config) {
     String(config.watchdogKeepReportFiles),
     '--max-report-age-days',
     String(config.watchdogMaxReportAgeDays),
+    '--allow-memory-skills-production',
   ];
+  if (config.publicEndpoint) args.push('--public-endpoint');
+  if (safeString(config.accessKeyFile)) args.push('--access-key-file', config.accessKeyFile);
   if (safeString(config.profileFile)) {
     args.push('--profile-file', config.profileFile);
   }
@@ -1663,6 +1821,20 @@ async function crossNetworkReadiness(config, args = {}) {
   const watchdogInstallable = watchdogXml.includes('StartInterval')
     && watchdogXml.includes('watchdog')
     && !watchdogXml.includes('<key>RunAtLoad</key>');
+  const livePublicEndpointOk = !config.publicEndpoint
+    || !readiness
+    || (readiness?.capabilities?.cross_network_public_endpoint === true
+      && readiness?.network?.cross_network_public_endpoint === true);
+  const liveCrossNetworkReadyOk = !config.publicEndpoint
+    || !readiness
+    || readiness?.capabilities?.cross_network_ready === true;
+  const liveDomainEndpointReadyOk = !config.publicEndpoint
+    || !readiness
+    || (readiness?.capabilities?.domain_public_endpoint_ready === true
+      && readiness?.network?.public_endpoint_ready === true);
+  const livePublicBaseUrlMatches = !config.publicEndpoint
+    || !readiness
+    || safeString(readiness?.network?.public_base_url) === config.publicBaseUrl;
 
   const checks = [
     { name: 'lan_profile_or_allow_lan_or_public_endpoint', ok: config.allowLan === true || config.publicEndpoint === true, blocking: true },
@@ -1681,6 +1853,26 @@ async function crossNetworkReadiness(config, args = {}) {
       name: 'cross_network_auth_gate',
       ok: readiness ? readiness?.capabilities?.cross_network_auth_gate === true : true,
       blocking: readiness !== null,
+    },
+    {
+      name: 'live_cross_network_public_endpoint',
+      ok: livePublicEndpointOk,
+      blocking: config.publicEndpoint && readiness !== null,
+    },
+    {
+      name: 'live_cross_network_ready',
+      ok: liveCrossNetworkReadyOk,
+      blocking: config.publicEndpoint && readiness !== null,
+    },
+    {
+      name: 'live_domain_public_endpoint_ready',
+      ok: liveDomainEndpointReadyOk,
+      blocking: config.publicEndpoint && readiness !== null,
+    },
+    {
+      name: 'live_public_base_url_matches',
+      ok: livePublicBaseUrlMatches,
+      blocking: config.publicEndpoint && readiness !== null,
     },
     {
       name: 'memory_writer_authority_disabled',
@@ -1746,7 +1938,10 @@ async function crossNetworkReadiness(config, args = {}) {
     launchd_status: launchdOut,
     watchdog_timer_status: watchdogTimer,
     ui_compatibility: uiGate,
-    node_remains_authority: true,
+    rust_product_kernel: true,
+    swift_product_shell: true,
+    node_compatibility_layer: true,
+    node_remains_authority: false,
     production_authority_change: false,
     daemon_restarted: false,
     daemon_stopped: false,
@@ -2265,7 +2460,11 @@ async function opsReport(config, args = {}) {
   let httpMetrics = null;
   let httpMetricsError = '';
   try {
-    httpMetrics = await httpGetJson(`${config.baseUrl}/runtime/http-metrics`, 1000);
+    httpMetrics = await httpGetJson(
+      `${config.baseUrl}/runtime/http-metrics`,
+      1000,
+      readAccessKeyForProbe(config),
+    );
   } catch (error) {
     httpMetricsError = String(error.message || error);
   }
@@ -2308,7 +2507,10 @@ async function opsReport(config, args = {}) {
     ui_product_change: uiGate.product_ui_change === true,
     swift_ui_files_touched: uiGate.swift_ui_files_touched === true,
     rust_browser_product_ui: uiGate.rust_browser_product_ui === true,
-    node_remains_authority: true,
+    rust_product_kernel: true,
+    swift_product_shell: true,
+    node_compatibility_layer: true,
+    node_remains_authority: false,
     production_authority_change: false,
     memory_skills_production_allowed: memorySkills.allow,
     memory_skills_production_required: memorySkills.require,
@@ -2572,7 +2774,10 @@ function maintenance(config, args = {}) {
     ui_product_change: uiGate.product_ui_change === true,
     swift_ui_files_touched: uiGate.swift_ui_files_touched === true,
     rust_browser_product_ui: uiGate.rust_browser_product_ui === true,
-    node_remains_authority: true,
+    rust_product_kernel: true,
+    swift_product_shell: true,
+    node_compatibility_layer: true,
+    node_remains_authority: false,
     production_authority_change: false,
     daemon_restarted: false,
     daemon_stopped: false,
@@ -2671,7 +2876,11 @@ async function watchdog(config, args = {}) {
   let httpMetrics = null;
   let httpMetricsError = '';
   try {
-    httpMetrics = await httpGetJson(`${config.baseUrl}/runtime/http-metrics`, 1000);
+    httpMetrics = await httpGetJson(
+      `${config.baseUrl}/runtime/http-metrics`,
+      1000,
+      readAccessKeyForProbe(config),
+    );
   } catch (error) {
     httpMetricsError = String(error.message || error);
   }
@@ -2788,7 +2997,10 @@ async function watchdog(config, args = {}) {
     ui_product_change: uiGate.product_ui_change === true,
     swift_ui_files_touched: uiGate.swift_ui_files_touched === true,
     rust_browser_product_ui: uiGate.rust_browser_product_ui === true,
-    node_remains_authority: true,
+    rust_product_kernel: true,
+    swift_product_shell: true,
+    node_compatibility_layer: true,
+    node_remains_authority: false,
     production_authority_change: false,
     daemon_restarted: false,
     daemon_stopped: false,
@@ -2828,7 +3040,11 @@ async function opsGate(config, args = {}) {
   let httpMetrics = null;
   let httpMetricsError = '';
   try {
-    httpMetrics = await httpGetJson(`${config.baseUrl}/runtime/http-metrics`, 1000);
+    httpMetrics = await httpGetJson(
+      `${config.baseUrl}/runtime/http-metrics`,
+      1000,
+      readAccessKeyForProbe(config),
+    );
   } catch (error) {
     httpMetricsError = String(error.message || error);
   }
@@ -2905,7 +3121,10 @@ async function opsGate(config, args = {}) {
     ui_product_change: uiGate.product_ui_change === true,
     swift_ui_files_touched: uiGate.swift_ui_files_touched === true,
     rust_browser_product_ui: uiGate.rust_browser_product_ui === true,
-    node_remains_authority: true,
+    rust_product_kernel: true,
+    swift_product_shell: true,
+    node_compatibility_layer: true,
+    node_remains_authority: false,
     production_authority_change: false,
     daemon_restarted: false,
     daemon_stopped: false,
@@ -3107,6 +3326,21 @@ function printEnv(config) {
     `export XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_HTTP_BASE_URL=${shellQuote(config.baseUrl)}`,
     `export XHUB_RUST_PROVIDER_ROUTE_SHADOW_COMPARE_HTTP=1`,
     `export XHUB_RUST_PROVIDER_ROUTE_SHADOW_COMPARE_HTTP_BASE_URL=${shellQuote(config.baseUrl)}`,
+    `export XHUB_ENABLE_RUST_PROVIDER_KEY_SNAPSHOT=1`,
+    `export XHUB_RUST_PROVIDER_KEY_SNAPSHOT=1`,
+    `export XHUB_RUST_PROVIDER_KEY_SNAPSHOT_HTTP=1`,
+    `export XHUB_RUST_PROVIDER_KEY_SNAPSHOT_HTTP_BASE_URL=${shellQuote(config.baseUrl)}`,
+    `export XHUB_RUST_PROVIDER_KEY_SNAPSHOT_FALLBACK_ON_ERROR=1`,
+    `export XHUB_ENABLE_RUST_PROVIDER_QUOTA_APPLY=1`,
+    `export XHUB_RUST_PROVIDER_QUOTA_APPLY=1`,
+    `export XHUB_RUST_PROVIDER_QUOTA_APPLY_HTTP=1`,
+    `export XHUB_RUST_PROVIDER_QUOTA_APPLY_HTTP_BASE_URL=${shellQuote(config.baseUrl)}`,
+    `export XHUB_RUST_PROVIDER_QUOTA_APPLY_FALLBACK_ON_ERROR=1`,
+    `export XHUB_ENABLE_RUST_PROVIDER_QUOTA_SCHEDULER=1`,
+    `export XHUB_ENABLE_RUST_PROVIDER_QUOTA_PLAN=1`,
+    `export XHUB_ENABLE_RUST_PROVIDER_QUOTA_FAILURE=1`,
+    `export XHUB_RUST_PROVIDER_QUOTA_PLAN=1`,
+    `export XHUB_RUST_PROVIDER_QUOTA_FAILURE=1`,
     `export XHUB_RUST_MODEL_INVENTORY_BRIDGE=1`,
     `export XHUB_RUST_MODEL_INVENTORY_HTTP_BASE_URL=${shellQuote(config.baseUrl)}`,
   ];

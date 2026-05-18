@@ -11,6 +11,12 @@ Repository license note:
 Primary gate source:
 - `docs/open-source/OSS_RELEASE_CHECKLIST_v1.md`
 
+System description references:
+- `docs/system/CURRENT_STATUS.md`
+- `docs/system/RUST_MIGRATION.md`
+- `docs/system/AUTHORITY_BOUNDARIES.md`
+- `docs/system/API_AND_CONTRACTS.md`
+
 GitHub Release page template:
 - `docs/open-source/GITHUB_RELEASE_NOTES_TEMPLATE_v1.md`
 - `docs/open-source/GITHUB_RELEASE_NOTES_TEMPLATE_v1.en.md`
@@ -41,6 +47,37 @@ If release wording needs to mention memory control at all, keep it inside the fr
 
 That material may be referenced in release notes as part of the system's security posture, but it must not be used to expand the validated public release slice beyond the three approved statements above.
 
+## 0.2 Authority And Rust Migration Note
+
+Release wording must distinguish:
+
+- `production authority`
+- `preview-working`
+- `shadow`
+- `candidate authority`
+- `diagnostics-only`
+- `roadmap`
+
+The current product line is still primarily Swift XT plus Node Hub production authority. Rust Hub / `xhubd` may implement scheduler, provider route, model route, skills policy, memory read-only retrieval, daemon ops, or XT compatibility paths ahead of public release scope, but that implementation does not automatically promote Rust to production authority.
+
+For public release notes:
+
+- Do not claim Rust owns `HubAI.Generate`, memory writes, third-party skill execution, pairing trust, or XT product UI unless that path has an explicit release gate.
+- Do not describe shadow compare, candidate audit, readiness reports, or dry-run authority plans as production behavior.
+- Do mention Rust work as migration infrastructure only when evidence and package boundaries are included in the release.
+- If Rust is included, state the authority mode explicitly, for example `diagnostics-only`, `shadow compare`, `default-off candidate bridge`, or `production authority`.
+- Keep `docs/system/*` aligned with validated behavior before using those files as public release references.
+
+Any production authority migration requires:
+
+- default-off bridge or explicit opt-in
+- shadow or candidate evidence
+- sustained runner evidence where applicable
+- readiness gate
+- rollback path
+- no-secret evidence
+- compatibility check for existing Node/XT clients
+
 ## 1) Release Types
 
 - `alpha`: early public release, fast iteration, no API stability guarantee.
@@ -64,6 +101,14 @@ Before tagging, all required gates must pass:
 If any required evidence is missing, decision must be:
 - `NO-GO` or `INSUFFICIENT_EVIDENCE`
 
+For releases that include Rust migration artifacts, also confirm:
+
+- release notes name the exact Rust authority mode
+- diagnostics-only or shadow paths are not presented as production behavior
+- no runtime database, report bundle with secrets, launchd plist with local private paths, or access-key material is staged
+- rollback leaves Node Hub and Swift XT production paths usable
+- compatibility with existing public source-run commands is preserved
+
 ## 3) Recommended Preflight Commands
 
 Run from repository root:
@@ -74,6 +119,8 @@ rg --files | rg -n "(^|/)(build|data|\\.axcoder)(/|$)|\\.sqlite3$|\\.sqlite3-(sh
 ```
 
 Confirm no forbidden runtime artifacts are staged.
+
+If the release includes Rust daemon or migration artifacts, additionally inspect for local runtime artifacts, SQLite files, launchd plists, and generated reports before staging. These must remain out of public Git unless explicitly allowlisted and scrubbed.
 
 Additional engineering validation for the in-progress unified doctor shell:
 
@@ -87,9 +134,18 @@ Machine-readable supporting evidence produced by that gate:
 - `build/reports/xhub_doctor_xt_source_smoke_evidence.v1.json`
 - `build/reports/xhub_doctor_all_source_smoke_evidence.v1.json`
 
-The gate summary now also carries `project_context_summary_support`, `durable_candidate_mirror_support`, and `memory_route_truth_support`, so release evidence can show that XT source-run export preserved the structured `session_runtime_readiness.project_context_summary`, `session_runtime_readiness.durable_candidate_mirror_snapshot`, and `model_route_readiness.memory_route_truth_snapshot` rather than only reporting a green smoke status.
+For the current governed-skills preview surface, release-facing review may also reference these closure artifacts when checking whether the skills path is still only protocol-level or already has a working gate surface:
 
-The OSS refresh helper now also regenerates `build/reports/xhub_local_service_operator_recovery_report.v1.json`, so boundary/readiness reports can reuse the same machine-readable `action_category / external_status_line / top_recommended_action` instead of inventing a second wording layer.
+- `build/reports/w8_c1_starter_pack_baseline_evidence.v1.json`
+- `build/reports/w8_c2_skill_surface_truth_evidence.v1.json`
+- `build/reports/w8_c3_preflight_gate_evidence.v1.json`
+- `build/reports/w8_c4_call_skill_retry_evidence.v1.json`
+
+The gate summary now also carries `project_context_summary_support`, `heartbeat_governance_support`, `provider_key_selection_support`, `provider_key_route_context_support`, `durable_candidate_mirror_support`, and `memory_route_truth_support`, so release evidence can show that XT source-run export preserved the structured `session_runtime_readiness.project_context_summary`, `session_runtime_readiness.heartbeat_governance_snapshot`, `model_route_readiness.provider_key_selection_snapshot`, `model_route_readiness.provider_key_route_context_snapshot`, `session_runtime_readiness.durable_candidate_mirror_snapshot`, and `model_route_readiness.memory_route_truth_snapshot` rather than only reporting a green smoke status. The provider-key support block keeps `requested_provider / requested_model_id / selected_account_key / next_retry_at_ms` machine-readable for internal troubleshooting, while the route-context block keeps `model_id / import_issue_count / selected_account_key / primary_import_issue_ref` machine-readable for troubleshooting surface parity; both remain explainability only and do not upgrade release/support tooling into scheduler, import mutation, or auth authority.
+
+The OSS refresh helper now also regenerates `build/reports/xhub_local_service_operator_recovery_report.v1.json` and `build/reports/xhub_operator_channel_recovery_report.v1.json`, so runtime/channel operator wording can reuse one machine-readable source instead of inventing separate diagnosis layers downstream.
+
+For release/support operators who need a human-readable copy-paste surface, the same refresh helper now also writes `build/reports/oss_release_support_snippet.v1.md`. That markdown may carry preview-working operator-channel wording, but it must stay in the support/status lane and must not be promoted into validated release claims.
 
 To refresh the OSS release evidence bundle after the upstream gates have produced their inputs:
 
@@ -107,6 +163,7 @@ CI workflow path for the same gate:
 2. Confirm release scope and known limitations.
    - R1 wording must stay inside the validated release slice and the three approved statements.
    - If constitutional or memory-backed guardrails are mentioned, present them as system safety posture rather than as additional validated feature claims.
+   - If Rust migration work is mentioned, state whether it is diagnostics-only, shadow, candidate, or production authority.
 3. Prepare release notes with:
    - major changes
    - risk notes

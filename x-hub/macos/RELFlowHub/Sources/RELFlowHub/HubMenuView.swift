@@ -408,7 +408,16 @@ struct HubNotificationRow: View {
                 }
             }
 
-            snoozeMenu
+            if let quickCopy = hubNotificationQuickCopyAction(n) {
+                HubNeutralActionChipButton(
+                    title: quickCopy.label,
+                    systemName: "doc.on.doc",
+                    width: nil,
+                    help: quickCopy.label
+                ) {
+                    copyToPasteboard(quickCopy.text)
+                }
+            }
 
             HubNeutralActionChipButton(
                 title: n.unread ? HubUIStrings.Menu.NotificationRow.markRead : HubUIStrings.Menu.NotificationRow.markUnread,
@@ -421,7 +430,7 @@ struct HubNotificationRow: View {
 
             Spacer(minLength: 0)
 
-            overflowMenu
+            dismissButton
         }
     }
 
@@ -496,7 +505,16 @@ struct HubNotificationRow: View {
             }
 
             HStack(spacing: 8) {
-                snoozeMenu
+                if let quickCopy = hubNotificationQuickCopyAction(n) {
+                    HubNeutralActionChipButton(
+                        title: quickCopy.label,
+                        systemName: "doc.on.doc",
+                        width: nil,
+                        help: quickCopy.label
+                    ) {
+                        copyToPasteboard(quickCopy.text)
+                    }
+                }
 
                 HubNeutralActionChipButton(
                     title: n.unread ? HubUIStrings.Menu.NotificationRow.markRead : HubUIStrings.Menu.NotificationRow.markUnread,
@@ -509,43 +527,27 @@ struct HubNotificationRow: View {
 
                 Spacer(minLength: 0)
 
-                overflowMenu
+                dismissButton
             }
         }
     }
 
-    private var snoozeMenu: some View {
-        Menu {
-            Button(HubUIStrings.Menu.NotificationRow.tenMinutes) { store.snooze(n.id, minutes: 10) }
-            Button(HubUIStrings.Menu.NotificationRow.thirtyMinutes) { store.snooze(n.id, minutes: 30) }
-            Button(HubUIStrings.Menu.NotificationRow.oneHour) { store.snooze(n.id, minutes: 60) }
-            Button(HubUIStrings.Menu.NotificationRow.laterToday) { store.snoozeLaterToday(n.id) }
+    private var dismissButton: some View {
+        Button {
+            store.dismiss(n.id)
         } label: {
-            HubNeutralActionChipLabel(
-                title: HubUIStrings.Menu.NotificationRow.snooze,
-                systemName: "clock",
+            HubActionChipContent(
+                title: HubUIStrings.Menu.NotificationRow.dismiss,
+                systemName: "xmark.circle",
+                foreground: .red,
+                background: Color.red.opacity(0.10),
+                border: Color.red.opacity(0.24),
                 width: nil
             )
         }
-    }
-
-    private var overflowMenu: some View {
-        Menu {
-            if let quickCopy = hubNotificationQuickCopyAction(n) {
-                Button(quickCopy.label) {
-                    copyToPasteboard(quickCopy.text)
-                }
-            }
-            Button(HubUIStrings.Menu.NotificationRow.dismiss, role: .destructive) {
-                store.dismiss(n.id)
-            }
-        } label: {
-            HubNeutralActionChipLabel(
-                title: HubUIStrings.Menu.NotificationRow.more,
-                systemName: "ellipsis",
-                width: nil
-            )
-        }
+        .buttonStyle(.plain)
+        .help(HubUIStrings.Menu.NotificationRow.dismiss)
+        .accessibilityLabel(Text(HubUIStrings.Menu.NotificationRow.dismiss))
     }
 
     private var unreadIndicator: some View {

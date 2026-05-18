@@ -218,6 +218,20 @@ enum HubProviderKeysClient {
         var providers: [ProviderSummary]
     }
 
+    struct ProviderUsageWindow: Codable, Equatable, Sendable {
+        var key: String
+        var source: String
+        var windowKey: String
+        var label: String
+        var limitWindowSeconds: Int
+        var usedPercent: Double
+        var usedBasisPoints: Int
+        var remainingBasisPoints: Int
+        var limited: Bool
+        var resetAtMs: Double
+        var updatedAtMs: Double
+    }
+
     struct KeyQuota: Codable, Equatable, Sendable {
         var dailyTokenCap: Int64
         var dailyTokensUsed: Int64
@@ -227,6 +241,7 @@ enum HubProviderKeysClient {
         var lastErrorAtMs: Double
         var consecutiveErrors: Int
         var cooldownUntilMs: Double
+        var usageWindows: [ProviderUsageWindow] = []
     }
 
     struct KeyErrorState: Codable, Equatable, Sendable {
@@ -741,7 +756,8 @@ enum HubProviderKeysClient {
                 lastUsedAtMs: doubleValue(q["last_used_at_ms"]),
                 lastErrorAtMs: doubleValue(q["last_error_at_ms"]),
                 consecutiveErrors: intValue(q["consecutive_errors"]),
-                cooldownUntilMs: doubleValue(q["cooldown_until_ms"])
+                cooldownUntilMs: doubleValue(q["cooldown_until_ms"]),
+                usageWindows: parseProviderUsageWindows(q["usage_windows"])
             ),
             errorState: KeyErrorState(
                 status: stringValue(e["status"]).isEmpty ? "healthy" : stringValue(e["status"]),
@@ -1079,6 +1095,33 @@ main().catch((e) => { out({ ok: false, error: String(e?.message || e) }); proces
         )
     }
 
+    private static func parseProviderUsageWindows(_ raw: Any?) -> [ProviderUsageWindow] {
+        guard let values = raw as? [[String: Any]] else { return [] }
+        return values.compactMap { item in
+            let key = stringValue(item["key"])
+            let label = stringValue(item["label"])
+            let limitWindowSeconds = intValue(item["limit_window_seconds"])
+            let usedBasisPoints = max(0, min(10_000, intValue(item["used_basis_points"])))
+            let usedPercent = max(0, min(100, doubleValue(item["used_percent"])))
+            guard !key.isEmpty || !label.isEmpty || limitWindowSeconds > 0 || usedPercent > 0 else {
+                return nil
+            }
+            return ProviderUsageWindow(
+                key: key,
+                source: stringValue(item["source"]),
+                windowKey: stringValue(item["window_key"]),
+                label: label,
+                limitWindowSeconds: limitWindowSeconds,
+                usedPercent: usedPercent,
+                usedBasisPoints: usedBasisPoints,
+                remainingBasisPoints: max(0, min(10_000, intValue(item["remaining_basis_points"]))),
+                limited: boolValue(item["limited"]),
+                resetAtMs: doubleValue(item["reset_at_ms"]),
+                updatedAtMs: doubleValue(item["updated_at_ms"])
+            )
+        }
+    }
+
     private static func parseProviderPool(_ raw: [String: Any]) -> ProviderPool? {
         let poolID = stringValue(raw["pool_id"])
         guard !poolID.isEmpty else { return nil }
@@ -1185,7 +1228,8 @@ main().catch((e) => { out({ ok: false, error: String(e?.message || e) }); proces
                 lastUsedAtMs: doubleValue(quotaRaw["last_used_at_ms"]),
                 lastErrorAtMs: doubleValue(quotaRaw["last_error_at_ms"]),
                 consecutiveErrors: intValue(quotaRaw["consecutive_errors"]),
-                cooldownUntilMs: doubleValue(quotaRaw["cooldown_until_ms"])
+                cooldownUntilMs: doubleValue(quotaRaw["cooldown_until_ms"]),
+                usageWindows: parseProviderUsageWindows(quotaRaw["usage_windows"])
             ),
             errorState: KeyErrorState(
                 status: stringValue(errorRaw["status"]).isEmpty ? "healthy" : stringValue(errorRaw["status"]),

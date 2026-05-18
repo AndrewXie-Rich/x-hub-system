@@ -7,6 +7,7 @@ final class HubModelManager: ObservableObject {
 
     @Published var availableModels: [HubModel] = []
     @Published private(set) var latestSnapshot: ModelStateSnapshot = .empty()
+    @Published private(set) var latestRustInventoryProjection: XTRustModelInventoryProjection?
     @Published private(set) var hasFetchedAuthoritativeSnapshot: Bool = false
     @Published var isLoading: Bool = false
     @Published var error: String?
@@ -32,17 +33,33 @@ final class HubModelManager: ObservableObject {
 
         // Keep the Models page local-first so stale pairing state never blocks the
         // Hub control surface from rendering its own inventory.
-        let localSnapshot = await HubAIClient.shared.loadModelsState(transportOverride: .fileIPC)
+        let rustInventoryResult = await XTRustModelInventoryLiveBridge.loadIfEnabled(
+            runtimeBaseDir: HubPaths.baseDir()
+        )
+        let rustInventoryProjection: XTRustModelInventoryProjection?
+        let localSnapshot: ModelStateSnapshot
+        switch rustInventoryResult {
+        case .loaded(let snapshot):
+            rustInventoryProjection = snapshot.projection
+            localSnapshot = snapshot.projection.snapshot
+        case .disabled, .unavailable:
+            rustInventoryProjection = nil
+            localSnapshot = await HubAIClient.shared.loadModelsState(transportOverride: .fileIPC)
+        }
         let hasRemoteProfile = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
         // Reconcile against authoritative Hub inventory whenever a remote profile
         // exists, even if the last connect probe state in AppModel is stale.
         let shouldAttemptBackgroundAuthoritativeRefresh =
             HubAIClient.transportMode() != .fileIPC
             && hasRemoteProfile
+            && rustInventoryProjection == nil
         guard isCurrentFetch(generation) else { return }
 
         if !localSnapshot.models.isEmpty || !hadVisibleModels {
-            applyFetchedSnapshot(localSnapshot)
+            applyFetchedSnapshot(
+                localSnapshot,
+                rustInventoryProjection: rustInventoryProjection
+            )
         }
 
         if hasRemoteProfile {
@@ -159,8 +176,12 @@ final class HubModelManager: ObservableObject {
         return latestSnapshot
     }
 
-    private func applyFetchedSnapshot(_ snapshot: ModelStateSnapshot) {
+    private func applyFetchedSnapshot(
+        _ snapshot: ModelStateSnapshot,
+        rustInventoryProjection: XTRustModelInventoryProjection? = nil
+    ) {
         latestSnapshot = snapshot
+        latestRustInventoryProjection = rustInventoryProjection
         availableModels = snapshot.models
         hasFetchedAuthoritativeSnapshot = true
         appModel?.modelsState = snapshot

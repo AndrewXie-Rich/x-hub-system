@@ -10,7 +10,7 @@ const __dirname = path.dirname(__filename);
 const LOCAL_RUNTIME_SCRIPT = path.resolve(__dirname, '../../../python-runtime/python_service/relflowhub_local_runtime.py');
 
 const TTS_TASK_KIND = 'text_to_speech';
-const TTS_PROVIDER = 'transformers';
+const DEFAULT_TTS_PROVIDER = 'transformers';
 const TTS_AUDIT_SCHEMA_VERSION = 'xhub.local_tts_audit.v1';
 const MAX_TEXT_CHARS = 6000;
 const MIN_SPEECH_RATE = 0.6;
@@ -106,7 +106,7 @@ function buildTTSAuditRecord({
     task_kind: TTS_TASK_KIND,
     request_id: safeString(requestId),
     capability: safeString(capability),
-    provider: safeString(provider) || TTS_PROVIDER,
+    provider: safeString(provider) || DEFAULT_TTS_PROVIDER,
     requested_model_id: safeString(requestedModelId),
     model_id: safeString(modelId),
     resolved_model_id: safeString(resolvedModelId),
@@ -134,7 +134,7 @@ function buildTTSAuditLine(record = {}) {
   const outputToken = safeString(record.output_ref_kind) || 'none';
   const sourceToken = safeString(record.source_kind) || 'unknown';
   const statusToken = record.ok ? 'ok' : 'failed';
-  const providerToken = safeString(record.provider) || TTS_PROVIDER;
+  const providerToken = safeString(record.provider) || DEFAULT_TTS_PROVIDER;
   const denyToken = safeString(record.deny_code || record.raw_deny_code) || 'none';
   return [
     'tts_audit',
@@ -295,7 +295,7 @@ export async function synthesizeLocalSpeech({
   } = {}) => ({
     ...buildLocalTaskFailure({
       taskKind: TTS_TASK_KIND,
-      provider: TTS_PROVIDER,
+      provider: DEFAULT_TTS_PROVIDER,
       rawDenyCode,
       message,
       blockedBy,
@@ -319,7 +319,7 @@ export async function synthesizeLocalSpeech({
 
   const policyGate = evaluateLocalTaskPolicyGate({
     taskKind: TTS_TASK_KIND,
-    provider: TTS_PROVIDER,
+    provider: DEFAULT_TTS_PROVIDER,
     capabilityAllowed,
     capabilityDenyCode,
     killSwitch,
@@ -374,7 +374,6 @@ export async function synthesizeLocalSpeech({
     taskKind: TTS_TASK_KIND,
     deviceId,
     preferredModelId,
-    providerId: TTS_PROVIDER,
     requireLocalPath: true,
   });
   if (!modelSelection.ok) {
@@ -384,7 +383,7 @@ export async function synthesizeLocalSpeech({
         message: safeString(modelSelection.message) || 'local_tts_model_unavailable',
         blockedBy: 'provider',
         extra: {
-          provider: TTS_PROVIDER,
+          provider: DEFAULT_TTS_PROVIDER,
           model_id: safeString(modelSelection.resolved_model_id),
           route_source: safeString(modelSelection.route_source),
           route_reason_code: safeString(modelSelection.reason_code),
@@ -406,6 +405,7 @@ export async function synthesizeLocalSpeech({
     );
   }
   const model = modelSelection.model;
+  const selectedProvider = safeString(model?.runtime_provider_id || model?.backend || DEFAULT_TTS_PROVIDER);
   const taskExecutor = typeof executor === 'function' ? executor : defaultRuntimeTaskExecutor;
 
   try {
@@ -413,7 +413,7 @@ export async function synthesizeLocalSpeech({
       runtimeBaseDir: baseDir,
       timeoutMs: 60_000,
       request: {
-        provider: TTS_PROVIDER,
+        provider: selectedProvider,
         task_kind: TTS_TASK_KIND,
         model_id: safeString(model.model_id),
         model_path: safeString(model.model_path),
@@ -433,10 +433,10 @@ export async function synthesizeLocalSpeech({
         fail({
           rawDenyCode: safeString(response?.error) || 'local_tts_runtime_failed',
           message: safeString(response?.errorDetail || response?.error || 'local_tts_runtime_failed'),
-          blockedBy: 'provider',
-          extra: {
-            provider: safeString(response?.provider) || TTS_PROVIDER,
-            model_id: safeString(response?.modelId) || safeString(model.model_id),
+        blockedBy: 'provider',
+        extra: {
+          provider: safeString(response?.provider) || selectedProvider,
+          model_id: safeString(response?.modelId) || safeString(model.model_id),
             route_source: safeString(modelSelection.route_source),
             resolved_model_id: safeString(modelSelection.resolved_model_id) || safeString(model.model_id),
             usage: response?.usage && typeof response.usage === 'object'
@@ -471,7 +471,7 @@ export async function synthesizeLocalSpeech({
           message: 'tts_audio_output_missing',
           blockedBy: 'provider',
           extra: {
-            provider: safeString(response?.provider) || TTS_PROVIDER,
+            provider: safeString(response?.provider) || selectedProvider,
             model_id: safeString(response?.modelId) || safeString(model.model_id),
             route_source: safeString(modelSelection.route_source),
             resolved_model_id: safeString(modelSelection.resolved_model_id) || safeString(model.model_id),
@@ -502,7 +502,7 @@ export async function synthesizeLocalSpeech({
       ok: true,
       task_kind: TTS_TASK_KIND,
       capability: policyGate.capability,
-      provider: safeString(response.provider) || TTS_PROVIDER,
+      provider: safeString(response.provider) || selectedProvider,
       model_id: safeString(response.modelId) || safeString(model.model_id),
       route_source: safeString(modelSelection.route_source),
       resolved_model_id: safeString(modelSelection.resolved_model_id) || safeString(response.modelId) || safeString(model.model_id),
@@ -545,7 +545,7 @@ export async function synthesizeLocalSpeech({
         message: safeString(error?.message || error || 'local_tts_runtime_failed'),
         blockedBy: 'provider',
         extra: {
-          provider: TTS_PROVIDER,
+          provider: selectedProvider,
           model_id: safeString(model.model_id),
           route_source: safeString(modelSelection.route_source),
           resolved_model_id: safeString(modelSelection.resolved_model_id) || safeString(model.model_id),

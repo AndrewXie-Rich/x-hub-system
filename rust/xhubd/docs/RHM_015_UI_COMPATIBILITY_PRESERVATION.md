@@ -4,10 +4,10 @@ Status: active contract, created 2026-05-06
 
 ## Decision
 
-Rust Hub is a backend rewrite, not a product UI replacement. The existing XT
-and Hub user-facing UI must remain the product surface. The Rust browser page at
-`GET /` is only a local diagnostic page for daemon readiness and bridge
-inspection.
+X-Hub is one product with a Rust product kernel and a Swift product shell. Rust
+owns judgment, state, policy, and callable interfaces; Swift owns presentation
+and invokes the kernel contract. The Rust browser page at `GET /` is only a
+local diagnostic page for daemon readiness and bridge inspection.
 
 Any cutover that changes XT layout, labels, navigation, picker behavior,
 settings workflow, account management workflow, or user-visible model state
@@ -16,14 +16,14 @@ into the Rust backend migration.
 
 ## Non-Negotiable Rules
 
-1. **Default UI stays XT.** Users keep opening and operating the existing Swift
-   XT app and existing Hub setup/settings flows.
+1. **Default UI stays Swift.** Users keep opening and operating the existing
+   Swift XT/Hub apps and existing setup/settings flows.
 2. **Rust browser page is diagnostics only.** It must not become the place where
    users manage accounts, skills, models, grants, projects, or supervisor
    settings.
-3. **Rust bridges are default-off until gated.** Rust data can be consumed by XT
-   only through explicit opt-in environment variables, defaults keys, or
-   documented bridge flags.
+3. **Swift consumes the Rust kernel contract.** Product state should come from
+   Rust endpoints such as `GET /product/kernel`, with compatibility fallbacks
+   only where a migration gate still requires them.
 4. **Fallback must preserve the current UI path.** If Rust daemon is down,
    schema is invalid, readiness is false, or secret material is detected, XT
    must fall back to the existing Node/Swift path rather than showing an
@@ -37,6 +37,9 @@ into the Rust backend migration.
 7. **Authority changes require separate gates.** Inventory display, route
    decision preview, provider route authority, scheduler authority, skill
    execution, and memory writer authority are separate cutovers.
+8. **Node is compatibility, not product authority.** Node may remain as an admin
+   API, legacy bridge, or old-client compatibility layer, but product authority
+   belongs in the Rust kernel after the matching gate passes.
 
 ## Product Surfaces That Must Stay Stable
 
@@ -50,12 +53,14 @@ into the Rust backend migration.
 | Hub setup wizard | `x-terminal/Sources/UI/HubSetupWizardView.swift` | Keep onboarding path and provider/account setup flow unchanged until explicit product work. |
 | Settings guidance | `x-terminal/Sources/UI/XTSettingsGuidancePresentation.swift` | Keep current guidance hierarchy while allowing Rust truth to feed status text. |
 | Supervisor persona center | `x-terminal/Sources/UI/Supervisor/SupervisorPersonaCenterView.swift` | Keep available model source shape and persona model assignments stable. |
+| Rust kernel contract | `rust hub/crates/xhubd/src/main.rs` `GET /product/kernel` | Single Swift-consumed product-kernel status contract. |
 | Rust diagnostic page | `rust hub/crates/xhubd/src/main.rs` `GET /` | Keep as diagnostic/readiness page only; no product settings ownership. |
 
 ## Allowed Rust Data Replacements
 
 | Data | Rust Source | Allowed UI Use | Cutover State |
 | --- | --- | --- | --- |
+| Product kernel status | `GET /product/kernel` | Feed Hub shell readiness, authority, domain, and kernel/shell boundary state. | Product contract. |
 | Model inventory | `GET /model/inventory`, `xhubd model inventory` | Feed visible model inventory and truth cards. | Default-off live bridge exists. |
 | Model inventory readiness | `GET /model/readiness` | Gate whether Rust inventory can be trusted. | Evidence-only, default-off. |
 | Model route decision | `GET/POST /model/route`, `xhubd model route` | Preview route decisions and prepare authority cutover. | Read-only prep only. |
@@ -76,7 +81,7 @@ Do not bundle these with Rust backend migration tasks:
 - Collapsing quota, scope, runtime, and capability blockers into a generic
   unavailable state.
 - Changing default selected model behavior without route parity evidence.
-- Making Rust route or scheduler authority default-on.
+- Making a new authority path default-on without its matching live gate.
 - Adding UI text that explains internal bridge flags or daemon mechanics to
   normal users.
 
@@ -135,10 +140,9 @@ Rust package UI preservation gate:
 bash "tools/ui_compatibility_no_product_ui_change_gate.command"
 ```
 
-This static gate fails if the Rust Hub package embeds Swift UI source, if the
-Rust browser root page starts using product-management wording, or if the
-backend/readiness docs no longer state the default-off and writer-authority
-boundaries.
+This static gate fails if the Rust package embeds Swift UI source, if the Rust
+browser root page starts using product-management wording, or if the
+kernel/shell docs no longer preserve the product boundary.
 
 Focused XT tests:
 
@@ -185,7 +189,7 @@ The next Node/XT model route authority prep bridge may be implemented only if:
 For each Rust backend cutover that touches UI data:
 
 - Existing XT UI surfaces still compile and appear in the same place.
-- Existing fallback path still works when Rust is unavailable.
+- Existing compatibility fallback path still works when Rust is unavailable.
 - Rust truth can be enabled independently.
 - Secret material is rejected before projection.
 - Machine-readable reason codes are preserved through presentation.

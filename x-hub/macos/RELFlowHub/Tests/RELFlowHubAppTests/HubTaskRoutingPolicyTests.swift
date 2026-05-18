@@ -3,9 +3,9 @@ import XCTest
 @testable import RELFlowHubCore
 
 final class HubTaskRoutingPolicyTests: XCTestCase {
-    func testTranslateRoutesToLoadedTextGenerationModelWithoutExplicitRole() {
+    func testCoderRoutesToLoadedTextGenerationModelWithoutExplicitRole() {
         let decision = HubTaskRoutingPolicy.decision(
-            taskType: .translate,
+            taskType: .coder,
             models: [
                 HubModel(
                     id: "vision-only",
@@ -37,9 +37,9 @@ final class HubTaskRoutingPolicyTests: XCTestCase {
         XCTAssertFalse(decision.willAutoLoad)
     }
 
-    func testTranslateUsesRoleOnlyAsTieBreakerWithinTaskMatches() {
+    func testCoderUsesRoleOnlyAsTieBreakerWithinTaskMatches() {
         let decision = HubTaskRoutingPolicy.decision(
-            taskType: .translate,
+            taskType: .coder,
             models: [
                 HubModel(
                     id: "bigger-general",
@@ -58,7 +58,7 @@ final class HubTaskRoutingPolicyTests: XCTestCase {
                     quant: "fp16",
                     contextLength: 8192,
                     paramsB: 7.0,
-                    roles: ["translate"],
+                    roles: ["coder"],
                     state: .loaded,
                     taskKinds: ["text_generate"]
                 ),
@@ -71,9 +71,9 @@ final class HubTaskRoutingPolicyTests: XCTestCase {
         XCTAssertEqual(decision.reason, "task_match_loaded")
     }
 
-    func testAssistAutoloadsTaskMatchBeforeLoadedUnsupportedModel() {
+    func testSupervisorAutoloadsTaskMatchBeforeLoadedUnsupportedModel() {
         let decision = HubTaskRoutingPolicy.decision(
-            taskType: .assist,
+            taskType: .supervisor,
             models: [
                 HubModel(
                     id: "loaded-embedding",
@@ -113,7 +113,7 @@ final class HubTaskRoutingPolicyTests: XCTestCase {
             quant: "fp16",
             contextLength: 8192,
             paramsB: 7.0,
-            roles: ["general", "translate"],
+            roles: ["general", "coder"],
             state: .available,
             taskKinds: ["vision_understand", "ocr"]
         )

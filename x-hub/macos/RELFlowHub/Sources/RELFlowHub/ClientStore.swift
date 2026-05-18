@@ -16,6 +16,7 @@ final class ClientStore: ObservableObject {
     private let pruneTTL: Double = 180.0
 
     private var timer: Timer?
+    private let clientReadDirectories = ClientStorage.readDirectoryCandidates()
     private let refreshQueue = DispatchQueue(label: "xhub.client-store.refresh", qos: .utility)
     private var refreshInFlight: Bool = false
 
@@ -33,11 +34,14 @@ final class ClientStore: ObservableObject {
         refreshInFlight = true
 
         let pruneTTL = self.pruneTTL
+        let readDirectories = self.clientReadDirectories
         refreshQueue.async { [weak self] in
-            let snapshot = Self.loadClients(pruneTTL: pruneTTL)
+            let snapshot = Self.loadClients(pruneTTL: pruneTTL, readDirectories: readDirectories)
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.clients = snapshot
+                if self.clients != snapshot {
+                    self.clients = snapshot
+                }
                 self.refreshInFlight = false
             }
         }
@@ -51,12 +55,15 @@ final class ClientStore: ObservableObject {
         liveClients(now: now).count
     }
 
-    nonisolated private static func loadClients(pruneTTL: Double) -> [HubClientHeartbeat] {
+    nonisolated private static func loadClients(
+        pruneTTL: Double,
+        readDirectories: [URL] = ClientStorage.readDirectoryCandidates()
+    ) -> [HubClientHeartbeat] {
         let decoder = JSONDecoder()
         let now = Date().timeIntervalSince1970
         var latestByAppID: [String: HubClientHeartbeat] = [:]
 
-        for dir in ClientStorage.readDirectoryCandidates() {
+        for dir in readDirectories {
             guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else {
                 continue
             }

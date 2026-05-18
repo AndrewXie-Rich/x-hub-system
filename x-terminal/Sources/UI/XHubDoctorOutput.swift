@@ -108,7 +108,6 @@ struct XHubDoctorOutputCheckResult: Identifiable, Codable, Equatable, Sendable {
     var memoryRouteTruthSnapshot: XHubDoctorOutputMemoryRouteTruthSnapshot?
     var providerKeySelectionSnapshot: ProviderKeySelectionDecision?
     var providerKeyRouteContextSnapshot: XHubDoctorOutputProviderKeyRouteContextSnapshot?
-    var hubContractProjection: XTUnifiedDoctorHubContractProjection?
     var externalTerminalAccessSnapshot: XTUnifiedDoctorExternalTerminalAccessProjection?
     var durableCandidateMirrorSnapshot: XHubDoctorOutputDurableCandidateMirrorSnapshot?
     var localStoreWriteSnapshot: XHubDoctorOutputLocalStoreWriteSnapshot?
@@ -148,7 +147,6 @@ struct XHubDoctorOutputCheckResult: Identifiable, Codable, Equatable, Sendable {
         memoryRouteTruthSnapshot: XHubDoctorOutputMemoryRouteTruthSnapshot? = nil,
         providerKeySelectionSnapshot: ProviderKeySelectionDecision? = nil,
         providerKeyRouteContextSnapshot: XHubDoctorOutputProviderKeyRouteContextSnapshot? = nil,
-        hubContractProjection: XTUnifiedDoctorHubContractProjection? = nil,
         externalTerminalAccessSnapshot: XTUnifiedDoctorExternalTerminalAccessProjection? = nil,
         durableCandidateMirrorSnapshot: XHubDoctorOutputDurableCandidateMirrorSnapshot? = nil,
         localStoreWriteSnapshot: XHubDoctorOutputLocalStoreWriteSnapshot? = nil,
@@ -183,7 +181,6 @@ struct XHubDoctorOutputCheckResult: Identifiable, Codable, Equatable, Sendable {
         self.memoryRouteTruthSnapshot = memoryRouteTruthSnapshot
         self.providerKeySelectionSnapshot = providerKeySelectionSnapshot
         self.providerKeyRouteContextSnapshot = providerKeyRouteContextSnapshot
-        self.hubContractProjection = hubContractProjection
         self.externalTerminalAccessSnapshot = externalTerminalAccessSnapshot
         self.durableCandidateMirrorSnapshot = durableCandidateMirrorSnapshot
         self.localStoreWriteSnapshot = localStoreWriteSnapshot
@@ -221,7 +218,6 @@ struct XHubDoctorOutputCheckResult: Identifiable, Codable, Equatable, Sendable {
         case memoryRouteTruthSnapshot = "memory_route_truth_snapshot"
         case providerKeySelectionSnapshot = "provider_key_selection_snapshot"
         case providerKeyRouteContextSnapshot = "provider_key_route_context_snapshot"
-        case hubContractProjection = "hub_contract_projection"
         case externalTerminalAccessSnapshot = "external_terminal_access_snapshot"
         case durableCandidateMirrorSnapshot = "durable_candidate_mirror_snapshot"
         case localStoreWriteSnapshot = "local_store_write_snapshot"
@@ -2340,7 +2336,6 @@ private extension XHubDoctorOutputCheckResult {
             providerKeyRouteContextSnapshot: providerKeyRouteContext.hasSignal
                 ? XHubDoctorOutputProviderKeyRouteContextSnapshot(providerKeyRouteContext)
                 : nil,
-            hubContractProjection: section.hubContractProjection,
             externalTerminalAccessSnapshot: section.externalTerminalAccessProjection,
             durableCandidateMirrorSnapshot: XHubDoctorOutputDurableCandidateMirrorSnapshot(section: section),
             localStoreWriteSnapshot: XHubDoctorOutputLocalStoreWriteSnapshot(section: section),

@@ -1,9 +1,30 @@
 #!/usr/bin/env node
+import fs from 'node:fs';
 import http from 'node:http';
+import path from 'node:path';
+
+function safeString(value) {
+  return String(value ?? '').trim();
+}
+
+function readAccessKey(config) {
+  const raw = safeString(process.env.XHUB_RUST_HTTP_ACCESS_KEY || process.env.XHUB_RUST_HUB_ACCESS_KEY);
+  if (raw) return raw;
+  const filePath = safeString(config.accessKeyFile)
+    || safeString(process.env.XHUB_RUST_HTTP_ACCESS_KEY_FILE)
+    || safeString(process.env.XHUB_RUST_HUB_ACCESS_KEY_FILE);
+  if (!filePath) return '';
+  try {
+    return safeString(fs.readFileSync(path.resolve(filePath), 'utf8'));
+  } catch {
+    return '';
+  }
+}
 
 function parseArgs(argv) {
   const out = {
     httpBaseUrl: 'http://127.0.0.1:50151',
+    accessKeyFile: '',
     timeoutMs: 5000,
     scopeKey: 'project:rust-live-cutover',
     skillId: 'rust-authority-healthcheck',
@@ -14,6 +35,10 @@ function parseArgs(argv) {
     switch (arg) {
       case '--http-base-url':
         out.httpBaseUrl = String(next || '').trim() || out.httpBaseUrl;
+        i += 1;
+        break;
+      case '--access-key-file':
+        out.accessKeyFile = safeString(next);
         i += 1;
         break;
       case '--timeout-ms':
@@ -44,28 +69,33 @@ function usage() {
   return [
     'memory_skills_live_smoke.js',
     '',
-    'Options:',
-    '  --http-base-url <u>  Live xhubd HTTP base URL',
-    '  --timeout-ms <n>    Request timeout, default 5000',
-    '  --scope-key <s>     Skill policy scope for live smoke',
-    '  --skill-id <id>     Built-in skill id, default rust-authority-healthcheck',
+  'Options:',
+  '  --http-base-url <u>  Live xhubd HTTP base URL',
+  '  --access-key-file <p> HTTP access key file; defaults to env',
+  '  --timeout-ms <n>    Request timeout, default 5000',
+  '  --scope-key <s>     Skill policy scope for live smoke',
+  '  --skill-id <id>     Built-in skill id, default rust-authority-healthcheck',
   ].join('\n');
 }
 
-function httpJson(method, url, body, timeoutMs, okStatuses = [200]) {
+function httpJson(method, url, body, timeoutMs, okStatuses = [200], accessKey = '') {
   return new Promise((resolve, reject) => {
     const payload = body === undefined ? '' : JSON.stringify(body);
     const parsed = new URL(url);
+    const headers = {
+      ...(accessKey ? { Authorization: `Bearer ${accessKey}` } : {}),
+      ...(payload ? {
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(payload),
+      } : {}),
+    };
     const req = http.request({
       method,
       hostname: parsed.hostname,
       port: parsed.port,
       path: `${parsed.pathname}${parsed.search}`,
       timeout: timeoutMs,
-      headers: payload ? {
-        'content-type': 'application/json',
-        'content-length': Buffer.byteLength(payload),
-      } : {},
+      headers,
     }, (res) => {
       let data = '';
       res.setEncoding('utf8');
@@ -108,10 +138,11 @@ async function main() {
     console.log(usage());
     return;
   }
+  args.httpAccessKey = readAccessKey(args);
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
   const actor = 'rust-memory-skills-live-smoke';
 
-  const ready = await httpJson('GET', `${args.httpBaseUrl}/ready`, undefined, args.timeoutMs);
+  const ready = await httpJson('GET', `${args.httpBaseUrl}/ready`, undefined, args.timeoutMs, [200], args.httpAccessKey);
   assertOk(ready?.ready === true, 'live daemon not ready', ready);
   assertOk(ready?.memory?.canonical_writer_in_rust === true, 'memory writer authority not active', ready?.memory || {});
   assertOk(ready?.skills?.execution_authority_in_rust === true, 'skills execution authority not active', ready?.skills || {});
@@ -126,21 +157,21 @@ async function main() {
     text: memoryText,
     tags: ['rust-live-cutover', 'memory.write'],
     actor,
-  }, args.timeoutMs);
+  }, args.timeoutMs, [200], args.httpAccessKey);
   assertOk(written?.ok === true && written?.writer_authority_in_rust === true, 'live memory write failed', written);
   assertNoLeak(written, 'memory write');
 
   const secretDenied = await httpJson('POST', `${args.httpBaseUrl}/memory/write`, {
     text: 'live smoke should deny sk-rust-live-cutover-secret',
     actor,
-  }, args.timeoutMs, [403]);
+  }, args.timeoutMs, [403], args.httpAccessKey);
   assertOk(secretDenied?.deny_code === 'memory_secret_pattern_denied', 'secret memory write was not denied', secretDenied);
   assertNoLeak(secretDenied, 'secret memory write denial');
 
   const search = await httpJson('GET', `${args.httpBaseUrl}/memory/search?${new URLSearchParams({
     query: 'Rust live memory writer verification governed durable responsive',
     max_results: '5',
-  }).toString()}`, undefined, args.timeoutMs);
+  }).toString()}`, undefined, args.timeoutMs, [200], args.httpAccessKey);
   assertOk(Array.isArray(search?.results) && search.results.length >= 1, 'live memory write was not retrievable', search);
   assertNoLeak(search, 'memory search');
 
@@ -148,7 +179,7 @@ async function main() {
     scope_key: args.scopeKey,
     skill_id: args.skillId,
     actor,
-  }, args.timeoutMs);
+  }, args.timeoutMs, [200], args.httpAccessKey);
   assertOk(pinned?.ok === true, 'live skill pin failed', pinned);
 
   const granted = await httpJson('POST', `${args.httpBaseUrl}/skills/grant`, {
@@ -156,7 +187,7 @@ async function main() {
     skill_id: args.skillId,
     capability: 'health',
     actor,
-  }, args.timeoutMs);
+  }, args.timeoutMs, [200], args.httpAccessKey);
   assertOk(granted?.ok === true, 'live skill grant failed', granted);
 
   const executed = await httpJson('POST', `${args.httpBaseUrl}/skills/execute`, {
@@ -167,7 +198,7 @@ async function main() {
     audit_ref: 'rust-live-cutover',
     actor,
     input: { ping: true },
-  }, args.timeoutMs);
+  }, args.timeoutMs, [200], args.httpAccessKey);
   assertOk(executed?.ok === true && executed?.status === 'executed', 'live skill execution failed', executed);
   assertOk(executed?.execution_authority_in_rust === true, 'live skill execution authority not reported', executed);
   assertOk(executed?.output?.status === 'ok', 'live skill output mismatch', executed);
@@ -179,7 +210,7 @@ async function main() {
     requested_capabilities: ['health'],
     actor,
     input: { token: 'sk-rust-live-cutover-secret' },
-  }, args.timeoutMs, [403]);
+  }, args.timeoutMs, [403], args.httpAccessKey);
   assertOk(deniedExecute?.deny_code === 'skill_input_secret_pattern_denied', 'secret skill input was not denied', deniedExecute);
   assertNoLeak(deniedExecute, 'secret skill execute denial');
 
@@ -188,6 +219,7 @@ async function main() {
     schema_version: 'xhub.rust_hub.memory_skills_live_smoke.v1',
     command: 'memory-skills-live-smoke',
     http_base_url: args.httpBaseUrl,
+    http_access_key_configured: Boolean(args.httpAccessKey),
     scope_key: args.scopeKey,
     skill_id: args.skillId,
     memory_writer_authority_in_rust: true,

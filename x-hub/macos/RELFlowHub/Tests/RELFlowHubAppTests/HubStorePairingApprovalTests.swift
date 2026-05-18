@@ -294,6 +294,34 @@ final class HubStorePairingApprovalTests: XCTestCase {
         )
     }
 
+    func testOpenNotificationActionRoutesProviderKeysSettingsInHub() {
+        let store = HubStore(startServices: false)
+        let notification = HubNotification.make(
+            source: "Hub",
+            title: "Open provider keys settings",
+            body: "",
+            actionURL: "relflowhub://settings/provider-keys?source_ref=/Users/test/config149.toml"
+        )
+
+        store.openNotificationAction(notification)
+
+        XCTAssertEqual(
+            store.settingsNavigationTarget,
+            .providerKeys(sourceRef: "/Users/test/config149.toml")
+        )
+    }
+
+    func testOpenProviderKeysSettingsNormalizesSourceRef() {
+        let store = HubStore(startServices: false)
+
+        store.openProviderKeysSettings(sourceRef: "/Users/test/../test/config149.toml")
+
+        XCTAssertEqual(
+            store.settingsNavigationTarget,
+            .providerKeys(sourceRef: "/Users/test/config149.toml")
+        )
+    }
+
     private func makeRequest(
         deviceName: String,
         claimedDeviceId: String = "xt-device",

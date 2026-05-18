@@ -235,7 +235,7 @@ struct XTToolAuthorizationTests {
     }
 
     @Test
-    func deviceGatePrecedesProjectToolPolicyForUntrustedClipboardRead() async {
+    func deviceGateProjectBindingMissingRequestsLocalApprovalBeforeToolPolicy() async {
         let fixture = ToolExecutorProjectFixture(name: "tool-authorization-device-gate-precedence")
         defer { fixture.cleanup() }
 
@@ -250,21 +250,15 @@ struct XTToolAuthorizationTests {
         )
 
         #expect(decision.disposition == .ask)
+        #expect(decision.risk == .alwaysConfirm)
         #expect(decision.denyCode == xtTrustedAutomationLocalApprovalRequiredDenyCode)
         #expect(decision.policySource == "trusted_automation_device_gate")
-        #expect(decision.runtimePolicyDecision == nil)
-        let summary = xtToolAuthorizationDeniedSummary(
-            call: call,
-            projectRoot: fixture.root,
-            config: config,
-            decision: decision
-        )
-        #expect(jsonString(summary["deny_code"]) == xtTrustedAutomationLocalApprovalRequiredDenyCode)
-        #expect(jsonString(summary["trusted_automation_state"]) == AXTrustedAutomationProjectState.off.rawValue)
+        #expect(decision.policyReason.contains("project_trusted_automation_approval_required"))
+        #expect(decision.deviceGateDecision?.rejectCode == .trustedAutomationModeOff)
     }
 
     @Test
-    func deviceUIStepRequiresBothObserveAndActDeviceGates() async {
+    func deviceUIStepMissingActGroupRequestsLocalApprovalToArmGroup() async {
         await Self.permissionGate.run {
             let fixture = ToolExecutorProjectFixture(name: "tool-authorization-device-step-gates")
             defer { fixture.cleanup() }

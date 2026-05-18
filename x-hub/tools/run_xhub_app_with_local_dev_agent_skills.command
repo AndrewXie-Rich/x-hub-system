@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-APP_BIN="$ROOT_DIR/build/X-Hub.app/Contents/MacOS/RELFlowHub"
+APP_BIN="$ROOT_DIR/build/X-Hub.app/Contents/MacOS/XHub"
 
 if [ ! -x "$APP_BIN" ]; then
   echo "X-Hub app binary not found: $APP_BIN" >&2

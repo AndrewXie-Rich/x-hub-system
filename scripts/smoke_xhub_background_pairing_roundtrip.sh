@@ -322,7 +322,7 @@ PY
 
 launch_hub_background() {
   local app_path="$1"
-  local executable_path="$app_path/Contents/MacOS/RELFlowHub"
+  local executable_path="$app_path/Contents/MacOS/XHub"
   local open_err_file="$TMP_ROOT/open.err"
   local fallback_err_file="$TMP_ROOT/direct_launch.err"
 

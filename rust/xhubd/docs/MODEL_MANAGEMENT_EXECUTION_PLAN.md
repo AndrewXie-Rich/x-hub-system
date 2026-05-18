@@ -1,7 +1,7 @@
 # Rust Hub Model Management Execution Plan
 
 Status: active-proposed
-Updated: 2026-04-29
+Updated: 2026-05-18
 Target root: `/Users/andrew.xie/Documents/AX/rust/rust hub`
 Source plan: `/Users/andrew.xie/Documents/AX/x-hub-system/docs/memory-new/xhub-remote-paid-and-local-model-management-execution-plan-v1.md`
 
@@ -51,10 +51,14 @@ Already present in this Rust workspace:
   - supports shared OpenAI/Codex pools
   - skips disabled, missing-auth, expired, cooldown, blocked, stale, and quota
     exhausted accounts
+  - plans and applies secret-safe Codex OAuth refresh without exposing token
+    material in CLI/HTTP output
   - emits candidate decisions without provider secrets
 - `crates/xhubd/src/provider_bridge.rs`
   - exposes `xhubd provider route`
   - exposes `provider compare`, `provider reports`, and `provider readiness`
+  - exposes `provider plan-codex-oauth-refresh` and
+    `provider refresh-codex-oauth`
   - persists append-only `provider_route` shadow evidence
 - Node Hub opt-in hooks
   - provider route shadow compare

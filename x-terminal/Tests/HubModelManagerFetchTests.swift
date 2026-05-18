@@ -249,6 +249,49 @@ struct HubModelManagerFetchTests {
         }
     }
 
+    @MainActor
+    @Test
+    func fetchModelsCanUseDefaultOffRustInventoryBridgeWhenExplicitlyEnabled() async throws {
+        let tempRoot = try makeTempDir(prefix: "hub_model_manager_rust_inventory_bridge")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let baseDir = tempRoot.appendingPathComponent("RELFlowHub", isDirectory: true)
+        try FileManager.default.createDirectory(at: baseDir, withIntermediateDirectories: true)
+
+        let fixtureURL = try #require(Bundle.module.url(
+            forResource: "remote_missing_scope",
+            withExtension: "json",
+            subdirectory: nil
+        ))
+        XTRustModelInventoryLiveBridge.installConfigurationOverrideForTesting(
+            XTRustModelInventoryLiveBridgeConfiguration(
+                enabled: true,
+                snapshotPath: fixtureURL.path,
+                httpBaseURL: nil
+            )
+        )
+        defer {
+            XTRustModelInventoryLiveBridge.resetConfigurationOverrideForTesting()
+            HubPaths.clearPinnedBaseDirOverride()
+        }
+        HubPaths.setPinnedBaseDirOverride(baseDir)
+
+        let appModel = AppModel.makeForTesting()
+        let manager = HubModelManager()
+        manager.setAppModel(appModel)
+
+        await manager.fetchModels()
+
+        #expect(manager.latestRustInventoryProjection?.firstRemoteScopeBlocked?.blockingReasonCode == "missing_scope:api.model.read")
+        #expect(manager.latestSnapshot.models.map(\.id) == ["gpt-5.5"])
+        #expect(manager.latestSnapshot.models.first?.state == .available)
+        #expect(appModel.modelsState == manager.latestSnapshot)
+        let truth = manager.latestRustInventoryProjection.map {
+            XTModelInventoryTruthPresentation.build(rustInventory: $0)
+        }
+        #expect(truth?.state == .remoteScopeMissing)
+    }
+
     private func makeTempDir(prefix: String) throws -> URL {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent(prefix, isDirectory: true)

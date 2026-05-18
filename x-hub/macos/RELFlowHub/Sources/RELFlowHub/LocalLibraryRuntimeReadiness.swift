@@ -29,13 +29,15 @@ enum LocalLibraryRuntimeReadinessResolver {
     typealias TTSReadinessEvaluator = (String) -> IPCVoiceTTSReadinessResult
     typealias LaunchConfigAvailabilityResolver = (String) -> Bool
     typealias CompatibilityEvaluator = (HubModel, String) -> String?
+    typealias TrialSurfaceEvaluator = (HubModel, String) -> String?
 
     @MainActor
     static func readiness(
         for model: HubModel,
         ttsReadinessEvaluator: TTSReadinessEvaluator? = nil,
         commandLaunchConfigResolver: LaunchConfigAvailabilityResolver? = nil,
-        compatibilityEvaluator: CompatibilityEvaluator? = nil
+        compatibilityEvaluator: CompatibilityEvaluator? = nil,
+        trialSurfaceEvaluator: TrialSurfaceEvaluator? = nil
     ) -> LocalLibraryRuntimeReadiness {
         let strings = HubUIStrings.Models.Library.RuntimeReadiness.self
         guard !LocalModelRuntimeActionPlanner.isRemoteModel(model) else {
@@ -62,6 +64,20 @@ enum LocalLibraryRuntimeReadinessResolver {
                 pythonPath: HubStore.shared.preferredLocalProviderPythonPath(
                     preferredProviderID: providerID
                 )
+            )
+        }
+        let resolvedTrialSurfaceEvaluator = trialSurfaceEvaluator ?? { model, providerID in
+            let probeLaunchConfig = HubStore.shared.localRuntimePythonProbeLaunchConfig(
+                preferredProviderID: providerID
+            )
+            return LocalModelTrialSupportResolver.unavailabilityMessage(
+                for: model,
+                runtimeStatus: AIRuntimeStatusStorage.load(),
+                probeLaunchConfig: probeLaunchConfig,
+                pythonPath: probeLaunchConfig?.resolvedPythonPath
+                    ?? HubStore.shared.preferredLocalProviderPythonPath(
+                        preferredProviderID: providerID
+                    )
             )
         }
 
@@ -91,6 +107,10 @@ enum LocalLibraryRuntimeReadinessResolver {
             return .unavailable(collapsedDetail(blockedMessage))
         }
 
+        if let trialSurfaceMessage = resolvedTrialSurfaceEvaluator(model, providerID) {
+            return .unavailable(collapsedDetail(trialSurfaceMessage))
+        }
+
         return .ready(strings.localExecutionReady)
     }
 
@@ -108,10 +128,12 @@ final class LocalLibraryRuntimeReadinessSession {
     typealias ProviderProbeResolver = (String) -> LocalLibraryRuntimeProviderProbe
     typealias TTSReadinessEvaluator = LocalLibraryRuntimeReadinessResolver.TTSReadinessEvaluator
     typealias CompatibilityEvaluator = (HubModel, LocalLibraryRuntimeProviderProbe) -> String?
+    typealias TrialSurfaceEvaluator = (HubModel, LocalLibraryRuntimeProviderProbe) -> String?
 
     private let ttsReadinessEvaluator: TTSReadinessEvaluator?
     private let providerProbeResolver: ProviderProbeResolver
     private let compatibilityEvaluator: CompatibilityEvaluator
+    private let trialSurfaceEvaluator: TrialSurfaceEvaluator
     private var providerProbeByID: [String: LocalLibraryRuntimeProviderProbe] = [:]
 
     init(
@@ -124,11 +146,20 @@ final class LocalLibraryRuntimeReadinessSession {
                 probeLaunchConfig: providerProbe.probeLaunchConfig,
                 pythonPath: providerProbe.pythonPath
             )
+        },
+        trialSurfaceEvaluator: @escaping TrialSurfaceEvaluator = { model, providerProbe in
+            LocalModelTrialSupportResolver.unavailabilityMessage(
+                for: model,
+                runtimeStatus: AIRuntimeStatusStorage.load(),
+                probeLaunchConfig: providerProbe.probeLaunchConfig,
+                pythonPath: providerProbe.pythonPath
+            )
         }
     ) {
         self.ttsReadinessEvaluator = ttsReadinessEvaluator
         self.providerProbeResolver = providerProbeResolver
         self.compatibilityEvaluator = compatibilityEvaluator
+        self.trialSurfaceEvaluator = trialSurfaceEvaluator
     }
 
     func readiness(for model: HubModel) -> LocalLibraryRuntimeReadiness {
@@ -141,6 +172,10 @@ final class LocalLibraryRuntimeReadinessSession {
             compatibilityEvaluator: { [weak self] model, providerID in
                 guard let self else { return nil }
                 return self.compatibilityEvaluator(model, self.providerProbe(for: providerID))
+            },
+            trialSurfaceEvaluator: { [weak self] model, providerID in
+                guard let self else { return nil }
+                return self.trialSurfaceEvaluator(model, self.providerProbe(for: providerID))
             }
         )
     }

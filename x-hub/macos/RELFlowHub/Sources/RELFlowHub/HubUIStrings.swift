@@ -1701,6 +1701,8 @@ enum HubUIStrings {
 
         enum RuntimeError {
             static let missingModelPath = "模型路径缺失。"
+            static let missingMLX = "当前 Python 运行时缺少 mlx。"
+            static let missingMLXVLM = "当前 Python 运行时缺少 mlx_vlm。"
             static let missingTorch = "当前 Python 运行时缺少 torch。"
             static let missingTransformers = "当前 Python 运行时缺少 transformers。"
             static let missingPillow = "当前 Python 运行时缺少 Pillow。"
@@ -1717,6 +1719,8 @@ enum HubUIStrings {
             static let transformersImportFailed = "当前 Python 运行时无法初始化 transformers。"
             static let processorInitFailed = "当前 Python 运行时无法初始化这个模型的处理器。"
             static let processorInitFailedOutdated = "当前 Python Transformers 运行时过旧，无法初始化这个模型的图像/视频处理器。"
+            static let detailMissingMLX = "Hub 只有在 mlx 可用后才能加载这个 MLX 多模态模型。"
+            static let detailMissingMLXVLM = "Hub 只有在 mlx_vlm 可用后才能加载这个 MLX 多模态模型。"
             static let detailMissingTransformers = "Hub 只有在 transformers 可用后才能加载这个 Transformers 模型。"
             static let detailMissingTorch = "Hub 只有在 torch 可用后才能加载这个 Transformers 模型。"
             static let detailMissingPillow = "视觉和 OCR 模型需要 Pillow 来预处理图像。"
@@ -1736,6 +1740,10 @@ enum HubUIStrings {
                 guard !token.isEmpty else { return "" }
 
                 switch token {
+                case "missing_module:mlx":
+                    return missingMLX
+                case "missing_module:mlx_vlm":
+                    return missingMLXVLM
                 case "missing_module:torch":
                     return missingTorch
                 case "missing_module:transformers":
@@ -1788,6 +1796,10 @@ enum HubUIStrings {
                 guard !token.isEmpty else { return normalizedDetail }
 
                 switch token {
+                case "missing_module:mlx":
+                    return detailMissingMLX
+                case "missing_module:mlx_vlm":
+                    return detailMissingMLXVLM
                 case "missing_module:transformers":
                     return detailMissingTransformers
                 case "missing_module:torch":
@@ -2814,12 +2826,9 @@ enum HubUIStrings {
         }
 
         enum TaskType {
-            static let assist = "助理"
-            static let translate = "翻译"
-            static let summarize = "总结"
-            static let extract = "提取"
-            static let refine = "润色"
-            static let classify = "分类"
+            static let supervisor = "Supervisor"
+            static let coder = "Coder"
+            static let reviewer = "Reviewer"
         }
 
         enum Capability {
@@ -2874,13 +2883,11 @@ enum HubUIStrings {
         enum EditRoles {
             static let title = "角色"
             static let general = "通用"
-            static let translate = "翻译"
-            static let summarize = "总结"
-            static let extract = "提取"
-            static let refine = "润色"
-            static let classify = "分类"
+            static let supervisor = "Supervisor"
+            static let coder = "Coder"
+            static let reviewer = "Reviewer"
             static let customRolesPlaceholder = "自定义角色（用逗号分隔）"
-            static let routingHint = "路由会根据角色为每种任务类型挑选一个已加载模型。"
+            static let routingHint = "路由会按 Supervisor / Coder / Reviewer 三个角色挑选已加载模型；旧角色标签仍会自动并入这三类。"
             static let cancel = "取消"
             static let save = "保存"
         }
@@ -3070,6 +3077,18 @@ enum HubUIStrings {
 
                 static func syncedExistingDownloads(in path: String) -> String {
                     "已下载的市场模型保存在 \(path)。已经存在的模型都已同步到模型库。"
+                }
+
+                static func downloadsAccessRequired(in path: String) -> String {
+                    "Hub 需要先获得 \(path) 的读取授权，才能把这些已下载模型导入模型库。请选择这个目录，或它的上级目录。"
+                }
+
+                static func downloadsAccessInvalidSelection(in path: String) -> String {
+                    "请选择 \(path) 或它的上级目录，这样 Hub 才能持续读取已下载模型。"
+                }
+
+                static func downloadsAccessGrantFailed(in path: String) -> String {
+                    "Hub 还没拿到 \(path) 的读取授权，因此当前不能导入这些已下载模型。"
                 }
 
                 static func importedToLibrary(_ count: Int) -> String {
@@ -3704,6 +3723,8 @@ enum HubUIStrings {
             static let importCatalog = "导入远程目录…"
             static let add = "新增…"
             static let scanAll = "付费模型扫描"
+            static let scanQuick = "快速扫描"
+            static let scanFull = "全量扫描"
             static let rescan = "复检"
             static let empty = "还没有远程模型。"
             static let syncHint = "只有通过校验、且已启用的远程模型，才会被标记成可加载并同步给 X-Terminal。缺少 API Key 或地址校验失败的条目会继续留在 Hub 设置里，不会被下发。"
@@ -3806,6 +3827,7 @@ enum HubUIStrings {
             static let usageLimitUpgradeDetail = "当前额度已用完，可升级 Plus 后继续使用。"
             static let healthCheckingBadge = "付费扫描中"
             static let healthCheckingDetail = "正在按 key 逐个检测付费模型执行链路。"
+            static let healthFullCheckingDetail = "正在全量检测所有 key 下的所有模型，可用/不可用结果会写到各模型行。"
             static let healthHealthyBadge = "可用"
             static let healthDegradedBadge = "待复检"
             static let healthQuotaBadge = "额度用完"
@@ -3883,6 +3905,142 @@ enum HubUIStrings {
 
             static func healthLastChecked(_ time: String) -> String {
                 "上次检测 \(time)"
+            }
+        }
+
+        enum ProviderKeys {
+            static let sectionTitle = "Provider Key 管理"
+            static let title = "Provider Keys"
+            static let empty = "还没有导入 Provider Key。"
+            static let globalStrategy = "全局路由策略"
+            static let providerStrategy = "路由策略"
+            static let keyPools = "Key Pools"
+            static let quotaPools = "额度池"
+            static let ready = "就绪"
+            static let blocked = "阻塞"
+            static let mixed = "混合"
+            static let stale = "已过期"
+            static let enabled = "已启用"
+            static let disabled = "已停用"
+            static let healthy = "健康"
+            static let degraded = "降级"
+            static let rateLimited = "限流中"
+            static let authFailed = "认证失败"
+            static let autoDisabled = "已自动停用"
+            static let dailyUsage = "今日用量"
+            static let totalUsage = "累计用量"
+            static let noQuota = "无限额"
+            static let cooldown = "冷却中"
+            static let nextRetryUnknown = "预计下次可用：未知"
+            static let importAuthDir = "导入 Auth 目录…"
+            static let importProxyConfig = "导入代理配置…"
+            static let refresh = "刷新"
+            static let accounts = "个账号"
+            static let dedicatedSource = "独占"
+            static let sharedSource = "共享"
+
+            static func tokenCount(_ count: Int64) -> String {
+                if count >= 1_000_000 {
+                    return String(format: "%.1fM", Double(count) / 1_000_000.0)
+                } else if count >= 1_000 {
+                    return String(format: "%.1fK", Double(count) / 1_000.0)
+                }
+                return "\(count)"
+            }
+
+            static func providerSummary(provider: String, total: Int, enabled: Int) -> String {
+                "\(provider) · \(total) 个账号 · \(enabled) 个启用"
+            }
+
+            static func dailyUsageText(used: Int64, cap: Int64) -> String {
+                if cap <= 0 {
+                    return "今日 \(tokenCount(used)) tokens"
+                }
+                return "今日 \(tokenCount(used)) / \(tokenCount(cap)) tokens"
+            }
+
+            static func keyPoolSummary(
+                total: Int,
+                ready: Int,
+                cooldown: Int,
+                blocked: Int,
+                disabled: Int,
+                stale: Int
+            ) -> String {
+                Formatting.middleDotSeparated([
+                    "\(total) 个 key",
+                    "\(ready) 个就绪",
+                    cooldown > 0 ? "\(cooldown) 个冷却" : "",
+                    blocked > 0 ? "\(blocked) 个阻塞" : "",
+                    stale > 0 ? "\(stale) 个过期" : "",
+                    disabled > 0 ? "\(disabled) 个停用" : ""
+                ])
+            }
+
+            static func quotaPoolSummary(
+                pools: Int,
+                total: Int,
+                ready: Int,
+                cooldown: Int,
+                blocked: Int,
+                stale: Int
+            ) -> String {
+                Formatting.middleDotSeparated([
+                    "\(pools) 个池",
+                    "\(total) 个 key",
+                    "\(ready) 个可用",
+                    cooldown > 0 ? "\(cooldown) 个冷却" : "",
+                    blocked > 0 ? "\(blocked) 个阻塞" : "",
+                    stale > 0 ? "\(stale) 个过期" : ""
+                ])
+            }
+
+            static func familyQuotaPoolSummary(
+                sources: Int,
+                dedicated: Int,
+                shared: Int,
+                total: Int,
+                ready: Int,
+                cooldown: Int,
+                blocked: Int,
+                stale: Int
+            ) -> String {
+                Formatting.middleDotSeparated([
+                    "\(sources) 个来源",
+                    dedicated > 0 ? "\(dedicated) 个独占" : "",
+                    shared > 0 ? "\(shared) 个共享" : "",
+                    "\(total) 个 key",
+                    "\(ready) 个可用",
+                    cooldown > 0 ? "\(cooldown) 个冷却" : "",
+                    blocked > 0 ? "\(blocked) 个阻塞" : "",
+                    stale > 0 ? "\(stale) 个过期" : ""
+                ])
+            }
+
+            static func exclusiveUsage(_ usage: String) -> String {
+                "独占额度：\(usage)"
+            }
+
+            static func sharedSourceSummary(count: Int, sharedFamilies: String) -> String {
+                let sharedWith = sharedFamilies.trimmingCharacters(in: .whitespacesAndNewlines)
+                if sharedWith.isEmpty {
+                    return "共享来源：\(count) 个"
+                }
+                return "共享来源：\(count) 个 · 与 \(sharedWith) 共用"
+            }
+
+            static func sharedSourceUsage(count: Int, sharedFamilies: String, usage: String) -> String {
+                "\(sharedSourceSummary(count: count, sharedFamilies: sharedFamilies)) · 来源合计：\(usage)"
+            }
+
+            static func sharedWithFamilies(_ value: String) -> String {
+                "与 \(value) 共用额度"
+            }
+
+            static let dedicatedSourceDetail = "这组来源只服务当前家族。"
+
+            static func nextRetry(_ value: String) -> String {
+                "预计下次可用：\(value)"
             }
         }
 
@@ -5496,7 +5654,7 @@ enum HubUIStrings {
             static let noDomainSwiftFallbackSource = "来源：Swift 本机兜底"
             static let noDomainAccessMissing = "当前没有检测到 Tailscale / Headscale / WireGuard / ZeroTier 这类稳定私网地址。没有域名时，建议先让 Hub 和 XT 加入同一个私有网络；否则只能同网连接或临时使用公网 IP。"
             static func noDomainAccessDetected(_ host: String) -> String {
-                "检测到可用于无域名远程连接的私网入口：\(host)"
+                "检测到可用于无域名远程连接的私网入口：\(host)。XT 加入同一个私有网络后，可通过邀请链接稳定连接 Hub。"
             }
             static let externalInviteTitle = "外部访问邀请"
             static let externalHubAlias = "Hub Alias"
@@ -5510,11 +5668,11 @@ enum HubUIStrings {
             static let clearInviteToken = "停用邀请令牌"
             static let copyInviteLink = "复制邀请链接"
             static let copySecureRemoteSetupPack = "复制正式接入包"
-            static let secureRemoteSetupPackHint = "推荐异网 XT 直接使用这份正式接入包。它会固定使用稳定命名入口并附带 invite token，不再继续扩散 raw IP 配对方式。"
-            static let inviteLinkAutoGeneratesToken = "当前主机名已经满足正式入口要求；点击“复制邀请链接”会自动生成 invite token。"
+            static let secureRemoteSetupPackHint = "推荐异网 XT 直接使用这份正式接入包。它会固定使用稳定 DNS/tailnet 入口或 VPN 加密 IP，并附带 invite token，不再继续扩散公网 raw IP 配对方式。"
+            static let inviteLinkAutoGeneratesToken = "当前外部地址可生成邀请链接；点击“复制邀请链接”会自动生成 invite token。正式长期接入建议使用稳定 DNS/tailnet 入口或 VPN 加密 IP。"
             static let inviteQRCodeHint = "另一台已装 XT 的设备可直接扫码打开这条邀请链接。"
             static let inviteLinkNeedsStableHost = "邀请链接需要当前可达的 Hub 地址。可填写同 Wi-Fi / 局域网地址，或 tailnet / relay / DNS 主机名。"
-            static let inviteLinkRejectsRawIP = "正式接入包仍要求稳定命名入口；raw IP 邀请只适用于当前局域网 / 同 Wi-Fi。"
+            static let inviteLinkRejectsRawIP = "正式接入包要求稳定 DNS/tailnet 入口或 VPN 加密 IP；公网 raw IP 邀请只适用于临时验证。"
             static let transportSecurity = "传输安全"
             static let transportMode = "传输模式"
             static let insecure = "不加密"
@@ -5597,7 +5755,7 @@ enum HubUIStrings {
                 static let hintOfflineMissing = "Hub 当前没有正式远端入口，离开同网后 XT 只能等待你回到局域网或重新补入口。"
                 static let hintOfflineLANOnly = "这类入口只适合同一 Wi-Fi / 同一 VPN；换网后 XT 不会自动恢复。"
                 static let hintOfflineRawIP = "raw IP 只适合临时救火。网络切换、NAT 或公网 IP 变化后很容易失联。"
-                static let hintOfflineStableNamed = "远端入口名义上已配好，但服务侧现在不在线。优先检查 Hub 是否睡眠、退出或转发失效。"
+                static let hintOfflineStableNamed = "正式远端入口名义上已配好，但服务侧现在不在线。优先检查 Hub 是否睡眠、退出或转发失效。"
 
                 static let lanOnlyHeadline = "当前只有局域网入口"
                 static let lanOnlyDetail = "Hub 没有稳定的外部主机名，当前更适合同 Wi-Fi / 同 VPN 自动发现。"
@@ -5605,12 +5763,12 @@ enum HubUIStrings {
                 static let hintLANOnly = "首次配对完成后，这种配置依然只适合同网自动发现，不适合作为长期异网入口。"
 
                 static let rawIPHeadline = "当前外部入口仍是 raw IP"
-                static let rawIPNextStep = "把外部地址改成稳定命名入口，避免公网 IP 变化后 XT 全部失联。"
+                static let rawIPNextStep = "把外部地址改成稳定 DNS/tailnet 入口或 VPN 加密 IP，避免公网 IP 变化后 XT 全部失联。"
                 static let hintRawIP = "raw IP 可以临时用，但不要把它当正式入口。换网、休眠或公网 IP 变化后 XT 很容易全部掉线。"
 
                 static let tokenMissingHeadline = "正式异网入口还缺邀请令牌"
                 static let tokenMissingNextStep = "复制正式接入包，或至少复制邀请链接给 XT 完成正式配对。"
-                static let hintTokenMissing = "入口名字已经稳定，但 XT 还没拿到正式接入材料。先发邀请令牌，不要继续手填零散参数。"
+                static let hintTokenMissing = "正式远端入口已经稳定，但 XT 还没拿到正式接入材料。先发邀请令牌，不要继续手填零散参数。"
 
                 static let sleepRiskHeadline = "正式异网入口可用，但 Hub 仍可能睡眠"
                 static let sleepRiskNextStep = "打开“保持 Hub 在线”，避免 Hub 空闲睡眠后远端全部掉线。"
@@ -5637,15 +5795,15 @@ enum HubUIStrings {
                 }
 
                 static func tokenMissingDetail(_ host: String) -> String {
-                    "稳定命名入口 \(host) 已经配置好，但还没有 invite token，XT 还不能走正式异网配对链。"
+                    "正式远端入口 \(host) 已经配置好，但还没有 invite token，XT 还不能走正式异网配对链。"
                 }
 
                 static func sleepRiskDetail(_ host: String) -> String {
-                    "稳定命名入口 \(host) 与 invite token 都已就绪，但 Hub 还没启用系统防休眠，长时间空闲后仍可能离线。"
+                    "正式远端入口 \(host) 与 invite token 都已就绪，但 Hub 还没启用系统防休眠，长时间空闲后仍可能离线。"
                 }
 
                 static func readyDetail(_ host: String) -> String {
-                    "稳定命名入口 \(host)、invite token 和在线保活都已具备，Hub 已适合长期异网接入。"
+                    "正式远端入口 \(host)、invite token 和在线保活都已具备，Hub 已适合长期异网接入。"
                 }
 
                 static func nextStep(_ detail: String) -> String {
@@ -5722,11 +5880,11 @@ enum HubUIStrings {
             static let remoteAccessGuideChecklist = """
 远程接入（VPN / Tunnel）检查清单
 
-1) 传输层建议：优先使用 WireGuard / ZeroTier，不要把 gRPC 端口直接暴露到公网。
-   终端侧建议通过 VPN 或加密隧道接入，让 Hub 和 X-Terminal 处于同一个受控网络里。
+1) 传输层建议：优先使用用户自己的稳定域名 + mTLS，或 Tailscale / Headscale / WireGuard / ZeroTier 这类私有网络。
+   不要把未加固的 gRPC 端口直接裸露到公网。终端侧建议通过稳定域名、VPN 或加密隧道接入。
 
-   连接方式：在 Terminal 设备上把 `HUB_HOST` 设为 Hub 的 VPN IP。
-   如果没有 VPN，也可以用 SSH 等加密隧道把端口安全转发到本地。
+   连接方式：在 Terminal 设备上把 `HUB_HOST` 设为 Hub 自己的域名、MagicDNS 名称或 VPN IP。
+   如果没有 VPN，也可以用 SSH / raw TCP tunnel 等加密隧道把端口安全转发到 Hub。
 
 2) 设备级加固：把允许来源限定到你的 VPN 子网，例如 `10.7.0.0/24`。
    这样就算设备配对信息泄露，非受信网段也不能直接连进来。

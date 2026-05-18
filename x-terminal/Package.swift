@@ -18,7 +18,10 @@ let package = Package(
         .testTarget(
             name: "XTerminalTests",
             dependencies: ["XTerminal"],
-            path: "Tests"
+            path: "Tests",
+            resources: [
+                .process("Fixtures")
+            ]
         ),
     ]
 )

@@ -1,0 +1,38 @@
+{
+  "schema_version": "xhub.model_inventory.v1",
+  "ok": true,
+  "command": "inventory",
+  "runtime_base_dir": "/tmp/xhub-rhm-010",
+  "updated_at_ms": 1000,
+  "remote_models": [],
+  "local_models": [
+    {
+      "model_id": "local.summary",
+      "display_name": "Local Summary",
+      "family_key": "unknown",
+      "artifact_path": "/tmp/xhub-rhm-010/local.summary.gguf",
+      "format": "gguf",
+      "artifact_size_bytes": 7,
+      "checksum": "",
+      "quantization": "q4_k_m",
+      "runtime_provider": "mlx",
+      "availability_state": "unknown_stale",
+      "blocking_reason_code": "runtime_status_missing",
+      "capabilities": ["text.generate"],
+      "memory_risk": "unknown",
+      "duplicate_artifact_of": "",
+      "runtime_preflight": {
+        "runtime_provider": "mlx",
+        "availability_state": "unknown_stale",
+        "blocking_reason_code": "runtime_status_missing",
+        "runtime_source": "",
+        "runtime_source_path": "",
+        "supported_format": true,
+        "side_effect_free": true,
+        "runtime_updated_at_ms": 0,
+        "capability_tags": ["text.generate"],
+        "runtime_missing_requirements": []
+      }
+    }
+  ]
+}

@@ -11,4 +11,3 @@ fi
 
 cd "$ROOT_DIR"
 exec cargo build --workspace "$@"
-

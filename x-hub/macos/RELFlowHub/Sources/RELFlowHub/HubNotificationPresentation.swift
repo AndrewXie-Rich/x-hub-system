@@ -1621,31 +1621,6 @@ struct HubNotificationInspector: View {
                 }
             }
 
-            Menu {
-                Button(HubUIStrings.Menu.NotificationRow.tenMinutes) {
-                    store.snooze(notification.id, minutes: 10)
-                    dismiss()
-                }
-                Button(HubUIStrings.Menu.NotificationRow.thirtyMinutes) {
-                    store.snooze(notification.id, minutes: 30)
-                    dismiss()
-                }
-                Button(HubUIStrings.Menu.NotificationRow.oneHour) {
-                    store.snooze(notification.id, minutes: 60)
-                    dismiss()
-                }
-                Button(HubUIStrings.Menu.NotificationRow.laterToday) {
-                    store.snoozeLaterToday(notification.id)
-                    dismiss()
-                }
-            } label: {
-                HubNeutralActionChipLabel(
-                    title: HubUIStrings.Menu.NotificationRow.snooze,
-                    systemName: "clock",
-                    width: nil
-                )
-            }
-
             HubNeutralActionChipButton(
                 title: notification.unread ? HubUIStrings.Menu.NotificationRow.markRead : HubUIStrings.Menu.NotificationRow.markUnread,
                 systemName: notification.unread ? "checkmark.circle" : "arrow.uturn.backward.circle",
@@ -1657,18 +1632,7 @@ struct HubNotificationInspector: View {
 
             Spacer()
 
-            Menu {
-                Button(HubUIStrings.Notifications.Inspector.removeNotification, role: .destructive) {
-                    store.dismiss(notification.id)
-                    dismiss()
-                }
-            } label: {
-                HubNeutralActionChipLabel(
-                    title: HubUIStrings.Menu.NotificationRow.more,
-                    systemName: "ellipsis",
-                    width: nil
-                )
-            }
+            dismissNotificationButton
         }
     }
 
@@ -1766,31 +1730,6 @@ struct HubNotificationInspector: View {
                 )
             }
 
-            Menu {
-                Button(HubUIStrings.Menu.NotificationRow.tenMinutes) {
-                    store.snooze(notification.id, minutes: 10)
-                    dismiss()
-                }
-                Button(HubUIStrings.Menu.NotificationRow.thirtyMinutes) {
-                    store.snooze(notification.id, minutes: 30)
-                    dismiss()
-                }
-                Button(HubUIStrings.Menu.NotificationRow.oneHour) {
-                    store.snooze(notification.id, minutes: 60)
-                    dismiss()
-                }
-                Button(HubUIStrings.Menu.NotificationRow.laterToday) {
-                    store.snoozeLaterToday(notification.id)
-                    dismiss()
-                }
-            } label: {
-                HubNeutralActionChipLabel(
-                    title: HubUIStrings.Menu.NotificationRow.snooze,
-                    systemName: "clock",
-                    width: nil
-                )
-            }
-
             HubNeutralActionChipButton(
                 title: notification.unread ? HubUIStrings.Menu.NotificationRow.markRead : HubUIStrings.Menu.NotificationRow.markUnread,
                 systemName: notification.unread ? "checkmark.circle" : "arrow.uturn.backward.circle",
@@ -1802,19 +1741,27 @@ struct HubNotificationInspector: View {
 
             Spacer()
 
-            Menu {
-                Button(HubUIStrings.Notifications.Inspector.removeNotification, role: .destructive) {
-                    store.dismiss(notification.id)
-                    dismiss()
-                }
-            } label: {
-                HubNeutralActionChipLabel(
-                    title: HubUIStrings.Menu.NotificationRow.more,
-                    systemName: "ellipsis",
-                    width: nil
-                )
-            }
+            dismissNotificationButton
         }
+    }
+
+    private var dismissNotificationButton: some View {
+        Button {
+            store.dismiss(notification.id)
+            dismiss()
+        } label: {
+            HubActionChipContent(
+                title: HubUIStrings.Menu.NotificationRow.dismiss,
+                systemName: "xmark.circle",
+                foreground: .red,
+                background: Color.red.opacity(0.10),
+                border: Color.red.opacity(0.24),
+                width: nil
+            )
+        }
+        .buttonStyle(.plain)
+        .help(HubUIStrings.Notifications.Inspector.removeNotification)
+        .accessibilityLabel(Text(HubUIStrings.Notifications.Inspector.removeNotification))
     }
 
     @ViewBuilder

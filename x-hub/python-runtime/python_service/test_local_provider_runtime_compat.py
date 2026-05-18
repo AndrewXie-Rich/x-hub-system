@@ -34,7 +34,7 @@ from local_provider_scheduler import acquire_provider_slot, read_provider_schedu
 from provider_pack_registry import provider_pack_inventory
 from provider_runtime_resolver import ProviderRuntimeResolution, resolve_provider_runtime
 from relflowhub_local_runtime import _status_payload, _runtime_supports_command_proxy, build_registry, manage_local_model, provider_status_snapshot, run_local_bench, run_local_task
-from relflowhub_mlx_runtime import MLXRuntime, _load_routing_settings, _resolve_routing_preferred_model_id, _runtime_status_path, _sync_state_from_provider_statuses, _write_runtime_status
+from relflowhub_mlx_runtime import MLXRuntime, _load_routing_settings, _prune_ai_response_history, _resolve_routing_preferred_model_id, _runtime_status_path, _sync_state_from_provider_statuses, _write_runtime_status
 from xhub_local_service_bridge import probe_xhub_local_service
 
 
@@ -430,12 +430,14 @@ class StubMLXRuntime:
         loaded: dict[str, Any] | None = None,
         loaded_instances: list[dict[str, Any]] | None = None,
         memory_pair: tuple[int, int] = (0, 0),
+        idle_eviction: dict[str, Any] | None = None,
     ) -> None:
         self._mlx_ok = ok
         self._import_error = import_error
         self._loaded = dict(loaded or {})
         self._loaded_instances = [dict(item) for item in (loaded_instances or []) if isinstance(item, dict)]
         self._memory_pair = tuple(memory_pair)
+        self._idle_eviction = dict(idle_eviction or {})
 
     def memory_bytes(self) -> tuple[int, int]:
         return self._memory_pair
@@ -456,6 +458,9 @@ class StubMLXRuntime:
 
     def loaded_model_count(self) -> int:
         return len(self.loaded_model_ids())
+
+    def idle_eviction_state(self) -> dict[str, Any]:
+        return dict(self._idle_eviction)
 
 
 @contextmanager
@@ -1402,6 +1407,20 @@ def _test_mlx_provider_healthcheck_exposes_loaded_instances_machine_readably() -
             }
         ],
         memory_pair=(1024, 2048),
+        idle_eviction={
+            "policy": "idle_timeout_or_manual",
+            "automaticIdleEvictionEnabled": True,
+            "idleTimeoutSec": 1200,
+            "processScoped": True,
+            "lastEvictionReason": "none",
+            "lastEvictionAt": 0.0,
+            "lastEvictedInstanceKeys": [],
+            "lastEvictedModelIds": [],
+            "lastEvictedCount": 0,
+            "totalEvictedInstanceCount": 0,
+            "updatedAt": 0.0,
+            "ownerPid": 123,
+        },
     )
     provider = MLXProvider(runtime=runtime, runtime_version="compat-test")
     health = provider.healthcheck(
@@ -1421,6 +1440,86 @@ def _test_mlx_provider_healthcheck_exposes_loaded_instances_machine_readably() -
     assert len(payload["loadedInstances"]) == 1
     assert payload["loadedInstances"][0]["instanceKey"] == "mlx:mlx-qwen:hash-a"
     assert payload["loadedInstances"][0]["effectiveContextLength"] == 24576
+    assert payload["idleEviction"]["policy"] == "idle_timeout_or_manual"
+    assert payload["idleEviction"]["automaticIdleEvictionEnabled"] is True
+    assert payload["idleEviction"]["idleTimeoutSec"] == 1200
+
+
+def _test_mlx_runtime_idle_eviction_unloads_stale_instances() -> None:
+    runtime = MLXRuntime()
+    runtime._loaded = {
+        "mlx-qwen": {"model_id": "mlx-qwen"},
+        "mlx-recent": {"model_id": "mlx-recent"},
+    }
+    runtime._loaded_instances = {
+        "mlx:mlx-qwen:legacy_runtime": {
+            "instance_key": "mlx:mlx-qwen:legacy_runtime",
+            "model_id": "mlx-qwen",
+            "load_profile_hash": "legacy_runtime",
+            "effective_context_length": 8192,
+            "loaded_at": 10.0,
+            "last_used_at": 30.0,
+            "residency": "resident",
+            "residency_scope": "legacy_runtime",
+            "device_backend": "mps",
+        },
+        "mlx:mlx-recent:legacy_runtime": {
+            "instance_key": "mlx:mlx-recent:legacy_runtime",
+            "model_id": "mlx-recent",
+            "load_profile_hash": "legacy_runtime",
+            "effective_context_length": 8192,
+            "loaded_at": 150.0,
+            "last_used_at": 195.0,
+            "residency": "resident",
+            "residency_scope": "legacy_runtime",
+            "device_backend": "mps",
+        },
+    }
+    runtime._idle_timeout_sec = 60
+
+    eviction = runtime.evict_idle_loaded_models(now_ts=120.0)
+    state = runtime.idle_eviction_state()
+
+    assert eviction["removedInstanceCount"] == 1
+    assert eviction["unloadedModelIds"] == ["mlx-qwen"]
+    assert "mlx-qwen" not in runtime._loaded
+    assert "mlx-recent" in runtime._loaded
+    assert runtime._has_loaded_instances_for_model("mlx-qwen") is False
+    assert runtime._has_loaded_instances_for_model("mlx-recent") is True
+    assert state["automaticIdleEvictionEnabled"] is True
+    assert state["idleTimeoutSec"] == 60
+    assert state["lastEvictionReason"] == "idle_timeout"
+    assert state["lastEvictedInstanceKeys"] == ["mlx:mlx-qwen:legacy_runtime"]
+    assert state["lastEvictedModelIds"] == ["mlx-qwen"]
+    assert state["lastEvictedCount"] == 1
+    assert state["totalEvictedInstanceCount"] == 1
+
+
+def _test_prune_ai_response_history_keeps_fresh_files_and_drops_expired_history() -> None:
+    with tempfile.TemporaryDirectory(prefix="xhub_py_ai_responses_") as base_dir:
+        resp_dir = os.path.join(base_dir, "ai_responses")
+        os.makedirs(resp_dir, exist_ok=True)
+
+        expired = os.path.join(resp_dir, "resp_old.jsonl")
+        fresh = os.path.join(resp_dir, "resp_new.jsonl")
+        unrelated = os.path.join(resp_dir, "notes.txt")
+        write_text(expired, '{"type":"done"}\n')
+        write_text(fresh, '{"type":"done"}\n')
+        write_text(unrelated, 'keep')
+        os.utime(expired, (10.0, 10.0))
+        os.utime(fresh, (95.0, 95.0))
+
+        result = _prune_ai_response_history(
+            base_dir,
+            now_ts=100.0,
+            retention_sec=30,
+        )
+
+        assert result["disabled"] is False
+        assert result["deletedCount"] == 1
+        assert os.path.exists(expired) is False
+        assert os.path.exists(fresh) is True
+        assert os.path.exists(unrelated) is True
 
 
 def _test_transformers_embedding_hash_fallback_contract() -> None:
@@ -6612,6 +6711,8 @@ run("mlx runtime probe failure stays fail-closed without killing provider-aware 
 run("mlx runtime probe skips unsafe Xcode python before spawning a child probe", lambda: _test_mlx_runtime_probe_skips_unsafe_xcode_python_without_spawning_probe())
 run("mlx runtime keeps load-profile instances isolated while sharing one physical load", lambda: _test_mlx_runtime_load_profile_instances_share_physical_load())
 run("mlx runtime applies effective context length to generate and bench max_kv_size", lambda: _test_mlx_runtime_generate_and_bench_apply_effective_context_length())
+run("mlx runtime evicts stale resident instances after idle timeout without opening legacy lifecycle controls", lambda: _test_mlx_runtime_idle_eviction_unloads_stale_instances())
+run("mlx runtime prunes expired ai_responses history while keeping fresh response files", lambda: _test_prune_ai_response_history_keeps_fresh_files_and_drops_expired_history())
 run("mlx provider healthcheck exposes loaded instance inventory machine-readably", lambda: _test_mlx_provider_healthcheck_exposes_loaded_instances_machine_readably())
 run("transformers embedding contract executes with explicit offline hash fallback", lambda: _test_transformers_embedding_hash_fallback_contract())
 run("transformers embedding runtime failure exposes resolver metadata on task results", lambda: _test_transformers_embedding_runtime_failure_exposes_runtime_resolution_fields())

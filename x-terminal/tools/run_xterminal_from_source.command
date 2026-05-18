@@ -3,6 +3,25 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+if [ "${XHUB_ALLOW_LEGACY_XTERMINAL_RUN:-0}" != "1" ]; then
+  cat >&2 <<'EOF'
+ERROR: Refusing to run legacy X-Terminal from x-hub-system/x-terminal.
+
+This tree is legacy/read-only and must not be used for active XT development.
+
+Active XT source:
+  /Users/andrew.xie/Documents/AX/rust/rust xt/swift-xterminal
+
+Active XT build command:
+  /Users/andrew.xie/Documents/AX/rust/rust xt/commands/build_xt.command
+
+For archival/debug-only legacy runs, rerun with:
+  XHUB_ALLOW_LEGACY_XTERMINAL_RUN=1
+EOF
+  exit 64
+fi
+
 XT_DIR="$ROOT_DIR/x-terminal"
 SOURCE_RUN_HOME="${XTERMINAL_SOURCE_RUN_HOME:-$HOME}"
 SOURCE_RUN_TMPDIR="${XTERMINAL_SOURCE_RUN_TMPDIR:-${TMPDIR:-/tmp}}"

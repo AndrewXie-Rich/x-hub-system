@@ -236,6 +236,49 @@ await run('synthesizeLocalSpeech honors routed device override model selection',
   assert.equal(out.resolved_model_id, 'hf-tts-device');
 });
 
+await run('synthesizeLocalSpeech routes through runtime provider override when present', async () => {
+  const runtimeBaseDir = makeTempRuntimeDir();
+  writeJson(path.join(runtimeBaseDir, 'models_state.json'), {
+    updatedAt: Date.now() / 1000.0,
+    models: [
+      {
+        id: 'native-tts',
+        name: 'Native TTS',
+        backend: 'transformers',
+        runtimeProviderId: 'native_tts',
+        modelPath: '/models/native-tts',
+        taskKinds: ['text_to_speech'],
+        inputModalities: ['text'],
+        outputModalities: ['audio'],
+      },
+    ],
+  });
+
+  const out = await synthesizeLocalSpeech({
+    runtimeBaseDir,
+    text: 'hello world',
+    executor: async ({ request }) => {
+      assert.equal(String(request?.provider || ''), 'native_tts');
+      assert.equal(String(request?.model_id || ''), 'native-tts');
+      return {
+        ok: true,
+        provider: 'native_tts',
+        modelId: 'native-tts',
+        audioClipRef: 'hub://audio/clip/native-tts',
+        latencyMs: 7,
+        usage: {
+          inputTextChars: 11,
+        },
+      };
+    },
+  });
+
+  assert.equal(out.ok, true);
+  assert.equal(out.provider, 'native_tts');
+  assert.equal(out.model_id, 'native-tts');
+  assert.equal(out.audio_clip_ref, 'hub://audio/clip/native-tts');
+});
+
 await run('synthesizeLocalSpeech normalizes task_not_implemented runtime failures', async () => {
   const runtimeBaseDir = makeTempRuntimeDir();
   seedRuntimeState(runtimeBaseDir);

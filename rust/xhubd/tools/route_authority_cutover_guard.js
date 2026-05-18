@@ -30,6 +30,8 @@ function parseArgs(argv) {
     maxGenerateMs: 3000,
     rustHubRoot: ROOT_DIR,
     schedulerGateMode: 'ready',
+    allowMemorySkillsProduction: false,
+    requireMemorySkillsProduction: false,
     writeReport: true,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -95,6 +97,13 @@ function parseArgs(argv) {
         }
         i += 1;
         break;
+      case '--allow-memory-skills-production':
+        out.allowMemorySkillsProduction = true;
+        break;
+      case '--require-memory-skills-production':
+        out.allowMemorySkillsProduction = true;
+        out.requireMemorySkillsProduction = true;
+        break;
       case '--no-report':
         out.writeReport = false;
         break;
@@ -134,9 +143,17 @@ function usage() {
     '  --max-generate-ms <n>            Generate latency budget, default 3000',
     '  --rust-hub-root <p>              Expected active Rust Hub root for scheduler guard',
     '  --scheduler-gate-mode <mode>     ready|applied|skip, default ready',
+    '  --allow-memory-skills-production Permit explicit Rust memory writer and skills execution authority',
+    '  --require-memory-skills-production Require both Rust memory writer and skills execution authority',
     '  --no-report                      Print only; do not write reports/',
     '  --self-test                      Validate reducer logic',
   ].join('\n');
+}
+
+function memorySkillsArgs(config) {
+  if (config.requireMemorySkillsProduction) return ['--require-memory-skills-production'];
+  if (config.allowMemorySkillsProduction) return ['--allow-memory-skills-production'];
+  return [];
 }
 
 function runJson(command, args, timeoutMs) {
@@ -198,6 +215,7 @@ function collect(config) {
       '--no-report',
       '--rust-hub-root',
       config.rustHubRoot,
+      ...memorySkillsArgs(config),
     ], 60000);
     if (config.schedulerGateMode === 'ready' && schedulerGuard?.payload?.ok !== true) {
       schedulerPlan = runJson('bash', [

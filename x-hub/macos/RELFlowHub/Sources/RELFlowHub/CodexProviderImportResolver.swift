@@ -4,8 +4,14 @@ import RELFlowHubCore
 enum CodexProviderImportResolver {
     private static let codexHomeOverrideEnvKey = "XHUB_CODEX_HOME_OVERRIDE"
 
+    struct ResolvedCredentialVariant: Equatable {
+        var credentials: ProviderAuthImport.ImportedCredentials
+        var sourceURL: URL?
+    }
+
     struct ResolvedImport: Equatable {
         var credentials: ProviderAuthImport.ImportedCredentials?
+        var credentialVariants: [ResolvedCredentialVariant]
         var providerConfig: ProviderConfigImport.ImportedProviderConfig?
     }
 
@@ -21,22 +27,41 @@ enum CodexProviderImportResolver {
                 providerConfig: providerConfig,
                 forceProviderOverlay: false
             ),
+            credentialVariants: [
+                ResolvedCredentialVariant(
+                    credentials: mergedCredentials(
+                        credentials,
+                        providerConfig: providerConfig,
+                        forceProviderOverlay: false
+                    ),
+                    sourceURL: authURL
+                )
+            ],
             providerConfig: providerConfig
         )
     }
 
     static func resolveConfigImport(from configURL: URL) throws -> ResolvedImport {
         let initialConfig = try ProviderConfigImport.load(from: configURL)
-        let credentials = companionCredentials(forConfigURL: configURL)
+        let companionCredentials = companionCredentials(forConfigURL: configURL)
         let providerConfig = resolvedProviderConfig(
             forConfigURL: configURL,
             initialConfig: initialConfig,
-            credentials: credentials
+            credentials: companionCredentials.first?.credentials
         )
+        let mergedVariants = companionCredentials.map {
+            ResolvedCredentialVariant(
+                credentials: mergedCredentials(
+                    $0.credentials,
+                    providerConfig: providerConfig,
+                    forceProviderOverlay: true
+                ),
+                sourceURL: $0.sourceURL
+            )
+        }
         return ResolvedImport(
-            credentials: credentials.map {
-                mergedCredentials($0, providerConfig: providerConfig, forceProviderOverlay: true)
-            },
+            credentials: mergedVariants.first?.credentials,
+            credentialVariants: mergedVariants,
             providerConfig: providerConfig
         )
     }
@@ -116,13 +141,22 @@ enum CodexProviderImportResolver {
         return initialConfig
     }
 
-    private static func companionCredentials(forConfigURL configURL: URL) -> ProviderAuthImport.ImportedCredentials? {
+    private static func companionCredentials(forConfigURL configURL: URL) -> [ResolvedCredentialVariant] {
+        var collected: [ResolvedCredentialVariant] = []
+        var seen: Set<String> = []
         for candidate in authCandidates(alongside: configURL) {
-            if let credentials = try? ProviderAuthImport.load(from: candidate) {
-                return credentials
+            if let credential = try? ProviderAuthImport.load(from: candidate) {
+                let signature = credentialSignature(credential)
+                guard seen.insert(signature).inserted else { continue }
+                collected.append(
+                    ResolvedCredentialVariant(
+                        credentials: credential,
+                        sourceURL: candidate
+                    )
+                )
             }
         }
-        return nil
+        return collected
     }
 
     private static func activeCodexExplicitProviderConfig() -> ProviderConfigImport.ImportedProviderConfig? {
@@ -143,7 +177,10 @@ enum CodexProviderImportResolver {
             merged.backend = providerConfig.backend
             merged.baseURL = providerConfig.baseURL
             merged.apiKeyRef = providerConfig.apiKeyRef
-            let normalizedWireAPI = providerConfig.wireAPI.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalizedWireAPI = preferredWireAPI(
+                credentials: credentials,
+                providerConfig: providerConfig
+            )
             if !normalizedWireAPI.isEmpty {
                 merged.wireAPI = normalizedWireAPI
             }
@@ -160,11 +197,30 @@ enum CodexProviderImportResolver {
         merged.backend = providerConfig.backend
         merged.baseURL = providerConfig.baseURL
         merged.apiKeyRef = providerConfig.apiKeyRef
-        let normalizedWireAPI = providerConfig.wireAPI.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedWireAPI = preferredWireAPI(
+            credentials: credentials,
+            providerConfig: providerConfig
+        )
         if !normalizedWireAPI.isEmpty {
             merged.wireAPI = normalizedWireAPI
         }
         return merged
+    }
+
+    private static func preferredWireAPI(
+        credentials: ProviderAuthImport.ImportedCredentials,
+        providerConfig: ProviderConfigImport.ImportedProviderConfig
+    ) -> String {
+        let configWireAPI = providerConfig.wireAPI.trimmingCharacters(in: .whitespacesAndNewlines)
+        if credentials.kind == .chatGPTTokenBundle,
+           providerConfig.source == .fallbackOpenAI,
+           RemoteProviderEndpoints.normalizedWireAPI(configWireAPI) == .responses {
+            let credentialWireAPI = credentials.wireAPI.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !credentialWireAPI.isEmpty {
+                return credentialWireAPI
+            }
+        }
+        return configWireAPI
     }
 
     private static func shouldOverlayProviderMetadata(
@@ -203,11 +259,61 @@ enum CodexProviderImportResolver {
     }
 
     private static func authCandidates(alongside url: URL?) -> [URL] {
-        var candidates: [URL] = []
-        if let url {
-            candidates.append(url.deletingLastPathComponent().appendingPathComponent("auth.json", isDirectory: false))
+        guard let directory = url?.deletingLastPathComponent() else {
+            return []
         }
+
+        var candidates: [URL] = [
+            directory.appendingPathComponent("auth.json", isDirectory: false)
+        ]
+        candidates.append(contentsOf: discoveredSiblingAuthCandidates(in: directory))
         return uniqueFileCandidates(candidates)
+    }
+
+    private static func discoveredSiblingAuthCandidates(in directory: URL) -> [URL] {
+        guard let siblingFiles = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+
+        return siblingFiles
+            .filter { candidate in
+                let fileName = candidate.lastPathComponent.lowercased()
+                guard fileName != "auth.json" else { return false }
+                guard candidate.pathExtension.lowercased() == "json" else { return false }
+                return isLikelyCodexAuthCandidate(fileName)
+            }
+            .sorted { lhs, rhs in
+                let lhsRank = authCandidateRank(for: lhs.lastPathComponent)
+                let rhsRank = authCandidateRank(for: rhs.lastPathComponent)
+                if lhsRank != rhsRank {
+                    return lhsRank > rhsRank
+                }
+                return lhs.lastPathComponent.localizedCaseInsensitiveCompare(rhs.lastPathComponent) == .orderedDescending
+            }
+    }
+
+    private static func isLikelyCodexAuthCandidate(_ fileName: String) -> Bool {
+        let lowercased = fileName.lowercased()
+        guard lowercased.hasPrefix("auth"), lowercased.hasSuffix(".json") else {
+            return false
+        }
+        let stem = String(lowercased.dropLast(".json".count))
+        let suffix = String(stem.dropFirst("auth".count))
+        return suffix.isEmpty || suffix.allSatisfy(\.isNumber)
+    }
+
+    private static func authCandidateRank(for fileName: String) -> Int {
+        let lowercased = fileName.lowercased()
+        if lowercased == "auth.json" {
+            return .max
+        }
+        let stem = String(lowercased.dropLast(".json".count))
+        let suffix = String(stem.dropFirst("auth".count))
+        return Int(suffix) ?? 1
     }
 
     private static func loadProviderConfig(
@@ -258,6 +364,17 @@ enum CodexProviderImportResolver {
             unique.append(candidate)
         }
         return unique
+    }
+
+    private static func credentialSignature(_ credentials: ProviderAuthImport.ImportedCredentials) -> String {
+        [
+            credentials.kind.rawValue,
+            credentials.backend.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            credentials.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            credentials.apiKeyRef.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            credentials.wireAPI.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            credentials.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        ].joined(separator: "\u{1F}")
     }
 
     private static func normalizedBaseURL(_ raw: String?) -> String {

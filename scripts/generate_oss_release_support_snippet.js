@@ -103,6 +103,44 @@ function formatIssue(code, issue) {
   return `${normalizedCode} (${normalizedIssue})`;
 }
 
+function formatProviderKeyRoute(focus) {
+  if (!focus || typeof focus !== "object" || focus.support_ready !== true) {
+    return "not available";
+  }
+  const modelId = normalizeString(focus.requested_model_id, "missing_model");
+  const selectedAccount = normalizeString(focus.selected_account_key, "unselected");
+  const wireAPI = normalizeString(focus.selected_wire_api, "");
+  return wireAPI
+    ? `${modelId} -> ${selectedAccount} via ${wireAPI}`
+    : `${modelId} -> ${selectedAccount}`;
+}
+
+function formatProviderKeyRetry(focus) {
+  if (!focus || typeof focus !== "object" || focus.support_ready !== true) {
+    return "not available";
+  }
+  const retryAtMs = Number.isFinite(focus.next_retry_at_ms) ? focus.next_retry_at_ms : null;
+  if (!retryAtMs || retryAtMs <= 0) return "not scheduled";
+  const retryAtISO = normalizeString(focus.next_retry_at_iso, "");
+  const retryAccount = normalizeString(focus.next_retry_account_key, "");
+  const retryReason = normalizeString(focus.next_retry_reason_code, "");
+  const headline = retryAccount
+    ? `${retryAccount} at ${retryAtISO || retryAtMs}`
+    : `${retryAtISO || retryAtMs}`;
+  return retryReason ? `${headline} reason=${retryReason}` : headline;
+}
+
+function formatProviderKeyCandidateHealth(focus) {
+  if (!focus || typeof focus !== "object" || focus.support_ready !== true) {
+    return "not available";
+  }
+  return `total=${Number.isFinite(focus.candidate_count) ? focus.candidate_count : 0}; cooldown=${
+    Number.isFinite(focus.cooldown_candidate_count) ? focus.cooldown_candidate_count : 0
+  }; stale=${Number.isFinite(focus.stale_candidate_count) ? focus.stale_candidate_count : 0}; blocked=${
+    Number.isFinite(focus.blocked_candidate_count) ? focus.blocked_candidate_count : 0
+  }`;
+}
+
 function renderBulletList(values, fallback = "none") {
   const items = normalizeArray(values)
     .map((value) => normalizeString(value))
@@ -131,6 +169,11 @@ function buildReleaseSupportSnippet(packet, options = {}) {
   const requireRealFocus =
     operatorHandoff.require_real_focus && typeof operatorHandoff.require_real_focus === "object"
       ? operatorHandoff.require_real_focus
+      : null;
+  const providerKeyFocus =
+    operatorHandoff.provider_key_selection_focus
+    && typeof operatorHandoff.provider_key_selection_focus === "object"
+      ? operatorHandoff.provider_key_selection_focus
       : null;
   const localServiceAction = firstAction(
     operatorHandoff.top_recommended_action,
@@ -170,6 +213,7 @@ function buildReleaseSupportSnippet(packet, options = {}) {
     "",
     "Guardrail:",
     "- Keep the operator-channel line in preview/support wording only; do not present it as a validated release claim.",
+    "- Keep remote provider-key routing details in the internal operator handoff only; do not expose selected account keys in public status wording.",
     "- Local-service recovery and require-real closure remain the release-gating truth.",
     "",
     "## Release Operator Snapshot",
@@ -199,6 +243,10 @@ function buildReleaseSupportSnippet(packet, options = {}) {
     )}`,
     `- Channel action category: ${normalizeString(channelFocus?.action_category, "missing")}`,
     `- Channel next action: ${formatAction(channelAction)}`,
+    `- Remote provider-key support ready: ${yesNoUnknown(providerKeyFocus?.support_ready)}`,
+    `- Remote provider-key route: ${formatProviderKeyRoute(providerKeyFocus)}`,
+    `- Remote provider-key next retry: ${formatProviderKeyRetry(providerKeyFocus)}`,
+    `- Remote provider-key candidate health: ${formatProviderKeyCandidateHealth(providerKeyFocus)}`,
   ];
 
   if (requireRealFocus) {

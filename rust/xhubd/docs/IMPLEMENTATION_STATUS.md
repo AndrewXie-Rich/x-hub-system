@@ -1,6 +1,6 @@
 # Rust Hub Implementation Status
 
-Updated: 2026-05-13
+Updated: 2026-05-14
 
 ## Active Slice
 
@@ -9,6 +9,14 @@ Model management plan: `docs/MODEL_MANAGEMENT_EXECUTION_PLAN.md`
 
 Current slice:
 
+- Work claim 2026-05-15: `RHM-137` XT Hub compatibility guard was executed in
+  docs only after reading the Rust XT Hub-facing contract in
+  `/Users/andrew.xie/Documents/AX/rust/rust xt/swift-xterminal`. Existing
+  Rust `xhubd` daemon was running; a live stability/heartbeat check had just
+  completed and wrote reports only. No local `cargo`/Swift build or test
+  process was modified or interrupted. Scope: document the XT-facing fields,
+  route semantics, pending-grant truth, provider/model bridge obligations, and
+  required Rust/XT smoke matrix before further Hub changes.
 - Work claim 2026-04-30: `RHM-002` and `RHM-004` were executed in
   `crates/xhub-provider`; no other local `cargo`/`xhubd`/provider-route process
   was running at claim time.
@@ -633,6 +641,71 @@ Current slice:
   read-only `GET/POST /model/route` using the existing
   `xhub.model_route_decision.v1` schema, and the smoke validates remote plus
   local-only route decisions without changing production authority.
+- `RHM-138` provider key import prep: implemented. Rust provider store can now
+  import Codex CLI `auth*.json` and Codex CLI `config.toml` sibling/explicit
+  auth files into `hub_provider_keys.json`, preserving XT-visible
+  `ok/imported/errors`, `import_source_statuses`, `source_owners`,
+  `source_type`, `source_ref`, `oauth_source_key`, pool/host/wire fields, and
+  secret-redacted runtime snapshots. `xhubd provider import` and
+  `/provider/import` are HTTP/CLI prep surfaces; XT still uses the classic
+  Node `HubProviderKeys` gRPC service unless a separate XT migration layer or
+  Rust-compatible gRPC service is enabled.
+- `RHM-138a` live provider import evidence: implemented on 2026-05-18. Domain
+  `xhubd` readiness now advertises `runtime.provider_key_import_http=true` and
+  `capabilities.provider_key_import_http=true`, and the diagnostic browser
+  status page renders the same capability. A secret-free fixture import through
+  `/provider/import` returned `ok=true imported=1` and produced a redacted
+  runtime snapshot. The user-approved Codex import from `/Users/andrew.xie/.codex`
+  and `/Users/andrew.xie/.codex/config.toml` returned `ok=true imported=7`
+  with no errors. The live snapshot contains three enabled Codex OAuth accounts,
+  but all have `reason_code=token_expired` with expiry times on 2026-04-30, so
+  `/model/inventory` correctly reports `blocking_reason_code=all_keys_auth_blocked`.
+  The remaining work is OAuth re-login/refresh, not quota exhaustion.
+- `RHM-138b` fail-closed OAuth refresh state writer prep: implemented on
+  2026-05-18. Rust provider storage now has secret-safe OAuth refresh apply and
+  failure writers, exposed through `xhubd provider apply-oauth-refresh`,
+  `xhubd provider record-oauth-refresh-failure`,
+  `/provider/oauth-refresh/apply`, and `/provider/oauth-refresh/failure`.
+  Successful apply updates access-token state, preserves the old refresh token
+  when the provider omits a replacement, clears auth-managed blockers such as
+  `token_expired`, and returns no token material. Failure recording keeps XT
+  reason codes such as `invalid_grant`, `refresh_token_reused`, and
+  `refresh_timeout`, sets `retry_at_source=refresh`, uses no retry for terminal
+  failures, and keeps retryable failures in cooldown. `/ready` now advertises
+  `provider_oauth_refresh_apply_http=true` and
+  `provider_oauth_refresh_failure_http=true`. This is still a state-writer
+  surface; the live Codex token endpoint caller remains the next step.
+- `RHM-138c` OAuth refresh state-writer package/live readiness evidence:
+  implemented on 2026-05-18. Packaged Rust Hub at
+  `dist/rust-hub-20260518T015311Z`, installed it into the domain launchd
+  profile, and verified readiness reports
+  `provider_oauth_refresh_apply_http=true` and
+  `provider_oauth_refresh_failure_http=true`. Targeted checks passed:
+  `cargo test -p xhub-provider`, `cargo test -p xhubd provider_bridge`,
+  `cargo check -p xhubd`, `bash tools/provider_route_http_smoke.command`,
+  `bash tools/model_route_http_smoke.command`,
+  `bash tools/skills_catalog_http_smoke.command`, and
+  `bash tools/daemon_ops_gate.command --allow-memory-skills-production --require-memory-skills-production`.
+- `RHM-138d` Codex OAuth live token endpoint bridge: implemented on
+  2026-05-18. Rust Hub now exposes `xhubd provider refresh-codex-oauth` and
+  `/provider/oauth-refresh/codex`, which read the account refresh token from
+  `hub_provider_keys.json`, send it to the OpenAI/Codex token endpoint through
+  stdin-backed `curl`, and then use the existing OAuth apply/failure writers.
+  The refresh token is not placed in the command line, URL, logs, or JSON
+  response. `/ready` now advertises `provider_oauth_refresh_codex_http=true`.
+  Mock token endpoint tests cover both successful token rotation and terminal
+  `invalid_grant`/`refresh_token_reused` fail-closed behavior.
+- `RHM-138e` Codex OAuth refresh planner and mock smoke: implemented on
+  2026-05-18. Rust Hub now exposes
+  `xhubd provider plan-codex-oauth-refresh` and
+  `/provider/oauth-refresh/codex/plan`. The plan is secret-free, selects only
+  due Codex/OpenAI OAuth accounts, respects disabled/in-flight/terminal-failure
+  cooldowns, and computes an expiry-based refresh due time with a long default
+  lead that is automatically capped for short-lived access tokens. `/ready`
+  now advertises `provider_oauth_refresh_codex_plan_http=true`. Added
+  `tools/provider_codex_oauth_refresh_smoke.command`, which uses a temporary
+  provider store plus local mock token endpoint to verify plan -> refresh ->
+  plan-empty without touching live accounts.
 - Browser status page: implemented. `GET /` now returns a local HTML status
   page that fetches `/ready`, while `/health`, `/ready`, and all bridge APIs
   remain JSON for Node/XT callers.
@@ -2011,6 +2084,36 @@ RHM-128 domain smoke script syntax and localhost self-check: ok
 RHM-128 Rust xhubd full suite after domain readiness change: ok
 RHM-129 domain activation plan implementation: ok
 RHM-129 domain activation plan self-test and placeholder rejection: ok
+RHM-132 remote route semantics gate implementation: ok
+RHM-132 route gate self-test, stable-domain pass, and raw-public-IP rejection: ok
+RHM-132 domain activation plan embeds and enforces route-gate evidence: ok
+RHM-132 packaged Rust Hub doctor, route gate, activation plan, and UI gate: ok
+RHM-132 active root converged to rust-hub-20260514T092945Z: ok
+RHM-132 live daemon ops gate and process sanity after convergence: ok
+RHM-133 remote route doctor implementation: ok
+RHM-133 remote route doctor self-test and no-network planning checks: ok
+RHM-133 packaged remote route doctor, route planning, and UI compatibility checks: ok
+RHM-133 active root converged to rust-hub-20260514T094114Z: ok
+RHM-133 live scheduler and provider/model route runtime guards after X-Hub relaunch: ok
+RHM-133 live daemon ops gate after active-root convergence: ok
+RHM-133 process sanity: X-Hub, relflowhub_node, xhubd live; no target debug/release xhubd: ok
+RHM-134 domain readiness bundle implementation: ok
+RHM-134 activation plan pipe-safe JSON flush for bundled parsing: ok
+RHM-134 readiness bundle self-test and stable HTTPS no-network planning check: ok
+RHM-134 readiness bundle raw public IP rejection: ok
+RHM-134 packaged Rust Hub doctor, readiness bundle, and UI/no-Swift gate: ok
+RHM-134 packaged stable HTTPS no-network bundle with packaged xhubd binary source: ok
+RHM-134 active root converged to rust-hub-20260514T122148Z: ok
+RHM-134 live scheduler and provider/model route runtime guards after X-Hub relaunch: ok
+RHM-134 live daemon ops gate after active-root convergence: ok
+RHM-134 process sanity: X-Hub, relflowhub_node, xhubd live; no target debug/release xhubd: ok
+RHM-135 cross-network provider candidate plan implementation: ok
+RHM-135 provider candidate plan self-test: ok
+RHM-135 Tailscale MagicDNS provider detection: ok
+RHM-135 readiness bundle planning for detected tailnet URL: ok
+RHM-135 packaged access-key fallback from dist root to source repo secrets: ok
+RHM-135 Tailscale backend moved to Running with Health empty: ok
+RHM-135 strict live readiness remains blocked while tailnet Serve is disabled: ok
 RHM-130 active-root plan/apply production-aware syntax and self-tests: ok
 RHM-130 live dry-run skips route prep under provider/model production authority: ok
 RHM-130 packaged active-root plan/apply production-aware dry-run: ok
@@ -2022,6 +2125,14 @@ RHM-131 XT file IPC heartbeat auto-discovers live base dir from classic compat: 
 
 Continue post-cutover hardening:
 
+- add the XT-side migration decision for provider import/list/route: either
+  keep XT on classic Node `HubProviderKeys` gRPC while Node shares/imports the
+  Rust runtime store, or implement a Rust-compatible `HubProviderKeys` gRPC
+  service before switching XT off the Node client-kit path;
+- complete the live Codex OAuth token endpoint caller or re-login UX. The Rust
+  fail-closed refresh state writer exists, but the current imported accounts
+  are still expired (`token_expired`, 2026-04-30), so model inventory remains
+  blocked by `all_keys_auth_blocked` until fresh tokens are obtained;
 - let the package-store 8h live stability session and 4h rolling checkpoint
   sidecar continue to collect evidence;
 - keep `current`, launchctl `XHUB_RUST_HUB_ROOT`, and X-Hub Node inherited root
@@ -2029,6 +2140,7 @@ Continue post-cutover hardening:
 - keep `/ready` and `/xt/classic-hub-compat` under the recent slow-request
   budget while memory writer and skills execution stay in Rust authority;
 - choose the real domain/tunnel provider, run
+  `cross_network_remote_route_gate.command` and
   `cross_network_domain_activation_plan.command` with the final HTTPS URL, then
   execute its access-key, launchd, watchdog, pairing, and domain-smoke steps in
   order before XT uses the domain outside the first LAN pairing;

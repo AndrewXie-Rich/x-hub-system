@@ -217,95 +217,19 @@ struct OrbFloatingView: View {
     private let snapshotFreshnessTTL: Double = 20.0
     private let satellitePersistenceTTL: Double = 10.0
 
-    private let points = ParticleCloud.points(count: 2520, seed: 1)
+    private static let points = ParticleCloud.points(count: 720, seed: 1)
 
     var body: some View {
-        // Keep the orb readable without burning the main thread.
-        let minInterval: Double = {
-            switch alert.kind {
-            case .meetingUrgent:
-                return 1.0 / 30.0
-            case .meetingHot, .meetingSoon:
-                return 1.0 / 26.0
-            case .idle:
-                return 1.0 / 20.0
-            default:
-                return 1.0 / 22.0
-            }
-        }()
-        TimelineView(.animation(minimumInterval: minInterval, paused: false)) { ctx in
-            let t = ctx.date.timeIntervalSinceReferenceDate
-            let color = currentColor(now: ctx.date)
-
-            let omegaTarget = orbOmegaTarget()
-            let orbitOmegaTarget = satellitesOrbitOmegaTarget()
-
-            // Continuous angles.
-            let ay = orbPhaseBase + (t - orbPhaseStartT) * orbOmegaRef
-            let ax = ay * 0.67
-            let orbitPhase = satPhaseBase + (t - satPhaseStartT) * satOmegaRef
-
-            let key = phaseKey(omegaTarget: omegaTarget, orbitOmegaTarget: orbitOmegaTarget)
-
-            return ZStack {
-                GeometryReader { geo in
-                    let side = min(geo.size.width, geo.size.height)
-
-                    // Important: keep BOTH the orb canvas and the satellites in the same centered
-                    // square coordinate space. Otherwise, if the hosting view isn't perfectly
-                    // square, the canvas draws in the top-left while satellites stay centered.
-                    ZStack {
-                        // Transparent floating panels can exhibit temporal tearing when multiple
-                        // async canvases race each other. Keep orb rendering on the main render path.
-                        Canvas(opaque: false, colorMode: .linear, rendersAsynchronously: false) { context, _ in
-                            draw(context: &context, side: side, t: t, ay: ay, ax: ax, rgba: color)
-                        }
-                        .frame(width: side, height: side)
-                        .allowsHitTesting(false)
-
-                        if !cachedSatellites.isEmpty {
-                            SatellitesOrbitLayer(
-                                satellites: cachedSatellites,
-                                t: t,
-                                orbitPhase: orbitPhase,
-                                side: side
-                            )
-                            .frame(width: side, height: side)
-                            .allowsHitTesting(false)
-                        }
-                    }
-                    .frame(width: side, height: side)
-                    .position(x: geo.size.width / 2, y: geo.size.height / 2)
+        let minInterval = timelineMinimumInterval()
+        Group {
+            if usesDisplayLinkedTimeline {
+                TimelineView(.animation(minimumInterval: minInterval, paused: false)) { ctx in
+                    renderOrbFrame(date: ctx.date)
                 }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .contentShape(Rectangle())
-            .onAppear {
-                // Initialize phase anchors once.
-                if orbPhaseStartT == 0 || satPhaseStartT == 0 {
-                    let t0 = Date().timeIntervalSinceReferenceDate
-                    orbOmegaRef = omegaTarget
-                    orbPhaseBase = 0
-                    orbPhaseStartT = t0
-                    satOmegaRef = orbitOmegaTarget
-                    satPhaseBase = 0
-                    satPhaseStartT = t0
+            } else {
+                TimelineView(.periodic(from: .now, by: minInterval)) { ctx in
+                    renderOrbFrame(date: ctx.date)
                 }
-            }
-            .onChange(of: key) { _ in
-                let t0 = Date().timeIntervalSinceReferenceDate
-
-                // Orb.
-                let curAy = orbPhaseBase + (t0 - orbPhaseStartT) * orbOmegaRef
-                orbPhaseBase = curAy.truncatingRemainder(dividingBy: 2.0 * Double.pi)
-                orbPhaseStartT = t0
-                orbOmegaRef = omegaTarget
-
-                // Satellites.
-                let curOp = satPhaseBase + (t0 - satPhaseStartT) * satOmegaRef
-                satPhaseBase = curOp.truncatingRemainder(dividingBy: 2.0 * Double.pi)
-                satPhaseStartT = t0
-                satOmegaRef = orbitOmegaTarget
             }
         }
         .onChange(of: alert.kind) { newKind in
@@ -335,11 +259,105 @@ struct OrbFloatingView: View {
         }
     }
 
+    private var usesDisplayLinkedTimeline: Bool {
+        alert.kind == .meetingUrgent || alert.kind == .meetingHot
+    }
+
+    @ViewBuilder
+    private func renderOrbFrame(date: Date) -> some View {
+        let t = date.timeIntervalSinceReferenceDate
+        let color = currentColor(now: date)
+
+        let omegaTarget = orbOmegaTarget()
+        let orbitOmegaTarget = satellitesOrbitOmegaTarget()
+
+        // Continuous angles.
+        let ay = orbPhaseBase + (t - orbPhaseStartT) * orbOmegaRef
+        let ax = ay * 0.67
+        let orbitPhase = satPhaseBase + (t - satPhaseStartT) * satOmegaRef
+
+        let key = phaseKey(omegaTarget: omegaTarget, orbitOmegaTarget: orbitOmegaTarget)
+
+        ZStack {
+            GeometryReader { geo in
+                let side = min(geo.size.width, geo.size.height)
+
+                // Important: keep BOTH the orb canvas and the satellites in the same centered
+                // square coordinate space. Otherwise, if the hosting view isn't perfectly
+                // square, the canvas draws in the top-left while satellites stay centered.
+                ZStack {
+                    // Transparent floating panels can exhibit temporal tearing when multiple
+                    // async canvases race each other. Keep orb rendering on the main render path.
+                    Canvas(opaque: false, colorMode: .nonLinear, rendersAsynchronously: false) { context, _ in
+                        draw(context: &context, side: side, t: t, ay: ay, ax: ax, rgba: color)
+                    }
+                    .frame(width: side, height: side)
+                    .allowsHitTesting(false)
+
+                    if !cachedSatellites.isEmpty {
+                        SatellitesOrbitLayer(
+                            satellites: cachedSatellites,
+                            t: t,
+                            orbitPhase: orbitPhase,
+                            side: side
+                        )
+                        .frame(width: side, height: side)
+                        .allowsHitTesting(false)
+                    }
+                }
+                .frame(width: side, height: side)
+                .position(x: geo.size.width / 2, y: geo.size.height / 2)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .onAppear {
+            // Initialize phase anchors once.
+            if orbPhaseStartT == 0 || satPhaseStartT == 0 {
+                let t0 = Date().timeIntervalSinceReferenceDate
+                orbOmegaRef = omegaTarget
+                orbPhaseBase = 0
+                orbPhaseStartT = t0
+                satOmegaRef = orbitOmegaTarget
+                satPhaseBase = 0
+                satPhaseStartT = t0
+            }
+        }
+        .onChange(of: key) { _ in
+            let t0 = Date().timeIntervalSinceReferenceDate
+
+            // Orb.
+            let curAy = orbPhaseBase + (t0 - orbPhaseStartT) * orbOmegaRef
+            orbPhaseBase = curAy.truncatingRemainder(dividingBy: 2.0 * Double.pi)
+            orbPhaseStartT = t0
+            orbOmegaRef = omegaTarget
+
+            // Satellites.
+            let curOp = satPhaseBase + (t0 - satPhaseStartT) * satOmegaRef
+            satPhaseBase = curOp.truncatingRemainder(dividingBy: 2.0 * Double.pi)
+            satPhaseStartT = t0
+            satOmegaRef = orbitOmegaTarget
+        }
+    }
+
     private func phaseKey(omegaTarget: Double, orbitOmegaTarget: Double) -> String {
         // Discretize to avoid tiny float diffs.
         let a = Int((omegaTarget * 10_000).rounded())
         let b = Int((orbitOmegaTarget * 10_000).rounded())
         return "k=\(alert.kind.rawValue)|c=\(alert.count)|r=\(alert.urgentSecondsToMeeting ?? -1)|w=\(alert.urgentWindowSeconds ?? -1)|o=\(a)|so=\(b)"
+    }
+
+    private func timelineMinimumInterval() -> Double {
+        switch alert.kind {
+        case .meetingUrgent:
+            return 1.0 / 12.0
+        case .meetingHot, .meetingSoon:
+            return 1.0 / 8.0
+        case .idle:
+            return 1.0
+        default:
+            return 0.5
+        }
     }
 
     private func satelliteVisuals(now: Double) -> [SatelliteVisual] {
@@ -673,10 +691,14 @@ struct OrbFloatingView: View {
 
     private func pointStride() -> Int {
         switch alert.kind {
-        case .meetingUrgent, .meetingHot, .meetingSoon, .idle:
+        case .meetingUrgent:
             return 1
+        case .meetingHot, .meetingSoon:
+            return 2
+        case .idle:
+            return 6
         default:
-            return 1
+            return 4
         }
     }
 
@@ -710,8 +732,8 @@ struct OrbFloatingView: View {
             cg.setShouldAntialias(true)
             cg.setAllowsAntialiasing(true)
 
-            for index in stride(from: 0, to: points.count, by: strideValue) {
-                let p = points[index]
+            for index in stride(from: 0, to: Self.points.count, by: strideValue) {
+                let p = Self.points[index]
                 // Rotate around Y.
                 let x1 = p.x * cosY + p.z * sinY
                 let z1 = -p.x * sinY + p.z * cosY
@@ -929,7 +951,7 @@ private struct SatellitesOrbitLayer: View {
     var body: some View {
         let shown = satellites
 
-        Canvas(opaque: false, colorMode: .linear, rendersAsynchronously: false) { context, _ in
+        Canvas(opaque: false, colorMode: .nonLinear, rendersAsynchronously: false) { context, _ in
             draw(
                 context: &context,
                 satellites: shown

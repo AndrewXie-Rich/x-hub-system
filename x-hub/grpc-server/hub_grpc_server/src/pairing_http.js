@@ -7,7 +7,16 @@ import { fileURLToPath } from 'node:url';
 import { nowMs, uuid } from './util.js';
 import { resolveRuntimeBaseDir } from './local_runtime_ipc.js';
 import { pushHubNotification } from './hub_ipc.js';
-import { findClientByToken } from './clients.js';
+import {
+  findClientByToken,
+  loadClients,
+  findClientByAccessKeyId,
+  getClientAuthStatus,
+  touchClientUsageByToken,
+  generateAccessKeyId,
+  redactClientToken,
+  invalidateClientsCache,
+} from './clients.js';
 import { upsertDevicePresence } from './device_presence.js';
 import {
   ensureHubTlsMaterial,
@@ -342,6 +351,30 @@ function toHttpChannelProviderRuntimeStatus(row) {
   };
 }
 
+function toHttpPendingGrantRequest(row) {
+  if (!row || typeof row !== 'object') return null;
+  return {
+    grant_request_id: safeString(row.grant_request_id),
+    request_id: safeString(row.request_id),
+    client: {
+      device_id: safeString(row.device_id),
+      user_id: safeString(row.user_id),
+      app_id: safeString(row.app_id),
+      project_id: safeString(row.project_id),
+      session_id: '',
+    },
+    capability: safeString(row.capability),
+    model_id: safeString(row.model_id),
+    reason: safeString(row.reason),
+    requested_ttl_sec: Math.max(0, Number(row.requested_ttl_sec || 0)),
+    requested_token_cap: Math.max(0, Number(row.requested_token_cap || 0)),
+    status: safeString(row.status),
+    decision: safeString(row.decision),
+    created_at_ms: Math.max(0, Number(row.created_at_ms || 0)),
+    decided_at_ms: Math.max(0, Number(row.decided_at_ms || 0)),
+  };
+}
+
 function buildHttpOperatorChannelLiveTestEvidenceReport({
   provider = '',
   verdict = '',
@@ -501,6 +534,117 @@ function fetchRustHubJSONPath(routePath, { timeoutMs = 1500 } = {}) {
 
 function sha256Hex(text) {
   return crypto.createHash('sha256').update(String(text || ''), 'utf8').digest('hex');
+}
+
+function readTextFileTrimmed(filePath) {
+  const p = safeString(filePath);
+  if (!p) return '';
+  try {
+    return fs.readFileSync(p, 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+
+function rustHubHTTPBaseURL() {
+  const raw = safeString(
+    process.env.XHUB_RUST_HUB_HTTP_BASE_URL
+      || process.env.XHUB_RUST_HTTP_BASE_URL
+      || process.env.XHUBD_HTTP_BASE_URL
+      || 'http://127.0.0.1:50151'
+  );
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'http:') return 'http://127.0.0.1:50151';
+    return url.toString().replace(/\/+$/, '');
+  } catch {
+    return 'http://127.0.0.1:50151';
+  }
+}
+
+function rustHubHTTPAccessKey() {
+  const direct = safeString(process.env.XHUB_RUST_HTTP_ACCESS_KEY || process.env.XHUB_RUST_HUB_ACCESS_KEY);
+  if (direct) return direct;
+
+  for (const key of ['XHUB_RUST_HTTP_ACCESS_KEY_FILE', 'XHUB_RUST_HUB_ACCESS_KEY_FILE']) {
+    const value = readTextFileTrimmed(process.env[key]);
+    if (value) return value;
+  }
+
+  const root = safeString(process.env.XHUB_RUST_HUB_ROOT);
+  if (root) {
+    for (const rel of [
+      'secrets/xhubd_http_access_key',
+      'secrets/xhubd_domain_access_key',
+      'secrets/xhubd_lan_access_key',
+    ]) {
+      const value = readTextFileTrimmed(path.join(root, rel));
+      if (value) return value;
+    }
+  }
+  return '';
+}
+
+function fetchRustHubJSONPath(routePath, { timeoutMs = 1500 } = {}) {
+  return new Promise((resolve) => {
+    const base = rustHubHTTPBaseURL();
+    let target;
+    try {
+      target = new URL(routePath, `${base}/`);
+    } catch {
+      resolve({
+        ok: false,
+        status: 500,
+        text: '',
+        error: 'rust_kernel_base_url_invalid',
+      });
+      return;
+    }
+
+    const accessKey = rustHubHTTPAccessKey();
+    const headers = {
+      accept: 'application/json',
+    };
+    if (accessKey) {
+      headers.authorization = `Bearer ${accessKey}`;
+      headers['x-xhub-access-key'] = accessKey;
+    }
+
+    const request = http.request({
+      method: 'GET',
+      hostname: target.hostname,
+      port: Number(target.port || 80),
+      path: `${target.pathname}${target.search}`,
+      headers,
+      timeout: Math.max(250, Math.min(10_000, Number(timeoutMs || 0))),
+    }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+      response.on('end', () => {
+        resolve({
+          ok: true,
+          status: Number(response.statusCode || 0),
+          text: Buffer.concat(chunks).toString('utf8'),
+          contentType: safeString(response.headers?.['content-type']) || 'application/json; charset=utf-8',
+          sourceBaseURL: base,
+        });
+      });
+    });
+
+    request.on('error', (err) => {
+      resolve({
+        ok: false,
+        status: 503,
+        text: '',
+        error: safeString(err?.message) || 'rust_kernel_contract_unavailable',
+        sourceBaseURL: base,
+      });
+    });
+    request.on('timeout', () => {
+      request.destroy(new Error('rust_kernel_contract_timeout'));
+    });
+    request.end();
+  });
 }
 
 function sha256FileHex(filePath) {
@@ -878,6 +1022,12 @@ const PAID_MODEL_SELECTION_MODES = new Set(['off', 'all_paid_models', 'custom_se
 const POLICY_MODES = new Set(['new_profile', 'legacy_grant']);
 const DEFAULT_PAIRING_DAILY_TOKEN_LIMIT = 500000;
 const DEFAULT_PAIRING_SINGLE_REQUEST_TOKEN_LIMIT = 12000;
+const XT_ACCESS_KEY_MANAGER_APP_IDS = new Set(['x_terminal', 'xterminal']);
+const XT_ACCESS_KEY_MANAGER_SCOPES = new Set([
+  'hub_access_keys.manage',
+  'hub.access_keys.manage',
+  'access_keys.manage',
+]);
 
 function uniqueStrings(values) {
   const out = [];
@@ -966,19 +1116,19 @@ function readClientsSnapshot(runtimeBaseDir) {
   const fp = clientsConfigPath(runtimeBaseDir);
   const obj = readJsonSafe(fp);
   if (!obj || typeof obj !== 'object') {
-    return { schema_version: 'hub_grpc_clients.v1', updated_at_ms: 0, clients: [] };
+    return { schema_version: 'hub_grpc_clients.v2', updated_at_ms: 0, clients: [] };
   }
   const clients = Array.isArray(obj.clients) ? obj.clients : Array.isArray(obj.devices) ? obj.devices : [];
   return {
-    schema_version: safeString(obj.schema_version) || 'hub_grpc_clients.v1',
+    schema_version: safeString(obj.schema_version) || 'hub_grpc_clients.v2',
     updated_at_ms: Number(obj.updated_at_ms || 0) || 0,
     clients: Array.isArray(clients) ? clients : [],
   };
 }
 
 function upsertClientInSnapshot(snap, entry) {
-  const out = snap && typeof snap === 'object' ? { ...snap } : { schema_version: 'hub_grpc_clients.v1', updated_at_ms: 0, clients: [] };
-  out.schema_version = safeString(out.schema_version) || 'hub_grpc_clients.v1';
+  const out = snap && typeof snap === 'object' ? { ...snap } : { schema_version: 'hub_grpc_clients.v2', updated_at_ms: 0, clients: [] };
+  out.schema_version = safeString(out.schema_version) || 'hub_grpc_clients.v2';
   if (!Array.isArray(out.clients)) out.clients = [];
   const did = safeString(entry?.device_id);
   if (!did) return out;
@@ -1000,7 +1150,9 @@ function upsertClientInSnapshot(snap, entry) {
 function writeClientsSnapshot(runtimeBaseDir, snap) {
   const base = safeString(runtimeBaseDir);
   if (!base) return false;
-  return writeJsonAtomic(base, 'hub_grpc_clients.json', snap);
+  const ok = writeJsonAtomic(base, 'hub_grpc_clients.json', snap);
+  if (ok) invalidateClientsCache();
+  return ok;
 }
 
 function generateClientToken() {
@@ -1075,8 +1227,19 @@ function requireHttpClient(req) {
   }
 
   const client = findClientByToken(runtimeBaseDir, tok);
-  if (!client || !client.enabled) {
+  if (!client) {
     return { ok: false, status: 401, code: 'unauthenticated', message: 'Missing/invalid client token' };
+  }
+
+  const availability = getClientAuthStatus(client);
+  if (!availability.usable) {
+    const errorCode = safeString(availability.reason_code) || 'unauthenticated';
+    const message = errorCode === 'token_revoked'
+      ? 'Client token has been revoked'
+      : errorCode === 'token_expired'
+        ? 'Client token has expired'
+        : 'Client token is disabled';
+    return { ok: false, status: 401, code: errorCode, message };
   }
 
   const peerIp = peerIpFromReq(req);
@@ -1085,11 +1248,1966 @@ function requireHttpClient(req) {
     return { ok: false, status: 403, code: 'permission_denied', message: 'Client source IP is not allowed' };
   }
 
+  const touchedClient = touchClientUsageByToken(runtimeBaseDir, tok, {
+    peer_ip: peerIp,
+    transport: 'http',
+  }) || client;
+
   return {
     ok: true,
     runtimeBaseDir,
     peerIp,
+    client: touchedClient,
+  };
+}
+
+function resolveClientConnectHost(req, {
+  hostFallback,
+  peerIp,
+  internetHostHint,
+} = {}) {
+  const hostHeader = safeString(req?.headers?.host);
+  const hostHeaderName = hostHeader.includes(':') ? hostHeader.split(':')[0] : hostHeader;
+  return uniqueStrings([
+    internetHostHint,
+    hostHintFromReq(req, { hostFallback, peerIp }),
+    hostHeaderName,
+    hostFallback,
+  ])[0] || '';
+}
+
+function buildClientConnectExport({
+  req,
+  hostFallback,
+  peerIp,
+  internetHostHint,
+  grpcPort,
+  tlsMode,
+  tlsServerName,
+  client,
+  clientToken = '',
+} = {}) {
+  const hubHost = resolveClientConnectHost(req, {
+    hostFallback,
+    peerIp,
+    internetHostHint,
+  });
+  if (!hubHost) {
+    return {
+      connect: null,
+      connect_env: '',
+      connect_env_template: '',
+    };
+  }
+
+  const grpcPortNumber = Number(grpcPort || 0) || 50051;
+  const serverName = tlsMode !== 'insecure' ? safeString(tlsServerName) : '';
+  const tlsEnv =
+    tlsMode === 'insecure'
+      ? ''
+      : `HUB_GRPC_TLS_MODE=${shellQuoteSingle(tlsMode)}\nHUB_GRPC_TLS_SERVER_NAME=${shellQuoteSingle(serverName)}\nHUB_GRPC_TLS_CA_CERT_PATH=$HOME/.axhub/tls/ca.cert.pem\n`
+        + (tlsMode === 'mtls'
+          ? `HUB_GRPC_TLS_CLIENT_CERT_PATH=$HOME/.axhub/tls/client.cert.pem\nHUB_GRPC_TLS_CLIENT_KEY_PATH=$HOME/.axhub/tls/client.key.pem\n`
+          : '');
+
+  const commonEnv =
+    `HUB_HOST=${shellQuoteSingle(hubHost)}\n`
+    + `HUB_PORT=${grpcPortNumber}\n`
+    + `HUB_ACCESS_KEY_ID=${shellQuoteSingle(client?.access_key_id || client?.device_id || '')}\n`
+    + `HUB_DEVICE_ID=${shellQuoteSingle(client?.device_id || '')}\n`
+    + `HUB_USER_ID=${shellQuoteSingle(client?.user_id || '')}\n`
+    + `HUB_APP_ID=${shellQuoteSingle(client?.app_id || '')}\n`;
+
+  return {
+    connect: {
+      hub_host: hubHost,
+      hub_port: grpcPortNumber,
+      tls_mode: safeString(tlsMode || 'insecure') || 'insecure',
+      tls_server_name: serverName,
+      auth_env_key: 'HUB_CLIENT_TOKEN',
+    },
+    connect_env: clientToken
+      ? commonEnv + `HUB_CLIENT_TOKEN=${shellQuoteSingle(clientToken)}\n` + tlsEnv
+      : '',
+    connect_env_template:
+      commonEnv + `HUB_CLIENT_TOKEN=${shellQuoteSingle(redactClientToken(client?.token || '<set-client-token>') || '<set-client-token>')}\n` + tlsEnv,
+  };
+}
+
+function buildClientOpenAICompatExport({
+  req,
+  hostFallback,
+  peerIp,
+  internetHostHint,
+  pairingPort,
+  schemeFallback,
+  client,
+  clientToken = '',
+} = {}) {
+  const hubHost = resolveClientConnectHost(req, {
+    hostFallback,
+    peerIp,
+    internetHostHint,
+  });
+  const scheme = safeString(req?.headers?.['x-forwarded-proto']) || safeString(schemeFallback) || 'http';
+  const portNumber = positiveIntOrZero(pairingPort);
+  if (!hubHost) {
+    return {
+      openai_compat: null,
+      openai_compat_env: '',
+      openai_compat_env_template: '',
+    };
+  }
+
+  const authority = (() => {
+    const normalizedHost = safeString(hubHost);
+    if (!normalizedHost) return '';
+    if (normalizedHost.includes(':')) return normalizedHost;
+    if ((scheme === 'https' && portNumber === 443) || (scheme === 'http' && portNumber === 80) || portNumber <= 0) {
+      return normalizedHost;
+    }
+    return `${normalizedHost}:${portNumber}`;
+  })();
+  if (!authority) {
+    return {
+      openai_compat: null,
+      openai_compat_env: '',
+      openai_compat_env_template: '',
+    };
+  }
+
+  const baseUrl = `${scheme}://${authority}/v1`;
+  const commonEnv =
+    `OPENAI_BASE_URL=${shellQuoteSingle(baseUrl)}\n`
+    + `AXHUB_ACCESS_KEY_ID=${shellQuoteSingle(client?.access_key_id || client?.device_id || '')}\n`
+    + `AXHUB_DEVICE_ID=${shellQuoteSingle(client?.device_id || '')}\n`
+    + `AXHUB_USER_ID=${shellQuoteSingle(client?.user_id || '')}\n`
+    + `AXHUB_APP_ID=${shellQuoteSingle(client?.app_id || '')}\n`;
+
+  return {
+    openai_compat: {
+      base_url: baseUrl,
+      models_url: `${baseUrl}/models`,
+      chat_completions_url: `${baseUrl}/chat/completions`,
+      responses_url: `${baseUrl}/responses`,
+      auth_scheme: 'bearer',
+      api_key_env_key: 'OPENAI_API_KEY',
+      base_url_env_key: 'OPENAI_BASE_URL',
+    },
+    openai_compat_env: clientToken
+      ? commonEnv + `OPENAI_API_KEY=${shellQuoteSingle(clientToken)}\n`
+      : '',
+    openai_compat_env_template:
+      commonEnv + `OPENAI_API_KEY=${shellQuoteSingle(redactClientToken(client?.token || '<set-openai-api-key>') || '<set-openai-api-key>')}\n`,
+  };
+}
+
+function toHttpClientAccessKey(client, context = {}, options = {}) {
+  if (!client || typeof client !== 'object') return null;
+  const includeSecretToken = options.include_secret_token === true;
+  const secretToken = includeSecretToken ? safeString(options.client_token || client.token) : '';
+  const exportInfo = buildClientConnectExport({
+    req: context.req,
+    hostFallback: context.hostFallback,
+    peerIp: context.peerIp,
+    internetHostHint: context.internetHostHint,
+    grpcPort: context.grpcPort,
+    tlsMode: context.tlsMode,
+    tlsServerName: context.tlsServerName,
     client,
+    clientToken: secretToken,
+  });
+  const openAICompatInfo = buildClientOpenAICompatExport({
+    req: context.req,
+    hostFallback: context.hostFallback,
+    peerIp: context.peerIp,
+    internetHostHint: context.internetHostHint,
+    pairingPort: context.pairingPort,
+    schemeFallback: context.schemeFallback,
+    client,
+    clientToken: secretToken,
+  });
+  return {
+    schema_version: 'hub.client_access_key.v1',
+    access_key_id: safeString(client.access_key_id || client.device_id),
+    auth_kind: safeString(client.auth_kind || 'paired_client') || 'paired_client',
+    status: safeString(client.status || ''),
+    status_reason: safeString(client.status_reason || ''),
+    device_id: safeString(client.device_id),
+    user_id: safeString(client.user_id),
+    app_id: safeString(client.app_id),
+    name: safeString(client.name),
+    note: safeString(client.note),
+    token_redacted: safeString(client.token_redacted || redactClientToken(client.token)),
+    enabled: client.enabled === true,
+    created_at_ms: Math.max(0, Number(client.created_at_ms || 0)),
+    updated_at_ms: Math.max(0, Number(client.updated_at_ms || 0)),
+    expires_at_ms: Math.max(0, Number(client.expires_at_ms || 0)),
+    last_used_at_ms: Math.max(0, Number(client.last_used_at_ms || 0)),
+    last_used_peer_ip: safeString(client.last_used_peer_ip),
+    last_used_transport: safeString(client.last_used_transport),
+    revoked_at_ms: Math.max(0, Number(client.revoked_at_ms || 0)),
+    revoke_reason: safeString(client.revoke_reason),
+    revoked_by_user_id: safeString(client.revoked_by_user_id),
+    revoked_via: safeString(client.revoked_via),
+    created_by_user_id: safeString(client.created_by_user_id),
+    created_by_app_id: safeString(client.created_by_app_id),
+    created_via: safeString(client.created_via),
+    last_rotated_at_ms: Math.max(0, Number(client.last_rotated_at_ms || 0)),
+    rotation_count: Math.max(0, Number(client.rotation_count || 0)),
+    capabilities: safeStringArray(client.capabilities),
+    scopes: safeStringArray(client.scopes),
+    allowed_cidrs: safeStringArray(client.allowed_cidrs),
+    policy_mode: safeString(client.policy_mode),
+    trust_profile_present: !!client.trust_profile_present,
+    approved_trust_profile: client.approved_trust_profile && typeof client.approved_trust_profile === 'object'
+      ? client.approved_trust_profile
+      : null,
+    connect: exportInfo.connect,
+    connect_env_template: exportInfo.connect_env_template,
+    openai_compat: openAICompatInfo.openai_compat,
+    openai_compat_env_template: openAICompatInfo.openai_compat_env_template,
+    ...(includeSecretToken ? { connect_env: exportInfo.connect_env } : {}),
+    ...(includeSecretToken ? { openai_compat_env: openAICompatInfo.openai_compat_env } : {}),
+  };
+}
+
+function findClientSnapshotIndex(snapshot, accessKeyId) {
+  const rows = Array.isArray(snapshot?.clients) ? snapshot.clients : [];
+  for (let index = 0; index < rows.length; index += 1) {
+    const item = rows[index];
+    const candidateAccessKeyId = safeString(item?.access_key_id || item?.accessKeyId || item?.device_id || item?.id);
+    const candidateDeviceId = safeString(item?.device_id || item?.id);
+    if (candidateAccessKeyId === accessKeyId || candidateDeviceId === accessKeyId) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function buildClientAccessKeyResponseContext(req, {
+  hostFallback,
+  internetHostHint,
+  grpcPort,
+} = {}) {
+  const tlsMode = tlsModeFromEnv(process.env);
+  const pairingPort = positiveIntOrZero(process.env.HUB_PAIRING_PORT || (positiveIntOrZero(grpcPort) + 1));
+  return {
+    req,
+    hostFallback,
+    peerIp: peerIpFromReq(req),
+    internetHostHint,
+    grpcPort,
+    pairingPort,
+    schemeFallback: safeString(process.env.HUB_PAIRING_PUBLIC_SCHEME || '') || 'http',
+    tlsMode,
+    tlsServerName: tlsMode === 'insecure' ? '' : tlsServerNameFromEnv(process.env),
+  };
+}
+
+function makeHubServiceCallPeer(req) {
+  const peerIp = peerIpFromReq(req) || '127.0.0.1';
+  return `ipv4:${peerIp}:0`;
+}
+
+function makeHubServiceMetadata(token = '') {
+  const rawToken = safeString(token);
+  return {
+    get(key) {
+      if (safeString(key).toLowerCase() === 'authorization') {
+        return rawToken ? [`Bearer ${rawToken}`] : [];
+      }
+      return [];
+    },
+  };
+}
+
+function makeHubUnaryCall({ req, token = '', request = {} } = {}) {
+  return {
+    request,
+    metadata: makeHubServiceMetadata(token),
+    getPeer() {
+      return makeHubServiceCallPeer(req);
+    },
+  };
+}
+
+function makeHubStreamingCall({ req, token = '', request = {}, onWrite = null, onEnd = null } = {}) {
+  const writes = [];
+  let ended = false;
+  return {
+    request,
+    writes,
+    get ended() {
+      return ended;
+    },
+    metadata: makeHubServiceMetadata(token),
+    getPeer() {
+      return makeHubServiceCallPeer(req);
+    },
+    write(payload) {
+      writes.push(payload);
+      if (typeof onWrite === 'function') {
+        try {
+          onWrite(payload);
+        } catch {
+          // ignore bridge-to-http callback failures
+        }
+      }
+    },
+    end() {
+      ended = true;
+      if (typeof onEnd === 'function') {
+        try {
+          onEnd();
+        } catch {
+          // ignore bridge-to-http callback failures
+        }
+      }
+    },
+    on() {
+      // HTTP gateway only supports request/response for now.
+    },
+  };
+}
+
+function openAIErrorTypeForStatus(status) {
+  const code = Number(status || 0);
+  if (code === 401) return 'authentication_error';
+  if (code === 403) return 'permission_error';
+  if (code === 404) return 'not_found_error';
+  if (code === 429) return 'rate_limit_error';
+  return 'invalid_request_error';
+}
+
+function openAIStatusForHubErrorCode(rawCode = '') {
+  const code = safeString(rawCode).toLowerCase();
+  if (!code) return 503;
+  if (code === 'unauthenticated' || code === 'token_revoked' || code === 'token_expired') return 401;
+  if (code === 'permission_denied' || code === 'grant_required' || code === 'kill_switch_active') return 403;
+  if (code === 'model_not_found') return 404;
+  if (code.includes('rate_limit') || code.includes('quota') || code.includes('budget_exceeded')) return 429;
+  if (code.includes('invalid') || code.includes('unsupported') || code.includes('bad_')) return 400;
+  return 503;
+}
+
+function openAIErrorPayload({
+  status = 500,
+  code = 'gateway_error',
+  message = '',
+  type = '',
+} = {}) {
+  return {
+    error: {
+      message: safeString(message) || safeString(code) || 'gateway_error',
+      type: safeString(type) || openAIErrorTypeForStatus(status),
+      code: safeString(code) || 'gateway_error',
+    },
+  };
+}
+
+function openAIErrorResponse(res, status, {
+  code = 'gateway_error',
+  message = '',
+  type = '',
+} = {}) {
+  jsonResponse(res, Number(status || 500), openAIErrorPayload({ status, code, message, type }));
+}
+
+function normalizeOpenAIChatMessageContent(rawContent) {
+  if (typeof rawContent === 'string') return rawContent;
+  if (Array.isArray(rawContent)) {
+    return rawContent
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (!item || typeof item !== 'object') return '';
+        const type = safeString(item.type).toLowerCase();
+        if (type === 'text' || type === 'input_text') return safeString(item.text);
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n');
+  }
+  if (rawContent && typeof rawContent === 'object') {
+    return safeString(rawContent.text || rawContent.content);
+  }
+  return '';
+}
+
+function toHubGenerateMessages(messages) {
+  if (!Array.isArray(messages)) return [];
+  return messages
+    .map((item) => ({
+      role: safeString(item?.role || 'user') || 'user',
+      content: normalizeOpenAIChatMessageContent(item?.content),
+    }))
+    .filter((item) => item.content);
+}
+
+function normalizeOpenAIResponsesContent(rawContent) {
+  if (typeof rawContent === 'string') return rawContent;
+  if (Array.isArray(rawContent)) {
+    return rawContent
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (!item || typeof item !== 'object') return '';
+        const type = safeString(item.type).toLowerCase();
+        if (type === 'text' || type === 'input_text' || type === 'output_text') {
+          if (typeof item.text === 'string') return item.text;
+          if (item.text && typeof item.text === 'object') {
+            return safeString(item.text.value || item.text.text);
+          }
+          return safeString(item.output_text);
+        }
+        if (type === 'message') return normalizeOpenAIResponsesContent(item.content);
+        if (typeof item.content === 'string') return item.content;
+        return safeString(item.value);
+      })
+      .filter(Boolean)
+      .join('\n');
+  }
+  if (rawContent && typeof rawContent === 'object') {
+    const type = safeString(rawContent.type).toLowerCase();
+    if (type === 'message') return normalizeOpenAIResponsesContent(rawContent.content);
+    if (typeof rawContent.text === 'string') return rawContent.text;
+    if (rawContent.text && typeof rawContent.text === 'object') {
+      return safeString(rawContent.text.value || rawContent.text.text);
+    }
+    if (typeof rawContent.content === 'string') return rawContent.content;
+    return safeString(rawContent.value || rawContent.output_text);
+  }
+  return '';
+}
+
+function toHubGenerateMessagesFromResponsesPayload(payload = {}) {
+  const out = [];
+  const instructions = normalizeOpenAIResponsesContent(payload.instructions);
+  if (instructions) {
+    out.push({
+      role: 'system',
+      content: instructions,
+    });
+  }
+
+  const input = payload.input;
+  if (typeof input === 'string') {
+    out.push({
+      role: 'user',
+      content: input,
+    });
+    return out.filter((item) => item.content);
+  }
+
+  if (!Array.isArray(input)) {
+    const content = normalizeOpenAIResponsesContent(input);
+    if (content) {
+      out.push({
+        role: 'user',
+        content,
+      });
+    }
+    return out.filter((item) => item.content);
+  }
+
+  for (const item of input) {
+    if (typeof item === 'string') {
+      out.push({
+        role: 'user',
+        content: item,
+      });
+      continue;
+    }
+    if (!item || typeof item !== 'object') continue;
+    const type = safeString(item.type).toLowerCase();
+    if (type && type !== 'message') {
+      const content = normalizeOpenAIResponsesContent(item);
+      if (content) {
+        out.push({
+          role: 'user',
+          content,
+        });
+      }
+      continue;
+    }
+
+    const role = safeString(item.role || 'user') || 'user';
+    const content = normalizeOpenAIResponsesContent(item.content);
+    if (!content) continue;
+    out.push({
+      role,
+      content,
+    });
+  }
+
+  return out.filter((item) => item.content);
+}
+
+function normalizeOpenAIFinishReason(reason = '') {
+  const token = safeString(reason).toLowerCase();
+  if (!token) return 'stop';
+  if (token === 'completed' || token === 'eos' || token === 'done') return 'stop';
+  return token;
+}
+
+function toOpenAIModelInfo(model) {
+  const modelId = safeString(model?.model_id);
+  if (!modelId) return null;
+  return {
+    id: modelId,
+    object: 'model',
+    owned_by: 'axhub',
+    backend: safeString(model?.backend).toLowerCase(),
+    kind: safeString(model?.kind).toLowerCase(),
+    visibility: safeString(model?.visibility).toLowerCase(),
+    requires_grant: !!model?.requires_grant,
+    context_length: Math.max(0, Number(model?.context_length || 0)),
+  };
+}
+
+function toOpenAIModelListResponse(response = {}) {
+  const rows = (Array.isArray(response?.models) ? response.models : [])
+    .map((item) => toOpenAIModelInfo(item))
+    .filter(Boolean);
+  return {
+    object: 'list',
+    data: rows,
+    count: rows.length,
+    trust_profile_present: !!response?.trust_profile_present,
+    paid_model_policy_mode: safeString(response?.paid_model_policy_mode),
+    daily_token_limit: Math.max(0, Number(response?.daily_token_limit || 0)),
+    single_request_token_limit: Math.max(0, Number(response?.single_request_token_limit || 0)),
+  };
+}
+
+async function invokeHubListModels({ hubServices, req, token = '', request = {} } = {}) {
+  const listModels = hubServices?.HubModels?.ListModels;
+  if (typeof listModels !== 'function') {
+    return {
+      ok: false,
+      status: 503,
+      code: 'hub_models_gateway_unavailable',
+      message: 'Hub model service is unavailable',
+    };
+  }
+
+  const call = makeHubUnaryCall({ req, token, request });
+  return new Promise((resolve) => {
+    try {
+      listModels(call, (error, response) => {
+        if (error) {
+          const message = safeString(error?.message || 'Hub model service request failed');
+          resolve({
+            ok: false,
+            status: openAIStatusForHubErrorCode(message),
+            code: message || 'hub_models_request_failed',
+            message,
+          });
+          return;
+        }
+        resolve({ ok: true, response: response || {} });
+      });
+    } catch (error) {
+      const message = safeString(error?.message || 'Hub model service request failed');
+      resolve({
+        ok: false,
+        status: 503,
+        code: 'hub_models_request_failed',
+        message,
+      });
+    }
+  });
+}
+
+async function invokeHubCancel({ hubServices, req, token = '', request = {} } = {}) {
+  const cancel = hubServices?.HubAI?.Cancel;
+  if (typeof cancel !== 'function') {
+    return {
+      ok: false,
+      status: 503,
+      code: 'hub_cancel_gateway_unavailable',
+      message: 'Hub cancel service is unavailable',
+    };
+  }
+
+  const call = makeHubUnaryCall({ req, token, request });
+  return new Promise((resolve) => {
+    try {
+      cancel(call, (error, response) => {
+        if (error) {
+          const message = safeString(error?.message || 'Hub cancel request failed');
+          resolve({
+            ok: false,
+            status: openAIStatusForHubErrorCode(message),
+            code: message || 'hub_cancel_request_failed',
+            message,
+          });
+          return;
+        }
+        resolve({
+          ok: !!response?.ok,
+          response: response || {},
+        });
+      });
+    } catch (error) {
+      const message = safeString(error?.message || 'Hub cancel request failed');
+      resolve({
+        ok: false,
+        status: 503,
+        code: 'hub_cancel_request_failed',
+        message,
+      });
+    }
+  });
+}
+
+async function invokeHubProviderKeysUnary({
+  hubServices,
+  req,
+  token = '',
+  method = '',
+  request = {},
+} = {}) {
+  const fn = hubServices?.HubProviderKeys?.[method];
+  if (typeof fn !== 'function') {
+    return {
+      ok: false,
+      status: 503,
+      code: 'hub_provider_keys_gateway_unavailable',
+      message: 'Hub provider key service is unavailable',
+    };
+  }
+
+  const call = makeHubUnaryCall({ req, token, request });
+  return new Promise((resolve) => {
+    try {
+      fn(call, (error, response) => {
+        if (error) {
+          const message = safeString(error?.message || 'Hub provider key service request failed');
+          resolve({
+            ok: false,
+            status: openAIStatusForHubErrorCode(message),
+            code: message || 'hub_provider_keys_request_failed',
+            message,
+          });
+          return;
+        }
+        resolve({ ok: true, response: response || {} });
+      });
+    } catch (error) {
+      const message = safeString(error?.message || 'Hub provider key service request failed');
+      resolve({
+        ok: false,
+        status: 503,
+        code: 'hub_provider_keys_request_failed',
+        message,
+      });
+    }
+  });
+}
+
+async function invokeHubGrantsUnary({
+  hubServices,
+  req,
+  token = '',
+  method = '',
+  request = {},
+} = {}) {
+  const fn = hubServices?.HubGrants?.[method];
+  if (typeof fn !== 'function') {
+    return {
+      ok: false,
+      status: 503,
+      code: 'hub_grants_gateway_unavailable',
+      message: 'Hub grant service is unavailable',
+    };
+  }
+
+  const call = makeHubUnaryCall({ req, token, request });
+  return new Promise((resolve) => {
+    try {
+      fn(call, (error, response) => {
+        if (error) {
+          const message = safeString(error?.message || 'Hub grant service request failed');
+          resolve({
+            ok: false,
+            status: openAIStatusForHubErrorCode(message),
+            code: message || 'hub_grants_request_failed',
+            message,
+          });
+          return;
+        }
+        resolve({ ok: true, response: response || {} });
+      });
+    } catch (error) {
+      const message = safeString(error?.message || 'Hub grant service request failed');
+      resolve({
+        ok: false,
+        status: 503,
+        code: 'hub_grants_request_failed',
+        message,
+      });
+    }
+  });
+}
+
+async function invokeHubGenerate({ hubServices, req, token = '', request = {} } = {}) {
+  const generate = hubServices?.HubAI?.Generate;
+  if (typeof generate !== 'function') {
+    return {
+      ok: false,
+      status: 503,
+      code: 'hub_generate_gateway_unavailable',
+      message: 'Hub generate service is unavailable',
+    };
+  }
+
+  const call = makeHubStreamingCall({ req, token, request });
+  try {
+    await generate(call);
+    return {
+      ok: true,
+      writes: Array.isArray(call.writes) ? call.writes : [],
+      ended: call.ended === true,
+    };
+  } catch (error) {
+    const message = safeString(error?.message || 'Hub generate service request failed');
+    return {
+      ok: false,
+      status: openAIStatusForHubErrorCode(message),
+      code: message || 'hub_generate_request_failed',
+      message,
+    };
+  }
+}
+
+async function invokeHubGenerateStreaming({
+  hubServices,
+  req,
+  token = '',
+  request = {},
+  onWrite = null,
+  onEnd = null,
+} = {}) {
+  const generate = hubServices?.HubAI?.Generate;
+  if (typeof generate !== 'function') {
+    return {
+      ok: false,
+      status: 503,
+      code: 'hub_generate_gateway_unavailable',
+      message: 'Hub generate service is unavailable',
+      writes: [],
+    };
+  }
+
+  const call = makeHubStreamingCall({ req, token, request, onWrite, onEnd });
+  try {
+    await generate(call);
+    return {
+      ok: true,
+      writes: Array.isArray(call.writes) ? call.writes : [],
+      ended: call.ended === true,
+    };
+  } catch (error) {
+    const message = safeString(error?.message || 'Hub generate service request failed');
+    return {
+      ok: false,
+      status: openAIStatusForHubErrorCode(message),
+      code: message || 'hub_generate_request_failed',
+      message,
+      writes: Array.isArray(call.writes) ? call.writes : [],
+      ended: call.ended === true,
+    };
+  }
+}
+
+function toOpenAIChatCompletionResponse({
+  request = {},
+  generateWrites = [],
+} = {}) {
+  let done = null;
+  let errorEvent = null;
+  let content = '';
+  for (const event of Array.isArray(generateWrites) ? generateWrites : []) {
+    if (event?.delta?.text) content += String(event.delta.text);
+    if (event?.done) done = event.done;
+    if (event?.error) errorEvent = event.error;
+  }
+
+  if (errorEvent) {
+    const errorCode = safeString(errorEvent?.error?.code || errorEvent?.deny_code || errorEvent?.fallback_reason_code) || 'generate_failed';
+    const errorMessage = safeString(errorEvent?.error?.message || errorCode) || 'generate_failed';
+    return {
+      ok: false,
+      status: openAIStatusForHubErrorCode(errorCode),
+      payload: openAIErrorPayload({
+        status: openAIStatusForHubErrorCode(errorCode),
+        code: errorCode,
+        message: errorMessage,
+      }),
+    };
+  }
+
+  if (!done || done.ok !== true) {
+    const errorCode = safeString(done?.deny_code || done?.reason) || 'generate_failed';
+    const status = openAIStatusForHubErrorCode(errorCode);
+    return {
+      ok: false,
+      status,
+      payload: openAIErrorPayload({
+        status,
+        code: errorCode,
+        message: safeString(done?.reason || errorCode) || 'generate_failed',
+      }),
+    };
+  }
+
+  const usage = done?.usage && typeof done.usage === 'object' ? done.usage : {};
+  return {
+    ok: true,
+    status: 200,
+    payload: {
+      id: `chatcmpl-axhub-${safeString(done?.request_id || request?.request_id) || uuid()}`,
+      object: 'chat.completion',
+      created: Math.floor(Date.now() / 1000),
+      model: safeString(done?.actual_model_id || request?.model_id),
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: 'assistant',
+            content,
+          },
+          finish_reason: normalizeOpenAIFinishReason(done?.reason),
+        },
+      ],
+      usage: {
+        prompt_tokens: Math.max(0, Number(usage?.prompt_tokens || 0)),
+        completion_tokens: Math.max(0, Number(usage?.completion_tokens || 0)),
+        total_tokens: Math.max(0, Number(usage?.total_tokens || 0)),
+      },
+      x_hub: {
+        request_id: safeString(done?.request_id || request?.request_id),
+        actual_model_id: safeString(done?.actual_model_id),
+        runtime_provider: safeString(done?.runtime_provider),
+        execution_path: safeString(done?.execution_path),
+        fallback_reason_code: safeString(done?.fallback_reason_code),
+        audit_ref: safeString(done?.audit_ref),
+        deny_code: safeString(done?.deny_code),
+      },
+    },
+  };
+}
+
+function toOpenAIResponsesResponse({
+  request = {},
+  generateWrites = [],
+} = {}) {
+  let done = null;
+  let errorEvent = null;
+  let content = '';
+  for (const event of Array.isArray(generateWrites) ? generateWrites : []) {
+    if (event?.delta?.text) content += String(event.delta.text);
+    if (event?.done) done = event.done;
+    if (event?.error) errorEvent = event.error;
+  }
+
+  if (errorEvent) {
+    const errorCode = safeString(errorEvent?.error?.code || errorEvent?.deny_code || errorEvent?.fallback_reason_code) || 'generate_failed';
+    const errorMessage = safeString(errorEvent?.error?.message || errorCode) || 'generate_failed';
+    const status = openAIStatusForHubErrorCode(errorCode);
+    return {
+      ok: false,
+      status,
+      payload: openAIErrorPayload({
+        status,
+        code: errorCode,
+        message: errorMessage,
+      }),
+    };
+  }
+
+  if (!done || done.ok !== true) {
+    const errorCode = safeString(done?.deny_code || done?.reason) || 'generate_failed';
+    const status = openAIStatusForHubErrorCode(errorCode);
+    return {
+      ok: false,
+      status,
+      payload: openAIErrorPayload({
+        status,
+        code: errorCode,
+        message: safeString(done?.reason || errorCode) || 'generate_failed',
+      }),
+    };
+  }
+
+  const usage = done?.usage && typeof done.usage === 'object' ? done.usage : {};
+  const requestId = safeString(done?.request_id || request?.request_id) || uuid();
+  const modelId = safeString(done?.actual_model_id || request?.model_id);
+  return {
+    ok: true,
+    status: 200,
+    payload: {
+      id: `resp-axhub-${requestId}`,
+      object: 'response',
+      created_at: Math.floor(Date.now() / 1000),
+      status: 'completed',
+      model: modelId,
+      output: [
+        {
+          id: `msg-axhub-${requestId}`,
+          object: 'message',
+          type: 'message',
+          status: 'completed',
+          role: 'assistant',
+          content: [
+            {
+              type: 'output_text',
+              text: content,
+              annotations: [],
+            },
+          ],
+        },
+      ],
+      output_text: content,
+      usage: {
+        input_tokens: Math.max(0, Number(usage?.prompt_tokens || usage?.input_tokens || 0)),
+        output_tokens: Math.max(0, Number(usage?.completion_tokens || usage?.output_tokens || 0)),
+        total_tokens: Math.max(0, Number(usage?.total_tokens || 0)),
+      },
+      x_hub: {
+        request_id: safeString(done?.request_id || request?.request_id),
+        actual_model_id: safeString(done?.actual_model_id),
+        runtime_provider: safeString(done?.runtime_provider),
+        execution_path: safeString(done?.execution_path),
+        fallback_reason_code: safeString(done?.fallback_reason_code),
+        audit_ref: safeString(done?.audit_ref),
+        deny_code: safeString(done?.deny_code),
+      },
+    },
+  };
+}
+
+function startOpenAIEventStream(res) {
+  res.writeHead(200, {
+    'content-type': 'text/event-stream; charset=utf-8',
+    'cache-control': 'no-store',
+    connection: 'keep-alive',
+    'x-accel-buffering': 'no',
+  });
+  if (typeof res.flushHeaders === 'function') {
+    try {
+      res.flushHeaders();
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function writeOpenAISSE(res, {
+  event = '',
+  data = '',
+} = {}) {
+  if (!res || res.writableEnded || res.destroyed) return false;
+  let payload = '';
+  if (event) payload += `event: ${event}\n`;
+  const rawData = typeof data === 'string' ? data : JSON.stringify(data);
+  for (const line of String(rawData || '').split('\n')) {
+    payload += `data: ${line}\n`;
+  }
+  payload += '\n';
+  try {
+    res.write(payload);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function endOpenAIChatCompletionStream(res) {
+  writeOpenAISSE(res, { data: '[DONE]' });
+  try {
+    res.end();
+  } catch {
+    // ignore
+  }
+}
+
+function toOpenAIChatCompletionChunk({
+  request = {},
+  delta = null,
+  finishReason = null,
+  usage = null,
+} = {}) {
+  const choice = {
+    index: 0,
+    delta: delta && typeof delta === 'object' ? delta : {},
+    finish_reason: finishReason == null ? null : finishReason,
+  };
+  const payload = {
+    id: `chatcmpl-axhub-${safeString(request?.request_id) || uuid()}`,
+    object: 'chat.completion.chunk',
+    created: Math.floor(Date.now() / 1000),
+    model: safeString(request?.model_id),
+    choices: [choice],
+  };
+  if (usage && typeof usage === 'object') {
+    payload.usage = {
+      prompt_tokens: Math.max(0, Number(usage.prompt_tokens || 0)),
+      completion_tokens: Math.max(0, Number(usage.completion_tokens || 0)),
+      total_tokens: Math.max(0, Number(usage.total_tokens || 0)),
+    };
+  }
+  return payload;
+}
+
+async function streamOpenAIChatCompletions({
+  hubServices,
+  req,
+  res,
+  token = '',
+  request = {},
+  includeUsage = false,
+} = {}) {
+  startOpenAIEventStream(res);
+  const writes = [];
+  const streamRequest = {
+    request_id: safeString(request?.request_id) || uuid(),
+    model_id: safeString(request?.model_id),
+  };
+  let started = false;
+  let responseFinished = false;
+  let cancelRequested = false;
+
+  const requestCancel = () => {
+    if (cancelRequested || responseFinished) return;
+    cancelRequested = true;
+    void invokeHubCancel({
+      hubServices,
+      req,
+      token,
+      request: {
+        request_id: streamRequest.request_id,
+        reason: 'http_client_disconnected',
+      },
+    });
+  };
+
+  res.on('finish', () => {
+    responseFinished = true;
+  });
+  res.on('close', () => {
+    if (!responseFinished) requestCancel();
+  });
+
+  const ensureStart = () => {
+    if (started || responseFinished) return;
+    started = true;
+    writeOpenAISSE(res, {
+      data: toOpenAIChatCompletionChunk({
+        request: streamRequest,
+        delta: { role: 'assistant' },
+      }),
+    });
+  };
+
+  let finalized = false;
+  const finalize = (streamWrites) => {
+    if (finalized) return;
+    finalized = true;
+    const completion = toOpenAIChatCompletionResponse({
+      request: streamRequest,
+      generateWrites: streamWrites,
+    });
+    if (completion.ok) {
+      ensureStart();
+      writeOpenAISSE(res, {
+        data: toOpenAIChatCompletionChunk({
+          request: {
+            request_id: safeString(completion.payload?.x_hub?.request_id || streamRequest.request_id),
+            model_id: safeString(completion.payload?.model || streamRequest.model_id),
+          },
+          delta: {},
+          finishReason: completion.payload?.choices?.[0]?.finish_reason ?? 'stop',
+          usage: includeUsage ? completion.payload?.usage : null,
+        }),
+      });
+    } else {
+      ensureStart();
+      writeOpenAISSE(res, { data: completion.payload });
+    }
+    endOpenAIChatCompletionStream(res);
+  };
+
+  const generated = await invokeHubGenerateStreaming({
+    hubServices,
+    req,
+    token,
+    request,
+    onWrite(payload) {
+      writes.push(payload);
+      if (payload?.start?.model_id) {
+        streamRequest.model_id = safeString(payload.start.model_id) || streamRequest.model_id;
+        ensureStart();
+        return;
+      }
+      if (payload?.delta?.text) {
+        ensureStart();
+        writeOpenAISSE(res, {
+          data: toOpenAIChatCompletionChunk({
+            request: streamRequest,
+            delta: { content: String(payload.delta.text) },
+          }),
+        });
+        return;
+      }
+      if (payload?.done || payload?.error) {
+        finalize(writes);
+      }
+    },
+    onEnd() {
+      finalize(writes);
+    },
+  });
+
+  if (!generated.ok && !finalized) {
+    const payload = openAIErrorPayload({
+      status: generated.status || 503,
+      code: generated.code || 'hub_generate_request_failed',
+      message: generated.message || 'Hub generate service request failed',
+    });
+    writeOpenAISSE(res, { data: payload });
+    endOpenAIChatCompletionStream(res);
+    return;
+  }
+
+  if (!finalized) {
+    finalize(Array.isArray(generated.writes) ? generated.writes : writes);
+  }
+}
+
+async function streamOpenAIResponses({
+  hubServices,
+  req,
+  res,
+  token = '',
+  request = {},
+} = {}) {
+  startOpenAIEventStream(res);
+  const writes = [];
+  const streamRequest = {
+    request_id: safeString(request?.request_id) || uuid(),
+    model_id: safeString(request?.model_id),
+  };
+  const responseId = `resp-axhub-${streamRequest.request_id}`;
+  const itemId = `msg-axhub-${streamRequest.request_id}`;
+  const createdAt = Math.floor(Date.now() / 1000);
+  let started = false;
+  let responseFinished = false;
+  let cancelRequested = false;
+
+  const requestCancel = () => {
+    if (cancelRequested || responseFinished) return;
+    cancelRequested = true;
+    void invokeHubCancel({
+      hubServices,
+      req,
+      token,
+      request: {
+        request_id: streamRequest.request_id,
+        reason: 'http_client_disconnected',
+      },
+    });
+  };
+
+  res.on('finish', () => {
+    responseFinished = true;
+  });
+  res.on('close', () => {
+    if (!responseFinished) requestCancel();
+  });
+
+  const ensureStart = () => {
+    if (started || responseFinished) return;
+    started = true;
+    writeOpenAISSE(res, {
+      event: 'response.created',
+      data: {
+        type: 'response.created',
+        response: {
+          id: responseId,
+          object: 'response',
+          created_at: createdAt,
+          status: 'in_progress',
+          model: streamRequest.model_id,
+        },
+      },
+    });
+    writeOpenAISSE(res, {
+      event: 'response.output_item.added',
+      data: {
+        type: 'response.output_item.added',
+        output_index: 0,
+        item: {
+          id: itemId,
+          type: 'message',
+          object: 'message',
+          status: 'in_progress',
+          role: 'assistant',
+          content: [],
+        },
+      },
+    });
+    writeOpenAISSE(res, {
+      event: 'response.content_part.added',
+      data: {
+        type: 'response.content_part.added',
+        output_index: 0,
+        content_index: 0,
+        item_id: itemId,
+        part: {
+          type: 'output_text',
+          text: '',
+          annotations: [],
+        },
+      },
+    });
+  };
+
+  let finalized = false;
+  const finalize = (streamWrites) => {
+    if (finalized) return;
+    finalized = true;
+    const response = toOpenAIResponsesResponse({
+      request: streamRequest,
+      generateWrites: streamWrites,
+    });
+    ensureStart();
+    if (response.ok) {
+      const text = safeString(response.payload?.output_text);
+      writeOpenAISSE(res, {
+        event: 'response.output_text.done',
+        data: {
+          type: 'response.output_text.done',
+          item_id: itemId,
+          output_index: 0,
+          content_index: 0,
+          text,
+        },
+      });
+      writeOpenAISSE(res, {
+        event: 'response.content_part.done',
+        data: {
+          type: 'response.content_part.done',
+          item_id: itemId,
+          output_index: 0,
+          content_index: 0,
+          part: {
+            type: 'output_text',
+            text,
+            annotations: [],
+          },
+        },
+      });
+      writeOpenAISSE(res, {
+        event: 'response.output_item.done',
+        data: {
+          type: 'response.output_item.done',
+          output_index: 0,
+          item: response.payload?.output?.[0] || null,
+        },
+      });
+      writeOpenAISSE(res, {
+        event: 'response.completed',
+        data: {
+          type: 'response.completed',
+          response: response.payload,
+        },
+      });
+    } else {
+      writeOpenAISSE(res, {
+        event: 'error',
+        data: response.payload?.error || response.payload,
+      });
+    }
+    try {
+      res.end();
+    } catch {
+      // ignore
+    }
+  };
+
+  const generated = await invokeHubGenerateStreaming({
+    hubServices,
+    req,
+    token,
+    request,
+    onWrite(payload) {
+      writes.push(payload);
+      if (payload?.start?.model_id) {
+        streamRequest.model_id = safeString(payload.start.model_id) || streamRequest.model_id;
+        ensureStart();
+        return;
+      }
+      if (payload?.delta?.text) {
+        ensureStart();
+        writeOpenAISSE(res, {
+          event: 'response.output_text.delta',
+          data: {
+            type: 'response.output_text.delta',
+            item_id: itemId,
+            output_index: 0,
+            content_index: 0,
+            delta: String(payload.delta.text),
+          },
+        });
+        return;
+      }
+      if (payload?.done || payload?.error) {
+        finalize(writes);
+      }
+    },
+    onEnd() {
+      finalize(writes);
+    },
+  });
+
+  if (!generated.ok && !finalized) {
+    writeOpenAISSE(res, {
+      event: 'error',
+      data: openAIErrorPayload({
+        status: generated.status || 503,
+        code: generated.code || 'hub_generate_request_failed',
+        message: generated.message || 'Hub generate service request failed',
+      }).error,
+    });
+    try {
+      res.end();
+    } catch {
+      // ignore
+    }
+    return;
+  }
+
+  if (!finalized) {
+    finalize(Array.isArray(generated.writes) ? generated.writes : writes);
+  }
+}
+
+function buildClientAccessKeyActor(rawActor = {}) {
+  const actor = rawActor && typeof rawActor === 'object' ? rawActor : {};
+  const user_id = safeString(actor.user_id || actor.created_by_user_id);
+  const app_id = safeString(actor.app_id || actor.created_by_app_id);
+  const created_via = safeString(actor.created_via || actor.via || actor.created_by_app_id || actor.app_id || 'hub_local_ui') || 'hub_local_ui';
+  return {
+    user_id,
+    app_id,
+    created_via,
+    allow_override: actor.allow_override === true,
+  };
+}
+
+function manageAccessKeyDenied(message = 'Client is not allowed to manage Hub access keys') {
+  return {
+    ok: false,
+    status: 403,
+    code: 'permission_denied',
+    message,
+  };
+}
+
+function requireXtAccessKeyManager(req) {
+  const auth = requireHttpClient(req);
+  if (!auth.ok) return auth;
+
+  const client = auth.client && typeof auth.client === 'object' ? auth.client : {};
+  const authKind = safeString(auth.auth_kind || client.auth_kind).toLowerCase();
+  const appId = safeString(client.app_id || auth.app_id).toLowerCase();
+  const scopes = uniqueStrings(
+    safeStringArray(auth.scopes || client.scopes).map((item) => safeString(item).toLowerCase())
+  );
+  const hasManageScope = scopes.some((item) => XT_ACCESS_KEY_MANAGER_SCOPES.has(item));
+  const trustedXt = authKind === 'paired_client' && XT_ACCESS_KEY_MANAGER_APP_IDS.has(appId);
+  if (!trustedXt && !hasManageScope) {
+    return manageAccessKeyDenied();
+  }
+
+  return {
+    ...auth,
+    access_key_actor: buildClientAccessKeyActor({
+      user_id: safeString(auth.user_id || client.user_id),
+      app_id: safeString(client.app_id || auth.app_id || 'x_terminal') || 'x_terminal',
+      created_via: trustedXt ? 'xt_settings_access_keys' : 'xt_scoped_access_keys',
+      allow_override: false,
+    }),
+  };
+}
+
+function buildListClientAccessKeysResponse({
+  runtimeBaseDir,
+  req,
+  hostFallback,
+  internetHostHint,
+  grpcPort,
+  wantedAuthKind = '',
+  wantedStatus = '',
+} = {}) {
+  const responseContext = buildClientAccessKeyResponseContext(req, {
+    hostFallback,
+    internetHostHint,
+    grpcPort,
+  });
+  const snapshot = readClientsSnapshot(runtimeBaseDir);
+  const accessKeys = loadClients(runtimeBaseDir)
+    .filter((item) => {
+      if (wantedAuthKind && safeString(item.auth_kind).toLowerCase() !== wantedAuthKind) return false;
+      if (wantedStatus && safeString(item.status).toLowerCase() !== wantedStatus) return false;
+      return true;
+    })
+    .sort((left, right) => {
+      const lts = Math.max(
+        0,
+        Number(left?.last_used_at_ms || 0),
+        Number(left?.created_at_ms || 0)
+      );
+      const rts = Math.max(
+        0,
+        Number(right?.last_used_at_ms || 0),
+        Number(right?.created_at_ms || 0)
+      );
+      if (lts !== rts) return rts - lts;
+      return safeString(left?.access_key_id).localeCompare(safeString(right?.access_key_id));
+    })
+    .map((item) => toHttpClientAccessKey(item, responseContext, {
+      include_secret_token: false,
+    }))
+    .filter(Boolean);
+
+  return {
+    ok: true,
+    status: 200,
+    json: {
+      ok: true,
+      schema_version: 'hub.client_access_key_list.v1',
+      updated_at_ms: Math.max(0, Number(snapshot.updated_at_ms || 0)),
+      access_keys: accessKeys,
+    },
+  };
+}
+
+function issueClientAccessKey({
+  runtimeBaseDir,
+  req,
+  hostFallback,
+  internetHostHint,
+  grpcPort,
+  body,
+  actor,
+} = {}) {
+  const obj = body && typeof body === 'object' ? body : {};
+  const resolvedActor = buildClientAccessKeyActor(actor);
+
+  const raw_policy_mode = obj.policy_mode == null ? '' : safeString(obj.policy_mode).toLowerCase();
+  if (raw_policy_mode && !POLICY_MODES.has(raw_policy_mode)) {
+    return {
+      ok: false,
+      status: 400,
+      json: {
+        ok: false,
+        error: { code: 'policy_mode_invalid', message: 'policy_mode_invalid', retryable: false },
+      },
+    };
+  }
+  const requested_policy_mode = raw_policy_mode || 'new_profile';
+  const raw_paid_model_selection_mode = obj.paid_model_selection_mode == null ? '' : safeString(obj.paid_model_selection_mode).toLowerCase();
+  const requested_paid_model_selection_mode = raw_paid_model_selection_mode || 'off';
+  const requested_allowed_paid_models = uniqueStrings(safeStringArray(obj.allowed_paid_models));
+  const requested_default_web_fetch_enabled = obj.default_web_fetch_enabled == null ? true : obj.default_web_fetch_enabled === true;
+  const requested_daily_token_limit = parseDailyTokenLimit(obj.daily_token_limit, DEFAULT_PAIRING_DAILY_TOKEN_LIMIT);
+  if (requested_policy_mode === 'new_profile') {
+    if (raw_paid_model_selection_mode && !PAID_MODEL_SELECTION_MODES.has(raw_paid_model_selection_mode)) {
+      return {
+        ok: false,
+        status: 400,
+        json: {
+          ok: false,
+          error: { code: 'paid_model_selection_mode_invalid', message: 'paid_model_selection_mode_invalid', retryable: false },
+        },
+      };
+    }
+    if (requested_paid_model_selection_mode === 'custom_selected_models' && requested_allowed_paid_models.length === 0) {
+      return {
+        ok: false,
+        status: 400,
+        json: {
+          ok: false,
+          error: { code: 'custom_selected_models_empty', message: 'custom_selected_models_empty', retryable: false },
+        },
+      };
+    }
+    if (requested_daily_token_limit == null) {
+      return {
+        ok: false,
+        status: 400,
+        json: {
+          ok: false,
+          error: { code: 'daily_token_limit_invalid', message: 'daily_token_limit_invalid', retryable: false },
+        },
+      };
+    }
+  }
+
+  const createdAtMs = nowMs();
+  const ttlSec = Number(obj.ttl_sec || obj.ttlSec || 0);
+  const requestedExpiresAtMs = obj.expires_at_ms != null
+    ? Number(obj.expires_at_ms)
+    : (Number.isFinite(ttlSec) && ttlSec > 0 ? (createdAtMs + (Math.floor(ttlSec) * 1000)) : 0);
+  if (requestedExpiresAtMs && (!Number.isFinite(requestedExpiresAtMs) || requestedExpiresAtMs <= createdAtMs)) {
+    return {
+      ok: false,
+      status: 400,
+      json: {
+        ok: false,
+        error: { code: 'expires_at_ms_invalid', message: 'expires_at_ms_invalid', retryable: false },
+      },
+    };
+  }
+
+  const requestedName = uniqueStrings([
+    obj.name,
+    obj.label,
+    obj.device_name,
+    obj.note,
+  ])[0] || 'Hub Access Key';
+  const requestedAccessKeyId = safeString(obj.access_key_id || obj.accessKeyId) || generateAccessKeyId();
+  const requestedDeviceId = safeString(obj.device_id || obj.deviceId) || `client_${requestedAccessKeyId.slice(-12)}`;
+  const requestedUserId = safeString(obj.user_id || obj.userId) || requestedDeviceId;
+  const requestedAppId = safeString(obj.app_id || obj.appId || 'external_terminal') || 'external_terminal';
+  const capabilities = safeStringArray(obj.capabilities);
+  const scopes = safeStringArray(obj.scopes);
+  const allowedCidrs = safeStringArray(obj.allowed_cidrs);
+  const baseCapList = capabilities.length ? capabilities : defaultClientCaps();
+  const approvedTrustProfile = requested_policy_mode === 'new_profile'
+    ? buildApprovedTrustProfile({
+        device_id: requestedDeviceId,
+        device_name: requestedName,
+        capabilities: baseCapList,
+        paid_model_selection_mode: requested_paid_model_selection_mode,
+        allowed_paid_models: requested_allowed_paid_models,
+        default_web_fetch_enabled: requested_default_web_fetch_enabled,
+        daily_token_limit: requested_daily_token_limit,
+        audit_ref: requestedAccessKeyId,
+      })
+    : null;
+  const capList = approvedTrustProfile
+    ? uniqueStrings(approvedTrustProfile.capabilities)
+    : uniqueStrings(baseCapList.length ? baseCapList : defaultClientCaps());
+  const scopeList = scopes.length ? uniqueStrings(scopes) : uniqueStrings(capList);
+  const cidrList = allowedCidrs.length ? uniqueStrings(allowedCidrs) : defaultAllowedCidrs();
+  const clientToken = generateClientToken();
+  const snapshotBeforeIssue = readClientsSnapshot(runtimeBaseDir);
+  const duplicate = (Array.isArray(snapshotBeforeIssue.clients) ? snapshotBeforeIssue.clients : []).some((item) => {
+    const candidateAccessKeyId = safeString(item?.access_key_id || item?.accessKeyId || item?.device_id || item?.id);
+    const candidateDeviceId = safeString(item?.device_id || item?.id);
+    return candidateAccessKeyId === requestedAccessKeyId || candidateDeviceId === requestedDeviceId;
+  });
+  if (duplicate) {
+    return {
+      ok: false,
+      status: 400,
+      json: {
+        ok: false,
+        error: { code: 'access_key_id_conflict', message: 'access_key_id_conflict', retryable: false },
+      },
+    };
+  }
+
+  const createdByUserId = safeString(
+    resolvedActor.allow_override ? (obj.created_by_hub_user_id || obj.created_by_user_id) : ''
+  ) || safeString(resolvedActor.user_id);
+  const createdByAppId = safeString(
+    resolvedActor.allow_override ? (obj.created_by_app_id || obj.created_via) : ''
+  ) || safeString(resolvedActor.app_id) || safeString(resolvedActor.created_via) || 'hub_local_ui';
+  const createdVia = safeString(
+    resolvedActor.allow_override ? obj.created_via : ''
+  ) || safeString(resolvedActor.created_via) || 'hub_local_ui';
+
+  const entry = {
+    access_key_id: requestedAccessKeyId,
+    auth_kind: 'hub_access_key',
+    device_id: requestedDeviceId,
+    user_id: requestedUserId,
+    app_id: requestedAppId,
+    name: requestedName,
+    note: safeString(obj.note),
+    token: clientToken,
+    enabled: true,
+    created_at_ms: createdAtMs,
+    updated_at_ms: createdAtMs,
+    expires_at_ms: requestedExpiresAtMs > 0 ? requestedExpiresAtMs : 0,
+    capabilities: capList,
+    scopes: scopeList,
+    allowed_cidrs: cidrList,
+    policy_mode: requested_policy_mode,
+    created_by_user_id: createdByUserId,
+    created_by_app_id: createdByAppId,
+    created_via: createdVia,
+    ...(approvedTrustProfile ? { approved_trust_profile: approvedTrustProfile } : {}),
+  };
+
+  const snapshot = upsertClientInSnapshot(snapshotBeforeIssue, entry);
+  if (!writeClientsSnapshot(runtimeBaseDir, snapshot)) {
+    return {
+      ok: false,
+      status: 500,
+      json: {
+        ok: false,
+        error: { code: 'write_failed', message: 'write_failed', retryable: true },
+      },
+    };
+  }
+
+  const responseContext = buildClientAccessKeyResponseContext(req, {
+    hostFallback,
+    internetHostHint,
+    grpcPort,
+  });
+  const issuedClient = findClientByAccessKeyId(runtimeBaseDir, requestedAccessKeyId) || entry;
+  return {
+    ok: true,
+    status: 200,
+    json: {
+      ok: true,
+      client_token: clientToken,
+      access_key: toHttpClientAccessKey(issuedClient, responseContext, {
+        include_secret_token: true,
+        client_token: clientToken,
+      }),
+    },
+  };
+}
+
+function buildClientAccessKeyDetailResponse({
+  runtimeBaseDir,
+  req,
+  hostFallback,
+  internetHostHint,
+  grpcPort,
+  accessKeyId,
+  requireHubAccessKeyOnly = false,
+} = {}) {
+  const client = findClientByAccessKeyId(runtimeBaseDir, accessKeyId);
+  if (!client) {
+    return {
+      ok: false,
+      status: 404,
+      json: {
+        ok: false,
+        error: { code: 'access_key_not_found', message: 'access_key_not_found', retryable: false },
+      },
+    };
+  }
+  if (requireHubAccessKeyOnly && safeString(client.auth_kind).toLowerCase() !== 'hub_access_key') {
+    return {
+      ok: false,
+      status: 404,
+      json: {
+        ok: false,
+        error: { code: 'access_key_not_found', message: 'access_key_not_found', retryable: false },
+      },
+    };
+  }
+
+  const responseContext = buildClientAccessKeyResponseContext(req, {
+    hostFallback,
+    internetHostHint,
+    grpcPort,
+  });
+  return {
+    ok: true,
+    status: 200,
+    json: {
+      ok: true,
+      access_key: toHttpClientAccessKey(client, responseContext),
+    },
+  };
+}
+
+function mutateClientAccessKey({
+  runtimeBaseDir,
+  req,
+  hostFallback,
+  internetHostHint,
+  grpcPort,
+  accessKeyId,
+  action,
+  body,
+  actor,
+  requireHubAccessKeyOnly = false,
+} = {}) {
+  const obj = body && typeof body === 'object' ? body : {};
+  const resolvedActor = buildClientAccessKeyActor(actor);
+  const snapshot = readClientsSnapshot(runtimeBaseDir);
+  const index = findClientSnapshotIndex(snapshot, accessKeyId);
+  if (index < 0) {
+    return {
+      ok: false,
+      status: 404,
+      json: {
+        ok: false,
+        error: { code: 'access_key_not_found', message: 'access_key_not_found', retryable: false },
+      },
+    };
+  }
+
+  const rows = Array.isArray(snapshot.clients) ? snapshot.clients : [];
+  const current = rows[index] && typeof rows[index] === 'object' ? { ...rows[index] } : null;
+  if (!current) {
+    return {
+      ok: false,
+      status: 404,
+      json: {
+        ok: false,
+        error: { code: 'access_key_not_found', message: 'access_key_not_found', retryable: false },
+      },
+    };
+  }
+
+  const currentAuthKind = safeString(current.auth_kind || '').toLowerCase() || 'paired_client';
+  if (requireHubAccessKeyOnly && currentAuthKind !== 'hub_access_key') {
+    return {
+      ok: false,
+      status: 404,
+      json: {
+        ok: false,
+        error: { code: 'access_key_not_found', message: 'access_key_not_found', retryable: false },
+      },
+    };
+  }
+
+  const touchedAtMs = nowMs();
+  const responseContext = buildClientAccessKeyResponseContext(req, {
+    hostFallback,
+    internetHostHint,
+    grpcPort,
+  });
+
+  if (action === 'revoke') {
+    const alreadyRevoked = Math.max(0, Number(current.revoked_at_ms || 0)) > 0;
+    current.enabled = false;
+    current.revoked_at_ms = alreadyRevoked ? Number(current.revoked_at_ms || 0) : touchedAtMs;
+    current.revoke_reason = safeString(obj.revoke_reason || obj.note || current.revoke_reason);
+    current.revoked_by_user_id = safeString(
+      resolvedActor.allow_override ? (obj.revoked_by_hub_user_id || obj.revoked_by_user_id) : ''
+    ) || safeString(resolvedActor.user_id) || safeString(current.revoked_by_user_id);
+    current.revoked_via = safeString(
+      resolvedActor.allow_override ? (obj.revoked_via || obj.app_id) : ''
+    ) || safeString(resolvedActor.created_via) || safeString(resolvedActor.app_id) || safeString(current.revoked_via || 'hub_local_ui') || 'hub_local_ui';
+    current.updated_at_ms = touchedAtMs;
+    snapshot.clients[index] = current;
+    snapshot.updated_at_ms = touchedAtMs;
+
+    if (!writeClientsSnapshot(runtimeBaseDir, snapshot)) {
+      return {
+        ok: false,
+        status: 500,
+        json: {
+          ok: false,
+          error: { code: 'write_failed', message: 'write_failed', retryable: true },
+        },
+      };
+    }
+
+    const revokedClient = findClientByAccessKeyId(runtimeBaseDir, accessKeyId) || current;
+    return {
+      ok: true,
+      status: 200,
+      json: {
+        ok: true,
+        idempotent: alreadyRevoked,
+        access_key: toHttpClientAccessKey(revokedClient, responseContext),
+      },
+    };
+  }
+
+  if (currentAuthKind !== 'hub_access_key') {
+    const code = action === 'update'
+      ? 'update_not_supported_for_paired_client'
+      : 'rotate_not_supported_for_paired_client';
+    return {
+      ok: false,
+      status: 400,
+      json: {
+        ok: false,
+        error: {
+          code,
+          message: code,
+          retryable: false,
+        },
+      },
+    };
+  }
+  if (Math.max(0, Number(current.revoked_at_ms || 0)) > 0) {
+    const code = action === 'update'
+      ? 'update_not_supported_for_revoked_key'
+      : 'rotate_not_supported_for_revoked_key';
+    return {
+      ok: false,
+      status: 400,
+      json: {
+        ok: false,
+        error: {
+          code,
+          message: code,
+          retryable: false,
+        },
+      },
+    };
+  }
+
+  if (action === 'update') {
+    const currentPolicyMode = normalizedPolicyMode(
+      current.policy_mode,
+      current.approved_trust_profile && typeof current.approved_trust_profile === 'object'
+        ? 'new_profile'
+        : 'legacy_grant'
+    );
+    const currentTrustProfile = current.approved_trust_profile && typeof current.approved_trust_profile === 'object'
+      ? { ...current.approved_trust_profile }
+      : null;
+    if (currentPolicyMode !== 'new_profile' || !currentTrustProfile) {
+      return {
+        ok: false,
+        status: 400,
+        json: {
+          ok: false,
+          error: {
+            code: 'update_not_supported_without_trust_profile',
+            message: 'update_not_supported_without_trust_profile',
+            retryable: false,
+          },
+        },
+      };
+    }
+
+    const currentBudgetPolicy = currentTrustProfile.budget_policy && typeof currentTrustProfile.budget_policy === 'object'
+      ? { ...currentTrustProfile.budget_policy }
+      : {};
+    const existingDailyTokenLimit = Math.max(
+      1,
+      Number(currentBudgetPolicy.daily_token_limit || current.daily_token_limit || DEFAULT_PAIRING_DAILY_TOKEN_LIMIT)
+        || DEFAULT_PAIRING_DAILY_TOKEN_LIMIT
+    );
+    const requestedDailyTokenLimit = parseDailyTokenLimit(
+      obj.daily_token_limit ?? obj.dailyTokenLimit,
+      existingDailyTokenLimit
+    );
+    if (requestedDailyTokenLimit == null) {
+      return {
+        ok: false,
+        status: 400,
+        json: {
+          ok: false,
+          error: {
+            code: 'daily_token_limit_invalid',
+            message: 'daily_token_limit_invalid',
+            retryable: false,
+          },
+        },
+      };
+    }
+
+    current.approved_trust_profile = {
+      ...currentTrustProfile,
+      budget_policy: {
+        ...currentBudgetPolicy,
+        daily_token_limit: requestedDailyTokenLimit,
+        single_request_token_limit: Math.max(
+          1,
+          Number(currentBudgetPolicy.single_request_token_limit || DEFAULT_PAIRING_SINGLE_REQUEST_TOKEN_LIMIT)
+            || DEFAULT_PAIRING_SINGLE_REQUEST_TOKEN_LIMIT
+        ),
+      },
+    };
+    current.policy_mode = 'new_profile';
+    current.trust_profile_present = true;
+    current.daily_token_limit = requestedDailyTokenLimit;
+    current.updated_at_ms = touchedAtMs;
+    current.note = obj.note != null ? safeString(obj.note) : safeString(current.note);
+    snapshot.clients[index] = current;
+    snapshot.updated_at_ms = touchedAtMs;
+
+    if (!writeClientsSnapshot(runtimeBaseDir, snapshot)) {
+      return {
+        ok: false,
+        status: 500,
+        json: {
+          ok: false,
+          error: { code: 'write_failed', message: 'write_failed', retryable: true },
+        },
+      };
+    }
+
+    const updatedClient = findClientByAccessKeyId(runtimeBaseDir, accessKeyId) || current;
+    return {
+      ok: true,
+      status: 200,
+      json: {
+        ok: true,
+        access_key: toHttpClientAccessKey(updatedClient, responseContext),
+      },
+    };
+  }
+
+  const requestedExpiresAtMs = obj.expires_at_ms != null ? Number(obj.expires_at_ms) : Number(current.expires_at_ms || 0);
+  if (requestedExpiresAtMs && (!Number.isFinite(requestedExpiresAtMs) || requestedExpiresAtMs <= touchedAtMs)) {
+    return {
+      ok: false,
+      status: 400,
+      json: {
+        ok: false,
+        error: {
+          code: 'expires_at_ms_invalid',
+          message: 'expires_at_ms_invalid',
+          retryable: false,
+        },
+      },
+    };
+  }
+
+  const nextToken = generateClientToken();
+  current.token = nextToken;
+  current.enabled = true;
+  current.updated_at_ms = touchedAtMs;
+  current.last_rotated_at_ms = touchedAtMs;
+  current.rotation_count = Math.max(0, Number(current.rotation_count || 0)) + 1;
+  current.expires_at_ms = requestedExpiresAtMs > 0 ? requestedExpiresAtMs : 0;
+  current.note = obj.note != null ? safeString(obj.note) : safeString(current.note);
+  snapshot.clients[index] = current;
+  snapshot.updated_at_ms = touchedAtMs;
+
+  if (!writeClientsSnapshot(runtimeBaseDir, snapshot)) {
+    return {
+      ok: false,
+      status: 500,
+      json: {
+        ok: false,
+        error: { code: 'write_failed', message: 'write_failed', retryable: true },
+      },
+    };
+  }
+
+  const rotatedClient = findClientByAccessKeyId(runtimeBaseDir, accessKeyId) || current;
+  return {
+    ok: true,
+    status: 200,
+    json: {
+      ok: true,
+      client_token: nextToken,
+      access_key: toHttpClientAccessKey(rotatedClient, responseContext, {
+        include_secret_token: true,
+        client_token: nextToken,
+      }),
+    },
   };
 }
 
@@ -1887,6 +4005,7 @@ function hostHintFromReq(req, { hostFallback, peerIp }) {
 
 export function startPairingHTTPServer({
   db,
+  hubServices,
   preauthGuard,
   unauthorizedFloodBreaker,
   connectorRuntimeOrchestrator,
@@ -2682,7 +4801,7 @@ export function startPairingHTTPServer({
     }
 
     // Swift shell public contract bridge: XT should see one Hub entrypoint
-    // (pairing/remote port) while the Rust kernel remains the source of truth.
+    // while the Rust kernel remains the source of truth.
     if (method === 'GET' && (
       pathname === '/xt/hub-contract'
       || pathname === '/xt/contract'
@@ -2720,6 +4839,249 @@ export function startPairingHTTPServer({
     // Health.
     if (method === 'GET' && pathname === '/health') {
       jsonResponse(res, 200, { ok: true, service: 'pairing', now_ms: nowMs() });
+      return;
+    }
+
+    if (method === 'GET' && pathname === '/v1/models') {
+      const auth = requireHttpClient(req);
+      if (!auth.ok) {
+        openAIErrorResponse(res, auth.status || 401, {
+          code: auth.code || 'unauthenticated',
+          message: auth.message || 'Missing/invalid client token',
+        });
+        return;
+      }
+
+      const listed = await invokeHubListModels({
+        hubServices,
+        req,
+        token: safeString(auth.client?.token),
+        request: {
+          client: {},
+        },
+      });
+      if (!listed.ok) {
+        openAIErrorResponse(res, listed.status || 503, {
+          code: listed.code || 'hub_models_request_failed',
+          message: listed.message || 'Hub model service request failed',
+        });
+        return;
+      }
+
+      jsonResponse(res, 200, toOpenAIModelListResponse(listed.response));
+      return;
+    }
+
+    if (method === 'POST' && pathname === '/v1/chat/completions') {
+      const auth = requireHttpClient(req);
+      if (!auth.ok) {
+        openAIErrorResponse(res, auth.status || 401, {
+          code: auth.code || 'unauthenticated',
+          message: auth.message || 'Missing/invalid client token',
+        });
+        return;
+      }
+
+      const body = await readBodyJson(req, { maxBytes: 256 * 1024 });
+      if (!body.ok) {
+        openAIErrorResponse(res, 400, {
+          code: body.error || 'bad_json',
+          message: body.error || 'bad_json',
+        });
+        return;
+      }
+
+      const payload = body.json && typeof body.json === 'object' ? body.json : {};
+      const modelId = safeString(payload.model);
+      const messages = toHubGenerateMessages(payload.messages);
+      const requestedMaxTokens = payload.max_completion_tokens != null
+        ? payload.max_completion_tokens
+        : payload.max_tokens;
+      if (!modelId) {
+        openAIErrorResponse(res, 400, {
+          code: 'model_required',
+          message: 'model is required',
+        });
+        return;
+      }
+      if (!messages.length) {
+        openAIErrorResponse(res, 400, {
+          code: 'messages_required',
+          message: 'messages must contain at least one text message',
+        });
+        return;
+      }
+
+      if (payload.stream === true) {
+        await streamOpenAIChatCompletions({
+          hubServices,
+          req,
+          res,
+          token: safeString(auth.client?.token),
+          request: {
+            request_id: safeString(payload.request_id || payload.id) || uuid(),
+            client: {
+              project_id: safeString(req?.headers?.['x-axhub-project-id']),
+              session_id: safeString(req?.headers?.['x-axhub-session-id']),
+            },
+            model_id: safeString(payload.model),
+            messages: toHubGenerateMessages(payload.messages),
+            max_tokens: positiveIntOrZero(requestedMaxTokens),
+            temperature: Number.isFinite(Number(payload.temperature)) ? Number(payload.temperature) : 0,
+            top_p: Number.isFinite(Number(payload.top_p)) ? Number(payload.top_p) : 0,
+            stream: false,
+            created_at_ms: nowMs(),
+            fail_closed_on_downgrade:
+              payload.fail_closed_on_downgrade === true
+              || safeString(req?.headers?.['x-axhub-fail-closed-on-downgrade']) === '1',
+          },
+          includeUsage: payload?.stream_options?.include_usage === true,
+        });
+        return;
+      }
+      const generated = await invokeHubGenerate({
+        hubServices,
+        req,
+        token: safeString(auth.client?.token),
+        request: {
+          request_id: safeString(payload.request_id || payload.id) || uuid(),
+          client: {
+            project_id: safeString(req?.headers?.['x-axhub-project-id']),
+            session_id: safeString(req?.headers?.['x-axhub-session-id']),
+          },
+          model_id: modelId,
+          messages,
+          max_tokens: positiveIntOrZero(requestedMaxTokens),
+          temperature: Number.isFinite(Number(payload.temperature)) ? Number(payload.temperature) : 0,
+          top_p: Number.isFinite(Number(payload.top_p)) ? Number(payload.top_p) : 0,
+          stream: false,
+          created_at_ms: nowMs(),
+          fail_closed_on_downgrade:
+            payload.fail_closed_on_downgrade === true
+            || safeString(req?.headers?.['x-axhub-fail-closed-on-downgrade']) === '1',
+        },
+      });
+      if (!generated.ok) {
+        openAIErrorResponse(res, generated.status || 503, {
+          code: generated.code || 'hub_generate_request_failed',
+          message: generated.message || 'Hub generate service request failed',
+        });
+        return;
+      }
+
+      const completion = toOpenAIChatCompletionResponse({
+        request: {
+          request_id: safeString(payload.request_id || payload.id),
+          model_id: modelId,
+        },
+        generateWrites: generated.writes,
+      });
+      jsonResponse(res, completion.status || 200, completion.payload);
+      return;
+    }
+
+    if (method === 'POST' && pathname === '/v1/responses') {
+      const auth = requireHttpClient(req);
+      if (!auth.ok) {
+        openAIErrorResponse(res, auth.status || 401, {
+          code: auth.code || 'unauthenticated',
+          message: auth.message || 'Missing/invalid client token',
+        });
+        return;
+      }
+
+      const body = await readBodyJson(req, { maxBytes: 256 * 1024 });
+      if (!body.ok) {
+        openAIErrorResponse(res, 400, {
+          code: body.error || 'bad_json',
+          message: body.error || 'bad_json',
+        });
+        return;
+      }
+
+      const payload = body.json && typeof body.json === 'object' ? body.json : {};
+      const modelId = safeString(payload.model);
+      const messages = toHubGenerateMessagesFromResponsesPayload(payload);
+      if (!modelId) {
+        openAIErrorResponse(res, 400, {
+          code: 'model_required',
+          message: 'model is required',
+        });
+        return;
+      }
+      if (!messages.length) {
+        openAIErrorResponse(res, 400, {
+          code: 'input_required',
+          message: 'input must contain at least one text item',
+        });
+        return;
+      }
+
+      if (payload.stream === true) {
+        await streamOpenAIResponses({
+          hubServices,
+          req,
+          res,
+          token: safeString(auth.client?.token),
+          request: {
+            request_id: safeString(payload.request_id || payload.id) || uuid(),
+            client: {
+              project_id: safeString(req?.headers?.['x-axhub-project-id']),
+              session_id: safeString(req?.headers?.['x-axhub-session-id']),
+            },
+            model_id: safeString(payload.model),
+            messages: toHubGenerateMessagesFromResponsesPayload(payload),
+            max_tokens: positiveIntOrZero(payload.max_output_tokens),
+            temperature: Number.isFinite(Number(payload.temperature)) ? Number(payload.temperature) : 0,
+            top_p: Number.isFinite(Number(payload.top_p)) ? Number(payload.top_p) : 0,
+            stream: false,
+            created_at_ms: nowMs(),
+            fail_closed_on_downgrade:
+              payload.fail_closed_on_downgrade === true
+              || safeString(req?.headers?.['x-axhub-fail-closed-on-downgrade']) === '1',
+          },
+        });
+        return;
+      }
+
+      const generated = await invokeHubGenerate({
+        hubServices,
+        req,
+        token: safeString(auth.client?.token),
+        request: {
+          request_id: safeString(payload.request_id || payload.id) || uuid(),
+          client: {
+            project_id: safeString(req?.headers?.['x-axhub-project-id']),
+            session_id: safeString(req?.headers?.['x-axhub-session-id']),
+          },
+          model_id: modelId,
+          messages,
+          max_tokens: positiveIntOrZero(payload.max_output_tokens),
+          temperature: Number.isFinite(Number(payload.temperature)) ? Number(payload.temperature) : 0,
+          top_p: Number.isFinite(Number(payload.top_p)) ? Number(payload.top_p) : 0,
+          stream: false,
+          created_at_ms: nowMs(),
+          fail_closed_on_downgrade:
+            payload.fail_closed_on_downgrade === true
+            || safeString(req?.headers?.['x-axhub-fail-closed-on-downgrade']) === '1',
+        },
+      });
+      if (!generated.ok) {
+        openAIErrorResponse(res, generated.status || 503, {
+          code: generated.code || 'hub_generate_request_failed',
+          message: generated.message || 'Hub generate service request failed',
+        });
+        return;
+      }
+
+      const response = toOpenAIResponsesResponse({
+        request: {
+          request_id: safeString(payload.request_id || payload.id),
+          model_id: modelId,
+        },
+        generateWrites: generated.writes,
+      });
+      jsonResponse(res, response.status || 200, response.payload);
       return;
     }
 
@@ -3819,10 +6181,13 @@ export function startPairingHTTPServer({
         const boundUserId = safeString(row.user_id) || safeString(row.approved_device_id);
         const approvedTrustProfile = parseApprovedTrustProfile(row.approved_trust_profile_json);
         out.approved = {
+          access_key_id: safeString(row.approved_device_id),
+          auth_kind: 'paired_client',
           device_id: safeString(row.approved_device_id),
           user_id: boundUserId,
           client_token: safeString(row.approved_client_token),
           capabilities: Array.isArray(caps) ? caps.map((s) => safeString(s)).filter(Boolean) : [],
+          scopes: Array.isArray(caps) ? caps.map((s) => safeString(s)).filter(Boolean) : [],
           allowed_cidrs: Array.isArray(cidrs) ? cidrs.map((s) => safeString(s)).filter(Boolean) : [],
           policy_mode: normalizedPolicyMode(row.policy_mode, approvedTrustProfile ? 'new_profile' : 'legacy_grant'),
           approved_trust_profile: approvedTrustProfile,
@@ -3912,6 +6277,232 @@ export function startPairingHTTPServer({
     }
 
     // -------------------- Admin pairing --------------------
+
+    if (pathname === '/admin/grant-requests' && method === 'GET') {
+      const admin = requireHttpAdmin(req);
+      if (!admin.ok) {
+        jsonResponse(res, admin.status || 403, { ok: false, error: { code: admin.code || 'permission_denied', message: admin.message || 'permission_denied', retryable: false } });
+        return;
+      }
+
+      const status = safeString(q.status || 'pending').toLowerCase();
+      const lim = Math.max(1, Math.min(500, positiveIntOrZero(q.limit) || 200));
+      let rows = [];
+      if (!status || status === 'pending') {
+        try {
+          rows = db.listPendingGrantRequests({
+            device_id: safeString(q.device_id),
+            user_id: safeString(q.user_id),
+            app_id: safeString(q.app_id),
+            project_id: safeString(q.project_id),
+            capability: safeString(q.capability),
+            limit: lim,
+          });
+        } catch {
+          rows = [];
+        }
+      }
+
+      jsonResponse(res, 200, {
+        ok: true,
+        updated_at_ms: nowMs(),
+        requests: rows.map(toHttpPendingGrantRequest).filter(Boolean),
+      });
+      return;
+    }
+
+    if (pathname.startsWith('/admin/grant-requests/') && method === 'POST') {
+      const admin = requireHttpAdmin(req);
+      if (!admin.ok) {
+        jsonResponse(res, admin.status || 403, { ok: false, error: { code: admin.code || 'permission_denied', message: admin.message || 'permission_denied', retryable: false } });
+        return;
+      }
+
+      const tail = pathname.slice('/admin/grant-requests/'.length);
+      const parts = tail.split('/').filter(Boolean);
+      const grant_request_id = safeString(parts[0]);
+      const action = safeString(parts[1]).toLowerCase();
+      if (!grant_request_id || (action !== 'approve' && action !== 'deny')) {
+        jsonResponse(res, 404, { ok: false, error: { code: 'not_found', message: 'not_found', retryable: false } });
+        return;
+      }
+
+      const body = await readBodyJson(req, { maxBytes: 16 * 1024 });
+      if (!body.ok) {
+        jsonResponse(res, 400, { ok: false, error: { code: body.error, message: body.error, retryable: false } });
+        return;
+      }
+
+      const obj = body.json || {};
+      const approverId = safeString(obj.approver_id || obj.approverId || 'hub_admin_local_http') || 'hub_admin_local_http';
+      const invoked = await invokeHubGrantsUnary({
+        hubServices,
+        req,
+        token: bearerTokenFromReq(req),
+        method: action === 'approve' ? 'ApproveGrant' : 'DenyGrant',
+        request: action === 'approve'
+          ? {
+              grant_request_id,
+              ttl_sec: positiveIntOrZero(obj.ttl_sec || obj.ttlSec),
+              token_cap: Math.max(0, Number(obj.token_cap || obj.tokenCap || 0) || 0),
+              approver_id: approverId,
+              note: safeString(obj.note),
+            }
+          : {
+              grant_request_id,
+              approver_id: approverId,
+              reason: safeString(obj.reason || obj.deny_reason || obj.denyReason || 'denied_via_hub_inbox') || 'denied_via_hub_inbox',
+            },
+      });
+      if (!invoked.ok) {
+        jsonResponse(res, invoked.status || 503, { ok: false, error: { code: invoked.code || 'hub_grants_request_failed', message: invoked.message || 'hub_grants_request_failed', retryable: true } });
+        return;
+      }
+
+      jsonResponse(res, 200, {
+        ok: true,
+        grant_request_id,
+        status: action === 'approve' ? 'approved' : 'denied',
+        grant: invoked.response?.grant || null,
+      });
+      return;
+    }
+
+    if (pathname === '/admin/provider-keys/oauth/start' && method === 'POST') {
+      const admin = requireHttpAdmin(req);
+      if (!admin.ok) {
+        jsonResponse(res, admin.status || 403, { ok: false, error: { code: admin.code || 'permission_denied', message: admin.message || 'permission_denied', retryable: false } });
+        return;
+      }
+
+      const body = await readBodyJson(req, { maxBytes: 16 * 1024 });
+      if (!body.ok) {
+        jsonResponse(res, 400, { ok: false, error: { code: body.error, message: body.error, retryable: false } });
+        return;
+      }
+
+      const obj = body.json || {};
+      const invoked = await invokeHubProviderKeysUnary({
+        hubServices,
+        req,
+        token: bearerTokenFromReq(req),
+        method: 'StartProviderOAuthLogin',
+        request: {
+          provider: safeString(obj.provider),
+          redirect_uri: safeString(obj.redirect_uri || obj.redirectURI),
+        },
+      });
+      if (!invoked.ok) {
+        jsonResponse(res, invoked.status || 503, { ok: false, error: { code: invoked.code || 'hub_provider_keys_request_failed', message: invoked.message || 'hub_provider_keys_request_failed', retryable: true } });
+        return;
+      }
+      const response = invoked.response || {};
+      if (response.ok !== true) {
+        jsonResponse(res, 400, {
+          ok: false,
+          error: {
+            code: safeString(response.error || 'oauth_start_failed') || 'oauth_start_failed',
+            message: safeString(response.error || 'oauth_start_failed') || 'oauth_start_failed',
+            retryable: false,
+          },
+          provider: safeString(response.provider),
+          status: safeString(response.status || 'error') || 'error',
+        });
+        return;
+      }
+      jsonResponse(res, 200, {
+        ok: true,
+        provider: safeString(response.provider),
+        state: safeString(response.state),
+        auth_url: safeString(response.auth_url),
+        redirect_uri: safeString(response.redirect_uri),
+        status: safeString(response.status || 'pending') || 'pending',
+        expires_at_ms: Math.max(0, Number(response.expires_at_ms || 0)),
+      });
+      return;
+    }
+
+    if (pathname === '/admin/provider-keys/oauth/status' && method === 'GET') {
+      const admin = requireHttpAdmin(req);
+      if (!admin.ok) {
+        jsonResponse(res, admin.status || 403, { ok: false, error: { code: admin.code || 'permission_denied', message: admin.message || 'permission_denied', retryable: false } });
+        return;
+      }
+
+      const invoked = await invokeHubProviderKeysUnary({
+        hubServices,
+        req,
+        token: bearerTokenFromReq(req),
+        method: 'GetProviderOAuthLoginStatus',
+        request: {
+          state: safeString(q.state),
+        },
+      });
+      if (!invoked.ok) {
+        jsonResponse(res, invoked.status || 503, { ok: false, error: { code: invoked.code || 'hub_provider_keys_request_failed', message: invoked.message || 'hub_provider_keys_request_failed', retryable: true } });
+        return;
+      }
+      const response = invoked.response || {};
+      jsonResponse(res, 200, {
+        ok: response.ok === true,
+        error: safeString(response.error),
+        provider: safeString(response.provider),
+        state: safeString(response.state),
+        status: safeString(response.status || 'unknown') || 'unknown',
+        expires_at_ms: Math.max(0, Number(response.expires_at_ms || 0)),
+        updated_at_ms: Math.max(0, Number(response.updated_at_ms || 0)),
+        auth_url: safeString(response.auth_url),
+        redirect_uri: safeString(response.redirect_uri),
+        status_message: safeString(response.status_message),
+        account_key: safeString(response.account_key),
+        email: safeString(response.email),
+        auth_file_path: safeString(response.auth_file_path),
+        imported: Math.max(0, Number(response.imported || 0)),
+      });
+      return;
+    }
+
+    if (pathname === '/admin/provider-keys/oauth/callback' && method === 'POST') {
+      const admin = requireHttpAdmin(req);
+      if (!admin.ok) {
+        jsonResponse(res, admin.status || 403, { ok: false, error: { code: admin.code || 'permission_denied', message: admin.message || 'permission_denied', retryable: false } });
+        return;
+      }
+
+      const body = await readBodyJson(req, { maxBytes: 32 * 1024 });
+      if (!body.ok) {
+        jsonResponse(res, 400, { ok: false, error: { code: body.error, message: body.error, retryable: false } });
+        return;
+      }
+
+      const obj = body.json || {};
+      const invoked = await invokeHubProviderKeysUnary({
+        hubServices,
+        req,
+        token: bearerTokenFromReq(req),
+        method: 'SubmitProviderOAuthCallback',
+        request: {
+          provider: safeString(obj.provider),
+          state: safeString(obj.state),
+          code: safeString(obj.code),
+          redirect_url: safeString(obj.redirect_url || obj.redirectURL),
+          error: safeString(obj.error),
+        },
+      });
+      if (!invoked.ok) {
+        jsonResponse(res, invoked.status || 503, { ok: false, error: { code: invoked.code || 'hub_provider_keys_request_failed', message: invoked.message || 'hub_provider_keys_request_failed', retryable: true } });
+        return;
+      }
+      const response = invoked.response || {};
+      jsonResponse(res, response.ok === true ? 200 : 400, {
+        ok: response.ok === true,
+        error: safeString(response.error),
+        provider: safeString(response.provider),
+        state: safeString(response.state),
+        status: safeString(response.status || 'error') || 'error',
+      });
+      return;
+    }
 
     if (pathname === '/admin/pairing/connector-ingress/gate-snapshot' && method === 'GET') {
       const admin = requireHttpAdmin(req);
@@ -4813,6 +7404,299 @@ export function startPairingHTTPServer({
       return;
     }
 
+    if (pathname === '/xt/clients/access-keys' && method === 'GET') {
+      const xt = requireXtAccessKeyManager(req);
+      if (!xt.ok) {
+        jsonResponse(res, xt.status || 403, {
+          ok: false,
+          error: {
+            code: xt.code || 'permission_denied',
+            message: xt.message || 'permission_denied',
+            retryable: false,
+          },
+        });
+        return;
+      }
+
+      const wantedStatus = safeString(q.status).toLowerCase();
+      const listed = buildListClientAccessKeysResponse({
+        runtimeBaseDir,
+        req,
+        hostFallback,
+        internetHostHint,
+        grpcPort,
+        wantedAuthKind: 'hub_access_key',
+        wantedStatus,
+      });
+      jsonResponse(res, listed.status, listed.json);
+      return;
+    }
+
+    if (pathname === '/xt/clients/access-keys' && method === 'POST') {
+      const xt = requireXtAccessKeyManager(req);
+      if (!xt.ok) {
+        jsonResponse(res, xt.status || 403, {
+          ok: false,
+          error: {
+            code: xt.code || 'permission_denied',
+            message: xt.message || 'permission_denied',
+            retryable: false,
+          },
+        });
+        return;
+      }
+
+      const body = await readBodyJson(req, { maxBytes: 64 * 1024 });
+      if (!body.ok) {
+        jsonResponse(res, 400, {
+          ok: false,
+          error: { code: body.error, message: body.error, retryable: false },
+        });
+        return;
+      }
+
+      const issued = issueClientAccessKey({
+        runtimeBaseDir,
+        req,
+        hostFallback,
+        internetHostHint,
+        grpcPort,
+        body: body.json || {},
+        actor: xt.access_key_actor,
+      });
+      jsonResponse(res, issued.status, issued.json);
+      return;
+    }
+
+    if (pathname.startsWith('/xt/clients/access-keys/') && method === 'GET') {
+      const xt = requireXtAccessKeyManager(req);
+      if (!xt.ok) {
+        jsonResponse(res, xt.status || 403, {
+          ok: false,
+          error: {
+            code: xt.code || 'permission_denied',
+            message: xt.message || 'permission_denied',
+            retryable: false,
+          },
+        });
+        return;
+      }
+
+      const accessKeyId = safeString(pathname.slice('/xt/clients/access-keys/'.length)).split('/')[0];
+      if (!accessKeyId) {
+        jsonResponse(res, 404, { ok: false, error: { code: 'not_found', message: 'not_found', retryable: false } });
+        return;
+      }
+
+      const detail = buildClientAccessKeyDetailResponse({
+        runtimeBaseDir,
+        req,
+        hostFallback,
+        internetHostHint,
+        grpcPort,
+        accessKeyId,
+        requireHubAccessKeyOnly: true,
+      });
+      jsonResponse(res, detail.status, detail.json);
+      return;
+    }
+
+    if (pathname.startsWith('/xt/clients/access-keys/') && method === 'POST') {
+      const xt = requireXtAccessKeyManager(req);
+      if (!xt.ok) {
+        jsonResponse(res, xt.status || 403, {
+          ok: false,
+          error: {
+            code: xt.code || 'permission_denied',
+            message: xt.message || 'permission_denied',
+            retryable: false,
+          },
+        });
+        return;
+      }
+
+      const tail = pathname.slice('/xt/clients/access-keys/'.length);
+      const parts = tail.split('/').filter(Boolean);
+      const accessKeyId = safeString(parts[0]);
+      const action = safeString(parts[1]);
+      if (!accessKeyId || (action !== 'revoke' && action !== 'rotate' && action !== 'update')) {
+        jsonResponse(res, 404, { ok: false, error: { code: 'not_found', message: 'not_found', retryable: false } });
+        return;
+      }
+
+      const body = await readBodyJson(req, { maxBytes: 64 * 1024 });
+      if (!body.ok) {
+        jsonResponse(res, 400, {
+          ok: false,
+          error: { code: body.error, message: body.error, retryable: false },
+        });
+        return;
+      }
+
+      const mutated = mutateClientAccessKey({
+        runtimeBaseDir,
+        req,
+        hostFallback,
+        internetHostHint,
+        grpcPort,
+        accessKeyId,
+        action,
+        body: body.json || {},
+        actor: xt.access_key_actor,
+        requireHubAccessKeyOnly: true,
+      });
+      jsonResponse(res, mutated.status, mutated.json);
+      return;
+    }
+
+    if (pathname === '/admin/clients/access-keys' && method === 'GET') {
+      const admin = requireHttpAdmin(req);
+      if (!admin.ok) {
+        jsonResponse(res, admin.status || 403, {
+          ok: false,
+          error: {
+            code: admin.code || 'permission_denied',
+            message: admin.message || 'permission_denied',
+            retryable: false,
+          },
+        });
+        return;
+      }
+
+      const wantedAuthKind = safeString(q.auth_kind).toLowerCase();
+      const wantedStatus = safeString(q.status).toLowerCase();
+      const listed = buildListClientAccessKeysResponse({
+        runtimeBaseDir,
+        req,
+        hostFallback,
+        internetHostHint,
+        grpcPort,
+        wantedAuthKind,
+        wantedStatus,
+      });
+      jsonResponse(res, listed.status, listed.json);
+      return;
+    }
+
+    if (pathname === '/admin/clients/access-keys' && method === 'POST') {
+      const admin = requireHttpAdmin(req);
+      if (!admin.ok) {
+        jsonResponse(res, admin.status || 403, {
+          ok: false,
+          error: {
+            code: admin.code || 'permission_denied',
+            message: admin.message || 'permission_denied',
+            retryable: false,
+          },
+        });
+        return;
+      }
+
+      const body = await readBodyJson(req, { maxBytes: 64 * 1024 });
+      if (!body.ok) {
+        jsonResponse(res, 400, {
+          ok: false,
+          error: { code: body.error, message: body.error, retryable: false },
+        });
+        return;
+      }
+      const issued = issueClientAccessKey({
+        runtimeBaseDir,
+        req,
+        hostFallback,
+        internetHostHint,
+        grpcPort,
+        body: body.json || {},
+        actor: {
+          created_via: 'hub_local_ui',
+          allow_override: true,
+        },
+      });
+      jsonResponse(res, issued.status, issued.json);
+      return;
+    }
+
+    if (pathname.startsWith('/admin/clients/access-keys/') && method === 'GET') {
+      const admin = requireHttpAdmin(req);
+      if (!admin.ok) {
+        jsonResponse(res, admin.status || 403, {
+          ok: false,
+          error: {
+            code: admin.code || 'permission_denied',
+            message: admin.message || 'permission_denied',
+            retryable: false,
+          },
+        });
+        return;
+      }
+
+      const accessKeyId = safeString(pathname.slice('/admin/clients/access-keys/'.length)).split('/')[0];
+      if (!accessKeyId) {
+        jsonResponse(res, 404, { ok: false, error: { code: 'not_found', message: 'not_found', retryable: false } });
+        return;
+      }
+
+      const detail = buildClientAccessKeyDetailResponse({
+        runtimeBaseDir,
+        req,
+        hostFallback,
+        internetHostHint,
+        grpcPort,
+        accessKeyId,
+      });
+      jsonResponse(res, detail.status, detail.json);
+      return;
+    }
+
+    if (pathname.startsWith('/admin/clients/access-keys/') && method === 'POST') {
+      const admin = requireHttpAdmin(req);
+      if (!admin.ok) {
+        jsonResponse(res, admin.status || 403, {
+          ok: false,
+          error: {
+            code: admin.code || 'permission_denied',
+            message: admin.message || 'permission_denied',
+            retryable: false,
+          },
+        });
+        return;
+      }
+
+      const tail = pathname.slice('/admin/clients/access-keys/'.length);
+      const parts = tail.split('/').filter(Boolean);
+      const accessKeyId = safeString(parts[0]);
+      const action = safeString(parts[1]);
+      if (!accessKeyId || (action !== 'revoke' && action !== 'rotate' && action !== 'update')) {
+        jsonResponse(res, 404, { ok: false, error: { code: 'not_found', message: 'not_found', retryable: false } });
+        return;
+      }
+
+      const body = await readBodyJson(req, { maxBytes: 64 * 1024 });
+      if (!body.ok) {
+        jsonResponse(res, 400, {
+          ok: false,
+          error: { code: body.error, message: body.error, retryable: false },
+        });
+        return;
+      }
+      const mutated = mutateClientAccessKey({
+        runtimeBaseDir,
+        req,
+        hostFallback,
+        internetHostHint,
+        grpcPort,
+        accessKeyId,
+        action,
+        body: body.json || {},
+        actor: {
+          created_via: 'hub_local_ui',
+          allow_override: true,
+        },
+      });
+      jsonResponse(res, mutated.status, mutated.json);
+      return;
+    }
+
     if (pathname === '/admin/pairing/requests' && method === 'GET') {
       const admin = requireHttpAdmin(req);
       if (!admin.ok) {
@@ -5015,16 +7899,24 @@ export function startPairingHTTPServer({
       const runtimeBaseDir = resolveRuntimeBaseDir();
       const snap0 = readClientsSnapshot(runtimeBaseDir);
       const entry = {
+        access_key_id: approved_device_id,
+        auth_kind: 'paired_client',
         device_id: approved_device_id,
         user_id: boundUserId || approved_device_id,
         app_id: safeString(obj.app_id || rowBeforeApprove.app_id),
         name: device_name,
+        note: safeString(obj.note),
         token: approved_client_token,
         enabled: true,
         created_at_ms: nowMs(),
+        updated_at_ms: nowMs(),
         capabilities: capList,
+        scopes: uniqueStrings(capList),
         allowed_cidrs: cidrList,
         policy_mode: requested_policy_mode,
+        created_by_user_id: safeString(obj.created_by_hub_user_id || rowBeforeApprove.user_id),
+        created_by_app_id: safeString(obj.created_via || 'hub_pairing_approve') || 'hub_pairing_approve',
+        created_via: 'hub_pairing_approve',
         ...(approvedTrustProfile ? { approved_trust_profile: approvedTrustProfile } : {}),
         ...(cert_sha256 ? { cert_sha256 } : {}),
       };
@@ -5066,6 +7958,8 @@ export function startPairingHTTPServer({
         tlsServerName,
         clientsSnapshot: snap1,
       });
+      const issuedClient = findClientByAccessKeyId(runtimeBaseDir, approved_device_id) || entry;
+      const peerIp = peerIpFromReq(req);
 
       jsonResponse(res, 200, {
         ok: true,
@@ -5073,6 +7967,18 @@ export function startPairingHTTPServer({
         status: 'approved',
         device_id: approved_device_id,
         client_token: approved_client_token,
+        access_key: toHttpClientAccessKey(issuedClient, {
+          req,
+          hostFallback,
+          peerIp,
+          internetHostHint,
+          grpcPort,
+          tlsMode,
+          tlsServerName,
+        }, {
+          include_secret_token: true,
+          client_token: approved_client_token,
+        }),
         policy_mode: requested_policy_mode,
         approved_trust_profile: approvedTrustProfile,
         pairing_profile_epoch: routeMetadata.pairing_profile_epoch,

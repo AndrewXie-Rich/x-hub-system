@@ -58,4 +58,3 @@ It does not embed the full status JSON and does not inspect secrets.
 - `tools/production_live_stability_session.command --status` during an active
   long production stability session
 - packaged `tools/production_live_stability_session.command --status`
-

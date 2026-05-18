@@ -12,7 +12,7 @@ const LOCAL_RUNTIME_SCRIPT = path.resolve(__dirname, '../../../python-runtime/py
 
 const VISION_TASK_KIND = 'vision_understand';
 const OCR_TASK_KIND = 'ocr';
-const VISION_PROVIDER = 'transformers';
+const DEFAULT_VISION_PROVIDER = 'transformers';
 const SUPPORTED_TASK_KINDS = new Set([VISION_TASK_KIND, OCR_TASK_KIND]);
 const SUPPORTED_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg']);
 const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
@@ -236,7 +236,7 @@ export async function runLocalVisionTask({
   } = {}) => ({
     ...buildLocalTaskFailure({
       taskKind: normalizedTaskKind,
-      provider: VISION_PROVIDER,
+      provider: DEFAULT_VISION_PROVIDER,
       rawDenyCode,
       message,
       blockedBy,
@@ -258,7 +258,7 @@ export async function runLocalVisionTask({
 
   const policyGate = evaluateLocalTaskPolicyGate({
     taskKind: normalizedTaskKind,
-    provider: VISION_PROVIDER,
+    provider: DEFAULT_VISION_PROVIDER,
     capabilityAllowed,
     capabilityDenyCode,
     killSwitch,
@@ -334,7 +334,6 @@ export async function runLocalVisionTask({
     taskKind: normalizedTaskKind,
     deviceId,
     preferredModelId,
-    providerId: VISION_PROVIDER,
     requireLocalPath: true,
   });
   if (!modelSelection.ok) {
@@ -343,7 +342,7 @@ export async function runLocalVisionTask({
       message: safeString(modelSelection.message) || modelUnavailableCode(normalizedTaskKind),
       blockedBy: 'provider',
       extra: {
-        provider: VISION_PROVIDER,
+        provider: DEFAULT_VISION_PROVIDER,
         model_id: safeString(modelSelection.resolved_model_id),
         route_source: safeString(modelSelection.route_source),
         route_reason_code: safeString(modelSelection.reason_code),
@@ -352,6 +351,7 @@ export async function runLocalVisionTask({
     });
   }
   const model = modelSelection.model;
+  const selectedProvider = safeString(model?.runtime_provider_id || model?.backend || DEFAULT_VISION_PROVIDER);
 
   const taskExecutor = typeof executor === 'function' ? executor : defaultRuntimeTaskExecutor;
   try {
@@ -359,7 +359,7 @@ export async function runLocalVisionTask({
       runtimeBaseDir: baseDir,
       timeoutMs: 60_000,
       request: {
-        provider: VISION_PROVIDER,
+        provider: selectedProvider,
         task_kind: normalizedTaskKind,
         model_id: safeString(model.model_id),
         model_path: safeString(model.model_path),
@@ -378,7 +378,7 @@ export async function runLocalVisionTask({
         message: safeString(response?.errorDetail || response?.error || 'local_vision_runtime_failed'),
         blockedBy: 'provider',
         extra: {
-          provider: safeString(response?.provider) || VISION_PROVIDER,
+          provider: safeString(response?.provider) || selectedProvider,
           model_id: safeString(response?.modelId) || safeString(model.model_id),
           route_source: safeString(modelSelection.route_source),
           resolved_model_id: safeString(modelSelection.resolved_model_id) || safeString(model.model_id),
@@ -392,7 +392,7 @@ export async function runLocalVisionTask({
       ok: true,
       task_kind: normalizedTaskKind,
       capability: policyGate.capability,
-      provider: safeString(response.provider) || VISION_PROVIDER,
+      provider: safeString(response.provider) || selectedProvider,
       model_id: safeString(response.modelId) || safeString(model.model_id),
       route_source: safeString(modelSelection.route_source),
       resolved_model_id: safeString(modelSelection.resolved_model_id) || safeString(response.modelId) || safeString(model.model_id),
@@ -411,7 +411,7 @@ export async function runLocalVisionTask({
       message: safeString(error?.message || error || 'local_vision_runtime_failed'),
       blockedBy: 'provider',
       extra: {
-        provider: VISION_PROVIDER,
+        provider: selectedProvider,
         model_id: safeString(model.model_id),
         route_source: safeString(modelSelection.route_source),
         resolved_model_id: safeString(modelSelection.resolved_model_id) || safeString(model.model_id),

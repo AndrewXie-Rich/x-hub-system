@@ -39,4 +39,3 @@ and accepts:
 The smoke uses temporary directories only. It does not touch XT live paths, does
 not execute ML, does not write live `hub_status.json`, and does not change
 production authority.
-

@@ -20,10 +20,9 @@ struct DockInputView: View {
     let memory: AXMemory?
     let config: AXProjectConfig?
     let hubConnected: Bool
-    let session: ChatSessionModel
+    @ObservedObject var session: ChatSessionModel
     @ObservedObject var composer: ChatComposerState
-    let status: XTChatStatusSnapshot
-    @Environment(\.xtAppModelReference) private var appModelReference
+    @EnvironmentObject private var appModel: AppModel
     @Environment(\.openWindow) private var openWindow
     @StateObject private var modelManager = HubModelManager.shared
 
@@ -33,7 +32,6 @@ struct DockInputView: View {
     @State private var isAttachmentDropTarget = false
     @State private var attachmentDropIntent: XTChatComposerDropIntent? = nil
     @State private var visibleModelInventory = XTVisibleHubModelInventory.empty
-    @State private var runtimeStatusSnapshot = DockInputRuntimeStatusSnapshot.empty
 
     var body: some View {
         VStack(spacing: 0) {
@@ -69,8 +67,8 @@ struct DockInputView: View {
                                 sendMessage()
                             },
                             canContinueAndSend: hubConnected &&
-                                !status.isSending &&
-                                status.pendingToolCalls.isEmpty &&
+                                !session.isSending &&
+                                session.pendingToolCalls.isEmpty &&
                                 AXChatAttachmentSupport.hasSubmittableContent(
                                     draft: composer.draft,
                                     attachments: composer.draftAttachments
@@ -79,10 +77,9 @@ struct DockInputView: View {
                         )
                     }
 
-                    if !status.pendingToolCalls.isEmpty {
+                    if !session.pendingToolCalls.isEmpty {
                         DockPendingToolApprovalPanel(
                             session: session,
-                            status: status,
                             hubConnected: hubConnected,
                             onApprove: {
                                 session.approvePendingTools(router: appModel.llmRouter)
@@ -93,7 +90,7 @@ struct DockInputView: View {
                             onFocusHistory: {
                                 appModel.requestProjectToolApprovalFocus(
                                     projectId: projectId,
-                                    requestId: status.pendingToolCalls.first?.id
+                                    requestId: session.pendingToolCalls.first?.id
                                 )
                             }
                         )
@@ -107,7 +104,7 @@ struct DockInputView: View {
                     }
 
                     if blockerPresentation == nil,
-                       let error = status.lastError,
+                       let error = session.lastError,
                        !error.isEmpty {
                         HStack(spacing: 8) {
                             Image(systemName: "exclamationmark.triangle.fill")
@@ -137,10 +134,9 @@ struct DockInputView: View {
         .frame(maxWidth: .infinity)
         .onAppear {
             modelManager.setAppModel(appModel)
-            refreshRuntimeStatusSnapshot()
             syncVisibleModelInventory()
             refreshSlashSuggestions()
-            if hubConnected {
+            if appModel.hubInteractive {
                 Task {
                     await modelManager.fetchModels()
                 }
@@ -153,13 +149,10 @@ struct DockInputView: View {
             syncVisibleModelInventory()
             refreshSlashSuggestions()
         }
-        .onChange(of: runtimeStatusRefreshSignature) { _ in
-            refreshRuntimeStatusSnapshot()
-        }
-        .onChange(of: status.pendingToolCalls.count) { _ in
+        .onChange(of: session.pendingToolCalls.count) { _ in
             refreshSlashSuggestions()
         }
-        .onChange(of: hubConnected) { connected in
+        .onChange(of: appModel.hubInteractive) { connected in
             if connected {
                 Task {
                     await modelManager.fetchModels()
@@ -169,59 +162,42 @@ struct DockInputView: View {
     }
 
     private var toolbarRow: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .center, spacing: 8) {
-                toolbarLeadingControls
+        HStack(alignment: .center, spacing: 8) {
+            ModelSelectorButton(ctx: ctx, config: config)
+                .environmentObject(appModel)
 
-                Spacer(minLength: 8)
+            VoiceInputButton(
+                text: $composer.draft,
+                style: .compact
+            )
 
-                toolbarStatusChip
+            Toggle(isOn: $composer.autoRunTools) {
+                Label("自动工具", systemImage: composer.autoRunTools ? "bolt.fill" : "bolt")
+                    .font(.caption.weight(.semibold))
+            }
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .disabled(!hubConnected)
+            .help("自动执行工具（Auto-run tools）")
+
+            if !composer.draftAttachments.isEmpty {
+                DockComposerChip(
+                    icon: "paperclip",
+                    text: "\(composer.draftAttachments.count) 个附件",
+                    tone: .neutral
+                )
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                toolbarLeadingControls
-                toolbarStatusChip
+            Spacer(minLength: 0)
+
+            if blockerPresentation == nil,
+               let statusChip = composerStatusChip {
+                DockComposerChip(
+                    icon: statusChip.icon,
+                    text: statusChip.text,
+                    tone: statusChip.tone
+                )
             }
-        }
-    }
-
-    @ViewBuilder
-    private var toolbarLeadingControls: some View {
-        ModelSelectorButton(ctx: ctx, config: config)
-
-        VoiceInputButton(
-            text: $composer.draft,
-            style: .compact
-        )
-
-        Toggle(isOn: $composer.autoRunTools) {
-            Label("自动执行", systemImage: composer.autoRunTools ? "bolt.fill" : "bolt")
-                .font(.caption.weight(.semibold))
-        }
-        .toggleStyle(.switch)
-        .controlSize(.mini)
-        .disabled(!hubConnected)
-        .help("自动执行普通待确认工具；策略拒绝、权限不足和强制审批的工具仍会停在审批区。")
-        .fixedSize()
-
-        if !composer.draftAttachments.isEmpty {
-            DockComposerChip(
-                icon: "paperclip",
-                text: "\(composer.draftAttachments.count) 个附件",
-                tone: .neutral
-            )
-        }
-    }
-
-    @ViewBuilder
-    private var toolbarStatusChip: some View {
-        if blockerPresentation == nil,
-           let statusChip = composerStatusChip {
-            DockComposerChip(
-                icon: statusChip.icon,
-                text: statusChip.text,
-                tone: statusChip.tone
-            )
         }
     }
 
@@ -244,7 +220,7 @@ struct DockInputView: View {
                 XTChatComposerTextView(
                     text: $composer.draft,
                     isFocused: $isFocused,
-                    canSubmit: canSend && !status.isSending,
+                    canSubmit: canSend && !session.isSending,
                     diagnosticScope: "coder_dock",
                     onSubmit: sendMessage,
                     allowsImportDrop: true,
@@ -289,7 +265,7 @@ struct DockInputView: View {
 
             VStack(spacing: 8) {
                 Button {
-                    if status.isSending {
+                    if session.isSending {
                         session.cancel()
                     } else {
                         sendMessage()
@@ -309,7 +285,7 @@ struct DockInputView: View {
                 .disabled(!canSend)
                 .shadow(color: sendButtonShadow, radius: 4, y: 2)
 
-                Text(status.isSending ? "停止" : "发送")
+                Text(session.isSending ? "停止" : "发送")
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(canSend ? .primary : .secondary)
             }
@@ -317,38 +293,22 @@ struct DockInputView: View {
     }
 
     private var footerRow: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 10) {
-                footerGuidanceText
+        HStack(spacing: 10) {
+            Text(composerGuidanceText)
+                .font(.caption)
+                .foregroundStyle(composerGuidanceColor)
+                .fixedSize(horizontal: false, vertical: true)
 
-                Spacer(minLength: 8)
+            Spacer(minLength: 0)
 
-                footerShortcutText
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                footerGuidanceText
-                footerShortcutText
-            }
+            Text("/ 查看命令 · ↩ 发送 · ⇧↩ 换行")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
         }
     }
 
-    private var footerGuidanceText: some View {
-        Text(composerGuidanceText)
-            .font(.caption)
-            .foregroundStyle(composerGuidanceColor)
-            .fixedSize(horizontal: false, vertical: true)
-    }
-
-    private var footerShortcutText: some View {
-        Text("/ 查看命令 · ↩ 发送 · ⇧↩ 换行")
-            .font(.caption)
-            .foregroundStyle(.tertiary)
-            .lineLimit(1)
-    }
-
     private var canSend: Bool {
-        if status.isSending {
+        if session.isSending {
             return true
         }
         return hubConnected &&
@@ -405,8 +365,8 @@ struct DockInputView: View {
         if !hubConnected {
             return "Hub 未连接。你可以先写好需求，连上后再发送。"
         }
-        if !status.pendingToolCalls.isEmpty {
-            return "先处理上方工具审批，处理完再继续这一轮。"
+        if !session.pendingToolCalls.isEmpty {
+            return "先处理上面的工具审批，处理完再继续这一轮。"
         }
         return "直接说要完成什么；输入 / 可查看常用命令。"
     }
@@ -415,8 +375,8 @@ struct DockInputView: View {
         if !hubConnected {
             return "当前还不能发出请求。先在 Control 里修复 Hub 连接，然后继续。"
         }
-        if !status.pendingToolCalls.isEmpty {
-            return "这轮有待审批工具请求，先批准或拒绝，再继续输入或发送。"
+        if !session.pendingToolCalls.isEmpty {
+            return "这轮有待审批工具请求，先处理审批，再继续输入或发送。"
         }
         if composer.draft.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") {
             return "选择一个命令，或继续输入来缩小建议范围。"
@@ -431,7 +391,7 @@ struct DockInputView: View {
         if !hubConnected {
             return .red
         }
-        if !status.pendingToolCalls.isEmpty {
+        if !session.pendingToolCalls.isEmpty {
             return .orange
         }
         return .secondary
@@ -441,10 +401,10 @@ struct DockInputView: View {
         if !hubConnected {
             return ("wifi.slash", "Hub 未连接", .danger)
         }
-        if !status.pendingToolCalls.isEmpty {
-            return ("hand.raised.fill", "待审批 \(status.pendingToolCalls.count)", .warning)
+        if !session.pendingToolCalls.isEmpty {
+            return ("hand.raised.fill", "待审批 \(session.pendingToolCalls.count)", .warning)
         }
-        if status.isSending {
+        if session.isSending {
             return ("ellipsis.circle.fill", "正在执行", .success)
         }
         return nil
@@ -452,8 +412,8 @@ struct DockInputView: View {
 
     private func sendMessage() {
         guard hubConnected,
-              !status.isSending,
-              status.pendingToolCalls.isEmpty,
+              !session.isSending,
+              session.pendingToolCalls.isEmpty,
               AXChatAttachmentSupport.hasSubmittableContent(
                 draft: composer.draft,
                 attachments: composer.draftAttachments
@@ -486,33 +446,12 @@ struct DockInputView: View {
         AXProjectRegistryStore.projectId(forRoot: ctx.root)
     }
 
-    private var appModel: AppModel {
-        guard let appModelReference else {
-            preconditionFailure("DockInputView requires xtAppModelReference")
-        }
-        return appModelReference
-    }
-
-    private var runtimeStatusRefreshSignature: String {
-        [
-            ctx.root.standardizedFileURL.path,
-            hubConnected ? "hub=1" : "hub=0",
-            status.lastError ?? "",
-            status.pendingToolCallIDSignature,
-            resolveConfiguredModelId(),
-            appModel.settingsStore.settings.interfaceLanguage.rawValue
-        ].joined(separator: "|")
-    }
-
     private var coderSnapshot: AXRoleExecutionSnapshot {
-        runtimeStatusSnapshot.coderSnapshot
+        AXRoleExecutionSnapshots.latestSnapshots(for: ctx)[.coder]
+            ?? .empty(role: .coder, source: "dock_input")
     }
 
     private var configuredModelId: String {
-        runtimeStatusSnapshot.configuredModelId
-    }
-
-    private func resolveConfiguredModelId() -> String {
         AXRoleExecutionSnapshots.configuredModelId(
             for: .coder,
             projectConfig: config,
@@ -521,11 +460,19 @@ struct DockInputView: View {
     }
 
     private var latestGovernanceInterception: ProjectGovernanceInterceptionPresentation? {
-        runtimeStatusSnapshot.latestGovernanceInterception
+        ProjectGovernanceInterceptionPresentation.latest(
+            from: AXProjectSkillActivityStore.loadRecentActivities(ctx: ctx, limit: 12)
+        )
     }
 
     private var primaryStatusAction: ProjectCoderExecutionStatusPrimaryActionPresentation? {
-        runtimeStatusSnapshot.primaryStatusAction
+        ProjectCoderExecutionStatusPrimaryActionResolver.resolve(
+            configuredModelId: configuredModelId,
+            snapshot: coderSnapshot,
+            hubConnected: hubConnected,
+            governanceInterception: latestGovernanceInterception,
+            language: appModel.settingsStore.settings.interfaceLanguage
+        )
     }
 
     private var blockerPresentation: DockInputBlockerPresentation? {
@@ -548,7 +495,7 @@ struct DockInputView: View {
             )
         }
 
-        let trimmedError = status.lastError?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let trimmedError = session.lastError?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !trimmedError.isEmpty,
            let primaryStatusAction {
             return DockInputBlockerPresentation(
@@ -578,40 +525,6 @@ struct DockInputView: View {
         return nil
     }
 
-    private func refreshRuntimeStatusSnapshot() {
-        let configuredModelId = resolveConfiguredModelId()
-        let coderSnapshot = XTProjectUIPresentationReadCache.roleExecutionSnapshot(
-            for: ctx,
-            role: .coder
-        ) {
-            AXRoleExecutionSnapshots.latestSnapshots(for: ctx)[.coder]
-                ?? .empty(role: .coder, source: "dock_input")
-        }
-        let latestGovernanceInterception = XTProjectUIPresentationReadCache.latestGovernanceInterception(
-            for: ctx,
-            limit: 12
-        ) {
-            ProjectGovernanceInterceptionPresentation.latest(
-                from: AXProjectSkillActivityStore.loadRecentActivities(ctx: ctx, limit: 12)
-            )
-        }
-        let primaryStatusAction = ProjectCoderExecutionStatusPrimaryActionResolver.resolve(
-            configuredModelId: configuredModelId,
-            snapshot: coderSnapshot,
-            hubConnected: hubConnected,
-            governanceInterception: latestGovernanceInterception,
-            language: appModel.settingsStore.settings.interfaceLanguage
-        )
-        let nextSnapshot = DockInputRuntimeStatusSnapshot(
-            configuredModelId: configuredModelId,
-            coderSnapshot: coderSnapshot,
-            latestGovernanceInterception: latestGovernanceInterception,
-            primaryStatusAction: primaryStatusAction
-        )
-        guard runtimeStatusSnapshot != nextSnapshot else { return }
-        runtimeStatusSnapshot = nextSnapshot
-    }
-
     private func syncVisibleModelInventory() {
         visibleModelInventory = XTVisibleHubModelInventorySupport.build(
             snapshot: modelInventorySnapshot
@@ -619,7 +532,7 @@ struct DockInputView: View {
     }
 
     private func refreshSlashSuggestions() {
-        showSlashSuggestions = composer.draft.hasPrefix("/") && status.pendingToolCalls.isEmpty
+        showSlashSuggestions = composer.draft.hasPrefix("/") && session.pendingToolCalls.isEmpty
         guard showSlashSuggestions else {
             slashSuggestions = []
             return
@@ -666,23 +579,21 @@ struct DockInputView: View {
 }
 
 private struct DockPendingToolApprovalPanel: View {
-    let session: ChatSessionModel
-    let status: XTChatStatusSnapshot
+    @ObservedObject var session: ChatSessionModel
     let hubConnected: Bool
     let onApprove: () -> Void
     let onReject: () -> Void
     let onFocusHistory: () -> Void
-    @State private var pendingSkillItems: [String: ProjectSkillActivityItem] = [:]
 
     var body: some View {
-        let pendingToolCalls = status.pendingToolCalls
-        let batchPresentation = XTPendingApprovalPresentation.pendingBatchPresentation(
-            calls: pendingToolCalls,
-            activityByRequestID: pendingSkillItems
+        let activityByRequestID = session.pendingProjectSkillActivityItems()
+        let presentation = XTPendingApprovalPresentation.pendingBatchPresentation(
+            calls: session.pendingToolCalls,
+            activityByRequestID: activityByRequestID
         )
-        let batchDeltaLines = XTPendingApprovalPresentation.pendingBatchDeltaLines(
-            calls: pendingToolCalls,
-            activityByRequestID: pendingSkillItems
+        let deltaLines = XTPendingApprovalPresentation.pendingBatchDeltaLines(
+            calls: session.pendingToolCalls,
+            activityByRequestID: activityByRequestID
         )
 
         VStack(alignment: .leading, spacing: 10) {
@@ -694,8 +605,7 @@ private struct DockPendingToolApprovalPanel: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("待审批")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.primary)
-                    Text(batchPresentation.subtitle)
+                    Text(presentation.subtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -719,20 +629,17 @@ private struct DockPendingToolApprovalPanel: View {
                 Button {
                     onApprove()
                 } label: {
-                    Label(
-                        batchPresentation.primaryActionTitle,
-                        systemImage: batchPresentation.primaryActionSystemImage
-                    )
+                    Label(presentation.primaryActionTitle, systemImage: presentation.primaryActionSystemImage)
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
-                .disabled(!hubConnected || status.isSending)
-                .help(hubConnected ? batchPresentation.footerNote : batchPresentation.hubDisconnectedNote)
+                .disabled(!hubConnected || session.isSending)
+                .help(hubConnected ? presentation.footerNote : presentation.hubDisconnectedNote)
             }
 
-            if !batchDeltaLines.isEmpty {
+            if !deltaLines.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    ForEach(Array(batchDeltaLines.prefix(3)), id: \.self) { line in
+                    ForEach(Array(deltaLines.prefix(3)), id: \.self) { line in
                         Text(line)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
@@ -744,10 +651,10 @@ private struct DockPendingToolApprovalPanel: View {
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    ForEach(pendingToolCalls) { call in
+                    ForEach(session.pendingToolCalls) { call in
                         PendingToolCallChip(
                             toolCall: call,
-                            activity: pendingSkillItems[call.id]
+                            activity: activityByRequestID[call.id]
                         )
                     }
                 }
@@ -761,16 +668,6 @@ private struct DockPendingToolApprovalPanel: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(Color.orange.opacity(0.18), lineWidth: 1)
         )
-        .onAppear {
-            refreshPendingSkillItems()
-        }
-        .onChange(of: status.pendingToolCallIDSignature) { _ in
-            refreshPendingSkillItems()
-        }
-    }
-
-    private func refreshPendingSkillItems() {
-        pendingSkillItems = session.pendingProjectSkillActivityItems()
     }
 }
 
@@ -883,13 +780,6 @@ struct ModelSelectorButton: View {
         let trimmed = configuredModelId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "auto" }
         return ExecutionRoutePresentation.shortModelLabel(trimmed)
-    }
-
-    private var appModel: AppModel {
-        guard let appModelReference else {
-            preconditionFailure("ModelSelectorButton requires xtAppModelReference")
-        }
-        return appModelReference
     }
 }
 

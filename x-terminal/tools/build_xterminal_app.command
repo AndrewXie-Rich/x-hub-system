@@ -2,12 +2,30 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-XT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-WORKSPACE_ROOT="$(cd "$XT_DIR/.." && pwd)"
-ROOT_DIR="$XT_DIR"
-# shellcheck source=../scripts/lib/build_snapshot_retention.sh
-source "$XT_DIR/scripts/lib/build_snapshot_retention.sh"
-OUT_DIR="${XTERMINAL_BUILD_OUT_DIR:-$WORKSPACE_ROOT/build}"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+if [ "${XHUB_ALLOW_LEGACY_XTERMINAL_BUILD:-0}" != "1" ]; then
+  cat >&2 <<'EOF'
+ERROR: Refusing to build legacy X-Terminal from x-hub-system/x-terminal.
+
+This tree is legacy/read-only and must not be used for XT packaging.
+
+Active XT source:
+  /Users/andrew.xie/Documents/AX/rust/rust xt/swift-xterminal
+
+Active XT build command:
+  /Users/andrew.xie/Documents/AX/rust/rust xt/commands/build_xt.command
+
+For archival/debug-only legacy builds, rerun with:
+  XHUB_ALLOW_LEGACY_XTERMINAL_BUILD=1
+EOF
+  exit 64
+fi
+
+# shellcheck source=../../scripts/lib/build_snapshot_retention.sh
+source "$ROOT_DIR/scripts/lib/build_snapshot_retention.sh"
+XT_DIR="$ROOT_DIR/x-terminal"
+OUT_DIR="$ROOT_DIR/build"
 APP_DIR="$OUT_DIR/X-Terminal.app"
 BUILD_CONFIG="${XTERMINAL_SWIFT_BUILD_CONFIG:-release}"
 INSTALL_TARGET="${XTERMINAL_INSTALL_TARGET:-}"
@@ -242,4 +260,4 @@ fi
 echo "Run hint: for end-user testing, launch the app from ~/Applications or /Applications instead of a repo checkout under Documents."
 echo "Calendar note: X-Terminal now owns the optional Calendar permission and local Supervisor meeting reminders."
 echo "Copy this app to another Mac, then open it directly."
-echo "Self-contained XT workspace: $WORKSPACE_ROOT"
+echo "To rebuild X-Hub + X-Terminal together, run: \"$ROOT_DIR/scripts/build_hub_and_xt_apps.command\""

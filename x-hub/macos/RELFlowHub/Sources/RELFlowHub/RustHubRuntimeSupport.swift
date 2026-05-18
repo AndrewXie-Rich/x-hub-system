@@ -395,17 +395,8 @@ enum RustHubRuntimeSupport {
                 : rustHubRunnerPath(rootPath: rootPath, selectedRunnerPath: info.runnerPath),
             "XHUB_RUST_HUB_HOST": defaultHost,
             "XHUB_RUST_HUB_HTTP_PORT": String(defaultHTTPPort),
-            "XHUB_RUST_HUB_HTTP_BASE_URL": defaultHTTPBaseURL,
-            "XHUB_RUST_HTTP_ACCESS_KEY_FILE": URL(fileURLWithPath: rootPath, isDirectory: true)
-                .appendingPathComponent("secrets/xhubd_http_access_key")
-                .path
+            "XHUB_RUST_HUB_HTTP_BASE_URL": defaultHTTPBaseURL
         ]
-        if let explicitAccessKeyFile = nonEmptyEnvironmentValue(baseEnvironment, "XHUB_RUST_HTTP_ACCESS_KEY_FILE") {
-            out["XHUB_RUST_HTTP_ACCESS_KEY_FILE"] = explicitAccessKeyFile
-        }
-        if let explicitHubAccessKeyFile = nonEmptyEnvironmentValue(baseEnvironment, "XHUB_RUST_HUB_ACCESS_KEY_FILE") {
-            out["XHUB_RUST_HUB_ACCESS_KEY_FILE"] = explicitHubAccessKeyFile
-        }
         if allowProductionPassthrough {
             for key in nodeProductionPassthroughKeys {
                 guard !alwaysClampedNodeAuthorityKeys.contains(key) else { continue }

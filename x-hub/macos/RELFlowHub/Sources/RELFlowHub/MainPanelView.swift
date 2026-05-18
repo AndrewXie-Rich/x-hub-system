@@ -41,7 +41,6 @@ struct MainPanelView: View {
 
 private struct InboxColumn: View {
     @EnvironmentObject var store: HubStore
-    @State private var showSettings = false
     @State private var showPairingQueue = false
     @State private var approvingPairingRequest: HubPairingRequest?
     @ObservedObject private var clientStore = ClientStore.shared
@@ -68,13 +67,14 @@ private struct InboxColumn: View {
         let liveClients = clientStore.liveClients(now: now)
         let liveMeetings = store.meetings.filter { $0.isMeeting && !store.isMeetingDismissed($0) }
         let pendingNetworkRequests = store.pendingNetworkRequests
+        let pendingGrantRequests = store.pendingGrantRequests
         let active = store.notifications.filter { ($0.snoozedUntil ?? 0) <= now }
         let snoozed = store.notifications.filter { ($0.snoozedUntil ?? 0) > now }
         let cal = Calendar.current
         let todayStart = cal.startOfDay(for: Date()).timeIntervalSince1970
         let todayFA = active.filter { store.isFATrackerRadarNotification($0) && $0.createdAt >= todayStart }
         let otherActive = active.filter { !(store.isFATrackerRadarNotification($0) && $0.createdAt >= todayStart) }
-        let hasListContent = !liveMeetings.isEmpty || !pendingNetworkRequests.isEmpty || !todayFA.isEmpty || !otherActive.isEmpty || !snoozed.isEmpty
+        let hasListContent = !liveMeetings.isEmpty || !pendingGrantRequests.isEmpty || !pendingNetworkRequests.isEmpty || !todayFA.isEmpty || !otherActive.isEmpty || !snoozed.isEmpty
 
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 16) {
@@ -87,6 +87,7 @@ private struct InboxColumn: View {
                             clientCount: liveClients.count,
                             meetingCount: liveMeetings.count,
                             networkCount: pendingNetworkRequests.count,
+                            grantCount: pendingGrantRequests.count,
                             notificationCount: todayFA.count + otherActive.count,
                             snoozedCount: snoozed.count,
                             pairingCount: store.pendingPairingRequests.count
@@ -101,6 +102,13 @@ private struct InboxColumn: View {
                                     title: "\(store.pendingPairingRequests.count) pairing pending",
                                     systemName: "wifi",
                                     tint: .blue
+                                )
+                            }
+                            if pendingGrantRequests.count > 0 {
+                                InboxInlineStatusPill(
+                                    title: "\(pendingGrantRequests.count) grant pending",
+                                    systemName: "checkmark.shield",
+                                    tint: .orange
                                 )
                             }
                         }
@@ -122,7 +130,7 @@ private struct InboxColumn: View {
                             systemName: "gearshape",
                             tint: .secondary
                         ) {
-                            showSettings = true
+                            openSettingsWindow()
                         }
                     }
                 }
@@ -140,8 +148,8 @@ private struct InboxColumn: View {
                     )
                     InboxSummaryTile(
                         title: "Action Needed",
-                        value: "\(pendingNetworkRequests.count + store.pendingPairingRequests.count)",
-                        detail: "Network + first pair approvals",
+                        value: "\(pendingGrantRequests.count + pendingNetworkRequests.count + store.pendingPairingRequests.count)",
+                        detail: "Grants + network + first pair",
                         tint: .orange
                     )
                     InboxSummaryTile(
@@ -238,6 +246,20 @@ private struct InboxColumn: View {
                             }
                         }
 
+                        if !pendingGrantRequests.isEmpty {
+                            Section {
+                                ForEach(pendingGrantRequests) { grant in
+                                    PendingGrantRequestRow(grant: grant)
+                                        .environmentObject(store)
+                                }
+                            } header: {
+                                InboxSectionHeader(
+                                    title: "Skill & Capability Grants",
+                                    detail: pendingGrantRequests.count == 1 ? "1 Hub approval waiting" : "\(pendingGrantRequests.count) Hub approvals waiting"
+                                )
+                            }
+                        }
+
                         if !todayFA.isEmpty {
                             Section {
                                 ForEach(todayFA) { n in
@@ -326,9 +348,6 @@ private struct InboxColumn: View {
         .sheet(isPresented: $showFASummary) {
             FASummarySheet(title: faSummaryTitle, text: faSummaryText, busy: faSummaryBusy, errorText: faSummaryError)
         }
-        .sheet(isPresented: $showSettings) {
-            SettingsSheetView().environmentObject(store)
-        }
         .sheet(item: $approvingPairingRequest) { req in
             PairingApprovalPolicySheet(req: req) { approval in
                 store.approvePairingRequest(req, approval: approval)
@@ -342,15 +361,26 @@ private struct InboxColumn: View {
             )
             .environmentObject(store)
         }
+        .onAppear {
+            if store.settingsNavigationTarget != nil {
+                openSettingsWindow()
+            }
+        }
         .onChange(of: store.settingsNavigationTarget) { newValue in
             if newValue != nil {
-                showSettings = true
+                openSettingsWindow()
             }
         }
         .onReceive(Timer.publish(every: 5.0, on: .main, in: .common).autoconnect()) { _ in
             // Force periodic refresh so snooze expiry and client TTL are reflected even when
             // no other store state changes.
             _tick &+= 1
+        }
+    }
+
+    private func openSettingsWindow() {
+        Task { @MainActor in
+            HubSettingsWindowPresenter.shared.show(store: store)
         }
     }
 
@@ -428,11 +458,12 @@ private struct InboxColumn: View {
         clientCount: Int,
         meetingCount: Int,
         networkCount: Int,
+        grantCount: Int,
         notificationCount: Int,
         snoozedCount: Int,
         pairingCount: Int
     ) -> String {
-        let actionCount = meetingCount + networkCount + notificationCount + pairingCount
+        let actionCount = meetingCount + networkCount + grantCount + notificationCount + pairingCount
         if actionCount == 0, snoozedCount == 0 {
             return clientCount > 0
                 ? "\(clientCount) paired surfaces are online. Nothing needs attention."
@@ -967,6 +998,150 @@ private struct NetworkRequestRow: View {
     }
 }
 
+private struct PendingGrantRequestRow: View {
+    @EnvironmentObject var store: HubStore
+    let grant: HubPendingGrantRequest
+
+    private var decisionInFlight: Bool {
+        store.isPendingGrantDecisionInFlight(grant)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                statusBadge("Hub 授权", systemName: "checkmark.shield", tint: .orange)
+                statusBadge(grant.displayCapability, systemName: capabilitySystemName, tint: .blue)
+                if decisionInFlight {
+                    statusBadge("处理中", systemName: "hourglass", tint: .secondary)
+                }
+                Spacer(minLength: 0)
+            }
+
+            Text(grantTitle)
+                .font(.headline)
+
+            let reason = grant.reason.trimmingCharacters(in: .whitespacesAndNewlines)
+            if reason.isEmpty {
+                Text("原因：(未提供)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("原因：\(reason)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            let scope = grant.scopeSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !scope.isEmpty {
+                Text(scope)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+
+            HStack(spacing: 8) {
+                infoPill("TTL", ttlText)
+                if grant.requestedTokenCap > 0 {
+                    infoPill("Token", "\(grant.requestedTokenCap)")
+                }
+                infoPill("请求", grant.requestId.isEmpty ? grant.grantRequestId : grant.requestId)
+            }
+
+            HStack(spacing: 10) {
+                Button(decisionInFlight ? "批准中..." : "批准") {
+                    store.approvePendingGrantRequest(grant)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(decisionInFlight)
+
+                Button("拒绝") {
+                    store.denyPendingGrantRequest(grant)
+                }
+                .buttonStyle(.bordered)
+                .disabled(decisionInFlight)
+
+                Spacer(minLength: 0)
+            }
+            .font(.caption)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(NSColor.controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.orange.opacity(0.20), lineWidth: 1)
+        )
+        .padding(.vertical, 4)
+    }
+
+    private var grantTitle: String {
+        let projectId = grant.client.projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !projectId.isEmpty {
+            return "\(grant.displayCapability)：\(projectId)"
+        }
+        let appId = grant.client.appId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !appId.isEmpty {
+            return "\(grant.displayCapability)：\(appId)"
+        }
+        return grant.displayCapability
+    }
+
+    private var ttlText: String {
+        let seconds = max(0, grant.requestedTtlSec)
+        guard seconds > 0 else { return "默认" }
+        if seconds >= 3600, seconds % 3600 == 0 {
+            return "\(seconds / 3600)h"
+        }
+        if seconds >= 60 {
+            return "\(max(1, seconds / 60))m"
+        }
+        return "\(seconds)s"
+    }
+
+    private var capabilitySystemName: String {
+        switch grant.capability.trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "skills.execute":
+            return "wand.and.stars"
+        case "web.fetch":
+            return "network"
+        case "ai.generate.paid", "ai.generate.local":
+            return "cpu"
+        default:
+            return "key"
+        }
+    }
+
+    private func infoPill(_ label: String, _ value: String) -> some View {
+        HStack(spacing: 4) {
+            Text(label)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .font(.caption2)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color.white.opacity(0.06))
+        .clipShape(Capsule())
+    }
+
+    private func statusBadge(_ title: String, systemName: String, tint: Color) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: systemName)
+            Text(title)
+        }
+        .font(.caption2)
+        .foregroundStyle(tint)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(tint.opacity(0.10))
+        .clipShape(Capsule())
+    }
+}
+
 private struct PairingRequestRow: View {
     @EnvironmentObject var store: HubStore
     let req: HubPairingRequest
@@ -1177,100 +1352,161 @@ private struct SnoozedNotificationRow: View {
     }
 }
 
+private struct ModelsDrawerLocalModelSnapshot {
+    var models: [HubModel]
+    var sections: [ModelLibrarySection]
+    var loadedCount: Int
+
+    static let empty = ModelsDrawerLocalModelSnapshot(
+        models: [],
+        sections: [],
+        loadedCount: 0
+    )
+
+    static func build(from catalogModels: [HubModel]) -> ModelsDrawerLocalModelSnapshot {
+        let models = LocalModelRuntimeActionPlanner.localModels(from: catalogModels)
+        return ModelsDrawerLocalModelSnapshot(
+            models: models,
+            sections: ModelLibrarySectionPlanner.sections(from: models),
+            loadedCount: models.filter { $0.state == .loaded }.count
+        )
+    }
+}
+
+private struct ModelsDrawerProviderKeySnapshot: Equatable {
+    var totalAccounts: Int
+    var readyAccounts: Int
+    var blockedAccounts: Int
+    var quotaPools: [ProviderQuotaPoolSnapshot]
+
+    static let empty = ModelsDrawerProviderKeySnapshot(
+        totalAccounts: 0,
+        readyAccounts: 0,
+        blockedAccounts: 0,
+        quotaPools: []
+    )
+
+    static func build(from snapshot: ProviderKeyStoreSnapshot) -> ModelsDrawerProviderKeySnapshot {
+        let derived = ProviderKeyStorage.derivedSnapshot(from: snapshot)
+        return ModelsDrawerProviderKeySnapshot(
+            totalAccounts: derived.totalAccounts,
+            readyAccounts: derived.readyAccounts,
+            blockedAccounts: derived.blockedAccounts,
+            quotaPools: derived.quotaPools
+        )
+    }
+}
+
 private struct ModelsDrawer: View {
     @EnvironmentObject var store: HubStore
     @ObservedObject private var modelStore = ModelStore.shared
     @State private var remoteModels: [RemoteModelEntry] = []
+    @State private var providerKeySnapshot: ModelsDrawerProviderKeySnapshot = .empty
+    @State private var localModelSnapshot: ModelsDrawerLocalModelSnapshot = .empty
+    @State private var capacitySnapshot: ModelCapacitySnapshot = .empty
+    @State private var remoteDrawerGroupSnapshot: [RemoteDrawerGroup] = []
     @State private var expandedRemoteGroupIDs: Set<String> = []
+    @State private var expandedQuotaPoolIssueIDs: Set<String> = []
     @State private var showDiscoverModels: Bool = false
     @State private var showAddModel: Bool = false
     @State private var showAddRemoteModel: Bool = false
-    @State private var routeTask: HubTaskType = .assist
+    @State private var routeTask: HubTaskType = .supervisor
     @State private var routePreferredModelId: String = ""
     @State private var routeAllowAutoLoad: Bool = true
     @State private var remoteModelsReloadTask: Task<Void, Never>? = nil
+    @State private var providerKeyReloadTask: Task<Void, Never>? = nil
 
-    var body: some View {
-        let localModels = modelStore.snapshot.models.filter { !LocalModelRuntimeActionPlanner.isRemoteModel($0) }
-        let localSections = ModelLibrarySectionPlanner.sections(from: localModels)
-        let remoteGroups = remoteDrawerGroups()
-        let localHealthSummary = LocalModelHealthSectionSummarySupport.presentation(
+    private var localModels: [HubModel] {
+        localModelSnapshot.models
+    }
+
+    private var localSections: [ModelLibrarySection] {
+        localModelSnapshot.sections
+    }
+
+    private var remoteGroups: [RemoteDrawerGroup] {
+        remoteDrawerGroupSnapshot
+    }
+
+    private var quotaPools: [ProviderQuotaPoolSnapshot] {
+        providerKeySnapshot.quotaPools
+    }
+
+    private var localHealthSummary: LocalModelHealthSectionSummaryPresentation? {
+        LocalModelHealthSectionSummarySupport.presentation(
             models: localModels,
             healthSnapshot: store.localModelHealthSnapshot,
             scanningModelIDs: store.localModelHealthScanningModelIDs
         )
-        let remoteHealthSummary = RemoteModelHealthSectionSummarySupport.presentation(
+    }
+
+    private var remoteHealthSummary: RemoteModelHealthSectionSummaryPresentation? {
+        RemoteModelHealthSectionSummarySupport.presentation(
             models: remoteModels,
             healthSnapshot: store.remoteKeyHealthSnapshot,
             scanningKeyReferences: store.remoteKeyHealthScanningKeyReferences
         )
+    }
 
+    private var localLoadedCount: Int {
+        localModelSnapshot.loadedCount
+    }
+
+    private var localAvailableCount: Int {
+        localHealthSummary?.availableCount ?? 0
+    }
+
+    private var localPendingCount: Int {
+        (localHealthSummary?.reviewCount ?? 0)
+            + (localHealthSummary?.discouragedCount ?? 0)
+            + (localHealthSummary?.unscannedCount ?? 0)
+    }
+
+    private var remoteLoadedCount: Int {
+        remoteGroups.reduce(0) { $0 + $1.loadedCount }
+    }
+
+    private var remoteAvailableCount: Int {
+        remoteGroups.reduce(0) { $0 + $1.availableCount }
+    }
+
+    private var remoteNeedsSetupCount: Int {
+        remoteGroups.reduce(0) { $0 + $1.needsSetupCount }
+    }
+
+    private var runtimeAlive: Bool {
+        store.aiRuntimeStatusSnapshot?.isAlive(ttl: AIRuntimeStatus.recommendedHeartbeatTTL) ?? false
+    }
+
+    private var runtimeReadyProviderCount: Int {
+        if let monitor = store.aiRuntimeStatusSnapshot?.monitorSnapshot {
+            return monitor.providers.filter(\.ok).count
+        }
+        return store.aiRuntimeStatusSnapshot?.providers.values.filter(\.ok).count ?? 0
+    }
+
+    private var runtimeTotalProviderCount: Int {
+        if let monitor = store.aiRuntimeStatusSnapshot?.monitorSnapshot {
+            return monitor.providers.count
+        }
+        return store.aiRuntimeStatusSnapshot?.providers.count ?? 0
+    }
+
+    private var runtimeLoadedInstanceCount: Int {
+        store.aiRuntimeStatusSnapshot?.monitorSnapshot?.loadedInstances.count ?? 0
+    }
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Models")
-                    .font(.headline)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("模型能力")
+                        .font(.headline)
+                    Text("并排看本地模型能力和付费模型能力；额度池和具体模型明细在下方。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
-
-                Button(
-                    store.localModelHealthScanInFlight
-                        ? HubUIStrings.Models.LocalHealth.scanningBadge
-                        : HubUIStrings.Models.LocalHealth.scanAll
-                ) {
-                    store.scanAllLocalModelHealth()
-                }
-                .buttonStyle(.plain)
-                .font(.caption.weight(.medium))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(Color.white.opacity(0.08))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.white.opacity(0.14), lineWidth: 1)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .focusable(false)
-                .disabled(store.localModelHealthScanInFlight || localModels.isEmpty)
-
-                Button(
-                    store.remoteKeyHealthScanInFlight
-                        ? HubUIStrings.Settings.RemoteModels.healthCheckingBadge
-                        : HubUIStrings.Settings.RemoteModels.scanAll
-                ) {
-                    store.scanAllRemoteKeyHealth()
-                }
-                .buttonStyle(.plain)
-                .font(.caption.weight(.medium))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(Color.white.opacity(0.08))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.white.opacity(0.14), lineWidth: 1)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .focusable(false)
-                .disabled(store.remoteKeyHealthScanInFlight || remoteGroups.isEmpty)
-
-                Menu {
-                    Button("Discover Models…") { showDiscoverModels = true }
-                    Divider()
-                    Button("Local Model…") { showAddModel = true }
-                    Button("Remote (Paid)…") { showAddRemoteModel = true }
-                } label: {
-                    Text("Add Model…")
-                }
-                // Avoid the macOS focus ring looking like an "empty input box" behind the button.
-                .buttonStyle(.plain)
-                .font(.caption.weight(.medium))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(Color.white.opacity(0.08))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.white.opacity(0.14), lineWidth: 1)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .focusable(false)
 
                 Button {
                     store.showModelsDrawer = false
@@ -1284,85 +1520,78 @@ private struct ModelsDrawer: View {
             .padding(.top, 12)
             .padding(.horizontal, 12)
 
-            HStack {
-                Text("AI Capacity")
-                    .font(.subheadline)
-                Spacer()
-                Text("\(formatBytes(modelStore.usedMemoryBytes())) / \(formatBytes(modelStore.budgetMemoryBytes()))")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                CapacityGauge(percent: modelStore.capacityPercent())
-                    .frame(width: 160, height: 14)
-            }
-            .padding(.horizontal, 12)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .top, spacing: 12) {
+                            localCapabilityCard
+                            paidCapabilityCard
+                        }
 
-            HStack(spacing: 10) {
-                Text(store.aiRuntimeStatusText)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Spacer()
-                Button("Start") { store.startAIRuntime() }
-                    .controlSize(.mini)
-                Button("Log") { store.openAIRuntimeLog() }
-                    .controlSize(.mini)
-            }
-            .padding(.horizontal, 12)
-            if !store.aiRuntimeLastError.isEmpty {
-                Text(store.aiRuntimeLastError)
-                    .font(.caption2)
-                    .foregroundStyle(.red)
-                    .padding(.horizontal, 12)
-                    .lineLimit(2)
-            }
+                        VStack(alignment: .leading, spacing: 12) {
+                            localCapabilityCard
+                            paidCapabilityCard
+                        }
+                    }
 
-            RoutingPreviewView(
-                taskType: $routeTask,
-                preferredModelId: $routePreferredModelId,
-                allowAutoLoad: $routeAllowAutoLoad
-            )
-            .padding(.horizontal, 12)
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .top, spacing: 12) {
+                            runtimeInfrastructureCard
+                            capacitySummaryCard
+                        }
 
-            if localHealthSummary != nil || remoteHealthSummary != nil {
-                VStack(alignment: .leading, spacing: 6) {
-                    if let localHealthSummary, !localHealthSummary.text.isEmpty {
-                        modelHealthSummaryLine(
-                            title: "本地",
-                            systemName: localHealthSummary.scanningCount > 0 ? "heart.text.square.fill" : "heart.text.square",
-                            text: localHealthSummary.text
+                        VStack(alignment: .leading, spacing: 12) {
+                            runtimeInfrastructureCard
+                            capacitySummaryCard
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        sectionHeader(
+                            title: "当前任务路由",
+                            subtitle: "这里是跨本地 / 付费两条能力线的最终解析结果。"
+                        )
+                        RoutingPreviewView(
+                            taskType: $routeTask,
+                            preferredModelId: $routePreferredModelId,
+                            allowAutoLoad: $routeAllowAutoLoad
                         )
                     }
-                    if let remoteHealthSummary, !remoteHealthSummary.text.isEmpty {
-                        modelHealthSummaryLine(
-                            title: "付费",
-                            systemName: remoteHealthSummary.scanningCount > 0 ? "cloud.fill" : "cloud",
-                            text: remoteHealthSummary.text
+
+                    if localModels.isEmpty && remoteGroups.isEmpty && quotaPools.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("还没有可展示的模型能力")
+                                .font(.subheadline)
+                            Text("先发现本地模型，或添加付费模型。接上 provider key 后，共享额度池也会显示在这里。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.white.opacity(0.04))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .stroke(Color.white.opacity(0.08), lineWidth: 1)
                         )
-                    }
-                }
-                .padding(.horizontal, 12)
-            }
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    } else {
+                        if !quotaPools.isEmpty {
+                            VStack(alignment: .leading, spacing: 10) {
+                                sectionHeader(
+                                    title: "共享额度池",
+                                    subtitle: "按模型家族聚合；共享来源会明确标出与哪些家族共用额度。"
+                                )
+                                ForEach(quotaPools) { pool in
+                                    remoteQuotaPoolCard(pool)
+                                }
+                            }
+                        }
 
-            Divider()
-
-            if localModels.isEmpty && remoteGroups.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("No models registered")
-                        .font(.subheadline)
-                    Text("Use Discover Models… to browse local models, or Add Model… to register a local folder or a remote paid model.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-            } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 12) {
                         if !remoteGroups.isEmpty {
                             VStack(alignment: .leading, spacing: 10) {
                                 sectionHeader(
-                                    title: "Remote (Paid)",
-                                    subtitle: "Grouped by custom alias first, then by provider/account."
+                                    title: "付费模型组",
+                                    subtitle: "按自定义别名优先、再按 provider / account 聚合。"
                                 )
                                 ForEach(remoteGroups) { group in
                                     remoteGroupCard(group)
@@ -1370,16 +1599,22 @@ private struct ModelsDrawer: View {
                             }
                         }
 
-                        ForEach(localSections) { section in
-                            localSectionCard(section)
+                        if !localSections.isEmpty {
+                            VStack(alignment: .leading, spacing: 10) {
+                                sectionHeader(
+                                    title: "本地模型库",
+                                    subtitle: "按能力分类展示本地文本、多模态、OCR、TTS 等可由 Hub 本地承接的模型。"
+                                )
+                                ForEach(localSections) { section in
+                                    localSectionCard(section)
+                                }
+                            }
                         }
                     }
                 }
                 .padding(.horizontal, 12)
                 .padding(.bottom, 12)
             }
-
-            Spacer(minLength: 0)
         }
         .background(.regularMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -1401,22 +1636,57 @@ private struct ModelsDrawer: View {
             }
         }
         .onAppear {
+            refreshLocalModelSnapshot()
+            refreshCapacitySnapshot()
             reloadRemoteModels(initial: true)
+            reloadProviderKeySnapshot()
         }
         .onDisappear {
             remoteModelsReloadTask?.cancel()
             remoteModelsReloadTask = nil
+            providerKeyReloadTask?.cancel()
+            providerKeyReloadTask = nil
         }
         .onChange(of: modelStore.snapshot.updatedAt) { _ in
+            refreshLocalModelSnapshot()
+            refreshCapacitySnapshot()
             reloadRemoteModels()
+        }
+        .onChange(of: store.aiRuntimeStatusSnapshot?.updatedAt ?? 0) { _ in
+            refreshCapacitySnapshot()
+        }
+        .onChange(of: store.remoteKeyHealthSnapshot.updatedAt) { _ in
+            refreshRemoteDrawerGroups()
+        }
+        .onReceive(Timer.publish(every: 10.0, on: .main, in: .common).autoconnect()) { _ in
+            reloadProviderKeySnapshot()
         }
         .onReceive(NotificationCenter.default.publisher(for: .relflowhubRemoteModelsChanged)) { _ in
             reloadRemoteModels()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .relflowhubRemoteKeyHealthChanged)) { _ in
+            refreshRemoteDrawerGroups()
+            reloadProviderKeySnapshot()
         }
     }
 
     private static func sortedRemoteModels(_ models: [RemoteModelEntry]) -> [RemoteModelEntry] {
         RemoteModelPresentationSupport.sorted(models)
+    }
+
+    private func refreshLocalModelSnapshot() {
+        localModelSnapshot = ModelsDrawerLocalModelSnapshot.build(from: modelStore.snapshot.models)
+    }
+
+    private func refreshCapacitySnapshot() {
+        capacitySnapshot = modelStore.capacitySnapshot(runtimeStatus: store.aiRuntimeStatusSnapshot)
+    }
+
+    private func refreshRemoteDrawerGroups() {
+        let groups = remoteDrawerGroups(from: remoteModels)
+        remoteDrawerGroupSnapshot = groups
+        let validGroupIDs = Set(groups.map(\.id))
+        expandedRemoteGroupIDs = expandedRemoteGroupIDs.intersection(validGroupIDs)
     }
 
     private func reloadRemoteModels(initial: Bool = false) {
@@ -1427,13 +1697,659 @@ private struct ModelsDrawer: View {
             }.value
             guard !Task.isCancelled else { return }
             remoteModels = loaded
-            let allGroupIDs = Set(remoteDrawerGroups(from: loaded).map(\.id))
+            let groups = remoteDrawerGroups(from: loaded)
+            remoteDrawerGroupSnapshot = groups
+            let allGroupIDs = Set(groups.map(\.id))
             if initial || expandedRemoteGroupIDs.isEmpty {
                 expandedRemoteGroupIDs = allGroupIDs
             } else {
                 expandedRemoteGroupIDs = expandedRemoteGroupIDs.intersection(allGroupIDs)
             }
         }
+    }
+
+    private func reloadProviderKeySnapshot() {
+        if store.remoteKeyHealthScanInFlight,
+           store.remoteKeyHealthActiveScanMode == .full {
+            return
+        }
+        providerKeyReloadTask?.cancel()
+        providerKeyReloadTask = Task { @MainActor in
+            let loaded = await Task.detached(priority: .userInitiated) {
+                RemoteProviderKeyBootstrapper.bootstrapIfNeeded()
+                return ModelsDrawerProviderKeySnapshot.build(from: ProviderKeyStorage.load())
+            }.value
+            guard !Task.isCancelled else { return }
+            providerKeySnapshot = loaded
+            let validIssueIDs = Set(loaded.quotaPools.map(\.id))
+            expandedQuotaPoolIssueIDs = expandedQuotaPoolIssueIDs.intersection(validIssueIDs)
+        }
+    }
+
+    private var localCapabilityCard: some View {
+        drawerSurfaceCard(
+            systemName: "internaldrive.fill",
+            title: "本地模型能力",
+            summary: localCapabilitySummaryText,
+            badge: localCapabilityBadgeText,
+            tint: localCapabilityTint
+        ) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    drawerMetricBadge("模型", value: "\(localModels.count)")
+                    drawerMetricBadge("已加载", value: "\(localLoadedCount)")
+                    drawerMetricBadge("预检可用", value: "\(localAvailableCount)")
+                    drawerMetricBadge("待复核", value: "\(localPendingCount)")
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        drawerMetricBadge("模型", value: "\(localModels.count)")
+                        drawerMetricBadge("已加载", value: "\(localLoadedCount)")
+                    }
+                    HStack(spacing: 8) {
+                        drawerMetricBadge("预检可用", value: "\(localAvailableCount)")
+                        drawerMetricBadge("待复核", value: "\(localPendingCount)")
+                    }
+                }
+            }
+
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    drawerActionChip(
+                        store.localModelHealthScanInFlight
+                            ? HubUIStrings.Models.LocalHealth.scanningBadge
+                            : HubUIStrings.Models.LocalHealth.scanAll,
+                        systemName: "waveform.path.ecg",
+                        tint: .teal,
+                        disabled: store.localModelHealthScanInFlight || localModels.isEmpty
+                    ) {
+                        store.scanAllLocalModelHealth()
+                    }
+
+                    drawerActionChip(
+                        "发现本地模型",
+                        systemName: "magnifyingglass",
+                        tint: .indigo
+                    ) {
+                        showDiscoverModels = true
+                    }
+
+                    Menu {
+                        Button("添加本地模型") { showAddModel = true }
+                        Button("刷新模型目录") { modelStore.refresh() }
+                    } label: {
+                        drawerActionChipLabel(
+                            "更多动作",
+                            systemName: "ellipsis.circle",
+                            tint: .secondary,
+                            disabled: false
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    drawerActionChip(
+                        store.localModelHealthScanInFlight
+                            ? HubUIStrings.Models.LocalHealth.scanningBadge
+                            : HubUIStrings.Models.LocalHealth.scanAll,
+                        systemName: "waveform.path.ecg",
+                        tint: .teal,
+                        disabled: store.localModelHealthScanInFlight || localModels.isEmpty
+                    ) {
+                        store.scanAllLocalModelHealth()
+                    }
+
+                    HStack(spacing: 8) {
+                        drawerActionChip(
+                            "发现本地模型",
+                            systemName: "magnifyingglass",
+                            tint: .indigo
+                        ) {
+                            showDiscoverModels = true
+                        }
+
+                        Menu {
+                            Button("添加本地模型") { showAddModel = true }
+                            Button("刷新模型目录") { modelStore.refresh() }
+                        } label: {
+                            drawerActionChipLabel(
+                                "更多动作",
+                                systemName: "ellipsis.circle",
+                                tint: .secondary,
+                                disabled: false
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            if let notice = localCapabilityNoticeText {
+                drawerNoticeLine(
+                    systemName: localCapabilityNoticeSystemName,
+                    text: notice,
+                    tint: localCapabilityNoticeTint
+                )
+            }
+        }
+    }
+
+    private var paidCapabilityCard: some View {
+        drawerSurfaceCard(
+            systemName: "antenna.radiowaves.left.and.right",
+            title: "付费模型能力",
+            summary: paidCapabilitySummaryText,
+            badge: paidCapabilityBadgeText,
+            tint: paidCapabilityTint
+        ) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    drawerMetricBadge("模型组", value: "\(remoteGroups.count)")
+                    drawerMetricBadge("已加载", value: "\(remoteLoadedCount)")
+                    drawerMetricBadge("Key", value: "\(providerKeySnapshot.readyAccounts)/\(providerKeySnapshot.totalAccounts)")
+                    drawerMetricBadge("额度池", value: "\(quotaPools.count)")
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        drawerMetricBadge("模型组", value: "\(remoteGroups.count)")
+                        drawerMetricBadge("已加载", value: "\(remoteLoadedCount)")
+                    }
+                    HStack(spacing: 8) {
+                        drawerMetricBadge("Key", value: "\(providerKeySnapshot.readyAccounts)/\(providerKeySnapshot.totalAccounts)")
+                        drawerMetricBadge("额度池", value: "\(quotaPools.count)")
+                    }
+                }
+            }
+
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    drawerActionChip(
+                        "添加付费模型",
+                        systemName: "plus",
+                        tint: .indigo
+                    ) {
+                        showAddRemoteModel = true
+                    }
+
+                    drawerActionChip(
+                        store.remoteKeyHealthScanInFlight
+                            ? HubUIStrings.Settings.RemoteModels.healthCheckingBadge
+                            : HubUIStrings.Settings.RemoteModels.scanQuick,
+                        systemName: "bolt.badge.clock",
+                        tint: .teal,
+                        disabled: store.remoteKeyHealthScanInFlight || remoteGroups.isEmpty
+                    ) {
+                        store.quickScanAllRemoteKeyHealth()
+                    }
+
+                    drawerActionChip(
+                        HubUIStrings.Settings.RemoteModels.scanFull,
+                        systemName: "arrow.trianglehead.clockwise.rotate.90",
+                        tint: .orange,
+                        disabled: store.remoteKeyHealthScanInFlight || remoteGroups.isEmpty
+                    ) {
+                        store.fullScanAllRemoteKeyHealth()
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    drawerActionChip(
+                        "添加付费模型",
+                        systemName: "plus",
+                        tint: .indigo
+                    ) {
+                        showAddRemoteModel = true
+                    }
+
+                    HStack(spacing: 8) {
+                        drawerActionChip(
+                            store.remoteKeyHealthScanInFlight
+                                ? HubUIStrings.Settings.RemoteModels.healthCheckingBadge
+                                : HubUIStrings.Settings.RemoteModels.scanQuick,
+                            systemName: "bolt.badge.clock",
+                            tint: .teal,
+                            disabled: store.remoteKeyHealthScanInFlight || remoteGroups.isEmpty
+                        ) {
+                            store.quickScanAllRemoteKeyHealth()
+                        }
+
+                        drawerActionChip(
+                            HubUIStrings.Settings.RemoteModels.scanFull,
+                            systemName: "arrow.trianglehead.clockwise.rotate.90",
+                            tint: .orange,
+                            disabled: store.remoteKeyHealthScanInFlight || remoteGroups.isEmpty
+                        ) {
+                            store.fullScanAllRemoteKeyHealth()
+                        }
+                    }
+                }
+            }
+
+            if let notice = paidCapabilityNoticeText {
+                drawerNoticeLine(
+                    systemName: paidCapabilityNoticeSystemName,
+                    text: notice,
+                    tint: paidCapabilityNoticeTint
+                )
+            }
+        }
+    }
+
+    private var runtimeInfrastructureCard: some View {
+        drawerSurfaceCard(
+            systemName: "cpu.fill",
+            title: "本地 Runtime",
+            summary: runtimeInfrastructureSummaryText,
+            badge: runtimeAlive ? "在线" : "待恢复",
+            tint: runtimeAlive ? .green : .orange
+        ) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    drawerMetricBadge("Provider", value: runtimeTotalProviderCount == 0 ? "0" : "\(runtimeReadyProviderCount)/\(runtimeTotalProviderCount)")
+                    drawerMetricBadge("实例", value: "\(runtimeLoadedInstanceCount)")
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    drawerMetricBadge("Provider", value: runtimeTotalProviderCount == 0 ? "0" : "\(runtimeReadyProviderCount)/\(runtimeTotalProviderCount)")
+                    drawerMetricBadge("实例", value: "\(runtimeLoadedInstanceCount)")
+                }
+            }
+
+            HStack(spacing: 8) {
+                drawerActionChip(
+                    "启动 Runtime",
+                    systemName: "play.fill",
+                    tint: .teal,
+                    disabled: runtimeAlive
+                ) {
+                    store.startAIRuntime()
+                }
+
+                drawerActionChip(
+                    "查看日志",
+                    systemName: "doc.text.magnifyingglass",
+                    tint: .secondary
+                ) {
+                    store.openAIRuntimeLog()
+                }
+            }
+
+            if !store.aiRuntimeLastError.isEmpty {
+                drawerNoticeLine(
+                    systemName: "exclamationmark.triangle",
+                    text: store.aiRuntimeLastError,
+                    tint: .red
+                )
+            }
+        }
+    }
+
+    private var capacitySummaryCard: some View {
+        let capacity = capacitySnapshot
+        return drawerSurfaceCard(
+            systemName: "gauge.with.needle.fill",
+            title: "AI 容量",
+            summary: "\(formatBytes(capacity.usedMemoryBytes)) / \(formatBytes(capacity.budgetMemoryBytes))",
+            badge: "\(Int((capacity.percent * 100).rounded()))%",
+            tint: capacity.percent > 0.85 ? .orange : .blue
+        ) {
+            CapacityGauge(percent: capacity.percent)
+                .frame(maxWidth: .infinity, minHeight: 14, maxHeight: 14)
+
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    drawerMetricBadge("本地已加载", value: "\(localLoadedCount)")
+                    drawerMetricBadge("付费已加载", value: "\(remoteLoadedCount)")
+                    drawerMetricBadge("共享额度池", value: "\(quotaPools.count)")
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        drawerMetricBadge("本地已加载", value: "\(localLoadedCount)")
+                        drawerMetricBadge("付费已加载", value: "\(remoteLoadedCount)")
+                    }
+                    drawerMetricBadge("共享额度池", value: "\(quotaPools.count)")
+                }
+            }
+        }
+    }
+
+    private var localCapabilitySummaryText: String {
+        guard !localModels.isEmpty else {
+            return "先发现并导入本地模型，这里会并排展示本地文本、多模态、OCR 与 TTS 承接能力。"
+        }
+        var parts: [String] = ["\(localModels.count) 个模型", "\(localLoadedCount) 已加载"]
+        if let summary = localHealthSummary?.text, !summary.isEmpty {
+            parts.append(summary)
+        }
+        parts.append(runtimeAlive ? "runtime 在线" : "runtime 待恢复")
+        return parts.joined(separator: " · ")
+    }
+
+    private var localCapabilityBadgeText: String {
+        guard !localModels.isEmpty else { return "未发现" }
+        if store.localModelHealthScanInFlight || (localHealthSummary?.scanningCount ?? 0) > 0 {
+            return "扫描中"
+        }
+        if !runtimeAlive && localLoadedCount == 0 {
+            return "等待 runtime"
+        }
+        if localLoadedCount > 0 {
+            return "\(localLoadedCount) 已加载"
+        }
+        if localAvailableCount > 0 {
+            return "\(localAvailableCount) 可用"
+        }
+        if localPendingCount > 0 {
+            return "\(localPendingCount) 待复核"
+        }
+        return "待准备"
+    }
+
+    private var localCapabilityTint: Color {
+        guard !localModels.isEmpty else { return .secondary }
+        if !runtimeAlive && localLoadedCount == 0 {
+            return .orange
+        }
+        if store.localModelHealthScanInFlight || (localHealthSummary?.scanningCount ?? 0) > 0 {
+            return .teal
+        }
+        if localLoadedCount > 0 {
+            return .green
+        }
+        if localAvailableCount > 0 {
+            return .indigo
+        }
+        if localPendingCount > 0 {
+            return .orange
+        }
+        return .secondary
+    }
+
+    private var localCapabilityNoticeText: String? {
+        guard !localModels.isEmpty else {
+            return "当前还没有本地模型。先点“发现本地模型”把可由 Hub 管理的本地模型编进目录。"
+        }
+        if !runtimeAlive {
+            return "本地 runtime 当前未就绪，本地模型暂时不能稳定承接任务。先恢复 provider 心跳和常驻实例。"
+        }
+        if (localHealthSummary?.discouragedCount ?? 0) > 0 {
+            return "当前有 \((localHealthSummary?.discouragedCount ?? 0)) 个本地模型被标记为高风险，修完兼容或依赖后再给 XT 默认路由。"
+        }
+        if (localHealthSummary?.unscannedCount ?? 0) > 0 {
+            return "当前还有 \((localHealthSummary?.unscannedCount ?? 0)) 个本地模型未做快速评审，建议先扫一轮。"
+        }
+        if localLoadedCount == 0 && localAvailableCount > 0 {
+            return "当前没有常驻本地模型，但已有 \(localAvailableCount) 个模型通过快速评审，可按需自动加载。"
+        }
+        if let summary = localHealthSummary?.text, !summary.isEmpty {
+            return summary
+        }
+        return nil
+    }
+
+    private var localCapabilityNoticeTint: Color {
+        if !runtimeAlive { return .orange }
+        if (localHealthSummary?.discouragedCount ?? 0) > 0 || (localHealthSummary?.unscannedCount ?? 0) > 0 {
+            return .orange
+        }
+        if localLoadedCount > 0 { return .green }
+        return .blue
+    }
+
+    private var localCapabilityNoticeSystemName: String {
+        if !runtimeAlive { return "exclamationmark.triangle" }
+        if (localHealthSummary?.discouragedCount ?? 0) > 0 || (localHealthSummary?.unscannedCount ?? 0) > 0 {
+            return "shield.lefthalf.filled.badge.exclamationmark"
+        }
+        if localLoadedCount > 0 { return "checkmark.seal" }
+        return "sparkles"
+    }
+
+    private var paidCapabilitySummaryText: String {
+        if remoteModels.isEmpty {
+            if providerKeySnapshot.totalAccounts > 0 {
+                return "已导入 \(providerKeySnapshot.totalAccounts) 个 key，但还没有把它们编成可执行的付费模型入口。"
+            }
+            return "这里管理付费 / 远端模型、共享额度池和 key 健康。"
+        }
+        var parts: [String] = ["\(remoteGroups.count) 个模型组", "\(remoteLoadedCount) 已加载"]
+        if remoteAvailableCount > 0 {
+            parts.append("\(remoteAvailableCount) 可执行")
+        }
+        if remoteNeedsSetupCount > 0 {
+            parts.append("\(remoteNeedsSetupCount) 待补齐")
+        }
+        parts.append("\(quotaPools.count) 个额度池")
+        return parts.joined(separator: " · ")
+    }
+
+    private var paidCapabilityBadgeText: String {
+        if remoteModels.isEmpty {
+            return providerKeySnapshot.totalAccounts > 0 ? "待编目" : "未配置"
+        }
+        if store.remoteKeyHealthScanInFlight || (remoteHealthSummary?.scanningCount ?? 0) > 0 {
+            return "扫描中"
+        }
+        if remoteNeedsSetupCount > 0 {
+            return "\(remoteNeedsSetupCount) 待补齐"
+        }
+        if remoteLoadedCount > 0 {
+            return "\(remoteLoadedCount) 已加载"
+        }
+        if remoteAvailableCount > 0 {
+            return "\(remoteAvailableCount) 可执行"
+        }
+        return "待准备"
+    }
+
+    private var paidCapabilityTint: Color {
+        if remoteModels.isEmpty {
+            return providerKeySnapshot.totalAccounts > 0 ? .indigo : .secondary
+        }
+        if store.remoteKeyHealthScanInFlight || (remoteHealthSummary?.scanningCount ?? 0) > 0 {
+            return .teal
+        }
+        if remoteNeedsSetupCount > 0 || providerKeySnapshot.blockedAccounts > 0 {
+            return .orange
+        }
+        if remoteLoadedCount > 0 {
+            return .green
+        }
+        if remoteAvailableCount > 0 {
+            return .indigo
+        }
+        return .secondary
+    }
+
+    private var paidCapabilityNoticeText: String? {
+        if remoteModels.isEmpty {
+            if providerKeySnapshot.totalAccounts > 0 {
+                return "key 已经接进 Hub，但还没有对应的付费模型入口。下一步是把要用的模型编入远端 catalog。"
+            }
+            return "当前还没有付费模型和 provider key。接入后，这里会显示模型组、共享额度池和 key 健康。"
+        }
+        if remoteNeedsSetupCount > 0 {
+            return "当前有 \(remoteNeedsSetupCount) 个付费模型待补齐 auth / provider 健康 / 兼容前置条件，修完后再给 XT 稳定路由。"
+        }
+        if let summary = remoteHealthSummary?.text, !summary.isEmpty {
+            return summary
+        }
+        if remoteLoadedCount > 0 {
+            return "当前已有 \(remoteLoadedCount) 个付费模型处于加载态，可直接复用；共享额度池会继续在下方展示。"
+        }
+        return nil
+    }
+
+    private var paidCapabilityNoticeTint: Color {
+        if remoteNeedsSetupCount > 0 || providerKeySnapshot.blockedAccounts > 0 {
+            return .orange
+        }
+        if remoteLoadedCount > 0 {
+            return .green
+        }
+        return .blue
+    }
+
+    private var paidCapabilityNoticeSystemName: String {
+        if remoteNeedsSetupCount > 0 || providerKeySnapshot.blockedAccounts > 0 {
+            return "exclamationmark.triangle"
+        }
+        if remoteLoadedCount > 0 {
+            return "checkmark.seal"
+        }
+        return "cloud"
+    }
+
+    private var runtimeInfrastructureSummaryText: String {
+        var parts: [String] = [store.aiRuntimeStatusText]
+        if runtimeTotalProviderCount > 0 {
+            parts.append("\(runtimeReadyProviderCount)/\(runtimeTotalProviderCount) 个 provider 就绪")
+        } else {
+            parts.append("等待 provider 上报")
+        }
+        if runtimeLoadedInstanceCount > 0 {
+            parts.append("\(runtimeLoadedInstanceCount) 个常驻实例")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    @ViewBuilder
+    private func drawerSurfaceCard<Content: View>(
+        systemName: String,
+        title: String,
+        summary: String,
+        badge: String,
+        tint: Color,
+        @ViewBuilder content: @escaping () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [tint.opacity(0.18), tint.opacity(0.08)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                    Image(systemName: systemName)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(tint)
+                }
+                .frame(width: 38, height: 38)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(title)
+                            .font(.subheadline.weight(.semibold))
+                        Text(badge)
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(tint)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(tint.opacity(0.12))
+                            .clipShape(Capsule())
+                    }
+
+                    Text(summary)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 8)
+            }
+
+            content()
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white.opacity(0.04))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(tint.opacity(0.18), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func drawerMetricBadge(_ title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.caption.weight(.semibold))
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Color.white.opacity(0.05))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func drawerActionChip(
+        _ title: String,
+        systemName: String,
+        tint: Color,
+        disabled: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            drawerActionChipLabel(title, systemName: systemName, tint: tint, disabled: disabled)
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+    }
+
+    @ViewBuilder
+    private func drawerActionChipLabel(
+        _ title: String,
+        systemName: String,
+        tint: Color,
+        disabled: Bool
+    ) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: systemName)
+                .imageScale(.small)
+            Text(title)
+                .lineLimit(1)
+        }
+        .font(.caption.weight(.medium))
+        .foregroundStyle(disabled ? .secondary : tint)
+        .padding(.horizontal, 10)
+        .frame(height: 30)
+        .background(tint.opacity(disabled ? 0.05 : 0.10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(tint.opacity(disabled ? 0.10 : 0.24), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func drawerNoticeLine(systemName: String, text: String, tint: Color) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: systemName)
+                .foregroundStyle(tint)
+                .padding(.top, 1)
+            Text(text)
+                .font(.caption2)
+                .foregroundStyle(tint)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(10)
+        .background(tint.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     @ViewBuilder
@@ -1457,6 +2373,110 @@ private struct ModelsDrawer: View {
         }
         .font(.caption2)
         .foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder
+    private func remoteQuotaPoolCard(_ pool: ProviderQuotaPoolSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(pool.displayName)
+                            .font(.subheadline.weight(.semibold))
+
+                        Text(remoteQuotaPoolStateText(pool.state))
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(remoteQuotaPoolStateColor(pool.state))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(remoteQuotaPoolStateColor(pool.state).opacity(0.12))
+                            .clipShape(Capsule())
+                    }
+
+                    Text(remoteQuotaPoolSubtitle(pool))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+
+                    if pool.hasExclusiveQuotaData {
+                        Text(remoteQuotaPoolUsageText(pool))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if pool.sharedSources > 0 {
+                        Text(remoteQuotaPoolSharedText(pool))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    remoteQuotaPoolIssueSummary(pool)
+                }
+
+                Spacer(minLength: 10)
+
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text(remoteQuotaPoolRetryText(pool))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.trailing)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(pool.sources.prefix(3)), id: \.id) { source in
+                    HStack(alignment: .top, spacing: 8) {
+                        Circle()
+                            .fill(remoteQuotaPoolStateColor(source.state))
+                            .frame(width: 7, height: 7)
+                            .padding(.top, 4)
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                Text(remoteQuotaPoolMemberTitle(source))
+                                    .font(.caption.weight(.medium))
+                                remoteQuotaPoolMemberScopeBadge(source)
+                            }
+                            Text(
+                                HubUIStrings.Settings.ProviderKeys.keyPoolSummary(
+                                    total: source.totalAccounts,
+                                    ready: source.readyAccounts,
+                                    cooldown: source.cooldownAccounts,
+                                    blocked: source.blockedAccounts,
+                                    disabled: source.disabledAccounts,
+                                    stale: source.staleAccounts
+                                )
+                            )
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+
+                            let familyNote = remoteQuotaPoolMemberFamilyNote(
+                                source
+                            )
+                            if !familyNote.isEmpty {
+                                Text(familyNote)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        Spacer(minLength: 8)
+                    }
+                }
+                if pool.sources.count > 3 {
+                    Text("还有 \(pool.sources.count - 3) 个来源在设置页可查看。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(12)
+        .background(Color.white.opacity(0.04))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(remoteQuotaPoolStateColor(pool.state).opacity(0.16), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     @ViewBuilder
@@ -1500,10 +2520,225 @@ private struct ModelsDrawer: View {
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
+    private func remoteQuotaPoolStateColor(_ state: String) -> Color {
+        switch state {
+        case "ready":
+            return .green
+        case "cooldown":
+            return .orange
+        case "blocked":
+            return .red
+        case "disabled":
+            return .gray
+        case "mixed":
+            return .yellow
+        default:
+            return .secondary
+        }
+    }
+
+    private func remoteQuotaPoolStateText(_ state: String) -> String {
+        switch state {
+        case "ready":
+            return HubUIStrings.Settings.ProviderKeys.ready
+        case "cooldown":
+            return HubUIStrings.Settings.ProviderKeys.cooldown
+        case "blocked":
+            return HubUIStrings.Settings.ProviderKeys.blocked
+        case "disabled":
+            return HubUIStrings.Settings.ProviderKeys.disabled
+        case "mixed":
+            return HubUIStrings.Settings.ProviderKeys.mixed
+        default:
+            return state
+        }
+    }
+
+    private func remoteQuotaPoolSubtitle(_ pool: ProviderQuotaPoolSnapshot) -> String {
+        HubUIStrings.Settings.ProviderKeys.familyQuotaPoolSummary(
+            sources: pool.totalSources,
+            dedicated: pool.dedicatedSources,
+            shared: pool.sharedSources,
+            total: pool.totalAccounts,
+            ready: pool.readyAccounts,
+            cooldown: pool.cooldownAccounts,
+            blocked: pool.blockedAccounts,
+            stale: pool.staleAccounts
+        )
+        + (pool.providerHosts.isEmpty ? "" : " · " + pool.providerHosts.joined(separator: ", "))
+    }
+
+    private func remoteQuotaPoolUsageText(_ pool: ProviderQuotaPoolSnapshot) -> String {
+        let usage = quotaUsageDetailText(
+            used: pool.exclusiveDailyTokensUsed,
+            cap: pool.exclusiveDailyTokenCap,
+            remaining: pool.exclusiveDailyTokensRemaining,
+            totalUsed: pool.exclusiveTotalTokensUsed
+        )
+        return HubUIStrings.Settings.ProviderKeys.exclusiveUsage(usage)
+    }
+
+    private func remoteQuotaPoolSharedText(_ pool: ProviderQuotaPoolSnapshot) -> String {
+        let sharedFamilies = HubUIStrings.Formatting.commaSeparated(pool.sharedWithFamilyDisplayNames)
+        if pool.hasSharedQuotaData {
+            let usage = quotaUsageDetailText(
+                used: pool.sharedDailyTokensUsed,
+                cap: pool.sharedDailyTokenCap,
+                remaining: pool.sharedDailyTokensRemaining,
+                totalUsed: pool.sharedTotalTokensUsed
+            )
+            return HubUIStrings.Settings.ProviderKeys.sharedSourceUsage(
+                count: pool.sharedSources,
+                sharedFamilies: sharedFamilies,
+                usage: usage
+            )
+        }
+        return HubUIStrings.Settings.ProviderKeys.sharedSourceSummary(
+            count: pool.sharedSources,
+            sharedFamilies: sharedFamilies
+        )
+    }
+
+    @ViewBuilder
+    private func remoteQuotaPoolMemberScopeBadge(_ source: ProviderQuotaPoolSourceSnapshot) -> some View {
+        let isShared = source.hasSharedQuotaBoundary
+        let tint: Color = isShared ? .orange : .green
+        Text(isShared ? HubUIStrings.Settings.ProviderKeys.sharedSource : HubUIStrings.Settings.ProviderKeys.dedicatedSource)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(tint.opacity(0.12))
+            .clipShape(Capsule())
+    }
+
+    private func remoteQuotaPoolMemberFamilyNote(
+        _ source: ProviderQuotaPoolSourceSnapshot
+    ) -> String {
+        let otherFamilies = source.sharedWithFamilyDisplayNames
+        if otherFamilies.isEmpty {
+            return HubUIStrings.Settings.ProviderKeys.dedicatedSourceDetail
+        }
+        return HubUIStrings.Settings.ProviderKeys.sharedWithFamilies(
+            HubUIStrings.Formatting.commaSeparated(otherFamilies)
+        )
+    }
+
+    @ViewBuilder
+    private func remoteQuotaPoolIssueSummary(_ pool: ProviderQuotaPoolSnapshot) -> some View {
+        let summary = pool.issueSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let detail = pool.issueDetail.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isExpanded = expandedQuotaPoolIssueIDs.contains(pool.id)
+        let tint = remoteQuotaPoolStateColor(pool.state)
+
+        if !summary.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .top, spacing: 6) {
+                    Text(summary)
+                        .font(.caption2)
+                        .foregroundStyle(tint)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if !detail.isEmpty {
+                        Button {
+                            if isExpanded {
+                                expandedQuotaPoolIssueIDs.remove(pool.id)
+                            } else {
+                                expandedQuotaPoolIssueIDs.insert(pool.id)
+                            }
+                        } label: {
+                            Image(systemName: isExpanded ? "chevron.up.circle.fill" : "info.circle")
+                                .imageScale(.small)
+                                .foregroundStyle(tint)
+                        }
+                        .buttonStyle(.plain)
+                        .help(isExpanded ? "收起详细错误" : "展开详细错误")
+                    }
+                }
+
+                if isExpanded && !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private func remoteQuotaPoolRetryText(_ pool: ProviderQuotaPoolSnapshot) -> String {
+        if let retryText = pool.sources
+            .flatMap(\.members)
+            .map({ $0.account.errorState.retryAtText.trimmingCharacters(in: .whitespacesAndNewlines) })
+            .first(where: { !$0.isEmpty }) {
+            return HubUIStrings.Settings.ProviderKeys.nextRetry(retryText)
+        }
+        guard pool.earliestRetryAtMs > 0 else {
+            return HubUIStrings.Settings.ProviderKeys.nextRetryUnknown
+        }
+        return HubUIStrings.Settings.ProviderKeys.nextRetry(
+            formattedDrawerTime(pool.earliestRetryAtMs)
+        )
+    }
+
+    private func remoteQuotaPoolMemberTitle(_ source: ProviderQuotaPoolSourceSnapshot) -> String {
+        if source.providerHost.isEmpty {
+            return source.poolID
+        }
+        return "\(source.providerHost) · \(source.wireAPI)"
+    }
+
+    private func formattedDrawerTime(_ timestampMs: Int64) -> String {
+        guard timestampMs > 0 else { return "未知" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale.autoupdatingCurrent
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        return formatter.string(from: Date(timeIntervalSince1970: TimeInterval(timestampMs) / 1000.0))
+    }
+
+    private func quotaUsageDetailText(
+        used: Int64,
+        cap: Int64,
+        remaining: Int64,
+        totalUsed: Int64
+    ) -> String {
+        var parts: [String] = []
+        let normalizedRemaining = max(Int64(0), remaining)
+        if cap > 0 {
+            parts.append(
+                "剩余 \(HubUIStrings.Settings.ProviderKeys.tokenCount(normalizedRemaining)) / \(HubUIStrings.Settings.ProviderKeys.tokenCount(cap)) tokens"
+            )
+        } else if normalizedRemaining > 0 {
+            parts.append("剩余 \(HubUIStrings.Settings.ProviderKeys.tokenCount(normalizedRemaining)) tokens")
+        }
+
+        parts.append(
+            HubUIStrings.Settings.ProviderKeys.dailyUsageText(
+                used: used,
+                cap: cap
+            )
+        )
+
+        if totalUsed > 0 {
+            parts.append("累计 \(HubUIStrings.Settings.ProviderKeys.tokenCount(totalUsed)) tokens")
+        }
+
+        let filtered = parts
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        if filtered.isEmpty {
+            return "未获取额度明细"
+        }
+        return filtered.joined(separator: " · ")
+    }
+
     @ViewBuilder
     private func remoteGroupCard(_ group: RemoteDrawerGroup) -> some View {
         let usageLimitNotice = remoteKeyUsageLimitNotice(for: group)
         let healthPresentation = remoteKeyHealthPresentation(for: group, usageLimitNotice: usageLimitNotice)
+        let slotPresentations = remoteKeySlotPresentations(for: group)
         VStack(alignment: .leading, spacing: 10) {
             DisclosureGroup(
                 isExpanded: bindingRemoteGroupExpanded(group.id)
@@ -1553,6 +2788,9 @@ private struct ModelsDrawer: View {
                                 .lineLimit(3)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
+                        if !slotPresentations.isEmpty {
+                            remoteKeySlotStatusList(slotPresentations)
+                        }
                     }
 
                     Spacer(minLength: 10)
@@ -1592,6 +2830,32 @@ private struct ModelsDrawer: View {
                 .stroke(Color.white.opacity(0.08), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func remoteKeySlotStatusList(_ slots: [RemoteKeySlotHealthPresentation]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(slots) { slot in
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(slot.keyReference)
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                        Text(slot.badgeText)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(slot.tint)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(slot.tint.opacity(0.12))
+                            .clipShape(Capsule())
+                    }
+                    Text(slot.detailText)
+                        .font(.caption2)
+                        .foregroundStyle(slot.tint)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -1734,6 +2998,16 @@ private struct ModelsDrawer: View {
         )
     }
 
+    private func remoteKeySlotPresentations(for group: RemoteDrawerGroup) -> [RemoteKeySlotHealthPresentation] {
+        RemoteKeyHealthPresentationSupport.slotPresentations(
+            models: group.models.map(\.entry),
+            healthSnapshot: store.remoteKeyHealthSnapshot,
+            isScanning: { keyReference in
+                store.isRemoteKeyHealthScanInProgress(for: keyReference)
+            }
+        )
+    }
+
     private func remoteDrawerGroups(from models: [RemoteModelEntry]) -> [RemoteDrawerGroup] {
         RemoteModelPresentationSupport.groups(
             from: models,
@@ -1748,6 +3022,8 @@ private struct ModelsDrawer: View {
                 detail: group.detail,
                 statusText: remoteGroupStatusText(group),
                 statusColor: remoteGroupStatusColor(group),
+                availableCount: group.availableCount,
+                needsSetupCount: group.needsSetupCount,
                 enabledModelIDs: group.enabledModelIDs,
                 loadableModelIDs: group.loadableModelIDs,
                 models: drawerModels
@@ -1870,6 +3146,8 @@ private struct RemoteDrawerGroup: Identifiable {
     let detail: String?
     let statusText: String
     let statusColor: Color
+    let availableCount: Int
+    let needsSetupCount: Int
     let enabledModelIDs: [String]
     let loadableModelIDs: [String]
     let models: [RemoteDrawerModel]
@@ -1990,26 +3268,20 @@ private struct RoutingPreviewView: View {
 
     private func desiredRoles(for t: HubTaskType) -> [String] {
         switch t {
-        case .translate: return ["translate", "general"]
-        case .summarize: return ["summarize", "general"]
-        case .extract: return ["extract", "general"]
-        case .refine: return ["refine", "general"]
-        case .classify: return ["classify", "general"]
-        case .assist: return ["general"]
+        case .supervisor: return ["supervisor", "assist", "advisor", "general"]
+        case .coder: return ["coder", "translate", "summarize", "extract", "refine", "classify", "general"]
+        case .reviewer: return ["reviewer", "review", "general"]
         }
     }
 
     private func preferSpeed(for t: HubTaskType) -> Bool {
-        switch t {
-        case .translate, .classify:
-            return true
-        default:
-            return false
-        }
+        false
     }
 
     private func modelRoles(_ m: HubModel) -> Set<String> {
-        let rs = (m.roles ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { !$0.isEmpty }
+        let rs = (m.roles ?? [])
+            .map(HubModelRolePresentation.canonicalRoleToken)
+            .filter { !$0.isEmpty }
         if rs.isEmpty { return ["general"] }
         return Set(rs)
     }
@@ -2428,6 +3700,14 @@ private struct ModelRow: View {
                             }
                         }
 
+                        miniIconButton(
+                            HubUIStrings.Models.LocalHealth.preflightAction,
+                            systemName: "heart.text.square",
+                            disabled: pending != nil || localHealthScanInProgress || trialStatus?.isRunning == true
+                        ) {
+                            store.scanLocalModelHealth(for: [m.id])
+                        }
+
                         if pending != nil || trialStatus?.isRunning == true || localHealthScanInProgress {
                             ProgressView()
                                 .controlSize(.mini)
@@ -2445,20 +3725,14 @@ private struct ModelRow: View {
             Button("Set Role: General") {
                 ModelStore.shared.updateRoles(modelId: m.id, roles: ["general"])
             }
-            Button("Set Role: Translate") {
-                ModelStore.shared.updateRoles(modelId: m.id, roles: ["translate"])
+            Button("Set Role: Supervisor") {
+                ModelStore.shared.updateRoles(modelId: m.id, roles: ["supervisor"])
             }
-            Button("Set Role: Summarize") {
-                ModelStore.shared.updateRoles(modelId: m.id, roles: ["summarize"])
+            Button("Set Role: Coder") {
+                ModelStore.shared.updateRoles(modelId: m.id, roles: ["coder"])
             }
-            Button("Set Role: Extract") {
-                ModelStore.shared.updateRoles(modelId: m.id, roles: ["extract"])
-            }
-            Button("Set Role: Refine") {
-                ModelStore.shared.updateRoles(modelId: m.id, roles: ["refine"])
-            }
-            Button("Set Role: Classify") {
-                ModelStore.shared.updateRoles(modelId: m.id, roles: ["classify"])
+            Button("Set Role: Reviewer") {
+                ModelStore.shared.updateRoles(modelId: m.id, roles: ["reviewer"])
             }
             if canBench {
                 Divider()
@@ -2496,11 +3770,14 @@ private struct ModelRow: View {
     }
 
     private func displayRoles() -> [String] {
-        let raw = (m.roles ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { !$0.isEmpty }
-        if raw.isEmpty {
-            return ["general"]
+        var seen = Set<String>()
+        let roles = (m.roles ?? [])
+            .map(HubModelRolePresentation.canonicalRoleToken)
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+        if roles.isEmpty {
+            return ["General"]
         }
-        return Array(raw.prefix(3))
+        return Array(roles.prefix(3)).map(HubModelRolePresentation.displayName)
     }
 
     private func supportedTaskSummary(_ descriptors: [LocalTaskRoutingDescriptor]) -> String {

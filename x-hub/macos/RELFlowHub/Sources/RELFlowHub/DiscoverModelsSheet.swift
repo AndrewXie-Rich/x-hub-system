@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import RELFlowHubCore
 
@@ -260,7 +261,7 @@ private final class LocalModelMarketStore: ObservableObject {
 
     func loadRecommended(limit: Int = pageSize) {
         search(query: "", category: .recommended, limit: limit, forceRefresh: false)
-        syncDownloadedLibrary(autoBenchNewModels: false)
+        syncDownloadedLibrary(autoBenchNewModels: false, allowPrompt: false)
     }
 
     func search(
@@ -330,12 +331,16 @@ private final class LocalModelMarketStore: ObservableObject {
         }
     }
 
-    func syncDownloadedLibrary(autoBenchNewModels: Bool) {
+    func syncDownloadedLibrary(autoBenchNewModels: Bool, allowPrompt: Bool = true) {
         guard !isSyncingLibrary else { return }
         isSyncingLibrary = true
 
         Task { [weak self] in
             guard let self else { return }
+            guard self.ensureDownloadedModelsAccess(allowPrompt: allowPrompt) else {
+                self.isSyncingLibrary = false
+                return
+            }
             let helperBinary = LMStudioMarketBridge.helperBinaryPath()
             let descriptors = await Task.detached(priority: .utility) {
                 LMStudioMarketBridge.loadDownloadedModels()
@@ -459,6 +464,9 @@ private final class LocalModelMarketStore: ObservableObject {
         marketKey: String,
         autoBenchNewModels: Bool
     ) async -> [String] {
+        guard ensureDownloadedModelsAccess(allowPrompt: true) else {
+            return []
+        }
         let helperBinary = LMStudioMarketBridge.helperBinaryPath()
         for _ in 0..<10 {
             let descriptors = await Task.detached(priority: .utility) {
@@ -481,6 +489,83 @@ private final class LocalModelMarketStore: ObservableObject {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
         return []
+    }
+
+    private func ensureDownloadedModelsAccess(allowPrompt: Bool) -> Bool {
+        guard SharedPaths.isSandboxedProcess() else {
+            return true
+        }
+
+        let downloadsURL = LMStudioMarketBridge.legacyDownloadedModelsDirectory(
+            homeDirectory: SharedPaths.realHomeDirectory(),
+            fileManager: .default
+        ).standardizedFileURL
+        if LocalModelAccessBookmarkStore.resolvedBookmarkURL(for: downloadsURL) != nil {
+            return true
+        }
+        guard allowPrompt else {
+            return false
+        }
+
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = downloadsURL.deletingLastPathComponent()
+        panel.prompt = HubUIStrings.Models.AddLocal.choosePrompt
+        panel.message = HubUIStrings.Models.Discover.Summary.downloadsAccessRequired(in: downloadsPath)
+        guard panel.runModal() == .OK, let selectedURL = panel.url?.standardizedFileURL else {
+            statusText = HubUIStrings.Models.Discover.Summary.downloadsAccessGrantFailed(in: downloadsPath)
+            return false
+        }
+        guard downloadsRootIsCovered(downloadsURL: downloadsURL, selectedURL: selectedURL) else {
+            statusText = HubUIStrings.Models.Discover.Summary.downloadsAccessInvalidSelection(in: downloadsPath)
+            return false
+        }
+
+        let baseDir = SharedPaths.ensureHubDirectory()
+        LocalModelAccessBookmarkStore.persistBookmarkIfPossible(
+            for: selectedURL,
+            baseDir: baseDir
+        )
+        if downloadsURL.path != selectedURL.path,
+           downloadsURL.path.hasPrefix(selectedURL.path + "/") {
+            do {
+                try LocalModelAccessBookmarkStore.withScopedAccess(
+                    to: selectedURL,
+                    baseDir: baseDir
+                ) {
+                    LocalModelAccessBookmarkStore.persistBookmarkIfPossible(
+                        for: downloadsURL,
+                        baseDir: baseDir
+                    )
+                }
+            } catch {
+                statusText = HubUIStrings.Models.Discover.Summary.downloadsAccessGrantFailed(in: downloadsPath)
+                return false
+            }
+        }
+
+        let granted = LocalModelAccessBookmarkStore.resolvedBookmarkURL(
+            for: downloadsURL,
+            baseDir: baseDir
+        ) != nil
+        if !granted {
+            statusText = HubUIStrings.Models.Discover.Summary.downloadsAccessGrantFailed(in: downloadsPath)
+        }
+        return granted
+    }
+
+    private func downloadsRootIsCovered(downloadsURL: URL, selectedURL: URL) -> Bool {
+        let downloadsPath = downloadsURL.standardizedFileURL.path
+        let selectedPath = selectedURL.standardizedFileURL.path
+        guard !downloadsPath.isEmpty, !selectedPath.isEmpty else {
+            return false
+        }
+        if downloadsPath == selectedPath {
+            return true
+        }
+        return downloadsPath.hasPrefix(selectedPath + "/")
     }
 
     private func annotatedResults(from rawResults: [LMStudioMarketResult]) -> [LMStudioMarketResult] {

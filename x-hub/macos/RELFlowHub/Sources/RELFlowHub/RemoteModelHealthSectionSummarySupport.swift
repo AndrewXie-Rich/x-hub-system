@@ -22,8 +22,17 @@ enum RemoteModelHealthSectionSummarySupport {
     ) -> RemoteModelHealthSectionSummaryPresentation? {
         guard !models.isEmpty else { return nil }
 
-        let healthByKeyReference = Dictionary(
-            uniqueKeysWithValues: healthSnapshot.records.map { ($0.keyReference, $0) }
+        let healthByKeyReference = RemoteKeyHealthSupport.pooledRecords(from: healthSnapshot)
+        let pooledScanningKeys = Set(
+            scanningKeyReferences.map {
+                RemoteModelStorage.keyPoolReference(forKeyReference: $0)
+            }
+        )
+        let pooledModelKeys = Set(
+            models.map {
+                RemoteModelStorage.keyPoolReference(for: $0)
+            }
+            .filter { !$0.isEmpty }
         )
 
         var scanningCount = 0
@@ -36,9 +45,8 @@ enum RemoteModelHealthSectionSummarySupport {
         var configCount = 0
         var unscannedCount = 0
 
-        for model in models {
-            let keyReference = RemoteModelStorage.keyReference(for: model)
-            if scanningKeyReferences.contains(keyReference) {
+        for keyReference in pooledModelKeys {
+            if pooledScanningKeys.contains(keyReference) {
                 scanningCount += 1
             }
 

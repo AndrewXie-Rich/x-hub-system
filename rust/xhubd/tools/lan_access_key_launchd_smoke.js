@@ -124,6 +124,49 @@ function main() {
     const plistLint = lintPlist(plistPath);
     assertOk(plistLint.ok === true, 'plutil rejected generated plist', plistLint);
 
+    const domainSourceKey = path.join(tempRoot, 'source', 'secrets', 'xhubd_domain_access_key');
+    const domainRuntimeRoot = path.join(tempRoot, 'runtime-domain');
+    const domainRuntimeKey = path.join(domainRuntimeRoot, 'config', 'xhubd_domain_access_key');
+    const domainInstallPlist = path.join(tempRoot, 'launch-agents', 'com.ax.xhubd.domain.smoke.plist');
+    const domainProfile = path.join(tempRoot, 'daemon_profile.domain.smoke.json');
+    const domainSecret = 'domain-runtime-access-key-smoke-secret-0000000000000000';
+    fs.mkdirSync(path.dirname(domainSourceKey), { recursive: true });
+    fs.writeFileSync(domainSourceKey, `${domainSecret}\n`, { mode: 0o600 });
+    fs.writeFileSync(domainProfile, `${JSON.stringify({
+      schema_version: 'xhub.rust_hub.daemon_profile.v1',
+      profile: 'domain',
+      host: '127.0.0.1',
+      port: 50151,
+      allow_lan: false,
+      public_endpoint: true,
+      public_base_url: 'https://hub.example.test',
+      http_require_access_key: true,
+      access_key_file: domainSourceKey,
+      launchd_label: 'com.ax.xhubd.domain.smoke',
+      wait_ms: 250,
+    }, null, 2)}\n`, 'utf8');
+
+    const domainDryRun = runDaemon([
+      'launchd-install',
+      '--dry-run',
+      '--profile',
+      'domain',
+      '--profile-file',
+      domainProfile,
+      '--launchd-runtime-root',
+      domainRuntimeRoot,
+      '--install-plist-path',
+      domainInstallPlist,
+    ]);
+    assertOk(domainDryRun.status === 0 && domainDryRun.parsed.ok === true, 'domain launchd dry-run failed', domainDryRun.parsed);
+    assertOk(domainDryRun.parsed.deployment?.access_key_file_relocated === true, 'domain launchd did not relocate access key', domainDryRun.parsed.deployment);
+    assertOk(domainDryRun.parsed.deployment?.access_key_file_runtime === domainRuntimeKey, 'domain launchd runtime key path mismatch', domainDryRun.parsed.deployment);
+    assertOk(fs.existsSync(domainInstallPlist), 'domain launchd plist missing', { domainInstallPlist });
+    const domainPlist = fs.readFileSync(domainInstallPlist, 'utf8');
+    assertOk(domainPlist.includes(domainRuntimeKey), 'domain launchd plist does not use runtime access key file');
+    assertOk(!domainPlist.includes(domainSourceKey), 'domain launchd plist still references source access key file');
+    assertOk(!domainPlist.includes(domainSecret), 'domain launchd plist leaked domain access key content');
+
     process.stdout.write(`${JSON.stringify({
       ok: true,
       schema_version: 'xhub.rust_hub.lan_access_key_launchd_smoke.v1',
@@ -138,6 +181,8 @@ function main() {
       launchd_plist_path: plistPath,
       launchd_plist_linted: plistLint.checked,
       launchd_plist_ok: plistLint.ok,
+      launchd_runtime_access_key_file: domainRuntimeKey,
+      launchd_runtime_access_key_relocated: true,
     }, null, 2)}\n`);
   } finally {
     try {

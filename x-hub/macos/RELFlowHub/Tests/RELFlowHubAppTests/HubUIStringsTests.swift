@@ -720,8 +720,9 @@ final class HubUIStringsTests: XCTestCase {
         XCTAssertEqual(HubUIStrings.Models.Drawer.libraryTab, "模型库")
         XCTAssertEqual(HubUIStrings.Models.Drawer.runtimeConsoleTitle, "运行控制台")
         XCTAssertEqual(HubUIStrings.Models.Drawer.librarySubtitle(total: 12, loaded: 3), "12 个模型 · 3 个已加载")
-        XCTAssertEqual(HubUIStrings.Models.TaskType.assist, "助理")
-        XCTAssertEqual(HubUIStrings.Models.TaskType.classify, "分类")
+        XCTAssertEqual(HubUIStrings.Models.TaskType.supervisor, "Supervisor")
+        XCTAssertEqual(HubUIStrings.Models.TaskType.coder, "Coder")
+        XCTAssertEqual(HubUIStrings.Models.TaskType.reviewer, "Reviewer")
         XCTAssertEqual(HubUIStrings.Models.Capability.text, "文本")
         XCTAssertEqual(HubUIStrings.Models.Capability.audioCleanup, "音频清理")
         XCTAssertEqual(HubUIStrings.Models.Capability.localizedTitle(for: "coding"), "编程")
@@ -729,6 +730,9 @@ final class HubUIStringsTests: XCTestCase {
         XCTAssertNil(HubUIStrings.Models.Capability.localizedTitle(for: "gguf"))
         XCTAssertEqual(HubUIStrings.Models.EditRoles.title, "角色")
         XCTAssertEqual(HubUIStrings.Models.EditRoles.general, "通用")
+        XCTAssertEqual(HubUIStrings.Models.EditRoles.supervisor, "Supervisor")
+        XCTAssertEqual(HubUIStrings.Models.EditRoles.coder, "Coder")
+        XCTAssertEqual(HubUIStrings.Models.EditRoles.reviewer, "Reviewer")
         XCTAssertEqual(HubUIStrings.Models.EditRoles.customRolesPlaceholder, "自定义角色（用逗号分隔）")
         XCTAssertEqual(HubUIStrings.Models.ImportRemoteCatalog.title, "导入 Remote Catalog 模型")
         XCTAssertEqual(HubUIStrings.Models.ImportRemoteCatalog.baseURL("https://example.com"), "基础地址：https://example.com")
@@ -1252,5 +1256,35 @@ final class HubUIStringsTests: XCTestCase {
             HubUIStrings.Settings.Diagnostics.FixNow.lockCleanupSummary(["已结束进程=101", "锁仍然忙碌=1", "等待重试"]),
             "已结束进程=101 · 锁仍然忙碌=1 · 等待重试"
         )
+    }
+
+    func testProviderKeyPoolFamilyStringsStayCentralized() {
+        XCTAssertEqual(HubUIStrings.Settings.ProviderKeys.dedicatedSource, "独占")
+        XCTAssertEqual(HubUIStrings.Settings.ProviderKeys.sharedSource, "共享")
+        XCTAssertEqual(
+            HubUIStrings.Settings.ProviderKeys.familyQuotaPoolSummary(
+                sources: 3,
+                dedicated: 1,
+                shared: 2,
+                total: 5,
+                ready: 4,
+                cooldown: 1,
+                blocked: 0,
+                stale: 0
+            ),
+            "3 个来源 · 1 个独占 · 2 个共享 · 5 个 key · 4 个可用 · 1 个冷却"
+        )
+        XCTAssertEqual(HubUIStrings.Settings.ProviderKeys.exclusiveUsage("今日 1.0K / 2.0K tokens"), "独占额度：今日 1.0K / 2.0K tokens")
+        XCTAssertEqual(HubUIStrings.Settings.ProviderKeys.sharedSourceSummary(count: 2, sharedFamilies: "GLM, Qwen"), "共享来源：2 个 · 与 GLM, Qwen 共用")
+        XCTAssertEqual(
+            HubUIStrings.Settings.ProviderKeys.sharedSourceUsage(
+                count: 2,
+                sharedFamilies: "GLM, Qwen",
+                usage: "今日 500 / 1.0K tokens"
+            ),
+            "共享来源：2 个 · 与 GLM, Qwen 共用 · 来源合计：今日 500 / 1.0K tokens"
+        )
+        XCTAssertEqual(HubUIStrings.Settings.ProviderKeys.sharedWithFamilies("GLM, Qwen"), "与 GLM, Qwen 共用额度")
+        XCTAssertEqual(HubUIStrings.Settings.ProviderKeys.dedicatedSourceDetail, "这组来源只服务当前家族。")
     }
 }

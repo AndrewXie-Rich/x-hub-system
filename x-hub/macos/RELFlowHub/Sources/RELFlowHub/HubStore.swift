@@ -707,6 +707,39 @@ func hubNormalizedPairedDeviceCapabilityFocusKey(_ raw: String?) -> String? {
     }
 }
 
+func hubNormalizedProviderKeySourceRef(_ raw: String?) -> String? {
+    let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !trimmed.isEmpty else { return nil }
+    if var components = URLComponents(string: trimmed),
+       let scheme = components.scheme?.lowercased(),
+       ["http", "https"].contains(scheme),
+       let host = components.host?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+       !host.isEmpty {
+        components.scheme = scheme
+        components.host = host
+        components.user = nil
+        components.password = nil
+        components.query = nil
+        components.fragment = nil
+        if (scheme == "http" && components.port == 80)
+            || (scheme == "https" && components.port == 443) {
+            components.port = nil
+        }
+        var path = components.path.trimmingCharacters(in: .whitespacesAndNewlines)
+        if path == "/" {
+            path = ""
+        }
+        while path.hasSuffix("/") {
+            path.removeLast()
+        }
+        components.path = path
+        return components.string ?? trimmed
+    }
+    let expanded = (trimmed as NSString).expandingTildeInPath
+    guard expanded.hasPrefix("/") else { return expanded }
+    return URL(fileURLWithPath: expanded).standardizedFileURL.path
+}
+
 func hubPairedDeviceCapabilityFocusTitle(_ capabilityKey: String?) -> String? {
     switch hubNormalizedPairedDeviceCapabilityFocusKey(capabilityKey) {
     case "web.fetch":
@@ -722,6 +755,7 @@ func hubPairedDeviceCapabilityFocusTitle(_ capabilityKey: String?) -> String? {
 
 enum HubSettingsNavigationTarget: Equatable {
     case pairedDevices(deviceID: String?, capabilityKey: String?)
+    case providerKeys(sourceRef: String?)
 }
 
 enum ModelTrialCategory: Equatable {
@@ -836,11 +870,6 @@ func hubClassifyModelTrialFailure(_ message: String) -> ModelTrialCategory {
     return .failed
 }
 
-private enum LocalModelTrialPath {
-    case textGenerate
-    case quickBench(taskKind: String, fixtureProfile: String)
-}
-
 private let modelTrialPrompt = "Reply with exactly HUB_OK. No extra words."
 
 @MainActor
@@ -946,6 +975,7 @@ final class HubStore: ObservableObject {
     @Published private(set) var remoteKeyHealthSnapshot: RemoteKeyHealthSnapshot = RemoteKeyHealthStorage.load()
     @Published private(set) var remoteKeyHealthScanningKeyReferences: Set<String> = []
     @Published private(set) var remoteKeyHealthScanInFlight: Bool = false
+    @Published private(set) var remoteKeyHealthActiveScanMode: RemoteKeyHealthScanner.ScanMode? = nil
     @Published private(set) var remoteKeyHealthAutoScanSchedule: ModelHealthAutoScanSchedule = HubStore.loadModelHealthAutoScanSchedule(
         key: HubStore.remoteKeyHealthAutoScanScheduleKey
     )
@@ -1048,6 +1078,8 @@ final class HubStore: ObservableObject {
     @Published private(set) var pendingNetworkRequests: [HubNetworkRequest] = []
     @Published private(set) var networkPolicySnapshot: HubNetworkPolicyList = HubNetworkPolicyStorage.load()
     @Published private(set) var pendingPairingRequests: [HubPairingRequest] = []
+    @Published private(set) var pendingGrantRequests: [HubPendingGrantRequest] = []
+    @Published private(set) var pendingGrantDecisionInFlightRequestIDs: Set<String> = []
     @Published private(set) var pendingOperatorChannelOnboardingTickets: [HubOperatorChannelOnboardingTicket] = []
     @Published private(set) var recentOperatorChannelOnboardingTickets: [HubOperatorChannelOnboardingTicket] = []
 
@@ -1068,6 +1100,7 @@ final class HubStore: ObservableObject {
     private var aiRuntimeMonitorTimer: Timer?
     private var networkRequestsTimer: Timer?
     private var pairingRequestsTimer: Timer?
+    private var grantRequestsTimer: Timer?
     private var operatorChannelOnboardingTimer: Timer?
     private var alwaysOnKeepaliveTimer: Timer?
     private var aiRuntimeLastLaunchAt: Double = 0
@@ -1137,6 +1170,7 @@ final class HubStore: ObservableObject {
             startIPC()
             startNetworkRequestsPolling()
             startPairingRequestsPolling()
+            startGrantRequestsPolling()
             startOperatorChannelOnboardingPolling()
             startAlwaysOnKeepalive()
             setupNotificationsAuthorizationState()
@@ -1668,6 +1702,30 @@ final class HubStore: ObservableObject {
         }
     }
 
+    func refreshPendingGrantRequests() {
+        let adminToken = grpc.localAdminToken()
+        let grpcPort = grpc.port
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if self.grantRequestsPollInFlight { return }
+            self.grantRequestsPollInFlight = true
+            defer { self.grantRequestsPollInFlight = false }
+
+            do {
+                let grants = try await PendingGrantHTTPClient.listPending(
+                    adminToken: adminToken,
+                    grpcPort: grpcPort,
+                    limit: 240
+                )
+                self.pendingGrantRequests = grants.sorted { lhs, rhs in
+                    lhs.createdAtMs < rhs.createdAtMs
+                }
+            } catch {
+                self.pendingGrantRequests = []
+            }
+        }
+    }
+
     func refreshOperatorChannelOnboardingTickets() {
         let adminToken = grpc.localAdminToken()
         let grpcPort = grpc.port
@@ -1970,6 +2028,7 @@ INSERT OR IGNORE INTO audit_events(
     }
 
     private var pairingPollInFlight: Bool = false
+    private var grantRequestsPollInFlight: Bool = false
     private var operatorChannelOnboardingPollInFlight: Bool = false
 
     private func startPairingRequestsPolling() {
@@ -1982,6 +2041,16 @@ INSERT OR IGNORE INTO audit_events(
         }
     }
 
+    private func startGrantRequestsPolling() {
+        refreshPendingGrantRequests()
+        grantRequestsTimer?.invalidate()
+        grantRequestsTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.refreshPendingGrantRequests()
+            }
+        }
+    }
+
     private func startOperatorChannelOnboardingPolling() {
         refreshOperatorChannelOnboardingTickets()
         operatorChannelOnboardingTimer?.invalidate()
@@ -1990,6 +2059,88 @@ INSERT OR IGNORE INTO audit_events(
                 self?.refreshOperatorChannelOnboardingTickets()
             }
         }
+    }
+
+    func approvePendingGrantRequest(_ grant: HubPendingGrantRequest) {
+        let id = grant.grantRequestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { return }
+        guard !pendingGrantDecisionInFlightRequestIDs.contains(id) else { return }
+        pendingGrantDecisionInFlightRequestIDs.insert(id)
+        let adminToken = grpc.localAdminToken()
+        let grpcPort = grpc.port
+        Task { @MainActor in
+            defer {
+                pendingGrantDecisionInFlightRequestIDs.remove(id)
+            }
+            do {
+                try await PendingGrantHTTPClient.approve(
+                    grantRequestId: id,
+                    ttlSec: grant.requestedTtlSec > 0 ? grant.requestedTtlSec : nil,
+                    tokenCap: grant.requestedTokenCap > 0 ? grant.requestedTokenCap : nil,
+                    note: "approved via Hub Inbox",
+                    adminToken: adminToken,
+                    grpcPort: grpcPort
+                )
+                refreshPendingGrantRequests()
+                push(.make(
+                    source: "Hub",
+                    title: "授权已批准",
+                    body: "\(grant.displayCapability) 已由 Hub 批准；XT 可继续按 grant lease 执行。",
+                    dedupeKey: nil
+                ))
+            } catch {
+                refreshPendingGrantRequests()
+                push(.make(
+                    source: "Hub",
+                    title: "授权批准失败",
+                    body: (error as NSError).localizedDescription,
+                    dedupeKey: nil
+                ))
+            }
+        }
+    }
+
+    func denyPendingGrantRequest(_ grant: HubPendingGrantRequest, reason: String? = nil) {
+        let id = grant.grantRequestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { return }
+        guard !pendingGrantDecisionInFlightRequestIDs.contains(id) else { return }
+        pendingGrantDecisionInFlightRequestIDs.insert(id)
+        let adminToken = grpc.localAdminToken()
+        let grpcPort = grpc.port
+        Task { @MainActor in
+            defer {
+                pendingGrantDecisionInFlightRequestIDs.remove(id)
+            }
+            do {
+                try await PendingGrantHTTPClient.deny(
+                    grantRequestId: id,
+                    reason: reason,
+                    adminToken: adminToken,
+                    grpcPort: grpcPort
+                )
+                refreshPendingGrantRequests()
+                push(.make(
+                    source: "Hub",
+                    title: "授权已拒绝",
+                    body: "\(grant.displayCapability) 已由 Hub 拒绝。",
+                    dedupeKey: nil
+                ))
+            } catch {
+                refreshPendingGrantRequests()
+                push(.make(
+                    source: "Hub",
+                    title: "授权拒绝失败",
+                    body: (error as NSError).localizedDescription,
+                    dedupeKey: nil
+                ))
+            }
+        }
+    }
+
+    func isPendingGrantDecisionInFlight(_ grant: HubPendingGrantRequest) -> Bool {
+        pendingGrantDecisionInFlightRequestIDs.contains(
+            grant.grantRequestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
     }
 
     func approvePairingRequest(_ req: HubPairingRequest, approval: HubPairingApprovalDraft? = nil) {
@@ -4686,15 +4837,19 @@ INSERT OR IGNORE INTO audit_events(
     func remoteKeyHealth(for keyReference: String) -> RemoteKeyHealthRecord? {
         let normalized = keyReference.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { return nil }
-        return remoteKeyHealthSnapshot.records.first { record in
-            record.keyReference == normalized
-        }
+        return RemoteKeyHealthSupport.pooledRecord(
+            for: normalized,
+            in: remoteKeyHealthSnapshot
+        )
     }
 
     func isRemoteKeyHealthScanInProgress(for keyReference: String) -> Bool {
         let normalized = keyReference.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { return false }
-        return remoteKeyHealthScanningKeyReferences.contains(normalized)
+        let poolKey = RemoteModelStorage.keyPoolReference(forKeyReference: normalized)
+        return remoteKeyHealthScanningKeyReferences.contains {
+            RemoteModelStorage.keyPoolReference(forKeyReference: $0) == poolKey
+        }
     }
 
     func updateRemoteKeyHealthAutoScanSchedule(_ schedule: ModelHealthAutoScanSchedule) {
@@ -4706,17 +4861,43 @@ INSERT OR IGNORE INTO audit_events(
     }
 
     func scanAllRemoteKeyHealth() {
-        requestRemoteKeyHealthScan(limitingTo: nil)
+        quickScanAllRemoteKeyHealth()
+    }
+
+    func quickScanAllRemoteKeyHealth() {
+        requestRemoteKeyHealthScan(limitingTo: nil, mode: .quick)
+    }
+
+    func fullScanAllRemoteKeyHealth() {
+        requestRemoteKeyHealthScan(limitingTo: nil, mode: .full)
     }
 
     func scanRemoteKeyHealth(for keyReferences: [String]) {
+        quickScanRemoteKeyHealth(for: keyReferences)
+    }
+
+    func quickScanRemoteKeyHealth(for keyReferences: [String]) {
         let normalized = Set(
             keyReferences
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
         )
         guard !normalized.isEmpty else { return }
-        requestRemoteKeyHealthScan(limitingTo: normalized)
+        let expanded = expandedRemoteKeyHealthReferences(normalized)
+        guard !expanded.isEmpty else { return }
+        requestRemoteKeyHealthScan(limitingTo: expanded, mode: .quick)
+    }
+
+    func fullScanRemoteKeyHealth(for keyReferences: [String]) {
+        let normalized = Set(
+            keyReferences
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        )
+        guard !normalized.isEmpty else { return }
+        let expanded = expandedRemoteKeyHealthReferences(normalized)
+        guard !expanded.isEmpty else { return }
+        requestRemoteKeyHealthScan(limitingTo: expanded, mode: .full)
     }
 
     func testLocalModelConnectivity(_ model: HubModel) {
@@ -4746,7 +4927,10 @@ INSERT OR IGNORE INTO audit_events(
                 let failureMessage = error.localizedDescription
                 modelTrialStatusByKey[key] = ModelTrialStatus(
                     state: .failure,
-                    category: hubClassifyModelTrialFailure(failureMessage),
+                    category: RemoteProviderKeyRuntimeFeedbackSupport.projectedCategory(
+                        status: 0,
+                        error: failureMessage
+                    ),
                     summary: HubUIStrings.Models.Trial.failed,
                     detail: HubUIStrings.Models.Trial.detailSummary([duration, failureMessage]),
                     updatedAt: Date().timeIntervalSince1970
@@ -4886,7 +5070,10 @@ INSERT OR IGNORE INTO audit_events(
         }
     }
 
-    private func requestRemoteKeyHealthScan(limitingTo keyReferences: Set<String>?) {
+    private func requestRemoteKeyHealthScan(
+        limitingTo keyReferences: Set<String>?,
+        mode: RemoteKeyHealthScanner.ScanMode
+    ) {
         guard !remoteKeyHealthScanInFlight else { return }
 
         let models = RemoteModelStorage.load().models
@@ -4903,12 +5090,14 @@ INSERT OR IGNORE INTO audit_events(
                 updatedAt: Date().timeIntervalSince1970
             )
             remoteKeyHealthSnapshot = pruned
+            remoteKeyHealthActiveScanMode = nil
             RemoteKeyHealthStorage.save(pruned)
             refreshRemoteKeyHealthAutoScanTimer()
             return
         }
 
         remoteKeyHealthScanInFlight = true
+        remoteKeyHealthActiveScanMode = mode
         remoteKeyHealthScanningKeyReferences = Set(groups.map(\.keyReference))
 
         Task { @MainActor in
@@ -4917,11 +5106,19 @@ INSERT OR IGNORE INTO audit_events(
             )
 
             for group in groups {
-                let scanned = await RemoteKeyHealthScanner.scan(
+                if mode == .full {
+                    setRemoteKeyHealthModelsRunning(group.models)
+                }
+
+                let report = await RemoteKeyHealthScanner.scanReport(
                     group: group,
-                    previous: recordsByKey[group.keyReference]
+                    previous: recordsByKey[group.keyReference],
+                    mode: mode
                 )
-                recordsByKey[group.keyReference] = scanned
+                recordsByKey[group.keyReference] = report.record
+                if mode == .full {
+                    applyRemoteKeyHealthModelResults(report.modelResults)
+                }
                 remoteKeyHealthScanningKeyReferences.remove(group.keyReference)
 
                 let snapshot = RemoteKeyHealthSnapshot(
@@ -4929,10 +5126,13 @@ INSERT OR IGNORE INTO audit_events(
                     updatedAt: Date().timeIntervalSince1970
                 )
                 remoteKeyHealthSnapshot = snapshot
-                RemoteKeyHealthStorage.save(snapshot)
+                if mode == .quick {
+                    RemoteKeyHealthStorage.save(snapshot)
+                }
             }
 
             remoteKeyHealthScanInFlight = false
+            remoteKeyHealthActiveScanMode = nil
             remoteKeyHealthScanningKeyReferences = []
             let finalSnapshot = RemoteKeyHealthSnapshot(
                 records: filteredRemoteKeyHealthRecords(recordsByKey, validKeys: validKeys),
@@ -4942,6 +5142,56 @@ INSERT OR IGNORE INTO audit_events(
             RemoteKeyHealthStorage.save(finalSnapshot)
             refreshRemoteKeyHealthAutoScanTimer()
         }
+    }
+
+    private func setRemoteKeyHealthModelsRunning(_ models: [RemoteModelEntry]) {
+        let updatedAt = Date().timeIntervalSince1970
+        var updated = modelTrialStatusByKey
+        for model in models {
+            updated[remoteModelTrialKey(model.id)] = ModelTrialStatus(
+                state: .running,
+                category: .running,
+                summary: HubUIStrings.Models.Trial.running,
+                detail: HubUIStrings.Settings.RemoteModels.healthFullCheckingDetail,
+                updatedAt: updatedAt
+            )
+        }
+        modelTrialStatusByKey = updated
+    }
+
+    private func applyRemoteKeyHealthModelResults(
+        _ results: [RemoteKeyHealthScanner.ModelScanResult]
+    ) {
+        let updatedAt = Date().timeIntervalSince1970
+        var updated = modelTrialStatusByKey
+        for result in results {
+            let detail: String
+            if let retryAtText = result.retryAtText?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !retryAtText.isEmpty,
+               !result.isHealthy {
+                detail = HubUIStrings.Settings.RemoteModels.detailSummary([
+                    boundedRemoteHealthDetail(result.detail),
+                    "预计下次可用：\(retryAtText)"
+                ])
+            } else {
+                detail = boundedRemoteHealthDetail(result.detail)
+            }
+
+            updated[remoteModelTrialKey(result.modelID)] = ModelTrialStatus(
+                state: result.isHealthy ? .success : .failure,
+                category: result.isHealthy ? .success : result.category,
+                summary: result.isHealthy ? HubUIStrings.Models.Trial.success : HubUIStrings.Models.Trial.failed,
+                detail: detail,
+                updatedAt: updatedAt
+            )
+        }
+        modelTrialStatusByKey = updated
+    }
+
+    private func boundedRemoteHealthDetail(_ raw: String) -> String {
+        let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized.count > 900 else { return normalized }
+        return String(normalized.prefix(900)).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
     }
 
     private func orderedLocalModelHealthScanModels(_ models: [HubModel]) -> [HubModel] {
@@ -5038,6 +5288,32 @@ INSERT OR IGNORE INTO audit_events(
                 }
                 return lhs.keyReference.localizedCaseInsensitiveCompare(rhs.keyReference) == .orderedAscending
             }
+    }
+
+    private func expandedRemoteKeyHealthReferences(_ requested: Set<String>) -> Set<String> {
+        guard !requested.isEmpty else { return [] }
+
+        let models = RemoteModelStorage.load().models
+        let actualKeyReferences = Set(
+            models
+                .map { RemoteModelStorage.keyReference(for: $0) }
+                .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        )
+        guard !actualKeyReferences.isEmpty else { return requested }
+
+        var expanded: Set<String> = []
+        for requestedKey in requested {
+            let poolKey = RemoteModelStorage.keyPoolReference(forKeyReference: requestedKey)
+            let matches = actualKeyReferences.filter {
+                RemoteModelStorage.keyPoolReference(forKeyReference: $0) == poolKey
+            }
+            if matches.isEmpty {
+                expanded.insert(requestedKey)
+            } else {
+                expanded.formUnion(matches)
+            }
+        }
+        return expanded
     }
 
     private func configureModelHealthAutoScanMonitoring() {
@@ -5188,7 +5464,7 @@ INSERT OR IGNORE INTO audit_events(
             refreshRemoteKeyHealthAutoScanTimer(now: now)
             return
         }
-        requestRemoteKeyHealthScan(limitingTo: keyReferences)
+        requestRemoteKeyHealthScan(limitingTo: keyReferences, mode: .quick)
     }
 
     func testRemoteModelConnectivity(_ entry: RemoteModelEntry) {
@@ -5211,7 +5487,11 @@ INSERT OR IGNORE INTO audit_events(
                     timeoutSec: 20.0
                 )
                 guard result.ok else {
-                    let detail = humanizedRemoteModelTrialError(status: result.status, error: result.error)
+                    let detail = await enrichedRemoteModelTrialError(
+                        for: entry,
+                        status: result.status,
+                        error: result.error
+                    )
                     throw NSError(domain: "relflowhub", code: 21, userInfo: [NSLocalizedDescriptionKey: detail])
                 }
                 let response = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5231,7 +5511,10 @@ INSERT OR IGNORE INTO audit_events(
                 let failureMessage = error.localizedDescription
                 modelTrialStatusByKey[key] = ModelTrialStatus(
                     state: .failure,
-                    category: hubClassifyModelTrialFailure(failureMessage),
+                    category: RemoteProviderKeyRuntimeFeedbackSupport.projectedCategory(
+                        status: 0,
+                        error: failureMessage
+                    ),
                     summary: HubUIStrings.Models.Trial.failed,
                     detail: HubUIStrings.Models.Trial.detailSummary([duration, failureMessage]),
                     updatedAt: Date().timeIntervalSince1970
@@ -5262,6 +5545,16 @@ INSERT OR IGNORE INTO audit_events(
             return descriptor.title
         }
         let normalized = normalizedRoutingToken(taskType)
+        switch normalized {
+        case "supervisor":
+            return HubUIStrings.Models.TaskType.supervisor
+        case "coder":
+            return HubUIStrings.Models.TaskType.coder
+        case "reviewer":
+            return HubUIStrings.Models.TaskType.reviewer
+        default:
+            break
+        }
         guard !normalized.isEmpty else { return HubUIStrings.Settings.GRPC.EditDeviceSheet.autoSelected }
         return normalized
             .split(separator: "_")
@@ -5452,11 +5745,27 @@ INSERT OR IGNORE INTO audit_events(
     }
 
     private func runLocalModelTrial(_ model: HubModel) async throws -> String {
-        guard let trialPath = localModelTrialPath(for: model) else {
+        let providerID = LocalModelRuntimeActionPlanner.providerID(for: model)
+        let probeLaunchConfig = localRuntimePythonProbeLaunchConfig(
+            preferredProviderID: providerID
+        )
+        let pythonPath = probeLaunchConfig?.resolvedPythonPath
+            ?? preferredLocalProviderPythonPath(preferredProviderID: providerID)
+        let trialPathResult = LocalModelTrialSupportResolver.resolveTrialRoute(
+            for: model,
+            runtimeStatus: AIRuntimeStatusStorage.load(),
+            probeLaunchConfig: probeLaunchConfig,
+            pythonPath: pythonPath
+        )
+        let trialPath: LocalModelTrialRoute
+        switch trialPathResult {
+        case .success(let resolved):
+            trialPath = resolved
+        case .failure(let error):
             throw NSError(
                 domain: "relflowhub",
                 code: 30,
-                userInfo: [NSLocalizedDescriptionKey: HubUIStrings.Models.Review.Bench.noRegisteredTasks]
+                userInfo: [NSLocalizedDescriptionKey: error.message]
             )
         }
 
@@ -5466,7 +5775,7 @@ INSERT OR IGNORE INTO audit_events(
                 prompt: modelTrialPrompt,
                 taskType: "text_generate",
                 preferredModelIDOverride: model.id,
-                requiredProviderID: LocalModelRuntimeActionPlanner.providerID(for: model),
+                requiredProviderID: providerID,
                 requiredModelID: model.id,
                 maxTokens: 24,
                 temperature: 0.0,
@@ -5482,21 +5791,6 @@ INSERT OR IGNORE INTO audit_events(
         case .quickBench(let taskKind, let fixtureProfile):
             return try await runQuickBenchTrial(model: model, taskKind: taskKind, fixtureProfile: fixtureProfile)
         }
-    }
-
-    private func localModelTrialPath(for model: HubModel) -> LocalModelTrialPath? {
-        guard (model.modelPath ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
-            return nil
-        }
-        if model.taskKinds.contains("text_generate") {
-            return .textGenerate
-        }
-        let providerID = LocalModelRuntimeActionPlanner.providerID(for: model)
-        guard let taskKind = ModelStore.shared.availableBenchTaskDescriptors(for: model).first?.taskKind,
-              let fixtureProfile = LocalBenchFixtureCatalog.defaultFixtureID(for: taskKind, providerID: providerID) else {
-            return nil
-        }
-        return .quickBench(taskKind: taskKind, fixtureProfile: fixtureProfile)
     }
 
     private func runQuickBenchTrial(
@@ -5557,6 +5851,24 @@ INSERT OR IGNORE INTO audit_events(
             return RemoteProviderClient.humanizedBridgeFailureReason(normalizedError)
         }
         return HubUIStrings.Settings.Networking.BridgeIPC.invalidResponse
+    }
+
+    private func enrichedRemoteModelTrialError(
+        for entry: RemoteModelEntry,
+        status: Int,
+        error: String
+    ) async -> String {
+        let detail = humanizedRemoteModelTrialError(status: status, error: error)
+        let category = RemoteProviderKeyRuntimeFeedbackSupport.projectedCategory(
+            status: status,
+            error: error,
+            detail: detail
+        )
+        return await RemoteRetryTimeSupport.enrichedDetail(
+            detail,
+            category: category,
+            model: entry
+        )
     }
 
     // -------------------- Today New (FA) batch summarization --------------------
@@ -6100,6 +6412,12 @@ INSERT OR IGNORE INTO audit_events(
         NotificationCenter.default.post(name: .relflowhubOpenMain, object: nil)
     }
 
+    func openProviderKeysSettings(sourceRef: String? = nil) {
+        let normalizedSourceRef = hubNormalizedProviderKeySourceRef(sourceRef)
+        settingsNavigationTarget = .providerKeys(sourceRef: normalizedSourceRef)
+        NotificationCenter.default.post(name: .relflowhubOpenMain, object: nil)
+    }
+
     func consumeSettingsNavigationTarget(_ target: HubSettingsNavigationTarget) {
         if settingsNavigationTarget == target {
             settingsNavigationTarget = nil
@@ -6124,12 +6442,17 @@ INSERT OR IGNORE INTO audit_events(
         }
 
         // Custom local actions handled by the Hub.
-        if handleLocalActionURL(url) {
+        if openLocalActionURL(url) {
             return
         }
 
         // Default: let macOS route the URL.
         NSWorkspace.shared.open(url)
+    }
+
+    @discardableResult
+    func openLocalActionURL(_ url: URL) -> Bool {
+        handleLocalActionURL(url)
     }
 
     func openFATrackerForRadars(_ radarIds: [Int], projectId: Int? = nil, fallbackURL: String? = nil) {
@@ -6186,6 +6509,22 @@ INSERT OR IGNORE INTO audit_events(
         return components.string ?? "relflowhub://settings/paired-devices"
     }
 
+    private static func providerKeysSettingsActionURL(sourceRef: String? = nil) -> String {
+        var components = URLComponents()
+        components.scheme = "relflowhub"
+        components.host = "settings"
+        components.path = "/provider-keys"
+        let normalizedSourceRef = hubNormalizedProviderKeySourceRef(sourceRef)
+        if let normalizedSourceRef {
+            components.queryItems = [
+                URLQueryItem(name: "source_ref", value: normalizedSourceRef)
+            ]
+        } else {
+            components.queryItems = nil
+        }
+        return components.string ?? "relflowhub://settings/provider-keys"
+    }
+
     private func handleLocalActionURL(_ url: URL) -> Bool {
         // relflowhub://handoff/fatracker?radars=123,456&fallback=rdar://123
         let scheme = (url.scheme ?? "").lowercased()
@@ -6221,6 +6560,12 @@ INSERT OR IGNORE INTO audit_events(
             let deviceID = items.first(where: { $0.name == "device_id" })?.value
             let capabilityKey = items.first(where: { $0.name == "capability" })?.value
             openPairedDevicesSettings(deviceID: deviceID, capabilityKey: capabilityKey)
+            return true
+        }
+        if host == "settings" && (path == "/provider-keys" || path == "/provider_keys" || path == "/providerkeys") {
+            let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let sourceRef = items.first(where: { $0.name == "source_ref" })?.value
+            openProviderKeysSettings(sourceRef: sourceRef)
             return true
         }
         return false

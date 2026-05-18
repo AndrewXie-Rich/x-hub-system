@@ -1059,6 +1059,7 @@ struct AddModelSheet: View {
         }
         ModelCatalogStorage.save(cat)
         ModelStore.shared.upsertCatalogModel(entry)
+        HubStore.shared.preflightLocalModelHealth(for: [entry.id])
 
         dismiss()
     }

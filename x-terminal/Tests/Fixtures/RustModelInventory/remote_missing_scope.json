@@ -1,0 +1,22 @@
+{
+  "schema_version": "xhub.model_inventory.v1",
+  "ok": true,
+  "command": "inventory",
+  "runtime_base_dir": "/tmp/xhub-rhm-010",
+  "updated_at_ms": 1000,
+  "remote_models": [
+    {
+      "model_id": "gpt-5.5",
+      "provider": "openai",
+      "provider_host": "api.openai.com",
+      "family_key": "gpt-5",
+      "pool_id": "free",
+      "availability_state": "blocked",
+      "available_account_count": 0,
+      "total_account_count": 1,
+      "blocking_reason_code": "missing_scope:api.model.read",
+      "next_retry_at_ms": 0
+    }
+  ],
+  "local_models": []
+}

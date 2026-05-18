@@ -1,0 +1,59 @@
+name: XHub Doctor Source Gate
+
+on:
+  pull_request:
+    paths:
+      - "x-hub/macos/RELFlowHub/**"
+      - "x-hub/tools/run_xhub_from_source.command"
+      - "x-terminal/**"
+      - "scripts/run_xhub_doctor_from_source.command"
+      - "scripts/run_xhub_doctor_from_source.test.js"
+      - "scripts/smoke_xhub_doctor_all_source_export.sh"
+      - "scripts/smoke_xhub_doctor_xt_source_export.sh"
+      - "scripts/ci/xhub_doctor_source_gate.sh"
+      - "scripts/ci/README.md"
+      - ".github/workflows/xhub-doctor-source-gate.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "x-hub/macos/RELFlowHub/**"
+      - "x-hub/tools/run_xhub_from_source.command"
+      - "x-terminal/**"
+      - "scripts/run_xhub_doctor_from_source.command"
+      - "scripts/run_xhub_doctor_from_source.test.js"
+      - "scripts/smoke_xhub_doctor_all_source_export.sh"
+      - "scripts/smoke_xhub_doctor_xt_source_export.sh"
+      - "scripts/ci/xhub_doctor_source_gate.sh"
+      - "scripts/ci/README.md"
+      - ".github/workflows/xhub-doctor-source-gate.yml"
+  workflow_dispatch:
+
+jobs:
+  doctor-source-gate:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run repo-level doctor source gate
+        env:
+          XHUB_DOCTOR_ALL_SOURCE_SMOKE_TMP_ROOT: ${{ runner.temp }}/xhub_doctor_all_source_smoke
+        run: |
+          bash ./scripts/ci/xhub_doctor_source_gate.sh
+
+      - name: Upload doctor source gate reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xhub-doctor-source-gate-reports
+          path: |
+            ./build/reports/xhub_doctor_source_gate_summary.v1.json
+            ./build/reports/xhub_doctor_source_gate_logs
+          if-no-files-found: warn

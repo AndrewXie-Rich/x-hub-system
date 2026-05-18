@@ -521,6 +521,55 @@ final class LMStudioMarketBridgeTests: XCTestCase {
         XCTAssertEqual(entries[0].taskKinds, ["text_generate"])
     }
 
+    func testCatalogEntriesBuildManagedMLXVisionImportWithHelperProvider() throws {
+        let rootDirectory = try makeTempDir()
+        let communityDirectory = rootDirectory.appendingPathComponent("mlx-community", isDirectory: true)
+        let modelDirectory = communityDirectory.appendingPathComponent("Qwen3-VL-4B-Instruct-3bit", isDirectory: true)
+        try FileManager.default.createDirectory(at: modelDirectory, withIntermediateDirectories: true)
+        try Data(
+            """
+            {
+              "architectures": ["Qwen3VLForConditionalGeneration"],
+              "model_type": "qwen3_vl",
+              "quantization": { "bits": 3, "group_size": 64 }
+            }
+            """.utf8
+        ).write(to: modelDirectory.appendingPathComponent("config.json"))
+        try Data("{}".utf8).write(to: modelDirectory.appendingPathComponent("preprocessor_config.json"))
+        try Data("{}".utf8).write(to: modelDirectory.appendingPathComponent("video_preprocessor_config.json"))
+        try Data().write(to: modelDirectory.appendingPathComponent("model.safetensors"))
+
+        let descriptor = LMStudioDownloadedModelDescriptor(
+            indexedModelIdentifier: "mlx-community/Qwen3-VL-4B-Instruct-3bit/model.safetensors",
+            displayName: "Qwen3 VL 4B Instruct 3bit",
+            defaultIdentifier: "qwen3-vl-4b-instruct-3bit",
+            user: "mlx-community",
+            model: "Qwen3-VL-4B-Instruct-3bit",
+            file: "model.safetensors",
+            format: "mlx",
+            quantLabel: "3bit",
+            domain: "vision",
+            contextLength: 32768,
+            directoryPath: modelDirectory.path,
+            entryPointPath: modelDirectory.appendingPathComponent("model.safetensors").path,
+            sourceDirectoryType: "downloaded",
+            paramsB: 4.0
+        )
+
+        let entries = LMStudioMarketBridge.catalogEntries(
+            from: [descriptor],
+            helperBinaryPath: "/Users/test/.lmstudio/bin/lms"
+        )
+
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries[0].backend, "mlx")
+        XCTAssertEqual(entries[0].runtimeProviderID, "mlx_vlm")
+        XCTAssertEqual(entries[0].modelFormat, "mlx")
+        XCTAssertEqual(entries[0].taskKinds, ["vision_understand", "ocr"])
+        XCTAssertEqual(entries[0].inputModalities, ["image"])
+        XCTAssertEqual(entries[0].outputModalities, ["text", "spans"])
+    }
+
     func testCatalogEntriesInferVoiceProfileForTTSModels() throws {
         let modelDirectory = try makeTempDir()
         let config = """

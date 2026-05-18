@@ -23,4 +23,3 @@ Health:
 ```bash
 cargo run -- health
 ```
-

@@ -14,6 +14,8 @@
     "supervisor_safe_point_timeline_projection_is_delivery_timing_explainability_not_scheduler_or_interrupt_authority",
     "skill_doctor_truth_projection_is_skill_capability_readiness_explainability_not_grant_override_authority",
     "hub_memory_prompt_projection_reuses_hub_generate_done_metadata_not_xt_local_prompt_inference",
+    "provider_key_selection_projection_replays_latest_remote_key_routing_explainability_not_scheduler_authority",
+    "provider_key_route_context_projection_is_route_context_explainability_not_scheduler_or_import_mutation_authority",
     "memory_route_truth_projection_must_directly_reuse_frozen_upstream_route_diagnostics",
     "durable_candidate_mirror_projection_is_explainability_only_not_durable_promotion_or_read_cutover_truth",
     "local_store_write_projection_is_xt_local_provenance_only_not_durable_writer_truth",
@@ -104,6 +106,8 @@
         "supervisorSafePointTimelineProjection",
         "projectRemoteSnapshotCacheProjection",
         "supervisorRemoteSnapshotCacheProjection",
+        "providerKeySelectionProjection",
+        "providerKeyRouteContextProjection",
         "memoryRouteTruthProjection",
         "durableCandidateMirrorProjection",
         "localStoreWriteProjection",
@@ -125,6 +129,8 @@
         "supervisorGuidanceContinuityProjection is currently expected on sessionRuntimeReadiness when XT can expose Supervisor latest-review/latest-guidance/pending-ack guidance continuity plus safe-point and ack posture as first-class machine-readable doctor truth.",
         "supervisorSafePointTimelineProjection is currently expected on sessionRuntimeReadiness when XT can expose pending guidance delivery timing, live safe-point posture, and tool-batch pause posture as first-class machine-readable doctor truth.",
         "projectRemoteSnapshotCacheProjection and supervisorRemoteSnapshotCacheProjection are currently expected on sessionRuntimeReadiness when XT can expose project/supervisor remote snapshot cache provenance without reparsing detailLines.",
+        "providerKeySelectionProjection is currently expected on modelRouteReadiness when XT can replay the latest real remote provider-key routing decision for the requested model without re-deriving scheduler truth locally.",
+        "providerKeyRouteContextProjection is currently expected on modelRouteReadiness when XT needs one structured route-context envelope carrying the requested model, live provider-pool snapshot, latest selection decision, and any provider-key import-source blockers without reparsing detailLines per surface.",
         "memoryRouteTruthProjection is currently expected on modelRouteReadiness when XT can project upstream memory route diagnostics.",
         "durableCandidateMirrorProjection is currently expected on sessionRuntimeReadiness when XT has supervisor durable-candidate mirror evidence to surface.",
         "localStoreWriteProjection is currently expected on sessionRuntimeReadiness when XT has local cache/fallback/edit-buffer write provenance to surface.",
@@ -325,6 +331,71 @@
         "This object is a first-class XT projection of Hub-provided prompt assembly explainability for the latest governed coding turn.",
         "It must directly reuse Hub Generate.done metadata rather than locally inferring what prompt content XT thinks was assembled.",
         "It is explainability only and must not be treated as prompt authority, grant truth, export approval, route truth, or a bypass around X-Constitution, audit, kill-switch, TTL, or remote export gates."
+      ]
+    },
+    "xt.unified_doctor_provider_key_selection_decision.v1": {
+      "required_fields": [
+        "requestedProvider",
+        "requestedModelId",
+        "strategy",
+        "selectionScope",
+        "selectedAccountKey",
+        "fallbackReasonCode",
+        "candidates"
+      ],
+      "rules": [
+        "This object is an XT-side explainability projection of the latest real remote provider-key routing decision observed for a requested model.",
+        "It exists so doctor/export/troubleshoot surfaces can replay selected-account, skip-reason, and retry-window truth without locally re-running scheduler logic.",
+        "It is explainability only and must not be treated as a scheduler command, grant authority, auth scope grant, or permission to bypass Hub health, TTL, audit, kill-switch, or policy gates."
+      ]
+    },
+    "xt.unified_doctor_provider_key_candidate_decision.v1": {
+      "required_fields": [
+        "accountKey",
+        "provider",
+        "poolID",
+        "wireAPI",
+        "availability",
+        "score",
+        "selected",
+        "reasonCode",
+        "retryAtMs"
+      ],
+      "rules": [
+        "This object is a compact XT-side replay of one candidate account considered by the latest provider-key routing decision.",
+        "availability reuses the Swift Codable enum payload verbatim so doctor/export consumers can distinguish ready, cooldown, blocked, disabled, and stale candidates without reparsing free-form text.",
+        "It is diagnostic evidence only and must not be treated as direct permission to pick, unblock, or re-enable a key outside the Hub-owned scheduler/runtime flow."
+      ]
+    },
+    "xt.unified_doctor_provider_key_route_context.v1": {
+      "required_fields": [
+        "importContextLines",
+        "importIssues"
+      ],
+      "optional_fields": [
+        "pool",
+        "decision",
+        "modelId"
+      ],
+      "rules": [
+        "This object is an XT-side explainability envelope for model-route troubleshooting surfaces that need one stable provider-key route context instead of reverse-parsing scattered detailLines.",
+        "It keeps requested model identity, any live provider-pool snapshot, the latest real selection decision, and normalized import-source blockers machine-readable in one payload.",
+        "It is explainability only and must not be treated as scheduler authority, provider-key import mutation authority, auth approval, or permission to bypass Hub health, TTL, audit, kill-switch, or policy gates."
+      ]
+    },
+    "xt.unified_doctor_provider_key_import_issue.v1": {
+      "required_fields": [
+        "kind",
+        "state",
+        "sourceRef",
+        "sourceName",
+        "errorCode",
+        "errorDetail"
+      ],
+      "rules": [
+        "This object is a normalized XT-side projection of one provider-key import-source blocker.",
+        "It exists so doctor/troubleshoot/export consumers can point users at the right Provider Key repair surface without reconstructing error fields from flat detailLines.",
+        "It is explainability only and must not be treated as direct import execution authority or mutation permission."
       ]
     },
     "xhub.project_governance_runtime_readiness.v1": {

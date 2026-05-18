@@ -149,4 +149,63 @@ public enum RemoteKeyHealthSupport {
     public static func recency(for health: RemoteKeyHealthRecord?) -> TimeInterval {
         max(health?.lastSuccessAt ?? 0, health?.lastCheckedAt ?? 0)
     }
+
+    public static func pooledRecords(from snapshot: RemoteKeyHealthSnapshot) -> [String: RemoteKeyHealthRecord] {
+        var grouped: [String: [RemoteKeyHealthRecord]] = [:]
+        for record in snapshot.records {
+            let poolKey = RemoteModelStorage.keyPoolReference(forKeyReference: record.keyReference)
+            guard !poolKey.isEmpty else { continue }
+            grouped[poolKey, default: []].append(record)
+        }
+
+        var pooled: [String: RemoteKeyHealthRecord] = [:]
+        for (poolKey, records) in grouped {
+            if let aggregated = aggregate(records, poolKey: poolKey) {
+                pooled[poolKey] = aggregated
+            }
+        }
+        return pooled
+    }
+
+    public static func pooledRecord(
+        for keyReference: String,
+        in snapshot: RemoteKeyHealthSnapshot
+    ) -> RemoteKeyHealthRecord? {
+        let poolKey = RemoteModelStorage.keyPoolReference(forKeyReference: keyReference)
+        guard !poolKey.isEmpty else { return nil }
+        return pooledRecords(from: snapshot)[poolKey]
+    }
+
+    private static func aggregate(
+        _ records: [RemoteKeyHealthRecord],
+        poolKey: String
+    ) -> RemoteKeyHealthRecord? {
+        let normalizedRecords = records
+            .sorted(by: isPreferredHealthRecord(_:_:))
+        guard let preferred = normalizedRecords.first else { return nil }
+
+        let winner = normalizedRecords.first(where: { $0.state == .healthy }) ?? preferred
+        var aggregated = winner
+        aggregated.keyReference = poolKey
+        return aggregated
+    }
+
+    private static func isPreferredHealthRecord(
+        _ lhs: RemoteKeyHealthRecord,
+        _ rhs: RemoteKeyHealthRecord
+    ) -> Bool {
+        let lhsPriority = sortPriority(for: lhs)
+        let rhsPriority = sortPriority(for: rhs)
+        if lhsPriority != rhsPriority {
+            return lhsPriority < rhsPriority
+        }
+
+        let lhsRecency = recency(for: lhs)
+        let rhsRecency = recency(for: rhs)
+        if lhsRecency != rhsRecency {
+            return lhsRecency > rhsRecency
+        }
+
+        return lhs.keyReference.localizedCaseInsensitiveCompare(rhs.keyReference) == .orderedAscending
+    }
 }

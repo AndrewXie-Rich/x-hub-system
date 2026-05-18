@@ -223,7 +223,7 @@ Can be deferred to later releases:
 Recommended files to attach to release approval:
 - `build/reports/oss_release_readiness_v1.json`
 - `build/reports/oss_secret_scrub_report.v1.json`
-- `build/reports/xhub_doctor_source_gate_summary.v1.json` (supporting evidence for the cross-product source-run doctor shell, including `project_context_summary_support`, `heartbeat_governance_support`, `durable_candidate_mirror_support`, and `memory_route_truth_support`)
+- `build/reports/xhub_doctor_source_gate_summary.v1.json` (supporting evidence for the cross-product source-run doctor shell, including `project_context_summary_support`, `heartbeat_governance_support`, `provider_key_selection_support`, `durable_candidate_mirror_support`, and `memory_route_truth_support`)
 - `build/reports/xhub_local_service_operator_recovery_report.v1.json` (supporting evidence for structured local-service recovery wording consumed by the boundary/readiness bundle)
 - `build/reports/xhub_operator_channel_recovery_report.v1.json` (supporting evidence for structured operator-channel onboarding recovery wording carried by the boundary/readiness bundle as preview support context, not as a validated release claim)
 - `build/reports/xt_w3_24_s_safe_onboarding_gate_summary.v1.json` (optional focused CI/support evidence proving the XT-W3-24-S safe-onboarding gate replayed the current Node regressions, Swift parity tests, and tracked packet refresh)

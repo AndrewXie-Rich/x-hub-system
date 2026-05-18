@@ -78,6 +78,39 @@ final class RemoteModelPresentationSupportTests: XCTestCase {
         XCTAssertNotEqual(groups[0].id, groups[1].id)
     }
 
+    func testGroupsCoalesceDisambiguatedPoolReferencesIntoOnePool() {
+        let models = [
+            RemoteModelEntry(
+                id: "openai/gpt-5.4",
+                name: "GPT-5.4",
+                groupDisplayName: "Research",
+                backend: "openai",
+                enabled: true,
+                apiKeyRef: "openai:api.openai.com",
+                upstreamModelId: "gpt-5.4",
+                apiKey: "sk-test-a"
+            ),
+            RemoteModelEntry(
+                id: "openai/gpt-5.4#2",
+                name: "GPT-5.4",
+                groupDisplayName: "Research",
+                backend: "openai",
+                enabled: true,
+                apiKeyRef: "openai:api.openai.com#2",
+                upstreamModelId: "gpt-5.4",
+                apiKey: "sk-test-b"
+            )
+        ]
+
+        let groups = RemoteModelPresentationSupport.groups(from: models)
+
+        XCTAssertEqual(groups.count, 1)
+        XCTAssertEqual(groups[0].title, "Research")
+        XCTAssertEqual(groups[0].keyReference, "openai:api.openai.com")
+        XCTAssertEqual(groups[0].models.count, 2)
+        XCTAssertEqual(groups[0].loadedCount, 2)
+    }
+
     func testGroupsFallBackToKeyReferenceWhenAliasMissing() {
         let model = RemoteModelEntry(
             id: "anthropic/claude-sonnet",
@@ -153,5 +186,87 @@ final class RemoteModelPresentationSupportTests: XCTestCase {
         )
 
         XCTAssertEqual(groups.map(\.keyReference), ["team-healthy", "team-blocked"])
+    }
+
+    func testGroupsUseBestHealthAcrossDisambiguatedPoolMembers() {
+        let pooledPrimary = RemoteModelEntry(
+            id: "gpt-5.4-primary",
+            name: "GPT 5.4",
+            backend: "openai_compatible",
+            enabled: true,
+            baseURL: "https://provider.example/v1",
+            apiKeyRef: "team-pooled",
+            upstreamModelId: "gpt-5.4",
+            wireAPI: "responses",
+            apiKey: "sk-primary"
+        )
+        let pooledSecondary = RemoteModelEntry(
+            id: "gpt-5.4-secondary",
+            name: "GPT 5.4",
+            backend: "openai_compatible",
+            enabled: true,
+            baseURL: "https://provider.example/v1",
+            apiKeyRef: "team-pooled#2",
+            upstreamModelId: "gpt-5.4",
+            wireAPI: "responses",
+            apiKey: "sk-secondary"
+        )
+        let blocked = RemoteModelEntry(
+            id: "gpt-5.4-blocked",
+            name: "GPT 5.4",
+            backend: "openai_compatible",
+            enabled: true,
+            baseURL: "https://provider.example/v1",
+            apiKeyRef: "team-blocked",
+            upstreamModelId: "gpt-5.4",
+            wireAPI: "responses",
+            apiKey: "sk-blocked"
+        )
+        let healthSnapshot = RemoteKeyHealthSnapshot(
+            records: [
+                RemoteKeyHealthRecord(
+                    keyReference: "team-pooled",
+                    backend: "openai_compatible",
+                    providerHost: "provider.example",
+                    canaryModelID: "gpt-5.4",
+                    state: .blockedAuth,
+                    summary: "",
+                    detail: "",
+                    lastCheckedAt: 10,
+                    lastSuccessAt: nil
+                ),
+                RemoteKeyHealthRecord(
+                    keyReference: "team-pooled#2",
+                    backend: "openai_compatible",
+                    providerHost: "provider.example",
+                    canaryModelID: "gpt-5.4",
+                    state: .healthy,
+                    summary: "",
+                    detail: "",
+                    lastCheckedAt: 20,
+                    lastSuccessAt: 20
+                ),
+                RemoteKeyHealthRecord(
+                    keyReference: "team-blocked",
+                    backend: "openai_compatible",
+                    providerHost: "provider.example",
+                    canaryModelID: "gpt-5.4",
+                    state: .blockedQuota,
+                    summary: "",
+                    detail: "",
+                    lastCheckedAt: 30,
+                    lastSuccessAt: nil
+                ),
+            ],
+            updatedAt: 30
+        )
+
+        let groups = RemoteModelPresentationSupport.groups(
+            from: [blocked, pooledPrimary, pooledSecondary],
+            healthSnapshot: healthSnapshot
+        )
+
+        XCTAssertEqual(groups.map(\.keyReference), ["team-pooled", "team-blocked"])
+        XCTAssertEqual(groups.first?.models.count, 2)
     }
 }

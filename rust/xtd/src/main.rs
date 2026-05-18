@@ -60,4 +60,3 @@ fn print_help() {
         env!("CARGO_PKG_VERSION")
     );
 }
-

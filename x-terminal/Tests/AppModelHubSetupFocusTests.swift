@@ -116,7 +116,7 @@ struct AppModelHubSetupFocusTests {
             AppModel.shouldConsumeHubInviteTokenAfterSuccessfulRemoteConnect(
                 report: report,
                 inviteToken: "axhub_invite_test_123",
-                internetHost: "hub.xhubsystem.com",
+                internetHost: "hub.example.com",
                 hasHubEnv: true
             )
         )
@@ -151,7 +151,7 @@ struct AppModelHubSetupFocusTests {
             AppModel.shouldConsumeHubInviteTokenAfterSuccessfulRemoteConnect(
                 report: successfulReport,
                 inviteToken: "axhub_invite_test_123",
-                internetHost: "hub.xhubsystem.com",
+                internetHost: "hub.example.com",
                 hasHubEnv: false
             ) == false
         )
@@ -159,7 +159,7 @@ struct AppModelHubSetupFocusTests {
             AppModel.shouldConsumeHubInviteTokenAfterSuccessfulRemoteConnect(
                 report: failedReport,
                 inviteToken: "axhub_invite_test_123",
-                internetHost: "hub.xhubsystem.com",
+                internetHost: "hub.example.com",
                 hasHubEnv: true
             ) == false
         )

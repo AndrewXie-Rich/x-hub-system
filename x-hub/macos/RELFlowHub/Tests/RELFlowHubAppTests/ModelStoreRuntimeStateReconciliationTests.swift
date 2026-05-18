@@ -303,6 +303,76 @@ final class ModelStoreRuntimeStateReconciliationTests: XCTestCase {
         XCTAssertTrue(reconciled.removedModelIDs.isEmpty)
     }
 
+    func testReconciledManagedLocalModelSnapshotsPreparesLMStudioManagedExternalModelsIntoSandboxStorage() throws {
+        let sourceRoot = try makeTempDir()
+        let baseDir = try makeTempDir()
+        let sourceModel = sourceRoot.appendingPathComponent("Qwen3-VL-4B-Instruct-3bit", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceModel, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: sourceModel.appendingPathComponent("config.json"))
+        try Data("{}".utf8).write(to: sourceModel.appendingPathComponent("tokenizer.json"))
+
+        let catalog = ModelCatalogSnapshot(
+            models: [
+                ModelCatalogEntry(
+                    id: "qwen3-vl-4b-instruct-3bit",
+                    name: "Qwen3 VL",
+                    backend: "mlx",
+                    runtimeProviderID: "mlx_vlm",
+                    quant: "3bit",
+                    contextLength: 32768,
+                    modelPath: sourceModel.path,
+                    note: "lmstudio_managed",
+                    modelFormat: "mlx",
+                    taskKinds: ["vision_understand", "ocr"]
+                )
+            ],
+            updatedAt: 10
+        )
+        let state = ModelStateSnapshot(
+            models: [
+                HubModel(
+                    id: "qwen3-vl-4b-instruct-3bit",
+                    name: "Qwen3 VL",
+                    backend: "mlx",
+                    runtimeProviderID: "mlx_vlm",
+                    quant: "3bit",
+                    contextLength: 32768,
+                    paramsB: 4.0,
+                    state: .available,
+                    modelPath: sourceModel.path,
+                    note: "lmstudio_managed",
+                    modelFormat: "mlx",
+                    taskKinds: ["vision_understand", "ocr"]
+                )
+            ],
+            updatedAt: 12
+        )
+
+        let reconciled = ModelStore.reconciledManagedLocalModelSnapshots(
+            catalog: catalog,
+            state: state,
+            baseDir: baseDir,
+            fileManager: .default,
+            sandboxed: true
+        )
+
+        let expectedManagedPath = baseDir
+            .appendingPathComponent("models", isDirectory: true)
+            .appendingPathComponent("qwen3-vl-4b-instruct-3bit", isDirectory: true)
+            .path
+        XCTAssertEqual(reconciled.catalog.models.first?.modelPath, expectedManagedPath)
+        XCTAssertEqual(reconciled.catalog.models.first?.note, "lmstudio_managed_copy")
+        XCTAssertEqual(reconciled.state.models.first?.modelPath, expectedManagedPath)
+        XCTAssertEqual(reconciled.state.models.first?.note, "lmstudio_managed_copy")
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: URL(fileURLWithPath: expectedManagedPath)
+                    .appendingPathComponent("config.json").path
+            )
+        )
+        XCTAssertTrue(reconciled.removedModelIDs.isEmpty)
+    }
+
     func testReconciledManagedLocalModelSnapshotsRefreshesStateTaskMetadataFromCatalog() throws {
         let baseDir = try makeTempDir()
         let modelPath = baseDir
@@ -398,6 +468,78 @@ final class ModelStoreRuntimeStateReconciliationTests: XCTestCase {
             reconciled.state.models[0].maxContextLength,
             catalog.models[0].maxContextLength
         )
+    }
+
+    func testRefreshedBaseModelSnapshotsRefreshesStateTaskMetadataOnModelStoreRefreshPath() throws {
+        let baseDir = try makeTempDir()
+        let modelPath = baseDir
+            .appendingPathComponent("models", isDirectory: true)
+            .appendingPathComponent("hf-whisper-tiny", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: modelPath,
+            withIntermediateDirectories: true
+        )
+
+        let catalog = ModelCatalogSnapshot(
+            models: [
+                ModelCatalogEntry(
+                    id: "hf-whisper-tiny",
+                    name: "whisper-tiny",
+                    backend: "transformers",
+                    runtimeProviderID: "transformers",
+                    quant: "fp16",
+                    contextLength: 448,
+                    maxContextLength: 448,
+                    paramsB: 0.1,
+                    modelPath: modelPath.path,
+                    roles: ["speech"],
+                    note: "catalog",
+                    modelFormat: "hf_transformers",
+                    defaultLoadProfile: LocalModelLoadProfile(contextLength: 448),
+                    taskKinds: ["speech_to_text"],
+                    inputModalities: ["audio"],
+                    outputModalities: ["text", "segments"],
+                    offlineReady: true
+                )
+            ],
+            updatedAt: 10
+        )
+        let state = ModelStateSnapshot(
+            models: [
+                HubModel(
+                    id: "hf-whisper-tiny",
+                    name: "whisper-tiny",
+                    backend: "transformers",
+                    runtimeProviderID: "transformers",
+                    quant: "fp16",
+                    contextLength: 32768,
+                    paramsB: 0.1,
+                    state: .available,
+                    modelPath: modelPath.path,
+                    note: "stale",
+                    modelFormat: "hf_transformers",
+                    taskKinds: ["text_generate"],
+                    inputModalities: ["text"],
+                    outputModalities: ["text"]
+                )
+            ],
+            updatedAt: 12
+        )
+
+        let refreshed = ModelStore.refreshedBaseModelSnapshots(
+            catalog: catalog,
+            state: state,
+            baseDir: baseDir,
+            fileManager: .default
+        )
+
+        XCTAssertEqual(refreshed.catalog.models.count, 1)
+        XCTAssertEqual(refreshed.state.models.count, 1)
+        XCTAssertEqual(refreshed.state.models[0].taskKinds, ["speech_to_text"])
+        XCTAssertEqual(refreshed.state.models[0].inputModalities, ["audio"])
+        XCTAssertEqual(refreshed.state.models[0].outputModalities, ["text", "segments"])
+        XCTAssertEqual(refreshed.state.models[0].note, "catalog")
+        XCTAssertEqual(refreshed.state.models[0].state, .available)
     }
 
     private func makeRuntimeStatus(loadedModels: [String]) -> AIRuntimeStatus {

@@ -54,7 +54,7 @@ final class LocalProviderPackRegistryTests: XCTestCase {
         XCTAssertEqual(snapshot.packs[0].reasonCode, "auto_local_helper_bridge_enabled")
     }
 
-    func testSyncAutoManagedPacksWritesMLXVLMHelperOverrideForMLXVisionCatalog() throws {
+    func testSyncAutoManagedPacksDoesNotWriteHelperOverrideForNativeMLXVLMCatalog() throws {
         let baseDir = try makeTempDir()
         let helper = try makeHelper()
         let catalog = ModelCatalogSnapshot(
@@ -80,13 +80,64 @@ final class LocalProviderPackRegistryTests: XCTestCase {
         )
         let snapshot = LocalProviderPackRegistry.load(baseDir: baseDir)
 
+        XCTAssertFalse(changed)
+        XCTAssertTrue(snapshot.packs.isEmpty)
+        let effectivePack = LocalProviderPackRegistry.effectivePack(
+            providerID: "mlx_vlm",
+            existing: snapshot,
+            catalog: catalog,
+            helperBinaryPath: helper.path
+        )
+        XCTAssertEqual(effectivePack?.providerId, "mlx_vlm")
+        XCTAssertEqual(effectivePack?.engine, "mlx-vlm")
+        XCTAssertEqual(effectivePack?.supportedFormats, ["mlx"])
+        XCTAssertEqual(effectivePack?.supportedDomains, ["vision", "ocr"])
+        XCTAssertEqual(effectivePack?.runtimeRequirements.executionMode, "builtin_python")
+        XCTAssertEqual(effectivePack?.runtimeRequirements.pythonModules, ["mlx", "mlx_lm", "mlx_vlm", "transformers", "pil"])
+    }
+
+    func testSyncAutoManagedPacksPrunesLegacyAutoManagedMLXVLMHelperEntry() throws {
+        let baseDir = try makeTempDir()
+        let existing = LocalProviderPackRegistrySnapshot(
+            schemaVersion: LocalProviderPackRegistry.schemaVersion,
+            updatedAt: 1,
+            packs: [
+                LocalProviderPackRegistryEntry(
+                    providerId: "mlx_vlm",
+                    engine: "mlx-vlm",
+                    version: "auto-2026-03-24",
+                    runtimeRequirements: LocalProviderPackRegistryRuntimeRequirements(
+                        executionMode: "helper_binary_bridge",
+                        helperBinary: "/tmp/lms"
+                    ),
+                    installed: true,
+                    enabled: true,
+                    packState: "installed",
+                    reasonCode: "auto_local_helper_bridge_enabled",
+                    note: "auto_local_helper_bridge"
+                ),
+            ]
+        )
+        LocalProviderPackRegistry.save(existing, baseDir: baseDir)
+
+        let changed = LocalProviderPackRegistry.syncAutoManagedPacks(
+            baseDir: baseDir,
+            catalog: ModelCatalogSnapshot(models: [], updatedAt: 0),
+            helperBinaryPath: ""
+        )
+        let snapshot = LocalProviderPackRegistry.load(baseDir: baseDir)
+
         XCTAssertTrue(changed)
-        XCTAssertEqual(snapshot.packs.count, 1)
-        XCTAssertEqual(snapshot.packs[0].providerId, "mlx_vlm")
-        XCTAssertEqual(snapshot.packs[0].engine, "mlx-vlm")
-        XCTAssertEqual(snapshot.packs[0].supportedFormats, ["mlx"])
-        XCTAssertEqual(snapshot.packs[0].supportedDomains, ["vision", "ocr"])
-        XCTAssertEqual(snapshot.packs[0].runtimeRequirements.executionMode, "helper_binary_bridge")
+        XCTAssertTrue(snapshot.packs.isEmpty)
+        XCTAssertEqual(
+            LocalProviderPackRegistry.effectivePack(
+                providerID: "mlx_vlm",
+                existing: snapshot,
+                catalog: .init(models: [], updatedAt: 0),
+                helperBinaryPath: ""
+            )?.runtimeRequirements.executionMode,
+            "builtin_python"
+        )
     }
 
     func testSyncAutoManagedPacksWritesLlamaCppHelperOverrideForGGUFCatalog() throws {

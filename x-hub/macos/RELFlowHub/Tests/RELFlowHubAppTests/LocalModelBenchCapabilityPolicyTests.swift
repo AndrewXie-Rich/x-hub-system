@@ -402,7 +402,7 @@ final class LocalModelBenchCapabilityPolicyTests: XCTestCase {
             paramsB: 7.0,
             state: .available,
             modelPath: modelDir.path,
-            taskKinds: ["vision_understand"]
+            taskKinds: ["speech_to_text"]
         )
         let fakePython = try makeFakePython(
             """
@@ -419,7 +419,7 @@ final class LocalModelBenchCapabilityPolicyTests: XCTestCase {
         )
         let message = LocalModelBenchCapabilityPolicy.unsupportedTaskMessage(
             for: model,
-            taskKind: "vision_understand",
+            taskKind: "speech_to_text",
             pythonPath: fakePython.path
         )
 

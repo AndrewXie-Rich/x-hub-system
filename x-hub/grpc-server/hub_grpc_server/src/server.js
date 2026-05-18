@@ -9,6 +9,9 @@ import { makeServices } from './services.js';
 import { startModelsWatcher } from './models_watcher.js';
 import { startOfficialSkillChannelMaintenance } from './official_skill_channel_maintenance.js';
 import { startPairingHTTPServer } from './pairing_http.js';
+import { startProviderKeyQuotaRefreshConductor } from './provider_key_quota_refresh_conductor.js';
+import { startProviderKeyRuntimeConductor } from './provider_key_runtime_conductor.js';
+import { startProviderKeySourceWatcher } from './provider_key_source_watcher.js';
 import { makeServerCredentials, tlsModeFromEnv } from './tls_support.js';
 import { resolveHubProtoPath } from './proto_path.js';
 
@@ -55,7 +58,16 @@ function main() {
   const impl = makeServices({ db, bus });
   const stopModelsWatcher = startModelsWatcher({ bus });
   const stopOfficialSkillChannelMaintenance = startOfficialSkillChannelMaintenance();
-  const stopPairingHTTP = startPairingHTTPServer({ db });
+  const stopPairingHTTP = startPairingHTTPServer({ db, hubServices: impl });
+  const stopProviderKeyRuntimeConductor = startProviderKeyRuntimeConductor({
+    runtimeBaseDir: process.env.HUB_RUNTIME_BASE_DIR || '',
+  });
+  const stopProviderKeyQuotaRefreshConductor = startProviderKeyQuotaRefreshConductor({
+    runtimeBaseDir: process.env.HUB_RUNTIME_BASE_DIR || '',
+  });
+  const stopProviderKeySourceWatcher = startProviderKeySourceWatcher({
+    runtimeBaseDir: process.env.HUB_RUNTIME_BASE_DIR || '',
+  });
 
   const maxMsg = grpcMaxMessageBytesFromEnv(process.env);
   const server = new grpc.Server({
@@ -79,6 +91,9 @@ function main() {
     server.addService(proto.HubSkills.service, impl.HubSkills);
   }
   server.addService(proto.HubAdmin.service, impl.HubAdmin);
+  if (proto.HubProviderKeys && impl.HubProviderKeys) {
+    server.addService(proto.HubProviderKeys.service, impl.HubProviderKeys);
+  }
 
   const addr = `${host}:${port}`;
   const { creds } = makeServerCredentials({ runtimeBaseDir: process.env.HUB_RUNTIME_BASE_DIR || '' });
@@ -108,6 +123,21 @@ function main() {
       }
       try {
         stopPairingHTTP?.();
+      } catch {
+        // ignore
+      }
+      try {
+        stopProviderKeyRuntimeConductor?.();
+      } catch {
+        // ignore
+      }
+      try {
+        stopProviderKeyQuotaRefreshConductor?.();
+      } catch {
+        // ignore
+      }
+      try {
+        stopProviderKeySourceWatcher?.();
       } catch {
         // ignore
       }

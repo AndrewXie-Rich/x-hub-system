@@ -6,12 +6,12 @@ final class LocalModelHealthScanPlannerTests: XCTestCase {
     func testBulkFullScanUsesFullTrialsForLoadedRoutedAndRecentHealthyModels() {
         let now = Date().timeIntervalSince1970
         let loaded = makeModel(id: "loaded", state: .loaded)
-        let translate = makeModel(id: "translate", roles: ["translate"])
-        let summarize = makeModel(id: "summarize", roles: ["summarize"])
+        let coder = makeModel(id: "coder", roles: ["coder"])
+        let reviewer = makeModel(id: "reviewer", roles: ["reviewer"])
         let recentHealthy = makeModel(id: "recent")
         let other = makeModel(id: "other")
         let jobs = LocalModelHealthScanPlanner.jobs(
-            for: [loaded, translate, summarize, recentHealthy, other],
+            for: [loaded, coder, reviewer, recentHealthy, other],
             requestedMode: .full,
             explicitlyLimited: false,
             healthByModelID: [
@@ -26,16 +26,16 @@ final class LocalModelHealthScanPlannerTests: XCTestCase {
                 )
             ],
             preferredModelIDByTask: [
-                HubTaskType.translate.rawValue: translate.id,
-                HubTaskType.summarize.rawValue: summarize.id,
+                HubTaskType.coder.rawValue: coder.id,
+                HubTaskType.reviewer.rawValue: reviewer.id,
             ],
             requestedTrialStatusUpdates: true,
             now: now
         )
 
         XCTAssertEqual(jobMode(in: jobs, modelID: loaded.id), .full)
-        XCTAssertEqual(jobMode(in: jobs, modelID: translate.id), .full)
-        XCTAssertEqual(jobMode(in: jobs, modelID: summarize.id), .full)
+        XCTAssertEqual(jobMode(in: jobs, modelID: coder.id), .full)
+        XCTAssertEqual(jobMode(in: jobs, modelID: reviewer.id), .full)
         XCTAssertEqual(jobMode(in: jobs, modelID: recentHealthy.id), .full)
         XCTAssertEqual(jobMode(in: jobs, modelID: other.id), .preflightOnly)
         XCTAssertTrue(jobUpdatesTrialStatus(in: jobs, modelID: loaded.id))

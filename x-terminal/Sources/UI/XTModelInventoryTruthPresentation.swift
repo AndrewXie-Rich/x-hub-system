@@ -10,6 +10,10 @@ enum XTModelInventoryTruthState: String, Equatable, Sendable {
     case runtimeHeartbeatStale = "runtime_heartbeat_stale"
     case noReadyProvider = "no_ready_provider"
     case providerPartialReadiness = "provider_partial_readiness"
+    case remoteQuotaBlocked = "remote_quota_blocked"
+    case remoteScopeMissing = "remote_scope_missing"
+    case localRuntimeMissing = "local_runtime_missing"
+    case localCapabilityMismatch = "local_capability_mismatch"
 }
 
 enum XTModelInventoryTruthTone: Equatable, Sendable {
@@ -32,13 +36,90 @@ struct XTModelInventoryTruthPresentation: Equatable, Sendable {
         switch state {
         case .inventoryReady, .localOnlyReady:
             return false
-        case .remoteOnlyReady, .snapshotMissing, .noInteractiveLoaded, .runtimeHeartbeatStale, .noReadyProvider, .providerPartialReadiness:
+        case .remoteOnlyReady, .snapshotMissing, .noInteractiveLoaded, .runtimeHeartbeatStale, .noReadyProvider, .providerPartialReadiness, .remoteQuotaBlocked, .remoteScopeMissing, .localRuntimeMissing, .localCapabilityMismatch:
             return true
         }
     }
 
     var showsStatusCard: Bool {
         state != .inventoryReady
+    }
+
+    static func build(
+        rustInventory projection: XTRustModelInventoryProjection
+    ) -> XTModelInventoryTruthPresentation {
+        let counts = loadedCounts(snapshot: projection.snapshot)
+
+        if let row = projection.firstRemoteScopeBlocked {
+            return XTModelInventoryTruthPresentation(
+                state: .remoteScopeMissing,
+                tone: .critical,
+                headline: "远端模型权限不足",
+                summary: "Hub 已返回远端模型目录，但 \(row.modelID) 被 provider scope 或权限挡住，XT 不应把它当成可用模型。",
+                detail: rustDetailLine(
+                    reason: row.blockingReasonCode,
+                    retryAtMs: row.nextRetryAtMs,
+                    fallback: "去 Hub 的远端模型账号页重新授权或补齐 provider scope 后，再刷新模型列表。"
+                ),
+                remoteInteractiveLoadedCount: counts.remoteInteractiveLoadedCount,
+                localInteractiveLoadedCount: counts.localInteractiveLoadedCount,
+                supportLoadedCount: counts.supportLoadedCount
+            )
+        }
+
+        if let row = projection.firstRemoteQuotaBlocked {
+            return XTModelInventoryTruthPresentation(
+                state: .remoteQuotaBlocked,
+                tone: .caution,
+                headline: "远端模型配额暂不可用",
+                summary: "Hub 已看到远端模型 \(row.modelID)，但当前账号池没有可用额度或仍在冷却，XT 不应猜测它可立即调用。",
+                detail: rustDetailLine(
+                    reason: row.blockingReasonCode,
+                    retryAtMs: row.nextRetryAtMs,
+                    fallback: "等待 provider 恢复时间，或切换到其它有额度的账号池/本地模型。"
+                ),
+                remoteInteractiveLoadedCount: counts.remoteInteractiveLoadedCount,
+                localInteractiveLoadedCount: counts.localInteractiveLoadedCount,
+                supportLoadedCount: counts.supportLoadedCount
+            )
+        }
+
+        if let row = projection.firstLocalRuntimeMissing {
+            return XTModelInventoryTruthPresentation(
+                state: .localRuntimeMissing,
+                tone: .critical,
+                headline: "本地模型运行时未就绪",
+                summary: "Hub 已看到本地模型 \(row.modelID)，但 Rust inventory 明确报告 runtime/preflight 不可信。",
+                detail: rustDetailLine(
+                    reason: row.blockingReasonCode,
+                    runtimeReason: row.runtimePreflight.blockingReasonCode,
+                    fallback: "先启动或修复本地模型 runtime，再刷新模型列表。"
+                ),
+                remoteInteractiveLoadedCount: counts.remoteInteractiveLoadedCount,
+                localInteractiveLoadedCount: counts.localInteractiveLoadedCount,
+                supportLoadedCount: counts.supportLoadedCount
+            )
+        }
+
+        if let row = projection.firstLocalCapabilityMismatch {
+            return XTModelInventoryTruthPresentation(
+                state: .localCapabilityMismatch,
+                tone: .caution,
+                headline: "本地模型能力不匹配",
+                summary: "Hub 已看到本地模型 \(row.modelID)，但它当前缺少本轮需要的能力标签，不应被 XT 当成兜底候选。",
+                detail: rustDetailLine(
+                    reason: row.blockingReasonCode,
+                    runtimeReason: row.runtimePreflight.blockingReasonCode,
+                    missingRequirements: row.runtimePreflight.runtimeMissingRequirements,
+                    fallback: "换一个带目标 capability 的模型，或修正 runtime 暴露的能力标签。"
+                ),
+                remoteInteractiveLoadedCount: counts.remoteInteractiveLoadedCount,
+                localInteractiveLoadedCount: counts.localInteractiveLoadedCount,
+                supportLoadedCount: counts.supportLoadedCount
+            )
+        }
+
+        return build(snapshot: projection.snapshot)
     }
 
     static func build(
@@ -319,6 +400,45 @@ struct XTModelInventoryTruthPresentation: Equatable, Sendable {
     private static func normalized(_ raw: String?) -> String? {
         let trimmed = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func loadedCounts(
+        snapshot: ModelStateSnapshot
+    ) -> (
+        remoteInteractiveLoadedCount: Int,
+        localInteractiveLoadedCount: Int,
+        supportLoadedCount: Int
+    ) {
+        let interactiveLoaded = snapshot.models.filter { $0.state == .loaded && $0.isSelectableForInteractiveRouting }
+        let remoteLoaded = interactiveLoaded.filter { !$0.isLocalModel }
+        let localLoaded = interactiveLoaded.filter(\.isLocalModel)
+        let supportLoadedCount = snapshot.models.filter { $0.state == .loaded && !$0.isSelectableForInteractiveRouting }.count
+        return (remoteLoaded.count, localLoaded.count, supportLoadedCount)
+    }
+
+    private static func rustDetailLine(
+        reason: String,
+        runtimeReason: String? = nil,
+        retryAtMs: Int64? = nil,
+        missingRequirements: [String] = [],
+        fallback: String
+    ) -> String {
+        var parts: [String] = []
+        let normalizedReason = normalized(reason)
+        if let normalizedReason {
+            parts.append("reason=\(normalizedReason)")
+        }
+        if let runtimeReason = normalized(runtimeReason) {
+            parts.append("runtime=\(runtimeReason)")
+        }
+        if let retryAtMs, retryAtMs > 0 {
+            parts.append("next_retry_at_ms=\(retryAtMs)")
+        }
+        if !missingRequirements.isEmpty {
+            parts.append("missing=\(missingRequirements.joined(separator: ","))")
+        }
+        parts.append("下一步：\(fallback)")
+        return parts.joined(separator: " ")
     }
 
     private static func loadRuntimeStatus(baseDir: URL) -> AIRuntimeStatus? {

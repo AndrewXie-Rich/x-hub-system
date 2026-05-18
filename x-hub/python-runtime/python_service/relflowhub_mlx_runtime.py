@@ -31,7 +31,7 @@ import re
 
 
 # Bump this whenever IPC/gen behavior changes; also helpful to confirm which script is running.
-RUNTIME_VERSION = "2026-03-14-mlx-instance-identity-v1"
+RUNTIME_VERSION = "2026-04-23-mlx-runtime-maintenance-v1"
 RUNTIME_STATUS_SCHEMA_VERSION = "xhub.local_runtime_status.v2"
 LOCAL_RUNTIME_COMMAND_IPC_VERSION = "xhub.local_runtime_command_ipc.v1"
 _MLX_IMPORT_PROBE_CACHE = {
@@ -39,10 +39,25 @@ _MLX_IMPORT_PROBE_CACHE = {
     "ok": False,
     "error": "",
 }
+DEFAULT_AI_RESPONSE_RETENTION_SEC = 24 * 60 * 60
+DEFAULT_AI_RESPONSE_PRUNE_INTERVAL_SEC = 60
+DEFAULT_MLX_IDLE_TIMEOUT_SEC = 20 * 60
+DEFAULT_MLX_IDLE_SWEEP_INTERVAL_SEC = 30
 
 
 def _now() -> float:
     return time.time()
+
+
+def _env_int(name: str, default: int, *, min_value: int = 0, max_value: int = 2_147_483_647) -> int:
+    raw = str(os.environ.get(name) or "").strip()
+    if not raw:
+        return int(default)
+    try:
+        value = int(float(raw))
+    except Exception:
+        return int(default)
+    return max(int(min_value), min(int(max_value), value))
 
 
 def _normalize_executable_path(value: str) -> str:
@@ -240,6 +255,105 @@ def _req_dir(base: str) -> str:
 
 def _resp_dir(base: str) -> str:
     return os.path.join(base, 'ai_responses')
+
+
+def _ai_response_retention_sec() -> int:
+    return _env_int(
+        'RELFLOWHUB_AI_RESPONSE_RETENTION_SEC',
+        DEFAULT_AI_RESPONSE_RETENTION_SEC,
+        min_value=0,
+        max_value=30 * 24 * 60 * 60,
+    )
+
+
+def _ai_response_prune_interval_sec() -> int:
+    return _env_int(
+        'RELFLOWHUB_AI_RESPONSE_PRUNE_INTERVAL_SEC',
+        DEFAULT_AI_RESPONSE_PRUNE_INTERVAL_SEC,
+        min_value=5,
+        max_value=60 * 60,
+    )
+
+
+def _mlx_idle_sweep_interval_sec() -> int:
+    return _env_int(
+        'RELFLOWHUB_MLX_IDLE_SWEEP_INTERVAL_SEC',
+        DEFAULT_MLX_IDLE_SWEEP_INTERVAL_SEC,
+        min_value=5,
+        max_value=60 * 60,
+    )
+
+
+def _prune_ai_response_history(
+    base: str,
+    *,
+    now_ts: float | None = None,
+    retention_sec: int | None = None,
+) -> dict[str, Any]:
+    ttl = int(_ai_response_retention_sec() if retention_sec is None else retention_sec)
+    if ttl <= 0:
+        return {
+            'retentionSec': 0,
+            'deletedCount': 0,
+            'deletedBytes': 0,
+            'deletedPaths': [],
+            'disabled': True,
+        }
+
+    directory = _resp_dir(base)
+    try:
+        os.makedirs(directory, exist_ok=True)
+    except Exception:
+        return {
+            'retentionSec': ttl,
+            'deletedCount': 0,
+            'deletedBytes': 0,
+            'deletedPaths': [],
+            'disabled': False,
+        }
+
+    cutoff = float(now_ts if now_ts is not None else _now()) - float(ttl)
+    deleted_paths: list[str] = []
+    deleted_bytes = 0
+    try:
+        entries = list(os.scandir(directory))
+    except Exception:
+        entries = []
+
+    for entry in entries:
+        try:
+            if not entry.is_file():
+                continue
+        except Exception:
+            continue
+        name = str(entry.name or '').strip()
+        if not name.startswith('resp_'):
+            continue
+        if not (name.endswith('.jsonl') or name.endswith('.jsonl.tmp') or name.endswith('.tmp')):
+            continue
+        try:
+            stat = entry.stat()
+        except Exception:
+            continue
+        if float(stat.st_mtime) > cutoff:
+            continue
+        try:
+            deleted_bytes += max(0, int(stat.st_size or 0))
+        except Exception:
+            pass
+        try:
+            os.remove(entry.path)
+            deleted_paths.append(entry.path)
+        except Exception:
+            continue
+
+    return {
+        'retentionSec': ttl,
+        'deletedCount': len(deleted_paths),
+        'deletedBytes': deleted_bytes,
+        'deletedPaths': deleted_paths,
+        'disabled': False,
+    }
 
 
 def _local_runtime_cmd_dir(base: str) -> str:
@@ -2594,6 +2708,13 @@ class MLXRuntime:
         self._tokenizer_wrapper = None
         self._import_error = ""
         self._probe_attempted = False
+        self._idle_timeout_sec = _env_int(
+            'RELFLOWHUB_MLX_IDLE_TIMEOUT_SEC',
+            DEFAULT_MLX_IDLE_TIMEOUT_SEC,
+            min_value=0,
+            max_value=24 * 60 * 60,
+        )
+        self._idle_eviction_state: dict[str, Any] = self._default_idle_eviction_state(owner_pid=0)
 
         # Offline guardrails.
         os.environ.setdefault('HF_HUB_OFFLINE', '1')
@@ -2763,6 +2884,17 @@ class MLXRuntime:
         )
         return rows
 
+    def _has_loaded_instances_for_model(self, model_id: str) -> bool:
+        token = str(model_id or '').strip()
+        if not token:
+            return False
+        for row in (self._loaded_instances or {}).values():
+            if not isinstance(row, dict):
+                continue
+            if str(row.get('model_id') or '').strip() == token:
+                return True
+        return False
+
     def _resolve_loaded_instance(
         self,
         model_id: str,
@@ -2876,6 +3008,174 @@ class MLXRuntime:
         if not isinstance(row, dict):
             return
         row['last_used_at'] = _now()
+
+    def _default_idle_eviction_state(self, *, owner_pid: int = 0) -> dict[str, Any]:
+        return {
+            'policy': 'idle_timeout_or_manual',
+            'automaticIdleEvictionEnabled': bool(self._idle_timeout_sec > 0),
+            'idleTimeoutSec': max(0, int(self._idle_timeout_sec or 0)),
+            'processScoped': True,
+            'lastEvictionReason': 'none',
+            'lastEvictionAt': 0.0,
+            'lastEvictedInstanceKeys': [],
+            'lastEvictedModelIds': [],
+            'lastEvictedCount': 0,
+            'totalEvictedInstanceCount': 0,
+            'updatedAt': 0.0,
+            'ownerPid': max(0, int(owner_pid or 0)),
+        }
+
+    def idle_timeout_sec(self) -> int:
+        return max(0, int(self._idle_timeout_sec or 0))
+
+    def idle_eviction_state(self) -> dict[str, Any]:
+        owner_pid = os.getpid() if (self._loaded or self._loaded_instances) else 0
+        previous = self._idle_eviction_state if isinstance(self._idle_eviction_state, dict) else {}
+        state = self._default_idle_eviction_state(owner_pid=owner_pid)
+        state['lastEvictionReason'] = str(
+            previous.get('lastEvictionReason') or previous.get('last_eviction_reason') or 'none'
+        ).strip() or 'none'
+        state['lastEvictionAt'] = float(previous.get('lastEvictionAt') or previous.get('last_eviction_at') or 0.0)
+        state['lastEvictedInstanceKeys'] = [
+            str(value or '').strip()
+            for value in (
+                previous.get('lastEvictedInstanceKeys')
+                or previous.get('last_evicted_instance_keys')
+                or []
+            )
+            if str(value or '').strip()
+        ]
+        state['lastEvictedModelIds'] = sorted(
+            {
+                str(value or '').strip()
+                for value in (
+                    previous.get('lastEvictedModelIds')
+                    or previous.get('last_evicted_model_ids')
+                    or []
+                )
+                if str(value or '').strip()
+            }
+        )
+        state['lastEvictedCount'] = max(
+            0,
+            int(previous.get('lastEvictedCount') or previous.get('last_evicted_count') or 0),
+        )
+        state['totalEvictedInstanceCount'] = max(
+            0,
+            int(previous.get('totalEvictedInstanceCount') or previous.get('total_evicted_instance_count') or 0),
+        )
+        state['updatedAt'] = float(previous.get('updatedAt') or previous.get('updated_at') or 0.0)
+        state['ownerPid'] = max(0, int(owner_pid or previous.get('ownerPid') or previous.get('owner_pid') or 0))
+        return state
+
+    def _record_eviction(self, reason: str, rows: list[dict[str, Any]]) -> None:
+        evicted_rows = [dict(row) for row in rows if isinstance(row, dict)]
+        if not evicted_rows:
+            return
+        state = self.idle_eviction_state()
+        instance_keys = [
+            str(row.get('instance_key') or row.get('instanceKey') or '').strip()
+            for row in evicted_rows
+            if str(row.get('instance_key') or row.get('instanceKey') or '').strip()
+        ]
+        model_ids = sorted(
+            {
+                str(row.get('model_id') or row.get('modelId') or '').strip()
+                for row in evicted_rows
+                if str(row.get('model_id') or row.get('modelId') or '').strip()
+            }
+        )
+        count = len(instance_keys)
+        now_ts = _now()
+        state['lastEvictionReason'] = str(reason or 'idle_timeout').strip() or 'idle_timeout'
+        state['lastEvictionAt'] = now_ts
+        state['lastEvictedInstanceKeys'] = instance_keys
+        state['lastEvictedModelIds'] = model_ids
+        state['lastEvictedCount'] = count
+        state['totalEvictedInstanceCount'] = max(
+            0,
+            int(state.get('totalEvictedInstanceCount') or 0) + count,
+        )
+        state['updatedAt'] = now_ts
+        state['ownerPid'] = os.getpid() if (self._loaded or self._loaded_instances) else 0
+        self._idle_eviction_state = state
+
+    def evict_idle_loaded_models(self, *, now_ts: float | None = None) -> dict[str, Any]:
+        timeout_sec = self.idle_timeout_sec()
+        if timeout_sec <= 0:
+            return {
+                'removedInstances': [],
+                'removedInstanceCount': 0,
+                'unloadedModelIds': [],
+                'timeoutSec': 0,
+                'disabled': True,
+            }
+
+        for raw_model_id in list((self._loaded or {}).keys()):
+            model_id = str(raw_model_id or '').strip()
+            if model_id:
+                self._ensure_default_instance_registered(model_id)
+
+        current = float(now_ts if now_ts is not None else _now())
+        removable_rows: list[dict[str, Any]] = []
+        for row in list((self._loaded_instances or {}).values()):
+            if not isinstance(row, dict):
+                continue
+            last_used_at = float(row.get('last_used_at') or row.get('loaded_at') or 0.0)
+            if last_used_at <= 0.0:
+                continue
+            if (current - last_used_at) < float(timeout_sec):
+                continue
+            removable_rows.append(dict(row))
+
+        if not removable_rows:
+            return {
+                'removedInstances': [],
+                'removedInstanceCount': 0,
+                'unloadedModelIds': [],
+                'timeoutSec': timeout_sec,
+                'disabled': False,
+            }
+
+        removed_instance_keys: set[str] = set()
+        affected_model_ids: set[str] = set()
+        for row in removable_rows:
+            instance_key = str(row.get('instance_key') or row.get('instanceKey') or '').strip()
+            if instance_key:
+                removed_instance_keys.add(instance_key)
+                try:
+                    self._loaded_instances.pop(instance_key, None)
+                except Exception:
+                    pass
+            model_id = str(row.get('model_id') or row.get('modelId') or '').strip()
+            if model_id:
+                affected_model_ids.add(model_id)
+
+        unloaded_model_ids: list[str] = []
+        for model_id in sorted(affected_model_ids):
+            if self._has_loaded_instances_for_model(model_id):
+                continue
+            if model_id in self._loaded:
+                try:
+                    self._loaded.pop(model_id, None)
+                    unloaded_model_ids.append(model_id)
+                except Exception:
+                    pass
+
+        if unloaded_model_ids:
+            self._release_runtime_memory()
+        self._record_eviction('idle_timeout', removable_rows)
+        return {
+            'removedInstances': [
+                dict(row)
+                for row in removable_rows
+                if str(row.get('instance_key') or row.get('instanceKey') or '').strip() in removed_instance_keys
+            ],
+            'removedInstanceCount': len(removed_instance_keys),
+            'unloadedModelIds': unloaded_model_ids,
+            'timeoutSec': timeout_sec,
+            'disabled': False,
+        }
 
     def _release_runtime_memory(self) -> None:
         try:
@@ -3087,6 +3387,7 @@ class MLXRuntime:
         *,
         instance_key: str = "",
         load_profile_hash: str = "",
+        eviction_reason: str = "",
     ) -> tuple[bool, str]:
         token = str(model_id or '').strip()
         explicit = bool(str(instance_key or '').strip() or str(load_profile_hash or '').strip())
@@ -3100,24 +3401,29 @@ class MLXRuntime:
                 return True, 'not_loaded'
             token = str(row.get('model_id') or token or '').strip()
             public_instance_key = str(row.get('instance_key') or '').strip()
+            removed_rows = [dict(row)]
             try:
                 self._loaded_instances.pop(public_instance_key, None)
             except Exception:
                 pass
-            if not self._instance_rows_for_model(token):
+            if not self._has_loaded_instances_for_model(token):
                 try:
                     self._loaded.pop(token, None)
                 except Exception:
                     pass
                 self._release_runtime_memory()
+            if eviction_reason:
+                self._record_eviction(eviction_reason, removed_rows)
             return True, 'ok'
 
         removed = False
+        removed_rows: list[dict[str, Any]] = []
         for row in list(self._instance_rows_for_model(token)):
             public_instance_key = str(row.get('instance_key') or '').strip()
             if not public_instance_key:
                 continue
             removed = True
+            removed_rows.append(dict(row))
             try:
                 self._loaded_instances.pop(public_instance_key, None)
             except Exception:
@@ -3131,6 +3437,8 @@ class MLXRuntime:
         if not removed:
             return True, 'not_loaded'
         self._release_runtime_memory()
+        if eviction_reason:
+            self._record_eviction(eviction_reason, removed_rows)
         return True, 'ok'
 
     def is_loaded(
@@ -3583,6 +3891,8 @@ def main() -> int:
 
     last_cat = 0.0
     last_remote = 0.0
+    last_ai_response_prune = 0.0
+    last_idle_eviction_sweep = 0.0
 
     def _resp_path(req_id: str) -> str:
         return os.path.join(_resp_dir(base), f'resp_{req_id}.jsonl')
@@ -3641,6 +3951,70 @@ def main() -> int:
                     pass
         except Exception:
             pass
+
+        current_ts = _now()
+        if (current_ts - last_idle_eviction_sweep) >= float(_mlx_idle_sweep_interval_sec()):
+            try:
+                eviction = rt.evict_idle_loaded_models(now_ts=current_ts)
+            except Exception as e:
+                eviction = {
+                    'removedInstanceCount': 0,
+                    'unloadedModelIds': [],
+                    'timeoutSec': rt.idle_timeout_sec() if hasattr(rt, 'idle_timeout_sec') else 0,
+                    'disabled': False,
+                    'error': f'{type(e).__name__}:{e}',
+                }
+            removed_instance_count = int(eviction.get('removedInstanceCount') or 0)
+            unloaded_model_ids = [
+                str(model_id or '').strip()
+                for model_id in (eviction.get('unloadedModelIds') or [])
+                if str(model_id or '').strip()
+            ]
+            if removed_instance_count > 0:
+                _audit(
+                    base,
+                    'mlx_idle_evict',
+                    removed_instance_count=removed_instance_count,
+                    unloaded_model_count=len(unloaded_model_ids),
+                    unloaded_model_ids=','.join(unloaded_model_ids),
+                    timeout_sec=int(eviction.get('timeoutSec') or 0),
+                )
+            elif str(eviction.get('error') or '').strip():
+                _audit(
+                    base,
+                    'mlx_idle_evict_failed',
+                    timeout_sec=int(eviction.get('timeoutSec') or 0),
+                    error=str(eviction.get('error') or ''),
+                )
+            last_idle_eviction_sweep = current_ts
+
+        if (current_ts - last_ai_response_prune) >= float(_ai_response_prune_interval_sec()):
+            try:
+                pruned = _prune_ai_response_history(base, now_ts=current_ts)
+            except Exception as e:
+                pruned = {
+                    'deletedCount': 0,
+                    'deletedBytes': 0,
+                    'retentionSec': _ai_response_retention_sec(),
+                    'disabled': False,
+                    'error': f'{type(e).__name__}:{e}',
+                }
+            if int(pruned.get('deletedCount') or 0) > 0:
+                _audit(
+                    base,
+                    'ai_response_prune',
+                    deleted_count=int(pruned.get('deletedCount') or 0),
+                    deleted_bytes=int(pruned.get('deletedBytes') or 0),
+                    retention_sec=int(pruned.get('retentionSec') or 0),
+                )
+            elif str(pruned.get('error') or '').strip():
+                _audit(
+                    base,
+                    'ai_response_prune_failed',
+                    retention_sec=int(pruned.get('retentionSec') or 0),
+                    error=str(pruned.get('error') or ''),
+                )
+            last_ai_response_prune = current_ts
 
         # Runtime heartbeat for clients (FA Tracker, etc).
         am, pm = rt.memory_bytes()
@@ -3734,6 +4108,7 @@ def main() -> int:
                             cmd.model_id,
                             instance_key=instance_key,
                             load_profile_hash=load_profile_hash,
+                            eviction_reason='manual_sleep',
                         )
                         if ok:
                             m['state'] = 'sleeping'
@@ -3744,6 +4119,7 @@ def main() -> int:
                             cmd.model_id,
                             instance_key=instance_key,
                             load_profile_hash=load_profile_hash,
+                            eviction_reason='manual_unload',
                         )
                         if ok:
                             m['state'] = 'available'

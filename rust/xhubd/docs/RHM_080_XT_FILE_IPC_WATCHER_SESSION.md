@@ -54,4 +54,3 @@ the request body includes `{"apply": true}`:
 - full `cargo test -p xhubd`
 - release `cargo build --release -p xhubd`
 - default live POST remains fail-closed unless every explicit gate is enabled
-

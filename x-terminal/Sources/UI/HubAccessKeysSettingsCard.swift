@@ -42,7 +42,7 @@ enum HubAccessKeyFocusCoordinator {
 }
 
 struct HubAccessKeysSettingsCard: View {
-    @EnvironmentObject private var hubConnectionStore: XTHubConnectionStore
+    @EnvironmentObject private var appModel: AppModel
     @StateObject private var model = HubAccessKeyManagementModel()
     @State private var pendingRevokeAccessKeyID: String = ""
     @State private var lastAutoFocusSignature: String = ""
@@ -92,7 +92,7 @@ struct HubAccessKeysSettingsCard: View {
                 }
                 .buttonStyle(.borderless)
                 .controlSize(.small)
-                .disabled(!hubInteractive || model.isBusy)
+                .disabled(!appModel.hubInteractive || model.isBusy)
             }
 
             Text("在 XT 内签发、轮换、撤销给非 XT terminal 使用的 Hub access key。原始 secret 只会在签发或轮换后返回一次；如果之前没保存，需要轮换后重新导出。")
@@ -100,7 +100,7 @@ struct HubAccessKeysSettingsCard: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            if !hubInteractive {
+            if !appModel.hubInteractive {
                 Text("先连上 Hub，再管理 access key 和导出 connect env。")
                     .font(.caption)
                     .foregroundStyle(UIThemeTokens.color(for: .diagnosticRequired))
@@ -155,12 +155,12 @@ struct HubAccessKeysSettingsCard: View {
         }
         .onAppear {
             attemptAutoFocusIfNeeded()
-            guard hubInteractive else { return }
+            guard appModel.hubInteractive else { return }
             Task {
                 await model.refresh()
             }
         }
-        .onChange(of: hubInteractive) { connected in
+        .onChange(of: appModel.hubInteractive) { connected in
             guard connected else { return }
             Task {
                 await model.refresh()
@@ -214,7 +214,7 @@ struct HubAccessKeysSettingsCard: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!hubInteractive || model.isBusy)
+                .disabled(!appModel.hubInteractive || model.isBusy)
 
                 Text("默认会生成 `external_terminal` 类型的 Hub access key。")
                     .font(.caption)
@@ -707,10 +707,6 @@ struct HubAccessKeysSettingsCard: View {
 
     private var pendingRevokeAccessKey: HubAccessKeysClient.AccessKey? {
         model.accessKeys.first(where: { $0.id == pendingRevokeAccessKeyID })
-    }
-
-    private var hubInteractive: Bool {
-        hubConnectionStore.snapshot.interactive
     }
 
     private var revokeDialogPresented: Binding<Bool> {

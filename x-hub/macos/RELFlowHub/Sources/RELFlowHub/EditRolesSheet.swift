@@ -7,11 +7,9 @@ struct EditRolesSheet: View {
 
     let model: HubModel
     @State private var isGeneral: Bool = true
-    @State private var isTranslate: Bool = false
-    @State private var isSummarize: Bool = false
-    @State private var isExtract: Bool = false
-    @State private var isRefine: Bool = false
-    @State private var isClassify: Bool = false
+    @State private var isSupervisor: Bool = false
+    @State private var isCoder: Bool = false
+    @State private var isReviewer: Bool = false
     @State private var customRolesText: String = ""
 
     var body: some View {
@@ -25,11 +23,9 @@ struct EditRolesSheet: View {
 
             VStack(alignment: .leading, spacing: 10) {
                 Toggle(HubUIStrings.Models.EditRoles.general, isOn: $isGeneral)
-                Toggle(HubUIStrings.Models.EditRoles.translate, isOn: $isTranslate)
-                Toggle(HubUIStrings.Models.EditRoles.summarize, isOn: $isSummarize)
-                Toggle(HubUIStrings.Models.EditRoles.extract, isOn: $isExtract)
-                Toggle(HubUIStrings.Models.EditRoles.refine, isOn: $isRefine)
-                Toggle(HubUIStrings.Models.EditRoles.classify, isOn: $isClassify)
+                Toggle(HubUIStrings.Models.EditRoles.supervisor, isOn: $isSupervisor)
+                Toggle(HubUIStrings.Models.EditRoles.coder, isOn: $isCoder)
+                Toggle(HubUIStrings.Models.EditRoles.reviewer, isOn: $isReviewer)
                 TextField(HubUIStrings.Models.EditRoles.customRolesPlaceholder, text: $customRolesText)
             }
 
@@ -48,14 +44,12 @@ struct EditRolesSheet: View {
         .padding(18)
         .frame(width: 420)
         .onAppear {
-            let roles = (model.roles ?? []).map { $0.lowercased() }
+            let roles = (model.roles ?? []).map { HubModelRolePresentation.canonicalRoleToken($0) }
             isGeneral = roles.isEmpty || roles.contains("general")
-            isTranslate = roles.contains("translate")
-            isSummarize = roles.contains("summarize")
-            isExtract = roles.contains("extract")
-            isRefine = roles.contains("refine")
-            isClassify = roles.contains("classify")
-            let known: Set<String> = ["general", "translate", "summarize", "extract", "refine", "classify"]
+            isSupervisor = roles.contains("supervisor")
+            isCoder = roles.contains("coder")
+            isReviewer = roles.contains("reviewer")
+            let known: Set<String> = ["general", "supervisor", "coder", "reviewer"]
             let custom = roles.filter { !known.contains($0) }
             customRolesText = custom.joined(separator: ",")
         }
@@ -64,11 +58,9 @@ struct EditRolesSheet: View {
     private func save() {
         var roles: [String] = []
         if isGeneral { roles.append("general") }
-        if isTranslate { roles.append("translate") }
-        if isSummarize { roles.append("summarize") }
-        if isExtract { roles.append("extract") }
-        if isRefine { roles.append("refine") }
-        if isClassify { roles.append("classify") }
+        if isSupervisor { roles.append("supervisor") }
+        if isCoder { roles.append("coder") }
+        if isReviewer { roles.append("reviewer") }
         let extra = customRolesText
             .split(separator: ",")
             .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }

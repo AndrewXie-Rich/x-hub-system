@@ -288,6 +288,17 @@ export function enqueueBridgeAIGenerate(baseDir, req) {
     top_p: Number(req?.top_p ?? 0.95),
     timeout_sec: Number(req?.timeout_sec || 60),
   };
+  if (req?.provider_key) {
+    obj.provider_key = {
+      account_key: String(req.provider_key.account_key || ''),
+      provider: String(req.provider_key.provider || ''),
+      api_key: String(req.provider_key.api_key || ''),
+      base_url: String(req.provider_key.base_url || ''),
+      proxy_url: String(req.provider_key.proxy_url || ''),
+      auth_type: String(req.provider_key.auth_type || 'api_key'),
+      custom_headers: (req.provider_key.custom_headers && typeof req.provider_key.custom_headers === 'object') ? req.provider_key.custom_headers : {},
+    };
+  }
   writeJsonAtomic(filePath, obj);
   return { filePath, req_id: rid };
 }

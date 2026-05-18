@@ -22,9 +22,9 @@ use xhub_skills::{
     evaluate_skill_preflight_with_authority, scan_skill_catalog, SkillCatalog, SkillCatalogEntry,
     SkillExecutionSpec, SkillPreflightDecision, SkillPreflightRequest, SKILL_CATALOG_SCHEMA,
     SKILL_POLICY_EVENTS_PRUNE_SCHEMA, SKILL_POLICY_EVENTS_SCHEMA, SKILL_POLICY_SOURCE,
-    SKILL_POLICY_STORE_READINESS_SCHEMA, SKILL_PREFLIGHT_AUDIT_PRUNE_SCHEMA,
-    SKILL_PREFLIGHT_AUDIT_SCHEMA, SKILL_PREFLIGHT_AUDIT_SUMMARY_SCHEMA, SKILL_PREFLIGHT_SCHEMA,
-    SKILL_READINESS_SCHEMA,
+    SKILL_POLICY_STORE_READINESS_SCHEMA, SKILL_PREAUTHORIZED_LEASE_SCHEMA,
+    SKILL_PREFLIGHT_AUDIT_PRUNE_SCHEMA, SKILL_PREFLIGHT_AUDIT_SCHEMA,
+    SKILL_PREFLIGHT_AUDIT_SUMMARY_SCHEMA, SKILL_PREFLIGHT_SCHEMA, SKILL_READINESS_SCHEMA,
 };
 
 const SCHEMA_VERSION: &str = "xhub.skills_bridge.v1";
@@ -971,6 +971,7 @@ fn skill_execute_response(
         "hub_executes_third_party_code": decision.hub_executes_third_party_code,
         "requires_pin_or_grant": decision.requires_pin_or_grant,
         "preflight": preflight_to_value(decision),
+        "preauthorized_lease": preauthorized_lease_to_value(decision),
         "policy_event_id": policy_event_id,
         "output": output.unwrap_or_else(|| json!({})),
         "detail_json_included": false,
@@ -1136,6 +1137,8 @@ fn entry_to_value(entry: &SkillCatalogEntry) -> Value {
         "status": entry.status.as_str(),
         "reason_codes": entry.reason_codes,
         "capability_tags": entry.capability_tags,
+        "risk_level": entry.risk_level,
+        "requires_grant": entry.requires_grant,
         "requires_pin_or_grant": entry.requires_pin_or_grant,
         "hub_executes_third_party_code": entry.hub_executes_third_party_code,
         "execution": {
@@ -1169,6 +1172,10 @@ pub fn preflight_to_value(decision: &SkillPreflightDecision) -> Value {
         "missing_capabilities": decision.missing_capabilities,
         "undeclared_capabilities": decision.undeclared_capabilities,
         "pinned": decision.pinned,
+        "risk_level": decision.risk_level,
+        "requires_grant": decision.requires_grant,
+        "preauthorization": preauthorization_to_value(decision),
+        "preauthorized_lease": preauthorized_lease_to_value(decision),
         "requires_pin_or_grant": decision.requires_pin_or_grant,
         "execution_authority_in_rust": decision.execution_authority_in_rust,
         "hub_executes_third_party_code": decision.hub_executes_third_party_code,
@@ -1184,10 +1191,78 @@ pub fn preflight_to_value(decision: &SkillPreflightDecision) -> Value {
             "reason_codes": decision.reason_codes,
             "requested_capabilities": decision.requested_capabilities,
             "pinned": decision.pinned,
+            "preauthorization": preauthorization_to_value(decision),
+            "preauthorized_lease": preauthorized_lease_to_value(decision),
             "execution_authority_in_rust": decision.execution_authority_in_rust,
             "hub_executes_third_party_code": decision.hub_executes_third_party_code,
         }
     })
+}
+
+fn preauthorization_to_value(decision: &SkillPreflightDecision) -> Value {
+    let preauth = &decision.preauthorization;
+    json!({
+        "schema_version": preauth.schema_version,
+        "source": preauth.source,
+        "preauthorized": preauth.preauthorized,
+        "decision": preauth.decision,
+        "reason_code": preauth.reason_code,
+        "deny_code": preauth.deny_code,
+        "grant_ttl_ms": preauth.grant_ttl_ms,
+        "issued_at_ms": preauth.issued_at_ms,
+        "expires_at_ms": preauth.expires_at_ms,
+        "scope_key": preauth.scope_key,
+        "skill_id": preauth.skill_id,
+        "risk_level": preauth.risk_level,
+        "requires_grant": preauth.requires_grant,
+        "execution_surface": preauth.execution_surface,
+        "hub_authority": preauth.hub_authority,
+        "hub_executes_third_party_code": preauth.hub_executes_third_party_code,
+    })
+}
+
+fn preauthorized_lease_to_value(decision: &SkillPreflightDecision) -> Value {
+    let preauth = &decision.preauthorization;
+    if !preauth.preauthorized || preauth.expires_at_ms <= preauth.issued_at_ms {
+        return Value::Null;
+    }
+    let lease_id = format!(
+        "skill_lease_{}_{}_{}",
+        lease_component(&preauth.scope_key),
+        lease_component(&preauth.skill_id),
+        preauth.issued_at_ms
+    );
+    json!({
+        "schema_version": SKILL_PREAUTHORIZED_LEASE_SCHEMA,
+        "source": preauth.source,
+        "hub_authority": true,
+        "lease_id": lease_id.clone(),
+        "grant_id": lease_id,
+        "skill_id": preauth.skill_id,
+        "scope_key": preauth.scope_key,
+        "execution_surface": preauth.execution_surface,
+        "granted_capabilities": decision.requested_capabilities,
+        "risk_level": preauth.risk_level,
+        "requires_grant": preauth.requires_grant,
+        "issued_at_ms": preauth.issued_at_ms,
+        "expires_at_ms": preauth.expires_at_ms,
+        "ttl_ms": preauth.expires_at_ms.saturating_sub(preauth.issued_at_ms),
+        "audit_ref": decision.audit_ref,
+        "hub_executes_third_party_code": false,
+    })
+}
+
+fn lease_component(raw: &str) -> String {
+    let value = raw
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+        .take(64)
+        .collect::<String>();
+    if value.is_empty() {
+        "default".to_string()
+    } else {
+        value
+    }
 }
 
 pub fn audit_summary_to_value(
@@ -1602,6 +1677,18 @@ mod tests {
             SKILL_PREFLIGHT_AUDIT_SCHEMA
         );
         assert_eq!(value["preflight"]["execution_authority_in_rust"], false);
+        assert_eq!(
+            value["preflight"]["preauthorization"]["preauthorized"],
+            true
+        );
+        assert_eq!(
+            value["preflight"]["preauthorized_lease"]["schema_version"],
+            SKILL_PREAUTHORIZED_LEASE_SCHEMA
+        );
+        assert_eq!(
+            value["preflight"]["preauthorized_lease"]["execution_surface"],
+            "xt_local"
+        );
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -1647,6 +1734,14 @@ mod tests {
         assert_eq!(value["preflight"]["allowed"], true);
         assert_eq!(value["preflight"]["pinned"], true);
         assert_eq!(value["preflight"]["granted_capabilities"][0], "memory.read");
+        assert_eq!(
+            value["preflight"]["preauthorization"]["decision"],
+            "approve"
+        );
+        assert_eq!(
+            value["preflight"]["preauthorized_lease"]["hub_authority"],
+            true
+        );
 
         let raw = revoke_grant_json_from_parts(
             &config,
@@ -1699,6 +1794,15 @@ mod tests {
         let value: Value = serde_json::from_str(&raw).expect("json");
         assert_eq!(value["preflight"]["allowed"], false);
         assert_eq!(value["preflight"]["pinned"], false);
+        assert_eq!(
+            value["preflight"]["preauthorization"]["decision"],
+            "pending"
+        );
+        assert_eq!(
+            value["preflight"]["preauthorization"]["reason_code"],
+            "skill_not_preauthorized"
+        );
+        assert!(value["preflight"]["preauthorized_lease"].is_null());
 
         let raw = policy_events_json_from_parts(
             &config,

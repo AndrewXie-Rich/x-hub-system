@@ -7,7 +7,7 @@
 	<key>CFBundleDisplayName</key>
 	<string>X-Hub</string>
 	<key>CFBundleExecutable</key>
-	<string>RELFlowHub</string>
+	<string>XHub</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.rel.flowhub</string>
 	<key>CFBundleInfoDictionaryVersion</key>

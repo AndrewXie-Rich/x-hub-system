@@ -9,7 +9,6 @@ const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(SCRIPT_DIR, '..');
 const REPORT_DIR = path.join(ROOT_DIR, 'reports');
 const DEFAULT_HTTP_BASE_URL = 'http://127.0.0.1:50151';
-const DEFAULT_LIVE_BASE_DIR = path.join(process.env.HOME || '', 'Library', 'Group Containers', 'group.rel.flowhub');
 
 function parseIntInRange(value, fallback, min, max) {
   const parsed = Number.parseInt(String(value ?? ''), 10);
@@ -21,7 +20,11 @@ function parseArgs(argv) {
   const out = {
     rustHubRoot: defaultRustHubRoot(),
     httpBaseUrl: DEFAULT_HTTP_BASE_URL,
-    liveBaseDir: DEFAULT_LIVE_BASE_DIR,
+    profile: '',
+    profileFile: '',
+    liveBaseDir: '',
+    liveBaseDirExplicit: false,
+    accessKeyFile: '',
     durationMs: 120000,
     intervalMs: 2000,
     maxStatusAgeMs: 5000,
@@ -47,8 +50,21 @@ function parseArgs(argv) {
         out.httpBaseUrl = String(next || '').trim() || out.httpBaseUrl;
         i += 1;
         break;
+      case '--profile':
+        out.profile = String(next || '').trim();
+        i += 1;
+        break;
+      case '--profile-file':
+        out.profileFile = String(next || '').trim();
+        i += 1;
+        break;
       case '--live-base-dir':
-        out.liveBaseDir = path.resolve(String(next || '').trim() || out.liveBaseDir);
+        out.liveBaseDir = path.resolve(String(next || '').trim());
+        out.liveBaseDirExplicit = true;
+        i += 1;
+        break;
+      case '--access-key-file':
+        out.accessKeyFile = String(next || '').trim();
         i += 1;
         break;
       case '--duration-ms':
@@ -133,14 +149,17 @@ function usage() {
     'Options:',
     '  --rust-hub-root <p>             Active/final Rust Hub root, default launchctl XHUB_RUST_HUB_ROOT or current package root',
     '  --http-base-url <u>             Rust xhubd HTTP base URL, default http://127.0.0.1:50151',
-    '  --live-base-dir <p>             Live XT file IPC base dir',
+    '  --profile <p>                   Daemon profile for nested daemon ops gate, e.g. domain',
+    '  --profile-file <p>              Daemon profile file for nested daemon ops gate',
+    '  --live-base-dir <p>             Live XT file IPC base dir; default discovers from /xt/classic-hub-compat',
+    '  --access-key-file <p>           HTTP access key file for authenticated live probes',
     '  --duration-ms <ms>              Heartbeat soak duration, default 120000, max 86400000',
     '  --interval-ms <ms>              Heartbeat interval, default 2000',
     '  --max-status-age-ms <ms>        Heartbeat freshness budget, default 5000',
     '  --status-read-timeout-ms <ms>   Child status read timeout, default 3000',
     '  --max-slow-requests <n>         Recent slow request budget for daemon ops gate, default 0',
     '  --skip-ui-compatibility         Skip no-product-UI-change gate',
-    '  --allow-missing-relflowhub      Do not fail if RELFlowHub process is absent',
+    '  --allow-missing-relflowhub      Do not fail if RELFlowHub/X-Hub bridge process is absent',
     '  --allow-target-xhubd            Do not fail if target/debug or target/release xhubd is present',
     '  --allow-memory-skills-production Permit explicit Rust memory writer and skills execution authority',
     '  --require-memory-skills-production Require both Rust memory writer and skills execution authority',
@@ -161,9 +180,44 @@ function parseJsonObject(stdout) {
   return JSON.parse(text.slice(start, end + 1));
 }
 
-function getJson(url, timeoutMs = 5000) {
+function safeString(value) {
+  return String(value ?? '').trim();
+}
+
+function launchctlGetenv(name) {
+  if (process.platform !== 'darwin') return '';
+  try {
+    return safeString(execFileSync('launchctl', ['getenv', name], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 3000,
+    }));
+  } catch {
+    return '';
+  }
+}
+
+function readAccessKeyForProbe(config) {
+  const raw = safeString(process.env.XHUB_RUST_HTTP_ACCESS_KEY || process.env.XHUB_RUST_HUB_ACCESS_KEY);
+  if (raw) return raw;
+  const accessKeyFile = safeString(config.accessKeyFile)
+    || safeString(process.env.XHUB_RUST_HTTP_ACCESS_KEY_FILE)
+    || safeString(process.env.XHUB_RUST_HUB_ACCESS_KEY_FILE)
+    || launchctlGetenv('XHUB_RUST_HTTP_ACCESS_KEY_FILE')
+    || launchctlGetenv('XHUB_RUST_HUB_ACCESS_KEY_FILE');
+  if (!accessKeyFile) return '';
+  try {
+    return safeString(fs.readFileSync(path.resolve(accessKeyFile), 'utf8'));
+  } catch {
+    return '';
+  }
+}
+
+function getJson(url, timeoutMs = 5000, config = {}) {
   return new Promise((resolve) => {
-    const req = http.get(url, { timeout: timeoutMs }, (res) => {
+    const accessKey = safeString(config.httpAccessKey);
+    const headers = accessKey ? { Authorization: `Bearer ${accessKey}` } : {};
+    const req = http.get(url, { timeout: timeoutMs, headers }, (res) => {
       let data = '';
       res.setEncoding('utf8');
       res.on('data', (chunk) => {
@@ -184,7 +238,7 @@ function getJson(url, timeoutMs = 5000) {
 
 async function getHttpMetrics(config, label) {
   const startedAtMs = Date.now();
-  const result = await getJson(`${config.httpBaseUrl}/runtime/http-metrics`, 5000);
+  const result = await getJson(`${config.httpBaseUrl}/runtime/http-metrics`, 5000, config);
   return {
     name: label,
     ok: result.ok && result.body?.ok === true,
@@ -288,6 +342,8 @@ function summarizeHeartbeat(output) {
     ok: output?.ok === true,
     cycle_count: Number(output?.cycle_count || 0),
     duration_ms: Number(output?.duration_ms || 0),
+    live_base_dir: String(output?.live_base_dir || ''),
+    live_base_dir_source: String(output?.live_base_dir_source || ''),
     status_unique_updated_at_count: Number(output?.status_unique_updated_at_count || 0),
     max_observed_status_age_ms: Number(output?.max_observed_status_age_ms || 0),
     memory_writer_authority_in_rust: output?.memory_writer_authority_in_rust === true,
@@ -297,6 +353,7 @@ function summarizeHeartbeat(output) {
 }
 
 function summarizeOpsGate(output) {
+  const readiness = output?.status?.readiness || output?.launchd_status?.readiness || null;
   return {
     ok: output?.ok === true,
     healthy: output?.healthy === true,
@@ -306,7 +363,7 @@ function summarizeOpsGate(output) {
     recent_slow_requests: output?.recent_slow_requests ?? null,
     slow_requests: Number(output?.slow_requests || 0),
     max_observed_http_elapsed_ms: Number(output?.max_observed_http_elapsed_ms || 0),
-    xt_file_ipc_production_surface_ready: output?.status?.readiness?.capabilities?.xt_file_ipc_production_surface_ready === true,
+    xt_file_ipc_production_surface_ready: readiness?.capabilities?.xt_file_ipc_production_surface_ready === true,
     memory_writer_authority_in_rust: output?.memory_writer_authority_in_rust === true,
     skills_execution_authority_in_rust: output?.skills_execution_authority_in_rust === true,
     ui_product_change: output?.ui_product_change === true,
@@ -361,12 +418,19 @@ function processSanity(config) {
   const relflowhub = snapshot.rows
     .filter((line) => /Contents\/MacOS\/RELFlowHub(?:\s|$)/.test(line) || /\/RELFlowHub(?:\s|$)/.test(line))
     .filter((line) => !line.includes('production_live_stability_gate.js'));
+  const xhubApp = snapshot.rows
+    .filter((line) => /Contents\/MacOS\/XHub(?:\s|$)/.test(line) || /\/X-Hub\.app\//.test(line))
+    .filter((line) => !line.includes('production_live_stability_gate.js'));
+  const relflowhubNode = snapshot.rows
+    .filter((line) => /\/relflowhub_node(?:\s|$)/.test(line) || /hub_grpc_server\/src\/server\.js/.test(line))
+    .filter((line) => !line.includes('production_live_stability_gate.js'));
   const pythonRuntime = snapshot.rows.filter((line) => /relflowhub_local_runtime\.py/.test(line));
+  const productBridgePresent = relflowhub.length > 0 || xhubApp.length > 0 || relflowhubNode.length > 0;
   const issues = [];
   if (!snapshot.ok) issues.push('process_snapshot_unavailable');
   if (xhubd.length === 0) issues.push('xhubd_process_not_found');
   if (config.requireNoTargetXhubd && targetXhubd.length > 0) issues.push('target_xhubd_process_present');
-  if (config.requireRelFlowHubProcess && relflowhub.length === 0) issues.push('relflowhub_process_not_found');
+  if (config.requireRelFlowHubProcess && !productBridgePresent) issues.push('product_bridge_process_not_found');
   return {
     ok: issues.length === 0,
     process_snapshot_ok: snapshot.ok,
@@ -374,7 +438,10 @@ function processSanity(config) {
     xhubd_processes: xhubd,
     target_xhubd_processes: targetXhubd,
     relflowhub_processes: relflowhub,
+    xhub_app_processes: xhubApp,
+    relflowhub_node_processes: relflowhubNode,
     python_runtime_processes: pythonRuntime,
+    product_bridge_present: productBridgePresent,
     require_no_target_xhubd: config.requireNoTargetXhubd,
     require_relflowhub_process: config.requireRelFlowHubProcess,
     issues,
@@ -422,6 +489,7 @@ function isBaselineSlowRequestCarryover(opsGate, metricsDelta, config) {
 async function run(config) {
   fs.mkdirSync(REPORT_DIR, { recursive: true });
   const startedAtMs = Date.now();
+  config.httpAccessKey = readAccessKeyForProbe(config);
   const metricsBefore = await getHttpMetrics(config, 'http_metrics_baseline');
   const heartbeatReportPath = path.join(REPORT_DIR, `xt_file_ipc_live_heartbeat_soak_for_stability_${utcStamp()}.json`);
   const memorySkillsGateArgs = [];
@@ -430,15 +498,24 @@ async function run(config) {
   } else if (config.allowMemorySkillsProduction) {
     memorySkillsGateArgs.push('--allow-memory-skills-production');
   }
+  const liveBaseDirArgs = config.liveBaseDirExplicit
+    ? ['--live-base-dir', config.liveBaseDir]
+    : [];
+  const daemonOpsGateArgs = [
+    ...(config.profile ? ['--profile', config.profile] : []),
+    ...(config.profileFile ? ['--profile-file', config.profileFile] : []),
+    ...(config.accessKeyFile ? ['--access-key-file', config.accessKeyFile] : []),
+  ];
   const heartbeat = runJsonStep('xt_file_ipc_live_heartbeat_soak', 'node', [
     path.join(SCRIPT_DIR, 'xt_file_ipc_live_heartbeat_soak.js'),
     '--http-base-url', config.httpBaseUrl,
-    '--live-base-dir', config.liveBaseDir,
+    ...liveBaseDirArgs,
     '--duration-ms', String(config.durationMs),
     '--interval-ms', String(config.intervalMs),
     '--max-status-age-ms', String(config.maxStatusAgeMs),
     '--status-read-timeout-ms', String(config.statusReadTimeoutMs),
     '--report-path', heartbeatReportPath,
+    ...(config.accessKeyFile ? ['--access-key-file', config.accessKeyFile] : []),
     ...memorySkillsGateArgs,
   ], {
     cwd: config.rustHubRoot,
@@ -450,6 +527,7 @@ async function run(config) {
 
   const opsGate = runJsonStep('daemon_ops_gate', 'bash', [
     path.join(SCRIPT_DIR, 'daemon_ops_gate.command'),
+    ...daemonOpsGateArgs,
     '--max-slow-requests', String(config.maxSlowRequests),
     ...memorySkillsGateArgs,
   ], {
@@ -563,7 +641,10 @@ async function run(config) {
     duration_ms: Date.now() - startedAtMs,
     rust_hub_root: config.rustHubRoot,
     http_base_url: config.httpBaseUrl,
-    live_base_dir: config.liveBaseDir,
+    daemon_profile: config.profile,
+    daemon_profile_file: config.profileFile,
+    live_base_dir: String(heartbeat.summary.live_base_dir || config.liveBaseDir || ''),
+    live_base_dir_source: String(heartbeat.summary.live_base_dir_source || (config.liveBaseDirExplicit ? 'argument' : '')),
     heartbeat_duration_ms: config.durationMs,
     heartbeat_interval_ms: config.intervalMs,
     max_status_age_ms: config.maxStatusAgeMs,

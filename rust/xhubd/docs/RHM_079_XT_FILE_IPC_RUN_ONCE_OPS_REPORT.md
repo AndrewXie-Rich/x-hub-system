@@ -52,4 +52,3 @@ If the opt-in smoke fails, `ops-report.ok=false`. Default skipped smoke remains
 - default `tools/daemon_ops_report.command --report-path ...`
 - opt-in `tools/daemon_ops_report.command --xt-file-ipc-run-once-smoke ...`
 - package includes the docs and script changes
-

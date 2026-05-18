@@ -28,8 +28,26 @@ public enum SharedPaths {
         return dict[key] as? String
     }()
 
+    private static let cachedDefaultRealHomeDirectory: URL = {
+        let candidates = realHomeDirectoryCandidates()
+        if let nonContainer = candidates.first(where: { !isContainerizedHomePath($0.path) }) {
+            return nonContainer
+        }
+        if let first = candidates.first {
+            return first
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+    }()
+
+    private static let cachedDefaultSandboxHomeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+
+    private static func environmentValue(_ key: String) -> String? {
+        guard let raw = getenv(key) else { return nil }
+        return String(cString: raw)
+    }
+
     private static func sourceRunHomeOverride() -> URL? {
-        let rawValue = ProcessInfo.processInfo.environment[sourceRunHomeOverrideEnvKey]?
+        let rawValue = environmentValue(sourceRunHomeOverrideEnvKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !rawValue.isEmpty else { return nil }
         let expandedPath = NSString(string: rawValue).expandingTildeInPath
@@ -86,15 +104,7 @@ public enum SharedPaths {
         if let override = sourceRunHomeOverride() {
             return override
         }
-        let candidates = realHomeDirectoryCandidates()
-        if let nonContainer = candidates.first(where: { !isContainerizedHomePath($0.path) }) {
-            return nonContainer
-        }
-        if let first = candidates.first {
-            return first
-        }
-        // Fallback: may still be container under sandbox, but better than crashing.
-        return FileManager.default.homeDirectoryForCurrentUser
+        return cachedDefaultRealHomeDirectory
     }
 
     public static func sandboxHomeDirectory() -> URL {
@@ -102,7 +112,7 @@ public enum SharedPaths {
             return override
         }
         // Under App Sandbox this is typically: ~/Library/Containers/<bundle-id>/Data
-        return FileManager.default.homeDirectoryForCurrentUser
+        return cachedDefaultSandboxHomeDirectory
     }
 
     public static func containerDataDirectory(bundleId: String? = Bundle.main.bundleIdentifier) -> URL? {
@@ -119,8 +129,7 @@ public enum SharedPaths {
     }
 
     public static func isSandboxedProcess() -> Bool {
-        let env = ProcessInfo.processInfo.environment
-        if env["APP_SANDBOX_CONTAINER_ID"] != nil {
+        if environmentValue("APP_SANDBOX_CONTAINER_ID") != nil {
             return true
         }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
@@ -168,20 +177,27 @@ public enum SharedPaths {
         }
 
         let useAppGroup = (groupDir != nil)
+        let sandboxed = isSandboxedProcess()
+        let containerDir = containerDataDirectory()
 
         // Dev sandbox builds: prefer the app container directory (stable, no TCC spam).
         // NOTE: Some builds do not expose a container home via FileManager.homeDirectoryForCurrentUser,
         // so we also probe the canonical container path by bundle id.
         if !useAppGroup {
-            if let cd = containerDataDirectory() {
+            if let cd = containerDir {
                 out.append(contentsOf: runtimeDirectories(in: cd))
             }
         }
 
-        if isSandboxedProcess() && !useAppGroup {
+        if sandboxed && !useAppGroup {
             out.append(contentsOf: runtimeDirectories(in: sandboxHomeDirectory()))
             out.append(contentsOf: runtimeDirectories(in: URL(fileURLWithPath: "/private/tmp", isDirectory: true)))
-            out.append(contentsOf: runtimeDirectories(in: realHomeDirectory()))
+            // Sandboxed Hub builds frequently cannot read the real home fallback without
+            // generating repeated deny logs. Keep that legacy path only when we do not
+            // have a stable app container to read from.
+            if containerDir == nil {
+                out.append(contentsOf: runtimeDirectories(in: realHomeDirectory()))
+            }
         } else {
             out.append(contentsOf: runtimeDirectories(in: realHomeDirectory()))
             out.append(contentsOf: runtimeDirectories(in: sandboxHomeDirectory()))

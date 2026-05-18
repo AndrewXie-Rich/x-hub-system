@@ -24,4 +24,3 @@ fail_closed = true
 default_project_mode = "project_code"
 default_supervisor_mode = "assistant_personal"
 secret_remote_mode = "deny"
-

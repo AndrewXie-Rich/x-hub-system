@@ -305,6 +305,75 @@ supervisor_remote_snapshot_cache_projection = {
     "ageMs": 3000,
     "ttlRemainingMs": 12000,
 }
+provider_key_selection_projection = {
+    "requestedProvider": "openai",
+    "requestedModelId": "openai/gpt-5.4",
+    "strategy": "fill-first",
+    "selectionScope": "openai::openai:api.openai.com:responses",
+    "selectedAccountKey": "openai:primary",
+    "fallbackReasonCode": "",
+    "candidates": [
+        {
+            "accountKey": "openai:primary",
+            "provider": "openai",
+            "poolID": "openai:api.openai.com:responses",
+            "wireAPI": "responses",
+            "availability": {"ready": {}},
+            "score": 1200,
+            "selected": True,
+            "reasonCode": "selected_by_scheduler",
+            "retryAtMs": 0,
+        },
+        {
+            "accountKey": "openai:cooldown",
+            "provider": "openai",
+            "poolID": "openai:api.openai.com:responses",
+            "wireAPI": "responses",
+            "availability": {
+                "cooldown": {
+                    "retryAtMs": 1741300185000,
+                    "reasonCode": "provider_timeout",
+                }
+            },
+            "score": -500,
+            "selected": False,
+            "reasonCode": "provider_timeout",
+            "retryAtMs": 1741300185000,
+        },
+        {
+            "accountKey": "openai:stale",
+            "provider": "openai",
+            "poolID": "openai:api.openai.com:responses",
+            "wireAPI": "responses",
+            "availability": {
+                "stale": {
+                    "reasonCode": "runtime_stale",
+                }
+            },
+            "score": -750,
+            "selected": False,
+            "reasonCode": "runtime_stale",
+            "retryAtMs": 0,
+        },
+    ],
+}
+provider_key_route_context_projection = {
+    "decision": provider_key_selection_projection,
+    "modelId": "openai/gpt-5.4",
+    "importContextLines": [
+        "配置文件 config149.toml 最近一次同步失败；最近错误：unsupported_toml_config",
+    ],
+    "importIssues": [
+        {
+            "kind": "config_path",
+            "state": "sync_failed",
+            "sourceRef": "/Users/test/config149.toml",
+            "sourceName": "config149.toml",
+            "errorCode": "unsupported_toml_config",
+            "errorDetail": "missing auth entries",
+        }
+    ],
+}
 heartbeat_governance_projection = {
     "projectId": "project-alpha",
     "projectName": "Alpha",
@@ -492,12 +561,15 @@ payload = {
             "summary": "Assigned models are visible, but recent project requests degraded during execution.",
             "nextStep": "Inspect route diagnostics for the affected project.",
             "repairEntry": "xt_choose_model",
+            "providerKeySelectionProjection": provider_key_selection_projection,
+            "providerKeyRouteContextProjection": provider_key_route_context_projection,
             "memoryRouteTruthProjection": memory_route_truth_projection,
             "detailLines": [
                 "configured_models=1",
                 "recent_route_events_24h=2",
                 "recent_route_failures_24h=1",
-                "recent_remote_retry_recoveries_24h=1"
+                "recent_remote_retry_recoveries_24h=1",
+                "route_event_1=project=Smoke Project role=coder path=remote_error requested=openai/gpt-5.4 actual=qwen3-14b-mlx reason=provider_timeout provider=OpenAI audit_ref=route-audit-1"
             ],
         },
         {
@@ -644,6 +716,8 @@ env \
   XTERMINAL_SOURCE_RUN_SWIFT_MODULE_CACHE_PATH="$SNAPSHOT_DIR/.swift-module-cache" \
   XTERMINAL_SOURCE_RUN_DISABLE_SANDBOX=1 \
   XTERMINAL_SOURCE_RUN_DISABLE_INDEX_STORE=1 \
+  XHUB_XT_SOURCE_HELPER="$SNAPSHOT_DIR/x-terminal/tools/run_xterminal_from_source.command" \
+  XHUB_ALLOW_LEGACY_XTERMINAL_RUN=1 \
   bash "$SNAPSHOT_DIR/scripts/run_xhub_doctor_from_source.command" \
     xt \
     --workspace-root "$WORKSPACE_DIR" \
@@ -718,6 +792,8 @@ supervisor_memory_assembly_resolution = session_runtime.get("supervisor_memory_a
 supervisor_remote_snapshot_cache_snapshot = session_runtime.get("supervisor_remote_snapshot_cache_snapshot")
 durable_candidate_mirror_snapshot = session_runtime.get("durable_candidate_mirror_snapshot")
 local_store_write_snapshot = session_runtime.get("local_store_write_snapshot")
+provider_key_selection_snapshot = model_route.get("provider_key_selection_snapshot")
+provider_key_route_context_snapshot = model_route.get("provider_key_route_context_snapshot")
 memory_route_truth_snapshot = model_route.get("memory_route_truth_snapshot")
 assert project_context_summary is not None, session_runtime
 assert hub_memory_prompt_projection_snapshot is not None, session_runtime
@@ -730,6 +806,8 @@ assert supervisor_memory_assembly_resolution is not None, session_runtime
 assert supervisor_remote_snapshot_cache_snapshot is not None, session_runtime
 assert durable_candidate_mirror_snapshot is not None, session_runtime
 assert local_store_write_snapshot is not None, session_runtime
+assert provider_key_selection_snapshot is not None, model_route
+assert provider_key_route_context_snapshot is not None, model_route
 assert memory_route_truth_snapshot is not None, model_route
 assert project_context_summary["source_kind"] == "latest_coder_usage", project_context_summary
 assert project_context_summary["project_label"] == "Smoke Project", project_context_summary
@@ -781,6 +859,16 @@ assert durable_candidate_mirror_snapshot["local_store_role"] == "cache|fallback|
 assert local_store_write_snapshot["personal_memory_intent"] == "manual_edit_buffer_commit", local_store_write_snapshot
 assert local_store_write_snapshot["cross_link_intent"] == "after_turn_cache_refresh", local_store_write_snapshot
 assert local_store_write_snapshot["personal_review_intent"] == "derived_refresh", local_store_write_snapshot
+assert provider_key_selection_snapshot["requestedProvider"] == "openai", provider_key_selection_snapshot
+assert provider_key_selection_snapshot["requestedModelId"] == "openai/gpt-5.4", provider_key_selection_snapshot
+assert provider_key_selection_snapshot["selectedAccountKey"] == "openai:primary", provider_key_selection_snapshot
+assert provider_key_selection_snapshot["candidates"][0]["wireAPI"] == "responses", provider_key_selection_snapshot
+assert provider_key_selection_snapshot["candidates"][1]["availability"]["cooldown"]["reasonCode"] == "provider_timeout", provider_key_selection_snapshot
+assert provider_key_selection_snapshot["candidates"][1]["availability"]["cooldown"]["retryAtMs"] == 1741300185000, provider_key_selection_snapshot
+assert provider_key_route_context_snapshot["model_id"] == "openai/gpt-5.4", provider_key_route_context_snapshot
+assert provider_key_route_context_snapshot["decision"]["selectedAccountKey"] == "openai:primary", provider_key_route_context_snapshot
+assert provider_key_route_context_snapshot["import_issues"][0]["errorCode"] == "unsupported_toml_config", provider_key_route_context_snapshot
+assert provider_key_route_context_snapshot["import_issues"][0]["sourceRef"] == "/Users/test/config149.toml", provider_key_route_context_snapshot
 assert memory_route_truth_snapshot["projection_source"] == "xt_model_route_diagnostics_summary", memory_route_truth_snapshot
 assert memory_route_truth_snapshot["completeness"] == "partial_xt_projection", memory_route_truth_snapshot
 assert memory_route_truth_snapshot["route_result"]["route_source"] == "local_fallback_after_remote_error", memory_route_truth_snapshot
@@ -818,6 +906,8 @@ evidence = {
     "supervisor_remote_snapshot_cache_snapshot": supervisor_remote_snapshot_cache_snapshot,
     "durable_candidate_mirror_snapshot": durable_candidate_mirror_snapshot,
     "local_store_write_snapshot": local_store_write_snapshot,
+    "provider_key_selection_snapshot": provider_key_selection_snapshot,
+    "provider_key_route_context_snapshot": provider_key_route_context_snapshot,
     "connectivity_repair_ledger": connectivity_repair_ledger,
     "assertions": {
         "source_kind": {
@@ -984,6 +1074,31 @@ evidence = {
             "expected": "derived_refresh",
             "actual": local_store_write_snapshot["personal_review_intent"],
             "pass": local_store_write_snapshot["personal_review_intent"] == "derived_refresh",
+        },
+        "provider_key_requested_provider": {
+            "expected": "openai",
+            "actual": provider_key_selection_snapshot["requestedProvider"],
+            "pass": provider_key_selection_snapshot["requestedProvider"] == "openai",
+        },
+        "provider_key_selected_account": {
+            "expected": "openai:primary",
+            "actual": provider_key_selection_snapshot["selectedAccountKey"],
+            "pass": provider_key_selection_snapshot["selectedAccountKey"] == "openai:primary",
+        },
+        "provider_key_route_context_model_id": {
+            "expected": "openai/gpt-5.4",
+            "actual": provider_key_route_context_snapshot["model_id"],
+            "pass": provider_key_route_context_snapshot["model_id"] == "openai/gpt-5.4",
+        },
+        "provider_key_route_context_primary_import_issue": {
+            "expected": "unsupported_toml_config",
+            "actual": provider_key_route_context_snapshot["import_issues"][0]["errorCode"],
+            "pass": provider_key_route_context_snapshot["import_issues"][0]["errorCode"] == "unsupported_toml_config",
+        },
+        "provider_key_next_retry_at_ms": {
+            "expected": 1741300185000,
+            "actual": provider_key_selection_snapshot["candidates"][1]["availability"]["cooldown"]["retryAtMs"],
+            "pass": provider_key_selection_snapshot["candidates"][1]["availability"]["cooldown"]["retryAtMs"] == 1741300185000,
         },
         "memory_projection_source": {
             "expected": "xt_model_route_diagnostics_summary",

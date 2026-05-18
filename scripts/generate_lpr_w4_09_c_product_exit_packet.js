@@ -111,6 +111,17 @@ function normalizeBoolean(value) {
   return value === true;
 }
 
+function normalizeInteger(value, fallback = 0) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.max(0, Math.trunc(value));
+  }
+  const trimmed = String(value ?? "").trim();
+  if (/^-?\d+$/.test(trimmed)) {
+    return Math.max(0, Number.parseInt(trimmed, 10));
+  }
+  return fallback;
+}
+
 function normalizeArray(value) {
   return Array.isArray(value) ? value : [];
 }
@@ -282,6 +293,211 @@ function compactHeartbeatRecoveryDecision(decision) {
   }
 
   return Object.keys(out).length > 0 ? out : null;
+}
+
+function compactProviderKeyCandidateDecision(candidate) {
+  if (!candidate || typeof candidate !== "object") return null;
+
+  let availabilityState = candidate.availability_state || null;
+  let availabilityReasonCode = candidate.availability_reason_code || null;
+  let availabilityRetryAtMs = candidate.availability_retry_at_ms ?? null;
+  const availability = candidate.availability;
+  if (!availabilityState && availability && typeof availability === "object") {
+    for (const state of ["ready", "cooldown", "blocked", "disabled", "stale"]) {
+      if (!Object.prototype.hasOwnProperty.call(availability, state)) continue;
+      availabilityState = state;
+      const details = availability[state];
+      if (details && typeof details === "object") {
+        availabilityReasonCode = details.reasonCode ?? null;
+        availabilityRetryAtMs = details.retryAtMs ?? null;
+      }
+      break;
+    }
+  }
+
+  return {
+    account_key: candidate.account_key ?? candidate.accountKey ?? null,
+    provider: candidate.provider ?? null,
+    pool_id: candidate.pool_id ?? candidate.poolID ?? null,
+    wire_api: candidate.wire_api ?? candidate.wireAPI ?? null,
+    availability_state: availabilityState,
+    availability_reason_code: availabilityReasonCode,
+    availability_retry_at_ms: availabilityRetryAtMs,
+    selected: candidate.selected,
+    reason_code: candidate.reason_code ?? candidate.reasonCode ?? null,
+    retry_at_ms: candidate.retry_at_ms ?? candidate.retryAtMs ?? null,
+  };
+}
+
+function compactProviderKeySelectionSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return null;
+
+  const rawCandidatePreview = Array.isArray(snapshot.candidate_preview)
+    ? snapshot.candidate_preview
+    : Array.isArray(snapshot.candidates)
+      ? snapshot.candidates
+      : [];
+  const candidatePreview = rawCandidatePreview
+    .map((candidate) => compactProviderKeyCandidateDecision(candidate))
+    .filter(Boolean)
+    .slice(0, 4);
+  const selectedCandidate = compactProviderKeyCandidateDecision(snapshot.selected_candidate)
+    || candidatePreview.find((candidate) => candidate.selected === true)
+    || null;
+  const blockedCandidateCount = Number.isFinite(snapshot.blocked_candidate_count)
+    ? snapshot.blocked_candidate_count
+    : candidatePreview.filter((candidate) => candidate.availability_state === "blocked").length;
+  const cooldownCandidateCount = Number.isFinite(snapshot.cooldown_candidate_count)
+    ? snapshot.cooldown_candidate_count
+    : candidatePreview.filter((candidate) => candidate.availability_state === "cooldown").length;
+  const staleCandidateCount = Number.isFinite(snapshot.stale_candidate_count)
+    ? snapshot.stale_candidate_count
+    : candidatePreview.filter((candidate) => candidate.availability_state === "stale").length;
+  const retryCandidates = candidatePreview
+    .map((candidate) => candidate.availability_retry_at_ms ?? candidate.retry_at_ms ?? null)
+    .filter((retryAtMs) => Number.isFinite(retryAtMs) && retryAtMs > 0);
+  const nextRetryAtMs = Number.isFinite(snapshot.next_retry_at_ms)
+    ? snapshot.next_retry_at_ms
+    : retryCandidates.length > 0
+      ? Math.min(...retryCandidates)
+      : null;
+
+  return {
+    requested_provider: snapshot.requested_provider ?? snapshot.requestedProvider ?? null,
+    requested_model_id: snapshot.requested_model_id ?? snapshot.requestedModelId ?? null,
+    strategy: snapshot.strategy ?? null,
+    selection_scope: snapshot.selection_scope ?? snapshot.selectionScope ?? null,
+    selected_account_key: snapshot.selected_account_key ?? snapshot.selectedAccountKey ?? null,
+    fallback_reason_code: snapshot.fallback_reason_code ?? snapshot.fallbackReasonCode ?? null,
+    candidate_count: Number.isFinite(snapshot.candidate_count)
+      ? snapshot.candidate_count
+      : candidatePreview.length,
+    blocked_candidate_count: blockedCandidateCount,
+    cooldown_candidate_count: cooldownCandidateCount,
+    stale_candidate_count: staleCandidateCount,
+    next_retry_at_ms: nextRetryAtMs,
+    selected_candidate: selectedCandidate,
+    candidate_preview: candidatePreview,
+  };
+}
+
+function compactProviderKeyImportIssue(issue) {
+  if (!issue || typeof issue !== "object") return null;
+
+  return {
+    kind: issue.kind ?? null,
+    state: issue.state ?? null,
+    source_ref: issue.source_ref ?? issue.sourceRef ?? null,
+    source_name: issue.source_name ?? issue.sourceName ?? null,
+    error_code: issue.error_code ?? issue.errorCode ?? null,
+    error_detail: issue.error_detail ?? issue.errorDetail ?? null,
+  };
+}
+
+function compactProviderKeyRouteContextSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return null;
+
+  const compactImportIssues = Array.isArray(snapshot.import_issues)
+    ? snapshot.import_issues
+        .map((issue) => compactProviderKeyImportIssue(issue))
+        .filter(Boolean)
+    : Array.isArray(snapshot.importIssues)
+      ? snapshot.importIssues
+          .map((issue) => compactProviderKeyImportIssue(issue))
+          .filter(Boolean)
+      : [];
+  const primaryImportIssue = compactProviderKeyImportIssue(
+    snapshot.primary_import_issue
+      ?? snapshot.primaryImportIssue
+      ?? compactImportIssues[0]
+  );
+  const decision = snapshot.decision;
+  const importContextPreview = (
+    Array.isArray(snapshot.import_context_preview)
+      ? snapshot.import_context_preview
+      : Array.isArray(snapshot.import_context_lines)
+        ? snapshot.import_context_lines
+        : Array.isArray(snapshot.importContextLines)
+          ? snapshot.importContextLines
+          : []
+  )
+    .filter((line) => typeof line === "string" && line.trim().length > 0)
+    .slice(0, 3);
+
+  return {
+    model_id: snapshot.model_id ?? snapshot.modelId ?? null,
+    selected_account_key:
+      snapshot.selected_account_key
+      ?? snapshot.selectedAccountKey
+      ?? (decision && typeof decision === "object"
+        ? decision.selected_account_key ?? decision.selectedAccountKey ?? null
+        : null),
+    import_issue_count: Number.isFinite(snapshot.import_issue_count)
+      ? snapshot.import_issue_count
+      : compactImportIssues.length,
+    primary_import_issue: primaryImportIssue,
+    import_context_preview: importContextPreview,
+  };
+}
+
+function isoFromEpochMs(value) {
+  if (!Number.isFinite(value) || value <= 0) return "";
+  try {
+    return new Date(Math.trunc(value)).toISOString();
+  } catch {
+    return "";
+  }
+}
+
+function retryAtMsForProviderKeyCandidate(candidate) {
+  if (!candidate || typeof candidate !== "object") return null;
+  const retryAtMs = candidate.availability_retry_at_ms ?? candidate.retry_at_ms ?? null;
+  return Number.isFinite(retryAtMs) && retryAtMs > 0 ? retryAtMs : null;
+}
+
+function compactProviderKeySelectionFocus(support) {
+  if (!support || typeof support !== "object") return null;
+
+  const xtSourceSnapshot = compactProviderKeySelectionSnapshot(
+    support.xt_source_provider_key_selection_snapshot
+  );
+  const allSourceSnapshot = compactProviderKeySelectionSnapshot(
+    support.all_source_provider_key_selection_snapshot
+  );
+  const selectedSnapshot = xtSourceSnapshot || allSourceSnapshot;
+  if (!selectedSnapshot) return null;
+
+  const nextRetryCandidate = normalizeArray(selectedSnapshot.candidate_preview)
+    .filter((candidate) => retryAtMsForProviderKeyCandidate(candidate) !== null)
+    .sort((lhs, rhs) => retryAtMsForProviderKeyCandidate(lhs) - retryAtMsForProviderKeyCandidate(rhs))[0] || null;
+  const nextRetryAtMs = Number.isFinite(selectedSnapshot.next_retry_at_ms)
+    ? selectedSnapshot.next_retry_at_ms
+    : retryAtMsForProviderKeyCandidate(nextRetryCandidate);
+
+  return {
+    support_ready: true,
+    source: xtSourceSnapshot ? "xt_source_smoke" : "all_source_smoke",
+    xt_source_smoke_status: normalizeString(support.xt_source_smoke_status, "missing"),
+    all_source_smoke_status: normalizeString(support.all_source_smoke_status, "missing"),
+    requested_provider: normalizeString(selectedSnapshot.requested_provider, ""),
+    requested_model_id: normalizeString(selectedSnapshot.requested_model_id, ""),
+    strategy: normalizeString(selectedSnapshot.strategy, ""),
+    selection_scope: normalizeString(selectedSnapshot.selection_scope, ""),
+    selected_account_key: normalizeString(selectedSnapshot.selected_account_key, ""),
+    selected_wire_api: normalizeString(selectedSnapshot.selected_candidate?.wire_api, ""),
+    fallback_reason_code: normalizeString(selectedSnapshot.fallback_reason_code, ""),
+    candidate_count: normalizeInteger(selectedSnapshot.candidate_count, 0),
+    blocked_candidate_count: normalizeInteger(selectedSnapshot.blocked_candidate_count, 0),
+    cooldown_candidate_count: normalizeInteger(selectedSnapshot.cooldown_candidate_count, 0),
+    stale_candidate_count: normalizeInteger(selectedSnapshot.stale_candidate_count, 0),
+    next_retry_at_ms: nextRetryAtMs,
+    next_retry_at_iso: normalizeString(isoFromEpochMs(nextRetryAtMs), ""),
+    next_retry_account_key: normalizeString(nextRetryCandidate?.account_key, ""),
+    next_retry_reason_code: normalizeString(
+      nextRetryCandidate?.availability_reason_code || nextRetryCandidate?.reason_code,
+      ""
+    ),
+  };
 }
 
 function compactLocalStoreWriteSnapshot(snapshot) {
@@ -887,6 +1103,9 @@ function buildProductExitPacket(inputs = {}) {
   const compactRequireRealReport = compactRequireReal(requireReal);
   const compactBoundaryReport = compactBoundary(boundary);
   const compactOssReadinessReport = compactOssReadiness(ossReadiness);
+  const providerKeySelectionFocus = compactProviderKeySelectionFocus(
+    doctorSourceGate?.provider_key_selection_support || null
+  );
 
   const operatorSupportReady = normalizeBoolean(
     compactRecovery?.machine_decision?.support_ready
@@ -1062,6 +1281,7 @@ function buildProductExitPacket(inputs = {}) {
           }
         : null,
       support_faq: compactRecovery?.support_faq || [],
+      provider_key_selection_focus: providerKeySelectionFocus,
       require_real_focus: compactRequireRealReport
         ? {
             verdict_reason: compactRequireRealReport.verdict_reason,
@@ -1201,6 +1421,42 @@ function buildProductExitPacket(inputs = {}) {
                   ),
                   all_source_heartbeat_governance_snapshot: compactHeartbeatGovernanceSnapshot(
                     doctorSourceGate.heartbeat_governance_support.all_source_heartbeat_governance_snapshot
+                  ),
+                }
+              : null,
+            provider_key_selection_support: doctorSourceGate.provider_key_selection_support
+              ? {
+                  xt_source_smoke_status: normalizeString(
+                    doctorSourceGate.provider_key_selection_support.xt_source_smoke_status,
+                    "missing"
+                  ),
+                  all_source_smoke_status: normalizeString(
+                    doctorSourceGate.provider_key_selection_support.all_source_smoke_status,
+                    "missing"
+                  ),
+                  xt_source_provider_key_selection_snapshot: compactProviderKeySelectionSnapshot(
+                    doctorSourceGate.provider_key_selection_support.xt_source_provider_key_selection_snapshot
+                  ),
+                  all_source_provider_key_selection_snapshot: compactProviderKeySelectionSnapshot(
+                    doctorSourceGate.provider_key_selection_support.all_source_provider_key_selection_snapshot
+                  ),
+                }
+              : null,
+            provider_key_route_context_support: doctorSourceGate.provider_key_route_context_support
+              ? {
+                  xt_source_smoke_status: normalizeString(
+                    doctorSourceGate.provider_key_route_context_support.xt_source_smoke_status,
+                    "missing"
+                  ),
+                  all_source_smoke_status: normalizeString(
+                    doctorSourceGate.provider_key_route_context_support.all_source_smoke_status,
+                    "missing"
+                  ),
+                  xt_source_provider_key_route_context_snapshot: compactProviderKeyRouteContextSnapshot(
+                    doctorSourceGate.provider_key_route_context_support.xt_source_provider_key_route_context_snapshot
+                  ),
+                  all_source_provider_key_route_context_snapshot: compactProviderKeyRouteContextSnapshot(
+                    doctorSourceGate.provider_key_route_context_support.all_source_provider_key_route_context_snapshot
                   ),
                 }
               : null,

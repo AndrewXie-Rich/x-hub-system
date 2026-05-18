@@ -3605,7 +3605,6 @@ final class XTUnifiedDoctorSection: Identifiable, Codable, Equatable, @unchecked
     var memoryRouteTruthProjection: AXModelRouteTruthProjection? = nil
     var providerKeySelectionProjection: ProviderKeySelectionDecision? = nil
     var providerKeyRouteContextProjection: XTProviderKeyRouteContext? = nil
-    var hubContractProjection: XTUnifiedDoctorHubContractProjection? = nil
     var externalTerminalAccessProjection: XTUnifiedDoctorExternalTerminalAccessProjection? = nil
     var durableCandidateMirrorProjection: XTUnifiedDoctorDurableCandidateMirrorProjection? = nil
     var localStoreWriteProjection: XTUnifiedDoctorLocalStoreWriteProjection? = nil
@@ -3638,7 +3637,6 @@ final class XTUnifiedDoctorSection: Identifiable, Codable, Equatable, @unchecked
             && lhs.memoryRouteTruthProjection == rhs.memoryRouteTruthProjection
             && lhs.providerKeySelectionProjection == rhs.providerKeySelectionProjection
             && lhs.providerKeyRouteContextProjection == rhs.providerKeyRouteContextProjection
-            && lhs.hubContractProjection == rhs.hubContractProjection
             && lhs.externalTerminalAccessProjection == rhs.externalTerminalAccessProjection
             && lhs.durableCandidateMirrorProjection == rhs.durableCandidateMirrorProjection
             && lhs.localStoreWriteProjection == rhs.localStoreWriteProjection
@@ -3670,7 +3668,6 @@ final class XTUnifiedDoctorSection: Identifiable, Codable, Equatable, @unchecked
         case memoryRouteTruthProjection
         case providerKeySelectionProjection
         case providerKeyRouteContextProjection
-        case hubContractProjection
         case externalTerminalAccessProjection
         case durableCandidateMirrorProjection
         case localStoreWriteProjection
@@ -3720,7 +3717,6 @@ final class XTUnifiedDoctorSection: Identifiable, Codable, Equatable, @unchecked
         memoryRouteTruthProjection: AXModelRouteTruthProjection? = nil,
         providerKeySelectionProjection: ProviderKeySelectionDecision? = nil,
         providerKeyRouteContextProjection: XTProviderKeyRouteContext? = nil,
-        hubContractProjection: XTUnifiedDoctorHubContractProjection? = nil,
         externalTerminalAccessProjection: XTUnifiedDoctorExternalTerminalAccessProjection? = nil,
         durableCandidateMirrorProjection: XTUnifiedDoctorDurableCandidateMirrorProjection? = nil,
         localStoreWriteProjection: XTUnifiedDoctorLocalStoreWriteProjection? = nil,
@@ -3750,7 +3746,6 @@ final class XTUnifiedDoctorSection: Identifiable, Codable, Equatable, @unchecked
         self.memoryRouteTruthProjection = memoryRouteTruthProjection
         self.providerKeySelectionProjection = providerKeySelectionProjection
         self.providerKeyRouteContextProjection = providerKeyRouteContextProjection
-        self.hubContractProjection = hubContractProjection
         self.externalTerminalAccessProjection = externalTerminalAccessProjection
         self.durableCandidateMirrorProjection = durableCandidateMirrorProjection
         self.localStoreWriteProjection = localStoreWriteProjection
@@ -3835,10 +3830,6 @@ final class XTUnifiedDoctorSection: Identifiable, Codable, Equatable, @unchecked
                 XTProviderKeyRouteContext.self,
                 forKey: .providerKeyRouteContextProjection
             ),
-            hubContractProjection: try container.decodeIfPresent(
-                XTUnifiedDoctorHubContractProjection.self,
-                forKey: .hubContractProjection
-            ),
             externalTerminalAccessProjection: try container.decodeIfPresent(
                 XTUnifiedDoctorExternalTerminalAccessProjection.self,
                 forKey: .externalTerminalAccessProjection
@@ -3914,7 +3905,6 @@ final class XTUnifiedDoctorSection: Identifiable, Codable, Equatable, @unchecked
             providerKeyRouteContextProjection,
             forKey: .providerKeyRouteContextProjection
         )
-        try container.encodeIfPresent(hubContractProjection, forKey: .hubContractProjection)
         try container.encodeIfPresent(
             externalTerminalAccessProjection,
             forKey: .externalTerminalAccessProjection
@@ -4017,7 +4007,6 @@ struct XTUnifiedDoctorReportContract: Codable, Equatable {
             "memoryRouteTruthProjection",
             "providerKeySelectionProjection",
             "providerKeyRouteContextProjection",
-            "hubContractProjection",
             "externalTerminalAccessProjection",
             "durableCandidateMirrorProjection",
             "localStoreWriteProjection",
@@ -4094,7 +4083,6 @@ final class XTUnifiedDoctorInput: @unchecked Sendable {
     var calendarReminderSnapshot: XTUnifiedDoctorCalendarReminderSnapshot
     var skillsSnapshot: AXSkillsDoctorSnapshot
     var skillDoctorTruthProjection: XTUnifiedDoctorSkillDoctorTruthProjection? = nil
-    var hubContractProjection: XTUnifiedDoctorHubContractProjection? = nil
     var externalTerminalAccessProjection: XTUnifiedDoctorExternalTerminalAccessProjection? = nil
     var providerKeyImportSnapshot: HubProviderKeyImportSnapshot? = nil
     var reportPath: String
@@ -4150,7 +4138,6 @@ final class XTUnifiedDoctorInput: @unchecked Sendable {
         calendarReminderSnapshot: XTUnifiedDoctorCalendarReminderSnapshot = .empty,
         skillsSnapshot: AXSkillsDoctorSnapshot,
         skillDoctorTruthProjection: XTUnifiedDoctorSkillDoctorTruthProjection? = nil,
-        hubContractProjection: XTUnifiedDoctorHubContractProjection? = nil,
         externalTerminalAccessProjection: XTUnifiedDoctorExternalTerminalAccessProjection? = nil,
         providerKeyImportSnapshot: HubProviderKeyImportSnapshot? = nil,
         reportPath: String = XTUnifiedDoctorStore.defaultReportURL().path,
@@ -4201,7 +4188,6 @@ final class XTUnifiedDoctorInput: @unchecked Sendable {
         self.calendarReminderSnapshot = calendarReminderSnapshot
         self.skillsSnapshot = skillsSnapshot
         self.skillDoctorTruthProjection = skillDoctorTruthProjection
-        self.hubContractProjection = hubContractProjection
         self.externalTerminalAccessProjection = externalTerminalAccessProjection
         self.providerKeyImportSnapshot = providerKeyImportSnapshot
         self.reportPath = reportPath
@@ -4411,9 +4397,6 @@ enum XTUnifiedDoctorBuilder {
             explicitFailureIssue: failureIssue,
             externalTerminalAccessSection: externalTerminalAccess
         )
-        let hubContractSchemas = input.hubContractProjection?.contractReady == true
-            ? [input.hubContractProjection?.schemaVersion ?? HubContractSnapshot.currentSchemaVersion]
-            : []
         let consumedContracts = orderedUnique(
             input.runtime.consumedContracts + hubContractSchemas + [
                 XTUIInformationArchitectureContract.frozen.schemaVersion,

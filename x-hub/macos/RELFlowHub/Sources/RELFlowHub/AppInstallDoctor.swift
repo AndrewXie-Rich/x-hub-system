@@ -4,11 +4,18 @@ import AppKit
 @MainActor
 enum AppInstallDoctor {
     private static let allowNonApplicationsKey = "relflowhub_allow_run_outside_applications"
+    private static let canonicalAppBundleName = "X-Hub.app"
+    private static let canonicalApplicationsPath = "/Applications/X-Hub.app"
 
     static func shouldWarn(bundleURL: URL = Bundle.main.bundleURL) -> Bool {
-        // Allow dev workflows to run from the repo build directory without nagging.
-        let p = bundleURL.path
-        if p.contains("/build/X-Hub.app") || p.contains("/build/RELFlowHub.app") { return false }
+        let standardizedURL = bundleURL.standardizedFileURL
+        let p = standardizedURL.path
+
+        // Allow dev workflows to run the current build product without nagging.
+        if standardizedURL.lastPathComponent == canonicalAppBundleName,
+           p.contains("/build/\(canonicalAppBundleName)") {
+            return false
+        }
 
         // Allow users to explicitly opt out (dev/testing).
         if UserDefaults.standard.bool(forKey: allowNonApplicationsKey) { return false }
@@ -19,9 +26,9 @@ enum AppInstallDoctor {
         // Running from a DMG mount is a common cause of repeated TCC prompts.
         if p.hasPrefix("/Volumes/") { return true }
 
-        // Prefer /Applications (or ~/Applications) so TCC permissions remain stable.
-        let homeApps = (NSHomeDirectory() as NSString).appendingPathComponent("Applications")
-        if p.hasPrefix("/Applications/") || p.hasPrefix(homeApps + "/") { return false }
+        // Prefer the canonical app name in /Applications (or ~/Applications) so
+        // TCC permissions and helper process paths remain stable.
+        if isCanonicalApplicationsInstall(standardizedURL) { return false }
 
         return true
     }
@@ -73,13 +80,16 @@ enum AppInstallDoctor {
 
         // Fast path: LaunchServices lookup.
         if let u = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) {
-            return u
+            let standardizedURL = u.standardizedFileURL
+            if isCanonicalApplicationsInstall(standardizedURL) {
+                return standardizedURL
+            }
         }
 
-        // Conservative fallback: common install name.
+        // Conservative fallback: canonical install name only. The historical
+        // RELFlowHub.app path is intentionally not treated as an installed copy.
         let candidates = [
-            URL(fileURLWithPath: "/Applications/X-Hub.app"),
-            URL(fileURLWithPath: "/Applications/RELFlowHub.app"),
+            URL(fileURLWithPath: canonicalApplicationsPath),
         ]
         for candidate in candidates {
             if FileManager.default.fileExists(atPath: candidate.path) {
@@ -87,5 +97,15 @@ enum AppInstallDoctor {
             }
         }
         return nil
+    }
+
+    private static func isCanonicalApplicationsInstall(_ url: URL) -> Bool {
+        guard url.lastPathComponent == canonicalAppBundleName else { return false }
+
+        let p = url.path
+        if p == canonicalApplicationsPath { return true }
+
+        let homeApps = (NSHomeDirectory() as NSString).appendingPathComponent("Applications")
+        return p == (homeApps as NSString).appendingPathComponent(canonicalAppBundleName)
     }
 }

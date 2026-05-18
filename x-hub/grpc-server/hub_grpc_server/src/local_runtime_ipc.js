@@ -46,6 +46,8 @@ function isExecutableFile(filePath) {
   const normalized = safeString(filePath);
   if (!normalized) return false;
   try {
+    const stat = fs.statSync(normalized);
+    if (!stat.isFile()) return false;
     fs.accessSync(normalized, fs.constants.X_OK);
     return true;
   } catch {
@@ -109,18 +111,27 @@ function runtimeStatusPythonCandidates(runtimeBaseDir) {
     seen.add(normalized);
     out.push(normalized);
   };
+  const pushExecutable = (value) => {
+    const normalized = normalizeAbsolutePath(value);
+    if (!normalized || !isExecutableFile(normalized) || seen.has(normalized)) return;
+    seen.add(normalized);
+    out.push(normalized);
+  };
 
-  push(status.runtimeSourcePath || status.runtime_source_path || status.pythonExecutable || status.python_executable);
+  pushExecutable(status.pythonExecutable || status.python_executable);
+  pushExecutable(status.runtimeSourcePath || status.runtime_source_path);
   const providers = status.providers && typeof status.providers === 'object' ? status.providers : {};
   const preferredProviders = ['mlx', 'transformers'];
   for (const providerId of preferredProviders) {
     const provider = providers[providerId];
     if (!provider || typeof provider !== 'object') continue;
-    push(provider.runtimeSourcePath || provider.runtime_source_path || provider.pythonExecutable || provider.python_executable);
+    pushExecutable(provider.pythonExecutable || provider.python_executable);
+    pushExecutable(provider.runtimeSourcePath || provider.runtime_source_path);
   }
   for (const provider of Object.values(providers)) {
     if (!provider || typeof provider !== 'object') continue;
-    push(provider.runtimeSourcePath || provider.runtime_source_path || provider.pythonExecutable || provider.python_executable);
+    pushExecutable(provider.pythonExecutable || provider.python_executable);
+    pushExecutable(provider.runtimeSourcePath || provider.runtime_source_path);
   }
   return out;
 }
@@ -189,6 +200,11 @@ function safeStringList(values) {
 
 function normalizeProviderId(value) {
   return String(value || '').trim().toLowerCase();
+}
+
+function modelRuntimeProviderId(model) {
+  const row = model && typeof model === 'object' ? model : {};
+  return normalizeProviderId(row.runtimeProviderID || row.runtimeProviderId || row.runtime_provider_id);
 }
 
 function normalizeObject(value) {
@@ -1323,7 +1339,7 @@ function localTaskModelCompatibilityFailure(record, {
   const normalizedTaskKind = safeString(taskKind).toLowerCase();
   const normalizedProviderId = normalizeProviderId(providerId);
   const row = record && typeof record === 'object' ? record : null;
-  const recordProviderId = normalizeProviderId(row?.backend);
+  const recordProviderId = normalizeProviderId(row?.runtime_provider_id || row?.backend);
   const recordModelId = safeString(row?.model_id);
   const recordTaskKinds = normalizeTaskKinds(row?.task_kinds, row?.backend);
   const hasLocalPath = !!safeString(row?.model_path);
@@ -1465,7 +1481,7 @@ export function readRuntimeModelRecord(baseDir, modelId) {
       model_id: needle,
       name: String(model.name || needle).trim(),
       backend: String(model.backend || '').trim(),
-      runtime_provider_id: normalizeProviderId(model.runtimeProviderId || model.runtime_provider_id),
+      runtime_provider_id: modelRuntimeProviderId(model),
       model_path: String(model.modelPath || model.model_path || '').trim(),
       task_kinds: normalizeTaskKinds(model.taskKinds || model.task_kinds, model.backend),
       input_modalities: safeStringList(model.inputModalities || model.input_modalities),
@@ -1502,7 +1518,7 @@ export function listRuntimeModelRecords(baseDir) {
       model_id: modelId,
       name: String(model.name || modelId).trim(),
       backend: String(model.backend || '').trim(),
-      runtime_provider_id: normalizeProviderId(model.runtimeProviderId || model.runtime_provider_id),
+      runtime_provider_id: modelRuntimeProviderId(model),
       model_path: String(model.modelPath || model.model_path || '').trim(),
       task_kinds: normalizeTaskKinds(model.taskKinds || model.task_kinds, model.backend),
       input_modalities: safeStringList(model.inputModalities || model.input_modalities),
@@ -1521,7 +1537,7 @@ export function listRuntimeModelRecords(baseDir) {
 export function localProviderForModel(baseDir, modelId) {
   if (baseDir && typeof baseDir === 'object' && !Array.isArray(baseDir) && modelId == null) {
     const model = baseDir;
-    const runtimeProviderId = normalizeProviderId(model.runtimeProviderId || model.runtime_provider_id);
+    const runtimeProviderId = modelRuntimeProviderId(model);
     if (runtimeProviderId) return runtimeProviderId;
     return normalizeProviderId(model.backend);
   }

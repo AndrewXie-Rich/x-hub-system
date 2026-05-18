@@ -1,0 +1,66 @@
+name: XT-W3-24 Safe Onboarding Gate
+
+on:
+  pull_request:
+    paths:
+      - "x-hub/grpc-server/hub_grpc_server/src/operator_channel_live_test_evidence.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/operator_channel_live_test_evidence.test.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/channel_onboarding_admin_http.test.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/pairing_http_preauth_replay.test.js"
+      - "x-hub/macos/RELFlowHub/**"
+      - "scripts/generate_xt_w3_24_s_safe_onboarding_release_evidence.js"
+      - "scripts/generate_xt_w3_24_s_safe_onboarding_release_evidence.test.js"
+      - "scripts/ci/xt_w3_24_s_safe_onboarding_gate.sh"
+      - "scripts/ci/README.md"
+      - "docs/open-source/evidence/xt_w3_24_s_safe_onboarding_release_evidence.v1.json"
+      - "docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md"
+      - "docs/open-source/XHUB_NEXT_10_WORK_ORDERS_v1.md"
+      - "x-terminal/work-orders/xt-w3-24-safe-operator-channel-onboarding-automation-implementation-pack-v1.md"
+      - ".github/workflows/xt-w3-24-safe-onboarding-gate.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "x-hub/grpc-server/hub_grpc_server/src/operator_channel_live_test_evidence.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/operator_channel_live_test_evidence.test.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/channel_onboarding_admin_http.test.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/pairing_http_preauth_replay.test.js"
+      - "x-hub/macos/RELFlowHub/**"
+      - "scripts/generate_xt_w3_24_s_safe_onboarding_release_evidence.js"
+      - "scripts/generate_xt_w3_24_s_safe_onboarding_release_evidence.test.js"
+      - "scripts/ci/xt_w3_24_s_safe_onboarding_gate.sh"
+      - "scripts/ci/README.md"
+      - "docs/open-source/evidence/xt_w3_24_s_safe_onboarding_release_evidence.v1.json"
+      - "docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md"
+      - "docs/open-source/XHUB_NEXT_10_WORK_ORDERS_v1.md"
+      - "x-terminal/work-orders/xt-w3-24-safe-operator-channel-onboarding-automation-implementation-pack-v1.md"
+      - ".github/workflows/xt-w3-24-safe-onboarding-gate.yml"
+  workflow_dispatch:
+
+jobs:
+  xt-w3-24-safe-onboarding-gate:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run XT-W3-24 safe onboarding gate
+        run: |
+          bash ./scripts/ci/xt_w3_24_s_safe_onboarding_gate.sh
+
+      - name: Upload XT-W3-24 safe onboarding reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xt-w3-24-safe-onboarding-gate-reports
+          path: |
+            ./build/reports/xt_w3_24_s_safe_onboarding_gate_summary.v1.json
+            ./build/reports/xt_w3_24_s_safe_onboarding_gate_logs
+            ./docs/open-source/evidence/xt_w3_24_s_safe_onboarding_release_evidence.v1.json
+          if-no-files-found: warn

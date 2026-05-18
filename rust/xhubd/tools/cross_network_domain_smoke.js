@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
+import os from 'node:os';
 
 function parseArgs(argv) {
   const out = {
@@ -52,11 +53,36 @@ function endpoint(baseUrl, path) {
   return new URL(path, baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`);
 }
 
-function requestJson(url, { timeoutMs, accessKey = '' }) {
+function parseTailscaleIPv4s(text) {
+  const matches = String(text || '').match(/\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\b/g);
+  return [...new Set(matches || [])];
+}
+
+function localTailnetLookupAddress(hostname) {
+  if (!String(hostname || '').toLowerCase().endsWith('.ts.net')) return '';
+  for (const rows of Object.values(os.networkInterfaces())) {
+    for (const row of rows || []) {
+      if (row.family === 'IPv4') {
+        const [ip] = parseTailscaleIPv4s(row.address);
+        if (ip) return ip;
+      }
+    }
+  }
+  return '';
+}
+
+function requestJson(url, { timeoutMs, accessKey = '', lookupAddress = '' }) {
   return new Promise((resolve) => {
     const client = url.protocol === 'https:' ? https : http;
     const headers = accessKey ? { Authorization: `Bearer ${accessKey}` } : {};
-    const req = client.get(url, { timeout: timeoutMs, headers }, (res) => {
+    const requestUrl = new URL(url.href);
+    const options = { timeout: timeoutMs, headers };
+    if (lookupAddress) {
+      headers.Host = url.host;
+      options.servername = url.hostname;
+      requestUrl.hostname = lookupAddress;
+    }
+    const req = client.get(requestUrl, options, (res) => {
       let body = '';
       res.setEncoding('utf8');
       res.on('data', (chunk) => {
@@ -111,16 +137,20 @@ async function main() {
   const parsed = new URL(config.publicBaseUrl);
   if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('public_base_url_must_be_http_or_https');
   const accessKey = readAccessKey(config.accessKeyFile);
+  const lookupAddress = localTailnetLookupAddress(parsed.hostname);
 
   const health = await requestJson(endpoint(config.publicBaseUrl, '/health'), {
     timeoutMs: config.timeoutMs,
+    lookupAddress,
   });
   const readyWithoutKey = await requestJson(endpoint(config.publicBaseUrl, '/ready'), {
     timeoutMs: config.timeoutMs,
+    lookupAddress,
   });
   const readyWithKey = await requestJson(endpoint(config.publicBaseUrl, '/ready'), {
     timeoutMs: config.timeoutMs,
     accessKey,
+    lookupAddress,
   });
 
   const issues = [];
@@ -141,6 +171,7 @@ async function main() {
     generated_at_iso: new Date().toISOString(),
     duration_ms: Date.now() - startedAt,
     public_base_url: config.publicBaseUrl,
+    tailnet_dns_lookup_fallback: lookupAddress ? 'local_tailnet_interface' : '',
     expect_auth_required: config.expectAuthRequired,
     require_cross_network_ready: config.requireCrossNetworkReady,
     key_printed: false,

@@ -12,7 +12,7 @@ Usage:
 
 Examples:
   bash scripts/with_local_dev_agent_skills_env.sh -- bash x-hub/tools/run_xhub_from_source.command
-  bash scripts/with_local_dev_agent_skills_env.sh -- build/X-Hub.app/Contents/MacOS/RELFlowHub
+  bash scripts/with_local_dev_agent_skills_env.sh -- build/X-Hub.app/Contents/MacOS/XHub
 EOF
 }
 

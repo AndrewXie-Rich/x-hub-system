@@ -467,7 +467,10 @@ struct ModelSelectorView: View {
     }
 
     private var modelInventoryTruth: XTModelInventoryTruthPresentation {
-        XTModelInventoryTruthPresentation.build(
+        if let rustInventory = modelManager.latestRustInventoryProjection {
+            return XTModelInventoryTruthPresentation.build(rustInventory: rustInventory)
+        }
+        return XTModelInventoryTruthPresentation.build(
             snapshot: modelInventorySnapshot,
             hubBaseDir: modelSettingsSnapshot.hubBaseDir ?? HubPaths.baseDir()
         )

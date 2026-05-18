@@ -9,6 +9,8 @@
     "doctor_output_must_be_surface_neutral_even_when_producer_specific_destinations_are_present",
     "blocking_failures_must_emit_concrete_next_steps",
     "heartbeat_governance_snapshot_is_review_explainability_not_memory_or_policy_truth",
+    "provider_key_selection_snapshot_is_remote_key_routing_explainability_not_scheduler_or_grant_authority",
+    "provider_key_route_context_snapshot_is_route_context_explainability_not_scheduler_or_auth_authority",
     "supervisor_review_trigger_snapshot_is_review_engine_explainability_not_scheduler_authority",
     "supervisor_guidance_continuity_snapshot_is_safe_point_review_explainability_not_interrupt_or_grant_authority",
     "supervisor_safe_point_timeline_snapshot_is_delivery_timing_explainability_not_scheduler_or_interrupt_authority",
@@ -148,6 +150,8 @@
         "project_remote_snapshot_cache_snapshot",
         "supervisor_remote_snapshot_cache_snapshot",
         "heartbeat_governance_snapshot",
+        "provider_key_selection_snapshot",
+        "provider_key_route_context_snapshot",
         "memory_route_truth_snapshot",
         "durable_candidate_mirror_snapshot",
         "local_store_write_snapshot",
@@ -159,7 +163,7 @@
       },
       "rules": [
         "Blocking failed checks should include either a concrete next_step or a corresponding top-level next_steps entry.",
-        "detail_lines, repair_destination_ref, project_context_summary, hub_memory_prompt_projection, project_governance_runtime_readiness, project_memory_policy, project_memory_readiness, project_memory_assembly_resolution, supervisor_memory_policy, supervisor_memory_assembly_resolution, supervisor_review_trigger_snapshot, project_remote_snapshot_cache_snapshot, supervisor_remote_snapshot_cache_snapshot, heartbeat_governance_snapshot, memory_route_truth_snapshot, durable_candidate_mirror_snapshot, local_store_write_snapshot, and skill_doctor_truth_snapshot are optional producer context and do not change the normalized check semantics.",
+        "detail_lines, repair_destination_ref, project_context_summary, hub_memory_prompt_projection, project_governance_runtime_readiness, project_memory_policy, project_memory_readiness, project_memory_assembly_resolution, supervisor_memory_policy, supervisor_memory_assembly_resolution, supervisor_review_trigger_snapshot, project_remote_snapshot_cache_snapshot, supervisor_remote_snapshot_cache_snapshot, heartbeat_governance_snapshot, provider_key_selection_snapshot, provider_key_route_context_snapshot, memory_route_truth_snapshot, durable_candidate_mirror_snapshot, local_store_write_snapshot, and skill_doctor_truth_snapshot are optional producer context and do not change the normalized check semantics.",
         "project_context_summary is currently used by XT session runtime readiness to expose a human-readable projection of project context assembly truth alongside the raw detail lines.",
         "hub_memory_prompt_projection is currently used by XT session runtime readiness to expose Hub-provided prompt assembly counts/source kinds as first-class machine-readable explainability without reparsing detail_lines or locally inferring prompt content.",
         "project_governance_runtime_readiness is currently used by XT session runtime readiness to expose the A-tier configured-vs-runtime-ready split as first-class machine-readable diagnostics.",
@@ -170,8 +174,12 @@
         "supervisor_safe_point_timeline_snapshot is currently used by XT session runtime readiness to expose pending guidance delivery timing, live safe-point posture, and tool-batch pause posture as first-class machine-readable diagnostics.",
         "project_remote_snapshot_cache_snapshot and supervisor_remote_snapshot_cache_snapshot are read-only XT projections of remote snapshot cache provenance; they must not be treated as durable truth or as permission to bypass Hub-first routing.",
         "heartbeat_governance_snapshot is currently used by XT session runtime readiness to expose project heartbeat quality, anomalies, effective cadence, next-review-due truth, and attached project-memory-readiness explainability alongside the raw detail lines.",
+        "provider_key_selection_snapshot is currently used by XT model route readiness to expose the latest real remote provider-key routing decision, selected account, skipped candidates, and retry timing without reparsing detail lines or re-running scheduler logic locally.",
+        "provider_key_route_context_snapshot is currently used by XT model route readiness to export one normalized route-context envelope carrying the requested model, provider-pool snapshot, latest selection decision, and any import-source blockers without forcing doctor/export/troubleshoot to reverse-parse raw detail lines or maintain per-surface naming drift.",
         "skill_doctor_truth_snapshot is currently used by XT skills compatibility readiness to expose the project effective skill profile plus typed per-skill readiness counts/previews as first-class machine-readable doctor truth.",
         "hub_memory_prompt_projection is a read-only XT carrier of Hub prompt-assembly explainability and must not be treated as prompt authority, export approval, route truth, or a second memory resolver.",
+        "provider_key_selection_snapshot is a read-only XT carrier of Hub-owned remote key-routing explainability and must not be treated as auth scope grant, scheduler authority, direct key enable/disable authority, or permission to bypass runtime health gates.",
+        "provider_key_route_context_snapshot is a read-only XT carrier of remote provider-key route context explainability and must not be treated as scheduler authority, import mutation authority, auth approval, or permission to bypass runtime health gates.",
         "memory_route_truth_snapshot is a read-only projection of upstream memory route diagnostics and must not be treated as a second route resolver.",
         "durable_candidate_mirror_snapshot is a read-only XT projection of supervisor durable-candidate mirror state and must not be treated as durable promotion, canonical save success, or read cutover truth.",
         "local_store_write_snapshot is a read-only XT projection of local cache/fallback/edit-buffer write provenance and must not be treated as durable writer authority.",
@@ -558,6 +566,71 @@
         "Producer-local clamp or serving facts must be expressed separately and must not overwrite route_result semantics.",
         "projection_source identifies which frozen diagnostics source produced the snapshot, while completeness declares whether the payload is full upstream truth or an explicit partial XT projection.",
         "If the producer only has partial XT route facts, missing fields must be emitted as explicit unknown values rather than omitted or silently fabricated."
+      ]
+    },
+    "xhub.doctor_provider_key_selection_snapshot.v1": {
+      "required_fields": [
+        "requestedProvider",
+        "requestedModelId",
+        "strategy",
+        "selectionScope",
+        "selectedAccountKey",
+        "fallbackReasonCode",
+        "candidates"
+      ],
+      "rules": [
+        "This object is optional and producer-specific; it mirrors XT model-route explainability for the latest real remote provider-key routing decision observed for the requested model.",
+        "It keeps selected-account, candidate-pool, skip-reason, and retry timing machine-readable so generic doctor consumers do not need to reinterpret free-form detail_lines.",
+        "Its semantics are diagnostic only and must not be upgraded into scheduler authority, auth-scope grant truth, key enable/disable authority, or a bypass around Hub runtime health, audit, TTL, kill-switch, or policy gates."
+      ]
+    },
+    "xhub.doctor_provider_key_route_context_snapshot.v1": {
+      "required_fields": [
+        "import_context_lines",
+        "import_issues"
+      ],
+      "optional_fields": [
+        "pool",
+        "decision",
+        "model_id"
+      ],
+      "rules": [
+        "This object is an optional XT-originated route-context envelope for model-route troubleshooting and export consumers.",
+        "It keeps the requested model, any live provider-pool snapshot, the latest real provider-key selection decision, and normalized provider-key import blockers machine-readable in one payload.",
+        "Its semantics are diagnostic only and must not be upgraded into scheduler authority, import mutation authority, auth approval, or permission to bypass runtime health, audit, TTL, kill-switch, or policy gates."
+      ]
+    },
+    "xhub.doctor_provider_key_import_issue_snapshot.v1": {
+      "required_fields": [
+        "kind",
+        "state",
+        "sourceRef",
+        "sourceName",
+        "errorCode",
+        "errorDetail"
+      ],
+      "rules": [
+        "This object is an optional XT-originated normalized provider-key import blocker carried inside route-context snapshots.",
+        "It exists so generic doctor consumers can point users at the right Provider Key repair surface without reverse-parsing flat detail_lines.",
+        "Its semantics are diagnostic only and must not be upgraded into import execution authority or mutation permission."
+      ]
+    },
+    "xhub.doctor_provider_key_candidate_decision.v1": {
+      "required_fields": [
+        "accountKey",
+        "provider",
+        "poolID",
+        "wireAPI",
+        "availability",
+        "score",
+        "selected",
+        "reasonCode",
+        "retryAtMs"
+      ],
+      "rules": [
+        "This object is optional and producer-specific; it mirrors one candidate account from the latest provider-key routing decision.",
+        "availability reuses the direct Swift Codable enum payload so consumers can distinguish ready, cooldown, blocked, disabled, and stale candidates without inventing a second mapping layer.",
+        "Its semantics are diagnostic only and must not be upgraded into direct key scheduling, auth escalation, or state-mutation authority."
       ]
     },
     "xhub.doctor_durable_candidate_mirror_snapshot.v1": {

@@ -2,23 +2,17 @@ import Foundation
 import RELFlowHubCore
 
 enum HubTaskType: String, CaseIterable, Identifiable {
-    case assist
-    case translate
-    case summarize
-    case extract
-    case refine
-    case classify
+    case supervisor
+    case coder
+    case reviewer
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
-        case .assist: return HubUIStrings.Models.TaskType.assist
-        case .translate: return HubUIStrings.Models.TaskType.translate
-        case .summarize: return HubUIStrings.Models.TaskType.summarize
-        case .extract: return HubUIStrings.Models.TaskType.extract
-        case .refine: return HubUIStrings.Models.TaskType.refine
-        case .classify: return HubUIStrings.Models.TaskType.classify
+        case .supervisor: return HubUIStrings.Models.TaskType.supervisor
+        case .coder: return HubUIStrings.Models.TaskType.coder
+        case .reviewer: return HubUIStrings.Models.TaskType.reviewer
         }
     }
 
@@ -28,22 +22,14 @@ enum HubTaskType: String, CaseIterable, Identifiable {
 
     var desiredRoles: [String] {
         switch self {
-        case .translate: return ["translate", "general"]
-        case .summarize: return ["summarize", "general"]
-        case .extract: return ["extract", "general"]
-        case .refine: return ["refine", "general"]
-        case .classify: return ["classify", "general"]
-        case .assist: return ["general"]
+        case .supervisor: return ["supervisor", "assist", "advisor", "general"]
+        case .coder: return ["coder", "translate", "summarize", "extract", "refine", "classify", "general"]
+        case .reviewer: return ["reviewer", "review", "general"]
         }
     }
 
     var preferSpeed: Bool {
-        switch self {
-        case .translate, .classify:
-            return true
-        default:
-            return false
-        }
+        false
     }
 }
 
@@ -229,13 +215,28 @@ enum HubTaskRoutingPolicy {
     }
 
     private static func normalizedRoles(for model: HubModel) -> [String] {
+        var seen = Set<String>()
         let roles = (model.roles ?? [])
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-            .filter { !$0.isEmpty }
+            .map(normalizedRoleToken)
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
         if roles.isEmpty {
             return ["general"]
         }
         return roles
+    }
+
+    private static func normalizedRoleToken(_ raw: String) -> String {
+        let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch normalized {
+        case "assist", "advisor", "supervisor":
+            return "supervisor"
+        case "review", "reviewer":
+            return "reviewer"
+        case "translate", "summarize", "extract", "refine", "classify", "coder":
+            return "coder"
+        default:
+            return normalized
+        }
     }
 
     private static func supportedTaskKinds(for model: HubModel) -> Set<String> {

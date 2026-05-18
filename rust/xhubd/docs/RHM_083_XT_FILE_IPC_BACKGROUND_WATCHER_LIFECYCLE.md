@@ -63,4 +63,3 @@ While active, it:
 - release `cargo build --release -p xhubd`
 - `/ready.capabilities.xt_file_ipc_shadow_watcher_background_lifecycle_http=true`
 - default live start POST remains fail-closed with `wrote=false`
-

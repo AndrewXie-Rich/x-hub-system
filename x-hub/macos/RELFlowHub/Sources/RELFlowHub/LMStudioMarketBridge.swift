@@ -1967,12 +1967,12 @@ enum LMStudioMarketBridge {
         let modelURL = URL(fileURLWithPath: path, isDirectory: true)
         let manifest = XHubLocalModelManifestLoader.load(from: modelURL)
         let config = readConfigJSON(in: modelURL)
-        let backendDetection = LocalModelImportDetector.detectBackend(
-            for: modelURL,
+        let backend = preferredBackend(
+            for: descriptor,
+            modelURL: modelURL,
             manifest: manifest,
             config: config
         )
-        let backend = backendDetection.backend
         guard backend == "mlx" || backend == "transformers" || backend == "llama.cpp" else { return nil }
 
         let inferredCapabilities = LocalModelImportDetector.detectCapabilities(
@@ -2390,6 +2390,36 @@ enum LMStudioMarketBridge {
         return LocalModelCapabilityDefaults.defaultModelFormat(forBackend: backend)
     }
 
+    private static func preferredBackend(
+        for descriptor: LMStudioDownloadedModelDescriptor,
+        modelURL: URL,
+        manifest: XHubLocalModelManifest?,
+        config: [String: Any]?
+    ) -> String {
+        let manifestBackend = (manifest?.backend ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if !manifestBackend.isEmpty {
+            return manifestBackend
+        }
+
+        let normalizedFormat = descriptor.format.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch normalizedFormat {
+        case "mlx":
+            return "mlx"
+        case "gguf":
+            return "llama.cpp"
+        case "transformers", "hf", "hf_transformers":
+            return "transformers"
+        default:
+            return LocalModelImportDetector.detectBackend(
+                for: modelURL,
+                manifest: manifest,
+                config: config
+            ).backend
+        }
+    }
+
     private static func taskKinds(
         forDomain domain: String,
         modelName: String
@@ -2422,10 +2452,7 @@ enum LMStudioMarketBridge {
             || normalizedName.contains("qwen3-vl")
             || normalizedName.contains("florence")
             || normalizedName.contains("ocr") {
-            if normalizedName.contains("ocr") {
-                return ["vision_understand", "ocr"]
-            }
-            return ["vision_understand"]
+            return ["vision_understand", "ocr"]
         }
         return ["text_generate"]
     }

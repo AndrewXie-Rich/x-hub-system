@@ -116,6 +116,65 @@ final class EmbeddedBridgeRunner {
         return max(minValue, min(maxValue, parsed))
     }
 
+    private static func parseProviderKeyOverride(
+        _ raw: Any?
+    ) -> RemoteModelTrialRunner.ProviderKeyExecutionOverride? {
+        guard let obj = raw as? [String: Any] else { return nil }
+
+        let accountKey = String(describing: obj["account_key"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let provider = String(describing: obj["provider"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let apiKey = String(describing: obj["api_key"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseURL = String(describing: obj["base_url"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let proxyURL = String(describing: obj["proxy_url"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let authType = String(describing: obj["auth_type"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let refreshToken = String(describing: obj["refresh_token"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let accountId = String(describing: obj["account_id"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let oauthSourceKey = String(describing: obj["oauth_source_key"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let authIndex = { () -> Int in
+            if let value = obj["auth_index"] as? Int { return value }
+            if let value = obj["auth_index"] as? Double { return Int(value) }
+            if let value = obj["auth_index"] as? NSNumber { return value.intValue }
+            if let value = obj["auth_index"] as? String { return Int(value.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0 }
+            return 0
+        }()
+        let sourceType = String(describing: obj["source_type"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let sourceRef = String(describing: obj["source_ref"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var customHeaders: [String: String] = [:]
+        if let rawHeaders = obj["custom_headers"] as? [String: Any] {
+            for (headerKey, rawValue) in rawHeaders {
+                let key = headerKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                let value = String(describing: rawValue).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !key.isEmpty, !value.isEmpty else { continue }
+                customHeaders[key] = value
+            }
+        } else if let rawHeaders = obj["custom_headers"] as? [String: String] {
+            for (headerKey, rawValue) in rawHeaders {
+                let key = headerKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !key.isEmpty, !value.isEmpty else { continue }
+                customHeaders[key] = value
+            }
+        }
+
+        guard !accountKey.isEmpty || !apiKey.isEmpty else { return nil }
+        return RemoteModelTrialRunner.ProviderKeyExecutionOverride(
+            accountKey: accountKey,
+            provider: provider,
+            apiKey: apiKey,
+            baseURL: baseURL,
+            proxyURL: proxyURL,
+            authType: authType,
+            refreshToken: refreshToken,
+            accountId: accountId,
+            oauthSourceKey: oauthSourceKey,
+            authIndex: authIndex,
+            sourceType: sourceType,
+            sourceRef: sourceRef,
+            customHeaders: customHeaders
+        )
+    }
+
     private func tick() {
         let now = Date().timeIntervalSince1970
         var loadedEnabledUntil: Double?
@@ -280,6 +339,7 @@ final class EmbeddedBridgeRunner {
                 let temperature = Double(obj["temperature"] as? Double ?? 0.2)
                 let topP = Double(obj["top_p"] as? Double ?? 0.95)
                 let timeoutSec = Double(obj["timeout_sec"] as? Double ?? 60.0)
+                let providerKeyOverride = Self.parseProviderKeyOverride(obj["provider_key"])
 
                 // Accept the request: remove the file so clients can retry with a new req_id if needed.
                 try? FileManager.default.removeItem(at: url)
@@ -294,7 +354,8 @@ final class EmbeddedBridgeRunner {
                         maxTokens: maxTokens,
                         temperature: temperature,
                         topP: topP,
-                        timeoutSec: timeoutSec
+                        timeoutSec: timeoutSec,
+                        providerKeyOverride: providerKeyOverride
                     )
                 }
                 continue
@@ -398,7 +459,8 @@ final class EmbeddedBridgeRunner {
         maxTokens: Int,
         temperature: Double,
         topP: Double,
-        timeoutSec: Double
+        timeoutSec: Double,
+        providerKeyOverride: RemoteModelTrialRunner.ProviderKeyExecutionOverride?
     ) async {
         defer { activeAIGenerateCount = max(0, activeAIGenerateCount - 1) }
 
@@ -440,7 +502,8 @@ final class EmbeddedBridgeRunner {
             maxTokens: maxTokens,
             temperature: temperature,
             topP: topP,
-            timeoutSec: timeoutSec
+            timeoutSec: timeoutSec,
+            providerKeyOverride: providerKeyOverride
         )
         writeResp(
             ok: result.ok,

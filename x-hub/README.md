@@ -124,6 +124,21 @@ Validate the staged local dev Agent baseline end to end:
 bash x-hub/tools/run_local_dev_agent_skills_baseline_smoke.command
 ```
 
+Remote XT access through a stable DNS name, MagicDNS, or Tailscale/private VPN
+IP is covered in:
+
+- `x-hub/docs/REMOTE_ROUTE_SETUP.md`
+- Tailscale install: https://tailscale.com/download
+- macOS install guide: https://tailscale.com/kb/1016/install-mac
+
+Remote access is bring-your-own-domain by default: each Hub owner should set
+their own domain, MagicDNS name, or VPN/tunnel IP in Hub Settings before sharing
+an invite link with XT.
+
+Users without a domain should use the no-domain private network path in Hub
+Settings. When Hub detects a Tailscale/Headscale/WireGuard/ZeroTier-style tunnel
+address, it can use that as the stable External Address for XT invites.
+
 ## Operational Boundaries
 
 - Terminal UX, session UX, and supervisor UI belong in `x-terminal/`.

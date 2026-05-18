@@ -8,7 +8,7 @@ final class LocalModelExecutionProviderResolverTests: XCTestCase {
             backend: "mlx",
             modelPath: "/tmp/models/glm4v-mlx",
             taskKinds: ["vision_understand", "ocr"],
-            helperBinaryPath: "/Users/test/.lmstudio/bin/lms"
+            helperBinaryPath: ""
         )
 
         XCTAssertEqual(suggested, "mlx_vlm")
@@ -39,7 +39,7 @@ final class LocalModelExecutionProviderResolverTests: XCTestCase {
 
         let updated = LocalModelExecutionProviderResolver.backfilled(
             entry,
-            helperBinaryPath: "/Users/test/.lmstudio/bin/lms"
+            helperBinaryPath: ""
         )
 
         XCTAssertEqual(updated.runtimeProviderID, "mlx_vlm")

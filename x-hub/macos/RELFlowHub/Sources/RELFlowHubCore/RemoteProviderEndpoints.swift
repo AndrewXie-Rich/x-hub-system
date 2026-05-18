@@ -56,6 +56,23 @@ public enum RemoteProviderEndpoints {
         normalizedWireAPI(raw) ?? .chatCompletions
     }
 
+    public static func normalizedOpenAIModelID(_ raw: String) -> String {
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.lowercased().hasPrefix("openai/") {
+            value = String(value.dropFirst("openai/".count))
+        }
+
+        let lowered = value.lowercased()
+        if lowered.hasPrefix("gpt"),
+           lowered.count > 3 {
+            let index = lowered.index(lowered.startIndex, offsetBy: 3)
+            if lowered[index].isNumber {
+                return "gpt-" + lowered.dropFirst(3)
+            }
+        }
+        return lowered
+    }
+
     public static func openAIChatCompletionsURL(baseURL: String?, backend: String) -> URL? {
         let b = canonicalBackend(backend)
         let base = normalizedBase(baseURL)

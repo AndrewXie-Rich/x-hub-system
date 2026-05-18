@@ -33,11 +33,12 @@ function withEnv(tempEnv, fn) {
   }
 }
 
-function makeTransportCall() {
+function makeTransportCall(token = '') {
   return {
     metadata: {
-      get() {
-        return [];
+      get(key) {
+        if (String(key || '').toLowerCase() !== 'authorization') return [];
+        return token ? [`Bearer ${token}`] : [];
       },
     },
     getPeer() {
@@ -65,6 +66,18 @@ function makeDirectCall() {
       return 'ipv4:127.0.0.1:54321';
     },
   };
+}
+
+function writeClientsSnapshot(runtimeBaseDir, clients) {
+  fs.writeFileSync(
+    path.join(runtimeBaseDir, 'hub_grpc_clients.json'),
+    JSON.stringify({
+      schema_version: 'hub_grpc_clients.v2',
+      updated_at_ms: 1,
+      clients,
+    }, null, 2) + '\n',
+    'utf8'
+  );
 }
 
 run('requireClientAuth denies real grpc transport when no tokens are configured', () => {
@@ -102,6 +115,82 @@ run('requireClientAuth preserves direct in-process service invocation for unit t
     () => {
       const auth = requireClientAuth(makeDirectCall());
       assert.equal(auth.ok, true);
+    }
+  );
+  fs.rmSync(runtimeBaseDir, { recursive: true, force: true });
+});
+
+run('requireClientAuth rejects revoked hub access keys with explicit token_revoked reason', () => {
+  const runtimeBaseDir = makeRuntimeBaseDir('revoked');
+  writeClientsSnapshot(runtimeBaseDir, [{
+    access_key_id: 'hak_revoked_1',
+    auth_kind: 'hub_access_key',
+    device_id: 'client_revoked_1',
+    user_id: 'svc_revoked',
+    app_id: 'external_terminal',
+    name: 'Revoked Key',
+    token: 'tok_revoked_1',
+    enabled: false,
+    created_at_ms: 1,
+    revoked_at_ms: 123,
+    revoke_reason: 'manual_disable',
+    capabilities: ['models'],
+    scopes: ['models'],
+    allowed_cidrs: ['loopback'],
+  }]);
+  withEnv(
+    {
+      HUB_CLIENT_TOKEN: '',
+      HUB_RUNTIME_BASE_DIR: runtimeBaseDir,
+      HUB_GRPC_TLS_MODE: '',
+      HUB_GRPC_CERT: '',
+      HUB_GRPC_KEY: '',
+      HUB_GRPC_CA: '',
+    },
+    () => {
+      const auth = requireClientAuth(makeTransportCall('tok_revoked_1'));
+      assert.equal(auth.ok, false);
+      assert.equal(String(auth.reason || ''), 'token_revoked');
+      assert.equal(String(auth.code || ''), 'token_revoked');
+    }
+  );
+  fs.rmSync(runtimeBaseDir, { recursive: true, force: true });
+});
+
+run('requireClientAuth updates last_used metadata for ready hub access keys', () => {
+  const runtimeBaseDir = makeRuntimeBaseDir('usage_touch');
+  writeClientsSnapshot(runtimeBaseDir, [{
+    access_key_id: 'hak_ready_1',
+    auth_kind: 'hub_access_key',
+    device_id: 'client_ready_1',
+    user_id: 'svc_ready',
+    app_id: 'external_terminal',
+    name: 'Ready Key',
+    token: 'tok_ready_1',
+    enabled: true,
+    created_at_ms: 1,
+    capabilities: ['models', 'ai.generate.local'],
+    scopes: ['models', 'ai.generate.local'],
+    allowed_cidrs: ['loopback'],
+  }]);
+  withEnv(
+    {
+      HUB_CLIENT_TOKEN: '',
+      HUB_RUNTIME_BASE_DIR: runtimeBaseDir,
+      HUB_GRPC_TLS_MODE: '',
+      HUB_GRPC_CERT: '',
+      HUB_GRPC_KEY: '',
+      HUB_GRPC_CA: '',
+    },
+    () => {
+      const auth = requireClientAuth(makeTransportCall('tok_ready_1'));
+      assert.equal(auth.ok, true);
+      assert.equal(String(auth.access_key_id || ''), 'hak_ready_1');
+      assert.equal(String(auth.auth_kind || ''), 'hub_access_key');
+      const persisted = JSON.parse(fs.readFileSync(path.join(runtimeBaseDir, 'hub_grpc_clients.json'), 'utf8'));
+      assert.ok(Number(persisted.clients?.[0]?.last_used_at_ms || 0) > 0);
+      assert.equal(String(persisted.clients?.[0]?.last_used_transport || ''), 'grpc');
+      assert.equal(String(persisted.clients?.[0]?.last_used_peer_ip || ''), '127.0.0.1');
     }
   );
   fs.rmSync(runtimeBaseDir, { recursive: true, force: true });

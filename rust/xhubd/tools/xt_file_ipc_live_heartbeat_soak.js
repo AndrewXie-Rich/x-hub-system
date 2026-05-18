@@ -63,6 +63,48 @@ function parseIntInRange(value, fallback, min, max) {
   return Math.max(min, Math.min(max, parsed));
 }
 
+function safeString(value) {
+  return String(value ?? '').trim();
+}
+
+function readLaunchdEnvironmentVariables(plistPath) {
+  const resolved = safeString(plistPath) ? path.resolve(plistPath) : '';
+  if (process.platform !== 'darwin' || !resolved || !fs.existsSync(resolved)) return {};
+  try {
+    const result = spawnSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', resolved], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    if (result.status !== 0) return {};
+    const parsed = JSON.parse(result.stdout || '{}');
+    const env = parsed?.EnvironmentVariables;
+    return env && typeof env === 'object' && !Array.isArray(env) ? env : {};
+  } catch {
+    return {};
+  }
+}
+
+function defaultLaunchdEnv() {
+  return readLaunchdEnvironmentVariables(path.join(process.env.HOME || '', 'Library', 'LaunchAgents', 'com.ax.xhubd.local.plist'));
+}
+
+function readAccessKeyForProbe(config = {}) {
+  const raw = safeString(process.env.XHUB_RUST_HTTP_ACCESS_KEY || process.env.XHUB_RUST_HUB_ACCESS_KEY);
+  if (raw) return raw;
+  const launchdEnv = defaultLaunchdEnv();
+  const accessKeyFile = safeString(config.accessKeyFile)
+    || safeString(process.env.XHUB_RUST_HTTP_ACCESS_KEY_FILE)
+    || safeString(process.env.XHUB_RUST_HUB_ACCESS_KEY_FILE)
+    || safeString(launchdEnv.XHUB_RUST_HTTP_ACCESS_KEY_FILE)
+    || safeString(launchdEnv.XHUB_RUST_HUB_ACCESS_KEY_FILE);
+  if (!accessKeyFile) return '';
+  try {
+    return safeString(fs.readFileSync(path.resolve(accessKeyFile), 'utf8'));
+  } catch {
+    return '';
+  }
+}
+
 function parseArgs(argv) {
   const out = {
     httpBaseUrl: DEFAULT_HTTP_BASE_URL,
@@ -74,6 +116,7 @@ function parseArgs(argv) {
     statusReadTimeoutMs: 3000,
     allowMemorySkillsProduction: false,
     requireMemorySkillsProduction: false,
+    accessKeyFile: '',
     reportPath: '',
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -103,6 +146,10 @@ function parseArgs(argv) {
         break;
       case '--status-read-timeout-ms':
         out.statusReadTimeoutMs = parseIntInRange(next, out.statusReadTimeoutMs, 100, 30000);
+        i += 1;
+        break;
+      case '--access-key-file':
+        out.accessKeyFile = String(next || '').trim();
         i += 1;
         break;
       case '--allow-memory-skills-production':
@@ -143,6 +190,7 @@ function usage() {
     '  --interval-ms <ms>       Delay between checks, default 2000',
     '  --max-status-age-ms <ms> Freshness budget, default 5000',
     '  --status-read-timeout-ms <ms> Child-process status read timeout, default 3000',
+    '  --access-key-file <p>  HTTP access key file; defaults to env or com.ax.xhubd.local launchd plist',
     '  --allow-memory-skills-production Permit explicit Rust memory writer and skills execution authority',
     '  --require-memory-skills-production Require both Rust memory writer and skills execution authority',
     '  --report-path <p>       JSON report path',
@@ -161,9 +209,12 @@ function nowMs() {
   return Date.now();
 }
 
-function getJson(url, timeoutMs = 5000) {
+function getJson(url, timeoutMs = 5000, config = {}) {
   return new Promise((resolve) => {
-    const req = http.get(url, { timeout: timeoutMs }, (res) => {
+    const headers = { accept: 'application/json' };
+    const accessKey = readAccessKeyForProbe(config);
+    if (accessKey) headers.Authorization = `Bearer ${accessKey}`;
+    const req = http.get(url, { timeout: timeoutMs, headers }, (res) => {
       let data = '';
       res.setEncoding('utf8');
       res.on('data', (chunk) => {
@@ -200,7 +251,7 @@ async function resolveLiveBaseDir(config) {
   if (String(config.liveBaseDir || '').trim()) {
     return { ...config, liveBaseDir: path.resolve(config.liveBaseDir), liveBaseDirSource: config.liveBaseDirSource || 'argument' };
   }
-  const compat = await getJson(`${config.httpBaseUrl}/xt/classic-hub-compat`, 10000);
+  const compat = await getJson(`${config.httpBaseUrl}/xt/classic-hub-compat`, 10000, config);
   const discovered = compat.ok ? firstUsableLiveBaseDir(compat.body) : '';
   if (discovered) {
     return { ...config, liveBaseDir: discovered, liveBaseDirSource: 'xt_classic_hub_compat' };
@@ -264,9 +315,9 @@ function addIssue(issues, code, detail = {}) {
 
 function checkCycle(config, index, startedAtMs) {
   return Promise.all([
-    getJson(`${config.httpBaseUrl}/health`, 5000),
-    getJson(`${config.httpBaseUrl}/ready`, 5000),
-    getJson(`${config.httpBaseUrl}/xt/classic-hub-compat`, 10000),
+    getJson(`${config.httpBaseUrl}/health`, 5000, config),
+    getJson(`${config.httpBaseUrl}/ready`, 5000, config),
+    getJson(`${config.httpBaseUrl}/xt/classic-hub-compat`, 10000, config),
   ]).then(([health, ready, compat]) => {
     const status = readStatus(config.liveBaseDir, config.statusReadTimeoutMs);
     const issues = [];

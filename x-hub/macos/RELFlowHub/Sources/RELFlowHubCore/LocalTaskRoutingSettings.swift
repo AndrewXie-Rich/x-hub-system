@@ -29,7 +29,7 @@ public struct LocalTaskRoutingSettings: Codable, Equatable {
     }
 
     public func resolvedModelId(taskKind: String, deviceId: String? = nil) -> (modelId: String, source: String) {
-        let normalizedTask = Self.normalizedToken(taskKind)
+        let normalizedTask = Self.normalizedTaskToken(taskKind)
         guard !normalizedTask.isEmpty else {
             return ("", "auto_selected")
         }
@@ -46,7 +46,7 @@ public struct LocalTaskRoutingSettings: Codable, Equatable {
     }
 
     public mutating func setModelId(_ modelId: String?, for taskKind: String, deviceId: String? = nil) {
-        let normalizedTask = Self.normalizedToken(taskKind)
+        let normalizedTask = Self.normalizedTaskToken(taskKind)
         guard !normalizedTask.isEmpty else { return }
         let normalizedModelId = Self.normalizedModelId(modelId)
         let normalizedDeviceId = Self.normalizedToken(deviceId)
@@ -155,7 +155,7 @@ public struct LocalTaskRoutingSettings: Codable, Equatable {
     private static func normalizedTaskMap(_ raw: [String: String]) -> [String: String] {
         var out: [String: String] = [:]
         for (taskKind, modelId) in raw {
-            let normalizedTask = normalizedToken(taskKind)
+            let normalizedTask = normalizedTaskToken(taskKind)
             let normalizedModelId = normalizedModelId(modelId)
             guard !normalizedTask.isEmpty, let normalizedModelId else { continue }
             out[normalizedTask] = normalizedModelId
@@ -177,6 +177,20 @@ public struct LocalTaskRoutingSettings: Codable, Equatable {
 
     private static func normalizedToken(_ raw: String?) -> String {
         raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+    }
+
+    private static func normalizedTaskToken(_ raw: String?) -> String {
+        let normalized = normalizedToken(raw)
+        switch normalized {
+        case "assist", "coder", "x_terminal_coarse", "x_terminal_refine", "ax_coder_coarse", "ax_coder_refine":
+            return "coder"
+        case "review", "reviewer":
+            return "reviewer"
+        case "advisor", "supervisor":
+            return "supervisor"
+        default:
+            return normalized
+        }
     }
 
     private static func normalizedModelId(_ raw: String?) -> String? {

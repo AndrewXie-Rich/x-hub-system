@@ -38,6 +38,13 @@ enum CodexModelCatalogFallback {
     }
 
     static func supportsFallback(for backend: String) -> Bool {
+        switch RemoteProviderEndpoints.normalizedBackend(backend) {
+        case "chatgpt", "codex", "openai-chatgpt", "openai_chatgpt":
+            return true
+        default:
+            break
+        }
+
         switch RemoteProviderEndpoints.canonicalBackend(backend) {
         case "openai", "openai_compatible":
             return true

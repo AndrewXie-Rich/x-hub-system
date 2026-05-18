@@ -2539,6 +2539,506 @@ message IssueSupervisorCheckpointChallengeResponse {
   bool audit_logged = 4;
 }
 
+// -------------------- Provider Key Pool --------------------
+
+message ProviderKeyAccount {
+  string account_key = 1;
+  string provider = 2;
+  string email = 3;
+  string auth_type = 4;       // api_key | oauth | copilot
+  bool enabled = 5;
+  string tier = 6;
+  string base_url = 7;
+  string notes = 8;
+  int32 priority = 9;
+  int64 expires_at_ms = 10;
+  int64 created_at_ms = 11;
+  int64 updated_at_ms = 12;
+  repeated string models = 13;
+  string api_key_redacted = 14; // always redacted in list responses
+  string proxy_url = 15;
+  string account_id = 16;
+  string source_type = 17;
+  string source_ref = 18;
+  string oauth_source_key = 19;
+  int32 auth_index = 20;
+  string pool_id = 21;
+  string provider_host = 22;
+  string wire_api = 23;
+  int64 last_refresh_at_ms = 24;
+  map<string, ProviderKeyModelState> model_states = 25;
+}
+
+message ListProviderKeysRequest {
+  ClientIdentity client = 1;
+  string provider = 2; // optional filter
+}
+
+message ListProviderKeysResponse {
+  repeated ProviderKeyAccount accounts = 1;
+  string routing_strategy = 2;
+}
+
+message ProviderKeyPoolMember {
+  string account_key = 1;
+  string provider = 2;
+  string email = 3;
+  string tier = 4;
+  bool enabled = 5;
+  string auth_type = 6;
+  string account_id = 7;
+  string source_ref = 8;
+  string oauth_source_key = 9;
+  string pool_id = 10;
+  string state = 11; // ready | cooldown | blocked | expired | disabled | stale
+  string reason_code = 12;
+  string status_message = 13;
+  int64 retry_at_ms = 14;
+  int64 expires_at_ms = 15;
+  int64 last_refresh_at_ms = 16;
+  int64 last_used_at_ms = 17;
+  int64 daily_token_cap = 18;
+  int64 daily_tokens_used = 19;
+  int64 daily_tokens_remaining = 20;
+  int64 total_tokens_used = 21;
+  bool removable = 22;
+  string removal_reason = 23;
+  string api_key_redacted = 24;
+}
+
+message ProviderKeyPool {
+  string pool_id = 1;
+  string capability_pool_id = 2;
+  string provider = 3;
+  string provider_host = 4;
+  string wire_api = 5;
+  string model_id = 6;
+  string model_family = 7;
+  string state = 8;
+  repeated string source_providers = 9;
+  int32 total_accounts = 10;
+  int32 enabled_accounts = 11;
+  int32 ready_accounts = 12;
+  int32 cooldown_accounts = 13;
+  int32 blocked_accounts = 14;
+  int32 expired_accounts = 15;
+  int32 disabled_accounts = 16;
+  int32 stale_accounts = 17;
+  int32 auth_failed_accounts = 18;
+  int32 free_accounts = 19;
+  int32 paid_accounts = 20;
+  int32 unknown_tier_accounts = 21;
+  int32 removable_accounts = 22;
+  int32 known_quota_accounts = 23;
+  int64 daily_token_cap = 24;
+  int64 daily_tokens_used = 25;
+  int64 daily_tokens_remaining = 26;
+  int64 total_tokens_used = 27;
+  int64 next_retry_at_ms = 28;
+  int64 last_used_at_ms = 29;
+  int64 last_refresh_at_ms = 30;
+  repeated string blocker_reason_codes = 31;
+  repeated ProviderKeyPoolMember members = 32;
+}
+
+message ListProviderKeyPoolsRequest {
+  ClientIdentity client = 1;
+  string provider = 2; // optional filter; shared pools follow Hub execution family
+  string model_id = 3; // optional target model/capability bucket
+  bool include_members = 4;
+}
+
+message ListProviderKeyPoolsResponse {
+  repeated ProviderKeyPool pools = 1;
+  int64 updated_at_ms = 2;
+  string routing_strategy = 3;
+}
+
+message AddProviderKeyRequest {
+  ClientIdentity client = 1;
+  string provider = 2;
+  string email = 3;
+  string api_key = 4;
+  string refresh_token = 5;
+  string base_url = 6;
+  string proxy_url = 7;
+  string auth_type = 8;
+  string tier = 9;
+  string notes = 10;
+  int32 priority = 11;
+  map<string, string> custom_headers = 12;
+  repeated string models = 13;
+  string wire_api = 14;
+}
+
+message AddProviderKeyResponse {
+  bool ok = 1;
+  string account_key = 2;
+  string error = 3;
+}
+
+message RemoveProviderKeyRequest {
+  ClientIdentity client = 1;
+  string account_key = 2;
+}
+
+message RemoveProviderKeyResponse {
+  bool ok = 1;
+  string error = 2;
+}
+
+message RemoveProviderKeysRequest {
+  ClientIdentity client = 1;
+  repeated string account_keys = 2;
+}
+
+message RemoveProviderKeysResponse {
+  bool ok = 1;
+  int32 removed = 2;
+  repeated string missing_account_keys = 3;
+  string error = 4;
+}
+
+message UpdateProviderKeyRequest {
+  ClientIdentity client = 1;
+  string account_key = 2;
+  string email = 3;
+  string api_key = 4;
+  string refresh_token = 5;
+  string base_url = 6;
+  string proxy_url = 7;
+  bool enabled = 8;
+  string tier = 9;
+  string notes = 10;
+  int32 priority = 11;
+  string auth_type = 12;
+  map<string, string> custom_headers = 13;
+  repeated string models = 14;
+  string wire_api = 15;
+}
+
+message UpdateProviderKeyResponse {
+  bool ok = 1;
+  string error = 2;
+}
+
+message SetProviderRoutingStrategyRequest {
+  ClientIdentity client = 1;
+  string provider = 2;
+  string strategy = 3; // round-robin | fill-first | quota-aware | priority
+}
+
+message SetProviderRoutingStrategyResponse {
+  bool ok = 1;
+  string error = 2;
+}
+
+message ImportProviderKeysRequest {
+  ClientIdentity client = 1;
+  string auth_dir = 2;       // path to auth directory for JSON file import
+  string config_path = 3;    // path to YAML config for proxy config import
+}
+
+message ImportProviderKeysResponse {
+  bool ok = 1;
+  int32 imported = 2;
+  repeated string errors = 3;
+}
+
+message GetProviderKeySummaryRequest {
+  ClientIdentity client = 1;
+}
+
+message ProviderKeySummaryProvider {
+  string provider = 1;
+  int32 total_accounts = 2;
+  int32 enabled_accounts = 3;
+  string routing_strategy = 4;
+}
+
+message GetProviderKeySummaryResponse {
+  string schema_version = 1;
+  int64 updated_at_ms = 2;
+  string global_routing_strategy = 3;
+  repeated ProviderKeySummaryProvider providers = 4;
+}
+
+message ProviderKeyUsageWindow {
+  string key = 1;
+  string source = 2; // rate_limit | code_review_rate_limit | provider-specific source
+  string window_key = 3; // primary | secondary | provider-specific key
+  string label = 4;
+  int32 limit_window_seconds = 5;
+  double used_percent = 6;
+  int32 used_basis_points = 7;
+  int32 remaining_basis_points = 8;
+  bool limited = 9;
+  int64 reset_at_ms = 10;
+  int64 updated_at_ms = 11;
+}
+
+message ProviderKeyQuota {
+  int64 daily_token_cap = 1;
+  int64 daily_tokens_used = 2;
+  int64 daily_tokens_remaining = 3;
+  int64 total_tokens_used = 4;
+  int64 last_used_at_ms = 5;
+  int64 last_error_at_ms = 6;
+  int32 consecutive_errors = 7;
+  int64 cooldown_until_ms = 8;
+  repeated ProviderKeyUsageWindow usage_windows = 9;
+}
+
+message ProviderKeyErrorState {
+  string status = 1;       // healthy | degraded | rate_limited | auth_failed | disabled | blocked_auth | blocked_quota | blocked_network | blocked_provider | blocked_config | unknown_stale
+  string last_error_code = 2;
+  int64 last_error_at_ms = 3;
+  bool auto_disabled = 4;
+  string status_message = 5;
+  string reason_code = 6;
+  int64 next_retry_at_ms = 7;
+  string retry_at_source = 8;
+}
+
+message ProviderKeyModelState {
+  string status = 1; // ready | cooldown | blocked | disabled | stale
+  string reason_code = 2;
+  string status_message = 3;
+  int64 next_retry_at_ms = 4;
+  string retry_at_source = 5;
+  string last_error_code = 6;
+  int64 last_error_at_ms = 7;
+  int64 updated_at_ms = 8;
+}
+
+message ProviderKeyRefreshState {
+  string status = 1; // idle | pending | refreshing | cooldown | failed
+  int64 last_attempt_at_ms = 2;
+  int64 last_success_at_ms = 3;
+  int64 next_refresh_at_ms = 4;
+  int32 failure_count = 5;
+  string last_error_code = 6;
+  string last_error_message = 7;
+}
+
+message ProviderKeyImportSourceStatus {
+  string source_key = 1;
+  string kind = 2;
+  string source_ref = 3;
+  string state = 4;
+  int64 last_sync_at_ms = 5;
+  int32 last_imported_count = 6;
+  int32 owned_account_count = 7;
+  int32 last_error_count = 8;
+  repeated string last_errors = 9;
+  int64 updated_at_ms = 10;
+}
+
+message ProviderKeyRuntimeAccountSnapshot {
+  string account_key = 1;
+  string provider = 2;
+  string email = 3;
+  bool enabled = 4;
+  string auth_type = 5;
+  string tier = 6;
+  string base_url = 7;
+  string proxy_url = 8;
+  string pool_id = 9;
+  string provider_host = 10;
+  string wire_api = 11;
+  string account_id = 12;
+  string source_type = 13;
+  string source_ref = 14;
+  string oauth_source_key = 15;
+  int32 auth_index = 16;
+  int64 expires_at_ms = 17;
+  int64 created_at_ms = 18;
+  int64 updated_at_ms = 19;
+  int64 last_refresh_at_ms = 20;
+  repeated string models = 21;
+  repeated string source_owners = 22;
+  repeated string required_refresh_metadata = 23;
+  ProviderKeyQuota quota = 24;
+  ProviderKeyErrorState error_state = 25;
+  ProviderKeyRefreshState refresh_state = 26;
+  map<string, ProviderKeyModelState> model_states = 27;
+  string api_key_redacted = 28;
+  string notes = 29;
+  int32 priority = 30;
+}
+
+message GetProviderKeyRuntimeSnapshotRequest {
+  ClientIdentity client = 1;
+  string provider = 2; // optional filter
+}
+
+message GetProviderKeyRuntimeSnapshotResponse {
+  repeated ProviderKeyRuntimeAccountSnapshot accounts = 1;
+  repeated ProviderKeyImportSourceStatus import_source_statuses = 2;
+  int64 updated_at_ms = 3;
+  string global_routing_strategy = 4;
+  repeated ProviderKeySummaryProvider providers = 5;
+}
+
+message ProviderKeyRouteCandidateDecision {
+  string account_key = 1;
+  string provider = 2;
+  string provider_group = 3;
+  string pool_id = 4;
+  string provider_host = 5;
+  string wire_api = 6;
+  string state = 7; // ready | cooldown | blocked | disabled | stale | expired
+  string reason_code = 8;
+  string status_message = 9;
+  int64 retry_at_ms = 10;
+  string retry_at_source = 11;
+  double score = 12;
+  bool selected = 13;
+  repeated string models = 14;
+  repeated string source_owners = 15;
+  repeated string required_refresh_metadata = 16;
+  string model_state_key = 17;
+}
+
+message ProviderKeyRouteDecision {
+  string requested_provider = 1;
+  string requested_model_id = 2;
+  string resolved_provider = 3;
+  string strategy = 4;
+  string selection_scope = 5;
+  string selected_account_key = 6;
+  string fallback_reason_code = 7;
+  int32 available_count = 8;
+  int32 total_count = 9;
+  repeated ProviderKeyRouteCandidateDecision candidates = 10;
+  int64 updated_at_ms = 11;
+}
+
+message GetProviderKeyRouteDecisionRequest {
+  ClientIdentity client = 1;
+  string model_id = 2;
+  string provider = 3; // optional override; normally inferred from model_id
+}
+
+message GetProviderKeyRouteDecisionResponse {
+  ProviderKeyRouteDecision decision = 1;
+}
+
+message ReportKeyUsageRequest {
+  ClientIdentity client = 1;
+  string account_key = 2;
+  int64 tokens_used = 3;
+  double cost_usd = 4;
+  string model_id = 5;
+  int64 latency_ms = 6;
+  int64 occurred_at_ms = 7;
+}
+
+message ReportKeyUsageResponse {
+  bool ok = 1;
+  string error = 2;
+}
+
+message ReportKeyErrorRequest {
+  ClientIdentity client = 1;
+  string account_key = 2;
+  string error_code = 3;
+  string model_id = 4;
+  string outcome = 5;
+  int32 http_status = 6;
+  string reason_code = 7;
+  string status_message = 8;
+  int64 latency_ms = 9;
+  int64 occurred_at_ms = 10;
+  int64 next_retry_at_ms = 11;
+  string retry_at_source = 12;
+}
+
+message ReportKeyErrorResponse {
+  bool ok = 1;
+  string error = 2;
+  bool auto_disabled = 3;
+}
+
+message GetKeyUsageRequest {
+  ClientIdentity client = 1;
+  string account_key = 2;
+}
+
+message GetKeyUsageResponse {
+  string account_key = 1;
+  string provider = 2;
+  ProviderKeyQuota quota = 3;
+  ProviderKeyErrorState error_state = 4;
+  map<string, ProviderKeyModelState> model_states = 5;
+}
+
+message ResetKeyErrorStateRequest {
+  ClientIdentity client = 1;
+  string account_key = 2;
+}
+
+message ResetKeyErrorStateResponse {
+  bool ok = 1;
+  string error = 2;
+}
+
+message StartProviderOAuthLoginRequest {
+  ClientIdentity client = 1;
+  string provider = 2;
+  string redirect_uri = 3; // optional override; defaults to provider-native localhost callback
+}
+
+message StartProviderOAuthLoginResponse {
+  bool ok = 1;
+  string error = 2;
+  string provider = 3;
+  string state = 4;
+  string auth_url = 5;
+  string redirect_uri = 6;
+  string status = 7; // pending | error
+  int64 expires_at_ms = 8;
+}
+
+message SubmitProviderOAuthCallbackRequest {
+  ClientIdentity client = 1;
+  string provider = 2;
+  string state = 3;
+  string code = 4;
+  string redirect_url = 5; // optional full localhost callback URL; Hub extracts code/state/error from it
+  string error = 6;
+}
+
+message SubmitProviderOAuthCallbackResponse {
+  bool ok = 1;
+  string error = 2;
+  string provider = 3;
+  string state = 4;
+  string status = 5; // processing | error
+}
+
+message GetProviderOAuthLoginStatusRequest {
+  ClientIdentity client = 1;
+  string state = 2;
+}
+
+message GetProviderOAuthLoginStatusResponse {
+  bool ok = 1;
+  string error = 2;
+  string provider = 3;
+  string state = 4;
+  string status = 5; // unknown | pending | processing | ok | error | expired
+  int64 expires_at_ms = 6;
+  int64 updated_at_ms = 7;
+  string auth_url = 8;
+  string redirect_uri = 9;
+  string status_message = 10;
+  string account_key = 11;
+  string email = 12;
+  string auth_file_path = 13;
+  int32 imported = 14;
+}
+
 // -------------------- Services --------------------
 
 service HubModels {
@@ -2661,4 +3161,25 @@ service HubSkills {
 service HubAdmin {
   rpc SetKillSwitch(SetKillSwitchRequest) returns (SetKillSwitchResponse);
   rpc GetKillSwitch(GetKillSwitchRequest) returns (GetKillSwitchResponse);
+}
+
+service HubProviderKeys {
+  rpc ListProviderKeys(ListProviderKeysRequest) returns (ListProviderKeysResponse);
+  rpc ListProviderKeyPools(ListProviderKeyPoolsRequest) returns (ListProviderKeyPoolsResponse);
+  rpc GetProviderKeyRuntimeSnapshot(GetProviderKeyRuntimeSnapshotRequest) returns (GetProviderKeyRuntimeSnapshotResponse);
+  rpc GetProviderKeyRouteDecision(GetProviderKeyRouteDecisionRequest) returns (GetProviderKeyRouteDecisionResponse);
+  rpc AddProviderKey(AddProviderKeyRequest) returns (AddProviderKeyResponse);
+  rpc RemoveProviderKey(RemoveProviderKeyRequest) returns (RemoveProviderKeyResponse);
+  rpc RemoveProviderKeys(RemoveProviderKeysRequest) returns (RemoveProviderKeysResponse);
+  rpc UpdateProviderKey(UpdateProviderKeyRequest) returns (UpdateProviderKeyResponse);
+  rpc SetProviderRoutingStrategy(SetProviderRoutingStrategyRequest) returns (SetProviderRoutingStrategyResponse);
+  rpc ImportProviderKeys(ImportProviderKeysRequest) returns (ImportProviderKeysResponse);
+  rpc GetProviderKeySummary(GetProviderKeySummaryRequest) returns (GetProviderKeySummaryResponse);
+  rpc ReportKeyUsage(ReportKeyUsageRequest) returns (ReportKeyUsageResponse);
+  rpc ReportKeyError(ReportKeyErrorRequest) returns (ReportKeyErrorResponse);
+  rpc GetKeyUsage(GetKeyUsageRequest) returns (GetKeyUsageResponse);
+  rpc ResetKeyErrorState(ResetKeyErrorStateRequest) returns (ResetKeyErrorStateResponse);
+  rpc StartProviderOAuthLogin(StartProviderOAuthLoginRequest) returns (StartProviderOAuthLoginResponse);
+  rpc SubmitProviderOAuthCallback(SubmitProviderOAuthCallbackRequest) returns (SubmitProviderOAuthCallbackResponse);
+  rpc GetProviderOAuthLoginStatus(GetProviderOAuthLoginStatusRequest) returns (GetProviderOAuthLoginStatusResponse);
 }

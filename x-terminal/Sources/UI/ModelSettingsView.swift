@@ -25,12 +25,7 @@ struct ModelSettingsView: View {
     @State private var activeFocusRequest: XTModelSettingsFocusRequest?
     @State private var roleModelChangeNotice: XTSettingsChangeNotice?
     @State private var visibleModelInventory = XTVisibleHubModelInventory.empty
-    @State private var roleRoutePickerTarget: RoleRoutePickerTarget?
     @State private var providerKeySelectionSummary: XTDoctorProjectionSummary?
-    @State private var rustHubReadinessPresentation = RustHubReadinessPresentation.loading()
-    @State private var rustHubReadinessRefreshID = 0
-    @State private var rustHubModelRouteDiagnosticsPresentation = RustHubModelRouteDiagnosticsPresentation.loading()
-    @State private var rustHubModelRouteDiagnosticsRefreshID = 0
 
     init(standaloneWindow: Bool = false) {
         self.standaloneWindow = standaloneWindow
@@ -88,12 +83,6 @@ struct ModelSettingsView: View {
         }
         .task(id: providerKeySelectionTaskID) {
             await refreshProviderKeySelectionSummary()
-        }
-        .task(id: rustHubReadinessTaskID) {
-            await refreshRustHubReadiness()
-        }
-        .task(id: rustHubModelRouteDiagnosticsTaskID) {
-            await refreshRustHubModelRouteDiagnostics()
         }
     }
     
@@ -550,8 +539,6 @@ struct ModelSettingsView: View {
             roleRoutePreferenceCard
 
             routeTruthCard
-
-            rustHubModelRouteDiagnosticsCard
 
             if let providerKeySelectionSummary {
                 providerKeySelectionCard(summary: providerKeySelectionSummary)
@@ -1112,7 +1099,10 @@ struct ModelSettingsView: View {
     }
 
     private var modelInventoryTruth: XTModelInventoryTruthPresentation {
-        XTModelInventoryTruthPresentation.build(
+        if let rustInventory = modelManager.latestRustInventoryProjection {
+            return XTModelInventoryTruthPresentation.build(rustInventory: rustInventory)
+        }
+        return XTModelInventoryTruthPresentation.build(
             snapshot: modelInventorySnapshot,
             hubBaseDir: modelSettingsSnapshot.hubBaseDir ?? HubPaths.baseDir()
         )
@@ -1223,44 +1213,8 @@ struct ModelSettingsView: View {
             providerKeySelectionModelID ?? "none",
             String(selectedRoleExecutionSnapshot.updatedAt),
             selectedRoleExecutionSnapshot.executionPath,
-            String(modelSettingsSnapshot.unifiedDoctorGeneratedAtMs)
+            String(appModel.unifiedDoctorReport.generatedAtMs)
         ].joined(separator: "::")
-    }
-
-    private var rustHubModelRouteDiagnosticsTaskID: String {
-        [
-            interfaceLanguage.rawValue,
-            String(rustHubModelRouteDiagnosticsRefreshID)
-        ].joined(separator: "::")
-    }
-
-    private var rustHubReadinessTaskID: String {
-        [
-            interfaceLanguage.rawValue,
-            String(rustHubReadinessRefreshID)
-        ].joined(separator: "::")
-    }
-
-    private var rustHubReadinessCompactText: String {
-        switch rustHubReadinessPresentation.tone {
-        case .ready:
-            return XTL10n.text(interfaceLanguage, zhHans: "Hub 内核 ready", en: "Hub kernel ready")
-        case .warning:
-            return XTL10n.text(interfaceLanguage, zhHans: "Hub 内核需核对", en: "Hub kernel review")
-        case .unavailable:
-            return XTL10n.text(interfaceLanguage, zhHans: "Hub 内核 off", en: "Hub kernel off")
-        }
-    }
-
-    private var rustHubReadinessIconName: String {
-        switch rustHubReadinessPresentation.tone {
-        case .ready:
-            return "server.rack"
-        case .warning:
-            return "exclamationmark.triangle"
-        case .unavailable:
-            return "server.rack"
-        }
     }
 
     private var providerKeySelectionModelID: String? {
@@ -1315,61 +1269,11 @@ struct ModelSettingsView: View {
             modelId: modelId,
             importSnapshot: importSnapshot
                 ?? HubProviderKeyImportSnapshotStore.load(allowCompatibilityFallback: true),
-            doctorSection: modelSettingsSnapshot.modelRouteReadinessSection,
+            doctorSection: appModel.unifiedDoctorReport.section(.modelRouteReadiness),
             language: interfaceLanguage
         )
         await MainActor.run {
             providerKeySelectionSummary = summary
-        }
-    }
-
-    private func refreshRustHubReadiness() async {
-        let language = interfaceLanguage
-        await MainActor.run {
-            rustHubReadinessPresentation = .loading(language: language)
-        }
-
-        let result = await RustHubReadinessClient.fetchReadiness()
-        let presentation: RustHubReadinessPresentation
-        if let snapshot = result.snapshot, result.ok {
-            presentation = RustHubReadinessPresentation.build(
-                snapshot: snapshot,
-                language: language
-            )
-        } else {
-            presentation = RustHubReadinessPresentation.unavailable(
-                message: result.errorMessage,
-                language: language
-            )
-        }
-
-        await MainActor.run {
-            rustHubReadinessPresentation = presentation
-        }
-    }
-
-    private func refreshRustHubModelRouteDiagnostics() async {
-        let language = interfaceLanguage
-        await MainActor.run {
-            rustHubModelRouteDiagnosticsPresentation = .loading(language: language)
-        }
-
-        let result = await RustHubModelRouteDiagnosticsClient.fetchDiagnostics(limit: 1)
-        let presentation: RustHubModelRouteDiagnosticsPresentation
-        if let snapshot = result.snapshot, result.ok {
-            presentation = RustHubModelRouteDiagnosticsPresentation.build(
-                snapshot: snapshot,
-                language: language
-            )
-        } else {
-            presentation = RustHubModelRouteDiagnosticsPresentation.unavailable(
-                message: result.errorMessage,
-                language: language
-            )
-        }
-
-        await MainActor.run {
-            rustHubModelRouteDiagnosticsPresentation = presentation
         }
     }
 
@@ -1379,49 +1283,6 @@ struct ModelSettingsView: View {
         }
         return !ProviderKeySelectionSupport.inferProvider(fromModelId: modelId).isEmpty
             && !modelId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().contains("mlx")
-    }
-
-    private func rustHubReadinessTint(
-        _ tone: RustHubReadinessPresentation.Tone
-    ) -> Color {
-        switch tone {
-        case .ready:
-            return .green
-        case .warning:
-            return .orange
-        case .unavailable:
-            return .secondary
-        }
-    }
-
-    private func rustHubModelRouteDiagnosticsTint(
-        _ tone: RustHubModelRouteDiagnosticsPresentation.Tone
-    ) -> Color {
-        switch tone {
-        case .ready:
-            return .green
-        case .warning:
-            return .orange
-        case .blocked:
-            return .red
-        case .unavailable:
-            return .secondary
-        }
-    }
-
-    private var appModel: AppModel {
-        guard let appModelReference else {
-            preconditionFailure("ModelSettingsView requires xtAppModelReference")
-        }
-        return appModelReference
-    }
-
-    private var modelSettingsSnapshot: XTModelSettingsSnapshot {
-        modelSettingsStore.snapshot
-    }
-
-    private var navigationFocusSnapshot: XTNavigationFocusSnapshot {
-        navigationFocusStore.snapshot
     }
 
     @ViewBuilder

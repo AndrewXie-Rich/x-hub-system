@@ -41,7 +41,9 @@ import sys
 VISION_TASKS = {"vision_understand", "ocr"}
 
 model_path = (sys.argv[1] if len(sys.argv) > 1 else "").strip()
-task_kinds = [token.strip().lower() for token in (sys.argv[2] if len(sys.argv) > 2 else "").split(",") if token.strip()]
+provider_id = (sys.argv[2] if len(sys.argv) > 2 else "").strip().lower()
+task_kinds = [token.strip().lower() for token in (sys.argv[3] if len(sys.argv) > 3 else "").split(",") if token.strip()]
+
 
 def emit(code, summary, detail="", blocking=True):
     print("code=" + str(code or "").strip())
@@ -51,25 +53,49 @@ def emit(code, summary, detail="", blocking=True):
     print("blocking=" + ("1" if blocking else "0"))
     sys.exit(0)
 
+
 if not model_path:
     emit("missing_model_path", "\#(HubUIStrings.Models.RuntimeError.missingModelPath)", blocking=True)
 
-if importlib.util.find_spec("transformers") is None:
-    emit(
-        "missing_module:transformers",
-        "\#(HubUIStrings.Models.RuntimeError.missingTransformers)",
-        "\#(HubUIStrings.Models.RuntimeError.detailMissingTransformers)",
-        True,
-    )
+if provider_id == "mlx_vlm":
+    if importlib.util.find_spec("mlx") is None:
+        emit(
+            "missing_module:mlx",
+            "当前 Python 运行时缺少 mlx。",
+            "Hub 只有在 mlx 可用后才能加载这个 MLX 多模态模型。",
+            True,
+        )
+    if importlib.util.find_spec("mlx_vlm") is None:
+        emit(
+            "missing_module:mlx_vlm",
+            "当前 Python 运行时缺少 mlx_vlm。",
+            "Hub 只有在 mlx_vlm 可用后才能加载这个 MLX 多模态模型。",
+            True,
+        )
+    if importlib.util.find_spec("transformers") is None:
+        emit(
+            "missing_module:transformers",
+            "\#(HubUIStrings.Models.RuntimeError.missingTransformers)",
+            "\#(HubUIStrings.Models.RuntimeError.detailMissingTransformers)",
+            True,
+        )
+else:
+    if importlib.util.find_spec("transformers") is None:
+        emit(
+            "missing_module:transformers",
+            "\#(HubUIStrings.Models.RuntimeError.missingTransformers)",
+            "\#(HubUIStrings.Models.RuntimeError.detailMissingTransformers)",
+            True,
+        )
 
-needs_torch = bool(task_kinds)
-if needs_torch and importlib.util.find_spec("torch") is None:
-    emit(
-        "missing_module:torch",
-        "\#(HubUIStrings.Models.RuntimeError.missingTorch)",
-        "\#(HubUIStrings.Models.RuntimeError.detailMissingTorch)",
-        True,
-    )
+    needs_torch = bool(task_kinds)
+    if needs_torch and importlib.util.find_spec("torch") is None:
+        emit(
+            "missing_module:torch",
+            "\#(HubUIStrings.Models.RuntimeError.missingTorch)",
+            "\#(HubUIStrings.Models.RuntimeError.detailMissingTorch)",
+            True,
+        )
 
 if any(task in VISION_TASKS for task in task_kinds) and importlib.util.find_spec("PIL") is None:
     emit(
@@ -91,47 +117,48 @@ if not os.path.exists(config_path):
 with open(config_path, "r", encoding="utf-8") as handle:
     config = json.load(handle)
 
-try:
-    import transformers
-    from transformers.models.auto.configuration_auto import CONFIG_MAPPING
-except Exception as exc:
-    emit(
-        "transformers_import_failed",
-        "\#(HubUIStrings.Models.RuntimeError.transformersImportFailed)",
-        f"{type(exc).__name__}: {exc}",
-        True,
-    )
-
-transformers_version = str(getattr(transformers, "__version__", "") or "").strip()
-model_type_rows = [
-    ("config.model_type", str(config.get("model_type") or "").strip()),
-]
-
-text_config = config.get("text_config") if isinstance(config.get("text_config"), dict) else {}
-vision_config = config.get("vision_config") if isinstance(config.get("vision_config"), dict) else {}
-for label, obj in (("text_config.model_type", text_config), ("vision_config.model_type", vision_config)):
-    if isinstance(obj, dict):
-        value = str(obj.get("model_type") or "").strip()
-        if value:
-            model_type_rows.append((label, value))
-
-seen_model_types = set()
-for label, model_type in model_type_rows:
-    if not model_type or model_type in seen_model_types:
-        continue
-    seen_model_types.add(model_type)
+if provider_id != "mlx_vlm":
     try:
-        CONFIG_MAPPING[model_type]
-    except Exception:
-        detail = f"\#(HubUIStrings.Models.RuntimeError.detectedInPrefix){label}。"
-        if transformers_version:
-            detail += f"\#(HubUIStrings.Models.RuntimeError.currentTransformersPrefix){transformers_version}。"
+        import transformers
+        from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+    except Exception as exc:
         emit(
-            f"unsupported_model_type:{model_type}",
-            f"\#(HubUIStrings.Models.RuntimeError.unsupportedModelType("{model_type}"))",
-            detail,
+            "transformers_import_failed",
+            "\#(HubUIStrings.Models.RuntimeError.transformersImportFailed)",
+            f"{type(exc).__name__}: {exc}",
             True,
         )
+
+    transformers_version = str(getattr(transformers, "__version__", "") or "").strip()
+    model_type_rows = [
+        ("config.model_type", str(config.get("model_type") or "").strip()),
+    ]
+
+    text_config = config.get("text_config") if isinstance(config.get("text_config"), dict) else {}
+    vision_config = config.get("vision_config") if isinstance(config.get("vision_config"), dict) else {}
+    for label, obj in (("text_config.model_type", text_config), ("vision_config.model_type", vision_config)):
+        if isinstance(obj, dict):
+            value = str(obj.get("model_type") or "").strip()
+            if value:
+                model_type_rows.append((label, value))
+
+    seen_model_types = set()
+    for label, model_type in model_type_rows:
+        if not model_type or model_type in seen_model_types:
+            continue
+        seen_model_types.add(model_type)
+        try:
+            CONFIG_MAPPING[model_type]
+        except Exception:
+            detail = f"\#(HubUIStrings.Models.RuntimeError.detectedInPrefix){label}。"
+            if transformers_version:
+                detail += f"\#(HubUIStrings.Models.RuntimeError.currentTransformersPrefix){transformers_version}。"
+            emit(
+                f"unsupported_model_type:{model_type}",
+                f"\#(HubUIStrings.Models.RuntimeError.unsupportedModelType("{model_type}"))",
+                detail,
+                True,
+            )
 
 processor_files = [
     "processor_config.json",
@@ -229,6 +256,7 @@ emit("ok", "ok", "", False)
         }
         let issue = uncachedIssue(
             modelPath: trimmedPath,
+            providerID: normalizedBackend,
             taskKinds: normalizedTaskKinds,
             launchConfig: resolvedLaunch
         )
@@ -279,7 +307,19 @@ emit("ok", "ok", "", False)
             .lowercased() ?? ""
 
         switch normalizedProviderID {
-        case "mlx_vlm", "llama.cpp":
+        case "mlx_vlm":
+            guard executionMode == "helper_binary_bridge" else {
+                return nil
+            }
+            return LocalModelNonPythonExecutionCoverage(
+                coversAllRequestedTaskKinds: true,
+                helperBackedTaskKinds: requestedTaskKinds.isEmpty ? ["__all__"] : requestedTaskKinds,
+                helperBinaryPath: resolvedHelperBinaryPath(
+                    configuredPath: effectivePack?.runtimeRequirements.helperBinary ?? "",
+                    fallbackPath: normalizedHelperBinaryPath
+                )
+            )
+        case "llama.cpp":
             if !executionMode.isEmpty, executionMode != "helper_binary_bridge" {
                 return nil
             }
@@ -406,12 +446,13 @@ emit("ok", "ok", "", False)
 
     private static func uncachedIssue(
         modelPath: String,
+        providerID: String,
         taskKinds: [String],
         launchConfig: LocalRuntimePythonProbeLaunchConfig
     ) -> LocalModelRuntimeCompatibilityIssue? {
         let result = runCapture(
             launchConfig.executable,
-            launchConfig.argumentsPrefix + ["-c", probeScript, modelPath, taskKinds.joined(separator: ",")],
+            launchConfig.argumentsPrefix + ["-c", probeScript, modelPath, providerID, taskKinds.joined(separator: ",")],
             env: launchConfig.environment,
             timeoutSec: 6.0
         )

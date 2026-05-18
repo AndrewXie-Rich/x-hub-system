@@ -52,8 +52,8 @@ enum RemoteModelPresentationSupport {
     ) -> [RemoteModelGroupPlan] {
         let sortedModels = sorted(models)
         let grouped = Dictionary(grouping: sortedModels, by: groupIdentifier(for:))
-        let healthByKey = Dictionary(
-            uniqueKeysWithValues: (healthSnapshot?.records ?? []).map { ($0.keyReference, $0) }
+        let pooledHealthByKey = RemoteKeyHealthSupport.pooledRecords(
+            from: healthSnapshot ?? .empty()
         )
 
         return grouped.compactMap { groupID, models in
@@ -62,7 +62,7 @@ enum RemoteModelPresentationSupport {
             let states = models.map(state(for:))
             return RemoteModelGroupPlan(
                 id: groupID,
-                keyReference: RemoteModelStorage.keyReference(for: models.first),
+                keyReference: RemoteModelStorage.keyPoolReference(for: models.first),
                 title: groupTitle(for: models),
                 detail: groupDetail(for: models),
                 models: models,
@@ -73,8 +73,8 @@ enum RemoteModelPresentationSupport {
             )
         }
         .sorted { lhs, rhs in
-            let lhsHealth = healthByKey[lhs.keyReference]
-            let rhsHealth = healthByKey[rhs.keyReference]
+            let lhsHealth = pooledHealthByKey[lhs.keyReference]
+            let rhsHealth = pooledHealthByKey[rhs.keyReference]
             let lhsPriority = RemoteKeyHealthSupport.sortPriority(for: lhsHealth)
             let rhsPriority = RemoteKeyHealthSupport.sortPriority(for: rhsHealth)
             if lhsPriority != rhsPriority {
@@ -140,10 +140,10 @@ enum RemoteModelPresentationSupport {
 
     private static func groupIdentifier(for entry: RemoteModelEntry) -> String {
         let alias = (entry.effectiveGroupDisplayName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let keyPoolReference = RemoteModelStorage.keyPoolReference(for: entry)
         if !alias.isEmpty {
-            let keyReference = RemoteModelStorage.keyReference(for: entry)
-            if !keyReference.isEmpty {
-                return "alias::\(alias.lowercased())::key::\(keyReference.lowercased())"
+            if !keyPoolReference.isEmpty {
+                return "alias::\(alias.lowercased())::key::\(keyPoolReference.lowercased())"
             }
             if let host = endpointHost(for: entry), !host.isEmpty {
                 return "alias::\(alias.lowercased())::host::\(host.lowercased())"
@@ -151,9 +151,8 @@ enum RemoteModelPresentationSupport {
             return "alias::\(alias.lowercased())::backend::\(RemoteProviderEndpoints.canonicalBackend(entry.backend).lowercased())"
         }
 
-        let keyReference = RemoteModelStorage.keyReference(for: entry)
-        if !keyReference.isEmpty {
-            return "key::\(keyReference.lowercased())"
+        if !keyPoolReference.isEmpty {
+            return "key::\(keyPoolReference.lowercased())"
         }
 
         if let host = endpointHost(for: entry), !host.isEmpty {
@@ -169,7 +168,7 @@ enum RemoteModelPresentationSupport {
             return alias
         }
 
-        let keyReference = RemoteModelStorage.keyReference(for: models.first)
+        let keyReference = RemoteModelStorage.keyPoolReference(for: models.first)
         if !keyReference.isEmpty {
             return keyReference
         }
@@ -190,7 +189,7 @@ enum RemoteModelPresentationSupport {
 
         var parts: [String] = [backendLabel(for: first)]
 
-        let keyReference = RemoteModelStorage.keyReference(for: first)
+        let keyReference = RemoteModelStorage.keyPoolReference(for: first)
         if !keyReference.isEmpty, keyReference != groupTitle(for: models) {
             parts.append(keyReference)
         }

@@ -1190,6 +1190,13 @@ message AgentToolRequestRequest {
   string exec_cwd = 10; // absolute cwd path; hub resolves canonical realpath for binding
 }
 
+// Skill runner tools (`skills.run*` / `skills.execute*`) remain Hub-authorized
+// even when XT performs local execution. Hub binds the request to skill id,
+// package/version identity, argv, cwd, device, user, project, and grant scope.
+// Resolved pinned low/medium-risk skills with no explicit grant requirement may
+// receive a short TTL XT-local preauthorization lease. Unpinned, new, high-risk,
+// revoked, missing, mismatched, or grant-required skills must not be locally
+// auto-approved by XT.
 message AgentToolRequestResponse {
   bool accepted = 1;
   string tool_request_id = 2;

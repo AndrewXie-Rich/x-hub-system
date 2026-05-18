@@ -1,5 +1,10 @@
 import { resolveRuntimeBaseDir } from './local_runtime_ipc.js';
-import { loadClients, findClientByToken } from './clients.js';
+import {
+  loadClients,
+  findClientByToken,
+  getClientAuthStatus,
+  touchClientUsageByToken,
+} from './clients.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -303,6 +308,7 @@ export function requireClientAuth(call) {
   const peerIp = peerIpFromCall(call);
   const peerCertSha256 = peerCertSha256FromCall(call);
   const tlsMode = tlsModeFromEnv(process.env);
+  const runtimeBaseDir = resolveRuntimeBaseDir();
 
   const deny = (reason, message, extra = {}) => {
     recordDeniedAttemptBestEffort({
@@ -340,11 +346,24 @@ export function requireClientAuth(call) {
   // Preferred (v1): per-device client allowlist loaded from runtime base dir.
   // This makes quotas/policies meaningful because device_id is no longer user-controlled.
   try {
-    const base = resolveRuntimeBaseDir();
-    const clients = loadClients(base);
+    const clients = loadClients(runtimeBaseDir);
     if (clients.length > 0) {
-      const c = findClientByToken(base, tok);
+      const c = findClientByToken(runtimeBaseDir, tok);
       if (c) {
+        const availability = getClientAuthStatus(c);
+        if (!availability.usable) {
+          const denyMessage = availability.reason_code === 'token_revoked'
+            ? 'Client token has been revoked'
+            : availability.reason_code === 'token_expired'
+              ? 'Client token has expired'
+              : 'Client token is disabled';
+          return deny(availability.reason_code || 'invalid_token', denyMessage, {
+            device_id: safeString(c.device_id),
+            client_name: safeString(c.name),
+            code: availability.reason_code || 'unauthenticated',
+          });
+        }
+
         const device_id = String(c.device_id || '').trim();
         // Backward compatible default: if user_id is not configured, treat the device_id
         // as the user identity (single-device == single-user).
@@ -374,25 +393,33 @@ export function requireClientAuth(call) {
           }
         }
 
+        const touchedClient = touchClientUsageByToken(runtimeBaseDir, tok, {
+          peer_ip: peerIp,
+          transport: 'grpc',
+        }) || c;
+
         return {
           ok: true,
           device_id,
           user_id,
           client_name,
-          capabilities: Array.isArray(c.capabilities) ? c.capabilities : [],
-          policy_mode: safeString(c.policy_mode).toLowerCase(),
-          trust_profile_present: !!c.trust_profile_present,
-          trust_mode: safeString(c.trust_mode).toLowerCase(),
-          trusted_automation_mode: safeString(c.trusted_automation_mode).toLowerCase(),
-          trusted_automation_state: safeString(c.trusted_automation_state).toLowerCase(),
-          allowed_project_ids: Array.isArray(c.allowed_project_ids) ? c.allowed_project_ids : [],
-          allowed_workspace_roots: Array.isArray(c.allowed_workspace_roots) ? c.allowed_workspace_roots : [],
-          xt_binding_required: !!c.xt_binding_required,
-          auto_grant_profile: safeString(c.auto_grant_profile),
-          device_permission_owner_ref: safeString(c.device_permission_owner_ref),
-          approved_trust_profile: c.approved_trust_profile && typeof c.approved_trust_profile === 'object'
-            ? c.approved_trust_profile
-            : (c.trust_profile && typeof c.trust_profile === 'object' ? c.trust_profile : null),
+          access_key_id: safeString(touchedClient.access_key_id || c.access_key_id),
+          auth_kind: safeString(touchedClient.auth_kind || c.auth_kind),
+          capabilities: Array.isArray(touchedClient.capabilities) ? touchedClient.capabilities : [],
+          scopes: Array.isArray(touchedClient.scopes) ? touchedClient.scopes : [],
+          policy_mode: safeString(touchedClient.policy_mode).toLowerCase(),
+          trust_profile_present: !!touchedClient.trust_profile_present,
+          trust_mode: safeString(touchedClient.trust_mode).toLowerCase(),
+          trusted_automation_mode: safeString(touchedClient.trusted_automation_mode).toLowerCase(),
+          trusted_automation_state: safeString(touchedClient.trusted_automation_state).toLowerCase(),
+          allowed_project_ids: Array.isArray(touchedClient.allowed_project_ids) ? touchedClient.allowed_project_ids : [],
+          allowed_workspace_roots: Array.isArray(touchedClient.allowed_workspace_roots) ? touchedClient.allowed_workspace_roots : [],
+          xt_binding_required: !!touchedClient.xt_binding_required,
+          auto_grant_profile: safeString(touchedClient.auto_grant_profile),
+          device_permission_owner_ref: safeString(touchedClient.device_permission_owner_ref),
+          approved_trust_profile: touchedClient.approved_trust_profile && typeof touchedClient.approved_trust_profile === 'object'
+            ? touchedClient.approved_trust_profile
+            : (touchedClient.trust_profile && typeof touchedClient.trust_profile === 'object' ? touchedClient.trust_profile : null),
           peer_ip: peerIp,
           peer_cert_sha256: peerCertSha256,
         };

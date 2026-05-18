@@ -159,13 +159,7 @@ final class AppModel: ObservableObject {
         var projection: XTUnifiedDoctorSkillDoctorTruthProjection
     }
 
-    @Published var settingsStore: SettingsStore {
-        didSet {
-            refreshControlSurfaceSnapshot()
-            refreshModelSettingsSnapshot()
-            refreshSettingsCenterSnapshot()
-        }
-    }
+    @Published var settingsStore: SettingsStore
     @Published var llmRouter: LLMRouter
     @Published var projectRoot: URL? = nil {
         didSet {
@@ -181,11 +175,6 @@ final class AppModel: ObservableObject {
     @Published var registry: AXProjectRegistry = .empty() {
         didSet {
             sortedProjectsCache = registry.sortedProjects()
-            refreshProjectListSnapshot()
-            refreshGlobalHomeResumeSnapshot()
-            refreshSkillLibrarySnapshot()
-            refreshModelSettingsSnapshot()
-            refreshSettingsCenterRouteRepairSnapshot()
         }
     }
     @Published var selectedProjectId: String? = nil {
@@ -228,57 +217,23 @@ final class AppModel: ObservableObject {
         didSet {
             if oldValue != skillsCompatibilitySnapshot {
                 cachedSkillDoctorTruthProjection = nil
-                refreshGlobalHomeSkillsSnapshot()
-                refreshSkillLibrarySnapshot()
-                refreshSettingsCenterSnapshot()
             }
         }
     }
-    @Published var unifiedDoctorReport: XTUnifiedDoctorReport = .empty {
-        didSet {
-            refreshModelSettingsSnapshot()
-            refreshSettingsCenterSnapshot()
-        }
-    }
-    @Published private(set) var officialSkillsRecheckStatusLine: String = "" {
-        didSet { refreshSettingsCenterSnapshot() }
-    }
-    @Published private(set) var historicalProjectBoundaryRepairStatusLine: String = "" {
-        didSet { refreshSettingsCenterSnapshot() }
-    }
-    @Published private(set) var supervisorVoiceSmokeRunning: Bool = false {
-        didSet { refreshSettingsCenterSnapshot() }
-    }
-    @Published private(set) var supervisorVoiceSmokeStatusLine: String = "" {
-        didSet { refreshSettingsCenterSnapshot() }
-    }
-    @Published private(set) var supervisorVoiceSmokeDetailLine: String = "" {
-        didSet { refreshSettingsCenterSnapshot() }
-    }
-    @Published private(set) var supervisorVoiceSmokeLastPassed: Bool? = nil {
-        didSet { refreshSettingsCenterSnapshot() }
-    }
-    @Published private(set) var supervisorVoiceSmokeReportURL: URL? = nil {
-        didSet { refreshSettingsCenterSnapshot() }
-    }
-    @Published private(set) var supervisorVoiceSmokeReportSummary: XTSupervisorVoiceSmokeReportSummary? = nil {
-        didSet { refreshSettingsCenterSnapshot() }
-    }
-    @Published var lastImportedAgentSkillDirectory: URL? = nil {
-        didSet { refreshSkillLibrarySnapshot() }
-    }
-    @Published var lastImportedAgentSkillName: String = "" {
-        didSet { refreshSkillLibrarySnapshot() }
-    }
-    @Published var lastImportedAgentSkillStage: HubIPCClient.AgentImportStageResult? = nil {
-        didSet { refreshSkillLibrarySnapshot() }
-    }
-    @Published var lastImportedAgentSkillStatusLine: String = "" {
-        didSet { refreshSkillLibrarySnapshot() }
-    }
-    @Published var agentSkillImportBusy: Bool = false {
-        didSet { refreshSkillLibrarySnapshot() }
-    }
+    @Published var unifiedDoctorReport: XTUnifiedDoctorReport = .empty
+    @Published private(set) var officialSkillsRecheckStatusLine: String = ""
+    @Published private(set) var historicalProjectBoundaryRepairStatusLine: String = ""
+    @Published private(set) var supervisorVoiceSmokeRunning: Bool = false
+    @Published private(set) var supervisorVoiceSmokeStatusLine: String = ""
+    @Published private(set) var supervisorVoiceSmokeDetailLine: String = ""
+    @Published private(set) var supervisorVoiceSmokeLastPassed: Bool? = nil
+    @Published private(set) var supervisorVoiceSmokeReportURL: URL? = nil
+    @Published private(set) var supervisorVoiceSmokeReportSummary: XTSupervisorVoiceSmokeReportSummary? = nil
+    @Published var lastImportedAgentSkillDirectory: URL? = nil
+    @Published var lastImportedAgentSkillName: String = ""
+    @Published var lastImportedAgentSkillStage: HubIPCClient.AgentImportStageResult? = nil
+    @Published var lastImportedAgentSkillStatusLine: String = ""
+    @Published var agentSkillImportBusy: Bool = false
     @Published var baselineInstallBusy: Bool = false
     @Published var baselineInstallStatusLine: String = ""
     @Published private(set) var skillGovernanceActionStatusLine: String = "" {
@@ -298,9 +253,9 @@ final class AppModel: ObservableObject {
 
     private var sortedProjectsCache: [AXProjectEntry] = []
     private var cachedSkillDoctorTruthProjection: CachedSkillDoctorTruthProjection? = nil
-    private var settingsCenterRouteRepairLogLines: [String] = []
-    private var settingsCenterRouteRepairLogDigest: AXRouteRepairLogDigest = .empty
-    private var settingsCenterCurrentProjectRouteWatchItem: AXRouteRepairProjectWatchItem? = nil
+
+    @Published var runtimeStatus: AIRuntimeStatus? = nil
+    @Published var modelsState: ModelStateSnapshot = .empty()
 
     let hubConnectionStore = XTHubConnectionStore()
     let workSurfaceStore = XTWorkSurfaceStore()
@@ -890,9 +845,6 @@ final class AppModel: ObservableObject {
     private var lastHubNetworkPathFingerprint: HubNetworkPathFingerprint? = nil
     private var hubConnectivityIncidentSnapshot: XTHubConnectivityIncidentSnapshot? = nil
     private var hubRemotePrefsDoctorRefreshTask: Task<Void, Never>? = nil
-    private var hubContractDoctorRefreshTask: Task<Void, Never>? = nil
-    private var hubContractDoctorProjection: XTUnifiedDoctorHubContractProjection? = nil
-    private var nextHubContractDoctorRefreshAt: Date = .distantPast
     private var externalTerminalAccessDoctorRefreshTask: Task<Void, Never>? = nil
     private var externalTerminalAccessDoctorProjection: XTUnifiedDoctorExternalTerminalAccessProjection? =
         HubExternalTerminalAccessSnapshotStore.load(allowCompatibilityFallback: true)
@@ -7330,8 +7282,6 @@ final class AppModel: ObservableObject {
         }
 
         refreshExternalTerminalAccessDoctorProjectionIfNeeded(force: false)
-        refreshHubContractDoctorProjectionIfNeeded(force: false)
-        let hubContractDoctorProjection = self.hubContractDoctorProjection
         let externalTerminalAccessDoctorProjection = self.externalTerminalAccessDoctorProjection
             ?? HubExternalTerminalAccessSnapshotStore.load(allowCompatibilityFallback: true)
         if self.externalTerminalAccessDoctorProjection == nil {
@@ -7462,7 +7412,6 @@ final class AppModel: ObservableObject {
             calendarReminderSnapshot: calendarReminderSnapshot,
             skillsSnapshot: skillsCompatibilitySnapshot,
             skillDoctorTruthProjection: skillDoctorTruthProjection,
-            hubContractProjection: hubContractDoctorProjection,
             externalTerminalAccessProjection: externalTerminalAccessDoctorProjection,
             providerKeyImportSnapshot: HubProviderKeyImportSnapshotStore.load()
                 ?? HubProviderKeyImportSnapshotStore.load(allowCompatibilityFallback: true),
@@ -7536,6 +7485,50 @@ final class AppModel: ObservableObject {
             }
 
             self.hubContractDoctorProjection = projection
+            self.refreshUnifiedDoctorReport(force: true)
+        }
+    }
+
+    private func refreshExternalTerminalAccessDoctorProjectionIfNeeded(force: Bool) {
+        guard hubInteractive else { return }
+
+        let now = Date()
+        if !force, now < nextExternalTerminalAccessDoctorRefreshAt {
+            return
+        }
+        guard externalTerminalAccessDoctorRefreshTask == nil else { return }
+
+        nextExternalTerminalAccessDoctorRefreshAt = now.addingTimeInterval(30.0)
+        externalTerminalAccessDoctorRefreshTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.externalTerminalAccessDoctorRefreshTask = nil }
+
+            let result = await HubAccessKeysClient.listAccessKeys()
+            guard !Task.isCancelled else { return }
+
+            let projection: XTUnifiedDoctorExternalTerminalAccessProjection
+            if result.ok {
+                projection = XTUnifiedDoctorExternalTerminalAccessProjection(
+                    listResult: result,
+                    observedAt: Date()
+                )
+            } else if let existing = self.externalTerminalAccessDoctorProjection
+                ?? HubExternalTerminalAccessSnapshotStore.load(allowCompatibilityFallback: true) {
+                projection = existing.withFetchFailure(
+                    errorCode: result.errorCode,
+                    errorMessage: result.errorMessage.isEmpty ? result.errorCode : result.errorMessage,
+                    observedAt: Date()
+                )
+            } else {
+                projection = XTUnifiedDoctorExternalTerminalAccessProjection.fetchFailure(
+                    errorCode: result.errorCode,
+                    errorMessage: result.errorMessage.isEmpty ? result.errorCode : result.errorMessage,
+                    observedAt: Date()
+                )
+            }
+
+            self.externalTerminalAccessDoctorProjection = projection
+            HubExternalTerminalAccessSnapshotStore.write(projection)
             self.refreshUnifiedDoctorReport(force: true)
         }
     }

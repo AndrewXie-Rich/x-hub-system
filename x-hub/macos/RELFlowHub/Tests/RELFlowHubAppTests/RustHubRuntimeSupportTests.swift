@@ -42,10 +42,6 @@ final class RustHubRuntimeSupportTests: XCTestCase {
         XCTAssertEqual(env["XHUB_RUST_HUB_ROOT"], info.rootPath)
         XCTAssertEqual(env["XHUB_RUST_HUB_RUNNER"], info.runnerPath)
         XCTAssertEqual(env["XHUB_RUST_HUB_HTTP_PORT"], "50151")
-        XCTAssertEqual(
-            env["XHUB_RUST_HTTP_ACCESS_KEY_FILE"],
-            "/Applications/X-Hub.app/Contents/Resources/rust-hub/secrets/xhubd_http_access_key"
-        )
         XCTAssertNil(env["XHUB_RUST_SCHEDULER_AUTHORITY"])
         XCTAssertNil(env["XHUB_RUST_PROVIDER_ROUTE_PRODUCTION_AUTHORITY"])
         XCTAssertNil(env["XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_PRODUCTION"])

@@ -6,7 +6,7 @@ import RELFlowHubCore
 // Clients write one JSON file per request into a dropbox directory.
 // Hub polls and processes files, then deletes them.
 
-struct HubStatus: Codable {
+struct HubStatus: Codable, Sendable {
     var pid: Int32
     var startedAt: Double
     var updatedAt: Double
@@ -36,12 +36,17 @@ private struct FileIPCInternalStatus: Codable {
 }
 
 final class FileIPC: @unchecked Sendable {
+    private static let staleResponseTTL: TimeInterval = 24 * 60 * 60
+    private static let staleResponsePruneInterval: TimeInterval = 60
+    private static let staleTempResponseTTL: TimeInterval = 10 * 60
+
     private let store: HubStore
     private let baseDir: URL
     private let eventsDir: URL
     private let responsesDir: URL
     private let statusFile: URL
     private let internalStatusFile: URL
+    private let rustLiveBridge: RustLiveFileIPCBridge
 
     // Use GCD timers on a global queue; a private serial queue can still be starved
     // under certain AppKit event-tracking / app-nap scenarios.
@@ -50,6 +55,7 @@ final class FileIPC: @unchecked Sendable {
     private var pollTimer: DispatchSourceTimer?
     private var heartbeatTimer: DispatchSourceTimer?
     private let startedAt = Date().timeIntervalSince1970
+    private var lastResponsePruneAt: TimeInterval = 0
 
     init(store: HubStore) {
         self.store = store
@@ -66,6 +72,12 @@ final class FileIPC: @unchecked Sendable {
         self.responsesDir = baseDir.appendingPathComponent("ipc_responses", isDirectory: true)
         self.statusFile = baseDir.appendingPathComponent("hub_status.json")
         self.internalStatusFile = baseDir.appendingPathComponent("file_ipc_status.json")
+        self.rustLiveBridge = RustLiveFileIPCBridge(
+            appBaseDir: baseDir,
+            appEventsDir: eventsDir,
+            appResponsesDir: responsesDir,
+            appStatusFile: statusFile
+        )
 
         writeInternalStatus(lastHeartbeatAt: 0, lastDrainAt: 0, lastDrainFilesSeen: 0)
     }
@@ -143,6 +155,7 @@ final class FileIPC: @unchecked Sendable {
         try secureDirectory(baseDir)
         try secureDirectory(eventsDir)
         try secureDirectory(responsesDir)
+        pruneStaleResponseFilesIfNeeded(force: true)
 
         // Poll new event files.
         let poll = DispatchSource.makeTimerSource(queue: pollQueue)
@@ -204,6 +217,11 @@ final class FileIPC: @unchecked Sendable {
             loadedModelCount: loaded,
             modelsUpdatedAt: ms.updatedAt
         )
+        if rustLiveBridge.publishAliasHeartbeat(fallbackStatus: st) {
+            writeInternalStatus(lastHeartbeatAt: Date().timeIntervalSince1970, lastDrainAt: 0, lastDrainFilesSeen: -1)
+            return
+        }
+
         if let data = try? JSONEncoder().encode(st) {
             writeProtectedData(data, to: statusFile)
         }
@@ -212,6 +230,9 @@ final class FileIPC: @unchecked Sendable {
     }
 
     private func drainOnce() {
+        pruneStaleResponseFilesIfNeeded()
+        rustLiveBridge.bridgeDropboxes()
+
         guard let files = try? FileManager.default.contentsOfDirectory(at: eventsDir, includingPropertiesForKeys: nil) else {
             return
         }
@@ -540,6 +561,45 @@ final class FileIPC: @unchecked Sendable {
 
         if let data = try? JSONEncoder().encode(st) {
             writeProtectedData(data, to: internalStatusFile)
+        }
+    }
+
+    private func pruneStaleResponseFilesIfNeeded(force: Bool = false, now: TimeInterval = Date().timeIntervalSince1970) {
+        if !force, (now - lastResponsePruneAt) < Self.staleResponsePruneInterval {
+            return
+        }
+        lastResponsePruneAt = now
+
+        let keys: [URLResourceKey] = [.contentModificationDateKey, .isRegularFileKey, .nameKey]
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: responsesDir,
+            includingPropertiesForKeys: keys,
+            options: [.skipsHiddenFiles]
+        ) else {
+            return
+        }
+
+        for url in files {
+            guard let values = try? url.resourceValues(forKeys: Set(keys)),
+                  values.isRegularFile == true else {
+                continue
+            }
+
+            let name = values.name ?? url.lastPathComponent
+            let modifiedAt = values.contentModificationDate?.timeIntervalSince1970 ?? 0
+            let age = modifiedAt > 0 ? (now - modifiedAt) : .greatestFiniteMagnitude
+
+            if name.hasPrefix(".resp_") {
+                if age >= Self.staleTempResponseTTL {
+                    try? FileManager.default.removeItem(at: url)
+                }
+                continue
+            }
+
+            guard name.hasPrefix("resp_") else { continue }
+            if age >= Self.staleResponseTTL {
+                try? FileManager.default.removeItem(at: url)
+            }
         }
     }
 }

@@ -123,6 +123,46 @@ struct XTPendingApprovalPresentationTests {
     }
 
     @Test
+    func approvalMessageExplainsTrustedAutomationApprovalEffect() {
+        let toolCall = ToolCall(
+            id: "pending-browser-trusted-automation-1",
+            tool: .deviceBrowserControl,
+            args: [
+                "action": .string("open_url"),
+                "url": .string("https://example.com/dashboard")
+            ]
+        )
+        let activity = ProjectSkillActivityItem(
+            requestID: "pending-browser-trusted-automation-1",
+            skillID: "guarded-automation",
+            toolName: ToolName.deviceBrowserControl.rawValue,
+            status: "awaiting_approval",
+            createdAt: 1.0,
+            resolutionSource: "",
+            toolArgs: toolCall.args,
+            routingReasonCode: "",
+            routingExplanation: "",
+            executionReadiness: XTSkillExecutionReadinessState.localApprovalRequired.rawValue,
+            approvalSummary: "",
+            grantFloor: XTSkillGrantFloor.none.rawValue,
+            approvalFloor: XTSkillApprovalFloor.localApproval.rawValue,
+            resultSummary: "",
+            detail: "",
+            denyCode: xtTrustedAutomationLocalApprovalRequiredDenyCode,
+            authorizationDisposition: ""
+        )
+
+        let message = XTPendingApprovalPresentation.approvalMessage(
+            for: toolCall,
+            activity: activity
+        )
+
+        #expect(message.summary.contains("启用可信设备自动化"))
+        #expect(message.nextStep?.contains("启用可信设备自动化") == true)
+        #expect(message.nextStep?.contains("macOS 系统权限") == true)
+    }
+
+    @Test
     func approvalMessageUsesGrantSpecificNextStepWhenReadinessRequiresGrant() {
         let toolCall = ToolCall(
             id: "pending-delivery-1",

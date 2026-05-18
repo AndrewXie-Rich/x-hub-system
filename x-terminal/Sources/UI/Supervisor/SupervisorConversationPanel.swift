@@ -457,8 +457,242 @@ struct SupervisorConversationPanel: View {
         workSurfaceStore.snapshot
     }
 
-    private var projectContext: AXProjectContext? {
-        workSurfaceSnapshot.projectContext
+    private var callModeButtonColor: Color {
+        if supervisor.voiceCallModeActive {
+            return Color(red: 0.73, green: 0.16, blue: 0.16)
+        }
+        if let preflight = callModePreflight {
+            switch preflight.disposition {
+            case .block:
+                return Color(red: 0.73, green: 0.16, blue: 0.16)
+            case .advisory:
+                return Color.orange
+            }
+        }
+        if supervisor.voiceRouteDecision.route.supportsLiveCapture {
+            return Color(red: 0.12, green: 0.54, blue: 0.31)
+        }
+        return Color.secondary
+    }
+
+    private var callModeButtonIconName: String {
+        if supervisor.voiceCallModeActive {
+            return "phone.down.fill"
+        }
+        if callModePreflight?.blocksStart == true {
+            return "exclamationmark.triangle.fill"
+        }
+        return "phone.fill"
+    }
+
+    private var callModeButtonTitle: String {
+        if supervisor.voiceCallModeActive {
+            return "结束通话"
+        }
+        if callModePreflight?.blocksStart == true {
+            return "先修复语音"
+        }
+        return "进入通话"
+    }
+
+    private var callModeHeadline: String {
+        if supervisor.voiceCallModeActive {
+            switch supervisor.voiceRuntimeState.state {
+            case .listening:
+                return "已接通，直接开口"
+            case .transcribing:
+                return "正在听你说话"
+            case .completed:
+                return "这一句已送进 Supervisor"
+            case .failClosed:
+                return "通话链路当前不可用"
+            case .idle:
+                return "通话已接通"
+            }
+        }
+        if let preflight = callModePreflight {
+            return preflight.headline
+        }
+        switch supervisor.voiceCaptureSource {
+        case .wakeArmed:
+            return "待命中，叫一声就行"
+        case .wakeFollowup:
+            return "已唤醒，继续说"
+        case .talkLoop:
+            return "我在继续听"
+        case .continuousConversation:
+            return "通话已接通"
+        case .manualComposer, .none:
+            break
+        }
+        return "像打电话一样连续说话"
+    }
+
+    private var callModeDetail: String {
+        if supervisor.voiceCallModeActive {
+            if supervisor.voiceRuntimeState.state == .failClosed {
+                return SupervisorVoiceReasonPresentation.displayTextOrRaw(
+                    supervisor.voiceRuntimeState.reasonCode
+                ) ?? "请先修复当前语音链路。"
+            }
+            return "你说完一轮后会自动送进 Supervisor，并在回复后继续监听。"
+        }
+        if let preflight = callModePreflight {
+            let detail = preflight.detail.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !detail.isEmpty {
+                return detail
+            }
+            return preflight.nextStep
+        }
+
+        switch supervisor.voiceCaptureSource {
+        case .wakeArmed:
+            return "当前在后台待命；命中唤醒词后，我会先接通，再继续听你下一句。"
+        case .wakeFollowup:
+            return "我已经听到唤醒词，现在直接说你的问题或指令。"
+        case .talkLoop:
+            return "上一轮刚结束；你可以继续接着说，不用重新点麦克风。"
+        case .continuousConversation:
+            return "当前已经在连续通话模式。"
+        case .manualComposer, .none:
+            break
+        }
+
+        if supervisor.voiceRouteDecision.route.supportsLiveCapture {
+            return "这会直接启动连续语音会话，不需要每轮都手动点麦克风。"
+        }
+        return "当前还没在实时语音链路上，先修复语音就绪状态再进入通话。"
+    }
+
+    private var statusBadgeText: String {
+        if supervisor.voiceCallModeActive {
+            return "通话中"
+        }
+        if let preflight = callModePreflight {
+            switch preflight.disposition {
+            case .block:
+                return "先修复"
+            case .advisory:
+                return "建议复检"
+            }
+        }
+        switch supervisor.voiceCaptureSource {
+        case .wakeArmed:
+            return "待命中"
+        case .wakeFollowup:
+            return "已唤醒"
+        case .talkLoop:
+            return "跟进监听"
+        case .continuousConversation:
+            return "通话中"
+        case .manualComposer:
+            return "手动录音"
+        case .none:
+            if supervisor.voiceRuntimeState.state == .failClosed {
+                return "需修复"
+            }
+            return "文本模式"
+        }
+    }
+
+    private var statusBadgeColor: Color {
+        if supervisor.voiceRuntimeState.state == .failClosed {
+            return Color.red
+        }
+        if supervisor.voiceCallModeActive {
+            return Color(red: 0.12, green: 0.54, blue: 0.31)
+        }
+        if let preflight = callModePreflight {
+            switch preflight.disposition {
+            case .block:
+                return Color.red
+            case .advisory:
+                return Color.orange
+            }
+        }
+        switch supervisor.voiceCaptureSource {
+        case .wakeArmed:
+            return Color.blue
+        case .wakeFollowup:
+            return Color.orange
+        case .talkLoop, .continuousConversation:
+            return Color(red: 0.12, green: 0.54, blue: 0.31)
+        case .manualComposer:
+            return Color.red
+        case .none:
+            return Color.secondary
+        }
+    }
+
+    private var callModePreflight: SupervisorManager.SupervisorVoiceCallEntryPreflight? {
+        guard !supervisor.voiceCallModeActive else { return nil }
+        return supervisor.voiceCallEntryPreflight
+    }
+
+    private func performVoiceRepairAction() {
+        guard let preflight = supervisor.voiceCallEntryPreflight else { return }
+        guard let destination = preflight.repairDestination else {
+            openVoiceRepairURLFallback()
+            return
+        }
+
+        let detail: String? = {
+            let trimmed = preflight.detail.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }()
+        let plan = SupervisorConversationRepairActionPlanner.plan(for: destination)
+
+        switch plan.action {
+        case .openXTSettings(let sectionId):
+            appModel.requestSettingsFocus(
+                sectionId: sectionId,
+                title: preflight.headline,
+                detail: detail
+            )
+            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        case .openSupervisorControlCenter(let sheet):
+            if sheet == .modelSettings {
+                appModel.requestModelSettingsFocus(
+                    title: preflight.headline,
+                    detail: detail
+                )
+            }
+            supervisor.requestSupervisorWindow(
+                sheet: sheet,
+                reason: "voice_call_entry_repair",
+                focusConversation: false,
+                startConversation: false
+            )
+        case .openHubSetup(let sectionId):
+            appModel.requestHubSetupFocus(
+                sectionId: sectionId,
+                title: preflight.headline,
+                detail: detail
+            )
+            openWindow(id: "hub_setup")
+        case .openHubProviderKeys:
+            if !appModel.openRELFlowHubProviderKeysSettings() {
+                appModel.requestHubSetupFocus(
+                    sectionId: "troubleshoot",
+                    title: preflight.headline,
+                    detail: detail
+                )
+                openWindow(id: "hub_setup")
+            }
+        case .openSystemPrivacy(let target):
+            XTSystemSettingsLinks.openPrivacy(target)
+        case .focusSupervisor:
+            NSApp.activate(ignoringOtherApps: true)
+            requestInputFocus()
+        }
+    }
+
+    private func openVoiceRepairURLFallback() {
+        guard let raw = supervisor.voiceCallEntryPreflight?.actionURL,
+              let url = URL(string: raw) else {
+            return
+        }
+        openURL(url)
     }
 }
 

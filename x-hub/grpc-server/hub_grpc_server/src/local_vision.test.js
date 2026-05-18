@@ -322,3 +322,53 @@ await run('runLocalVisionTask honors routed model binding for OCR', async () => 
   assert.equal(out.route_source, 'device_override');
   assert.equal(out.resolved_model_id, 'hf-ocr-device');
 });
+
+await run('understandLocalImage routes through runtime provider override for MLX vision models', async () => {
+  const runtimeBaseDir = makeTempRuntimeDir();
+  writeJson(path.join(runtimeBaseDir, 'models_state.json'), {
+    updatedAt: Date.now() / 1000.0,
+    models: [
+      {
+        id: 'qwen3-vl-mlx',
+        name: 'Qwen3 VL MLX',
+        backend: 'mlx',
+        runtimeProviderId: 'mlx_vlm',
+        modelPath: '/models/qwen3-vl-mlx',
+        taskKinds: ['vision_understand', 'ocr'],
+        inputModalities: ['image'],
+        outputModalities: ['text'],
+      },
+    ],
+  });
+  const imagePath = path.join(runtimeBaseDir, 'frame.png');
+  writePng(imagePath, { width: 48, height: 32 });
+
+  const out = await understandLocalImage({
+    runtimeBaseDir,
+    imagePath,
+    executor: async ({ request }) => {
+      assert.equal(String(request?.provider || ''), 'mlx_vlm');
+      assert.equal(String(request?.model_id || ''), 'qwen3-vl-mlx');
+      return {
+        ok: true,
+        provider: 'mlx_vlm',
+        modelId: 'qwen3-vl-mlx',
+        text: 'mlx vision ready',
+        spans: [],
+        latencyMs: 12,
+        usage: {
+          inputImageBytes: 33,
+          inputImageWidth: 48,
+          inputImageHeight: 32,
+          inputImagePixels: 1536,
+          promptChars: 0,
+        },
+      };
+    },
+  });
+
+  assert.equal(out.ok, true);
+  assert.equal(out.provider, 'mlx_vlm');
+  assert.equal(out.model_id, 'qwen3-vl-mlx');
+  assert.equal(out.resolved_model_id, 'qwen3-vl-mlx');
+});

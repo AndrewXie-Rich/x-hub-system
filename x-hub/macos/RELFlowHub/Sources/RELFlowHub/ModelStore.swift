@@ -63,6 +63,22 @@ struct LocalModelRuntimeTargetOption: Identifiable, Equatable {
     }
 }
 
+struct ModelCapacitySnapshot: Equatable {
+    var usedMemoryBytes: Int64
+    var budgetMemoryBytes: Int64
+
+    static let empty = ModelCapacitySnapshot(
+        usedMemoryBytes: 0,
+        budgetMemoryBytes: 1
+    )
+
+    var percent: Double {
+        let used = Double(max(0, usedMemoryBytes))
+        let budget = Double(max(1, budgetMemoryBytes))
+        return max(0.0, min(1.0, used / budget))
+    }
+}
+
 struct LocalModelQuickBenchPreparationPlan: Equatable {
     var requestContext: LocalModelRuntimeRequestContext
     var requiresWarmup: Bool
@@ -192,23 +208,57 @@ enum LocalModelRuntimeActionPlanner {
     static let runtimeStartMessage = HubUIStrings.Models.Runtime.ActionPlanner.runtimeStartMessage
 
     static func isRemoteModel(_ model: HubModel) -> Bool {
+        isRemoteModel(
+            model,
+            helperBinaryPath: LocalHelperBridgeDiscovery.discoverHelperBinary()
+        )
+    }
+
+    static func isRemoteModel(_ model: HubModel, helperBinaryPath: String) -> Bool {
         let modelPath = (model.modelPath ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if !modelPath.isEmpty {
             return false
         }
-        return providerID(for: model) != "mlx"
+        return providerID(for: model, helperBinaryPath: helperBinaryPath) != "mlx"
     }
 
     static func providerID(for model: HubModel) -> String {
-        LocalModelExecutionProviderResolver.preferredRuntimeProviderID(for: model)
+        providerID(
+            for: model,
+            helperBinaryPath: LocalHelperBridgeDiscovery.discoverHelperBinary()
+        )
+    }
+
+    static func providerID(for model: HubModel, helperBinaryPath: String) -> String {
+        LocalModelExecutionProviderResolver.preferredRuntimeProviderID(
+            for: model,
+            helperBinaryPath: helperBinaryPath
+        )
+    }
+
+    static func localModels(from models: [HubModel]) -> [HubModel] {
+        guard !models.isEmpty else { return [] }
+        let helperBinaryPath = LocalHelperBridgeDiscovery.discoverHelperBinary()
+        return models.filter {
+            !isRemoteModel($0, helperBinaryPath: helperBinaryPath)
+        }
+    }
+
+    static func remoteModels(from models: [HubModel]) -> [HubModel] {
+        guard !models.isEmpty else { return [] }
+        let helperBinaryPath = LocalHelperBridgeDiscovery.discoverHelperBinary()
+        return models.filter {
+            isRemoteModel($0, helperBinaryPath: helperBinaryPath)
+        }
     }
 
     static func presentation(
         for model: HubModel,
         runtimeStatus: AIRuntimeStatus? = nil
     ) -> LocalModelRuntimePresentation? {
-        guard !isRemoteModel(model) else { return nil }
-        let providerID = providerID(for: model)
+        let helperBinaryPath = LocalHelperBridgeDiscovery.discoverHelperBinary()
+        guard !isRemoteModel(model, helperBinaryPath: helperBinaryPath) else { return nil }
+        let providerID = providerID(for: model, helperBinaryPath: helperBinaryPath)
         let providerStatus = runtimeStatus?.providerStatus(providerID)
         let controlMode = LocalRuntimeProviderPolicy.resolvedControlMode(
             providerID: providerID,
@@ -243,7 +293,8 @@ enum LocalModelRuntimeActionPlanner {
         model: HubModel,
         runtimeStatus: AIRuntimeStatus?
     ) -> LocalModelRuntimeActionRoute {
-        guard !isRemoteModel(model) else {
+        let helperBinaryPath = LocalHelperBridgeDiscovery.discoverHelperBinary()
+        guard !isRemoteModel(model, helperBinaryPath: helperBinaryPath) else {
             return .immediateFailure(message: HubUIStrings.Models.Runtime.ActionPlanner.remoteModelControlUnsupported)
         }
         guard let runtimeStatus else {
@@ -253,7 +304,7 @@ enum LocalModelRuntimeActionPlanner {
             return .immediateFailure(message: runtimeStartMessage)
         }
 
-        let providerID = providerID(for: model)
+        let providerID = providerID(for: model, helperBinaryPath: helperBinaryPath)
         let resolvedControlMode = LocalRuntimeProviderPolicy.resolvedControlMode(
             providerID: providerID,
             taskKinds: model.taskKinds,
@@ -431,6 +482,8 @@ final class ModelStore: ObservableObject {
     }
 
     private struct RefreshComputation: Sendable {
+        let baseCatalogSnapshot: ModelCatalogSnapshot
+        let reconciledCatalogSnapshot: ModelCatalogSnapshot
         let baseSnapshot: ModelStateSnapshot
         let reconciledSnapshot: ModelStateSnapshot
         let runtimeStatus: AIRuntimeStatus?
@@ -464,6 +517,8 @@ final class ModelStore: ObservableObject {
     private var successfulLocalLifecycleActionsByModelId: [String: SuccessfulLocalLifecycleAction] = [:]
     private var refreshTask: Task<Void, Never>?
     private var refreshRequestedRevision: UInt64 = 0
+    private let refreshBaseDir = SharedPaths.ensureHubDirectory()
+    private let commandResultDirectories = ModelStore.commandResultDirectoryCandidates()
 
     private init() {
         migrateLegacyHomeModelsIfNeeded()
@@ -471,7 +526,7 @@ final class ModelStore: ObservableObject {
         relinkManagedLocalModelsIfNeeded()
         pruneMissingManagedLocalModelsIfNeeded()
         refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.refresh()
             }
@@ -500,11 +555,15 @@ final class ModelStore: ObservableObject {
         let revision = refreshRequestedRevision
         let pendingSnapshot = pendingByModelId
         let lifecycleSnapshot = successfulLocalLifecycleActionsByModelId
+        let baseDir = refreshBaseDir
+        let commandResultDirectories = commandResultDirectories
         refreshTask = Task { [weak self] in
             let computation = await Task.detached(priority: .utility) {
                 Self.buildRefreshComputation(
                     pendingByModelId: pendingSnapshot,
-                    successfulLocalLifecycleActionsByModelId: lifecycleSnapshot
+                    successfulLocalLifecycleActionsByModelId: lifecycleSnapshot,
+                    baseDir: baseDir,
+                    commandResultDirectories: commandResultDirectories
                 )
             }.value
             self?.finishRefresh(
@@ -535,6 +594,9 @@ final class ModelStore: ObservableObject {
         resetDerivedUICaches()
         currentRuntimeStatus = computation.runtimeStatus
         snapshot = computation.reconciledSnapshot
+        if computation.reconciledCatalogSnapshot != computation.baseCatalogSnapshot {
+            ModelCatalogStorage.save(computation.reconciledCatalogSnapshot)
+        }
         if computation.reconciledSnapshot != computation.baseSnapshot {
             ModelStateStorage.save(computation.reconciledSnapshot)
         }
@@ -577,13 +639,21 @@ final class ModelStore: ObservableObject {
 
     nonisolated private static func buildRefreshComputation(
         pendingByModelId: [String: PendingCommand],
-        successfulLocalLifecycleActionsByModelId: [String: SuccessfulLocalLifecycleAction]
+        successfulLocalLifecycleActionsByModelId: [String: SuccessfulLocalLifecycleAction],
+        baseDir: URL = SharedPaths.ensureHubDirectory(),
+        commandResultDirectories: [URL]? = nil
     ) -> RefreshComputation {
+        let baseCatalog = ModelCatalogStorage.load()
         let base = ModelStateStorage.load()
-        let merged = mergeRemoteModels(base)
+        let refreshedBase = refreshedBaseModelSnapshots(
+            catalog: baseCatalog,
+            state: base,
+            baseDir: baseDir,
+            fileManager: .default
+        )
         let runtimeStatus = AIRuntimeStatusStorage.load()
         let reconciled = reconciledLocalRuntimeState(
-            merged,
+            refreshedBase.state,
             runtimeStatus: runtimeStatus,
             pendingByModelId: pendingByModelId,
             successfulLocalLifecycleActionsByModelId: successfulLocalLifecycleActionsByModelId
@@ -605,8 +675,10 @@ final class ModelStore: ObservableObject {
             benchSnapshot: benchSnapshot,
             requestContextByModelId: requestContextByModelId
         )
-        let commandResults = collectCommandResults()
+        let commandResults = collectCommandResults(directories: commandResultDirectories)
         return RefreshComputation(
+            baseCatalogSnapshot: baseCatalog,
+            reconciledCatalogSnapshot: refreshedBase.catalog,
             baseSnapshot: base,
             reconciledSnapshot: reconciled,
             runtimeStatus: runtimeStatus,
@@ -665,8 +737,10 @@ final class ModelStore: ObservableObject {
         return map
     }
 
-    nonisolated private static func collectCommandResults() -> (decoded: [CommandResultFile], invalid: [URL]) {
-        let directories = commandResultDirectoryCandidates()
+    nonisolated private static func collectCommandResults(
+        directories: [URL]? = nil
+    ) -> (decoded: [CommandResultFile], invalid: [URL]) {
+        let directories = directories ?? commandResultDirectoryCandidates()
         guard !directories.isEmpty else { return ([], []) }
 
         let decoder = JSONDecoder()
@@ -790,6 +864,24 @@ final class ModelStore: ObservableObject {
         return ModelStateSnapshot(models: merged, updatedAt: Date().timeIntervalSince1970)
     }
 
+    nonisolated static func refreshedBaseModelSnapshots(
+        catalog: ModelCatalogSnapshot,
+        state: ModelStateSnapshot,
+        baseDir: URL = SharedPaths.ensureHubDirectory(),
+        fileManager: FileManager = .default
+    ) -> (catalog: ModelCatalogSnapshot, state: ModelStateSnapshot) {
+        let reconciled = reconciledManagedLocalModelSnapshots(
+            catalog: catalog,
+            state: state,
+            baseDir: baseDir,
+            fileManager: fileManager
+        )
+        return (
+            catalog: reconciled.catalog,
+            state: mergeRemoteModels(reconciled.state)
+        )
+    }
+
     nonisolated static func reconciledLocalRuntimeState(
         _ snapshot: ModelStateSnapshot,
         runtimeStatus: AIRuntimeStatus?,
@@ -902,15 +994,23 @@ final class ModelStore: ObservableObject {
 
     // MVP "explainable" capacity: sum model costs (paramsB + ctx + quant) normalized to 100.
     func capacityPercent() -> Double {
-        // Prefer runtime-reported MLX active memory; fallback to per-model sum.
-        let used = Double(max(0, usedMemoryBytes()))
-        let budget = Double(max(1, budgetMemoryBytes()))
-        return max(0.0, min(1.0, used / budget))
+        capacitySnapshot().percent
+    }
+
+    func capacitySnapshot(runtimeStatus: AIRuntimeStatus? = AIRuntimeStatusStorage.load()) -> ModelCapacitySnapshot {
+        ModelCapacitySnapshot(
+            usedMemoryBytes: usedMemoryBytes(runtimeStatus: runtimeStatus),
+            budgetMemoryBytes: resolvedBudgetMemoryBytes()
+        )
     }
 
     func usedMemoryBytes() -> Int64 {
+        usedMemoryBytes(runtimeStatus: AIRuntimeStatusStorage.load())
+    }
+
+    private func usedMemoryBytes(runtimeStatus: AIRuntimeStatus?) -> Int64 {
         // Prefer runtime-reported active MLX memory for accuracy.
-        if let st = AIRuntimeStatusStorage.load(),
+        if let st = runtimeStatus,
            st.isAlive(ttl: AIRuntimeStatus.recommendedHeartbeatTTL),
            st.isProviderReady("mlx", ttl: AIRuntimeStatus.recommendedHeartbeatTTL),
            let b = st.providerStatus("mlx")?.activeMemoryBytes ?? st.activeMemoryBytes,
@@ -934,6 +1034,10 @@ final class ModelStore: ObservableObject {
     }
 
     func budgetMemoryBytes() -> Int64 {
+        resolvedBudgetMemoryBytes()
+    }
+
+    private func resolvedBudgetMemoryBytes() -> Int64 {
         // Conservative budget: keep headroom so the machine stays responsive.
         // Avoid a fixed 4GB reserve because it makes 8GB Macs show 100% too easily.
         let phys = Double(ProcessInfo.processInfo.physicalMemory)
@@ -1943,26 +2047,31 @@ final class ModelStore: ObservableObject {
     }
 
     private func startDefaultBench(for model: HubModel) {
-        guard let task = availableBenchTaskDescriptors(for: model).first?.taskKind else {
+        let providerID = LocalModelRuntimeActionPlanner.providerID(for: model)
+        let probeLaunchConfig = HubStore.shared.localRuntimePythonProbeLaunchConfig(
+            preferredProviderID: providerID
+        )
+        let pythonPath = probeLaunchConfig?.resolvedPythonPath
+            ?? HubStore.shared.preferredLocalProviderPythonPath(preferredProviderID: providerID)
+        switch LocalModelTrialSupportResolver.resolveDefaultBenchSelection(
+            for: model,
+            runtimeStatus: AIRuntimeStatusStorage.load(),
+            probeLaunchConfig: probeLaunchConfig,
+            pythonPath: pythonPath
+        ) {
+        case .success(let selection):
+            runBench(
+                modelId: model.id,
+                taskKind: selection.taskKind,
+                fixtureProfile: selection.fixtureProfile
+            )
+        case .failure(let error):
             recordImmediateFailure(
                 action: "bench",
                 modelId: model.id,
-                msg: HubUIStrings.Models.Review.Bench.noRegisteredTasks
+                msg: error.message
             )
-            return
         }
-        guard let fixtureID = LocalBenchFixtureCatalog.defaultFixtureID(
-            for: task,
-            providerID: LocalModelRuntimeActionPlanner.providerID(for: model)
-        ) else {
-            recordImmediateFailure(
-                action: "bench",
-                modelId: model.id,
-                msg: HubUIStrings.Models.Review.Bench.fixtureUnavailable(LocalTaskRoutingCatalog.title(for: task))
-            )
-            return
-        }
-        runBench(modelId: model.id, taskKind: task, fixtureProfile: fixtureID)
     }
 
     private func finishProviderLifecycleCommand(
@@ -2415,6 +2524,10 @@ final class ModelStore: ObservableObject {
             helperBinaryPath: helperBinaryPath
         )
 
+        if !newModelIDs.isEmpty {
+            HubStore.shared.preflightLocalModelHealth(for: newModelIDs)
+        }
+
         if autoBenchNewModels {
             for modelID in newModelIDs {
                 scheduleDefaultBenchIfNeeded(forModelId: modelID)
@@ -2559,7 +2672,7 @@ final class ModelStore: ObservableObject {
         return Self.synthesizedCatalogEntry(from: model)
     }
 
-    private static func synthesizedCatalogEntry(from model: HubModel) -> ModelCatalogEntry? {
+    nonisolated private static func synthesizedCatalogEntry(from model: HubModel) -> ModelCatalogEntry? {
         let modelPath = (model.modelPath ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !modelPath.isEmpty else { return nil }
         return ModelCatalogEntry(
@@ -3013,15 +3126,34 @@ final class ModelStore: ObservableObject {
         }
     }
 
-    static func reconciledManagedLocalModelSnapshots(
+    nonisolated static func reconciledManagedLocalModelSnapshots(
         catalog: ModelCatalogSnapshot,
         state: ModelStateSnapshot,
         baseDir: URL = SharedPaths.ensureHubDirectory(),
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        sandboxed: Bool = SharedPaths.isSandboxedProcess()
     ) -> (catalog: ModelCatalogSnapshot, state: ModelStateSnapshot, removedModelIDs: Set<String>) {
         var removedModelIDs: Set<String> = []
 
         let reconciledCatalogModels = catalog.models.compactMap { entry -> ModelCatalogEntry? in
+            if shouldPrepareManagedLocalModelDuringReconcile(
+                entry,
+                sandboxed: sandboxed,
+                baseDir: baseDir
+            ) {
+                do {
+                    return try LocalModelManagedStorage.preparedCatalogEntryIfNeeded(
+                        entry,
+                        sandboxed: sandboxed,
+                        baseDir: baseDir,
+                        fileManager: fileManager
+                    )
+                } catch {
+                    HubDiagnostics.log(
+                        "local_model_reconcile_prepare_failed model=\(entry.id) error=\(error.localizedDescription)"
+                    )
+                }
+            }
             if let updated = LocalModelManagedStorage.relinkedCatalogEntryIfManagedCopyExists(
                 entry,
                 baseDir: baseDir,
@@ -3080,6 +3212,30 @@ final class ModelStore: ObservableObject {
                 continue
             }
             if let synthesized = Self.synthesizedCatalogEntry(from: model),
+               shouldPrepareManagedLocalModelDuringReconcile(
+                    synthesized,
+                    sandboxed: sandboxed,
+                    baseDir: baseDir
+               ) {
+                do {
+                    let prepared = try LocalModelManagedStorage.preparedCatalogEntryIfNeeded(
+                        synthesized,
+                        sandboxed: sandboxed,
+                        baseDir: baseDir,
+                        fileManager: fileManager
+                    )
+                    var updatedModel = model
+                    updatedModel.modelPath = prepared.modelPath
+                    updatedModel.note = prepared.note
+                    reconciledStateModels.append(updatedModel)
+                    continue
+                } catch {
+                    HubDiagnostics.log(
+                        "local_model_reconcile_prepare_failed model=\(model.id) error=\(error.localizedDescription)"
+                    )
+                }
+            }
+            if let synthesized = Self.synthesizedCatalogEntry(from: model),
                let updated = LocalModelManagedStorage.relinkedCatalogEntryIfManagedCopyExists(
                     synthesized,
                     baseDir: baseDir,
@@ -3111,7 +3267,22 @@ final class ModelStore: ObservableObject {
         return (reconciledCatalog, reconciledState, removedModelIDs)
     }
 
-    private static func shouldPruneMissingManagedLocalModel(
+    nonisolated private static func shouldPrepareManagedLocalModelDuringReconcile(
+        _ entry: ModelCatalogEntry,
+        sandboxed: Bool,
+        baseDir: URL
+    ) -> Bool {
+        guard sandboxed else { return false }
+        let normalizedNote = (entry.note ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard normalizedNote == "lmstudio_managed" else { return false }
+        return LocalModelManagedStorage.needsManagedPreparation(
+            modelPath: entry.modelPath,
+            sandboxed: sandboxed,
+            baseDir: baseDir
+        )
+    }
+
+    nonisolated private static func shouldPruneMissingManagedLocalModel(
         modelPath: String,
         baseDir: URL,
         fileManager: FileManager

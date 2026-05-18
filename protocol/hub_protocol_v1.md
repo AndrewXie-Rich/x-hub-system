@@ -654,6 +654,8 @@ See `service HubMemory` in `protocol/hub_protocol_v1.proto`:
   - skills 能力映射冻结：`capabilities_required -> required_grant_scope` 以 `docs/memory-new/schema/xhub_skills_capability_grant_chain_contract.v1.json` 为准；scope/risk floor 漂移按 `request_tampered` fail-closed
   - high-risk execute 必须携带有效 `grant_id`，缺失/过期/篡改一律 deny（fail-closed）
   - execute 幂等重放采用严格一致性：同一 `request_id` 若 `tool_request_id/tool_name/tool_args_hash/exec_argv/exec_cwd/grant_id` 漂移，统一 `deny_code=request_tampered`（不回放旧成功结果）
+  - `skills.run*` / `skills.execute*` 必须由 Hub 在 `AgentToolRequest` 阶段绑定 `skill_id + package_sha256 + exec_argv + exec_cwd` 并先过 skill package gate。已由 Hub resolved/pinned、低/中风险且 `requires_grant=false` 的 skill 可收到 Hub 签发的短 TTL preauthorized lease；未 pinned、新 package、高风险、`requires_grant=true`、包缺失、撤销或 package/skill 不匹配都不能被 XT 本地缓存自动放行。
+  - preauthorized lease 只表示“本次/短期 XT-local execution 被 Hub 授权”，不是 XT durable authority。XT 必须继续把执行结果、stderr 摘要、artifact refs、grant/execution id 和 audit event 回传 Hub。
   - 审批绑定硬化：`exec_argv` 精确匹配（仅接受字符串参数）+ `exec_cwd` 绝对路径 canonical realpath（含 symlink 防护）+ identity hash 绑定 canonical session project scope + 执行前二次 identity hash 校验（不匹配即 deny）
   - incident 语义冻结：`grant_pending` / `awaiting_instruction` / `runtime_error` 的 `deny_code + event_type` 模板受 `docs/memory-new/xhub-skills-capability-grant-chain-contract-v1.md` 约束，供 XT-Ready 机判联动
   - 推荐 machine-readable `deny_code`：`invalid_request` / `session_not_found` / `tool_request_not_found` / `grant_pending` / `grant_missing` / `grant_expired` / `request_tampered` / `gateway_fail_closed` / `policy_denied` / `downgrade_to_local` / `approval_binding_invalid` / `approval_binding_missing` / `approval_binding_corrupt` / `approval_argv_mismatch` / `approval_cwd_invalid` / `approval_cwd_mismatch` / `approval_identity_mismatch` / `runtime_error`
@@ -799,6 +801,12 @@ See `service HubSkills` in `protocol/hub_protocol_v1.proto`:
 - `SetSkillPin` (scope `global|project`, identity bound by pairing; global pins are keyed by `user_id`)
 - `ListResolvedSkills` (`Memory-Core` governed rule layer > `Global` > `Project` precedence for resolution visibility, returns the effective list for a `(user_id, project_id)` context; this does not choose the memory executor, and durable memory writes still terminate through `Writer + Gate`)
 - `GetSkillManifest` / `DownloadSkillPackage` (runner fetch)
+
+Runtime grant contract:
+- XT-local skill execution still enters Hub through `AgentToolRequest` and `AgentToolExecute`.
+- Hub may preauthorize a resolved/pinned low-or-medium risk skill by returning an approved tool request with a short-lived `grant_id`; `AgentToolExecute.result_json.preauthorized_lease` carries `schema_version=xhub.skills.preauthorized_lease.v1`, `grant_id`, `skill_id`, `package_sha256`, `scope_key`, `execution_surface=xt_local`, `issued_at_ms`, `expires_at_ms`, and `hub_authority=true`.
+- The lease is invalidated by normal grant expiry/revocation, package revocation, request tampering, package/skill mismatch, or policy/kill-switch denial. XT must treat missing/expired/tampered leases as deny and ask Hub again.
+- New or unpinned skills, high/critical risk skills, and skills declaring `requires_grant=true` remain `grant_pending` until Hub/Supervisor approval.
 
 Audit event types (minimum set):
 - `skills.search.performed`

@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  buildLocalRuntimeSpawnConfig,
   manageLocalModelLifecycle,
   isRuntimeProviderReady,
   listRuntimeModelRecords,
@@ -11,6 +12,7 @@ import {
   readLocalTaskRoutingSettings,
   readRuntimeModelRecord,
   readRuntimeStatusSnapshot,
+  resolveLocalRuntimePythonExecutable,
   resolveLocalTaskModelRecord,
   resolveLocalTaskRoutingBinding,
   runLocalBench,
@@ -44,6 +46,46 @@ function writeJson(filePath, obj) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, JSON.stringify(obj), 'utf8');
 }
+
+function writeExecutable(filePath, text = '#!/bin/sh\nexit 0\n') {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, text, 'utf8');
+  fs.chmodSync(filePath, 0o755);
+}
+
+await run('resolveLocalRuntimePythonExecutable ignores directory runtimeSourcePath entries', () => {
+  const baseDir = makeTempRuntimeDir();
+  const fakeBinDir = path.join(baseDir, 'bin');
+  const fakePython = path.join(fakeBinDir, 'python3');
+  writeExecutable(fakePython);
+  writeJson(path.join(baseDir, 'ai_runtime_status.json'), {
+    providers: {
+      mlx_vlm: {
+        provider: 'mlx_vlm',
+        ok: true,
+        runtimeSource: 'hub_py_deps',
+        runtimeSourcePath: path.join(baseDir, 'py_deps', 'site-packages'),
+      },
+    },
+  });
+
+  const resolved = resolveLocalRuntimePythonExecutable({
+    runtimeBaseDir: baseDir,
+    env: {
+      PATH: fakeBinDir,
+    },
+  });
+  const spawnConfig = buildLocalRuntimeSpawnConfig({
+    runtimeBaseDir: baseDir,
+    env: {
+      PATH: fakeBinDir,
+    },
+  });
+
+  assert.notEqual(resolved, path.join(baseDir, 'py_deps', 'site-packages'));
+  assert.equal(path.basename(resolved), 'python3');
+  assert.equal(path.basename(spawnConfig.executable), 'python3');
+});
 
 await run('readRuntimeStatusSnapshot exposes provider-aware readiness', () => {
   const baseDir = makeTempRuntimeDir();
@@ -796,6 +838,61 @@ await run('resolveLocalTaskModelRecord returns routed compatible local model rec
   assert.equal(selection.route_source, 'device_override');
   assert.equal(selection.resolved_model_id, 'hf-embed-device');
   assert.equal(selection.model.model_id, 'hf-embed-device');
+});
+
+await run('resolveLocalTaskModelRecord matches requested provider against runtime provider override', () => {
+  const baseDir = makeTempRuntimeDir();
+  writeJson(path.join(baseDir, 'models_state.json'), {
+    updatedAt: Date.now() / 1000.0,
+    models: [
+      {
+        id: 'qwen3-vl-mlx',
+        name: 'Qwen3 VL MLX',
+        backend: 'mlx',
+        runtimeProviderId: 'mlx_vlm',
+        modelPath: '/models/qwen3-vl-mlx',
+        taskKinds: ['vision_understand', 'ocr'],
+      },
+    ],
+  });
+
+  const selection = resolveLocalTaskModelRecord({
+    runtimeBaseDir: baseDir,
+    taskKind: 'vision_understand',
+    providerId: 'mlx_vlm',
+  });
+
+  assert.equal(selection.ok, true);
+  assert.equal(selection.resolved_model_id, 'qwen3-vl-mlx');
+  assert.equal(selection.model.runtime_provider_id, 'mlx_vlm');
+});
+
+await run('resolveLocalTaskModelRecord honors runtimeProviderID from persisted state snapshots', () => {
+  const baseDir = makeTempRuntimeDir();
+  writeJson(path.join(baseDir, 'models_state.json'), {
+    updatedAt: Date.now() / 1000.0,
+    models: [
+      {
+        id: 'qwen3-vl-live',
+        name: 'Qwen3 VL Live',
+        backend: 'mlx',
+        runtimeProviderID: 'mlx_vlm',
+        modelPath: '/models/qwen3-vl-live',
+        taskKinds: ['vision_understand', 'ocr'],
+      },
+    ],
+  });
+
+  const selection = resolveLocalTaskModelRecord({
+    runtimeBaseDir: baseDir,
+    taskKind: 'ocr',
+    providerId: 'mlx_vlm',
+  });
+
+  assert.equal(selection.ok, true);
+  assert.equal(selection.resolved_model_id, 'qwen3-vl-live');
+  assert.equal(selection.model.runtime_provider_id, 'mlx_vlm');
+  assert.equal(localProviderForModel(baseDir, 'qwen3-vl-live'), 'mlx_vlm');
 });
 
 await run('resolveLocalTaskModelRecord fails closed when routed model is incompatible', () => {

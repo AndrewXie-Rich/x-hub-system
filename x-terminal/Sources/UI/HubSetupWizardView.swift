@@ -1144,7 +1144,7 @@ struct HubSetupWizardView: View {
                                 Text("正式入口")
                                     .frame(width: 130, alignment: .leading)
                                 VStack(alignment: .leading, spacing: 4) {
-                                    TextField("hub.xhubsystem.com", text: internetHostBinding)
+                                    TextField("hub.your-domain.example", text: internetHostBinding)
                                         .textFieldStyle(.roundedBorder)
                                     Text(formalEntryGuidancePresentation.message)
                                         .font(.caption)
@@ -1362,8 +1362,8 @@ struct HubSetupWizardView: View {
                 TroubleshootPanel(
                     title: "高频问题 3 步修复",
                     issues: UITroubleshootIssue.highFrequencyIssues,
-                    paidAccessSnapshot: settingsSnapshot.hubRemotePaidAccessSnapshot,
-                    internetHost: settingsSnapshot.hubInternetHost,
+                    paidAccessSnapshot: appModel.hubRemotePaidAccessSnapshot,
+                    internetHost: appModel.hubInternetHost,
                     pairingContext: troubleshootPairingContext,
                     providerKeyRouteContext: modelRouteProviderKeyContext,
                     externalTerminalAccessProjection: externalTerminalAccessDoctorProjection
@@ -1525,7 +1525,7 @@ struct HubSetupWizardView: View {
                     title: UITroubleshootKnowledgeBase.repairEntryTitle(for: issue),
                     detail: UIFirstRunJourneyPlanner.reviewSubtitle(
                         failureIssue: issue,
-                        failureCode: settingsSnapshot.hubSetupFailureCode,
+                        failureCode: appModel.hubSetupFailureCode,
                         runtime: runtimeSnapshot,
                         pairingContext: troubleshootPairingContext,
                         externalTerminalAccessProjection: externalTerminalAccessDoctorProjection

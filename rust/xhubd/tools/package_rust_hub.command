@@ -35,6 +35,14 @@ cp "$ROOT_DIR/tools/cross_network_readiness_gate.command" "$DIST_DIR/tools/cross
 cp "$ROOT_DIR/tools/cross_network_installed_gate.command" "$DIST_DIR/tools/cross_network_installed_gate.command"
 cp "$ROOT_DIR/tools/cross_network_install_plan.command" "$DIST_DIR/tools/cross_network_install_plan.command"
 cp "$ROOT_DIR/tools/cross_network_pairing_export.command" "$DIST_DIR/tools/cross_network_pairing_export.command"
+cp "$ROOT_DIR/tools/cross_network_remote_route_gate.js" "$DIST_DIR/tools/cross_network_remote_route_gate.js"
+cp "$ROOT_DIR/tools/cross_network_remote_route_gate.command" "$DIST_DIR/tools/cross_network_remote_route_gate.command"
+cp "$ROOT_DIR/tools/cross_network_remote_route_doctor.js" "$DIST_DIR/tools/cross_network_remote_route_doctor.js"
+cp "$ROOT_DIR/tools/cross_network_remote_route_doctor.command" "$DIST_DIR/tools/cross_network_remote_route_doctor.command"
+cp "$ROOT_DIR/tools/cross_network_provider_candidate_plan.js" "$DIST_DIR/tools/cross_network_provider_candidate_plan.js"
+cp "$ROOT_DIR/tools/cross_network_provider_candidate_plan.command" "$DIST_DIR/tools/cross_network_provider_candidate_plan.command"
+cp "$ROOT_DIR/tools/cross_network_domain_readiness_bundle.js" "$DIST_DIR/tools/cross_network_domain_readiness_bundle.js"
+cp "$ROOT_DIR/tools/cross_network_domain_readiness_bundle.command" "$DIST_DIR/tools/cross_network_domain_readiness_bundle.command"
 cp "$ROOT_DIR/tools/cross_network_domain_activation_plan.js" "$DIST_DIR/tools/cross_network_domain_activation_plan.js"
 cp "$ROOT_DIR/tools/cross_network_domain_activation_plan.command" "$DIST_DIR/tools/cross_network_domain_activation_plan.command"
 cp "$ROOT_DIR/tools/cross_network_domain_smoke.js" "$DIST_DIR/tools/cross_network_domain_smoke.js"
@@ -49,12 +57,12 @@ cp "$ROOT_DIR/tools/memory_skills_production_smoke.js" "$DIST_DIR/tools/memory_s
 cp "$ROOT_DIR/tools/memory_skills_production_smoke.command" "$DIST_DIR/tools/memory_skills_production_smoke.command"
 cp "$ROOT_DIR/tools/memory_skills_live_smoke.js" "$DIST_DIR/tools/memory_skills_live_smoke.js"
 cp "$ROOT_DIR/tools/memory_skills_live_smoke.command" "$DIST_DIR/tools/memory_skills_live_smoke.command"
+cp "$ROOT_DIR/tools/local_ml_execution_smoke.js" "$DIST_DIR/tools/local_ml_execution_smoke.js"
+cp "$ROOT_DIR/tools/local_ml_execution_smoke.command" "$DIST_DIR/tools/local_ml_execution_smoke.command"
 cp "$ROOT_DIR/tools/skills_catalog_shadow_smoke.js" "$DIST_DIR/tools/skills_catalog_shadow_smoke.js"
 cp "$ROOT_DIR/tools/skills_catalog_shadow_smoke.command" "$DIST_DIR/tools/skills_catalog_shadow_smoke.command"
 cp "$ROOT_DIR/tools/skills_catalog_http_smoke.js" "$DIST_DIR/tools/skills_catalog_http_smoke.js"
 cp "$ROOT_DIR/tools/skills_catalog_http_smoke.command" "$DIST_DIR/tools/skills_catalog_http_smoke.command"
-cp "$ROOT_DIR/tools/xt_hub_contract_smoke.js" "$DIST_DIR/tools/xt_hub_contract_smoke.js"
-cp "$ROOT_DIR/tools/xt_hub_contract_smoke.command" "$DIST_DIR/tools/xt_hub_contract_smoke.command"
 cp "$ROOT_DIR/tools/xt_file_ipc_watcher_run_once_smoke.js" "$DIST_DIR/tools/xt_file_ipc_watcher_run_once_smoke.js"
 cp "$ROOT_DIR/tools/xt_file_ipc_watcher_run_once_smoke.command" "$DIST_DIR/tools/xt_file_ipc_watcher_run_once_smoke.command"
 cp "$ROOT_DIR/tools/xt_file_ipc_background_watcher_smoke.js" "$DIST_DIR/tools/xt_file_ipc_background_watcher_smoke.js"
@@ -180,6 +188,14 @@ chmod +x "$DIST_DIR/tools/run_rust_hub.command" \
   "$DIST_DIR/tools/cross_network_installed_gate.command" \
   "$DIST_DIR/tools/cross_network_install_plan.command" \
   "$DIST_DIR/tools/cross_network_pairing_export.command" \
+  "$DIST_DIR/tools/cross_network_remote_route_gate.js" \
+  "$DIST_DIR/tools/cross_network_remote_route_gate.command" \
+  "$DIST_DIR/tools/cross_network_remote_route_doctor.js" \
+  "$DIST_DIR/tools/cross_network_remote_route_doctor.command" \
+  "$DIST_DIR/tools/cross_network_provider_candidate_plan.js" \
+  "$DIST_DIR/tools/cross_network_provider_candidate_plan.command" \
+  "$DIST_DIR/tools/cross_network_domain_readiness_bundle.js" \
+  "$DIST_DIR/tools/cross_network_domain_readiness_bundle.command" \
   "$DIST_DIR/tools/cross_network_domain_activation_plan.js" \
   "$DIST_DIR/tools/cross_network_domain_activation_plan.command" \
   "$DIST_DIR/tools/cross_network_domain_smoke.js" \
@@ -194,12 +210,12 @@ chmod +x "$DIST_DIR/tools/run_rust_hub.command" \
   "$DIST_DIR/tools/memory_skills_production_smoke.command" \
   "$DIST_DIR/tools/memory_skills_live_smoke.js" \
   "$DIST_DIR/tools/memory_skills_live_smoke.command" \
+  "$DIST_DIR/tools/local_ml_execution_smoke.js" \
+  "$DIST_DIR/tools/local_ml_execution_smoke.command" \
   "$DIST_DIR/tools/skills_catalog_shadow_smoke.js" \
   "$DIST_DIR/tools/skills_catalog_shadow_smoke.command" \
   "$DIST_DIR/tools/skills_catalog_http_smoke.js" \
   "$DIST_DIR/tools/skills_catalog_http_smoke.command" \
-  "$DIST_DIR/tools/xt_hub_contract_smoke.js" \
-  "$DIST_DIR/tools/xt_hub_contract_smoke.command" \
   "$DIST_DIR/tools/xt_file_ipc_watcher_run_once_smoke.js" \
   "$DIST_DIR/tools/xt_file_ipc_watcher_run_once_smoke.command" \
   "$DIST_DIR/tools/xt_file_ipc_background_watcher_smoke.js" \

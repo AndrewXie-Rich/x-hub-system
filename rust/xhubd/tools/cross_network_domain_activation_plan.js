@@ -3,14 +3,23 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { analyzeRemoteRoute } from './cross_network_remote_route_gate.js';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(SCRIPT_DIR, '..');
 
+function defaultAccessKeyFile() {
+  const packaged = path.join(ROOT_DIR, 'secrets', 'xhubd_domain_access_key');
+  if (fs.existsSync(packaged)) return packaged;
+  const sourceRepo = path.resolve(ROOT_DIR, '..', '..', 'secrets', 'xhubd_domain_access_key');
+  if (fs.existsSync(sourceRepo)) return sourceRepo;
+  return packaged;
+}
+
 function parseArgs(argv) {
   const out = {
     publicBaseUrl: process.env.XHUB_RUST_HUB_PUBLIC_BASE_URL || '',
-    accessKeyFile: process.env.XHUB_RUST_HTTP_ACCESS_KEY_FILE || path.join(ROOT_DIR, 'secrets', 'xhubd_domain_access_key'),
+    accessKeyFile: process.env.XHUB_RUST_HTTP_ACCESS_KEY_FILE || defaultAccessKeyFile(),
     profile: 'domain',
     hubLabel: 'AX Rust Hub',
     outputDir: path.join(ROOT_DIR, 'pairing'),
@@ -21,6 +30,8 @@ function parseArgs(argv) {
     timeoutMs: 30000,
     requireMemorySkillsProduction: false,
     allowLoopbackPublicHost: false,
+    allowVpnRawHost: false,
+    allowPublicRawIp: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -72,6 +83,12 @@ function parseArgs(argv) {
       case '--allow-loopback-public-host':
         out.allowLoopbackPublicHost = true;
         break;
+      case '--allow-vpn-raw-host':
+        out.allowVpnRawHost = true;
+        break;
+      case '--allow-public-raw-ip':
+        out.allowPublicRawIp = true;
+        break;
       case '--self-test':
         out.selfTest = true;
         break;
@@ -110,6 +127,8 @@ function usage() {
     '  --timeout-ms <n>                 Domain smoke timeout, default 30000',
     '  --require-memory-skills-production',
     '  --allow-loopback-public-host     Test-only: allow localhost public URL',
+    '  --allow-vpn-raw-host             Explicitly allow raw VPN/tailnet/private IP host',
+    '  --allow-public-raw-ip            Dev escape hatch for raw public IP host',
     '  --self-test',
   ].join('\n');
 }
@@ -183,12 +202,21 @@ function commonArgs(config) {
   return args;
 }
 
+function remoteRouteGateArgs(config) {
+  const args = ['--public-base-url', config.publicBaseUrl];
+  if (config.allowLoopbackPublicHost) args.push('--allow-loopback-public-host');
+  if (config.allowVpnRawHost) args.push('--allow-vpn-raw-host');
+  if (config.allowPublicRawIp) args.push('--allow-public-raw-ip');
+  return args;
+}
+
 function tool(name) {
   return path.join(ROOT_DIR, 'tools', name);
 }
 
 function buildPlan(config) {
   const common = commonArgs(config);
+  const remoteGate = remoteRouteGateArgs(config);
   const readinessCommon = config.requireMemorySkillsProduction
     ? common
     : [...common, '--allow-memory-skills-production'];
@@ -222,6 +250,12 @@ function buildPlan(config) {
         mutates: true,
         command: commandLine(['bash', tool('xhubd_daemon.command'), 'access-key-init', ...common]),
         notes: 'Creates or chmods the key file; stdout never contains the key.',
+      },
+      {
+        name: 'remote_route_semantics_gate',
+        mutates: false,
+        command: commandLine(['bash', tool('cross_network_remote_route_gate.command'), ...remoteGate]),
+        notes: 'Blocks LAN-only names, loopback, raw public IP defaults, and ambiguous raw VPN hosts before domain activation.',
       },
       {
         name: 'readiness_preflight',
@@ -307,7 +341,10 @@ function runSelfTest() {
   const validation = validatePublicBaseUrl(config);
   if (!validation.ok) throw new Error(`expected valid URL: ${validation.issues.join(',')}`);
   const plan = buildPlan(config);
-  if (plan.steps.length !== 8) throw new Error('expected eight activation steps');
+  if (plan.steps.length !== 9) throw new Error('expected nine activation steps');
+  if (!plan.steps.some((step) => step.command.includes('cross_network_remote_route_gate.command'))) {
+    throw new Error('remote route semantics gate missing');
+  }
   if (!plan.steps.some((step) => step.command.includes('cross_network_pairing_export.command'))) {
     throw new Error('pairing export missing');
   }
@@ -327,8 +364,18 @@ async function main() {
     return;
   }
   const validation = validatePublicBaseUrl(config);
+  const remoteRoute = analyzeRemoteRoute({
+    publicBaseUrl: config.publicBaseUrl,
+    requireHttps: true,
+    allowLoopbackPublicHost: config.allowLoopbackPublicHost,
+    allowVpnRawHost: config.allowVpnRawHost,
+    allowPublicRawIp: config.allowPublicRawIp,
+  });
   const binaryExists = fs.existsSync(config.launchdBinarySource);
-  const issues = [...validation.issues];
+  const remoteRouteBlockers = remoteRoute.issues
+    .filter((issue) => issue.severity === 'blocker')
+    .map((issue) => `remote_route_${issue.code}`);
+  const issues = [...validation.issues, ...remoteRouteBlockers];
   if (!binaryExists) issues.push('launchd_binary_source_missing');
   const plan = buildPlan(config);
   const report = {
@@ -349,6 +396,17 @@ async function main() {
     access_key_file_exists: fs.existsSync(config.accessKeyFile),
     pairing_output_dir: config.outputDir,
     require_memory_skills_production: config.requireMemorySkillsProduction,
+    allow_vpn_raw_host: config.allowVpnRawHost,
+    allow_public_raw_ip: config.allowPublicRawIp,
+    remote_route_gate: {
+      ok: remoteRoute.ok,
+      target: remoteRoute.target,
+      host_classification: remoteRoute.host_classification,
+      route_profile: remoteRoute.route_profile,
+      security_checks: remoteRoute.security_checks,
+      issues: remoteRoute.issues,
+      recommendations: remoteRoute.recommendations,
+    },
     production_authority_change: false,
     daemon_restarted: false,
     daemon_stopped: false,
@@ -359,7 +417,7 @@ async function main() {
     ...plan,
   };
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-  process.exit(report.ok ? 0 : 2);
+  process.exitCode = report.ok ? 0 : 2;
 }
 
 main().catch((error) => {

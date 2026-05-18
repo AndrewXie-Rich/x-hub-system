@@ -13,6 +13,8 @@ pub const SKILL_PREFLIGHT_AUDIT_PRUNE_SCHEMA: &str = "xhub.skills_preflight_audi
 pub const SKILL_POLICY_EVENTS_SCHEMA: &str = "xhub.skills_policy_events.v1";
 pub const SKILL_POLICY_EVENTS_PRUNE_SCHEMA: &str = "xhub.skills_policy_events_prune.v1";
 pub const SKILL_POLICY_STORE_READINESS_SCHEMA: &str = "xhub.skills_policy_store_readiness.v1";
+pub const SKILL_PREAUTHORIZATION_SCHEMA: &str = "xhub.skills.preauthorization.v1";
+pub const SKILL_PREAUTHORIZED_LEASE_SCHEMA: &str = "xhub.skills.preauthorized_lease.v1";
 pub const SKILL_POLICY_SOURCE: &str = "rust_hub_skill_policy_gate_v1";
 
 const MAX_MANIFEST_BYTES: usize = 64 * 1024;
@@ -80,6 +82,8 @@ pub struct SkillCatalogEntry {
     pub status: SkillStatus,
     pub reason_codes: Vec<String>,
     pub capability_tags: Vec<String>,
+    pub risk_level: String,
+    pub requires_grant: bool,
     pub requires_pin_or_grant: bool,
     pub hub_executes_third_party_code: bool,
     pub execution: SkillExecutionSpec,
@@ -182,10 +186,33 @@ pub struct SkillPreflightDecision {
     pub missing_capabilities: Vec<String>,
     pub undeclared_capabilities: Vec<String>,
     pub pinned: bool,
+    pub risk_level: String,
+    pub requires_grant: bool,
+    pub preauthorization: SkillPreauthorizationDecision,
     pub requires_pin_or_grant: bool,
     pub execution_authority_in_rust: bool,
     pub hub_executes_third_party_code: bool,
     pub audit_schema_version: &'static str,
+}
+
+#[derive(Debug, Clone)]
+pub struct SkillPreauthorizationDecision {
+    pub schema_version: &'static str,
+    pub source: &'static str,
+    pub preauthorized: bool,
+    pub decision: String,
+    pub reason_code: String,
+    pub deny_code: String,
+    pub grant_ttl_ms: u64,
+    pub issued_at_ms: i64,
+    pub expires_at_ms: i64,
+    pub scope_key: String,
+    pub skill_id: String,
+    pub risk_level: String,
+    pub requires_grant: bool,
+    pub execution_surface: &'static str,
+    pub hub_authority: bool,
+    pub hub_executes_third_party_code: bool,
 }
 
 pub fn scan_skill_catalog(skills_dir: &Path) -> SkillCatalog {
@@ -302,6 +329,10 @@ pub fn evaluate_skill_preflight_with_authority(
     let hub_executes_third_party_code = skill
         .map(|entry| entry.hub_executes_third_party_code)
         .unwrap_or(false);
+    let risk_level = skill
+        .map(|entry| entry.risk_level.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+    let requires_grant = skill.map(|entry| entry.requires_grant).unwrap_or(false);
 
     let pinned = !skill_id.is_empty() && pinned_skill_ids.iter().any(|item| item == &skill_id);
     if boundary.requires_pin_or_grant && !pinned {
@@ -336,6 +367,16 @@ pub fn evaluate_skill_preflight_with_authority(
 
     dedupe_strings(&mut reason_codes);
     let allowed = reason_codes.is_empty();
+    let preauthorization = build_skill_preauthorization(
+        allowed,
+        &reason_codes,
+        &scope_key,
+        &skill_id,
+        pinned,
+        &risk_level,
+        requires_grant,
+        hub_executes_third_party_code,
+    );
 
     SkillPreflightDecision {
         schema_version: SKILL_PREFLIGHT_SCHEMA,
@@ -355,6 +396,9 @@ pub fn evaluate_skill_preflight_with_authority(
         missing_capabilities,
         undeclared_capabilities,
         pinned,
+        risk_level,
+        requires_grant,
+        preauthorization,
         requires_pin_or_grant: boundary.requires_pin_or_grant,
         execution_authority_in_rust,
         hub_executes_third_party_code,
@@ -410,6 +454,17 @@ fn scan_skill_json(skill_dir: &Path, manifest_path: &Path) -> SkillCatalogEntry 
     }
 
     let capability_tags = collect_json_tags(&value);
+    let risk_level = normalized_risk_level(
+        value_string(&value, "risk_level")
+            .or_else(|| value_string(&value, "riskLevel"))
+            .or_else(|| value_string(&value, "risk")),
+    );
+    let grant_floor = value_string(&value, "grant_floor")
+        .or_else(|| value_string(&value, "grantFloor"))
+        .unwrap_or_default();
+    let requires_grant = value_bool(&value, "requires_grant")
+        .or_else(|| value_bool(&value, "requiresGrant"))
+        .unwrap_or_else(|| grant_floor_requires_grant(&grant_floor));
     let execution = parse_execution_spec(value.get("execution"), &mut reason_codes);
     entry_from_parts(
         skill_id,
@@ -419,6 +474,8 @@ fn scan_skill_json(skill_dir: &Path, manifest_path: &Path) -> SkillCatalogEntry 
         ManifestKind::SkillJson,
         reason_codes,
         capability_tags,
+        risk_level,
+        requires_grant,
         execution,
     )
 }
@@ -447,6 +504,8 @@ fn scan_skill_md(skill_dir: &Path, manifest_path: &Path) -> SkillCatalogEntry {
         ManifestKind::SkillMd,
         reason_codes,
         capability_tags,
+        "medium".to_string(),
+        false,
         SkillExecutionSpec::none(),
     )
 }
@@ -459,6 +518,8 @@ fn entry_from_parts(
     manifest_kind: ManifestKind,
     reason_codes: Vec<String>,
     capability_tags: Vec<String>,
+    risk_level: String,
+    requires_grant: bool,
     execution: SkillExecutionSpec,
 ) -> SkillCatalogEntry {
     let blocked = reason_codes.iter().any(|code| is_blocking_reason(code));
@@ -476,9 +537,106 @@ fn entry_from_parts(
         },
         reason_codes,
         capability_tags,
+        risk_level: normalized_risk_level(Some(risk_level)),
+        requires_grant,
         requires_pin_or_grant: boundary.requires_pin_or_grant,
         hub_executes_third_party_code: execution.executes_third_party_code(),
         execution,
+    }
+}
+
+fn build_skill_preauthorization(
+    allowed: bool,
+    reason_codes: &[String],
+    scope_key: &str,
+    skill_id: &str,
+    pinned: bool,
+    risk_level: &str,
+    requires_grant: bool,
+    hub_executes_third_party_code: bool,
+) -> SkillPreauthorizationDecision {
+    let high_risk = is_high_risk(risk_level);
+    let hard_deny = reason_codes.iter().find(|code| {
+        !matches!(
+            code.as_str(),
+            "skill_pin_required" | "capability_grant_required"
+        )
+    });
+    let preauthorized = allowed && pinned && !high_risk && !requires_grant;
+    let reason_code = if preauthorized {
+        String::new()
+    } else if let Some(code) = hard_deny {
+        code.clone()
+    } else if !pinned {
+        "skill_not_preauthorized".to_string()
+    } else if requires_grant {
+        "skill_requires_grant".to_string()
+    } else if high_risk {
+        "skill_high_risk".to_string()
+    } else {
+        "capability_grant_required".to_string()
+    };
+    let decision = if preauthorized {
+        "approve"
+    } else if hard_deny.is_some() {
+        "deny"
+    } else {
+        "pending"
+    };
+    let deny_code = if preauthorized {
+        String::new()
+    } else if hard_deny.is_some() {
+        reason_code.clone()
+    } else {
+        "grant_pending".to_string()
+    };
+    let grant_ttl_ms = 5 * 60 * 1000;
+    let issued_at_ms = if preauthorized { now_ms() } else { 0 };
+    let expires_at_ms = if preauthorized {
+        issued_at_ms + grant_ttl_ms as i64
+    } else {
+        0
+    };
+    SkillPreauthorizationDecision {
+        schema_version: SKILL_PREAUTHORIZATION_SCHEMA,
+        source: SKILL_POLICY_SOURCE,
+        preauthorized,
+        decision: decision.to_string(),
+        reason_code,
+        deny_code,
+        grant_ttl_ms,
+        issued_at_ms,
+        expires_at_ms,
+        scope_key: scope_key.to_string(),
+        skill_id: skill_id.to_string(),
+        risk_level: normalized_risk_level(Some(risk_level.to_string())),
+        requires_grant,
+        execution_surface: "xt_local",
+        hub_authority: true,
+        hub_executes_third_party_code,
+    }
+}
+
+fn is_high_risk(risk_level: &str) -> bool {
+    matches!(
+        risk_level.trim().to_ascii_lowercase().as_str(),
+        "high" | "critical"
+    )
+}
+
+fn normalized_risk_level(raw: Option<String>) -> String {
+    match raw
+        .unwrap_or_else(|| "medium".to_string())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "low" => "low".to_string(),
+        "medium" => "medium".to_string(),
+        "high" => "high".to_string(),
+        "critical" => "critical".to_string(),
+        "unknown" => "unknown".to_string(),
+        _ => "medium".to_string(),
     }
 }
 
@@ -601,6 +759,31 @@ fn value_string(value: &Value, key: &str) -> Option<String> {
         .and_then(Value::as_str)
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn value_bool(value: &Value, key: &str) -> Option<bool> {
+    match value.get(key)? {
+        Value::Bool(value) => Some(*value),
+        Value::String(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn grant_floor_requires_grant(raw: &str) -> bool {
+    let value = raw.trim().to_ascii_lowercase();
+    !value.is_empty() && !matches!(value.as_str(), "none" | "no" | "false" | "0")
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(i64::MAX as u128) as i64
 }
 
 fn collect_json_tags(value: &Value) -> Vec<String> {
@@ -819,6 +1002,62 @@ mod tests {
         assert!(decision.allowed);
         assert_eq!(decision.decision, "allow");
         assert!(!decision.execution_authority_in_rust);
+        assert_eq!(decision.risk_level, "medium");
+        assert!(decision.preauthorization.preauthorized);
+        assert_eq!(decision.preauthorization.decision, "approve");
+        assert_eq!(decision.preauthorization.execution_surface, "xt_local");
+        assert!(decision.preauthorization.hub_authority);
+        assert!(decision.preauthorization.expires_at_ms > decision.preauthorization.issued_at_ms);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn preauthorization_keeps_unpinned_or_high_risk_skills_pending() {
+        let dir = temp_dir("preauth_pending");
+        let skill = dir.join("publish");
+        fs::create_dir_all(&skill).expect("mkdir");
+        fs::write(
+            skill.join("skill.json"),
+            r#"{"id":"publish","name":"Publish","risk_level":"high","requires_grant":true,"capabilities":["deploy.write"]}"#,
+        )
+        .expect("write");
+        let catalog = scan_skill_catalog(&dir);
+        let decision = evaluate_skill_preflight(
+            &catalog,
+            SkillPreflightRequest {
+                skill_id: "publish".to_string(),
+                requested_capabilities: vec!["deploy.write".to_string()],
+                pinned_skill_ids: vec!["publish".to_string()],
+                granted_capabilities: vec!["deploy.write".to_string()],
+                ..Default::default()
+            },
+        );
+        assert!(decision.allowed);
+        assert_eq!(decision.risk_level, "high");
+        assert!(decision.requires_grant);
+        assert!(!decision.preauthorization.preauthorized);
+        assert_eq!(decision.preauthorization.decision, "pending");
+        assert_eq!(decision.preauthorization.deny_code, "grant_pending");
+        assert_eq!(
+            decision.preauthorization.reason_code,
+            "skill_requires_grant"
+        );
+
+        let unpinned = evaluate_skill_preflight(
+            &catalog,
+            SkillPreflightRequest {
+                skill_id: "publish".to_string(),
+                requested_capabilities: vec!["deploy.write".to_string()],
+                granted_capabilities: vec!["deploy.write".to_string()],
+                ..Default::default()
+            },
+        );
+        assert!(!unpinned.allowed);
+        assert_eq!(unpinned.preauthorization.decision, "pending");
+        assert_eq!(
+            unpinned.preauthorization.reason_code,
+            "skill_not_preauthorized"
+        );
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -897,6 +1136,11 @@ mod tests {
         assert!(decision
             .reason_codes
             .contains(&"capability_grant_required".to_string()));
+        assert_eq!(decision.preauthorization.decision, "pending");
+        assert_eq!(
+            decision.preauthorization.reason_code,
+            "skill_not_preauthorized"
+        );
         let _ = fs::remove_dir_all(dir);
     }
 }

@@ -63,6 +63,7 @@ class MLXProvider(LocalProvider):
         active_memory_bytes: int | None = None
         peak_memory_bytes: int | None = None
         loaded_model_count: int | None = None
+        idle_eviction: dict[str, Any] | None = None
 
         if runtime is not None:
             ok = bool(getattr(runtime, "_mlx_ok", False))
@@ -121,6 +122,14 @@ class MLXProvider(LocalProvider):
                 except Exception:
                     active_memory_bytes = None
                     peak_memory_bytes = None
+            idle_eviction_state = getattr(runtime, "idle_eviction_state", None)
+            if callable(idle_eviction_state):
+                try:
+                    row = idle_eviction_state()
+                    if isinstance(row, dict):
+                        idle_eviction = dict(row)
+                except Exception:
+                    idle_eviction = None
         else:
             if not runtime_resolution.ok:
                 import_error = runtime_resolution.import_error
@@ -151,10 +160,10 @@ class MLXProvider(LocalProvider):
         )
         reason_code = "ready"
         if not ok:
-            if runtime_resolution.runtime_reason_code != "ready":
-                reason_code = runtime_resolution.runtime_reason_code
-            elif import_error:
+            if import_error:
                 reason_code = "import_error"
+            elif runtime_resolution.runtime_reason_code != "ready":
+                reason_code = runtime_resolution.runtime_reason_code
             else:
                 reason_code = "unavailable"
 
@@ -179,6 +188,7 @@ class MLXProvider(LocalProvider):
             warmup_task_kinds=self.warmup_task_kinds(),
             residency_scope=self.residency_scope(),
             loaded_instances=loaded_instances,
+            idle_eviction=idle_eviction,
             real_task_kinds=self.supported_task_kinds() if ok else [],
             fallback_task_kinds=[],
             unavailable_task_kinds=[],

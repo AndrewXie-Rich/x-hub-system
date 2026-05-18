@@ -2051,7 +2051,10 @@ struct SupervisorSettingsView: View {
     }
 
     private var supervisorModelInventoryTruth: XTModelInventoryTruthPresentation {
-        XTModelInventoryTruthPresentation.build(
+        if let rustInventory = modelManager.latestRustInventoryProjection {
+            return XTModelInventoryTruthPresentation.build(rustInventory: rustInventory)
+        }
+        return XTModelInventoryTruthPresentation.build(
             snapshot: modelInventorySnapshot,
             hubBaseDir: modelSettingsSnapshot.hubBaseDir ?? HubPaths.baseDir()
         )

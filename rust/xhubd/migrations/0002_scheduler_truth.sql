@@ -61,4 +61,3 @@ CREATE TABLE IF NOT EXISTS rust_hub_scheduler_scope_counters (
   oldest_queued_at_ms INTEGER NOT NULL DEFAULT 0,
   updated_at_ms INTEGER NOT NULL
 );
-

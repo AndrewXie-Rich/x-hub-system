@@ -68,6 +68,28 @@ final class LocalModelImportDetectorTests: XCTestCase {
         XCTAssertEqual(detection.sourceSummary, "backend folder signature")
     }
 
+    func testDetectBackendUsesMLXPathHeuristicForCommunityLeafWithoutMLXToken() throws {
+        let parent = try makeTempDir(named: "mlx-community")
+        let tempDir = parent.appendingPathComponent("Qwen3-VL-4B-Instruct-3bit", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: tempDir.appendingPathComponent("config.json"))
+        try Data("{}".utf8).write(to: tempDir.appendingPathComponent("preprocessor_config.json"))
+        try Data("{}".utf8).write(to: tempDir.appendingPathComponent("video_preprocessor_config.json"))
+        try Data("weights".utf8).write(to: tempDir.appendingPathComponent("model.safetensors"))
+
+        let detection = LocalModelImportDetector.detectBackend(
+            for: tempDir,
+            manifest: nil,
+            config: [
+                "model_type": "qwen3_vl",
+                "quantization": ["bits": 3, "group_size": 64],
+            ]
+        )
+
+        XCTAssertEqual(detection.backend, "mlx")
+        XCTAssertEqual(detection.sourceSummary, "backend mlx path heuristic")
+    }
+
     func testDetectBackendUsesProcessorSignatureForTransformers() throws {
         let tempDir = try makeTempDir(named: "whisper-small-local")
         try Data("{}".utf8).write(to: tempDir.appendingPathComponent("config.json"))
@@ -143,6 +165,56 @@ final class LocalModelImportDetectorTests: XCTestCase {
         XCTAssertEqual(capabilities?.outputModalities, ["embedding"])
         XCTAssertEqual(capabilities?.sourceSummary, "inferred: config/embedding")
         XCTAssertEqual(capabilities?.processorRequirements.processorRequired, false)
+    }
+
+    func testDetectCapabilitiesInfersVisionAndOCRForMLXVisionModel() throws {
+        let tempDir = try makeTempDir(named: "Qwen3-VL-4B-Instruct-MLX-3bit")
+        try Data("{}".utf8).write(to: tempDir.appendingPathComponent("config.json"))
+        try Data("{}".utf8).write(to: tempDir.appendingPathComponent("preprocessor_config.json"))
+        try Data("{}".utf8).write(to: tempDir.appendingPathComponent("video_preprocessor_config.json"))
+
+        let capabilities = LocalModelImportDetector.detectCapabilities(
+            for: tempDir,
+            backend: "mlx",
+            config: [
+                "architectures": ["Qwen3VLForConditionalGeneration"],
+                "model_type": "qwen3_vl",
+                "quantization": ["bits": 3, "group_size": 64],
+            ]
+        )
+
+        XCTAssertEqual(capabilities?.modelFormat, "mlx")
+        XCTAssertEqual(capabilities?.taskKinds, ["vision_understand", "ocr"])
+        XCTAssertEqual(capabilities?.inputModalities, ["image"])
+        XCTAssertEqual(capabilities?.outputModalities, ["text", "spans"])
+        XCTAssertEqual(capabilities?.sourceSummary, "inferred: mlx/vision")
+        XCTAssertEqual(capabilities?.processorRequirements.tokenizerRequired, true)
+        XCTAssertEqual(capabilities?.processorRequirements.processorRequired, true)
+        XCTAssertEqual(capabilities?.processorRequirements.featureExtractorRequired, true)
+    }
+
+    func testDetectCapabilitiesInfersEmbeddingProfileForMLXEmbeddingModel() throws {
+        let tempDir = try makeTempDir(named: "Qwen3-Embedding-0.6B-4bit-DWQ")
+        try Data("{}".utf8).write(to: tempDir.appendingPathComponent("config.json"))
+
+        let capabilities = LocalModelImportDetector.detectCapabilities(
+            for: tempDir,
+            backend: "mlx",
+            config: [
+                "architectures": ["Qwen3EmbeddingModel"],
+                "model_type": "qwen3_embedding",
+                "quantization": ["bits": 4, "group_size": 64],
+            ]
+        )
+
+        XCTAssertEqual(capabilities?.modelFormat, "mlx")
+        XCTAssertEqual(capabilities?.taskKinds, ["embedding"])
+        XCTAssertEqual(capabilities?.inputModalities, ["text"])
+        XCTAssertEqual(capabilities?.outputModalities, ["embedding"])
+        XCTAssertEqual(capabilities?.sourceSummary, "inferred: mlx/embedding")
+        XCTAssertEqual(capabilities?.processorRequirements.tokenizerRequired, true)
+        XCTAssertEqual(capabilities?.processorRequirements.processorRequired, false)
+        XCTAssertEqual(capabilities?.processorRequirements.featureExtractorRequired, false)
     }
 
     func testDetectCapabilitiesInfersEmbeddingProfileForGGUFModel() throws {

@@ -46,14 +46,9 @@ struct ProjectTerminalView: View {
     }
 
     let ctx: AXProjectContext
-    let session: TerminalSessionModel
-    @Environment(\.xtAppModelReference) private var appModelReference
-    @EnvironmentObject private var hubConnectionStore: XTHubConnectionStore
-    @EnvironmentObject private var workSurfaceStore: XTWorkSurfaceStore
+    @ObservedObject var session: TerminalSessionModel
+    @EnvironmentObject private var appModel: AppModel
     @Environment(\.openWindow) private var openWindow
-    @StateObject private var terminalStatusStore = XTTerminalStatusStore()
-    @StateObject private var terminalOutputStore = XTTerminalOutputStore()
-    @State private var runtimeHeaderSnapshot: TerminalRuntimeHeaderSnapshot = .empty
 
     var body: some View {
         let statusSnapshot = terminalStatusSnapshot
@@ -89,27 +84,49 @@ struct ProjectTerminalView: View {
     }
 
     private var header: some View {
-        let headerSnapshot = runtimeHeaderSnapshot
+        let snapshot = AXRoleExecutionSnapshots.latestSnapshots(for: ctx)[.coder]
+            ?? .empty(role: .coder, source: "project_terminal")
+        let configuredModelId = AXRoleExecutionSnapshots.configuredModelId(
+            for: .coder,
+            projectConfig: projectConfig,
+            settings: appModel.settingsStore.settings
+        )
+        let interfaceLanguage = appModel.settingsStore.settings.interfaceLanguage
+        let primaryStatusAction = ProjectCoderExecutionStatusPrimaryActionResolver.resolve(
+            configuredModelId: configuredModelId,
+            snapshot: snapshot,
+            hubConnected: appModel.hubConnected
+        )
+        let statusPresentation = ProjectCoderExecutionStatusResolver.map(
+            configuredModelId: configuredModelId,
+            snapshot: snapshot,
+            hubConnected: appModel.hubConnected,
+            governancePresentation: governancePresentation
+        )
+        let routeNeedsAttention = statusPresentation.tone == .warning || statusPresentation.tone == .danger
+        let headerState = terminalWorkHeaderState(
+            statusPresentation: statusPresentation,
+            primaryStatusAction: primaryStatusAction
+        )
 
         return ProjectWorkHeaderCard(
             icon: "terminal.fill",
-            title: headerSnapshot.displayName.isEmpty ? ctx.displayName() : headerSnapshot.displayName,
-            readinessText: headerSnapshot.headerState.readinessText,
-            readinessTone: headerSnapshot.headerState.readinessTone,
-            nextStepText: headerSnapshot.headerState.nextStepText,
-            badgeText: headerSnapshot.terminalStatus.lastExitCode.map { "exit=\($0)" },
-            detailText: headerSnapshot.headerState.detailText,
-            statusPresentation: headerSnapshot.statusPresentation,
+            title: ctx.displayName(),
+            readinessText: headerState.readinessText,
+            readinessTone: headerState.readinessTone,
+            nextStepText: headerState.nextStepText,
+            badgeText: session.lastExitCode.map { "exit=\($0)" },
+            detailText: headerState.detailText,
+            statusPresentation: statusPresentation,
             primaryAction: terminalPrimaryAction(
-                statusSnapshot: headerSnapshot.terminalStatus,
-                routeNeedsAttention: headerSnapshot.routeNeedsAttention,
-                primaryStatusAction: headerSnapshot.primaryStatusAction,
-                configuredModelId: headerSnapshot.configuredModelId,
-                snapshot: headerSnapshot.coderSnapshot,
-                interfaceLanguage: headerSnapshot.interfaceLanguage
+                routeNeedsAttention: routeNeedsAttention,
+                primaryStatusAction: primaryStatusAction,
+                configuredModelId: configuredModelId,
+                snapshot: snapshot,
+                interfaceLanguage: interfaceLanguage
             ),
-            secondaryAction: terminalSecondaryAction(routeNeedsAttention: headerSnapshot.routeNeedsAttention),
-            tertiaryAction: headerSnapshot.terminalStatus.outputIsEmpty ? nil : ProjectWorkHeaderAction(
+            secondaryAction: terminalSecondaryAction(routeNeedsAttention: routeNeedsAttention),
+            tertiaryAction: session.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : ProjectWorkHeaderAction(
                 title: "清空输出",
                 helpText: "清空当前终端输出，不会停止 shell。",
                 style: .plain,
@@ -238,14 +255,18 @@ struct ProjectTerminalView: View {
     }
 
     private func terminalWorkHeaderState(
-        statusSnapshot: XTTerminalStatusSnapshot,
         statusPresentation: ProjectCoderExecutionStatusPresentation,
         primaryStatusAction: ProjectCoderExecutionStatusPrimaryActionPresentation?
-    ) -> TerminalWorkHeaderState {
-        let lastError = statusSnapshot.lastError?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    ) -> (
+        readinessText: String,
+        readinessTone: ProjectCoderExecutionStatusTone,
+        nextStepText: String,
+        detailText: String?
+    ) {
+        let lastError = session.lastError?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-        if !statusSnapshot.isRunning {
-            return TerminalWorkHeaderState(
+        if !session.isRunning {
+            return (
                 readinessText: "Shell 已停止",
                 readinessTone: lastError.isEmpty ? .warning : .danger,
                 nextStepText: "先重启项目 Shell，再继续运行命令或让 AI 接手。",
@@ -254,7 +275,7 @@ struct ProjectTerminalView: View {
         }
 
         if !lastError.isEmpty {
-            return TerminalWorkHeaderState(
+            return (
                 readinessText: "Shell 异常",
                 readinessTone: .danger,
                 nextStepText: "先处理当前 shell 错误；如果 AI 路由也异常，再去看项目设置。",
@@ -263,7 +284,7 @@ struct ProjectTerminalView: View {
         }
 
         if statusPresentation.tone == .warning || statusPresentation.tone == .danger {
-            return TerminalWorkHeaderState(
+            return (
                 readinessText: "AI 需修复",
                 readinessTone: statusPresentation.tone,
                 nextStepText: primaryStatusAction.map { "Shell 可用；如果接下来要走 AI，先\($0.title)。" }
@@ -272,7 +293,7 @@ struct ProjectTerminalView: View {
             )
         }
 
-        return TerminalWorkHeaderState(
+        return (
             readinessText: "可工作",
             readinessTone: .success,
             nextStepText: "可以直接运行命令；如果接下来要让 AI 执行，当前路径也基本就绪。",
@@ -281,14 +302,13 @@ struct ProjectTerminalView: View {
     }
 
     private func terminalPrimaryAction(
-        statusSnapshot: XTTerminalStatusSnapshot,
         routeNeedsAttention: Bool,
         primaryStatusAction: ProjectCoderExecutionStatusPrimaryActionPresentation?,
         configuredModelId: String,
         snapshot: AXRoleExecutionSnapshot,
         interfaceLanguage: XTInterfaceLanguage
     ) -> ProjectWorkHeaderAction? {
-        if !statusSnapshot.isRunning {
+        if !session.isRunning {
             return ProjectWorkHeaderAction(
                 title: "重启 Shell",
                 helpText: "重新启动当前项目绑定的 shell。",
@@ -317,11 +337,6 @@ struct ProjectTerminalView: View {
         }
 
         return nil
-    }
-
-    private func bindSessionProjectionStores() {
-        terminalStatusStore.bind(to: session)
-        terminalOutputStore.bind(to: session)
     }
 
     private func terminalSecondaryAction(
@@ -433,68 +448,5 @@ struct ProjectTerminalView: View {
                 )
             )
         }
-    }
-
-    private func refreshTerminalRuntimeHeaderSnapshot(statusSnapshot: XTTerminalStatusSnapshot) {
-        let next = buildTerminalRuntimeHeaderSnapshot(statusSnapshot: statusSnapshot)
-        guard runtimeHeaderSnapshot != next else { return }
-        runtimeHeaderSnapshot = next
-    }
-
-    private func buildTerminalRuntimeHeaderSnapshot(
-        statusSnapshot: XTTerminalStatusSnapshot
-    ) -> TerminalRuntimeHeaderSnapshot {
-        let coderSnapshot = XTProjectUIPresentationReadCache.roleExecutionSnapshot(
-            for: ctx,
-            role: .coder
-        ) {
-            AXRoleExecutionSnapshots.latestSnapshots(for: ctx)[.coder]
-                ?? .empty(role: .coder, source: "project_terminal")
-        }
-        let config = projectConfig
-        let settings = appModel.settingsStore.settings
-        let configuredModelId = AXRoleExecutionSnapshots.configuredModelId(
-            for: .coder,
-            projectConfig: config,
-            settings: settings
-        )
-        let interfaceLanguage = settings.interfaceLanguage
-        let governancePresentation = XTProjectUIPresentationReadCache.governancePresentation(
-            projectId: projectId
-        ) {
-            ProjectGovernancePresentation(
-                resolved: appModel.resolvedProjectGovernance(for: ctx, config: config)
-            )
-        }
-        let statusPresentation = ProjectCoderExecutionStatusResolver.map(
-            configuredModelId: configuredModelId,
-            snapshot: coderSnapshot,
-            hubConnected: hubConnected,
-            governancePresentation: governancePresentation
-        )
-        let primaryStatusAction = ProjectCoderExecutionStatusPrimaryActionResolver.resolve(
-            configuredModelId: configuredModelId,
-            snapshot: coderSnapshot,
-            hubConnected: hubConnected,
-            language: interfaceLanguage
-        )
-        let routeNeedsAttention = statusPresentation.tone == .warning || statusPresentation.tone == .danger
-        let headerState = terminalWorkHeaderState(
-            statusSnapshot: statusSnapshot,
-            statusPresentation: statusPresentation,
-            primaryStatusAction: primaryStatusAction
-        )
-
-        return TerminalRuntimeHeaderSnapshot(
-            displayName: ctx.displayName(),
-            terminalStatus: statusSnapshot,
-            coderSnapshot: coderSnapshot,
-            configuredModelId: configuredModelId,
-            interfaceLanguage: interfaceLanguage,
-            statusPresentation: statusPresentation,
-            primaryStatusAction: primaryStatusAction,
-            headerState: headerState,
-            routeNeedsAttention: routeNeedsAttention
-        )
     }
 }

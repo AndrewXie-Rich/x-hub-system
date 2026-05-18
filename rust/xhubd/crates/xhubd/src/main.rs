@@ -1,4 +1,4 @@
-#![recursion_limit = "256"]
+#![recursion_limit = "512"]
 
 use std::collections::{BTreeMap, VecDeque};
 use std::env;
@@ -32,6 +32,7 @@ use xhub_skills::{
 
 mod evidence_bridge;
 mod grpc_runtime;
+mod local_ml_bridge;
 mod memory_bridge;
 mod model_bridge;
 mod network_bridge;
@@ -63,13 +64,16 @@ async fn run() -> Result<(), String> {
         }
         "migrate" => migrate(&config),
         "scheduler" => scheduler_bridge::run(&config, &args[2..]),
+        "network" => network_bridge::run(&config, &args[2..]),
         "provider" => provider_bridge::run(&config, &args[2..]),
         "model" => model_bridge::run(&config, &args[2..]),
+        "local-ml" | "local-ml-execution" => Err(
+            "local-ml is served over HTTP at /local-ml/execute and /local-ml/readiness".to_string(),
+        ),
         "memory" => memory_bridge::run(&config, &args[2..]),
-        "network" => network_bridge::run(&config, &args[2..]),
-        "xt" => xt_contract::run(&config, &args[2..]),
         "evidence" => evidence_bridge::run(&config, &args[2..]),
         "skills" => skills_bridge::run(&config, &args[2..]),
+        "xt" => xt_contract::run(&config, &args[2..]),
         "scheduler-smoke" => scheduler_smoke(&config),
         "serve" => {
             if args.iter().any(|arg| arg == "--grpc" || arg == "grpc") {
@@ -112,18 +116,20 @@ fn print_help() {
     println!("  migrate  Apply Rust Hub baseline SQLite migrations");
     println!("  scheduler <enqueue|claim|acquire|heartbeat|release|cancel|status>");
     println!("           JSON bridge commands for Node/shadow integration");
-    println!("  model <inventory|route|compare|reports|readiness|diagnostics>");
-    println!("           JSON remote/local model inventory and route bridge commands");
-    println!("  memory <retrieve|search|readiness>");
-    println!("           JSON memory retrieval shadow read-only commands");
     println!("  network <remote-entry-candidates>");
     println!("           JSON remote-entry candidates for Swift Hub shell setup");
-    println!("  xt <contract>");
-    println!("           JSON Hub capability contract for X-Terminal integrations");
+    println!("  model <inventory|route|compare|reports|readiness|diagnostics>");
+    println!("           JSON remote/local model inventory and route bridge commands");
+    println!("  local-ml HTTP: /local-ml/execute, /local-ml/readiness");
+    println!("           Rust-governed local ML execution bridge, opt-in only");
+    println!("  memory <retrieve|search|readiness>");
+    println!("           JSON memory retrieval shadow read-only commands");
     println!("  evidence <write|list>");
     println!("           JSON unified evidence ledger commands");
     println!("  skills <catalog|readiness|policy-readiness|pin|grant|unpin|revoke-grant|policy|policy-events|policy-events-prune|audit|audit-prune|preflight>");
     println!("           JSON skill catalog, policy, and preflight audit commands without code execution");
+    println!("  xt <contract>");
+    println!("           JSON Hub capability contract for X-Terminal integrations");
     println!("  provider <route>");
     println!("           JSON provider routing shadow commands");
     println!("  scheduler-smoke");
@@ -500,11 +506,17 @@ fn handle_client(mut stream: TcpStream, state: &HubState) -> Result<(), String> 
         match route_path {
             "/" => ("200 OK", root_body()),
             "/health" => ("200 OK", health_json(config)),
+            "/product/kernel" | "/kernel/status" => ("200 OK", product_kernel_json(state)),
             "/ready" | "/readiness" | "/runtime/readiness" => {
                 ("200 OK", readiness_json_cached(state))
             }
             "/runtime/scheduler_status" => ("200 OK", scheduler_status_json()),
             "/runtime/http-metrics" | "/http/metrics" => http_metrics_json(state),
+            "/network/remote-entry-candidates"
+            | "/network/remote-entry"
+            | "/remote/entry-candidates" => {
+                network_bridge::remote_entry_candidates_http_json(config, query)
+            }
             "/xt/hub-contract" | "/xt/contract" | "/contract/xt" => {
                 xt_contract::contract_http_json(config)
             }
@@ -575,14 +587,39 @@ fn handle_client(mut stream: TcpStream, state: &HubState) -> Result<(), String> 
             }
             "/contract/proto_summary" => ("200 OK", proto_summary_json(config)),
             "/provider/route" => provider_route_http_json(config, query),
+            "/provider/pools" | "/provider/key-pools" => provider_pools_http_json(config, query),
+            "/provider/runtime-snapshot" | "/provider/snapshot" => {
+                provider_runtime_snapshot_http_json(config, query)
+            }
+            "/provider/import" | "/provider/keys/import" => {
+                provider_import_http_json(config, query, request.body.as_str())
+            }
+            "/provider/openai-quota-refresh/plan" | "/provider/quota/openai/plan" => {
+                provider_openai_quota_plan_http_json(config, query, request.body.as_str())
+            }
+            "/provider/openai-quota-refresh/apply" | "/provider/quota/openai/apply" => {
+                provider_openai_quota_apply_http_json(config, query, request.body.as_str())
+            }
+            "/provider/openai-quota-refresh/failure" | "/provider/quota/openai/failure" => {
+                provider_openai_quota_failure_http_json(config, query, request.body.as_str())
+            }
+            "/provider/oauth-refresh/apply" | "/provider/oauth/apply" => {
+                provider_oauth_refresh_apply_http_json(config, query, request.body.as_str())
+            }
+            "/provider/oauth-refresh/failure" | "/provider/oauth/failure" => {
+                provider_oauth_refresh_failure_http_json(config, query, request.body.as_str())
+            }
+            "/provider/oauth-refresh/codex/plan"
+            | "/provider/oauth/codex-refresh/plan"
+            | "/provider/codex-oauth-refresh/plan" => {
+                provider_codex_oauth_plan_http_json(config, query, request.body.as_str())
+            }
+            "/provider/oauth-refresh/codex" | "/provider/oauth/codex-refresh" => {
+                provider_codex_oauth_refresh_http_json(config, query, request.body.as_str())
+            }
             "/provider/compare" => provider_compare_http_json(config, query, request.body.as_str()),
             "/provider/reports" => provider_reports_http_json(config, query),
             "/provider/readiness" => provider_readiness_http_json(config, query),
-            "/network/remote-entry-candidates"
-            | "/network/remote-entry"
-            | "/remote/entry-candidates" => {
-                network_bridge::remote_entry_candidates_http_json(config, query)
-            }
             "/memory/search" => memory_search_http_json(state, query),
             "/memory/retrieve" => memory_retrieve_http_json(state, query, request.body.as_str()),
             "/memory/write" | "/memory/append" => {
@@ -629,6 +666,20 @@ fn handle_client(mut stream: TcpStream, state: &HubState) -> Result<(), String> 
             "/model/readiness" | "/model/cutover-readiness" => {
                 model_readiness_http_json(config, query)
             }
+            "/local-ml/readiness"
+            | "/local-ml/status"
+            | "/runtime/local-ml/readiness"
+            | "/runtime/ml-execution/readiness" => {
+                local_ml_bridge::readiness_http_json(config, query)
+            }
+            "/local-ml/execute"
+            | "/local-ml/run-local-task"
+            | "/runtime/local-ml/execute"
+            | "/runtime/ml-execution/execute" => local_ml_bridge::execute_http_json(
+                config,
+                request.method.as_str(),
+                request.body.as_str(),
+            ),
             _ => (
                 "404 Not Found",
                 "{\"ok\":false,\"error\":\"not_found\"}\n".to_string(),
@@ -871,7 +922,28 @@ fn http_access_key_failure(
     peer_addr: Option<SocketAddr>,
     route_path: &str,
 ) -> Option<(&'static str, String)> {
-    if !http_access_key_required_for_request(config, peer_addr, route_path) {
+    http_access_key_failure_with_public_endpoint(
+        request,
+        config,
+        peer_addr,
+        route_path,
+        cross_network_public_endpoint_enabled(),
+    )
+}
+
+fn http_access_key_failure_with_public_endpoint(
+    request: &HttpRequest,
+    config: &HubConfig,
+    peer_addr: Option<SocketAddr>,
+    route_path: &str,
+    public_endpoint_enabled: bool,
+) -> Option<(&'static str, String)> {
+    if !http_access_key_required_for_request_with_public_endpoint(
+        config,
+        peer_addr,
+        route_path,
+        public_endpoint_enabled,
+    ) {
         return None;
     }
 
@@ -899,10 +971,11 @@ fn http_access_key_failure(
     }
 }
 
-fn http_access_key_required_for_request(
+fn http_access_key_required_for_request_with_public_endpoint(
     config: &HubConfig,
     peer_addr: Option<SocketAddr>,
     route_path: &str,
+    public_endpoint_enabled: bool,
 ) -> bool {
     if route_path == "/health" {
         return false;
@@ -910,7 +983,7 @@ fn http_access_key_required_for_request(
     if config.http_access_key_required {
         return true;
     }
-    if cross_network_public_endpoint_enabled() {
+    if public_endpoint_enabled {
         return true;
     }
     let peer_is_loopback = peer_addr
@@ -1029,6 +1102,686 @@ fn provider_route_http_json(config: &HubConfig, query: &str) -> (&'static str, S
             ),
         ),
     }
+}
+
+fn provider_pools_http_json(config: &HubConfig, query: &str) -> (&'static str, String) {
+    let runtime_base_dir = query_param(query, "runtime_base_dir")
+        .or_else(|| query_param(query, "runtimeBaseDir"))
+        .map(PathBuf::from);
+    let provider = query_param(query, "provider").unwrap_or_default();
+    let model_id = query_param(query, "model_id")
+        .or_else(|| query_param(query, "modelId"))
+        .unwrap_or_default();
+    let include_members =
+        match optional_query_bool_alias(query, "include_members", "includeMembers", true) {
+            Ok(value) => value,
+            Err(body) => return ("400 Bad Request", body),
+        };
+    let request_now_ms = match optional_query_u128_alias(query, "now_ms", "nowMs") {
+        Ok(value) => value,
+        Err(body) => return ("400 Bad Request", body),
+    };
+
+    match provider_bridge::pools_json_from_parts(
+        config,
+        runtime_base_dir,
+        provider,
+        model_id,
+        include_members,
+        request_now_ms,
+    ) {
+        Ok(body) => ("200 OK", format!("{body}\n")),
+        Err(err) => (
+            "400 Bad Request",
+            format!(
+                "{{\"ok\":false,\"error\":\"provider_pools_failed\",\"message\":\"{}\"}}\n",
+                json_escape(&err)
+            ),
+        ),
+    }
+}
+
+fn provider_runtime_snapshot_http_json(config: &HubConfig, query: &str) -> (&'static str, String) {
+    let runtime_base_dir = query_param(query, "runtime_base_dir")
+        .or_else(|| query_param(query, "runtimeBaseDir"))
+        .map(PathBuf::from);
+    let provider = query_param(query, "provider").unwrap_or_default();
+
+    match provider_bridge::runtime_snapshot_json_from_parts(config, runtime_base_dir, provider) {
+        Ok(body) => ("200 OK", format!("{body}\n")),
+        Err(err) => (
+            "400 Bad Request",
+            format!(
+                "{{\"ok\":false,\"error\":\"provider_runtime_snapshot_failed\",\"message\":\"{}\"}}\n",
+                json_escape(&err)
+            ),
+        ),
+    }
+}
+
+fn provider_import_http_json(
+    config: &HubConfig,
+    query: &str,
+    body: &str,
+) -> (&'static str, String) {
+    let parsed_body = match parse_optional_json_body(body) {
+        Ok(value) => value,
+        Err(err) => {
+            return (
+                "400 Bad Request",
+                format!(
+                    "{{\"ok\":false,\"error\":\"invalid_json\",\"message\":\"{}\"}}\n",
+                    json_escape(&err)
+                ),
+            )
+        }
+    };
+    let runtime_base_dir =
+        body_or_query_string(&parsed_body, query, "runtime_base_dir", "runtimeBaseDir")
+            .map(PathBuf::from);
+    let auth_dir = body_or_query_string(&parsed_body, query, "auth_dir", "authDir")
+        .or_else(|| body_or_query_string(&parsed_body, query, "auth_path", "authPath"))
+        .unwrap_or_default();
+    let config_path =
+        body_or_query_string(&parsed_body, query, "config_path", "configPath").unwrap_or_default();
+    let imported_at_ms = body_u64_alias(&parsed_body, "now_ms", "nowMs")
+        .or_else(|| query_param(query, "now_ms").and_then(|value| value.parse::<u64>().ok()))
+        .or_else(|| query_param(query, "nowMs").and_then(|value| value.parse::<u64>().ok()));
+
+    match provider_bridge::import_json_from_parts(
+        config,
+        runtime_base_dir,
+        auth_dir,
+        config_path,
+        imported_at_ms,
+    ) {
+        Ok(body) => ("200 OK", format!("{body}\n")),
+        Err(err) => (
+            "400 Bad Request",
+            format!(
+                "{{\"ok\":false,\"error\":\"provider_import_failed\",\"message\":\"{}\"}}\n",
+                json_escape(&err)
+            ),
+        ),
+    }
+}
+
+fn provider_openai_quota_apply_http_json(
+    config: &HubConfig,
+    query: &str,
+    body: &str,
+) -> (&'static str, String) {
+    match provider_openai_quota_apply_http_body(config, query, body) {
+        Ok(body) => ("200 OK", format!("{body}\n")),
+        Err(err) => (
+            "400 Bad Request",
+            format!(
+                "{{\"ok\":false,\"error\":\"provider_openai_quota_apply_failed\",\"message\":\"{}\"}}\n",
+                json_escape(&err)
+            ),
+        ),
+    }
+}
+
+fn provider_openai_quota_plan_http_json(
+    config: &HubConfig,
+    query: &str,
+    body: &str,
+) -> (&'static str, String) {
+    match provider_openai_quota_plan_http_body(config, query, body) {
+        Ok(body) => ("200 OK", format!("{body}\n")),
+        Err(err) => (
+            "400 Bad Request",
+            format!(
+                "{{\"ok\":false,\"error\":\"provider_openai_quota_plan_failed\",\"message\":\"{}\"}}\n",
+                json_escape(&err)
+            ),
+        ),
+    }
+}
+
+fn provider_openai_quota_plan_http_body(
+    config: &HubConfig,
+    query: &str,
+    body: &str,
+) -> Result<String, String> {
+    let parsed_body = if body.trim().is_empty() {
+        Value::Object(Default::default())
+    } else {
+        serde_json::from_str::<Value>(body)
+            .map_err(|err| format!("invalid openai quota plan request json: {err}"))?
+    };
+    let runtime_base_dir = body_string(&parsed_body, "runtime_base_dir")
+        .or_else(|| body_string(&parsed_body, "runtimeBaseDir"))
+        .or_else(|| query_param(query, "runtime_base_dir"))
+        .or_else(|| query_param(query, "runtimeBaseDir"))
+        .map(PathBuf::from);
+    let now = body_u64_alias(&parsed_body, "now_ms", "nowMs")
+        .or_else(|| query_param(query, "now_ms").and_then(|value| value.parse::<u64>().ok()))
+        .or_else(|| query_param(query, "nowMs").and_then(|value| value.parse::<u64>().ok()))
+        .unwrap_or_else(|| now_ms().min(u64::MAX as u128) as u64);
+    let include_skipped = body_bool_alias(&parsed_body, "include_skipped", "includeSkipped")
+        .or_else(|| {
+            optional_query_bool_alias(query, "include_skipped", "includeSkipped", false).ok()
+        })
+        .unwrap_or(false);
+    let mut in_flight_account_keys = body_string_list(&parsed_body, "in_flight_account_keys");
+    in_flight_account_keys.extend(body_string_list(&parsed_body, "inFlightAccountKeys"));
+    if let Some(keys) = query_param_list(query, "in_flight_account_keys")
+        .or_else(|| query_param_list(query, "inFlightAccountKeys"))
+    {
+        in_flight_account_keys.extend(keys);
+    }
+    in_flight_account_keys.sort();
+    in_flight_account_keys.dedup();
+    provider_bridge::plan_openai_quota_json_from_parts(
+        config,
+        runtime_base_dir,
+        xhub_provider::OpenAIQuotaRefreshPlanOptions {
+            now_ms: now,
+            include_skipped,
+            in_flight_account_keys,
+        },
+    )
+}
+
+fn provider_openai_quota_apply_http_body(
+    config: &HubConfig,
+    query: &str,
+    body: &str,
+) -> Result<String, String> {
+    let parsed_body = if body.trim().is_empty() {
+        Value::Object(Default::default())
+    } else {
+        serde_json::from_str::<Value>(body)
+            .map_err(|err| format!("invalid openai quota apply request json: {err}"))?
+    };
+    let usage = parsed_body
+        .get("usage")
+        .or_else(|| parsed_body.get("usage_payload"))
+        .or_else(|| parsed_body.get("usagePayload"))
+        .cloned()
+        .ok_or_else(|| "provider openai quota apply requires usage".to_string())?;
+    let runtime_base_dir = body_string(&parsed_body, "runtime_base_dir")
+        .or_else(|| body_string(&parsed_body, "runtimeBaseDir"))
+        .or_else(|| query_param(query, "runtime_base_dir"))
+        .or_else(|| query_param(query, "runtimeBaseDir"))
+        .map(PathBuf::from);
+    let refreshed_at_ms = body_u64_alias(&parsed_body, "refreshed_at_ms", "refreshedAtMs")
+        .or_else(|| body_u64_alias(&parsed_body, "now_ms", "nowMs"))
+        .or_else(|| query_param(query, "now_ms").and_then(|value| value.parse::<u64>().ok()))
+        .or_else(|| query_param(query, "nowMs").and_then(|value| value.parse::<u64>().ok()))
+        .unwrap_or_else(|| now_ms().min(u64::MAX as u128) as u64);
+    let options = xhub_provider::OpenAIQuotaApplyOptions {
+        account_key: body_string_alias(&parsed_body, "account_key", "accountKey")
+            .or_else(|| query_param(query, "account_key"))
+            .or_else(|| query_param(query, "accountKey"))
+            .ok_or_else(|| "provider openai quota apply requires account_key".to_string())?,
+        refreshed_at_ms,
+        success_interval_ms: body_u64_alias(
+            &parsed_body,
+            "success_interval_ms",
+            "successIntervalMs",
+        )
+        .or_else(|| {
+            query_param(query, "success_interval_ms").and_then(|value| value.parse::<u64>().ok())
+        })
+        .or_else(|| {
+            query_param(query, "successIntervalMs").and_then(|value| value.parse::<u64>().ok())
+        })
+        .unwrap_or(5 * 60_000),
+        high_water_interval_ms: body_u64_alias(
+            &parsed_body,
+            "high_water_interval_ms",
+            "highWaterIntervalMs",
+        )
+        .or_else(|| {
+            query_param(query, "high_water_interval_ms").and_then(|value| value.parse::<u64>().ok())
+        })
+        .or_else(|| {
+            query_param(query, "highWaterIntervalMs").and_then(|value| value.parse::<u64>().ok())
+        })
+        .unwrap_or(60_000),
+        account_id: body_string_alias(&parsed_body, "account_id", "accountId")
+            .or_else(|| query_param(query, "account_id"))
+            .or_else(|| query_param(query, "accountId"))
+            .unwrap_or_default(),
+        oauth_source_key: body_string_alias(&parsed_body, "oauth_source_key", "oauthSourceKey")
+            .or_else(|| query_param(query, "oauth_source_key"))
+            .or_else(|| query_param(query, "oauthSourceKey"))
+            .unwrap_or_default(),
+    };
+
+    provider_bridge::apply_openai_quota_json_from_parts(config, runtime_base_dir, usage, options)
+}
+
+fn provider_openai_quota_failure_http_json(
+    config: &HubConfig,
+    query: &str,
+    body: &str,
+) -> (&'static str, String) {
+    match provider_openai_quota_failure_http_body(config, query, body) {
+        Ok(body) => ("200 OK", format!("{body}\n")),
+        Err(err) => (
+            "400 Bad Request",
+            format!(
+                "{{\"ok\":false,\"error\":\"provider_openai_quota_failure_failed\",\"message\":\"{}\"}}\n",
+                json_escape(&err)
+            ),
+        ),
+    }
+}
+
+fn provider_openai_quota_failure_http_body(
+    config: &HubConfig,
+    query: &str,
+    body: &str,
+) -> Result<String, String> {
+    let parsed_body = if body.trim().is_empty() {
+        Value::Object(Default::default())
+    } else {
+        serde_json::from_str::<Value>(body)
+            .map_err(|err| format!("invalid openai quota failure request json: {err}"))?
+    };
+    let runtime_base_dir = body_string(&parsed_body, "runtime_base_dir")
+        .or_else(|| body_string(&parsed_body, "runtimeBaseDir"))
+        .or_else(|| query_param(query, "runtime_base_dir"))
+        .or_else(|| query_param(query, "runtimeBaseDir"))
+        .map(PathBuf::from);
+    let options = xhub_provider::OpenAIQuotaRefreshFailureOptions {
+        account_key: body_string_alias(&parsed_body, "account_key", "accountKey")
+            .or_else(|| query_param(query, "account_key"))
+            .or_else(|| query_param(query, "accountKey"))
+            .ok_or_else(|| "provider openai quota failure requires account_key".to_string())?,
+        failed_at_ms: body_u64_alias(&parsed_body, "failed_at_ms", "failedAtMs")
+            .or_else(|| body_u64_alias(&parsed_body, "now_ms", "nowMs"))
+            .or_else(|| {
+                query_param(query, "failed_at_ms").and_then(|value| value.parse::<u64>().ok())
+            })
+            .or_else(|| {
+                query_param(query, "failedAtMs").and_then(|value| value.parse::<u64>().ok())
+            })
+            .or_else(|| query_param(query, "now_ms").and_then(|value| value.parse::<u64>().ok()))
+            .or_else(|| query_param(query, "nowMs").and_then(|value| value.parse::<u64>().ok()))
+            .unwrap_or_else(|| now_ms().min(u64::MAX as u128) as u64),
+        base_failure_backoff_ms: body_u64_alias(
+            &parsed_body,
+            "base_failure_backoff_ms",
+            "baseFailureBackoffMs",
+        )
+        .or_else(|| {
+            query_param(query, "base_failure_backoff_ms")
+                .and_then(|value| value.parse::<u64>().ok())
+        })
+        .or_else(|| {
+            query_param(query, "baseFailureBackoffMs").and_then(|value| value.parse::<u64>().ok())
+        })
+        .unwrap_or(60_000),
+        max_failure_backoff_ms: body_u64_alias(
+            &parsed_body,
+            "max_failure_backoff_ms",
+            "maxFailureBackoffMs",
+        )
+        .or_else(|| {
+            query_param(query, "max_failure_backoff_ms").and_then(|value| value.parse::<u64>().ok())
+        })
+        .or_else(|| {
+            query_param(query, "maxFailureBackoffMs").and_then(|value| value.parse::<u64>().ok())
+        })
+        .unwrap_or(15 * 60_000),
+        error_code: body_string_alias(&parsed_body, "error_code", "errorCode")
+            .or_else(|| query_param(query, "error_code"))
+            .or_else(|| query_param(query, "errorCode"))
+            .unwrap_or_default(),
+        error_message: body_string_alias(&parsed_body, "error_message", "errorMessage")
+            .or_else(|| query_param(query, "error_message"))
+            .or_else(|| query_param(query, "errorMessage"))
+            .unwrap_or_default(),
+    };
+    provider_bridge::record_openai_quota_failure_json_from_parts(config, runtime_base_dir, options)
+}
+
+fn provider_oauth_refresh_apply_http_json(
+    config: &HubConfig,
+    query: &str,
+    body: &str,
+) -> (&'static str, String) {
+    match provider_oauth_refresh_apply_http_body(config, query, body) {
+        Ok(body) => ("200 OK", format!("{body}\n")),
+        Err(err) => (
+            "400 Bad Request",
+            format!(
+                "{{\"ok\":false,\"error\":\"provider_oauth_refresh_apply_failed\",\"message\":\"{}\"}}\n",
+                json_escape(&err)
+            ),
+        ),
+    }
+}
+
+fn provider_oauth_refresh_apply_http_body(
+    config: &HubConfig,
+    query: &str,
+    body: &str,
+) -> Result<String, String> {
+    let parsed_body = if body.trim().is_empty() {
+        Value::Object(Default::default())
+    } else {
+        serde_json::from_str::<Value>(body)
+            .map_err(|err| format!("invalid oauth refresh apply request json: {err}"))?
+    };
+    let runtime_base_dir = body_string(&parsed_body, "runtime_base_dir")
+        .or_else(|| body_string(&parsed_body, "runtimeBaseDir"))
+        .or_else(|| query_param(query, "runtime_base_dir"))
+        .or_else(|| query_param(query, "runtimeBaseDir"))
+        .map(PathBuf::from);
+    let refreshed_at_ms = body_u64_alias(&parsed_body, "refreshed_at_ms", "refreshedAtMs")
+        .or_else(|| body_u64_alias(&parsed_body, "now_ms", "nowMs"))
+        .or_else(|| {
+            query_param(query, "refreshed_at_ms").and_then(|value| value.parse::<u64>().ok())
+        })
+        .or_else(|| query_param(query, "refreshedAtMs").and_then(|value| value.parse::<u64>().ok()))
+        .or_else(|| query_param(query, "now_ms").and_then(|value| value.parse::<u64>().ok()))
+        .or_else(|| query_param(query, "nowMs").and_then(|value| value.parse::<u64>().ok()))
+        .unwrap_or_else(|| now_ms().min(u64::MAX as u128) as u64);
+    let options = xhub_provider::ProviderOAuthRefreshApplyOptions {
+        account_key: body_string_alias(&parsed_body, "account_key", "accountKey")
+            .or_else(|| query_param(query, "account_key"))
+            .or_else(|| query_param(query, "accountKey"))
+            .ok_or_else(|| "provider oauth refresh apply requires account_key".to_string())?,
+        refreshed_at_ms,
+        access_token: body_string_alias(&parsed_body, "access_token", "accessToken")
+            .or_else(|| query_param(query, "access_token"))
+            .or_else(|| query_param(query, "accessToken"))
+            .ok_or_else(|| "provider oauth refresh apply requires access_token".to_string())?,
+        refresh_token: body_string_alias(&parsed_body, "refresh_token", "refreshToken")
+            .or_else(|| query_param(query, "refresh_token"))
+            .or_else(|| query_param(query, "refreshToken"))
+            .unwrap_or_default(),
+        expires_at_ms: body_u64_alias(&parsed_body, "expires_at_ms", "expiresAtMs")
+            .or_else(|| {
+                query_param(query, "expires_at_ms").and_then(|value| value.parse::<u64>().ok())
+            })
+            .or_else(|| {
+                query_param(query, "expiresAtMs").and_then(|value| value.parse::<u64>().ok())
+            })
+            .unwrap_or(0),
+        account_id: body_string_alias(&parsed_body, "account_id", "accountId")
+            .or_else(|| query_param(query, "account_id"))
+            .or_else(|| query_param(query, "accountId"))
+            .unwrap_or_default(),
+        email: body_string(&parsed_body, "email")
+            .or_else(|| query_param(query, "email"))
+            .unwrap_or_default(),
+        oauth_source_key: body_string_alias(&parsed_body, "oauth_source_key", "oauthSourceKey")
+            .or_else(|| query_param(query, "oauth_source_key"))
+            .or_else(|| query_param(query, "oauthSourceKey"))
+            .unwrap_or_default(),
+    };
+    provider_bridge::apply_oauth_refresh_json_from_parts(config, runtime_base_dir, options)
+}
+
+fn provider_oauth_refresh_failure_http_json(
+    config: &HubConfig,
+    query: &str,
+    body: &str,
+) -> (&'static str, String) {
+    match provider_oauth_refresh_failure_http_body(config, query, body) {
+        Ok(body) => ("200 OK", format!("{body}\n")),
+        Err(err) => (
+            "400 Bad Request",
+            format!(
+                "{{\"ok\":false,\"error\":\"provider_oauth_refresh_failure_failed\",\"message\":\"{}\"}}\n",
+                json_escape(&err)
+            ),
+        ),
+    }
+}
+
+fn provider_oauth_refresh_failure_http_body(
+    config: &HubConfig,
+    query: &str,
+    body: &str,
+) -> Result<String, String> {
+    let parsed_body = if body.trim().is_empty() {
+        Value::Object(Default::default())
+    } else {
+        serde_json::from_str::<Value>(body)
+            .map_err(|err| format!("invalid oauth refresh failure request json: {err}"))?
+    };
+    let runtime_base_dir = body_string(&parsed_body, "runtime_base_dir")
+        .or_else(|| body_string(&parsed_body, "runtimeBaseDir"))
+        .or_else(|| query_param(query, "runtime_base_dir"))
+        .or_else(|| query_param(query, "runtimeBaseDir"))
+        .map(PathBuf::from);
+    let options = xhub_provider::ProviderOAuthRefreshFailureOptions {
+        account_key: body_string_alias(&parsed_body, "account_key", "accountKey")
+            .or_else(|| query_param(query, "account_key"))
+            .or_else(|| query_param(query, "accountKey"))
+            .ok_or_else(|| "provider oauth refresh failure requires account_key".to_string())?,
+        failed_at_ms: body_u64_alias(&parsed_body, "failed_at_ms", "failedAtMs")
+            .or_else(|| body_u64_alias(&parsed_body, "now_ms", "nowMs"))
+            .or_else(|| {
+                query_param(query, "failed_at_ms").and_then(|value| value.parse::<u64>().ok())
+            })
+            .or_else(|| {
+                query_param(query, "failedAtMs").and_then(|value| value.parse::<u64>().ok())
+            })
+            .or_else(|| query_param(query, "now_ms").and_then(|value| value.parse::<u64>().ok()))
+            .or_else(|| query_param(query, "nowMs").and_then(|value| value.parse::<u64>().ok()))
+            .unwrap_or_else(|| now_ms().min(u64::MAX as u128) as u64),
+        base_failure_backoff_ms: body_u64_alias(
+            &parsed_body,
+            "base_failure_backoff_ms",
+            "baseFailureBackoffMs",
+        )
+        .or_else(|| {
+            query_param(query, "base_failure_backoff_ms")
+                .and_then(|value| value.parse::<u64>().ok())
+        })
+        .or_else(|| {
+            query_param(query, "baseFailureBackoffMs").and_then(|value| value.parse::<u64>().ok())
+        })
+        .unwrap_or(60_000),
+        max_failure_backoff_ms: body_u64_alias(
+            &parsed_body,
+            "max_failure_backoff_ms",
+            "maxFailureBackoffMs",
+        )
+        .or_else(|| {
+            query_param(query, "max_failure_backoff_ms").and_then(|value| value.parse::<u64>().ok())
+        })
+        .or_else(|| {
+            query_param(query, "maxFailureBackoffMs").and_then(|value| value.parse::<u64>().ok())
+        })
+        .unwrap_or(15 * 60_000),
+        terminal: body_bool(&parsed_body, "terminal").unwrap_or_else(|| {
+            optional_query_bool_alias(query, "terminal", "terminal", false).unwrap_or(false)
+        }),
+        error_code: body_string_alias(&parsed_body, "error_code", "errorCode")
+            .or_else(|| query_param(query, "error_code"))
+            .or_else(|| query_param(query, "errorCode"))
+            .unwrap_or_default(),
+        error_message: body_string_alias(&parsed_body, "error_message", "errorMessage")
+            .or_else(|| query_param(query, "error_message"))
+            .or_else(|| query_param(query, "errorMessage"))
+            .unwrap_or_default(),
+    };
+    provider_bridge::record_oauth_refresh_failure_json_from_parts(config, runtime_base_dir, options)
+}
+
+fn provider_codex_oauth_plan_http_json(
+    config: &HubConfig,
+    query: &str,
+    body: &str,
+) -> (&'static str, String) {
+    match provider_codex_oauth_plan_http_body(config, query, body) {
+        Ok(body) => ("200 OK", format!("{body}\n")),
+        Err(err) => (
+            "400 Bad Request",
+            format!(
+                "{{\"ok\":false,\"error\":\"provider_codex_oauth_plan_failed\",\"message\":\"{}\"}}\n",
+                json_escape(&err)
+            ),
+        ),
+    }
+}
+
+fn provider_codex_oauth_plan_http_body(
+    config: &HubConfig,
+    query: &str,
+    body: &str,
+) -> Result<String, String> {
+    let parsed_body = if body.trim().is_empty() {
+        Value::Object(Default::default())
+    } else {
+        serde_json::from_str::<Value>(body)
+            .map_err(|err| format!("invalid codex oauth plan request json: {err}"))?
+    };
+    let runtime_base_dir = body_string(&parsed_body, "runtime_base_dir")
+        .or_else(|| body_string(&parsed_body, "runtimeBaseDir"))
+        .or_else(|| query_param(query, "runtime_base_dir"))
+        .or_else(|| query_param(query, "runtimeBaseDir"))
+        .map(PathBuf::from);
+    let now = body_u64_alias(&parsed_body, "now_ms", "nowMs")
+        .or_else(|| query_param(query, "now_ms").and_then(|value| value.parse::<u64>().ok()))
+        .or_else(|| query_param(query, "nowMs").and_then(|value| value.parse::<u64>().ok()))
+        .unwrap_or_else(|| now_ms().min(u64::MAX as u128) as u64);
+    let include_skipped = body_bool_alias(&parsed_body, "include_skipped", "includeSkipped")
+        .or_else(|| {
+            optional_query_bool_alias(query, "include_skipped", "includeSkipped", false).ok()
+        })
+        .unwrap_or(false);
+    let mut in_flight_account_keys = body_string_list(&parsed_body, "in_flight_account_keys");
+    in_flight_account_keys.extend(body_string_list(&parsed_body, "inFlightAccountKeys"));
+    if let Some(keys) = query_param_list(query, "in_flight_account_keys")
+        .or_else(|| query_param_list(query, "inFlightAccountKeys"))
+    {
+        in_flight_account_keys.extend(keys);
+    }
+    in_flight_account_keys.sort();
+    in_flight_account_keys.dedup();
+    provider_bridge::plan_codex_oauth_refresh_json_from_parts(
+        config,
+        runtime_base_dir,
+        xhub_provider::ProviderOAuthRefreshPlanOptions {
+            now_ms: now,
+            include_skipped,
+            in_flight_account_keys,
+            refresh_lead_ms: body_u64_alias(&parsed_body, "refresh_lead_ms", "refreshLeadMs")
+                .or_else(|| {
+                    query_param(query, "refresh_lead_ms")
+                        .and_then(|value| value.parse::<u64>().ok())
+                })
+                .or_else(|| {
+                    query_param(query, "refreshLeadMs").and_then(|value| value.parse::<u64>().ok())
+                })
+                .unwrap_or(0),
+            min_refresh_lead_ms: body_u64_alias(
+                &parsed_body,
+                "min_refresh_lead_ms",
+                "minRefreshLeadMs",
+            )
+            .or_else(|| {
+                query_param(query, "min_refresh_lead_ms")
+                    .and_then(|value| value.parse::<u64>().ok())
+            })
+            .or_else(|| {
+                query_param(query, "minRefreshLeadMs").and_then(|value| value.parse::<u64>().ok())
+            })
+            .unwrap_or(0),
+        },
+    )
+}
+
+fn provider_codex_oauth_refresh_http_json(
+    config: &HubConfig,
+    query: &str,
+    body: &str,
+) -> (&'static str, String) {
+    match provider_codex_oauth_refresh_http_body(config, query, body) {
+        Ok(body) => ("200 OK", format!("{body}\n")),
+        Err(err) => (
+            "400 Bad Request",
+            format!(
+                "{{\"ok\":false,\"error\":\"provider_codex_oauth_refresh_failed\",\"message\":\"{}\"}}\n",
+                json_escape(&err)
+            ),
+        ),
+    }
+}
+
+fn provider_codex_oauth_refresh_http_body(
+    config: &HubConfig,
+    query: &str,
+    body: &str,
+) -> Result<String, String> {
+    let parsed_body = if body.trim().is_empty() {
+        Value::Object(Default::default())
+    } else {
+        serde_json::from_str::<Value>(body)
+            .map_err(|err| format!("invalid codex oauth refresh request json: {err}"))?
+    };
+    let runtime_base_dir = body_string(&parsed_body, "runtime_base_dir")
+        .or_else(|| body_string(&parsed_body, "runtimeBaseDir"))
+        .or_else(|| query_param(query, "runtime_base_dir"))
+        .or_else(|| query_param(query, "runtimeBaseDir"))
+        .map(PathBuf::from);
+    let options = provider_bridge::CodexOAuthRefreshOptions {
+        account_key: body_string_alias(&parsed_body, "account_key", "accountKey")
+            .or_else(|| query_param(query, "account_key"))
+            .or_else(|| query_param(query, "accountKey"))
+            .ok_or_else(|| "provider codex oauth refresh requires account_key".to_string())?,
+        refreshed_at_ms: body_u64_alias(&parsed_body, "refreshed_at_ms", "refreshedAtMs")
+            .or_else(|| body_u64_alias(&parsed_body, "now_ms", "nowMs"))
+            .or_else(|| {
+                query_param(query, "refreshed_at_ms").and_then(|value| value.parse::<u64>().ok())
+            })
+            .or_else(|| {
+                query_param(query, "refreshedAtMs").and_then(|value| value.parse::<u64>().ok())
+            })
+            .or_else(|| query_param(query, "now_ms").and_then(|value| value.parse::<u64>().ok()))
+            .or_else(|| query_param(query, "nowMs").and_then(|value| value.parse::<u64>().ok()))
+            .unwrap_or_else(|| now_ms().min(u64::MAX as u128) as u64),
+        timeout_ms: body_u64_alias(&parsed_body, "timeout_ms", "timeoutMs")
+            .or_else(|| {
+                query_param(query, "timeout_ms").and_then(|value| value.parse::<u64>().ok())
+            })
+            .or_else(|| query_param(query, "timeoutMs").and_then(|value| value.parse::<u64>().ok()))
+            .unwrap_or(15_000),
+        base_failure_backoff_ms: body_u64_alias(
+            &parsed_body,
+            "base_failure_backoff_ms",
+            "baseFailureBackoffMs",
+        )
+        .or_else(|| {
+            query_param(query, "base_failure_backoff_ms")
+                .and_then(|value| value.parse::<u64>().ok())
+        })
+        .or_else(|| {
+            query_param(query, "baseFailureBackoffMs").and_then(|value| value.parse::<u64>().ok())
+        })
+        .unwrap_or(60_000),
+        max_failure_backoff_ms: body_u64_alias(
+            &parsed_body,
+            "max_failure_backoff_ms",
+            "maxFailureBackoffMs",
+        )
+        .or_else(|| {
+            query_param(query, "max_failure_backoff_ms").and_then(|value| value.parse::<u64>().ok())
+        })
+        .or_else(|| {
+            query_param(query, "maxFailureBackoffMs").and_then(|value| value.parse::<u64>().ok())
+        })
+        .unwrap_or(15 * 60_000),
+        token_url: body_string_alias(&parsed_body, "token_url", "tokenUrl")
+            .or_else(|| query_param(query, "token_url"))
+            .or_else(|| query_param(query, "tokenUrl"))
+            .unwrap_or_default(),
+        force: body_bool(&parsed_body, "force").unwrap_or_else(|| {
+            optional_query_bool_alias(query, "force", "force", false).unwrap_or(false)
+        }),
+    };
+    provider_bridge::refresh_codex_oauth_json_from_parts(config, runtime_base_dir, options)
 }
 
 fn scheduler_status_http_json(config: &HubConfig, query: &str) -> (&'static str, String) {
@@ -3260,14 +4013,14 @@ fn root_body() -> String {
         <div class="links">
           <a href="/health">Health JSON</a>
           <a href="/ready">Ready JSON</a>
-          <a href="/xt/hub-contract">XT Hub Contract</a>
           <a href="/model/inventory">Model Inventory</a>
           <a href="/model/route">Model Route</a>
           <a href="/model/diagnostics">Model Diagnostics</a>
+          <a href="/xt/hub-contract">XT Hub Contract</a>
+          <a href="/network/remote-entry-candidates">Remote Entry Candidates</a>
           <a href="/provider/readiness">Provider Readiness</a>
           <a href="/skills/readiness">Skills Readiness</a>
           <a href="/skills/preflight">Skills Preflight</a>
-          <a href="/network/remote-entry-candidates">Remote Entry Candidates</a>
         </div>
       </div>
       <div class="panel">
@@ -3305,9 +4058,16 @@ export XHUB_RUST_MODEL_INVENTORY_HTTP_BASE_URL=http://127.0.0.1:50151</pre>
           row('Model inventory HTTP', ready.capabilities && ready.capabilities.model_inventory_http),
           row('Model diagnostics HTTP', ready.capabilities && ready.capabilities.model_route_diagnostics_http),
           row('Provider route HTTP', ready.capabilities && ready.capabilities.provider_route_http),
+          row('Provider import HTTP', ready.capabilities && ready.capabilities.provider_key_import_http),
+          row('Provider quota plan HTTP', ready.capabilities && ready.capabilities.provider_openai_quota_plan_http),
+          row('Provider quota apply HTTP', ready.capabilities && ready.capabilities.provider_openai_quota_apply_http),
+          row('Provider quota failure HTTP', ready.capabilities && ready.capabilities.provider_openai_quota_failure_http),
+          row('Provider OAuth apply HTTP', ready.capabilities && ready.capabilities.provider_oauth_refresh_apply_http),
+          row('Provider OAuth failure HTTP', ready.capabilities && ready.capabilities.provider_oauth_refresh_failure_http),
+          row('Provider Codex OAuth plan HTTP', ready.capabilities && ready.capabilities.provider_oauth_refresh_codex_plan_http),
+          row('Provider Codex OAuth HTTP', ready.capabilities && ready.capabilities.provider_oauth_refresh_codex_http),
           row('Skills catalog HTTP', ready.capabilities && ready.capabilities.skills_catalog_http),
-          row('Skills preflight HTTP', ready.capabilities && ready.capabilities.skills_preflight_http),
-          row('Remote entry candidates', ready.capabilities && ready.capabilities.remote_entry_candidates_http)
+          row('Skills preflight HTTP', ready.capabilities && ready.capabilities.skills_preflight_http)
         ].join('');
         document.getElementById('checks').innerHTML = (ready.checks || []).map((item) => {
           const klass = item.ok ? 'check good' : 'check fail';
@@ -3339,6 +4099,134 @@ fn health_json(config: &HubConfig) -> String {
         proto_ok,
         json_escape(&config.db_path.display().to_string())
     )
+}
+
+fn product_kernel_json(state: &HubState) -> String {
+    let readiness_body = readiness_json_cached(state);
+    product_kernel_json_from_readiness(&state.config, readiness_body.as_str())
+}
+
+fn product_kernel_json_from_readiness(config: &HubConfig, readiness_body: &str) -> String {
+    let generated_at_ms = now_ms().min(i64::MAX as u128) as i64;
+    let readiness =
+        serde_json::from_str::<Value>(readiness_body.trim()).unwrap_or_else(|_| json!({}));
+    let public_base_url = value_path_string(&readiness, &["network", "public_base_url"]);
+    let public_base_url_ready = value_path_bool(&readiness, &["network", "public_base_url_ready"]);
+    let domain_public_endpoint_ready =
+        value_path_bool(
+            &readiness,
+            &["capabilities", "domain_public_endpoint_ready"],
+        ) || value_path_bool(&readiness, &["network", "public_endpoint_ready"]);
+    let cross_network_ready = value_path_bool(&readiness, &["capabilities", "cross_network_ready"]);
+    let xt_file_ipc_surface_ready = value_path_bool(
+        &readiness,
+        &["capabilities", "xt_file_ipc_production_surface_ready"],
+    );
+    let xt_file_ipc_authority = xt_file_ipc_production_authority_enabled(xt_file_ipc_surface_ready);
+    let local_ml_enabled =
+        value_path_bool(&readiness, &["runtime", "ml_execution_authority_enabled"]);
+    let local_ml_ready = value_path_bool(&readiness, &["runtime", "ml_execution_in_rust"]);
+    let local_ml_authority = local_ml_enabled && local_ml_ready;
+    let provider_route_authority = provider_route_production_authority_enabled();
+    let model_route_authority = model_route_production_authority_enabled();
+    let scheduler_authority = scheduler_production_authority_enabled();
+    let memory_writer_authority =
+        value_path_bool(&readiness, &["memory", "canonical_writer_in_rust"]);
+    let skills_execution_authority =
+        value_path_bool(&readiness, &["skills", "execution_authority_in_rust"]);
+
+    let body = json!({
+        "schema_version": "xhub.product_kernel.v1",
+        "ok": value_path_bool(&readiness, &["ok"]),
+        "ready": value_path_bool(&readiness, &["ready"]),
+        "generated_at_ms": generated_at_ms,
+        "product": {
+            "name": "X-Hub",
+            "boundary": "rust_product_kernel_swift_shell",
+        },
+        "kernel": {
+            "name": "rust",
+            "daemon": DAEMON_NAME,
+            "version": value_path_string(&readiness, &["version"]),
+            "mode": value_path_string(&readiness, &["mode"]),
+            "http_addr": value_path_string(&readiness, &["http_addr"]),
+            "http_base_url": format!("http://{}", config.http_addr()),
+            "runtime_root": config.root_dir.display().to_string(),
+            "runtime_base_dir": value_path_string(&readiness, &["runtime", "runtime_base_dir"]),
+        },
+        "shell": {
+            "name": "swift",
+            "role": "product_ui_shell",
+            "owns_product_ui": true,
+            "embeds_kernel_ui": false,
+        },
+        "interfaces": {
+            "product_kernel_http": true,
+            "readiness_http": true,
+            "http_base_url": format!("http://{}", config.http_addr()),
+            "public_base_url": public_base_url,
+        },
+        "network": {
+            "cross_network_ready": cross_network_ready,
+            "domain_public_endpoint_ready": domain_public_endpoint_ready,
+            "public_base_url": public_base_url,
+            "public_base_url_ready": public_base_url_ready,
+            "http_access_key_required": value_path_bool(&readiness, &["network", "http_access_key_required"]),
+            "http_access_key_configured": value_path_bool(&readiness, &["network", "http_access_key_configured"]),
+        },
+        "storage": {
+            "db_path": value_path_string(&readiness, &["storage", "db_path"]),
+        },
+        "authority": {
+            "provider_route_in_rust": provider_route_authority,
+            "model_route_in_rust": model_route_authority,
+            "scheduler_in_rust": scheduler_authority,
+            "memory_writer_in_rust": memory_writer_authority,
+            "skills_execution_in_rust": skills_execution_authority,
+            "xt_file_ipc_in_rust": xt_file_ipc_authority,
+            "local_ml_execution_in_rust": local_ml_authority,
+            "node_compatibility_layer": true,
+            "node_remains_authority": false,
+            "swift_shell_owns_ui": true,
+            "rust_browser_product_ui": false,
+            "ui_product_change": false,
+        },
+        "readiness": {
+            "schema_version": value_path_string(&readiness, &["schema_version"]),
+            "ready": value_path_bool(&readiness, &["ready"]),
+            "checks": readiness.get("checks").cloned().unwrap_or_else(|| json!([])),
+        },
+    });
+    format!("{body}\n")
+}
+
+fn value_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    Some(current)
+}
+
+fn value_path_bool(value: &Value, path: &[&str]) -> bool {
+    match value_path(value, path) {
+        Some(Value::Bool(value)) => *value,
+        Some(Value::Number(value)) => value.as_i64().unwrap_or(0) != 0,
+        Some(Value::String(value)) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "y" | "on"
+        ),
+        _ => false,
+    }
+}
+
+fn value_path_string(value: &Value, path: &[&str]) -> String {
+    match value_path(value, path) {
+        Some(Value::String(value)) => value.trim().to_string(),
+        Some(Value::Number(value)) => value.to_string(),
+        Some(Value::Bool(value)) => value.to_string(),
+        _ => String::new(),
+    }
 }
 
 fn enforce_http_bind_policy(config: &HubConfig) -> Result<(), String> {
@@ -3416,6 +4304,28 @@ fn env_path_or_default(key: &str, fallback: PathBuf) -> PathBuf {
 fn cross_network_public_endpoint_enabled() -> bool {
     env_bool("XHUB_RUST_CROSS_NETWORK_PUBLIC_ENDPOINT", false)
         || env_bool("XHUB_RUST_HUB_PUBLIC_ENDPOINT", false)
+}
+
+fn provider_route_production_authority_enabled() -> bool {
+    env_bool("XHUB_RUST_PROVIDER_ROUTE_PRODUCTION_AUTHORITY", false)
+        || env_bool("XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_PRODUCTION", false)
+        || (env_bool("XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_CUTOVER", false)
+            && env_bool("XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_APPLY", false))
+}
+
+fn model_route_production_authority_enabled() -> bool {
+    env_bool("XHUB_RUST_MODEL_ROUTE_PRODUCTION_AUTHORITY", false)
+        || env_bool("XHUB_RUST_MODEL_ROUTE_AUTHORITY_PRODUCTION", false)
+        || (env_bool("XHUB_RUST_MODEL_ROUTE_AUTHORITY_CUTOVER", false)
+            && env_bool("XHUB_RUST_MODEL_ROUTE_AUTHORITY_APPLY", false))
+}
+
+fn scheduler_production_authority_enabled() -> bool {
+    env_bool("XHUB_RUST_SCHEDULER_AUTHORITY", false)
+}
+
+fn xt_file_ipc_production_authority_enabled(surface_ready: bool) -> bool {
+    surface_ready && env_bool("XHUB_RUST_XT_FILE_IPC_PRODUCTION_CUTOVER", false)
 }
 
 fn public_base_url_host(public_base_url: &str) -> Option<String> {
@@ -3595,13 +4505,20 @@ fn readiness_json(
     let skill_boundary = SkillBoundary::default();
     let memory_writer_authority = memory_bridge::memory_writer_authority_enabled();
     let skills_execution_authority = skills_bridge::skills_execution_authority_enabled();
+    let local_ml_readiness = local_ml_bridge::readiness(config);
+    let provider_route_authority = provider_route_production_authority_enabled();
+    let model_route_authority = model_route_production_authority_enabled();
+    let scheduler_authority = scheduler_production_authority_enabled();
+    let xt_file_ipc_production_authority =
+        xt_file_ipc_production_authority_enabled(xt_file_ipc_production_surface_ready);
     let ready = proto_ok
         && canonical_proto_ok
         && db_parent_ok
         && scheduler_ok
         && network_ok
         && memory_dir_exists
-        && skills_catalog_ok;
+        && skills_catalog_ok
+        && (!local_ml_readiness.enabled || local_ml_readiness.ready);
     let scheduler_error = match scheduler_status {
         Ok(_) => String::new(),
         Err(err) => err.to_string(),
@@ -3675,9 +4592,29 @@ fn readiness_json(
             "runtime_status_file_exists": runtime_exists && path_exists(&config.runtime_base_dir.join("ai_runtime_status.json")),
             "provider_store_file_exists": runtime_exists && path_exists(&config.runtime_base_dir.join("hub_provider_keys.json")),
             "provider_route_http": true,
+            "provider_key_pools_http": true,
+            "provider_key_runtime_snapshot_http": true,
+            "provider_key_import_http": true,
+            "provider_openai_quota_plan_http": true,
+            "provider_openai_quota_apply_http": true,
+            "provider_openai_quota_failure_http": true,
+            "provider_oauth_refresh_apply_http": true,
+            "provider_oauth_refresh_failure_http": true,
+            "provider_oauth_refresh_codex_plan_http": true,
+            "provider_oauth_refresh_codex_http": true,
+            "account_portfolio_snapshot_in_rust": true,
+            "quota_refresh_scheduler_in_rust": true,
+            "quota_refresh_state_writer_in_rust": true,
+            "provider_route_authority_in_rust": provider_route_authority,
             "model_inventory_http": true,
             "model_route_diagnostics_http": true,
-            "ml_execution_in_rust": false,
+            "model_route_authority_in_rust": model_route_authority,
+            "local_ml_execution_bridge_http": true,
+            "ml_execution_in_rust": local_ml_readiness.ready,
+            "ml_execution_authority_enabled": local_ml_readiness.enabled,
+            "ml_execution_authority": local_ml_readiness.authority,
+            "ml_execution_blocker": local_ml_readiness.blocker,
+            "ml_execution_readiness": local_ml_bridge::readiness_value(config),
         },
         "memory": {
             "memory_dir": memory_dir.display().to_string(),
@@ -3727,17 +4664,37 @@ fn readiness_json(
         "capabilities": {
             "scheduler_status_http": true,
             "scheduler_authority_http_opt_in": true,
+            "scheduler_authority_in_rust": scheduler_authority,
             "provider_route_http": true,
+            "provider_key_pools_http": true,
+            "provider_key_runtime_snapshot_http": true,
+            "provider_key_import_http": true,
+            "provider_openai_quota_plan_http": true,
+            "provider_openai_quota_apply_http": true,
+            "provider_openai_quota_failure_http": true,
+            "provider_oauth_refresh_apply_http": true,
+            "provider_oauth_refresh_failure_http": true,
+            "provider_oauth_refresh_codex_plan_http": true,
+            "provider_oauth_refresh_codex_http": true,
+            "account_portfolio_snapshot_in_rust": true,
+            "quota_refresh_scheduler_in_rust": true,
+            "quota_refresh_state_writer_in_rust": true,
+            "provider_route_authority_in_rust": provider_route_authority,
             "model_inventory_http": true,
             "model_route_diagnostics_http": true,
+            "model_route_authority_in_rust": model_route_authority,
+            "local_ml_execution_bridge_http": true,
+            "ml_execution_authority_in_rust": local_ml_readiness.ready,
+            "ml_execution_authority_enabled": local_ml_readiness.enabled,
             "http_backpressure": true,
             "http_metrics": true,
             "http_metrics_recent_window": true,
             "http_io_timeouts": true,
+            "remote_entry_candidates_http": true,
+            "swift_shell_remote_entry_authority": true,
             "memory_retrieval_http": true,
             "memory_write_http": true,
             "memory_writer_authority_in_rust": memory_writer_authority,
-            "xt_hub_contract_http": true,
             "xt_classic_hub_compat_preflight_http": true,
             "xt_classic_hub_grpc_probe_http": true,
             "xt_classic_hub_compat_authority": "preflight_only",
@@ -3756,8 +4713,9 @@ fn readiness_json(
             "xt_file_ipc_shadow_watcher_background_lifecycle_http": true,
             "xt_file_ipc_shadow_runtime_execution_plan_http": true,
             "xt_file_ipc_shadow_runtime_adapter_candidate_http": true,
-            "xt_file_ipc_shadow_authority": "temp_dir_only_fail_closed",
+            "xt_file_ipc_shadow_authority": if xt_file_ipc_production_authority { "production_status_writer" } else { "temp_dir_only_fail_closed" },
             "xt_file_ipc_production_surface_ready": xt_file_ipc_production_surface_ready,
+            "xt_file_ipc_production_authority_in_rust": xt_file_ipc_production_authority,
             "xt_classic_hub_status_writer_heartbeat": xt_file_ipc_production_surface_ready,
             "readiness_cache_http": readiness_cache_ttl_ms > 0,
             "memory_snapshot_cache_http": env_u128_in_range("XHUB_RUST_MEMORY_SNAPSHOT_CACHE_TTL_MS", 500, 0, 10_000) > 0,
@@ -3775,8 +4733,6 @@ fn readiness_json(
             "cross_network_public_endpoint": public_endpoint_enabled,
             "domain_public_endpoint_ready": public_endpoint_ready,
             "cross_network_auth_gate": true,
-            "remote_entry_candidates_http": true,
-            "swift_shell_remote_entry_authority": true,
         },
         "checks": [
             {"name": "proto", "ok": proto_ok, "blocking": true},
@@ -3789,6 +4745,7 @@ fn readiness_json(
             {"name": "memory_dir", "ok": memory_dir_exists, "blocking": true},
             {"name": "skills_dir", "ok": skills_dir_exists, "blocking": true},
             {"name": "skills_catalog", "ok": skills_catalog_ok, "blocking": true},
+            {"name": "local_ml_execution_authority", "ok": !local_ml_readiness.enabled || local_ml_readiness.ready, "blocking": local_ml_readiness.enabled},
             {"name": "memory_policy", "ok": memory_plan.fail_closed, "blocking": false},
             {"name": "skills_policy", "ok": !skill_boundary.hub_executes_third_party_code, "blocking": false},
         ],
@@ -3954,6 +4911,68 @@ mod tests {
     }
 
     #[test]
+    fn product_kernel_contract_declares_rust_kernel_and_swift_shell() {
+        let config = test_config(None, false);
+        let readiness = json!({
+            "schema_version": "xhub.rust_hub.readiness.v1",
+            "ok": true,
+            "ready": true,
+            "version": "0.1.0",
+            "mode": "shadow_http",
+            "http_addr": "127.0.0.1:50151",
+            "network": {
+                "public_base_url": "https://hub.example.com",
+                "public_base_url_ready": true,
+                "public_endpoint_ready": true,
+                "http_access_key_required": true,
+                "http_access_key_configured": true
+            },
+            "storage": {
+                "db_path": "/tmp/xhubd-test/data/hub.sqlite3"
+            },
+            "runtime": {
+                "runtime_base_dir": "/tmp/xhubd-test/runtime",
+                "ml_execution_in_rust": true,
+                "ml_execution_authority_enabled": true
+            },
+            "memory": {
+                "canonical_writer_in_rust": true
+            },
+            "skills": {
+                "execution_authority_in_rust": true
+            },
+            "capabilities": {
+                "cross_network_ready": true,
+                "domain_public_endpoint_ready": true,
+                "xt_file_ipc_production_surface_ready": true
+            },
+            "checks": [{"name": "proto", "ok": true, "blocking": true}]
+        })
+        .to_string();
+
+        let body = product_kernel_json_from_readiness(&config, readiness.as_str());
+        let value: Value = serde_json::from_str(&body).expect("product kernel json should parse");
+
+        assert_eq!(value["schema_version"], "xhub.product_kernel.v1");
+        assert_eq!(value["product"]["name"], "X-Hub");
+        assert_eq!(
+            value["product"]["boundary"],
+            "rust_product_kernel_swift_shell"
+        );
+        assert_eq!(value["kernel"]["name"], "rust");
+        assert_eq!(value["shell"]["name"], "swift");
+        assert_eq!(value["authority"]["memory_writer_in_rust"], true);
+        assert_eq!(value["authority"]["skills_execution_in_rust"], true);
+        assert_eq!(value["authority"]["local_ml_execution_in_rust"], true);
+        assert_eq!(value["authority"]["node_compatibility_layer"], true);
+        assert_eq!(value["authority"]["node_remains_authority"], false);
+        assert_eq!(value["authority"]["swift_shell_owns_ui"], true);
+        assert_eq!(value["authority"]["rust_browser_product_ui"], false);
+        assert_eq!(value["network"]["cross_network_ready"], true);
+        assert_eq!(value["network"]["domain_public_endpoint_ready"], true);
+    }
+
+    #[test]
     fn loopback_request_does_not_require_access_key_by_default() {
         let config = test_config(None, false);
         let peer = "127.0.0.1:49152".parse::<SocketAddr>().unwrap();
@@ -3986,6 +5005,66 @@ mod tests {
             .expect("explicit local auth should be enforced");
         assert_eq!(failure.0, "401 Unauthorized");
         assert!(failure.1.contains("missing_access_key"));
+    }
+
+    #[test]
+    fn public_endpoint_blocks_loopback_ready_without_key() {
+        let config = test_config(Some("secret-123"), false);
+        let peer = "127.0.0.1:49152".parse::<SocketAddr>().unwrap();
+        let failure = http_access_key_failure_with_public_endpoint(
+            &request(vec![]),
+            &config,
+            Some(peer),
+            "/ready",
+            true,
+        )
+        .expect("public endpoint auth should apply before loopback exemption");
+        assert_eq!(failure.0, "401 Unauthorized");
+        assert!(failure.1.contains("missing_access_key"));
+    }
+
+    #[test]
+    fn public_endpoint_accepts_loopback_bearer_access_key() {
+        let config = test_config(Some("secret-123"), false);
+        let peer = "127.0.0.1:49152".parse::<SocketAddr>().unwrap();
+        let request = request(vec![("authorization", "Bearer secret-123")]);
+        assert!(http_access_key_failure_with_public_endpoint(
+            &request,
+            &config,
+            Some(peer),
+            "/ready",
+            true,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn public_endpoint_accepts_loopback_header_access_key() {
+        let config = test_config(Some("secret-123"), false);
+        let peer = "127.0.0.1:49152".parse::<SocketAddr>().unwrap();
+        let request = request(vec![("x-xhub-access-key", "secret-123")]);
+        assert!(http_access_key_failure_with_public_endpoint(
+            &request,
+            &config,
+            Some(peer),
+            "/ready",
+            true,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn public_endpoint_keeps_health_unauthenticated_on_loopback() {
+        let config = test_config(Some("secret-123"), false);
+        let peer = "127.0.0.1:49152".parse::<SocketAddr>().unwrap();
+        assert!(http_access_key_failure_with_public_endpoint(
+            &request(vec![]),
+            &config,
+            Some(peer),
+            "/health",
+            true,
+        )
+        .is_none());
     }
 
     #[test]

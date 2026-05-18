@@ -95,11 +95,32 @@ private final class LocalHelperBridgeDiscoveryCacheEntry: NSObject {
 
 enum LocalHelperBridgeDiscovery {
     private static let defaultHelperNames = ["lms", "llmster", "lmstudio"]
+    nonisolated(unsafe) private static let defaultCache = NSCache<NSString, LocalHelperBridgeDiscoveryCacheEntry>()
     nonisolated(unsafe) private static let cache = NSCache<NSString, LocalHelperBridgeDiscoveryCacheEntry>()
     private static let cacheTTLSeconds: TimeInterval = 12.0
 
+    static func discoverHelperBinary() -> String {
+        let now = Date().timeIntervalSince1970
+        let cacheKey = "default" as NSString
+        if let cached = defaultCache.object(forKey: cacheKey),
+           now - cached.cachedAt <= cacheTTLSeconds {
+            return cached.path
+        }
+
+        let path = discoverHelperBinary(
+            homeDirectory: SharedPaths.realHomeDirectory(),
+            fileManager: .default,
+            environment: ProcessInfo.processInfo.environment
+        )
+        defaultCache.setObject(
+            LocalHelperBridgeDiscoveryCacheEntry(path: path, cachedAt: now),
+            forKey: cacheKey
+        )
+        return path
+    }
+
     static func discoverHelperBinary(
-        homeDirectory: URL = SharedPaths.realHomeDirectory(),
+        homeDirectory: URL,
         fileManager: FileManager = .default,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> String {
@@ -202,7 +223,10 @@ enum LocalProviderPackRegistry {
     static let fileName = "provider_pack_registry.json"
 
     private static let autoManagedNote = "auto_local_helper_bridge"
-    private static let autoManagedHelperProviderIDs: Set<String> = ["llama.cpp", "mlx_vlm", "transformers"]
+    private static let currentAutoManagedHelperProviderIDs: Set<String> = ["llama.cpp", "transformers"]
+    private static let legacyAutoManagedHelperProviderIDs: Set<String> = ["mlx_vlm"]
+    private static let autoManagedHelperProviderIDs =
+        currentAutoManagedHelperProviderIDs.union(legacyAutoManagedHelperProviderIDs)
     private static let helperSupportedTaskKinds: Set<String> = [
         "text_generate",
         "embedding",
@@ -256,6 +280,7 @@ enum LocalProviderPackRegistry {
             helperBinaryPath: normalizedHelperBinary
         )
         return snapshot.packs.first { $0.providerId == normalizedProviderID }
+            ?? builtinPack(providerID: normalizedProviderID)
     }
 
     static func save(
@@ -323,7 +348,7 @@ enum LocalProviderPackRegistry {
         }
 
         let normalizedHelperBinary = normalizedHelperBinaryPath(helperBinaryPath)
-        for providerID in autoManagedHelperProviderIDs.sorted() {
+        for providerID in currentAutoManagedHelperProviderIDs.sorted() {
             guard !manualHelperOverrides.contains(providerID) else { continue }
             guard shouldEnableAutoManagedHelperBridge(
                 catalog: catalog,
@@ -413,6 +438,32 @@ enum LocalProviderPackRegistry {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
         return URL(fileURLWithPath: (trimmed as NSString).expandingTildeInPath).standardizedFileURL.path
+    }
+
+    private static func builtinPack(providerID: String) -> LocalProviderPackRegistryEntry? {
+        switch providerID {
+        case "mlx_vlm":
+            return LocalProviderPackRegistryEntry(
+                providerId: "mlx_vlm",
+                engine: "mlx-vlm",
+                version: "builtin-2026-04-14-native-v1",
+                supportedFormats: ["mlx"],
+                supportedDomains: ["vision", "ocr"],
+                runtimeRequirements: LocalProviderPackRegistryRuntimeRequirements(
+                    executionMode: "builtin_python",
+                    pythonModules: ["mlx", "mlx_lm", "mlx_vlm", "transformers", "PIL"],
+                    notes: ["offline_only", "native_mlx_multimodal_runtime"]
+                ),
+                minHubVersion: "2026.03",
+                installed: true,
+                enabled: true,
+                packState: "installed",
+                reasonCode: "builtin_pack_registered",
+                note: ""
+            )
+        default:
+            return nil
+        }
     }
 
     private static func isAutoManagedHelperEntry(_ pack: LocalProviderPackRegistryEntry) -> Bool {
