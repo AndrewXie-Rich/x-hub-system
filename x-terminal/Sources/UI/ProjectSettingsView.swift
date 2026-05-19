@@ -99,7 +99,7 @@ struct ProjectSettingsView: View {
     private var overviewSettingsBody: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+                LazyVStack(alignment: .leading, spacing: 14) {
                     HStack {
                         Text("项目设置")
                             .font(.headline)
@@ -198,7 +198,7 @@ struct ProjectSettingsView: View {
 
     private var focusedGovernanceBody: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            LazyVStack(alignment: .leading, spacing: 16) {
                 governancePageHeader
                 governanceDestinationSurface
             }
@@ -1774,10 +1774,7 @@ struct ProjectSettingsView: View {
     }
 
     private var projectModelInventoryTruth: XTModelInventoryTruthPresentation {
-        if let rustInventory = modelManager.latestRustInventoryProjection {
-            return XTModelInventoryTruthPresentation.build(rustInventory: rustInventory)
-        }
-        return XTModelInventoryTruthPresentation.build(
+        XTModelInventoryTruthPresentation.build(
             snapshot: modelInventorySnapshot(),
             hubBaseDir: modelSettingsSnapshot.hubBaseDir ?? HubPaths.baseDir()
         )

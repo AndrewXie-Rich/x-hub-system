@@ -81,7 +81,6 @@ struct PendingToolApprovalView: View {
                         .shadow(color: .green.opacity(0.3), radius: 4, y: 2)
                     }
                     .buttonStyle(.plain)
-                    .disabled(!hubConnected)
                 }
             }
 

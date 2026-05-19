@@ -2,30 +2,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-
-if [ "${XHUB_ALLOW_LEGACY_XTERMINAL_BUILD:-0}" != "1" ]; then
-  cat >&2 <<'EOF'
-ERROR: Refusing to build legacy X-Terminal from x-hub-system/x-terminal.
-
-This tree is legacy/read-only and must not be used for XT packaging.
-
-Active XT source:
-  /Users/andrew.xie/Documents/AX/rust/rust xt/swift-xterminal
-
-Active XT build command:
-  /Users/andrew.xie/Documents/AX/rust/rust xt/commands/build_xt.command
-
-For archival/debug-only legacy builds, rerun with:
-  XHUB_ALLOW_LEGACY_XTERMINAL_BUILD=1
-EOF
-  exit 64
-fi
-
-# shellcheck source=../../scripts/lib/build_snapshot_retention.sh
-source "$ROOT_DIR/scripts/lib/build_snapshot_retention.sh"
-XT_DIR="$ROOT_DIR/x-terminal"
-OUT_DIR="$ROOT_DIR/build"
+XT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+WORKSPACE_ROOT="$(cd "$XT_DIR/.." && pwd)"
+ROOT_DIR="$XT_DIR"
+# shellcheck source=../scripts/lib/build_snapshot_retention.sh
+source "$XT_DIR/scripts/lib/build_snapshot_retention.sh"
+OUT_DIR="${XTERMINAL_BUILD_OUT_DIR:-$WORKSPACE_ROOT/build}"
 APP_DIR="$OUT_DIR/X-Terminal.app"
 BUILD_CONFIG="${XTERMINAL_SWIFT_BUILD_CONFIG:-release}"
 INSTALL_TARGET="${XTERMINAL_INSTALL_TARGET:-}"
@@ -217,6 +199,30 @@ else
   echo "[2b/4] Warning: axhubctl not found; remote Hub pairing/install-client will rely on PATH." >&2
 fi
 
+XTD_SRC=""
+for candidate in \
+  "$WORKSPACE_ROOT/rust/xtd/target/release/xtd" \
+  "$WORKSPACE_ROOT/rust/xtd/target/debug/xtd" \
+  "$WORKSPACE_ROOT/rust-xtd/target/release/xtd" \
+  "$WORKSPACE_ROOT/rust-xtd/target/debug/xtd" \
+  "$XT_DIR/../rust/xtd/target/release/xtd" \
+  "$XT_DIR/../rust/xtd/target/debug/xtd" \
+  "$XT_DIR/../rust-xtd/target/release/xtd" \
+  "$XT_DIR/../rust-xtd/target/debug/xtd"; do
+  if [ -f "$candidate" ]; then
+    XTD_SRC="$candidate"
+    break
+  fi
+done
+
+if [ -n "$XTD_SRC" ]; then
+  echo "[2c/4] Bundling xtd from: $XTD_SRC"
+  cp -f "$XTD_SRC" "$APP_DIR/Contents/Resources/xtd"
+  chmod +x "$APP_DIR/Contents/Resources/xtd"
+else
+  echo "[2c/4] Warning: xtd not found; XT core projection client will rely on XTERMINAL_XTD_PATH/PATH fallback." >&2
+fi
+
 IDENTITY="${XTERMINAL_CODESIGN_IDENTITY:--}"
 ENABLE_APP_SANDBOX="${XTERMINAL_ENABLE_APP_SANDBOX:-0}"
 ENT="$BUILD_SRC_DIR/X-Terminal.entitlements"
@@ -227,6 +233,9 @@ if [ -f "$APP_DIR/Contents/Resources/relflowhub_node" ]; then
 fi
 if [ -f "$APP_DIR/Contents/Resources/axhubctl" ]; then
   codesign --force --sign "$IDENTITY" "$APP_DIR/Contents/Resources/axhubctl"
+fi
+if [ -f "$APP_DIR/Contents/Resources/xtd" ]; then
+  codesign --force --sign "$IDENTITY" "$APP_DIR/Contents/Resources/xtd"
 fi
 if [ "$ENABLE_APP_SANDBOX" = "1" ]; then
   echo "[3a/4] App sandbox enabled via XTERMINAL_ENABLE_APP_SANDBOX=1"
@@ -260,4 +269,4 @@ fi
 echo "Run hint: for end-user testing, launch the app from ~/Applications or /Applications instead of a repo checkout under Documents."
 echo "Calendar note: X-Terminal now owns the optional Calendar permission and local Supervisor meeting reminders."
 echo "Copy this app to another Mac, then open it directly."
-echo "To rebuild X-Hub + X-Terminal together, run: \"$ROOT_DIR/scripts/build_hub_and_xt_apps.command\""
+echo "Self-contained XT workspace: $WORKSPACE_ROOT"

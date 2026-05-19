@@ -36,7 +36,16 @@ struct XTModelInventoryTruthPresentation: Equatable, Sendable {
         switch state {
         case .inventoryReady, .localOnlyReady:
             return false
-        case .remoteOnlyReady, .snapshotMissing, .noInteractiveLoaded, .runtimeHeartbeatStale, .noReadyProvider, .providerPartialReadiness, .remoteQuotaBlocked, .remoteScopeMissing, .localRuntimeMissing, .localCapabilityMismatch:
+        case .remoteOnlyReady,
+             .snapshotMissing,
+             .noInteractiveLoaded,
+             .runtimeHeartbeatStale,
+             .noReadyProvider,
+             .providerPartialReadiness,
+             .remoteQuotaBlocked,
+             .remoteScopeMissing,
+             .localRuntimeMissing,
+             .localCapabilityMismatch:
             return true
         }
     }
@@ -424,8 +433,7 @@ struct XTModelInventoryTruthPresentation: Equatable, Sendable {
         fallback: String
     ) -> String {
         var parts: [String] = []
-        let normalizedReason = normalized(reason)
-        if let normalizedReason {
+        if let normalizedReason = normalized(reason) {
             parts.append("reason=\(normalizedReason)")
         }
         if let runtimeReason = normalized(runtimeReason) {

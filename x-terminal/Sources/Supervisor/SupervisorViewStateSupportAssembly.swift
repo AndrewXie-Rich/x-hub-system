@@ -52,7 +52,8 @@ extension SupervisorViewStateSupport {
                 .surfaceState,
             directedUnblockBaton: legacyRuntime.monitor
                 .directedUnblockBatons
-                .first
+                .first,
+            laneWinnerScoreReport: cockpitPresentation.laneWinnerScoreReport
         )
     }
 

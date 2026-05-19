@@ -2,7 +2,7 @@ import SwiftUI
 
 struct SupervisorPersonaCenterView: View {
     @Environment(\.xtAppModelReference) private var appModelReference
-    @EnvironmentObject private var settingsCenterStore: XTSettingsCenterStore
+    @EnvironmentObject private var settingsValueStore: XTSettingsValueStore
 
     @State private var selectedPersonaID: String = "persona_slot_1"
     @State private var draftRegistry = SupervisorPersonaRegistry.default(defaultVoicePersona: .conversational)
@@ -614,7 +614,7 @@ struct SupervisorPersonaCenterView: View {
     }
 
     private var settingsSnapshot: XTerminalSettings {
-        settingsCenterStore.snapshot.settings
+        settingsValueStore.snapshot
     }
 
     private var defaultVoicePersona: VoicePersonaPreset {

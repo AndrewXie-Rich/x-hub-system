@@ -16,6 +16,7 @@ enum SupervisorCockpitActionResolver {
         var runtimeBlockerCode: String?
         var runtimeAccessSurfaceState: XTUISurfaceState?
         var directedUnblockBaton: DirectedUnblockBaton?
+        var laneWinnerScoreReport: LaneWinnerScoreReport?
     }
 
     enum URLTarget: Equatable {
@@ -38,6 +39,7 @@ enum SupervisorCockpitActionResolver {
             detail: String?
         )
         case setFocusedSplitLane(String)
+        case overrideLaneWinnerSelection(laneID: String, reason: String)
     }
 
     struct Plan: Equatable {
@@ -82,8 +84,64 @@ enum SupervisorCockpitActionResolver {
         case "directed_resume":
             return directedResume(context: context)
         default:
+            if let laneWinnerPlan = laneWinnerAction(actionID, context: context) {
+                return laneWinnerPlan
+            }
             return nil
         }
+    }
+
+    private static func laneWinnerAction(
+        _ actionID: String,
+        context: Context
+    ) -> Plan? {
+        let trimmed = actionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let laneID = laneID(from: trimmed, prefix: "lane_winner_select:") {
+            return Plan(
+                effects: [
+                    .setFocusedSplitLane(laneID),
+                    .overrideLaneWinnerSelection(
+                        laneID: laneID,
+                        reason: "cockpit_lane_winner_candidate_selection"
+                    )
+                ]
+            )
+        }
+        if let laneID = laneID(from: trimmed, prefix: "lane_winner_repair:") {
+            return laneWinnerRepair(laneID: laneID, context: context)
+        }
+        if let laneID = laneID(from: trimmed, prefix: "lane_winner_focus:") {
+            return Plan(effects: [.setFocusedSplitLane(laneID)])
+        }
+        return nil
+    }
+
+    private static func laneWinnerRepair(
+        laneID: String,
+        context: Context
+    ) -> Plan {
+        let candidate = context.laneWinnerScoreReport?.candidates.first(where: { $0.laneID == laneID })
+        let blockers = candidate?.blockers.prefix(5).joined(separator: ",") ?? "unknown"
+        let evidence = candidate?.evidenceRefs.prefix(5).joined(separator: ",") ?? "none"
+        let draft = [
+            "请继续当前 split lane 的修复，不要扩 scope。",
+            "目标 lane=\(laneID)。",
+            "winner_score_blockers=\(blockers)。",
+            "evidence_refs=\(evidence)。",
+            "先让 Coder 修复 blocker，再让 Reviewer 重新给出 LaneReviewReport；合回仍需通过 Hub 授权/策略和 mergeback gate。"
+        ].joined(separator: " ")
+        return Plan(
+            effects: [
+                .setFocusedSplitLane(laneID),
+                .setInputText(draft),
+                .requestConversationFocus
+            ]
+        )
+    }
+
+    private static func laneID(from actionID: String, prefix: String) -> String? {
+        guard actionID.hasPrefix(prefix) else { return nil }
+        return normalizedScalar(String(actionID.dropFirst(prefix.count)))
     }
 
     private static func submitIntake(context: Context) -> Plan {

@@ -187,12 +187,20 @@ struct ToolExecutorSkillsAndSummarizeTests {
         #expect(jsonString(summary["tool"]) == ToolName.skillsExecuteRunner.rawValue)
         #expect(jsonString(summary["skill_id"]) == "echo-skill")
         #expect(jsonString(summary["package_sha256"]) == package.packageSHA256)
+        #expect(jsonString(summary["execution_role"]) == "coder")
+        #expect(jsonString(summary["agent_mode"]) == "code")
+        #expect(summary["lane_id"] == .null)
+        #expect(summary["audit_ref"] == .null)
         #expect(jsonString(summary["hub_gate_tool_name"]) == ToolName.skillsExecuteRunner.rawValue)
         #expect(jsonNumber(summary["exit_code"]) == 0)
         #expect(toolBody(result.output).contains("XT generic runner package executed"))
 
         let gateRequest = try #require(await gate.lastRequest())
         #expect(gateRequest.projectId == projectID)
+        #expect(gateRequest.executionRole == "coder")
+        #expect(gateRequest.agentMode == "code")
+        #expect(gateRequest.laneId == nil)
+        #expect(gateRequest.auditRef == nil)
         #expect(gateRequest.skillId == "echo-skill")
         #expect(gateRequest.packageSHA256 == package.packageSHA256)
         #expect(gateRequest.toolName == ToolName.skillsExecuteRunner.rawValue)
@@ -236,6 +244,63 @@ struct ToolExecutorSkillsAndSummarizeTests {
         #expect(jsonString(summary["hub_gate_tool_name"]) == ToolName.skillsExecuteRunner.rawValue)
         let gateRequest = try #require(await gate.lastRequest())
         #expect(gateRequest.toolName == ToolName.skillsExecuteRunner.rawValue)
+    }
+
+    @Test
+    func genericSkillRunnerBindsRoleModeLaneAndAuditContextThroughHubGate() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "generic-skill-runner-context")
+        defer { fixture.cleanup() }
+        let package = try SkillRunnerPackageFixture(
+            skillID: "context-skill",
+            command: "env",
+            args: []
+        )
+        defer { package.cleanup() }
+
+        let gate = SkillRunnerGateCapture(mode: .approve)
+        installSkillRunnerOverrides(package: package, gate: gate)
+        defer { resetSkillRunnerOverrides() }
+
+        let projectID = AXProjectRegistryStore.projectId(forRoot: fixture.root)
+        let result = try await ToolExecutor.execute(
+            call: ToolCall(
+                id: "generic-runner-context-1",
+                tool: .skillsExecuteRunner,
+                args: [
+                    "skill_id": .string("context-skill"),
+                    "package_sha256": .string(package.packageSHA256),
+                    "role": .string("reviewer"),
+                    "agent_mode": .string("explore"),
+                    "lane_id": .string("lane-review"),
+                    "audit_ref": .string("audit-skill-context-1"),
+                    "payload": .object(["message": .string("review lane")])
+                ]
+            ),
+            projectRoot: fixture.root
+        )
+
+        #expect(result.ok)
+        let summary = try #require(toolSummaryObject(result.output))
+        #expect(jsonString(summary["project_id"]) == projectID)
+        #expect(jsonString(summary["execution_role"]) == "reviewer")
+        #expect(jsonString(summary["agent_mode"]) == "explore")
+        #expect(jsonString(summary["lane_id"]) == "lane-review")
+        #expect(jsonString(summary["audit_ref"]) == "audit-skill-context-1")
+
+        let body = toolBody(result.output)
+        #expect(body.contains("XHUB_SKILL_PROJECT_ID=\(projectID)"))
+        #expect(body.contains("XHUB_SKILL_EXECUTION_ROLE=reviewer"))
+        #expect(body.contains("XHUB_SKILL_AGENT_MODE=explore"))
+        #expect(body.contains("XHUB_SKILL_LANE_ID=lane-review"))
+        #expect(body.contains("XHUB_SKILL_AUDIT_REF=audit-skill-context-1"))
+
+        let gateRequest = try #require(await gate.lastRequest())
+        #expect(gateRequest.projectId == projectID)
+        #expect(gateRequest.executionRole == "reviewer")
+        #expect(gateRequest.agentMode == "explore")
+        #expect(gateRequest.laneId == "lane-review")
+        #expect(gateRequest.auditRef == "audit-skill-context-1")
+        #expect(gateRequest.toolArgsHash.count == 64)
     }
 
     @Test

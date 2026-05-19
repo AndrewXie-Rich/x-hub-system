@@ -162,6 +162,77 @@ struct SupervisorCockpitActionResolverTests {
         ])
     }
 
+    @Test
+    func laneWinnerSelectFocusesLaneAndRecordsLocalOverrideEffect() {
+        let plan = SupervisorCockpitActionResolver.resolve(
+            .primary(primaryAction("lane_winner_select:lane-code")),
+            context: context()
+        )
+
+        #expect(plan?.effects == [
+            .setFocusedSplitLane("lane-code"),
+            .overrideLaneWinnerSelection(
+                laneID: "lane-code",
+                reason: "cockpit_lane_winner_candidate_selection"
+            )
+        ])
+    }
+
+    @Test
+    func laneWinnerRepairDraftsFocusedRepairPromptFromScoreBlockers() {
+        let report = LaneWinnerScoreReport(
+            schemaVersion: LaneWinnerScoreReport.currentSchemaVersion,
+            splitPlanID: "split-plan",
+            recommendedLaneID: "",
+            automaticRecommendedLaneID: "",
+            manualOverrideLaneID: "",
+            manualOverrideReason: "",
+            selectionSource: "auto_score",
+            selectionBlockers: [],
+            candidateCount: 1,
+            eligibleCount: 0,
+            policySummary: "reviewer_approved_required",
+            candidates: [
+                LaneWinnerScoreCandidate(
+                    laneID: "lane-code",
+                    rank: 1,
+                    score: 10,
+                    selected: false,
+                    eligibleForMergeback: false,
+                    reviewVerdict: "changes_requested",
+                    riskTier: "medium",
+                    changedFileCount: 2,
+                    diagnosticsRunCount: 1,
+                    launchDenyCode: "",
+                    blockers: ["reviewer_changes_requested", "coverage_gap"],
+                    strengths: ["worktree_prepared"],
+                    evidenceRefs: [".xterminal/lane-output/lane-code.json"],
+                    coderOutputRef: ".xterminal/lane-output/lane-code.json",
+                    reviewReportRef: ".xterminal/lane-review/lane-code.json",
+                    mergebackReportRef: "",
+                    summary: "Needs repair."
+                )
+            ],
+            reportRef: ".xterminal/lane-winner/split-plan.json",
+            auditRef: "audit-score",
+            createdAtMs: 1
+        )
+        let plan = SupervisorCockpitActionResolver.resolve(
+            .primary(primaryAction("lane_winner_repair:lane-code")),
+            context: context(laneWinnerScoreReport: report)
+        )
+
+        #expect(plan?.effects.first == .setFocusedSplitLane("lane-code"))
+        #expect(plan?.effects.last == .requestConversationFocus)
+        guard case .setInputText(let draft)? = plan?.effects.dropFirst().first else {
+            Issue.record("Expected repair draft")
+            return
+        }
+        #expect(draft.contains("目标 lane=lane-code"))
+        #expect(draft.contains("winner_score_blockers=reviewer_changes_requested,coverage_gap"))
+        #expect(draft.contains("合回仍需通过 Hub 授权/策略和 mergeback gate"))
+    }
+
     private func context(
         inputText: String = "",
         reviewReportPath: String? = nil,
@@ -171,7 +242,8 @@ struct SupervisorCockpitActionResolverTests {
         selectedProjectID: String? = nil,
         runtimeBlockerCode: String? = nil,
         runtimeAccessSurfaceState: XTUISurfaceState? = nil,
-        directedUnblockBaton: DirectedUnblockBaton? = nil
+        directedUnblockBaton: DirectedUnblockBaton? = nil,
+        laneWinnerScoreReport: LaneWinnerScoreReport? = nil
     ) -> SupervisorCockpitActionResolver.Context {
         SupervisorCockpitActionResolver.Context(
             inputText: inputText,
@@ -182,7 +254,8 @@ struct SupervisorCockpitActionResolverTests {
             selectedProjectID: selectedProjectID,
             runtimeBlockerCode: runtimeBlockerCode,
             runtimeAccessSurfaceState: runtimeAccessSurfaceState,
-            directedUnblockBaton: directedUnblockBaton
+            directedUnblockBaton: directedUnblockBaton,
+            laneWinnerScoreReport: laneWinnerScoreReport
         )
     }
 

@@ -134,6 +134,16 @@ enum ToolResultPresentation {
             return "补丁检查"
         case .git_apply:
             return "应用补丁"
+        case .projectDiagnostics:
+            return "项目诊断"
+        case .lspDiagnostics:
+            return "LSP 诊断"
+        case .checkRun:
+            return "代码检查"
+        case .buildRun:
+            return "构建检查"
+        case .testRun:
+            return "测试检查"
         case .pr_create:
             return "创建 Pull Request"
         case .ci_read:

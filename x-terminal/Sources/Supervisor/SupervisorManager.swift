@@ -15612,6 +15612,308 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
         return String(digest.suffix(16))
     }
 
+    private func directSupervisorProjectCoderDispatchIfApplicable(
+        _ userMessage: String,
+        normalized: String,
+        projects: [AXProjectEntry]
+    ) -> String? {
+        guard isExplicitSupervisorProjectCodingExecutionIntent(
+            userMessage,
+            normalized: normalized
+        ) else { return nil }
+        guard let appModel else {
+            return "我识别到这是项目 coding 执行指令，但当前 Supervisor 还没有绑定 XT AppModel，不能安全派发给 Coder。"
+        }
+        guard appModel.hubConnected || appModel.hubRemoteConnected else {
+            return "我识别到这是项目 coding 执行指令，但当前 Hub 路由未连接，先不把它伪装成已派发。请先恢复 Hub 连接后再继续。"
+        }
+        guard let selection = focusedSupervisorCommandProjectSelection(
+            projects: projects,
+            userMessage: userMessage
+        ) else {
+            return "我识别到这是项目 coding 执行指令，但当前项目不唯一。请点选项目或在这句话里带上项目名，我再直接派给对应 Coder。"
+        }
+
+        let ctx = supervisorMemoryContext(for: selection.project)
+        let session = appModel.session(for: ctx)
+        session.ensureLoaded(ctx: ctx, limit: 200)
+        guard !session.isSending else {
+            return "我识别到这是《\(selection.project.displayName)》的 coding 执行指令，但这个项目的 Coder 正在处理上一轮。我不会插队覆盖当前执行；等它结束后再发“继续执行这条 coding 指令”。"
+        }
+        guard session.pendingToolCalls.isEmpty else {
+            return "我识别到这是《\(selection.project.displayName)》的 coding 执行指令，但这个项目的 Coder 还有待审批工具请求。我不会绕过审批直接开新轮；先审批当前 Coder 工具请求后再继续。"
+        }
+
+        let config: AXProjectConfig?
+        do {
+            config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        } catch {
+            return "我识别到这是《\(selection.project.displayName)》的 coding 执行指令，但项目配置加载失败：\(error.localizedDescription)"
+        }
+        let dispatchDedupeKey = supervisorProjectCoderDispatchDedupeKey(
+            project: selection.project,
+            userMessage: userMessage
+        )
+        if supervisorProjectCoderDispatchWasRecentlyHandled(dispatchDedupeKey) {
+            return ""
+        }
+        rememberSupervisorProjectCoderDispatch(dispatchDedupeKey)
+        let memory = try? AXProjectStore.loadOrCreateMemory(for: ctx)
+        let workflowContext = markSupervisorWorkflowCoderDispatchIfApplicable(
+            project: selection.project,
+            ctx: ctx,
+            userMessage: userMessage
+        )
+        let dispatchText = supervisorProjectCoderDispatchUserText(
+            userMessage: userMessage,
+            project: selection.project,
+            selectionSource: selection.source,
+            workflowContext: workflowContext
+        )
+
+        let preservedDraft = session.draft
+        let preservedAttachments = session.draftAttachments
+        session.draft = dispatchText
+        session.draftAttachments = []
+        session.send(
+            ctx: ctx,
+            memory: memory,
+            config: config,
+            router: appModel.llmRouter,
+            sender: .supervisor
+        )
+        if !preservedDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !preservedAttachments.isEmpty {
+            session.draft = preservedDraft
+            session.draftAttachments = preservedAttachments
+        }
+
+        _ = appendActionLedger(
+            action: "dispatch_project_coder",
+            targetRef: selection.project.displayName,
+            projectId: selection.project.projectId,
+            projectName: selection.project.displayName,
+            role: AXRole.coder.rawValue,
+            modelId: appModel.settingsStore.settings.modelRoute(for: .coder).primaryModelId,
+            status: "ok",
+            reasonCode: "explicit_supervisor_coding_instruction",
+            detail: capped(userMessage, maxChars: 240),
+            verifiedAt: Date().timeIntervalSince1970,
+            triggerSource: SupervisorCommandTriggerSource.userTurn.rawValue
+        )
+
+        var lines = [
+            "已把这条执行指令派发给《\(selection.project.displayName)》的 Coder，项目聊天正在处理。",
+            "这次不是让你复制到左侧输入框；Supervisor 已经把指令送进项目 Coder 执行轮。"
+        ]
+        if workflowContext != nil {
+            lines.append("当前 workflow 的下一条 `launch_run` 也已同步为 Coder 执行中。")
+        }
+        lines.append("如果后续需要写文件或跑命令，仍按 Coder 的工具审批和 A-Tier 策略走。")
+        return lines.joined(separator: "\n")
+    }
+
+    private func supervisorProjectCoderDispatchDedupeKey(
+        project: AXProjectEntry,
+        userMessage: String
+    ) -> String {
+        let normalizedInstruction = normalizedLookupKey(userMessage)
+        return supervisorDeterministicDigest(
+            stable: [
+                "supervisor_project_coder_dispatch",
+                project.projectId,
+                project.displayName,
+                normalizedInstruction
+            ].joined(separator: "|")
+        )
+    }
+
+    private func supervisorProjectCoderDispatchWasRecentlyHandled(_ key: String) -> Bool {
+        let normalizedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedKey.isEmpty else { return false }
+        let now = Date().timeIntervalSince1970
+        recentSupervisorProjectCoderDispatchesByKey = recentSupervisorProjectCoderDispatchesByKey.filter {
+            now - $0.value <= supervisorProjectCoderDispatchDedupeWindowSec
+        }
+        guard let previous = recentSupervisorProjectCoderDispatchesByKey[normalizedKey] else {
+            return false
+        }
+        return now - previous <= supervisorProjectCoderDispatchDedupeWindowSec
+    }
+
+    private func rememberSupervisorProjectCoderDispatch(_ key: String) {
+        let normalizedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedKey.isEmpty else { return }
+        recentSupervisorProjectCoderDispatchesByKey[normalizedKey] = Date().timeIntervalSince1970
+    }
+
+    private func isExplicitSupervisorProjectCodingExecutionIntent(
+        _ userMessage: String,
+        normalized: String
+    ) -> Bool {
+        let trimmed = userMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+
+        let lowered = trimmed
+            .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
+            .lowercased()
+        let compact = normalized
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: " ", with: "")
+        guard !compact.isEmpty else { return false }
+
+        let asksForExplanation = containsAny(compact, ["怎么", "如何", "为什么", "详细说说", "设计一下"])
+            || lowered.contains("?")
+            || lowered.contains("？")
+        let hasImperativeCue = containsAny(
+            compact,
+            ["先", "现在", "马上", "直接", "请", "帮我", "把", "给", "开始", "执行", "运行", "派发", "交给"]
+        )
+        if asksForExplanation && !hasImperativeCue {
+            return false
+        }
+
+        let executionVerbs = [
+            "创建",
+            "新建",
+            "建",
+            "写",
+            "改",
+            "修改",
+            "实现",
+            "开发",
+            "搭建",
+            "补齐",
+            "补",
+            "落盘",
+            "生成",
+            "跑",
+            "运行",
+            "执行",
+            "开始",
+            "做",
+            "派发",
+            "交给coder",
+            "交给 coder",
+            "让coder",
+            "让 coder",
+            "implement",
+            "build",
+            "code"
+        ]
+        let codingObjects = [
+            "代码",
+            "文件",
+            "页面",
+            "骨架",
+            "最小可运行",
+            "mvp",
+            "功能",
+            "项目根目录",
+            "仓库",
+            "repo",
+            "coder",
+            "coding",
+            "html",
+            "css",
+            "javascript",
+            "js",
+            "swift",
+            "index.html",
+            "style.css",
+            "main.js"
+        ]
+        let hasExecutionVerb = executionVerbs.contains { compact.contains($0.replacingOccurrences(of: " ", with: "")) }
+            || executionVerbs.contains { lowered.contains($0) }
+        let hasCodingObject = codingObjects.contains { compact.contains($0.replacingOccurrences(of: " ", with: "")) }
+            || codingObjects.contains { lowered.contains($0) }
+            || supervisorMessageContainsFileReference(lowered)
+
+        return hasExecutionVerb && hasCodingObject
+    }
+
+    private func supervisorMessageContainsFileReference(_ lowered: String) -> Bool {
+        lowered.range(
+            of: #"(?i)\b[\p{L}\p{N}_./-]+\.(html|css|js|jsx|ts|tsx|swift|py|rs|json|md|yml|yaml|toml|sh|txt)\b"#,
+            options: .regularExpression
+        ) != nil
+    }
+
+    private func markSupervisorWorkflowCoderDispatchIfApplicable(
+        project: AXProjectEntry,
+        ctx: AXProjectContext,
+        userMessage: String
+    ) -> String? {
+        guard let state = supervisorWorkflowState(
+            project: project,
+            ctx: ctx,
+            preferredJobId: nil,
+            preferredPlanId: nil,
+            preferredRequestId: nil
+        ), let plan = state.plan else {
+            return nil
+        }
+        guard !isTerminalSupervisorJobStatus(state.job.status),
+              !isTerminalSupervisorPlanStatus(plan.status),
+              let step = supervisorContinuableLaunchRunStep(in: plan) else {
+            return nil
+        }
+
+        let updatedAtMs = Int64((Date().timeIntervalSince1970 * 1000.0).rounded())
+        let detail = [
+            "launch_run dispatched to project Coder chat",
+            "dispatch_source=supervisor_chat",
+            "user_request=\(capped(userMessage, maxChars: 240))"
+        ].joined(separator: "\n")
+        _ = updateSupervisorWorkflowStepState(
+            ctx: ctx,
+            project: project,
+            jobId: state.job.jobId,
+            planId: plan.planId,
+            stepId: step.stepId,
+            status: .running,
+            detail: detail,
+            owner: "coder",
+            updatedAtMs: updatedAtMs
+        )
+        return [
+            "job_id=\(state.job.jobId)",
+            "plan_id=\(plan.planId)",
+            "step_id=\(step.stepId)",
+            "step_title=\(step.title)",
+            "step_kind=\(step.kind.rawValue)"
+        ].joined(separator: "\n")
+    }
+
+    private func supervisorProjectCoderDispatchUserText(
+        userMessage: String,
+        project: AXProjectEntry,
+        selectionSource: String,
+        workflowContext: String?
+    ) -> String {
+        var lines = [
+            "来自 Supervisor 的项目执行派发。",
+            "项目：\(project.displayName)",
+            "project_id：\(project.projectId)",
+            "selection_source：\(selectionSource)",
+            "",
+            "原始用户指令：",
+            userMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        ]
+        if let workflowContext, !workflowContext.isEmpty {
+            lines.append("")
+            lines.append("当前 workflow：")
+            lines.append(workflowContext)
+        }
+        lines.append("")
+        lines.append("执行要求：")
+        lines.append("- 这是 Coder 执行轮，不是 Supervisor 讨论轮。")
+        lines.append("- 优先在当前项目根目录内直接落盘完成请求。")
+        lines.append("- 如果需要新建文件，使用当前可用的 write_file/tool_calls；不要要求用户手动复制文件内容，除非当前 Tool policy 明确阻止写入。")
+        lines.append("- 范围收敛到这次指令；完成后说明改了什么、怎么运行、还有什么未做。")
+        return lines.joined(separator: "\n")
+    }
+
     private func directSupervisorWorkflowLaunchRunContinuationIfApplicable(
         _ userMessage: String,
         normalized: String,

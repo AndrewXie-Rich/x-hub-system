@@ -895,7 +895,7 @@ enum UIFirstRunJourneyPlanner {
 
 struct HubSetupWizardView: View {
     @Environment(\.xtAppModelReference) private var appModelReference
-    @EnvironmentObject private var settingsCenterStore: XTSettingsCenterStore
+    @EnvironmentObject private var settingsSurfaceProjectionStore: XTSettingsSurfaceProjectionStore
     @EnvironmentObject private var navigationFocusStore: XTNavigationFocusStore
     private let supervisorManager = SupervisorManager.shared
     @StateObject private var modelManager = HubModelManager.shared
@@ -1144,7 +1144,7 @@ struct HubSetupWizardView: View {
                                 Text("正式入口")
                                     .frame(width: 130, alignment: .leading)
                                 VStack(alignment: .leading, spacing: 4) {
-                                    TextField("hub.your-domain.example", text: internetHostBinding)
+                                    TextField("hub.xhubsystem.com", text: internetHostBinding)
                                         .textFieldStyle(.roundedBorder)
                                     Text(formalEntryGuidancePresentation.message)
                                         .font(.caption)
@@ -1362,8 +1362,8 @@ struct HubSetupWizardView: View {
                 TroubleshootPanel(
                     title: "高频问题 3 步修复",
                     issues: UITroubleshootIssue.highFrequencyIssues,
-                    paidAccessSnapshot: appModel.hubRemotePaidAccessSnapshot,
-                    internetHost: appModel.hubInternetHost,
+                    paidAccessSnapshot: settingsSnapshot.hubRemotePaidAccessSnapshot,
+                    internetHost: settingsSnapshot.hubInternetHost,
                     pairingContext: troubleshootPairingContext,
                     providerKeyRouteContext: modelRouteProviderKeyContext,
                     externalTerminalAccessProjection: externalTerminalAccessDoctorProjection
@@ -1405,8 +1405,8 @@ struct HubSetupWizardView: View {
         return appModelReference
     }
 
-    private var settingsSnapshot: XTSettingsCenterSnapshot {
-        settingsCenterStore.snapshot
+    private var settingsSnapshot: XTSettingsSurfaceProjectionSnapshot {
+        settingsSurfaceProjectionStore.snapshot
     }
 
     private var navigationFocusSnapshot: XTNavigationFocusSnapshot {
@@ -1525,7 +1525,7 @@ struct HubSetupWizardView: View {
                     title: UITroubleshootKnowledgeBase.repairEntryTitle(for: issue),
                     detail: UIFirstRunJourneyPlanner.reviewSubtitle(
                         failureIssue: issue,
-                        failureCode: appModel.hubSetupFailureCode,
+                        failureCode: settingsSnapshot.hubSetupFailureCode,
                         runtime: runtimeSnapshot,
                         pairingContext: troubleshootPairingContext,
                         externalTerminalAccessProjection: externalTerminalAccessDoctorProjection

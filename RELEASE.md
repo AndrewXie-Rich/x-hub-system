@@ -185,28 +185,22 @@ Public users should download packaged builds from GitHub Releases. The repositor
 Recommended assets for a macOS release:
 
 ```text
-XHub-System-Rust-<version>-macos-arm64.dmg
-XHub-System-Rust-<version>-macos-arm64.zip
-X-Hub-<version>-macos-arm64.zip
-XHub-Rust-Hub-<version>-macos-arm64.zip
-X-Terminal-RustXT-<version>-macos-arm64.zip
+XHub-System-<version>-macos-arm64.dmg
+X-Hub-<version>-macos-arm64.dmg
+X-Terminal-<version>-macos-arm64.dmg
 SHA256SUMS.txt
 ```
 
-The combined `XHub-System-Rust` DMG or ZIP is the primary user-facing Rust preview package because it contains the native Swift `X-Hub.app` UI with the Rust Hub runtime embedded, plus X-Terminal. The separate `X-Hub` app ZIP is useful for Hub-only updates. The separate Rust Hub and X-Terminal runtime ZIPs are useful for maintainers, advanced users, and partial-update testing.
+The combined `XHub-System` DMG is the primary user-facing package because it contains the native Swift `X-Hub.app` UI with the Rust Hub runtime embedded, plus `X-Terminal.app`. The separate `X-Hub` and `X-Terminal` DMGs are useful for partial updates and debugging.
 
 The Rust daemon/status page is an internal runtime surface. It must not be the only Hub artifact in a public Rust preview release.
 
-`scripts/package_rust_preview_release.command` includes a Git-tracked source gate for the Swift Hub UI, Rust kernel contract, Swift pairing proxy, and XT contract client files, plus a staged-artifact gate for `X-Hub.app/Contents/Resources/rust-hub/bin/xhubd`. If those files are missing or untracked, or the staged app is missing its embedded Rust kernel, the release build should fail instead of publishing a daemon-only Hub tag.
-Run `XHUB_RELEASE_GATE_ONLY=1 scripts/package_rust_preview_release.command` to check this gate without building release artifacts.
-Run `scripts/rust_preview_release_live_smoke.command <release-stage-dir-or-X-Hub.app>` after packaging to start the packaged Rust kernel and packaged Hub Node sidecar without launching the GUI, then verify `/pairing/discovery`, `/xt/hub-contract`, and remote-entry candidates.
-
-Legacy note: the non-Rust `XHub-System-<version>-macos-arm64.dmg` naming belongs to the older Swift/Node Hub app packaging path. Do not use it for a Rust refactor release unless the release notes explicitly mark it as legacy.
+`scripts/package_macos_release.command` builds a fresh Rust Hub package from `rust/xhubd`, embeds it into `X-Hub.app`, builds `X-Terminal.app` plus the Rust `xtd` sidecar, then creates Hub, Terminal, and combined DMGs. If a release needs a separate daemon/runtime diagnostic bundle, publish it as an advanced/maintainer asset and keep the combined DMG as the primary user download.
 
 Build release assets from the repository root:
 
 ```bash
-XHUB_RELEASE_VERSION=v0.1.0-alpha.5-rust-preview scripts/package_rust_preview_release.command
+XHUB_RELEASE_VERSION=v1.2.10 scripts/package_macos_release.command
 ```
 
 The script writes assets to:

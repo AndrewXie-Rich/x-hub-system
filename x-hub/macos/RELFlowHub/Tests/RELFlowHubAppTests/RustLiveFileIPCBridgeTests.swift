@@ -25,6 +25,37 @@ final class RustLiveFileIPCBridgeTests: XCTestCase {
         XCTAssertEqual((object["swiftShellBridge"] as? [String: Any])?["mode"] as? String, "app_group_alias")
     }
 
+    func testMirrorsRuntimeAuthorityFilesToRustLiveBaseBeforeAlias() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let appBase = root.appendingPathComponent("container/RELFlowHub", isDirectory: true)
+        let liveBase = root.appendingPathComponent("RELFlowHub", isDirectory: true)
+        let now: TimeInterval = 1_778_900_050
+        try writeLiveStatus(baseDir: liveBase, now: now - 0.25)
+        try writeText(
+            #"{"schema_version":"xhub.models_state.v1","updatedAt":1,"models":[]}"#,
+            to: liveBase.appendingPathComponent("models_state.json")
+        )
+        try setModificationDate(Date(timeIntervalSince1970: now - 20), for: liveBase.appendingPathComponent("models_state.json"))
+
+        let modelsState = #"{"schema_version":"xhub.models_state.v1","updatedAt":1778900050,"models":[{"id":"openai/gpt-5.5","name":"GPT 5.5","backend":"openai","state":"available"}]}"#
+        let providerKeys = #"{"schema_version":"hub_provider_keys.v1","updated_at_ms":1778900050000,"global_routing_strategy":"fill-first","providers":{"openai":{"routing_strategy":"fill-first","accounts":[{"account_key":"openai:test","provider":"openai","api_key":"sk-test","enabled":true,"models":["openai/gpt-5.5"]}]}}}"#
+        try writeText(modelsState, to: appBase.appendingPathComponent("models_state.json"))
+        try writeText(providerKeys, to: appBase.appendingPathComponent("hub_provider_keys.json"))
+        try setModificationDate(Date(timeIntervalSince1970: now), for: appBase.appendingPathComponent("models_state.json"))
+        try setModificationDate(Date(timeIntervalSince1970: now), for: appBase.appendingPathComponent("hub_provider_keys.json"))
+
+        let bridge = makeBridge(appBase: appBase, liveBase: liveBase)
+        XCTAssertTrue(bridge.publishAliasHeartbeat(fallbackStatus: makeFallbackStatus(baseDir: appBase, now: now), now: now))
+
+        XCTAssertEqual(try String(contentsOf: liveBase.appendingPathComponent("models_state.json"), encoding: .utf8), modelsState)
+        XCTAssertEqual(try String(contentsOf: liveBase.appendingPathComponent("hub_provider_keys.json"), encoding: .utf8), providerKeys)
+
+        let object = try readJSONObject(appBase.appendingPathComponent("hub_status.json"))
+        XCTAssertEqual(object["baseDir"] as? String, liveBase.path)
+    }
+
     func testForwardsKernelEventAndMirrorsRustResponse() throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -84,7 +115,8 @@ final class RustLiveFileIPCBridgeTests: XCTestCase {
             appStatusFile: appBase.appendingPathComponent("hub_status.json"),
             compatBaseDirs: [],
             liveBaseDirCandidates: { [liveBase] },
-            httpLiveStatusOverride: { _ in nil }
+            httpLiveStatusOverride: { _ in nil },
+            useRustLiveStatusHTTP: false
         )
 
         XCTAssertTrue(bridge.bridgeDropboxes(now: now + 0.1))
@@ -149,7 +181,8 @@ final class RustLiveFileIPCBridgeTests: XCTestCase {
             appResponsesDir: containerBase.appendingPathComponent("ipc_responses", isDirectory: true),
             appStatusFile: containerBase.appendingPathComponent("hub_status.json"),
             compatBaseDirs: [],
-            liveBaseDirCandidates: { [containerBase, liveBase] }
+            liveBaseDirCandidates: { [containerBase, liveBase] },
+            useRustLiveStatusHTTP: false
         )
 
         XCTAssertTrue(bridge.publishAliasHeartbeat(fallbackStatus: makeFallbackStatus(baseDir: containerBase, now: now), now: now + 0.1))
@@ -193,7 +226,8 @@ final class RustLiveFileIPCBridgeTests: XCTestCase {
                     responsesDir: liveBase.appendingPathComponent("ipc_responses", isDirectory: true),
                     updatedAt: overrideNow
                 )
-            }
+            },
+            useRustLiveStatusHTTP: false
         )
 
         XCTAssertTrue(bridge.publishAliasHeartbeat(fallbackStatus: makeFallbackStatus(baseDir: containerBase, now: now), now: now + 0.1))
@@ -201,6 +235,51 @@ final class RustLiveFileIPCBridgeTests: XCTestCase {
         let object = try readJSONObject(containerBase.appendingPathComponent("hub_status.json"))
         XCTAssertEqual(object["baseDir"] as? String, liveBase.path)
         XCTAssertEqual((object["rustHub"] as? [String: Any])?["authority"] as? String, "swift_shell_http_health_fallback")
+    }
+
+    func testCanPreferRustHTTPLiveStatusBeforeScanningCandidateFiles() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let containerBase = root.appendingPathComponent("container/RELFlowHub", isDirectory: true)
+        let liveBase = root.appendingPathComponent("RELFlowHub", isDirectory: true)
+        let now: TimeInterval = 1_778_900_172
+        try writeLiveStatus(baseDir: containerBase, now: now)
+
+        let bridge = RustLiveFileIPCBridge(
+            appBaseDir: containerBase,
+            appEventsDir: containerBase.appendingPathComponent("ipc_events", isDirectory: true),
+            appResponsesDir: containerBase.appendingPathComponent("ipc_responses", isDirectory: true),
+            appStatusFile: containerBase.appendingPathComponent("hub_status.json"),
+            compatBaseDirs: [],
+            liveBaseDirCandidates: { [containerBase] },
+            httpLiveStatusOverride: { overrideNow in
+                RustLiveFileIPCBridge.LiveStatus(
+                    raw: [
+                        "updatedAt": overrideNow,
+                        "ipcMode": "file",
+                        "ipcPath": liveBase.appendingPathComponent("ipc_events", isDirectory: true).path,
+                        "baseDir": liveBase.path,
+                        "protocolVersion": 1,
+                        "rustHub": [
+                            "schema_version": "xhub.rust_hub.xt_classic_status.v1",
+                            "authority": "rust_live_status_http",
+                        ],
+                    ],
+                    baseDir: liveBase,
+                    eventsDir: liveBase.appendingPathComponent("ipc_events", isDirectory: true),
+                    responsesDir: liveBase.appendingPathComponent("ipc_responses", isDirectory: true),
+                    updatedAt: overrideNow
+                )
+            },
+            useRustLiveStatusHTTP: true
+        )
+
+        XCTAssertTrue(bridge.publishAliasHeartbeat(fallbackStatus: makeFallbackStatus(baseDir: containerBase, now: now), now: now + 0.1))
+
+        let object = try readJSONObject(containerBase.appendingPathComponent("hub_status.json"))
+        XCTAssertEqual(object["baseDir"] as? String, liveBase.path)
+        XCTAssertEqual((object["rustHub"] as? [String: Any])?["authority"] as? String, "rust_live_status_http")
     }
 
     func testForwardsCompatibilityBaseKernelEventAndMirrorsResponse() throws {
@@ -284,6 +363,7 @@ final class RustLiveFileIPCBridgeTests: XCTestCase {
             compatBaseDirs: compatBaseDirs,
             liveBaseDirCandidates: { [liveBase] },
             httpLiveStatusOverride: { _ in nil },
+            useRustLiveStatusHTTP: false,
             runCompatibilityWorkInline: true
         )
     }
@@ -335,6 +415,15 @@ final class RustLiveFileIPCBridgeTests: XCTestCase {
     private func readJSONObject(_ url: URL) throws -> [String: Any] {
         let data = try Data(contentsOf: url)
         return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    private func writeText(_ text: String, to url: URL) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try text.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    private func setModificationDate(_ date: Date, for url: URL) throws {
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: url.path)
     }
 
     private func makeTemporaryDirectory() throws -> URL {

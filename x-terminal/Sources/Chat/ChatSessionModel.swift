@@ -69,6 +69,7 @@ final class ChatSessionModel: ObservableObject {
     @Published var currentReqId: String? = nil
 
     @Published var pendingToolCalls: [ToolCall] = []
+    @Published private(set) var messageTimelinePresentationVersion: Int = 0
     let composer = ChatComposerState()
 
     private var pendingFlow: ToolFlowState? = nil
@@ -79,12 +80,14 @@ final class ChatSessionModel: ObservableObject {
     private var expandRecentOnceAfterLoad: Bool = false
     private var activeConfig: AXProjectConfig? = nil
     private var toolStreamStates: [String: ToolStreamState] = [:]
-    @Published private var assistantProgressLinesByMessageID: [String: [String]] = [:]
-    @Published private var assistantVisibleStreamingMessageIDs: Set<String> = []
+    private var assistantProgressLinesByMessageID: [String: [String]] = [:]
+    private var assistantVisibleStreamingMessageIDs: Set<String> = []
     private var pendingAssistantStreamTextByMessageID: [String: String] = [:]
     private var assistantStreamFlushTasksByMessageID: [String: Task<Void, Never>] = [:]
     private var pendingToolStreamContentByMessageID: [String: String] = [:]
     private var toolStreamFlushTasksByMessageID: [String: Task<Void, Never>] = [:]
+    private var pendingAssistantProgressLinesByMessageID: [String: [String]] = [:]
+    private var assistantProgressFlushTasksByMessageID: [String: Task<Void, Never>] = [:]
     private var pendingProtectedInputApproval: ProtectedInputApprovalState? = nil
     private let sessionManager = AXSessionManager.shared
     private var boundSessionId: String? = nil
@@ -127,7 +130,7 @@ final class ChatSessionModel: ObservableObject {
     private let expandedRecentPromptTurns: Int = 16
     private let projectMemoryRetrievalMaxSnippets: Int = 3
     private let projectMemoryRetrievalMaxSnippetChars: Int = 360
-    private let streamingUIFlushIntervalNanos: UInt64 = 50_000_000
+    private let assistantProgressFlushIntervalNanos: UInt64 = 100_000_000
 
     var draft: String {
         get { composer.draft }
@@ -210,51 +213,6 @@ final class ChatSessionModel: ObservableObject {
             draft: draft,
             attachments: attachments
         )
-    }
-
-    private func consumeProtectedInputApprovalIfRequested(
-        userText: String,
-        attachments: [AXChatAttachment]
-    ) -> ProtectedInputApprovalState? {
-        guard attachments.isEmpty else { return nil }
-        guard let pendingProtectedInputApproval else { return nil }
-        guard isProtectedInputApprovalCommand(userText) else { return nil }
-        self.pendingProtectedInputApproval = nil
-        return pendingProtectedInputApproval
-    }
-
-    private func isProtectedInputApprovalCommand(_ raw: String) -> Bool {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return false }
-        let folded = trimmed.lowercased()
-        let exactCommands: Set<String> = [
-            "approve",
-            "approved",
-            "approve protected input",
-            "approve sensitive input",
-            "approve sanitized continue",
-            "approve_sanitized_continue",
-            "supervisor approve",
-            "批准",
-            "同意",
-            "继续执行",
-            "批准继续",
-            "批准脱敏继续",
-            "用户批准",
-            "supervisor批准"
-        ]
-        if exactCommands.contains(folded) || exactCommands.contains(trimmed) {
-            return true
-        }
-        if folded.contains("approve")
-            && (folded.contains("protected") || folded.contains("sensitive") || folded.contains("sanitized")) {
-            return true
-        }
-        if trimmed.contains("批准")
-            && (trimmed.contains("保护") || trimmed.contains("敏感") || trimmed.contains("脱敏") || trimmed.contains("继续")) {
-            return true
-        }
-        return false
     }
 
     private func activeConversationAttachments() -> [AXChatAttachment] {
@@ -1047,11 +1005,12 @@ messages:
         expandRecentOnceAfterLoad = true
         // Ensure recent_context exists for prompt assembly (especially for older projects).
         AXRecentContextStore.bootstrapFromRawLogIfNeeded(ctx: ctx, maxTurns: 12)
-        activeConfig = resolvedToolRuntimeConfig(
+        let resolvedConfig = resolvedToolRuntimeConfig(
             ctx: ctx,
             config: try? AXProjectStore.loadOrCreateConfig(for: ctx),
             preauthorizationReason: "chat_session_load"
         )
+        activeConfig = resolvedConfig
         loadFromRawLog(ctx: ctx, limit: limit)
         restorePendingToolApprovalIfAny(ctx: ctx)
         loadedRootPath = rootPath
@@ -1337,9 +1296,19 @@ messages:
         AXPendingActionsStore.saveToolApproval(action, for: ctx)
     }
 
-    private func restorePendingToolApprovalIfAny(ctx: AXProjectContext) {
-        guard let pending = AXPendingActionsStore.pendingToolApproval(for: ctx) else { return }
-        guard let userText = pending.userText, !userText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    private struct RestoredPendingToolApproval {
+        var calls: [ToolCall]
+        var flow: ToolFlowState
+        var assistantStub: String
+    }
+
+    private func reconstructedPendingToolApproval(
+        ctx: AXProjectContext,
+        pending: AXPendingAction,
+        appendTranscriptTail: Bool
+    ) -> RestoredPendingToolApproval? {
+        guard let userText = pending.userText,
+              !userText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         let calls = pending.toolCalls ?? []
         guard !calls.isEmpty else { return nil }
         guard let state = pending.flow else { return nil }
@@ -1809,127 +1778,6 @@ messages:
             )
             await runToolLoop(flow: flow, router: router)
         }
-    }
-
-    private func trustedAutomationConfigForApprovedDeviceTools(
-        calls: [ToolCall],
-        ctx: AXProjectContext,
-        config: AXProjectConfig
-    ) -> TrustedAutomationApprovalRepairResult {
-        let requiredGroups = xtTrustedAutomationRequiredDeviceToolGroups(for: calls)
-        guard !requiredGroups.isEmpty else {
-            return TrustedAutomationApprovalRepairResult(
-                config: config,
-                didUpdate: false,
-                deviceID: config.trustedAutomationDeviceId,
-                deviceToolGroups: config.deviceToolGroups
-            )
-        }
-
-        let permissionReadiness = AXTrustedAutomationPermissionOwnerReadiness.current()
-        let status = config.trustedAutomationStatus(
-            forProjectRoot: ctx.root,
-            permissionReadiness: permissionReadiness,
-            requiredDeviceToolGroups: requiredGroups
-        )
-        guard trustedAutomationProjectApprovalShouldUpdate(status: status) else {
-            return TrustedAutomationApprovalRepairResult(
-                config: config,
-                didUpdate: false,
-                deviceID: status.boundDeviceID,
-                deviceToolGroups: status.armedDeviceToolGroups
-            )
-        }
-
-        let deviceID = trustedAutomationApprovalDeviceID(
-            config: config,
-            permissionReadiness: permissionReadiness
-        )
-        guard !deviceID.isEmpty else {
-            return TrustedAutomationApprovalRepairResult(
-                config: config,
-                didUpdate: false,
-                deviceID: "",
-                deviceToolGroups: status.armedDeviceToolGroups
-            )
-        }
-
-        let mergedGroups = xtNormalizedTrustedAutomationDeviceToolGroups(
-            config.deviceToolGroups + requiredGroups
-        )
-        let updated = config.settingTrustedAutomationBinding(
-            mode: .trustedAutomation,
-            deviceId: deviceID,
-            deviceToolGroups: mergedGroups,
-            workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: ctx.root)
-        )
-        activeConfig = updated
-        try? AXProjectStore.saveConfig(updated, for: ctx)
-        AXProjectStore.appendRawLog(
-            [
-                "type": "trusted_automation_local_approval",
-                "action": "arm_project_for_approved_device_tools",
-                "created_at": Date().timeIntervalSince1970,
-                "project_id": AXProjectRegistryStore.projectId(forRoot: ctx.root),
-                "device_id": deviceID,
-                "device_tool_groups": mergedGroups,
-                "approval_effect": "project_binding_updated",
-            ],
-            for: ctx
-        )
-        return TrustedAutomationApprovalRepairResult(
-            config: updated,
-            didUpdate: true,
-            deviceID: deviceID,
-            deviceToolGroups: mergedGroups
-        )
-    }
-
-    private func trustedAutomationProjectApprovalShouldUpdate(status: AXTrustedAutomationProjectStatus) -> Bool {
-        let projectLevelCodes: Set<String> = [
-            XTDeviceAutomationRejectCode.trustedAutomationModeOff.rawValue,
-            XTDeviceAutomationRejectCode.trustedAutomationProjectNotBound.rawValue,
-            XTDeviceAutomationRejectCode.trustedAutomationWorkspaceMismatch.rawValue,
-            XTDeviceAutomationRejectCode.trustedAutomationSurfaceNotEnabled.rawValue,
-            "trusted_automation_device_tool_groups_missing",
-        ]
-        if status.missingPrerequisites.contains(where: { projectLevelCodes.contains($0) }) {
-            return true
-        }
-        if status.missingPrerequisites.contains(where: {
-            $0.hasPrefix("trusted_automation_required_device_tool_group_missing:")
-        }) {
-            return true
-        }
-        return !status.missingRequiredDeviceToolGroups.isEmpty
-    }
-
-    private func trustedAutomationApprovalDeviceID(
-        config: AXProjectConfig,
-        permissionReadiness: AXTrustedAutomationPermissionOwnerReadiness
-    ) -> String {
-        xtTrustedAutomationPreauthorizationDeviceID(
-            config: config,
-            permissionReadiness: permissionReadiness
-        )
-    }
-
-    private func openMissingTrustedAutomationSettingsIfNeeded(
-        blockedCalls: [XTToolAuthorizationBlockedCall]
-    ) {
-        guard !ProcessInfo.processInfo.isRunningUnderAutomatedTests else { return }
-        let actions = blockedCalls
-            .filter { $0.decision.denyCode == XTDeviceAutomationRejectCode.systemPermissionMissing.rawValue }
-            .flatMap { blocked -> [String] in
-                guard let gate = blocked.decision.deviceGateDecision else { return [] }
-                return gate.permissionReadiness.suggestedOpenSettingsActions(
-                    forDeviceToolGroups: [gate.requiredDeviceToolGroup]
-                )
-            }
-        guard let action = actions.first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
-            return
-        }
-        XTSystemSettingsLinks.openPrivacyAction(action)
     }
 
     func approvePendingTools(router: LLMRouter) {
@@ -8440,18 +8288,6 @@ XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端 pa
         slashTrustedAutomationDoctorText(config: config, ctx: ctx)
     }
 
-    func trustedAutomationConfigForApprovedDeviceToolsForTesting(
-        calls: [ToolCall],
-        ctx: AXProjectContext,
-        config: AXProjectConfig
-    ) -> AXProjectConfig {
-        trustedAutomationConfigForApprovedDeviceTools(
-            calls: calls,
-            ctx: ctx,
-            config: config
-        ).config
-    }
-
     func handleSlashModelForTesting(
         args: [String],
         userText: String,
@@ -9379,13 +9215,75 @@ XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端 pa
         assistantProgressLinesByMessageID[messageID] = nil
         cancelPendingAssistantProgressFlush(messageID: messageID)
         assistantVisibleStreamingMessageIDs.insert(messageID)
+        if hadProgressLines || !wasVisibleStreaming {
+            bumpMessageTimelinePresentationVersion()
+        }
         pendingAssistantStreamTextByMessageID[messageID] = normalized
         scheduleAssistantStreamFlush(messageID: messageID)
     }
 
+    private func scheduleAssistantProgressFlush(messageID: String) {
+        guard assistantProgressFlushTasksByMessageID[messageID] == nil else { return }
+        let delay = assistantProgressFlushIntervalNanos
+        assistantProgressFlushTasksByMessageID[messageID] = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: delay)
+            } catch {
+                return
+            }
+            self?.flushPendingAssistantProgress(messageID: messageID)
+        }
+    }
+
+    private func flushPendingAssistantProgress(messageID: String) {
+        assistantProgressFlushTasksByMessageID[messageID] = nil
+        guard let lines = pendingAssistantProgressLinesByMessageID.removeValue(forKey: messageID) else {
+            return
+        }
+        XTPerformanceTrace.event(
+            "chat_progress_flush",
+            "lines=\(lines.count)"
+        )
+        applyAssistantProgressLines(lines, messageID: messageID)
+    }
+
+    private func applyAssistantProgressLines(
+        _ lines: [String],
+        messageID: String
+    ) {
+        let normalized = lines
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        if normalized.isEmpty {
+            if assistantProgressLinesByMessageID.removeValue(forKey: messageID) != nil {
+                bumpMessageTimelinePresentationVersion()
+            }
+            return
+        }
+        guard assistantProgressLinesByMessageID[messageID] != normalized else { return }
+        assistantProgressLinesByMessageID[messageID] = normalized
+        bumpMessageTimelinePresentationVersion()
+    }
+
+    private func clearAssistantProgress(messageID: String) {
+        cancelPendingAssistantProgressFlush(messageID: messageID)
+        if assistantProgressLinesByMessageID.removeValue(forKey: messageID) != nil {
+            bumpMessageTimelinePresentationVersion()
+        }
+    }
+
+    private func cancelPendingAssistantProgressFlush(messageID: String) {
+        assistantProgressFlushTasksByMessageID[messageID]?.cancel()
+        assistantProgressFlushTasksByMessageID[messageID] = nil
+        pendingAssistantProgressLinesByMessageID[messageID] = nil
+    }
+
     private func scheduleAssistantStreamFlush(messageID: String) {
         guard assistantStreamFlushTasksByMessageID[messageID] == nil else { return }
-        let delay = streamingUIFlushIntervalNanos
+        let byteCount = pendingAssistantStreamTextByMessageID[messageID]?.utf8.count ?? 0
+        let delay = ChatStreamingUIFlushCadence.delayNanoseconds(
+            forContentByteCount: byteCount
+        )
         assistantStreamFlushTasksByMessageID[messageID] = Task { [weak self] in
             do {
                 try await Task.sleep(nanoseconds: delay)
@@ -9401,6 +9299,10 @@ XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端 pa
         guard let normalized = pendingAssistantStreamTextByMessageID.removeValue(forKey: messageID) else {
             return
         }
+        XTPerformanceTrace.event(
+            "chat_stream_flush",
+            "kind=assistant bytes=\(normalized.utf8.count)"
+        )
         updateMessage(id: messageID, content: normalized)
     }
 
@@ -9412,7 +9314,10 @@ XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端 pa
 
     private func scheduleToolStreamFlush(messageID: String) {
         guard toolStreamFlushTasksByMessageID[messageID] == nil else { return }
-        let delay = streamingUIFlushIntervalNanos
+        let byteCount = pendingToolStreamContentByMessageID[messageID]?.utf8.count ?? 0
+        let delay = ChatStreamingUIFlushCadence.delayNanoseconds(
+            forContentByteCount: byteCount
+        )
         toolStreamFlushTasksByMessageID[messageID] = Task { [weak self] in
             do {
                 try await Task.sleep(nanoseconds: delay)
@@ -9428,6 +9333,10 @@ XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端 pa
         guard let content = pendingToolStreamContentByMessageID.removeValue(forKey: messageID) else {
             return
         }
+        XTPerformanceTrace.event(
+            "chat_stream_flush",
+            "kind=tool bytes=\(content.utf8.count)"
+        )
         updateMessage(id: messageID, content: content)
     }
 
@@ -9444,13 +9353,23 @@ XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端 pa
         for task in toolStreamFlushTasksByMessageID.values {
             task.cancel()
         }
+        for task in assistantProgressFlushTasksByMessageID.values {
+            task.cancel()
+        }
         assistantStreamFlushTasksByMessageID = [:]
         toolStreamFlushTasksByMessageID = [:]
+        assistantProgressFlushTasksByMessageID = [:]
         pendingAssistantStreamTextByMessageID = [:]
         pendingToolStreamContentByMessageID = [:]
+        pendingAssistantProgressLinesByMessageID = [:]
         toolStreamStates = [:]
+        let shouldBumpPresentationVersion = !assistantProgressLinesByMessageID.isEmpty
+            || !assistantVisibleStreamingMessageIDs.isEmpty
         assistantProgressLinesByMessageID = [:]
         assistantVisibleStreamingMessageIDs = []
+        if shouldBumpPresentationVersion {
+            bumpMessageTimelinePresentationVersion()
+        }
     }
 
     private func assistantProgressLine(for call: ToolCall) -> String {
@@ -9517,6 +9436,8 @@ XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端 pa
             return "我在推送当前分支。"
         case .git_apply, .git_apply_check:
             return "我在应用代码改动。"
+        case .projectDiagnostics, .lspDiagnostics, .checkRun, .buildRun, .testRun:
+            return "我在运行项目诊断。"
         case .pr_create:
             return "我在创建 Pull Request。"
         case .ci_read:
@@ -10187,21 +10108,18 @@ XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端 pa
         flow.verifyRunIndex += 1
         let runId = flow.verifyRunIndex
 
-        var calls: [ToolCall] = []
-        for (i, cmd) in cmds.enumerated() {
-            let id = "verify\(runId)_cmd\(i + 1)"
-            calls.append(
-                ToolCall(
-                    id: id,
-                    tool: .run_command,
-                    args: [
-                        "command": .string(cmd),
-                        "timeout_sec": .number(900),
-                    ]
-                )
+        return [
+            ToolCall(
+                id: "verify\(runId)_diagnostics",
+                tool: .projectDiagnostics,
+                args: [
+                    "trigger": .string("post_mutation"),
+                    "kind": .string("verify"),
+                    "use_verify_commands": .bool(true),
+                    "timeout_sec": .number(900),
+                ]
             )
-        }
-        return calls
+        ]
     }
 
     private func verifyRunOK(flow: ToolFlowState) -> Bool {
@@ -10322,7 +10240,9 @@ Original output:
         )
         cancelPendingAssistantStreamFlush(messageID: messageID)
         clearAssistantProgress(assistantIndex: assistantIndex)
-        assistantVisibleStreamingMessageIDs.remove(messageID)
+        if assistantVisibleStreamingMessageIDs.remove(messageID) != nil {
+            bumpMessageTimelinePresentationVersion()
+        }
 
         guard shouldPreserve else { return assistantIndex }
 
@@ -10359,6 +10279,11 @@ Original output:
         userTextForMirror: String? = nil,
         userSender: AXChatMessageSender? = nil
     ) {
+        let resolvedUserSender = userSender
+            ?? (assistantIndex > 0 && messages.indices.contains(assistantIndex - 1)
+                ? messages[assistantIndex - 1].sender
+                : nil)
+            ?? Self.inferredUserSender(for: userText)
         let inferredAttachments: [AXChatAttachment] = {
             guard attachments.isEmpty,
                   assistantIndex > 0,
@@ -10579,7 +10504,12 @@ Original output:
              .agentImportRecord,
              .memory_snapshot,
              .project_snapshot,
-             .bridge_status:
+             .bridge_status,
+             .projectDiagnostics,
+             .lspDiagnostics,
+             .checkRun,
+             .buildRun,
+             .testRun:
             return .diagnostic
         case .read_file,
              .write_file,
@@ -11073,7 +11003,7 @@ Patch-first workflow (IMPORTANT):
 - For new files, you may use write_file (still requires confirmation).
 - If no stack is detected yet and the user asks to build something, choose a stack and scaffold minimal runnable files first (e.g., web: index.html; python: main.py; node: package.json; swift: Package.swift).
 - After applying changes, use git_diff to show what changed before returning final.
-- If verify commands are configured, run them (run_command) after changes and include output.
+- If verify commands are configured, run them after changes; prefer `project.diagnostics` so errors are structured and persisted under `.xterminal/diagnostics/`.
 
 \(skillRoutingGuidance)
 

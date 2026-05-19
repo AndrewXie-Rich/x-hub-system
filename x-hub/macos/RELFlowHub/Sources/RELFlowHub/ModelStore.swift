@@ -461,6 +461,7 @@ enum LocalModelRuntimeActionPlanner {
 final class ModelStore: ObservableObject {
     static let shared = ModelStore()
     nonisolated private static let successfulLifecycleActionGraceSec: TimeInterval = 8.0
+    nonisolated private static let managedModelReconcileInterval: TimeInterval = 60.0
 
     private struct OptionalRuntimePresentationCacheEntry {
         let value: LocalModelRuntimePresentation?
@@ -474,6 +475,19 @@ final class ModelStore: ObservableObject {
         let providerID: String
         let probeLaunchConfig: LocalRuntimePythonProbeLaunchConfig?
         let pythonPath: String?
+    }
+
+    private struct FileStamp: Equatable, Sendable {
+        let path: String
+        let exists: Bool
+        let modifiedAt: TimeInterval
+        let size: Int64
+    }
+
+    private struct RemoteModelExportCache {
+        let remoteModelsStamp: FileStamp
+        let remoteKeyHealthStamp: FileStamp
+        let models: [RemoteModelEntry]
     }
 
     private struct CommandResultFile: Sendable {
@@ -517,6 +531,9 @@ final class ModelStore: ObservableObject {
     private var successfulLocalLifecycleActionsByModelId: [String: SuccessfulLocalLifecycleAction] = [:]
     private var refreshTask: Task<Void, Never>?
     private var refreshRequestedRevision: UInt64 = 0
+    private var forceManagedModelReconcileOnNextRefresh: Bool = true
+    private var lastManagedModelReconcileAt: TimeInterval = 0
+    private var remoteModelExportCache: RemoteModelExportCache?
     private let refreshBaseDir = SharedPaths.ensureHubDirectory()
     private let commandResultDirectories = ModelStore.commandResultDirectoryCandidates()
 
@@ -528,7 +545,7 @@ final class ModelStore: ObservableObject {
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                self?.refresh()
+                self?.refresh(reconcileManagedModels: false)
             }
         }
 
@@ -536,7 +553,10 @@ final class ModelStore: ObservableObject {
         pruneLegacyDemoModels()
     }
 
-    func refresh() {
+    func refresh(reconcileManagedModels: Bool = true) {
+        if reconcileManagedModels {
+            forceManagedModelReconcileOnNextRefresh = true
+        }
         refreshRequestedRevision &+= 1
         scheduleRefreshIfNeeded()
     }
@@ -557,13 +577,17 @@ final class ModelStore: ObservableObject {
         let lifecycleSnapshot = successfulLocalLifecycleActionsByModelId
         let baseDir = refreshBaseDir
         let commandResultDirectories = commandResultDirectories
+        let reconcileManagedModels = shouldReconcileManagedModels(now: Date().timeIntervalSince1970)
+        let exportableRemoteModels = cachedExportableRemoteModels()
         refreshTask = Task { [weak self] in
             let computation = await Task.detached(priority: .utility) {
                 Self.buildRefreshComputation(
                     pendingByModelId: pendingSnapshot,
                     successfulLocalLifecycleActionsByModelId: lifecycleSnapshot,
                     baseDir: baseDir,
-                    commandResultDirectories: commandResultDirectories
+                    commandResultDirectories: commandResultDirectories,
+                    reconcileManagedLocalModels: reconcileManagedModels,
+                    exportableRemoteModels: exportableRemoteModels
                 )
             }.value
             self?.finishRefresh(
@@ -571,6 +595,53 @@ final class ModelStore: ObservableObject {
                 computation: computation
             )
         }
+    }
+
+    private func cachedExportableRemoteModels() -> [RemoteModelEntry] {
+        let remoteModelsStamp = Self.fileStamp(RemoteModelStorage.url())
+        let remoteKeyHealthStamp = Self.fileStamp(RemoteKeyHealthStorage.url())
+        if let cached = remoteModelExportCache,
+           cached.remoteModelsStamp == remoteModelsStamp,
+           cached.remoteKeyHealthStamp == remoteKeyHealthStamp {
+            return cached.models
+        }
+
+        let models = RemoteModelStorage.exportableEnabledModels()
+        remoteModelExportCache = RemoteModelExportCache(
+            remoteModelsStamp: Self.fileStamp(RemoteModelStorage.url()),
+            remoteKeyHealthStamp: Self.fileStamp(RemoteKeyHealthStorage.url()),
+            models: models
+        )
+        return models
+    }
+
+    nonisolated private static func fileStamp(_ url: URL) -> FileStamp {
+        let normalized = url.standardizedFileURL
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: normalized.path) else {
+            return FileStamp(path: normalized.path, exists: false, modifiedAt: 0, size: -1)
+        }
+        let modifiedAt = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        let size = (attributes[.size] as? NSNumber)?.int64Value ?? -1
+        return FileStamp(path: normalized.path, exists: true, modifiedAt: modifiedAt, size: size)
+    }
+
+    private func shouldReconcileManagedModels(now: TimeInterval) -> Bool {
+        if forceManagedModelReconcileOnNextRefresh {
+            forceManagedModelReconcileOnNextRefresh = false
+            lastManagedModelReconcileAt = now
+            return true
+        }
+
+        guard lastManagedModelReconcileAt > 0 else {
+            lastManagedModelReconcileAt = now
+            return true
+        }
+
+        if now - lastManagedModelReconcileAt >= Self.managedModelReconcileInterval {
+            lastManagedModelReconcileAt = now
+            return true
+        }
+        return false
     }
 
     private func finishRefresh(
@@ -641,7 +712,9 @@ final class ModelStore: ObservableObject {
         pendingByModelId: [String: PendingCommand],
         successfulLocalLifecycleActionsByModelId: [String: SuccessfulLocalLifecycleAction],
         baseDir: URL = SharedPaths.ensureHubDirectory(),
-        commandResultDirectories: [URL]? = nil
+        commandResultDirectories: [URL]? = nil,
+        reconcileManagedLocalModels: Bool = true,
+        exportableRemoteModels: [RemoteModelEntry]? = nil
     ) -> RefreshComputation {
         let baseCatalog = ModelCatalogStorage.load()
         let base = ModelStateStorage.load()
@@ -649,7 +722,9 @@ final class ModelStore: ObservableObject {
             catalog: baseCatalog,
             state: base,
             baseDir: baseDir,
-            fileManager: .default
+            fileManager: .default,
+            reconcileManagedLocalModels: reconcileManagedLocalModels,
+            exportableRemoteModels: exportableRemoteModels
         )
         let runtimeStatus = AIRuntimeStatusStorage.load()
         let reconciled = reconciledLocalRuntimeState(
@@ -823,9 +898,11 @@ final class ModelStore: ObservableObject {
         snapshot.models.filter { $0.state != .loaded }
     }
 
-    nonisolated private static func mergeRemoteModels(_ base: ModelStateSnapshot) -> ModelStateSnapshot {
-        let remote = RemoteModelStorage.exportableEnabledModels()
-
+    nonisolated private static func mergeRemoteModels(
+        _ base: ModelStateSnapshot,
+        exportableRemoteModels: [RemoteModelEntry]? = nil
+    ) -> ModelStateSnapshot {
+        let remote = exportableRemoteModels ?? RemoteModelStorage.exportableEnabledModels()
         // Keep local models (with a modelPath). Remove stale remote entries before re-adding.
         let localOnly = base.models.filter { !LocalModelRuntimeActionPlanner.isRemoteModel($0) }
 
@@ -868,8 +945,17 @@ final class ModelStore: ObservableObject {
         catalog: ModelCatalogSnapshot,
         state: ModelStateSnapshot,
         baseDir: URL = SharedPaths.ensureHubDirectory(),
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        reconcileManagedLocalModels: Bool = true,
+        exportableRemoteModels: [RemoteModelEntry]? = nil
     ) -> (catalog: ModelCatalogSnapshot, state: ModelStateSnapshot) {
+        guard reconcileManagedLocalModels else {
+            return (
+                catalog: catalog,
+                state: mergeRemoteModels(state, exportableRemoteModels: exportableRemoteModels)
+            )
+        }
+
         let reconciled = reconciledManagedLocalModelSnapshots(
             catalog: catalog,
             state: state,
@@ -878,7 +964,7 @@ final class ModelStore: ObservableObject {
         )
         return (
             catalog: reconciled.catalog,
-            state: mergeRemoteModels(reconciled.state)
+            state: mergeRemoteModels(reconciled.state, exportableRemoteModels: exportableRemoteModels)
         )
     }
 

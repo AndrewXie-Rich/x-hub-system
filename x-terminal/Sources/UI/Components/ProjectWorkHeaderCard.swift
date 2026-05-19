@@ -38,43 +38,8 @@ struct ProjectWorkHeaderCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .center, spacing: 10) {
-                Image(systemName: icon)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
-
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .lineLimit(1)
-
-                Spacer(minLength: 0)
-
-                if let badgeText = sanitized(badgeText) {
-                    Text(badgeText)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(Color.secondary.opacity(0.08))
-                        .clipShape(Capsule())
-                }
-            }
-
-            HStack(alignment: .top, spacing: 10) {
-                Text(readinessText)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(readinessTone.color)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(readinessTone.color.opacity(0.12))
-                    .clipShape(Capsule())
-
-                Text(nextStepText)
-                    .font(.system(size: 12, weight: .medium))
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Spacer(minLength: 0)
-            }
+            titleRow
+            readinessRow
 
             if let detailText = sanitized(detailText) {
                 Text(detailText)
@@ -91,21 +56,7 @@ struct ProjectWorkHeaderCard: View {
             }
 
             if primaryAction != nil || secondaryAction != nil || tertiaryAction != nil {
-                HStack(spacing: 8) {
-                    if let primaryAction {
-                        actionButton(primaryAction)
-                    }
-
-                    if let secondaryAction {
-                        actionButton(secondaryAction)
-                    }
-
-                    if let tertiaryAction {
-                        actionButton(tertiaryAction)
-                    }
-
-                    Spacer(minLength: 0)
-                }
+                actionRow
             }
         }
         .padding(.horizontal, 16)
@@ -119,6 +70,109 @@ struct ProjectWorkHeaderCard: View {
         )
     }
 
+    private var titleRow: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 10) {
+                titleIdentity
+                Spacer(minLength: 8)
+                badge
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                titleIdentity
+                badge
+            }
+        }
+    }
+
+    private var titleIdentity: some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+    }
+
+    @ViewBuilder
+    private var badge: some View {
+        if let badgeText = sanitized(badgeText) {
+            Text(badgeText)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Color.secondary.opacity(0.08))
+                .clipShape(Capsule())
+        }
+    }
+
+    private var readinessRow: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: 10) {
+                readinessPill
+
+                Text(nextStepText)
+                    .font(.system(size: 12, weight: .medium))
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Spacer(minLength: 0)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                readinessPill
+
+                Text(nextStepText)
+                    .font(.system(size: 12, weight: .medium))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var readinessPill: some View {
+        Text(readinessText)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(readinessTone.color)
+            .lineLimit(1)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(readinessTone.color.opacity(0.12))
+            .clipShape(Capsule())
+    }
+
+    private var actionRow: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                actionButtons
+                Spacer(minLength: 0)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                actionButtons
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var actionButtons: some View {
+        if let primaryAction {
+            actionButton(primaryAction)
+        }
+
+        if let secondaryAction {
+            actionButton(secondaryAction)
+        }
+
+        if let tertiaryAction {
+            actionButton(tertiaryAction)
+        }
+    }
+
     @ViewBuilder
     private func actionButton(_ action: ProjectWorkHeaderAction) -> some View {
         switch action.style {
@@ -128,18 +182,21 @@ struct ProjectWorkHeaderCard: View {
                 .controlSize(.small)
                 .disabled(action.disabled)
                 .help(action.helpText ?? "")
+                .fixedSize()
         case .secondary:
             Button(action.title, action: action.action)
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .disabled(action.disabled)
                 .help(action.helpText ?? "")
+                .fixedSize()
         case .plain:
             Button(action.title, action: action.action)
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
                 .disabled(action.disabled)
                 .help(action.helpText ?? "")
+                .fixedSize()
         }
     }
 

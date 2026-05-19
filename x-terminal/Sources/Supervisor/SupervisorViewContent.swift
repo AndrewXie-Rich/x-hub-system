@@ -58,7 +58,7 @@ struct SupervisorViewContent: View {
     @Environment(\.openURL) private var openURL
     @EnvironmentObject private var hubConnectionStore: XTHubConnectionStore
     @EnvironmentObject private var navigationFocusStore: XTNavigationFocusStore
-    @EnvironmentObject private var settingsCenterStore: XTSettingsCenterStore
+    @EnvironmentObject private var settingsSupervisorSignalStore: XTSettingsSupervisorSignalStore
 
     var body: some View {
         let bigTaskSceneHint = props.viewResources.detectedBigTaskCandidate.map {
@@ -94,7 +94,7 @@ struct SupervisorViewContent: View {
                             totalHeight: props.totalHeight
                         ),
                         entries: props.supervisor.heartbeatHistory,
-                        historicalProjectBoundaryRepairStatusLine: settingsCenterSnapshot.historicalProjectBoundaryRepairStatusLine,
+                        historicalProjectBoundaryRepairStatusLine: settingsSupervisorSignalSnapshot.historicalProjectBoundaryRepairStatusLine,
                         doctorPresentation: props.dashboardPresentations.doctor,
                         onOpenFocus: openFocusURL
                     )
@@ -145,7 +145,7 @@ struct SupervisorViewContent: View {
                         doctorPresentation: props.dashboardPresentations.doctor,
                         doctorSuggestionCards: SupervisorViewRuntimePresentationSupport.doctorSuggestionCards(
                             baseCards: props.supervisor.doctorSuggestionCards,
-                            historicalProjectBoundaryRepairStatusLine: settingsCenterSnapshot.historicalProjectBoundaryRepairStatusLine
+                            historicalProjectBoundaryRepairStatusLine: settingsSupervisorSignalSnapshot.historicalProjectBoundaryRepairStatusLine
                         ),
                         canOpenCanonicalMemorySyncStatusFile: props.viewResources.canOpenCanonicalMemorySyncStatusFile,
                         onRefreshDoctor: { props.supervisor.refreshSupervisorDoctorReport() },
@@ -330,8 +330,8 @@ struct SupervisorViewContent: View {
         navigationFocusStore.snapshot
     }
 
-    private var settingsCenterSnapshot: XTSettingsCenterSnapshot {
-        settingsCenterStore.snapshot
+    private var settingsSupervisorSignalSnapshot: XTSettingsSupervisorSignalSnapshot {
+        settingsSupervisorSignalStore.snapshot
     }
 
     private var appModel: AppModel {

@@ -153,12 +153,52 @@ struct HubBaseDirConvergenceTests {
             HubPaths.setCandidateBaseDirsOverrideForTesting(nil)
         }
 
+        defaults.removeObject(forKey: hubBaseDirDefaultsKey)
         HubPaths.setBaseDirOverride(nil)
         HubPaths.setCandidateBaseDirsOverrideForTesting([liveBaseDir])
 
         let result = HubConnector.connect(ttl: 0.1)
         #expect(result.ok == true)
         #expect(result.baseDir?.standardizedFileURL == liveBaseDir.standardizedFileURL)
+    }
+
+    @Test
+    func connectPrefersLiveCandidateWithFresherModelsStateOverPersistedBaseDir() throws {
+        let tempRoot = try makeTempDir(prefix: "hub_connector_fresh_models_state")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let stalePersistedBaseDir = tempRoot.appendingPathComponent("RELFlowHub", isDirectory: true)
+        let freshContainerBaseDir = tempRoot.appendingPathComponent("container/RELFlowHub", isDirectory: true)
+        try FileManager.default.createDirectory(at: stalePersistedBaseDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: freshContainerBaseDir, withIntermediateDirectories: true)
+        try writeFreshHubStatus(to: stalePersistedBaseDir)
+        try writeFreshHubStatus(to: freshContainerBaseDir)
+        try writeModelsState(to: stalePersistedBaseDir, updatedAt: 1, modelID: "local/stale")
+        try writeModelsState(to: freshContainerBaseDir, updatedAt: 2, modelID: "openai/gpt-5.5")
+        try setModificationDate(Date(timeIntervalSince1970: 100), for: stalePersistedBaseDir.appendingPathComponent("models_state.json"))
+        try setModificationDate(Date(timeIntervalSince1970: 200), for: freshContainerBaseDir.appendingPathComponent("models_state.json"))
+
+        let defaults = UserDefaults.standard
+        let previousValue = defaults.object(forKey: hubBaseDirDefaultsKey)
+        defer {
+            if let previousValue {
+                defaults.set(previousValue, forKey: hubBaseDirDefaultsKey)
+            } else {
+                defaults.removeObject(forKey: hubBaseDirDefaultsKey)
+            }
+            HubPaths.setBaseDirOverride(nil)
+            HubPaths.setCandidateBaseDirsOverrideForTesting(nil)
+        }
+
+        HubPaths.setBaseDirOverride(stalePersistedBaseDir)
+        HubPaths.setCandidateBaseDirsOverrideForTesting([freshContainerBaseDir, stalePersistedBaseDir])
+        defaults.set(stalePersistedBaseDir.path, forKey: hubBaseDirDefaultsKey)
+
+        let result = HubConnector.connect(ttl: 10)
+        #expect(result.ok == true)
+        #expect(result.baseDir?.standardizedFileURL == freshContainerBaseDir.standardizedFileURL)
+        #expect(HubPaths.baseDirOverride()?.standardizedFileURL == freshContainerBaseDir.standardizedFileURL)
+        #expect(defaults.string(forKey: hubBaseDirDefaultsKey) == freshContainerBaseDir.path)
     }
 
     @Test
@@ -216,6 +256,7 @@ struct HubBaseDirConvergenceTests {
             HubPaths.setCandidateBaseDirsOverrideForTesting(nil)
         }
 
+        defaults.removeObject(forKey: hubBaseDirDefaultsKey)
         HubPaths.setBaseDirOverride(nil)
         HubPaths.setCandidateBaseDirsOverrideForTesting([liveBaseDir])
 
@@ -263,6 +304,52 @@ struct HubBaseDirConvergenceTests {
             atomically: true,
             encoding: .utf8
         )
+    }
+
+    private func writeFreshHubStatus(to baseDir: URL) throws {
+        let now = Date().timeIntervalSince1970
+        let payload = """
+        {
+          "pid": \(getpid()),
+          "updatedAt": \(now),
+          "startedAt": \(now - 5),
+          "protocolVersion": 1,
+          "baseDir": "\(baseDir.path)",
+          "ipcMode": "file",
+          "ipcPath": "\(baseDir.appendingPathComponent("ipc_events", isDirectory: true).path)"
+        }
+        """
+        try payload.write(
+            to: baseDir.appendingPathComponent("hub_status.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
+    private func writeModelsState(to baseDir: URL, updatedAt: TimeInterval, modelID: String) throws {
+        let payload = """
+        {
+          "schema_version": "xhub.models_state.v1",
+          "updatedAt": \(updatedAt),
+          "models": [
+            {
+              "id": "\(modelID)",
+              "name": "\(modelID)",
+              "backend": "openai",
+              "state": "available"
+            }
+          ]
+        }
+        """
+        try payload.write(
+            to: baseDir.appendingPathComponent("models_state.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
+    private func setModificationDate(_ date: Date, for url: URL) throws {
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: url.path)
     }
 
     private func writeFreshAuthoritativeRuntimeStatus(to baseDir: URL) throws {

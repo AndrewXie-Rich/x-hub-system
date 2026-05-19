@@ -41,6 +41,7 @@ struct SupervisorCockpitPresentationInput: Codable, Equatable {
     let oneShotRuntimeSummary: String?
     let oneShotRuntimeNextTarget: String?
     let oneShotRuntimeActiveLaneCount: Int
+    let laneWinnerScoreReport: LaneWinnerScoreReport?
 
     init(
         isProcessing: Bool,
@@ -84,7 +85,8 @@ struct SupervisorCockpitPresentationInput: Codable, Equatable {
         oneShotRuntimeTopBlocker: String? = nil,
         oneShotRuntimeSummary: String? = nil,
         oneShotRuntimeNextTarget: String? = nil,
-        oneShotRuntimeActiveLaneCount: Int = 0
+        oneShotRuntimeActiveLaneCount: Int = 0,
+        laneWinnerScoreReport: LaneWinnerScoreReport? = nil
     ) {
         self.isProcessing = isProcessing
         self.pendingGrantCount = pendingGrantCount
@@ -128,6 +130,7 @@ struct SupervisorCockpitPresentationInput: Codable, Equatable {
         self.oneShotRuntimeSummary = oneShotRuntimeSummary
         self.oneShotRuntimeNextTarget = oneShotRuntimeNextTarget
         self.oneShotRuntimeActiveLaneCount = oneShotRuntimeActiveLaneCount
+        self.laneWinnerScoreReport = laneWinnerScoreReport
     }
 
     enum CodingKeys: String, CodingKey {
@@ -173,6 +176,7 @@ struct SupervisorCockpitPresentationInput: Codable, Equatable {
         case oneShotRuntimeSummary = "one_shot_runtime_summary"
         case oneShotRuntimeNextTarget = "one_shot_runtime_next_target"
         case oneShotRuntimeActiveLaneCount = "one_shot_runtime_active_lane_count"
+        case laneWinnerScoreReport = "lane_winner_score_report"
     }
 }
 
@@ -185,6 +189,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
     let reviewMemorySummary: SupervisorMemoryAssemblyCompactSummary?
     let plannerExplain: String
     let plannerMachineStatusRef: String
+    let laneWinnerScoreReport: LaneWinnerScoreReport?
     let actions: [PrimaryActionRailAction]
     let reviewReportPath: String
     let consumedFrozenFields: [String]
@@ -198,6 +203,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
         case reviewMemorySummary = "review_memory_summary"
         case plannerExplain = "planner_explain"
         case plannerMachineStatusRef = "planner_machine_status_ref"
+        case laneWinnerScoreReport = "lane_winner_score_report"
         case actions
         case reviewReportPath = "review_report_path"
         case consumedFrozenFields = "consumed_frozen_fields"
@@ -275,7 +281,8 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                 oneShotRuntimeTopBlocker: oneShotRunState?.topBlocker,
                 oneShotRuntimeSummary: oneShotRunState?.userVisibleSummary,
                 oneShotRuntimeNextTarget: oneShotRunState?.nextDirectedTarget,
-                oneShotRuntimeActiveLaneCount: oneShotRunState?.activeLanes.count ?? 0
+                oneShotRuntimeActiveLaneCount: oneShotRunState?.activeLanes.count ?? 0,
+                laneWinnerScoreReport: orchestrator.lastLaneWinnerScoreReport ?? orchestrator.previewLaneWinnerScoreReport()
             )
         )
     }
@@ -294,7 +301,10 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
         } else {
             replayStatus = "pending"
         }
-        let plannerMachineStatusRef = "processing=\(input.isProcessing); pending_grants=\(input.pendingGrantCount); grant_snapshot_fresh=\(input.hasFreshPendingGrantSnapshot); lane_running=\(input.laneSummary.running); lane_blocked=\(input.laneSummary.blocked); lane_stalled=\(input.laneSummary.stalled); lane_failed=\(input.laneSummary.failed); xt_ready_status=\(input.xtReadyStatus); xt_ready_issues=\(input.xtReadyIssueCount); memory_ready=\(input.memoryAssemblyReady); memory_issues=\(input.memoryAssemblyIssueCount); memory_top_issue=\(input.memoryAssemblyTopIssueCode ?? "none"); one_shot_state=\(input.oneShotRuntimeState ?? "none"); one_shot_owner=\(oneShotOwner); one_shot_blocker=\(oneShotTopBlocker); one_shot_next=\(oneShotNextTarget); one_shot_active_lanes=\(input.oneShotRuntimeActiveLaneCount); auto_confirm=\(input.autoConfirmPolicy ?? "none"); auto_launch=\(input.autoLaunchPolicy ?? "none"); freeze=\(freezeDecision); denied_launches=\(input.deniedLaunchCount); batons=\(input.directedUnblockBatonCount); replay=\(replayStatus)"
+        let winnerRef = input.laneWinnerScoreReport.map {
+            "winner_recommended=\($0.recommendedLaneID.isEmpty ? "none" : $0.recommendedLaneID); winner_eligible=\($0.eligibleCount)/\($0.candidateCount); winner_ref=\($0.reportRef)"
+        } ?? "winner_recommended=none; winner_eligible=0/0; winner_ref=none"
+        let plannerMachineStatusRef = "processing=\(input.isProcessing); pending_grants=\(input.pendingGrantCount); grant_snapshot_fresh=\(input.hasFreshPendingGrantSnapshot); lane_running=\(input.laneSummary.running); lane_blocked=\(input.laneSummary.blocked); lane_stalled=\(input.laneSummary.stalled); lane_failed=\(input.laneSummary.failed); xt_ready_status=\(input.xtReadyStatus); xt_ready_issues=\(input.xtReadyIssueCount); memory_ready=\(input.memoryAssemblyReady); memory_issues=\(input.memoryAssemblyIssueCount); memory_top_issue=\(input.memoryAssemblyTopIssueCode ?? "none"); one_shot_state=\(input.oneShotRuntimeState ?? "none"); one_shot_owner=\(oneShotOwner); one_shot_blocker=\(oneShotTopBlocker); one_shot_next=\(oneShotNextTarget); one_shot_active_lanes=\(input.oneShotRuntimeActiveLaneCount); auto_confirm=\(input.autoConfirmPolicy ?? "none"); auto_launch=\(input.autoLaunchPolicy ?? "none"); freeze=\(freezeDecision); denied_launches=\(input.deniedLaunchCount); batons=\(input.directedUnblockBatonCount); replay=\(replayStatus); \(winnerRef)"
         let runtimeStageRail = buildRuntimeStageRail(
             input: input,
             oneShotState: oneShotState,
@@ -826,6 +836,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             reviewMemorySummary: input.reviewMemorySummary,
             plannerExplain: plannerExplain,
             plannerMachineStatusRef: plannerMachineStatusRef,
+            laneWinnerScoreReport: input.laneWinnerScoreReport,
             actions: actions,
             reviewReportPath: replayRef,
             consumedFrozenFields: [
@@ -836,7 +847,8 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                 "xt.unblock_baton.v1.next_action",
                 "xt.delivery_scope_freeze.v1.validated_scope",
                 "xt.one_shot_autonomy_policy.v1.auto_launch_policy",
-                "xt.one_shot_replay_regression.v1.scenarios"
+                "xt.one_shot_replay_regression.v1.scenarios",
+                "xt.lane_winner_score_report.v1.candidates"
             ]
         )
     }

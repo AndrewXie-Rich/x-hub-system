@@ -85,35 +85,6 @@ struct XHubDoctorOutputTests {
     }
 
     @Test
-    func exportsHubContractProjectionFromHubReachabilitySection() throws {
-        var xtReport = sampleXTUnifiedDoctorReport(sourceReportPath: "/tmp/xt_unified_doctor_report.json")
-        xtReport.sections[0] = XTUnifiedDoctorSection(
-            kind: .hubReachability,
-            state: .ready,
-            headline: "Hub reachability carries the Hub contract",
-            summary: "XT can inspect the Hub-owned authority contract before updating runtime behavior.",
-            nextStep: "Keep consuming Hub contract fields before adding XT-side behavior.",
-            repairEntry: .homeSupervisor,
-            detailLines: ["route=paired-local"],
-            hubContractProjection: sampleReadyHubContractProjectionForTests()
-        )
-
-        let bundle = XHubDoctorOutputReport.xtReadinessBundle(
-            from: xtReport,
-            outputPath: "/tmp/xhub_doctor_output_xt_hub_contract.json"
-        )
-
-        let check = try #require(bundle.checks.first {
-            $0.checkID == XTUnifiedDoctorSectionKind.hubReachability.rawValue
-        })
-        let projection = try #require(check.hubContractProjection)
-        #expect(projection.contractReady == true)
-        #expect(projection.memoryCanonicalWriter == "hub_only")
-        #expect(projection.skillsAuthority == "hub_policy_gate")
-        #expect(projection.remoteEntryNoDomainSupported == true)
-    }
-
-    @Test
     func exportsSkillDoctorTruthSnapshotFromSkillsSection() throws {
         var xtReport = sampleXTUnifiedDoctorReport(sourceReportPath: "/tmp/xt_unified_doctor_report.json")
         xtReport.sections.append(

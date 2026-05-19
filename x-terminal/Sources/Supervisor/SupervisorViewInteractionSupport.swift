@@ -48,7 +48,13 @@ extension SupervisorViewInteractionCoordinator {
                     detail: detail
                 )
             },
-            setFocusedSplitLane: { ui.focusedSplitLaneID = $0 }
+            setFocusedSplitLane: { ui.focusedSplitLaneID = $0 },
+            overrideLaneWinnerSelection: { laneID, reason in
+                _ = screenModel.legacyRuntime.orchestrator.overrideLaneWinnerSelection(
+                    laneID: laneID,
+                    reason: reason
+                )
+            }
         )
     }
 

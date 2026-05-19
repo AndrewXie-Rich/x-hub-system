@@ -195,7 +195,8 @@ enum RemoteProviderKeyRuntimeFeedbackSupport {
         }
         if message.contains("invalid api key")
             || message.contains("incorrect api key")
-            || message.contains("authentication_failed") {
+            || message.contains("authentication_failed")
+            || (message.contains("api key") && (message.contains("无效") || message.contains("撤销") || message.contains("revoked"))) {
             return "invalid_api_key"
         }
         if message.contains("no api key available")

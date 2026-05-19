@@ -38,8 +38,7 @@ enum ProviderConfigImport {
 
     static func parse(text: String) throws -> ImportedProviderConfig {
         let config = extractConfig(from: text)
-        let providers = config.providers
-            .filter { $0.requiresOpenAIAuth && !$0.baseURL.isEmpty }
+        let providers = providerImportCandidates(from: config)
         let selected = selectProvider(from: providers, preferredName: config.preferredProviderName)
         if let selected {
             let backend = inferredBackend(baseURL: selected.baseURL)
@@ -144,6 +143,24 @@ enum ProviderConfigImport {
             preferredModelID: preferredModelID,
             providers: providers
         )
+    }
+
+    private static func providerImportCandidates(from config: ParsedConfig) -> [ProviderSection] {
+        let withBaseURL = config.providers.filter { !$0.baseURL.isEmpty }
+        guard !withBaseURL.isEmpty else { return [] }
+        let preferredName = config.preferredProviderName?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+
+        return withBaseURL.filter { provider in
+            if provider.requiresOpenAIAuth {
+                return true
+            }
+            if !provider.wireAPI.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return true
+            }
+            return !preferredName.isEmpty && provider.name.lowercased() == preferredName
+        }
     }
 
     private static func selectProvider(

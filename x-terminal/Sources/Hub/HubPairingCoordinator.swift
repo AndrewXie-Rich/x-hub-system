@@ -5055,6 +5055,10 @@ actor HubPairingCoordinator {
         var scriptEnv = merged
         scriptEnv["XTERMINAL_SKILL_RUNNER_REQUEST_ID"] = request.requestId
         scriptEnv["XTERMINAL_SKILL_RUNNER_PROJECT_ID"] = request.projectId ?? ""
+        scriptEnv["XTERMINAL_SKILL_RUNNER_EXECUTION_ROLE"] = request.executionRole ?? ""
+        scriptEnv["XTERMINAL_SKILL_RUNNER_AGENT_MODE"] = request.agentMode ?? ""
+        scriptEnv["XTERMINAL_SKILL_RUNNER_LANE_ID"] = request.laneId ?? ""
+        scriptEnv["XTERMINAL_SKILL_RUNNER_AUDIT_REF"] = request.auditRef ?? ""
         scriptEnv["XTERMINAL_SKILL_RUNNER_SKILL_ID"] = normalizedSkillId
         scriptEnv["XTERMINAL_SKILL_RUNNER_PACKAGE_SHA256"] = normalizedPackageSHA256
         scriptEnv["XTERMINAL_SKILL_RUNNER_TOOL_NAME"] = normalizedToolName
@@ -13856,6 +13860,7 @@ import grpc from '@grpc/grpc-js';
 import protoLoader from '@grpc/proto-loader';
 
 const safe = (v) => String(v ?? '').trim();
+const idToken = (v) => safe(v).toLowerCase().replace(/[^a-z0-9_.-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 64);
 const out = (obj) => {
   process.stdout.write(`${JSON.stringify(obj)}\n`);
 };
@@ -13958,6 +13963,10 @@ async function main() {
   const addr = `${host}:${port}`;
   const requestId = safe(process.env.XTERMINAL_SKILL_RUNNER_REQUEST_ID || `skill-runner-${Date.now()}`);
   const projectId = safe(process.env.XTERMINAL_SKILL_RUNNER_PROJECT_ID || '');
+  const executionRole = safe(process.env.XTERMINAL_SKILL_RUNNER_EXECUTION_ROLE || 'coder');
+  const agentMode = safe(process.env.XTERMINAL_SKILL_RUNNER_AGENT_MODE || '');
+  const laneId = safe(process.env.XTERMINAL_SKILL_RUNNER_LANE_ID || '');
+  const auditRef = safe(process.env.XTERMINAL_SKILL_RUNNER_AUDIT_REF || '');
   const skillId = safe(process.env.XTERMINAL_SKILL_RUNNER_SKILL_ID || '');
   const packageSHA256 = safe(process.env.XTERMINAL_SKILL_RUNNER_PACKAGE_SHA256 || '');
   const toolName = safe(process.env.XTERMINAL_SKILL_RUNNER_TOOL_NAME || 'skills.run.runner');
@@ -13975,13 +13984,24 @@ async function main() {
   const memoryClient = new proto.HubMemory(addr, creds, options);
   const md = metadataFromEnv();
   const client = reqClientFromEnv(projectId);
-  const agentInstanceId = 'x-terminal-skill-runner';
+  const contextTokens = [
+    idToken(executionRole),
+    idToken(agentMode),
+    idToken(laneId),
+  ].filter(Boolean);
+  const agentInstanceId = ['x-terminal-skill-runner', ...contextTokens].join(':');
+  const agentNameSuffix = [
+    executionRole && `role=${executionRole}`,
+    agentMode && `mode=${agentMode}`,
+    laneId && `lane=${laneId}`,
+    auditRef && `audit=${auditRef}`,
+  ].filter(Boolean).join(' ');
 
   const opened = await unary(memoryClient, 'AgentSessionOpen', {
     request_id: `${requestId}:session`,
     client,
     agent_instance_id: agentInstanceId,
-    agent_name: 'X-Terminal Skill Runner',
+    agent_name: agentNameSuffix ? `X-Terminal Skill Runner (${agentNameSuffix})` : 'X-Terminal Skill Runner',
     agent_version: '1',
     gateway_provider: 'x_terminal',
   }, md);

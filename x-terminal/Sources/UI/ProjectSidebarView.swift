@@ -3,8 +3,7 @@ import AppKit
 
 struct ProjectSidebarView: View {
     @Environment(\.xtAppModelReference) private var appModelReference
-    @EnvironmentObject private var projectListStore: XTProjectListStore
-    @EnvironmentObject private var workSurfaceStore: XTWorkSurfaceStore
+    @EnvironmentObject private var projectSidebarProjectionStore: XTCoreProjectSidebarProjectionStore
 
     let isActive: Bool
 
@@ -12,12 +11,20 @@ struct ProjectSidebarView: View {
         self.isActive = isActive
     }
 
+    @ViewBuilder
     var body: some View {
-        let snapshot = projectListSnapshot
-        let selectedProjectId = snapshot.selectedProjectId
-        let selectedSupplementalRefreshKey = isActive ? sidebarSupplementalRefreshKey : nil
+        if isActive {
+            activeProjectList
+        } else {
+            Color.clear
+                .frame(minWidth: 220, maxWidth: 320, maxHeight: .infinity)
+        }
+    }
 
-        VStack(spacing: 0) {
+    private var activeProjectList: some View {
+        let snapshot = projectSidebarProjectionStore.snapshot
+
+        return VStack(spacing: 0) {
             List(selection: selectedProjectBinding) {
                 Section {
                     Label("Home", systemImage: "house")
@@ -25,33 +32,30 @@ struct ProjectSidebarView: View {
                 }
 
                 Section("Projects") {
-                    ForEach(snapshot.projects) { project in
-                        let isSelected = selectedProjectId == project.projectId
+                    ForEach(snapshot.rows) { row in
                         ProjectRowView(
-                            project: project,
-                            isSelected: isSelected,
-                            supplementalRefreshKey: isSelected ? selectedSupplementalRefreshKey : nil
+                            row: row
                         )
                         .equatable()
-                            .tag(project.projectId)
+                            .tag(row.id)
                             .contextMenu {
                                 Button("接上次进度") {
-                                    appModel.presentResumeBrief(projectId: project.projectId)
+                                    appModel.presentResumeBrief(projectId: row.id)
                                 }
 
                                 Button("Open Project Folder") {
-                                    let url = URL(fileURLWithPath: project.rootPath)
+                                    let url = URL(fileURLWithPath: row.rootPath)
                                     appModel.openWorkspaceURL(url)
                                 }
                                 Button("Remove from List") {
-                                    appModel.removeProject(project.projectId)
+                                    appModel.removeProject(row.id)
                                 }
                             }
                     }
                     .onMove { offsets, destination in
                         appModel.moveProjects(from: offsets, to: destination)
                     }
-                    .moveDisabled(snapshot.projectCount <= 1)
+                    .moveDisabled(snapshot.rows.count <= 1)
                 }
             }
             .listStyle(.sidebar)
@@ -59,29 +63,9 @@ struct ProjectSidebarView: View {
         }
     }
 
-    private var projectListSnapshot: XTProjectListSnapshot {
-        projectListStore.snapshot
-    }
-
-    private var workSurfaceSnapshot: XTWorkSurfaceSnapshot {
-        workSurfaceStore.snapshot
-    }
-
-    private var sidebarSupplementalRefreshKey: ProjectSidebarSupplementalRefreshKey? {
-        guard let selectedProjectId = projectListSnapshot.selectedProjectId,
-              workSurfaceSnapshot.selectedProjectId == selectedProjectId else {
-            return nil
-        }
-        return ProjectSidebarSupplementalRefreshKey(
-            selectedProjectId: selectedProjectId,
-            selectedPane: workSurfaceSnapshot.selectedPane,
-            projectConfig: workSurfaceSnapshot.projectConfig
-        )
-    }
-
     private var selectedProjectBinding: Binding<String?> {
         Binding(
-            get: { projectListSnapshot.selectedProjectId },
+            get: { projectSidebarProjectionStore.snapshot.selectedProjectId },
             set: { nextProjectId in
                 guard let nextProjectId else {
                     appModel.selectedProjectId = nil
@@ -100,78 +84,56 @@ struct ProjectSidebarView: View {
     }
 }
 
-private struct ProjectSidebarSupplementalRefreshKey: Equatable {
-    let selectedProjectId: String
-    let selectedPane: AXProjectPane
-    let projectConfig: AXProjectConfig?
-}
-
 private struct ProjectRowView: View, Equatable {
     @Environment(\.xtAppModelReference) private var appModelReference
-    let project: AXProjectEntry
-    let isSelected: Bool
-    let supplementalRefreshKey: ProjectSidebarSupplementalRefreshKey?
+    let row: XTCoreProjectSidebarRowProjection
 
     static func == (lhs: ProjectRowView, rhs: ProjectRowView) -> Bool {
-        lhs.project == rhs.project &&
-            lhs.isSelected == rhs.isSelected &&
-            lhs.supplementalRefreshKey == rhs.supplementalRefreshKey
+        lhs.row == rhs.row
     }
 
     var body: some View {
-        let shouldLoadSupplementalMetadata = isSelected && supplementalRefreshKey != nil
-        let governancePresentation = shouldLoadSupplementalMetadata
-            ? ProjectGovernancePresentation(
-                resolved: appModel.resolvedProjectGovernance(for: project)
-            )
-            : nil
-        let latestSessionSummary = shouldLoadSupplementalMetadata
-            ? appModel.sessionSummaryPresentation(projectId: project.projectId)
-            : nil
-
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(project.displayName)
+                Text(row.displayName)
                     .font(.callout)
                     .lineLimit(1)
 
-                if latestSessionSummary != nil {
+                if row.resumeBadgeText != nil {
                     Image(systemName: "arrow.clockwise.circle.fill")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .help(latestSessionSummary?.helpText ?? "")
+                        .help(row.resumeHelpText ?? "")
                 }
             }
 
-            if isSelected,
-               let s = project.statusDigest,
-               !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if let s = row.statusDigest {
                 Text(s)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
 
-            if let latestSessionSummary {
-                Text(latestSessionSummary.badgeText)
+            if let resumeBadgeText = row.resumeBadgeText {
+                Text(resumeBadgeText)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                    .help(latestSessionSummary.helpText)
+                    .help(row.resumeHelpText ?? "")
             }
 
-            if let governancePresentation {
+            if let governance = row.governance {
                 ProjectSidebarGovernanceTierCards(
-                    presentation: governancePresentation,
+                    governance: governance,
                     onExecutionTierTap: {
                         appModel.requestProjectSettingsFocus(
-                            projectId: project.projectId,
+                            projectId: row.id,
                             destination: .executionTier
                         )
                     },
                     onSupervisorTierTap: {
                         appModel.requestProjectSettingsFocus(
-                            projectId: project.projectId,
+                            projectId: row.id,
                             destination: .supervisorTier
                         )
                     }
@@ -191,7 +153,7 @@ private struct ProjectRowView: View, Equatable {
 }
 
 private struct ProjectSidebarGovernanceTierCards: View {
-    let presentation: ProjectGovernancePresentation
+    let governance: XTCoreProjectSidebarGovernanceProjection
     let onExecutionTierTap: () -> Void
     let onSupervisorTierTap: () -> Void
 
@@ -199,30 +161,22 @@ private struct ProjectSidebarGovernanceTierCards: View {
         HStack(spacing: 6) {
             tierCard(
                 title: "A-Tier",
-                token: executionTier.shortToken,
-                label: executionTier.localizedShortLabel,
-                color: ProjectGovernanceComposerAccentTone.forExecutionTier(executionTier).color,
-                help: presentation.effectiveExecutionLabel,
+                token: governance.executionTierToken,
+                label: governance.executionTierLabel,
+                color: ProjectGovernanceComposerAccentTone.forExecutionTier(governance.executionTier).color,
+                help: governance.executionTierHelp,
                 action: onExecutionTierTap
             )
 
             tierCard(
                 title: "S-Tier",
-                token: supervisorTier.shortToken,
-                label: supervisorTier.localizedShortLabel,
-                color: ProjectGovernanceComposerAccentTone.forSupervisorTier(supervisorTier).color,
-                help: presentation.effectiveSupervisorLabel,
+                token: governance.supervisorTierToken,
+                label: governance.supervisorTierLabel,
+                color: ProjectGovernanceComposerAccentTone.forSupervisorTier(governance.supervisorTier).color,
+                help: governance.supervisorTierHelp,
                 action: onSupervisorTierTap
             )
         }
-    }
-
-    private var executionTier: AXProjectExecutionTier {
-        presentation.effectiveExecutionTier ?? presentation.executionTier
-    }
-
-    private var supervisorTier: AXProjectSupervisorInterventionTier {
-        presentation.effectiveSupervisorInterventionTier ?? presentation.supervisorInterventionTier
     }
 
     private func tierCard(

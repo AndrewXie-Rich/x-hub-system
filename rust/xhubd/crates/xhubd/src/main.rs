@@ -528,6 +528,11 @@ fn handle_client(mut stream: TcpStream, state: &HubState) -> Result<(), String> 
             | "/compat/classic-hub/write-status" => {
                 xt_compat::classic_hub_status_write_http_json(config, request.method.as_str())
             }
+            "/xt/file-ipc/live-status"
+            | "/xt/file-ipc-live-status"
+            | "/compat/xt-file-ipc/live-status" => {
+                xt_file_ipc::live_status_http_json(config, request.method.as_str())
+            }
             "/xt/file-ipc-shadow"
             | "/xt/file-ipc-shadow/respond-once"
             | "/xt/file-ipc-shadow/drain"

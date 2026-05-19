@@ -7,7 +7,6 @@ final class HubModelManager: ObservableObject {
 
     @Published var availableModels: [HubModel] = []
     @Published private(set) var latestSnapshot: ModelStateSnapshot = .empty()
-    @Published private(set) var latestRustInventoryProjection: XTRustModelInventoryProjection?
     @Published private(set) var hasFetchedAuthoritativeSnapshot: Bool = false
     @Published var isLoading: Bool = false
     @Published var error: String?
@@ -15,6 +14,9 @@ final class HubModelManager: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var appModel: AppModel?
     private var fetchGeneration: UInt64 = 0
+    private var fetchInFlight = false
+    private var lastFetchCompletedAt: Date?
+    private let fetchCoalescingWindow: TimeInterval = 2.0
 
     init() {}
 
@@ -22,44 +24,47 @@ final class HubModelManager: ObservableObject {
         self.appModel = appModel
     }
 
-    func fetchModels() async {
-        fetchGeneration &+= 1
-        let generation = fetchGeneration
+    func fetchModels(force: Bool = false) async {
         let fallbackSnapshot = currentFallbackSnapshot()
         let hadVisibleModels = !visibleSnapshot(fallback: fallbackSnapshot).models.isEmpty
+        if !force {
+            if fetchInFlight {
+                return
+            }
+            if hadVisibleModels,
+               let lastFetchCompletedAt,
+               Date().timeIntervalSince(lastFetchCompletedAt) < fetchCoalescingWindow {
+                return
+            }
+        }
+
+        fetchGeneration &+= 1
+        let generation = fetchGeneration
+        fetchInFlight = true
+        defer {
+            if isCurrentFetch(generation) {
+                fetchInFlight = false
+                lastFetchCompletedAt = Date()
+                isLoading = false
+            }
+        }
 
         isLoading = !hadVisibleModels
         error = nil
 
         // Keep the Models page local-first so stale pairing state never blocks the
         // Hub control surface from rendering its own inventory.
-        let rustInventoryResult = await XTRustModelInventoryLiveBridge.loadIfEnabled(
-            runtimeBaseDir: HubPaths.baseDir()
-        )
-        let rustInventoryProjection: XTRustModelInventoryProjection?
-        let localSnapshot: ModelStateSnapshot
-        switch rustInventoryResult {
-        case .loaded(let snapshot):
-            rustInventoryProjection = snapshot.projection
-            localSnapshot = snapshot.projection.snapshot
-        case .disabled, .unavailable:
-            rustInventoryProjection = nil
-            localSnapshot = await HubAIClient.shared.loadModelsState(transportOverride: .fileIPC)
-        }
+        let localSnapshot = await HubAIClient.shared.loadModelsState(transportOverride: .fileIPC)
         let hasRemoteProfile = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
         // Reconcile against authoritative Hub inventory whenever a remote profile
         // exists, even if the last connect probe state in AppModel is stale.
         let shouldAttemptBackgroundAuthoritativeRefresh =
             HubAIClient.transportMode() != .fileIPC
             && hasRemoteProfile
-            && rustInventoryProjection == nil
         guard isCurrentFetch(generation) else { return }
 
         if !localSnapshot.models.isEmpty || !hadVisibleModels {
-            applyFetchedSnapshot(
-                localSnapshot,
-                rustInventoryProjection: rustInventoryProjection
-            )
+            applyFetchedSnapshot(localSnapshot)
         }
 
         if hasRemoteProfile {
@@ -176,12 +181,8 @@ final class HubModelManager: ObservableObject {
         return latestSnapshot
     }
 
-    private func applyFetchedSnapshot(
-        _ snapshot: ModelStateSnapshot,
-        rustInventoryProjection: XTRustModelInventoryProjection? = nil
-    ) {
+    private func applyFetchedSnapshot(_ snapshot: ModelStateSnapshot) {
         latestSnapshot = snapshot
-        latestRustInventoryProjection = rustInventoryProjection
         availableModels = snapshot.models
         hasFetchedAuthoritativeSnapshot = true
         appModel?.modelsState = snapshot

@@ -42,6 +42,26 @@ struct AXRoleCanonicalizationTests {
     }
 
     @Test
+    func roleModelRoutesPreservePrimaryBackupAndAutomaticLocalFallback() throws {
+        let settings = XTerminalSettings.default()
+            .settingRolePrimaryModel(role: .coder, modelId: "openai/gpt-5.5")
+            .settingRolePaidBackupModel(role: .coder, modelId: "gemini/gemini-3.5-pro")
+            .settingRoleLocalFallback(role: .coder, mode: .automatic)
+
+        #expect(settings.assignment(for: .coder).model == "openai/gpt-5.5")
+        #expect(settings.modelRoute(for: .coder).primaryModelId == "openai/gpt-5.5")
+        #expect(settings.modelRoute(for: .coder).paidBackupModelId == "gemini/gemini-3.5-pro")
+        #expect(settings.modelRoute(for: .coder).localFallbackMode == .automatic)
+
+        let data = try JSONEncoder().encode(settings)
+        let decoded = try JSONDecoder().decode(XTerminalSettings.self, from: data)
+
+        #expect(decoded.assignment(for: .coder).model == "openai/gpt-5.5")
+        #expect(decoded.modelRoute(for: .coder).paidBackupModelId == "gemini/gemini-3.5-pro")
+        #expect(decoded.modelRoute(for: .coder).localFallbackMode == .automatic)
+    }
+
+    @Test
     func projectOverridesAndUsageSnapshotsReusePrimaryRoles() {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("xt-role-canonical-\(UUID().uuidString)", isDirectory: true)

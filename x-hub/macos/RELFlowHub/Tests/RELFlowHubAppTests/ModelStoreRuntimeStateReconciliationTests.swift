@@ -248,6 +248,61 @@ final class ModelStoreRuntimeStateReconciliationTests: XCTestCase {
         XCTAssertEqual(reconciled.removedModelIDs, Set(["deepseek-r1-0528-qwen3-8b"]))
     }
 
+    func testRefreshedBaseModelSnapshotsCanSkipManagedFilesystemReconcile() throws {
+        let baseDir = try makeTempDir()
+        let missingManagedPath = baseDir
+            .appendingPathComponent("models", isDirectory: true)
+            .appendingPathComponent("deepseek-r1-0528-qwen3-8b", isDirectory: true)
+
+        let catalog = ModelCatalogSnapshot(
+            models: [
+                ModelCatalogEntry(
+                    id: "deepseek-r1-0528-qwen3-8b",
+                    name: "DeepSeek R1",
+                    backend: "transformers",
+                    runtimeProviderID: "transformers",
+                    quant: "4bit",
+                    contextLength: 32768,
+                    modelPath: missingManagedPath.path,
+                    note: "managed_copy",
+                    modelFormat: "hf_transformers",
+                    taskKinds: ["text_generate"]
+                )
+            ],
+            updatedAt: 10
+        )
+        let state = ModelStateSnapshot(
+            models: [
+                HubModel(
+                    id: "deepseek-r1-0528-qwen3-8b",
+                    name: "DeepSeek R1",
+                    backend: "transformers",
+                    runtimeProviderID: "transformers",
+                    quant: "4bit",
+                    contextLength: 32768,
+                    paramsB: 8.0,
+                    state: .available,
+                    modelPath: missingManagedPath.path,
+                    note: "managed_copy",
+                    modelFormat: "hf_transformers",
+                    taskKinds: ["text_generate"]
+                )
+            ],
+            updatedAt: 12
+        )
+
+        let refreshed = ModelStore.refreshedBaseModelSnapshots(
+            catalog: catalog,
+            state: state,
+            baseDir: baseDir,
+            fileManager: .default,
+            reconcileManagedLocalModels: false
+        )
+
+        XCTAssertEqual(refreshed.catalog.models, catalog.models)
+        XCTAssertTrue(refreshed.state.models.contains { $0.id == "deepseek-r1-0528-qwen3-8b" })
+    }
+
     func testReconciledManagedLocalModelSnapshotsKeepsMissingExternalPaths() throws {
         let baseDir = try makeTempDir()
         let externalMissingPath = baseDir

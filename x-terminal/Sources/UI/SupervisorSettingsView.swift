@@ -71,7 +71,7 @@ private enum SupervisorSettingsNavigationSection: String, CaseIterable, Identifi
 
 struct SupervisorSettingsView: View {
     @Environment(\.xtAppModelReference) private var appModelReference
-    @EnvironmentObject private var settingsCenterStore: XTSettingsCenterStore
+    @EnvironmentObject private var settingsValueStore: XTSettingsValueStore
     @EnvironmentObject private var modelSettingsStore: XTModelSettingsStore
     @EnvironmentObject private var navigationFocusStore: XTNavigationFocusStore
     @EnvironmentObject private var projectListStore: XTProjectListStore
@@ -104,7 +104,7 @@ struct SupervisorSettingsView: View {
     @State private var selectedNavigationSection: SupervisorSettingsNavigationSection = .overview
     
     var body: some View {
-        let _ = settingsCenterSnapshot
+        let _ = settingsSnapshot
         let _ = modelSettingsSnapshot
         let _ = navigationFocusSnapshot
         let _ = projectListSnapshot
@@ -115,7 +115,7 @@ struct SupervisorSettingsView: View {
                 Divider()
 
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
+                    LazyVStack(alignment: .leading, spacing: 16) {
                         Color.clear
                             .frame(height: 0)
                             .id("supervisor_settings_detail_top")
@@ -212,7 +212,7 @@ struct SupervisorSettingsView: View {
     private var supervisorSettingsHeaderActionContent: some View {
         Button("刷新模型列表") {
             Task {
-                await modelManager.fetchModels()
+                await modelManager.fetchModels(force: true)
             }
         }
         .buttonStyle(.bordered)
@@ -2051,10 +2051,7 @@ struct SupervisorSettingsView: View {
     }
 
     private var supervisorModelInventoryTruth: XTModelInventoryTruthPresentation {
-        if let rustInventory = modelManager.latestRustInventoryProjection {
-            return XTModelInventoryTruthPresentation.build(rustInventory: rustInventory)
-        }
-        return XTModelInventoryTruthPresentation.build(
+        XTModelInventoryTruthPresentation.build(
             snapshot: modelInventorySnapshot,
             hubBaseDir: modelSettingsSnapshot.hubBaseDir ?? HubPaths.baseDir()
         )
@@ -3043,12 +3040,8 @@ struct SupervisorSettingsView: View {
         )
     }
 
-    private var settingsCenterSnapshot: XTSettingsCenterSnapshot {
-        settingsCenterStore.snapshot
-    }
-
     private var settingsSnapshot: XTerminalSettings {
-        settingsCenterSnapshot.settings
+        settingsValueStore.snapshot
     }
 
     private var modelSettingsSnapshot: XTModelSettingsSnapshot {

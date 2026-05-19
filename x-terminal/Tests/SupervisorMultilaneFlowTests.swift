@@ -424,6 +424,360 @@ struct SupervisorMultilaneFlowTests {
 
     @MainActor
     @Test
+    func orchestratorLaneLaunchPreparesWorktreeForRegisteredGitProject() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "orchestrator-lane-worktree")
+        defer { fixture.cleanup() }
+        try seedCommittedRepo(at: fixture.root)
+
+        let project = ProjectModel(
+            name: "Registered Repo",
+            taskDescription: "Code lane target",
+            modelName: "claude-sonnet-4.6",
+            registeredProjectBinding: ProjectRegistryBinding(
+                projectId: "registered-repo",
+                rootPath: fixture.root.path,
+                displayName: "Registered Repo"
+            ),
+            executionTier: .a3DeliverAuto,
+            supervisorInterventionTier: .s2PeriodicReview,
+            budget: Budget(daily: 50, monthly: 500)
+        )
+        project.priority = 10
+
+        let runtimeHost = MultilaneRuntimeHostSpy(projects: [project])
+        let orchestrator = SupervisorOrchestrator(runtimeHost: runtimeHost)
+
+        var task = DecomposedTask(
+            description: "Implement small code change",
+            type: .development,
+            complexity: .simple,
+            estimatedEffort: 900,
+            priority: 8
+        )
+        task.metadata["agent_mode"] = XTAgentMode.code.rawValue
+
+        let lane = SplitLaneProposal(
+            laneId: "lane-code",
+            goal: task.description,
+            dependsOn: [],
+            riskTier: .low,
+            budgetClass: .standard,
+            createChildProject: false,
+            expectedArtifacts: ["patch"],
+            dodChecklist: ["diagnostics_green"],
+            verificationContract: nil,
+            estimatedEffortMs: 900_000,
+            tokenBudget: 4_000,
+            sourceTaskId: task.id,
+            notes: []
+        )
+        let proposal = SplitProposal(
+            splitPlanId: UUID(),
+            rootProjectId: project.id,
+            planVersion: 1,
+            complexityScore: 12,
+            lanes: [lane],
+            recommendedConcurrency: 1,
+            tokenBudgetTotal: lane.tokenBudget,
+            estimatedWallTimeMs: lane.estimatedEffortMs,
+            sourceTaskDescription: task.description,
+            createdAt: Date()
+        )
+        let analysis = TaskAnalysis(
+            originalDescription: task.description,
+            keywords: ["code"],
+            verbs: ["implement"],
+            objects: ["change"],
+            constraints: [],
+            type: .development,
+            complexity: .simple,
+            estimatedEffort: task.estimatedEffort,
+            requiredSkills: ["swift"],
+            riskLevel: .low,
+            suggestedSubtasks: [],
+            potentialDependencies: []
+        )
+        let decomposition = DecompositionResult(
+            rootTask: task,
+            subtasks: [task],
+            allTasks: [task],
+            dependencyGraph: DependencyGraph(tasks: [task]),
+            analysis: analysis
+        )
+        let buildResult = SplitProposalBuildResult(
+            decomposition: decomposition,
+            proposal: proposal,
+            validation: SplitProposalValidationResult(issues: [])
+        )
+
+        _ = orchestrator.adoptPreparedSplitProposal(buildResult)
+        let report = try #require(await orchestrator.executeActiveSplitProposal())
+
+        #expect(report.launchedLaneIDs == ["lane-code"])
+        #expect(report.worktreeStateRefs["lane-code"] == ".xterminal/lane-state/lane-code.json")
+        #expect(report.worktreePaths["lane-code"] == ".xterminal/worktrees/lane-code")
+
+        let manager = LaneWorktreeManager(projectRoot: fixture.root)
+        let state = try #require(try manager.loadState(laneID: "lane-code"))
+        #expect(state.mode == .code)
+        #expect(state.sessionID == proposal.splitPlanId.uuidString.lowercased())
+        #expect(state.worktreePath == ".xterminal/worktrees/lane-code")
+
+        let monitoredTask = try #require(orchestrator.monitor.taskStates.values.first?.task)
+        #expect(monitoredTask.metadata["lane_worktree_path"] == ".xterminal/worktrees/lane-code")
+        #expect(monitoredTask.metadata["lane_worktree_state_ref"] == ".xterminal/lane-state/lane-code.json")
+        #expect(monitoredTask.metadata["agent_mode"] == XTAgentMode.code.rawValue)
+    }
+
+    @MainActor
+    @Test
+    func orchestratorMergebackSelectedWorktreeLaneAppliesWinnerAndRecordsAudit() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "orchestrator-lane-mergeback")
+        defer { fixture.cleanup() }
+        try seedCommittedSwiftPackageRepo(at: fixture.root)
+
+        let project = ProjectModel(
+            name: "Registered Repo",
+            taskDescription: "Code lane target",
+            modelName: "claude-sonnet-4.6",
+            registeredProjectBinding: ProjectRegistryBinding(
+                projectId: "registered-repo",
+                rootPath: fixture.root.path,
+                displayName: "Registered Repo"
+            ),
+            executionTier: .a3DeliverAuto,
+            supervisorInterventionTier: .s2PeriodicReview,
+            budget: Budget(daily: 50, monthly: 500)
+        )
+        project.priority = 10
+
+        let runtimeHost = MultilaneRuntimeHostSpy(projects: [project])
+        let orchestrator = SupervisorOrchestrator(runtimeHost: runtimeHost)
+
+        var task = DecomposedTask(
+            description: "Implement winner code change",
+            type: .development,
+            complexity: .simple,
+            estimatedEffort: 900,
+            priority: 8
+        )
+        task.metadata["agent_mode"] = XTAgentMode.code.rawValue
+
+        let lane = SplitLaneProposal(
+            laneId: "lane-code",
+            goal: task.description,
+            dependsOn: [],
+            riskTier: .low,
+            budgetClass: .standard,
+            createChildProject: false,
+            expectedArtifacts: ["patch"],
+            dodChecklist: ["diagnostics_green"],
+            verificationContract: nil,
+            estimatedEffortMs: 900_000,
+            tokenBudget: 4_000,
+            sourceTaskId: task.id,
+            notes: []
+        )
+        let proposal = SplitProposal(
+            splitPlanId: UUID(),
+            rootProjectId: project.id,
+            planVersion: 1,
+            complexityScore: 12,
+            lanes: [lane],
+            recommendedConcurrency: 1,
+            tokenBudgetTotal: lane.tokenBudget,
+            estimatedWallTimeMs: lane.estimatedEffortMs,
+            sourceTaskDescription: task.description,
+            createdAt: Date()
+        )
+        let analysis = TaskAnalysis(
+            originalDescription: task.description,
+            keywords: ["code"],
+            verbs: ["implement"],
+            objects: ["change"],
+            constraints: [],
+            type: .development,
+            complexity: .simple,
+            estimatedEffort: task.estimatedEffort,
+            requiredSkills: ["swift"],
+            riskLevel: .low,
+            suggestedSubtasks: [],
+            potentialDependencies: []
+        )
+        let decomposition = DecompositionResult(
+            rootTask: task,
+            subtasks: [task],
+            allTasks: [task],
+            dependencyGraph: DependencyGraph(tasks: [task]),
+            analysis: analysis
+        )
+        let buildResult = SplitProposalBuildResult(
+            decomposition: decomposition,
+            proposal: proposal,
+            validation: SplitProposalValidationResult(issues: [])
+        )
+
+        _ = orchestrator.adoptPreparedSplitProposal(buildResult)
+        _ = try #require(await orchestrator.executeActiveSplitProposal())
+
+        let manager = LaneWorktreeManager(projectRoot: fixture.root)
+        let state = try #require(try manager.loadState(laneID: "lane-code"))
+        let worktreeURL = fixture.root.appendingPathComponent(state.worktreePath, isDirectory: true)
+        try """
+        print("winner")
+        """.write(
+            to: worktreeURL.appendingPathComponent("Sources/GateFixture/main.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let taskID = try #require(orchestrator.monitor.taskStates.values.first?.task.id)
+        await orchestrator.monitor.updateState(taskID, status: .completed, note: "ready_for_mergeback")
+
+        let missingOutputReport = await orchestrator.mergebackSelectedWorktreeLane(
+            laneID: "lane-code",
+            strictIncidentCoverage: false,
+            timeoutSec: 120
+        )
+        #expect(missingOutputReport?.pass == false)
+        #expect(missingOutputReport?.blockedReason == "coder_lane_output_missing")
+        #expect(orchestrator.lastLaneWinnerScoreReport?.recommendedLaneID == "")
+        #expect(orchestrator.lastLaneWinnerScoreReport?.candidates.first?.blockers.contains("coder_lane_output_missing") == true)
+
+        let output = try orchestrator.recordCoderLaneOutput(
+            laneID: "lane-code",
+            summary: "Implemented winner code change.",
+            artifactRefs: ["local://lane-code/patch"],
+            auditRef: "audit-coder-lane-output-1"
+        )
+        #expect(output.role == "coder")
+        #expect(output.changedFiles == ["Sources/GateFixture/main.swift"])
+        #expect(output.outputRef == ".xterminal/lane-output/lane-code.json")
+        #expect(orchestrator.coderLaneOutputs["lane-code"] == output)
+
+        let missingReviewReport = await orchestrator.mergebackSelectedWorktreeLane(
+            laneID: "lane-code",
+            strictIncidentCoverage: false,
+            timeoutSec: 120
+        )
+        #expect(missingReviewReport?.pass == false)
+        #expect(missingReviewReport?.blockedReason == "reviewer_verdict_missing")
+        #expect(orchestrator.lastLaneWinnerScoreReport?.candidates.first?.blockers.contains("reviewer_verdict_missing") == true)
+
+        let blockedReview = try orchestrator.recordLaneReviewReport(
+            laneID: "lane-code",
+            verdict: .changesRequested,
+            reviewerID: "reviewer-1",
+            summary: "Needs a final approval before mergeback.",
+            issues: ["approval_not_final"],
+            recommendedActions: ["rerun review after confirming diagnostics"],
+            residualRisks: ["none"],
+            evidenceRefs: [output.outputRef],
+            auditRef: "audit-review-lane-code-blocked"
+        )
+        #expect(blockedReview.verdict == .changesRequested)
+        let blockedReviewReport = await orchestrator.mergebackSelectedWorktreeLane(
+            laneID: "lane-code",
+            strictIncidentCoverage: false,
+            timeoutSec: 120
+        )
+        #expect(blockedReviewReport?.pass == false)
+        #expect(blockedReviewReport?.blockedReason == "reviewer_verdict_not_approved")
+        #expect(orchestrator.lastLaneWinnerScoreReport?.recommendedLaneID == "")
+        #expect(orchestrator.lastLaneWinnerScoreReport?.candidates.first?.blockers.contains("reviewer_changes_requested") == true)
+
+        let review = try orchestrator.recordLaneReviewReport(
+            laneID: "lane-code",
+            verdict: .approved,
+            reviewerID: "reviewer-1",
+            summary: "Diff and diagnostics are acceptable for mergeback.",
+            issues: [],
+            recommendedActions: ["mergeback"],
+            residualRisks: ["low"],
+            evidenceRefs: [output.outputRef, output.diffRef],
+            auditRef: "audit-review-lane-code-approved"
+        )
+        #expect(review.role == "reviewer")
+        #expect(review.verdict == .approved)
+        #expect(review.coderOutputRef == output.outputRef)
+        #expect(review.reviewRef == ".xterminal/lane-review/lane-code.json")
+        #expect(orchestrator.laneReviewReports["lane-code"] == review)
+
+        let overrideScore = try #require(
+            orchestrator.overrideLaneWinnerSelection(
+                laneID: "lane-code",
+                reason: "test_manual_lane_selection"
+            )
+        )
+        #expect(orchestrator.laneWinnerSelectionOverride?.laneID == "lane-code")
+        #expect(overrideScore.recommendedLaneID == "lane-code")
+        #expect(overrideScore.selectionSource == "manual_override")
+        #expect(overrideScore.manualOverrideLaneID == "lane-code")
+
+        let maybeReport = await orchestrator.mergebackSelectedWorktreeLane(
+            strictIncidentCoverage: false,
+            timeoutSec: 120
+        )
+        let report = try #require(maybeReport)
+
+        #expect(report.pass)
+        #expect(report.changedFiles == ["Sources/GateFixture/main.swift"])
+        #expect(report.reportRef == ".xterminal/mergeback/lane-code.json")
+        #expect(orchestrator.lastLaneWorktreeMergebackReport == report)
+        #expect(orchestrator.lastMergebackGateReport?.pass == true)
+        #expect(orchestrator.lastMergebackQualityReport?.runAudits.first?.laneID == "lane-code")
+        let scoreReport = try #require(orchestrator.lastLaneWinnerScoreReport)
+        #expect(scoreReport.recommendedLaneID == "lane-code")
+        #expect(scoreReport.eligibleCount == 1)
+        #expect(scoreReport.candidates.first?.selected == true)
+        #expect(scoreReport.candidates.first?.reviewVerdict == "approved")
+        #expect(scoreReport.selectionSource == "manual_override")
+        #expect(scoreReport.manualOverrideLaneID == "lane-code")
+
+        let mergedSource = try String(
+            contentsOf: fixture.root.appendingPathComponent("Sources/GateFixture/main.swift"),
+            encoding: .utf8
+        )
+        #expect(mergedSource.contains("winner"))
+
+        let reportURL = fixture.root.appendingPathComponent(report.reportRef)
+        let persisted = try JSONDecoder().decode(
+            LaneWorktreeMergebackReport.self,
+            from: Data(contentsOf: reportURL)
+        )
+        #expect(persisted == report)
+        let persistedOutput = try JSONDecoder().decode(
+            CoderLaneOutput.self,
+            from: Data(contentsOf: fixture.root.appendingPathComponent(output.outputRef))
+        )
+        #expect(persistedOutput == output)
+        let persistedReview = try JSONDecoder().decode(
+            LaneReviewReport.self,
+            from: Data(contentsOf: fixture.root.appendingPathComponent(review.reviewRef))
+        )
+        #expect(persistedReview == review)
+        let persistedScore = try JSONDecoder().decode(
+            LaneWinnerScoreReport.self,
+            from: Data(contentsOf: fixture.root.appendingPathComponent(scoreReport.reportRef))
+        )
+        #expect(persistedScore == scoreReport)
+        #expect(orchestrator.splitAuditTrail.contains(where: {
+            $0.detail.contains("worktree_mergeback lane=lane-code pass=true")
+                && $0.payload["reviewer_verdict"] == "approved"
+                && $0.payload["coder_lane_output_ref"] == output.outputRef
+        }))
+        #expect(orchestrator.splitAuditTrail.contains(where: {
+            $0.detail.contains("lane_winner_score recommended=lane-code")
+                && $0.payload["lane_winner_score_ref"] == scoreReport.reportRef
+        }))
+        #expect(orchestrator.splitAuditTrail.contains(where: {
+            $0.detail.contains("lane_winner_manual_override lane=lane-code")
+                && $0.payload["hub_first_note"] == "local_selection_only_mergeback_still_requires_reviewer_gate_hub_policy"
+        }))
+    }
+
+    @MainActor
+    @Test
     func supervisorOrchestratorTreatsA4ProjectAsExclusiveEvenIfLegacyAutonomyShadowIsManual() {
         let supervisor = SupervisorModel()
         let orchestrator = supervisor.orchestrator!
@@ -721,4 +1075,88 @@ struct SupervisorMultilaneFlowTests {
             status: .handled
         )
     }
+
+    private func seedCommittedRepo(at root: URL) throws {
+        try requireGitSuccess(try runGit(["init", "-q"], cwd: root), "git init")
+        try requireGitSuccess(try runGit(["config", "user.email", "xt-tests@example.com"], cwd: root), "git config user.email")
+        try requireGitSuccess(try runGit(["config", "user.name", "XT Tests"], cwd: root), "git config user.name")
+        try "old\n".write(
+            to: root.appendingPathComponent("README.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try requireGitSuccess(try runGit(["add", "README.md"], cwd: root), "git add")
+        try requireGitSuccess(try runGit(["commit", "-q", "-m", "base"], cwd: root), "git commit")
+    }
+
+    private func seedCommittedSwiftPackageRepo(at root: URL) throws {
+        try requireGitSuccess(try runGit(["init", "-q"], cwd: root), "git init")
+        try requireGitSuccess(try runGit(["config", "user.email", "xt-tests@example.com"], cwd: root), "git config user.email")
+        try requireGitSuccess(try runGit(["config", "user.name", "XT Tests"], cwd: root), "git config user.name")
+        try """
+        // swift-tools-version: 5.9
+        import PackageDescription
+
+        let package = Package(
+            name: "GateFixture",
+            targets: [
+                .executableTarget(name: "GateFixture", path: "Sources/GateFixture")
+            ]
+        )
+        """.write(
+            to: root.appendingPathComponent("Package.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let sourceDir = root.appendingPathComponent("Sources/GateFixture", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceDir, withIntermediateDirectories: true)
+        try """
+        print("ok")
+        """.write(
+            to: sourceDir.appendingPathComponent("main.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try requireGitSuccess(try runGit(["add", "."], cwd: root), "git add")
+        try requireGitSuccess(try runGit(["commit", "-q", "-m", "base"], cwd: root), "git commit")
+    }
+
+    private func runGit(_ args: [String], cwd: URL) throws -> ProcessResult {
+        try ProcessCapture.run("/usr/bin/git", args, cwd: cwd)
+    }
+
+    private func requireGitSuccess(_ result: ProcessResult, _ operation: String) throws {
+        guard result.exitCode == 0 else {
+            throw NSError(
+                domain: "SupervisorMultilaneFlowTests",
+                code: Int(result.exitCode),
+                userInfo: [NSLocalizedDescriptionKey: "\(operation) failed\n\(result.combined)"]
+            )
+        }
+    }
+}
+
+@MainActor
+private final class MultilaneRuntimeHostSpy: SupervisorProjectRuntimeHosting {
+    var activeProjects: [ProjectModel]
+    var taskAssignerForRuntime: TaskAssigner? = nil
+
+    init(projects: [ProjectModel]) {
+        self.activeProjects = projects
+    }
+
+    func addActiveProjectIfNeeded(_ project: ProjectModel) {
+        guard !activeProjects.contains(where: { $0.id == project.id }) else { return }
+        activeProjects.append(project)
+    }
+
+    func onProjectCreated(_ project: ProjectModel) async {}
+    func onProjectDeleted(_ project: ProjectModel) async {}
+    func onProjectStarted(_ project: ProjectModel) async {}
+    func onProjectPaused(_ project: ProjectModel) async {}
+    func onProjectResumed(_ project: ProjectModel) async {}
+    func onProjectCompleted(_ project: ProjectModel) async {}
+    func onProjectArchived(_ project: ProjectModel) async {}
+    func onProjectExecutionStarted(_ project: ProjectModel, model: ModelInfo) async {}
+    func suggestModelUpgrade(for project: ProjectModel) async {}
 }

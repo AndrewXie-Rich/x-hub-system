@@ -6,9 +6,10 @@ struct TerminalChatView: View {
     let memory: AXMemory?
     let config: AXProjectConfig?
     let hubConnected: Bool
-    @ObservedObject var session: ChatSessionModel
+    let session: ChatSessionModel
     @ObservedObject private var composer: ChatComposerState
-    @EnvironmentObject private var appModel: AppModel
+    @Environment(\.xtAppModelReference) private var appModelReference
+    @EnvironmentObject private var modelSettingsStore: XTModelSettingsStore
     @Environment(\.openWindow) private var openWindow
     @StateObject private var modelManager = HubModelManager.shared
     @StateObject private var chatStatusStore = XTChatStatusStore()
@@ -19,21 +20,6 @@ struct TerminalChatView: View {
     @State private var isAttachmentDropTarget: Bool = false
     @State private var attachmentDropIntent: XTChatComposerDropIntent? = nil
     @State private var transcriptAttributedSnapshot = NSAttributedString(string: "")
-
-    init(
-        ctx: AXProjectContext,
-        memory: AXMemory?,
-        config: AXProjectConfig?,
-        hubConnected: Bool,
-        session: ChatSessionModel
-    ) {
-        self.ctx = ctx
-        self.memory = memory
-        self.config = config
-        self.hubConnected = hubConnected
-        self.session = session
-        _composer = ObservedObject(wrappedValue: session.composer)
-    }
 
     init(
         ctx: AXProjectContext,
@@ -133,10 +119,9 @@ struct TerminalChatView: View {
                 Text("待批准：\(pendingToolCalls.count) 个工具调用")
                     .font(.system(.body, design: .monospaced))
                 Spacer(minLength: 0)
-                Button("批准并执行") {
+                Button("审批") {
                     session.approvePendingTools(router: appModel.llmRouter)
                 }
-                .disabled(!hubConnected)
                 Button("拒绝") {
                     session.rejectPendingTools()
                 }
@@ -209,7 +194,7 @@ struct TerminalChatView: View {
 
                 VoiceInputButton(text: $composer.draft)
 
-                Toggle("自动执行工具", isOn: $composer.autoRunTools)
+                Toggle("自动执行", isOn: $composer.autoRunTools)
                     .toggleStyle(.switch)
                     .disabled(!hubConnected)
                     .help("自动执行普通待确认工具；策略拒绝、权限不足和强制审批的工具仍会停在审批区。")
@@ -222,15 +207,7 @@ struct TerminalChatView: View {
                 Button(status.isSending ? "发送中…" : "发送") {
                     sendMessage()
                 }
-                .disabled(
-                    !hubConnected ||
-                        session.isSending ||
-                        !session.pendingToolCalls.isEmpty ||
-                        !AXChatAttachmentSupport.hasSubmittableContent(
-                            draft: composer.draft,
-                            attachments: composer.draftAttachments
-                        )
-                )
+                .disabled(!canSubmit)
                 .keyboardShortcut(.return, modifiers: [.command])
             }
 
@@ -252,13 +229,7 @@ struct TerminalChatView: View {
                         session.dismissImportContinuation()
                         sendMessage()
                     },
-                    canContinueAndSend: hubConnected &&
-                        !session.isSending &&
-                        session.pendingToolCalls.isEmpty &&
-                        AXChatAttachmentSupport.hasSubmittableContent(
-                            draft: composer.draft,
-                            attachments: composer.draftAttachments
-                        ),
+                    canContinueAndSend: canSubmit,
                     onDismissContinuation: session.dismissImportContinuation
                 )
             }
@@ -269,14 +240,8 @@ struct TerminalChatView: View {
                     ofSize: NSFont.preferredFont(forTextStyle: .body).pointSize,
                     weight: .regular
                 ),
-                isEditable: session.pendingToolCalls.isEmpty,
-                canSubmit: hubConnected &&
-                    !session.isSending &&
-                    session.pendingToolCalls.isEmpty &&
-                    AXChatAttachmentSupport.hasSubmittableContent(
-                        draft: composer.draft,
-                        attachments: composer.draftAttachments
-                    ),
+                isEditable: status.pendingToolCalls.isEmpty,
+                canSubmit: canSubmit,
                 diagnosticScope: "terminal_chat",
                 onSubmit: sendMessage,
                 allowsImportDrop: true,

@@ -4446,7 +4446,11 @@ extension AXSkillsLibrary {
         let localFamilies = XTSkillCapabilityProfileSupport.orderedCapabilityFamilies(
             allowedTools.flatMap { XTSkillCapabilityProfileSupport.capabilityFamilies(for: $0) }
         )
-        let localProfiles = XTSkillCapabilityProfileSupport.capabilityProfiles(for: localFamilies)
+        var localProfiles = XTSkillCapabilityProfileSupport.capabilityProfiles(for: localFamilies)
+        if config.toolProfile == ToolProfile.minimal.rawValue,
+           !minimalToolProfileHasExplicitCodeExecutionSurface(allowedTools) {
+            localProfiles.removeAll { $0 == XTSkillCapabilityProfileID.codingExecute.rawValue }
+        }
         let requestedProfiles = XTSkillCapabilityProfileSupport.orderedProfiles(
             XTSkillCapabilityProfileSupport.legacyRequestedProfiles(toolProfileRaw: config.toolProfile) + localProfiles
         )
@@ -4474,6 +4478,22 @@ extension AXSkillsLibrary {
             runtimeSurfaceHash: runtimeSurfaceHash(projectRoot: projectRoot, config: config, hubBaseDir: hubBaseDir),
             profileEpoch: profileEpoch
         )
+    }
+
+    private static func minimalToolProfileHasExplicitCodeExecutionSurface(_ allowedTools: [ToolName]) -> Bool {
+        let codeExecutionTools: Set<ToolName> = [
+            .write_file,
+            .delete_path,
+            .move_path,
+            .git_apply,
+            .git_commit,
+            .run_command,
+            .process_start,
+            .process_stop,
+            .buildRun,
+            .testRun,
+        ]
+        return allowedTools.contains { codeExecutionTools.contains($0) }
     }
 
     static func resolvedSkillsCacheEpochState(

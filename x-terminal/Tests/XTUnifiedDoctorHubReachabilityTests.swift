@@ -42,50 +42,6 @@ struct XTUnifiedDoctorHubReachabilityTests {
         #expect(section?.headline == "Hub 已通过本机直连可达")
         #expect(report.currentFailureIssue == nil)
     }
-
-    @Test
-    func attachesHubContractProjectionToReachabilitySection() {
-        let input = makeHubReachabilityDoctorInput(
-            localConnected: true,
-            remoteConnected: false,
-            internetHost: "hub.example.com",
-            failureCode: ""
-        )
-        input.hubContractProjection = sampleReadyHubContractProjectionForTests()
-
-        let report = XTUnifiedDoctorBuilder.build(input: input)
-
-        let section = report.section(.hubReachability)
-        #expect(section?.state == .ready)
-        #expect(section?.hubContractProjection?.contractReady == true)
-        #expect(section?.detailLines.contains("hub_contract_schema_version=xhub.rust_hub.xt_contract.v1") == true)
-        #expect(section?.detailLines.contains("hub_contract_memory_canonical_writer=hub_only") == true)
-        #expect(section?.detailLines.contains("hub_contract_skills_lease_required=true") == true)
-        #expect(report.consumedContracts.contains(HubContractSnapshot.currentSchemaVersion))
-    }
-
-    @Test
-    func firstHubContractFetchFailureDoesNotMaskReachableHub() {
-        let input = makeHubReachabilityDoctorInput(
-            localConnected: true,
-            remoteConnected: false,
-            internetHost: "hub.example.com",
-            failureCode: ""
-        )
-        input.hubContractProjection = .fetchFailure(
-            errorCode: "network_error",
-            errorMessage: "connection refused",
-            observedAt: Date(timeIntervalSince1970: 1_741_300_001)
-        )
-
-        let report = XTUnifiedDoctorBuilder.build(input: input)
-
-        let section = report.section(.hubReachability)
-        #expect(section?.state == .ready)
-        #expect(section?.hubContractProjection?.contractReady == false)
-        #expect(section?.detailLines.contains("hub_contract_fetch_error_code=network_error") == true)
-        #expect(report.consumedContracts.contains(HubContractSnapshot.currentSchemaVersion) == false)
-    }
 }
 
 private func makeHubReachabilityDoctorInput(

@@ -361,7 +361,7 @@ struct ProjectDetailView: View {
             // 内容区域
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(spacing: 20) {
+                    LazyVStack(spacing: 20) {
                         if let initialFocusContext {
                             XTFocusContextCard(context: initialFocusContext)
                         }

@@ -106,6 +106,62 @@ enum MessageTimelineWindowingSupport {
     }
 }
 
+enum MessageTimelineChangeCoalescing {
+    static func shouldSkipTailRefresh(
+        handledByMessageCountChange: XTMessageTimelineTailSignature?,
+        currentTailSignature: XTMessageTimelineTailSignature
+    ) -> Bool {
+        handledByMessageCountChange == currentTailSignature
+    }
+}
+
+enum MessageTimelineStreamingTextPresentation {
+    static let defaultByteThreshold = 12_000
+    static let defaultSuffixCharacterLimit = 4_000
+
+    static func visibleContent(
+        for content: String,
+        isStreamingTail: Bool,
+        byteThreshold: Int = defaultByteThreshold,
+        suffixCharacterLimit: Int = defaultSuffixCharacterLimit
+    ) -> String {
+        guard isStreamingTail,
+              content.utf8.count > max(0, byteThreshold) else {
+            return content
+        }
+
+        let suffix = content.suffix(max(1, suffixCharacterLimit))
+        return "...\n" + suffix
+    }
+}
+
+enum MessageTimelineLongTextPresentation {
+    static let defaultCollapseByteThreshold = 24_000
+    static let defaultPreviewCharacterLimit = 6_000
+
+    static func shouldCollapse(
+        _ content: String,
+        byteThreshold: Int = defaultCollapseByteThreshold
+    ) -> Bool {
+        content.utf8.count > max(0, byteThreshold)
+    }
+
+    static func previewContent(
+        for content: String,
+        characterLimit: Int = defaultPreviewCharacterLimit
+    ) -> String {
+        let limit = max(1, characterLimit)
+        guard let endIndex = content.index(
+            content.startIndex,
+            offsetBy: limit,
+            limitedBy: content.endIndex
+        ), endIndex < content.endIndex else {
+            return content
+        }
+        return String(content[..<endIndex]) + "\n..."
+    }
+}
+
 private enum MessageTimelineFormatters {
     static let time: DateFormatter = {
         let formatter = DateFormatter()
@@ -149,6 +205,119 @@ private enum MessageTimelineRenderCache {
     }
 }
 
+struct MessageRowSnapshot: Identifiable, Equatable {
+    let message: AXChatMessage
+    let thinkingPresentation: XTStreamingPlaceholderPresentation?
+    let showsRouteDiagnoseActions: Bool
+    let usesStructuredAssistantContent: Bool
+    let isStreamingTail: Bool
+
+    var id: String { message.id }
+
+    init(
+        message: AXChatMessage,
+        thinkingPresentation: XTStreamingPlaceholderPresentation? = nil,
+        showsRouteDiagnoseActions: Bool? = nil,
+        usesStructuredAssistantContent: Bool? = nil,
+        isStreamingTail: Bool = false
+    ) {
+        self.message = message
+        self.thinkingPresentation = thinkingPresentation
+        self.showsRouteDiagnoseActions = showsRouteDiagnoseActions
+            ?? RouteDiagnoseMessagePresentation.matches(message)
+        self.usesStructuredAssistantContent = usesStructuredAssistantContent
+            ?? (message.role == .assistant && ToolCallParser.mightContainToolCalls(message.content))
+        self.isStreamingTail = isStreamingTail
+    }
+}
+
+enum MessageTimelineRowProjection {
+    static func timelineMessages(from messages: [AXChatMessage]) -> [AXChatMessage] {
+        messages.filter { $0.role != .tool }
+    }
+
+    static func sessionSendingForRow(
+        _ isSending: Bool,
+        snapshot: MessageRowSnapshot
+    ) -> Bool {
+        snapshot.showsRouteDiagnoseActions ? isSending : false
+    }
+
+    static func streamingTailMessageID(
+        isSending: Bool,
+        timelineMessages: [AXChatMessage]
+    ) -> String? {
+        guard isSending,
+              let tail = timelineMessages.last,
+              tail.role == .assistant else {
+            return nil
+        }
+        return tail.id
+    }
+
+    static func latestTimelineMessage(from messages: [AXChatMessage]) -> AXChatMessage? {
+        messages.reversed().first { $0.role != .tool }
+    }
+
+    static func latestTimelineMessageBeforeSourceTail(from messages: [AXChatMessage]) -> AXChatMessage? {
+        guard messages.count > 1 else { return nil }
+        var index = messages.index(before: messages.endIndex)
+        while index > messages.startIndex {
+            index = messages.index(before: index)
+            let message = messages[index]
+            if message.role != .tool {
+                return message
+            }
+        }
+        return nil
+    }
+
+    static func snapshots(
+        for messages: [AXChatMessage],
+        previousSnapshots: [MessageRowSnapshot] = [],
+        streamingTailMessageID: String? = nil,
+        thinkingPresentation: (AXChatMessage) -> XTStreamingPlaceholderPresentation?
+    ) -> [MessageRowSnapshot] {
+        var previousByID: [String: MessageRowSnapshot] = [:]
+        for snapshot in previousSnapshots {
+            previousByID[snapshot.id] = snapshot
+        }
+        return messages.map { message in
+            let thinking = thinkingPresentation(message)
+            let isStreamingTail = message.id == streamingTailMessageID
+            if let previous = previousByID[message.id],
+               previous.message == message,
+               previous.thinkingPresentation == thinking,
+               previous.isStreamingTail == isStreamingTail {
+                return previous
+            }
+            return MessageRowSnapshot(
+                message: message,
+                thinkingPresentation: thinking,
+                isStreamingTail: isStreamingTail
+            )
+        }
+    }
+
+    static func presentationRefreshIndexes(
+        timelineMessages: [AXChatMessage],
+        previousSnapshots: [MessageRowSnapshot]
+    ) -> [Int] {
+        guard !timelineMessages.isEmpty,
+              timelineMessages.count == previousSnapshots.count else {
+            return []
+        }
+
+        let latestIndex = timelineMessages.count - 1
+        var indexes: [Int] = [latestIndex]
+        for index in previousSnapshots.indices
+            where index != latestIndex && previousSnapshots[index].thinkingPresentation != nil {
+            indexes.append(index)
+        }
+        return indexes
+    }
+}
+
 private struct MessageTimelineStickToBottomObserver: NSViewRepresentable {
     var threshold: CGFloat
     var onStateChange: (Bool) -> Void
@@ -158,7 +327,9 @@ private struct MessageTimelineStickToBottomObserver: NSViewRepresentable {
         var onStateChange: (Bool) -> Void
         private weak var observedClipView: NSClipView?
         private weak var observedScrollView: NSScrollView?
+        private weak var pendingHostView: NSView?
         private var lastValue: Bool?
+        private var attachRefreshScheduled = false
 
         init(
             threshold: CGFloat,
@@ -166,6 +337,20 @@ private struct MessageTimelineStickToBottomObserver: NSViewRepresentable {
         ) {
             self.threshold = threshold
             self.onStateChange = onStateChange
+        }
+
+        func scheduleAttachAndRefresh(from hostView: NSView) {
+            pendingHostView = hostView
+            guard !attachRefreshScheduled else { return }
+            attachRefreshScheduled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.attachRefreshScheduled = false
+                guard let hostView = self.pendingHostView else { return }
+                self.pendingHostView = nil
+                self.attachIfNeeded(from: hostView)
+                self.refreshCurrentState()
+            }
         }
 
         deinit {
@@ -202,7 +387,6 @@ private struct MessageTimelineStickToBottomObserver: NSViewRepresentable {
 
         private func attach(to scrollView: NSScrollView) {
             guard observedScrollView !== scrollView else {
-                refreshCurrentState()
                 return
             }
 
@@ -218,10 +402,6 @@ private struct MessageTimelineStickToBottomObserver: NSViewRepresentable {
                 name: NSView.boundsDidChangeNotification,
                 object: clipView
             )
-
-            DispatchQueue.main.async { [weak self] in
-                self?.refreshCurrentState()
-            }
         }
 
         private func detach() {
@@ -252,19 +432,14 @@ private struct MessageTimelineStickToBottomObserver: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
         view.isHidden = true
-        DispatchQueue.main.async {
-            context.coordinator.attachIfNeeded(from: view)
-        }
+        context.coordinator.scheduleAttachAndRefresh(from: view)
         return view
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.threshold = threshold
         context.coordinator.onStateChange = onStateChange
-        DispatchQueue.main.async {
-            context.coordinator.attachIfNeeded(from: nsView)
-            context.coordinator.refreshCurrentState()
-        }
+        context.coordinator.scheduleAttachAndRefresh(from: nsView)
     }
 }
 
@@ -299,6 +474,9 @@ struct MessageTimelineView: View {
     @State private var visibleMessageRange: Range<Int> = 0..<0
     @State private var isLoadingPreviousMessages = false
     @State private var shouldStickToBottomState = true
+    @State private var bottomScrollScheduled = false
+    @State private var pendingBottomScrollAnimationDuration: Double?
+    @State private var tailSignatureHandledByMessageCountChange: XTMessageTimelineTailSignature?
 
     private let recentSkillActivityLimit = 8
     private let initialMessagePageSize = 48
@@ -321,10 +499,22 @@ struct MessageTimelineView: View {
         shouldStickToBottomState
     }
 
+    private var sessionIdentity: ObjectIdentifier {
+        ObjectIdentifier(session)
+    }
+
+    private var timelineSessionSnapshot: XTMessageTimelineSessionSnapshot {
+        if timelineSessionStore.isBound(to: session) {
+            return timelineSessionStore.snapshot
+        }
+        return XTMessageTimelineSessionSnapshot.make(from: session)
+    }
+
     private var shouldShowWorkEmptyState: Bool {
         visibleMessages.isEmpty
             && recentSkillActivities.isEmpty
-            && !session.shouldShowThinkingIndicator
+            && timelineSessionSnapshot.pendingToolCalls.isEmpty
+            && !timelineSessionSnapshot.shouldShowThinkingIndicator
     }
 
     var body: some View {
@@ -350,13 +540,12 @@ struct MessageTimelineView: View {
             .frame(width: 0, height: 0)
         )
         .onAppear {
+            timelineSessionStore.bind(to: session)
             pendingFocusedSkillActivityNonce = focusedSkillActivityNonce
             syncTimelineMessages()
             syncVisibleMessageRangeToLatest()
             refreshRecentSkillActivities(using: proxy)
-            DispatchQueue.main.async {
-                proxy.scrollTo(bottomID, anchor: .bottom)
-            }
+            scheduleScrollToBottom(using: proxy)
         }
         .onChange(of: ctx.root.path) { _ in
             timelineSessionStore.bind(to: session)
@@ -419,6 +608,48 @@ struct MessageTimelineView: View {
             pendingFocusedSkillActivityNonce = newNonce
             refreshRecentSkillActivities(using: proxy)
         }
+        .onChange(of: scrollToBottomNonce) { _ in
+            forceScrollToBottom(using: proxy)
+        }
+    }
+
+    private func forceScrollToBottom(using proxy: ScrollViewProxy) {
+        syncTimelineMessages()
+        syncVisibleMessageRangeToLatest()
+        shouldStickToBottomState = true
+        scheduleScrollToBottom(using: proxy)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            syncTimelineMessages()
+            syncVisibleMessageRangeToLatest()
+            proxy.scrollTo(bottomID, anchor: .bottom)
+        }
+    }
+
+    private func scheduleScrollToBottom(
+        using proxy: ScrollViewProxy,
+        animatedDuration: Double? = nil
+    ) {
+        if let animatedDuration {
+            pendingBottomScrollAnimationDuration = max(
+                pendingBottomScrollAnimationDuration ?? 0,
+                animatedDuration
+            )
+        }
+
+        guard !bottomScrollScheduled else { return }
+        bottomScrollScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.016) {
+            bottomScrollScheduled = false
+            let duration = pendingBottomScrollAnimationDuration
+            pendingBottomScrollAnimationDuration = nil
+            if let duration, duration > 0 {
+                withAnimation(.easeOut(duration: duration)) {
+                    proxy.scrollTo(bottomID, anchor: .bottom)
+                }
+            } else {
+                proxy.scrollTo(bottomID, anchor: .bottom)
+            }
+        }
     }
 
     @ViewBuilder
@@ -432,6 +663,10 @@ struct MessageTimelineView: View {
 
             if !shouldShowWorkEmptyState {
                 messageRows
+            }
+
+            if !timelineSessionSnapshot.pendingToolCalls.isEmpty {
+                pendingToolApprovalSection
             }
 
             if !recentSkillActivities.isEmpty {
@@ -450,7 +685,9 @@ struct MessageTimelineView: View {
     }
 
     private var workEmptyState: some View {
-        let latestSessionSummary = AXSessionSummaryCapsulePresentation.load(for: ctx)
+        let latestSessionSummary = XTProjectUIPresentationReadCache.sessionSummary(for: ctx) {
+            AXSessionSummaryCapsulePresentation.load(for: ctx)
+        }
         let actions: [ProjectWorkEmptyStateAction] = {
             var items: [ProjectWorkEmptyStateAction] = [
                 ProjectWorkEmptyStateAction(
@@ -513,16 +750,19 @@ struct MessageTimelineView: View {
 
     @ViewBuilder
     private var messageRows: some View {
-        ForEach(visibleMessages) { message in
+        ForEach(visibleRowSnapshots) { snapshot in
             TimelineMessageRow(
                 ctx: ctx,
                 config: config,
                 session: session,
-                message: message,
-                thinkingPresentation: session.assistantThinkingPresentation(for: message)
+                sessionIsSending: MessageTimelineRowProjection.sessionSendingForRow(
+                    timelineSessionSnapshot.isSending,
+                    snapshot: snapshot
+                ),
+                snapshot: snapshot
             )
                 .equatable()
-                .id(message.id)
+                .id(snapshot.id)
         }
     }
 
@@ -866,14 +1106,14 @@ private struct TimelineMessageRow: View, Equatable {
     let ctx: AXProjectContext?
     let config: AXProjectConfig?
     let session: ChatSessionModel?
-    let message: AXChatMessage
-    let thinkingPresentation: XTStreamingPlaceholderPresentation?
+    let sessionIsSending: Bool
+    let snapshot: MessageRowSnapshot
 
     static func == (lhs: TimelineMessageRow, rhs: TimelineMessageRow) -> Bool {
         lhs.ctx == rhs.ctx &&
         lhs.config == rhs.config &&
-        lhs.message == rhs.message &&
-        lhs.thinkingPresentation == rhs.thinkingPresentation
+        lhs.sessionIsSending == rhs.sessionIsSending &&
+        lhs.snapshot == rhs.snapshot
     }
 
     var body: some View {
@@ -881,8 +1121,8 @@ private struct TimelineMessageRow: View, Equatable {
             ctx: ctx,
             config: config,
             session: session,
-            message: message,
-            thinkingPresentation: thinkingPresentation
+            sessionIsSending: sessionIsSending,
+            snapshot: snapshot
         )
     }
 }
@@ -891,21 +1131,47 @@ struct MessageCard: View {
     let ctx: AXProjectContext?
     let config: AXProjectConfig?
     let session: ChatSessionModel?
-    let message: AXChatMessage
-    let thinkingPresentation: XTStreamingPlaceholderPresentation?
+    let sessionIsSending: Bool
+    let snapshot: MessageRowSnapshot
 
     init(
         ctx: AXProjectContext? = nil,
         config: AXProjectConfig? = nil,
         session: ChatSessionModel? = nil,
+        sessionIsSending: Bool = false,
         message: AXChatMessage,
         thinkingPresentation: XTStreamingPlaceholderPresentation? = nil
     ) {
         self.ctx = ctx
         self.config = config
         self.session = session
-        self.message = message
-        self.thinkingPresentation = thinkingPresentation
+        self.sessionIsSending = sessionIsSending
+        self.snapshot = MessageRowSnapshot(
+            message: message,
+            thinkingPresentation: thinkingPresentation
+        )
+    }
+
+    init(
+        ctx: AXProjectContext? = nil,
+        config: AXProjectConfig? = nil,
+        session: ChatSessionModel? = nil,
+        sessionIsSending: Bool = false,
+        snapshot: MessageRowSnapshot
+    ) {
+        self.ctx = ctx
+        self.config = config
+        self.session = session
+        self.sessionIsSending = sessionIsSending
+        self.snapshot = snapshot
+    }
+
+    private var message: AXChatMessage {
+        snapshot.message
+    }
+
+    private var thinkingPresentation: XTStreamingPlaceholderPresentation? {
+        snapshot.thinkingPresentation
     }
 
     var body: some View {
@@ -921,8 +1187,8 @@ struct MessageCard: View {
                     ctx: ctx,
                     config: config,
                     session: session,
-                    message: message,
-                    thinkingPresentation: thinkingPresentation
+                    sessionIsSending: sessionIsSending,
+                    snapshot: snapshot
                 )
             }
             .frame(
@@ -969,7 +1235,7 @@ struct MessageCard: View {
     }
 
     private var isUserMessage: Bool {
-        message.role == .user
+        message.role == .user && !message.isSupervisorDispatch
     }
 
     private var bubbleHorizontalAlignment: HorizontalAlignment {
@@ -981,6 +1247,9 @@ struct MessageCard: View {
     }
 
     private var roleAccentColor: Color {
+        if message.isSupervisorDispatch {
+            return .indigo
+        }
         switch message.role {
         case .user:
             return .blue
@@ -1038,7 +1307,8 @@ struct MessageCard: View {
                 MessageRoleBadge(
                     role: message.role,
                     label: roleLabel,
-                    accentColor: roleAccentColor
+                    accentColor: roleAccentColor,
+                    iconName: roleIconName
                 )
             }
         } else {
@@ -1046,58 +1316,14 @@ struct MessageCard: View {
                 MessageRoleBadge(
                     role: message.role,
                     label: roleLabel,
-                    accentColor: roleAccentColor
+                    accentColor: roleAccentColor,
+                    iconName: roleIconName
                 )
                 tagView
                 Spacer(minLength: 0)
                 headerMetaRow
             }
         }
-    }
-
-    private var headerMetaRow: some View {
-        HStack(spacing: 6) {
-            Text(timeLabel)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-
-            if message.role != .tool {
-                MessageActionButtons(message: message)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var tagView: some View {
-        if let tag = message.tag, !tag.isEmpty {
-            Text(tag)
-                .font(.system(.caption2, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 3)
-                .background(Color.secondary.opacity(0.08))
-                .clipShape(Capsule())
-        }
-    }
-}
-
-struct MessageRoleBadge: View {
-    let role: AXChatRole
-    let label: String
-    let accentColor: Color
-
-    var body: some View {
-        Label(label, systemImage: iconName)
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(accentColor)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(accentColor.opacity(0.1))
-            .clipShape(Capsule())
-            .overlay(
-                Capsule()
-                    .stroke(accentColor.opacity(0.18), lineWidth: 1)
-            )
     }
 
     private var headerMetaRow: some View {
@@ -1193,8 +1419,44 @@ struct MessageContentView: View {
     let ctx: AXProjectContext?
     let config: AXProjectConfig?
     let session: ChatSessionModel?
-    let message: AXChatMessage
-    let thinkingPresentation: XTStreamingPlaceholderPresentation?
+    let sessionIsSending: Bool
+    let snapshot: MessageRowSnapshot
+
+    init(
+        ctx: AXProjectContext? = nil,
+        config: AXProjectConfig? = nil,
+        session: ChatSessionModel? = nil,
+        sessionIsSending: Bool = false,
+        message: AXChatMessage,
+        thinkingPresentation: XTStreamingPlaceholderPresentation? = nil
+    ) {
+        self.ctx = ctx
+        self.config = config
+        self.session = session
+        self.sessionIsSending = sessionIsSending
+        self.snapshot = MessageRowSnapshot(
+            message: message,
+            thinkingPresentation: thinkingPresentation
+        )
+    }
+
+    init(
+        ctx: AXProjectContext? = nil,
+        config: AXProjectConfig? = nil,
+        session: ChatSessionModel? = nil,
+        sessionIsSending: Bool = false,
+        snapshot: MessageRowSnapshot
+    ) {
+        self.ctx = ctx
+        self.config = config
+        self.session = session
+        self.sessionIsSending = sessionIsSending
+        self.snapshot = snapshot
+    }
+
+    private var message: AXChatMessage {
+        snapshot.message
+    }
 
     var body: some View {
         switch message.role {
@@ -1204,8 +1466,8 @@ struct MessageContentView: View {
                 ctx: ctx,
                 config: config,
                 session: session,
-                message: message,
-                thinkingPresentation: thinkingPresentation
+                sessionIsSending: sessionIsSending,
+                snapshot: snapshot
             )
 
         case .tool:
@@ -1427,12 +1689,12 @@ struct ProjectSkillActivityCard: View {
 
             HStack(spacing: 8) {
                 if ProjectSkillActivityPresentation.isAwaitingApproval(item), isPendingApproval {
-                    Button("批准") {
+                    Button("审批") {
                         onApprove()
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(isBusy || !hubConnected)
-                    .help(hubConnected ? "批准后继续执行这次受治理的技能调用" : "先连接 Hub，才能批准执行")
+                    .disabled(isBusy)
+                    .help(hubConnected ? "审批后继续执行这次受治理的技能调用" : "Hub 未连接时仍会进入本地审批；需要 Hub grant 的项会继续等待")
 
                     Button("拒绝") {
                         onReject()
@@ -2192,8 +2454,48 @@ struct AssistantMessageContent: View {
     let ctx: AXProjectContext?
     let config: AXProjectConfig?
     let session: ChatSessionModel?
-    let message: AXChatMessage
-    let thinkingPresentation: XTStreamingPlaceholderPresentation?
+    let sessionIsSending: Bool
+    let snapshot: MessageRowSnapshot
+
+    init(
+        ctx: AXProjectContext? = nil,
+        config: AXProjectConfig? = nil,
+        session: ChatSessionModel? = nil,
+        sessionIsSending: Bool = false,
+        message: AXChatMessage,
+        thinkingPresentation: XTStreamingPlaceholderPresentation? = nil
+    ) {
+        self.ctx = ctx
+        self.config = config
+        self.session = session
+        self.sessionIsSending = sessionIsSending
+        self.snapshot = MessageRowSnapshot(
+            message: message,
+            thinkingPresentation: thinkingPresentation
+        )
+    }
+
+    init(
+        ctx: AXProjectContext? = nil,
+        config: AXProjectConfig? = nil,
+        session: ChatSessionModel? = nil,
+        sessionIsSending: Bool = false,
+        snapshot: MessageRowSnapshot
+    ) {
+        self.ctx = ctx
+        self.config = config
+        self.session = session
+        self.sessionIsSending = sessionIsSending
+        self.snapshot = snapshot
+    }
+
+    private var message: AXChatMessage {
+        snapshot.message
+    }
+
+    private var thinkingPresentation: XTStreamingPlaceholderPresentation? {
+        snapshot.thinkingPresentation
+    }
 
     private var parsedContent: ParsedContent {
         MessageTimelineRenderCache.parsedContent(for: message)
@@ -2204,11 +2506,6 @@ struct AssistantMessageContent: View {
             if let thinkingPresentation {
                 XTStreamingPlaceholderView(presentation: thinkingPresentation)
                     .frame(maxWidth: .infinity, alignment: .leading)
-            } else if !parsedContent.isEmpty {
-                // 结构化内容
-                ForEach(parsedContent.parts) { part in
-                    ParsedPartView(part: part)
-                }
             } else {
                 messageBody
             }
@@ -2224,6 +2521,36 @@ struct AssistantMessageContent: View {
                     messageContent: message.content
                 )
             }
+        }
+    }
+
+    @ViewBuilder
+    private var messageBody: some View {
+        if snapshot.usesStructuredAssistantContent {
+            structuredMessageBody
+        } else {
+            plainTextBody
+        }
+    }
+
+    @ViewBuilder
+    private var structuredMessageBody: some View {
+        if !parsedContent.isEmpty {
+            ForEach(parsedContent.parts) { part in
+                ParsedPartView(part: part)
+            }
+        } else {
+            plainTextBody
+        }
+    }
+
+    @ViewBuilder
+    private var plainTextBody: some View {
+        if !message.content.isEmpty {
+            MessagePlainTextBody(
+                content: message.content,
+                isStreamingTail: snapshot.isStreamingTail
+            )
         }
     }
 }
@@ -3020,6 +3347,8 @@ struct ToolCallCard: View {
             return "stop.circle"
         case .git_status, .git_diff, .git_apply_check, .git_apply:
             return "arrow.triangle.branch"
+        case .projectDiagnostics, .lspDiagnostics, .checkRun, .buildRun, .testRun:
+            return "stethoscope"
         case .git_commit:
             return "checkmark.circle"
         case .git_push:

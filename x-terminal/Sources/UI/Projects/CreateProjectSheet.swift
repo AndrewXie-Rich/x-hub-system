@@ -15,7 +15,7 @@ struct CreateProjectSheet: View {
     @Environment(\.xtAppModelReference) private var appModelReference
     @EnvironmentObject private var projectListStore: XTProjectListStore
     @EnvironmentObject private var workSurfaceStore: XTWorkSurfaceStore
-    @EnvironmentObject private var settingsCenterStore: XTSettingsCenterStore
+    @EnvironmentObject private var settingsValueStore: XTSettingsValueStore
 
     private let availableModels = XTModelCatalog.projectCreationEntries
 
@@ -928,7 +928,7 @@ struct CreateProjectSheet: View {
     }
 
     private var settingsSnapshot: XTerminalSettings {
-        settingsCenterStore.snapshot.settings
+        settingsValueStore.snapshot
     }
 
     private var appModel: AppModel {
@@ -1010,7 +1010,7 @@ struct CreateProjectSheet_Previews: PreviewProvider {
             .environment(\.xtAppModelReference, appModel)
             .environmentObject(appModel.projectListStore)
             .environmentObject(appModel.workSurfaceStore)
-            .environmentObject(appModel.settingsCenterStore)
+            .environmentObject(appModel.settingsValueStore)
     }
 }
 #endif

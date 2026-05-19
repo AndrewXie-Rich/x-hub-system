@@ -871,23 +871,31 @@ Please switch to Terminal mode (Chat/Terminal toggle) and run it there:
 
         case .git_apply:
             let patch = strArg(call, "patch")
-            let res = try GitApplier.applyPatch(patch, cwd: projectRoot)
+            let threeWay = optBoolArg(call, "three_way") ?? optBoolArg(call, "threeWay") ?? false
+            let plan = GitApplier.planPatch(patch)
+            let res = try GitApplier.applyPatch(patch, cwd: projectRoot, threeWay: threeWay)
             let ok = res.exit == 0
-            let out = "exit: \(res.exit)\n" + (res.output.isEmpty ? "(no output)" : res.output)
+            let header = gitApplyOutputHeader(exit: res.exit, plan: plan, threeWay: threeWay)
+            let out = header + "\n" + (res.output.isEmpty ? "(no output)" : res.output)
             return ToolResult(id: call.id, tool: call.tool, ok: ok, output: out)
 
         case .git_apply_check:
             let patch = strArg(call, "patch")
-            let res = try ProcessCapture.run(
-                "/usr/bin/git",
-                ["apply", "--check", "-"],
-                cwd: projectRoot,
-                stdin: patch.data(using: .utf8),
-                timeoutSec: 20.0
-            )
-            let ok = res.exitCode == 0
-            let out = "exit: \(res.exitCode)\n" + (res.combined.isEmpty ? "(ok)" : res.combined)
+            let threeWay = optBoolArg(call, "three_way") ?? optBoolArg(call, "threeWay") ?? false
+            let plan = GitApplier.planPatch(patch)
+            let res = try GitApplier.checkPatch(patch, cwd: projectRoot, threeWay: threeWay)
+            let ok = res.exit == 0
+            let header = gitApplyOutputHeader(exit: res.exit, plan: plan, threeWay: threeWay)
+            let out = header + "\n" + (res.output.isEmpty ? "(ok)" : res.output)
             return ToolResult(id: call.id, tool: call.tool, ok: ok, output: out)
+
+        case .projectDiagnostics, .lspDiagnostics, .checkRun, .buildRun, .testRun:
+            return try XTProjectDiagnosticsTool.run(
+                tool: call.tool,
+                call: call,
+                projectRoot: projectRoot,
+                config: config
+            )
 
         case .pr_create:
             let title = optStrArg(call, "title")
@@ -4885,12 +4893,34 @@ return jsResult
         "required_grant_scope",
         "timeout_sec",
         "package_dir",
+        "execution_role",
+        "role",
+        "agent_role",
+        "xt_role",
+        "agent_mode",
+        "xt_agent_mode",
+        "mode",
+        "lane_id",
+        "laneid",
+        "worktree_lane_id",
+        "audit_ref",
+        "auditref",
+        "evidence_ref",
+        "request_id",
         "payload",
         "input",
     ]
     private static let skillRunnerMaxInputBytes = 64 * 1024
     private static let skillRunnerMaxOutputBytes = 512 * 1024
     private static let skillRunnerMaxPackageBytes = 50 * 1024 * 1024
+
+    private struct SkillRunnerExecutionContext: Equatable {
+        var projectId: String
+        var executionRole: String
+        var agentMode: String
+        var laneId: String?
+        var auditRef: String?
+    }
 
     private static func executeSkillRunner(call: ToolCall, projectRoot: URL) async -> ToolResult {
         let skillId = firstNonEmptyString(
@@ -5029,6 +5059,7 @@ return jsResult
             optStrArg(call, "required_grant_scope"),
             requiresGrant ? "privileged" : "readonly"
         )
+        let executionContext = skillRunnerExecutionContext(call: call, projectRoot: projectRoot)
         let inputJSON = skillRunnerInputJSONString(call: call)
         guard Data(inputJSON.utf8).count <= skillRunnerMaxInputBytes else {
             return skillRunnerDeniedResult(
@@ -5041,12 +5072,17 @@ return jsResult
         let toolArgsHash = sha256Hex(stableSkillRunnerGateBinding(
             skillId: skillId,
             packageSHA256: packageSHA256,
-            inputJSON: inputJSON
+            inputJSON: inputJSON,
+            executionContext: executionContext
         ))
         let gate = await HubIPCClient.evaluateSkillRunnerGate(
             HubIPCClient.SkillRunnerGateRequestPayload(
                 requestId: call.id,
-                projectId: AXProjectRegistryStore.projectId(forRoot: projectRoot),
+                projectId: executionContext.projectId,
+                executionRole: executionContext.executionRole,
+                agentMode: executionContext.agentMode,
+                laneId: executionContext.laneId,
+                auditRef: executionContext.auditRef,
                 skillId: skillId,
                 packageSHA256: packageSHA256,
                 toolName: hubToolName,
@@ -5100,16 +5136,27 @@ return jsResult
                 stdin: Data(inputJSON.utf8),
                 timeoutSec: timeoutSec,
                 env: [
-                    "XHUB_SKILL_ID": skillId,
-                    "XHUB_SKILL_PACKAGE_SHA256": packageSHA256,
-                    "XHUB_SKILL_INPUT_JSON": inputJSON,
-                ]
+                "XHUB_SKILL_ID": skillId,
+                "XHUB_SKILL_PACKAGE_SHA256": packageSHA256,
+                "XHUB_SKILL_INPUT_JSON": inputJSON,
+                "XHUB_SKILL_REQUEST_ID": call.id,
+                "XHUB_SKILL_PROJECT_ID": executionContext.projectId,
+                "XHUB_SKILL_EXECUTION_ROLE": executionContext.executionRole,
+                "XHUB_SKILL_AGENT_MODE": executionContext.agentMode,
+                "XHUB_SKILL_LANE_ID": executionContext.laneId ?? "",
+                "XHUB_SKILL_AUDIT_REF": executionContext.auditRef ?? "",
+            ]
             )
             var summary: [String: JSONValue] = [
                 "tool": .string(call.tool.rawValue),
                 "ok": .bool(result.exitCode == 0),
                 "skill_id": .string(skillId),
                 "package_sha256": .string(packageSHA256),
+                "project_id": .string(executionContext.projectId),
+                "execution_role": .string(executionContext.executionRole),
+                "agent_mode": .string(executionContext.agentMode),
+                "lane_id": executionContext.laneId.map(JSONValue.string) ?? .null,
+                "audit_ref": executionContext.auditRef.map(JSONValue.string) ?? .null,
                 "hub_gate_source": .string(gate.source),
                 "hub_gate_tool_name": .string(gate.toolName),
                 "hub_gate_execution_id": gate.executionId.isEmpty ? .null : .string(gate.executionId),
@@ -5452,14 +5499,119 @@ return jsResult
         return text
     }
 
+    private static func skillRunnerExecutionContext(call: ToolCall, projectRoot: URL) -> SkillRunnerExecutionContext {
+        let projectId = firstNonEmptyString(
+            optStrArg(call, "project_id"),
+            AXProjectRegistryStore.projectId(forRoot: projectRoot)
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawMode = firstNonEmptyString(
+            optStrArg(call, "agent_mode"),
+            optStrArg(call, "xt_agent_mode"),
+            optStrArg(call, "mode")
+        )
+        let normalizedMode = normalizedSkillRunnerAgentMode(rawMode)
+        let rawRole = firstNonEmptyString(
+            optStrArg(call, "execution_role"),
+            optStrArg(call, "agent_role"),
+            optStrArg(call, "xt_role"),
+            optStrArg(call, "role")
+        )
+        let executionRole = normalizedSkillRunnerExecutionRole(rawRole, agentMode: normalizedMode)
+        let agentMode = normalizedMode.isEmpty
+            ? defaultSkillRunnerAgentMode(forRole: executionRole)
+            : normalizedMode
+        let laneId = normalizedOptionalToolValue(firstNonEmptyString(
+            optStrArg(call, "lane_id"),
+            optStrArg(call, "laneId"),
+            optStrArg(call, "worktree_lane_id"),
+            inferredSkillRunnerLaneId(projectRoot: projectRoot)
+        ))
+        let auditRef = normalizedOptionalToolValue(firstNonEmptyString(
+            optStrArg(call, "audit_ref"),
+            optStrArg(call, "auditRef"),
+            optStrArg(call, "evidence_ref")
+        ))
+        return SkillRunnerExecutionContext(
+            projectId: projectId,
+            executionRole: executionRole,
+            agentMode: agentMode,
+            laneId: laneId,
+            auditRef: auditRef
+        )
+    }
+
+    private static func normalizedSkillRunnerExecutionRole(_ raw: String, agentMode: String) -> String {
+        if let role = AXRole.resolveModelAssignmentToken(raw)?.primaryRole {
+            return role.rawValue
+        }
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "supervisor", "coder", "reviewer":
+            return raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        default:
+            break
+        }
+        switch agentMode {
+        case XTAgentMode.orchestrator.rawValue:
+            return AXRole.supervisor.rawValue
+        case XTAgentMode.plan.rawValue, XTAgentMode.ask.rawValue:
+            return AXRole.supervisor.rawValue
+        case XTAgentMode.explore.rawValue:
+            return AXRole.reviewer.rawValue
+        default:
+            return AXRole.coder.rawValue
+        }
+    }
+
+    private static func normalizedSkillRunnerAgentMode(_ raw: String) -> String {
+        if let parsed = XTAgentMode.parse(raw) {
+            return parsed.rawValue
+        }
+        return raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "_")
+    }
+
+    private static func defaultSkillRunnerAgentMode(forRole role: String) -> String {
+        switch role {
+        case AXRole.supervisor.rawValue:
+            return XTAgentMode.orchestrator.rawValue
+        case AXRole.reviewer.rawValue:
+            return XTAgentMode.explore.rawValue
+        default:
+            return XTAgentMode.code.rawValue
+        }
+    }
+
+    private static func normalizedOptionalToolValue(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func inferredSkillRunnerLaneId(projectRoot: URL) -> String? {
+        let components = projectRoot.standardizedFileURL.pathComponents
+        guard let worktreesIndex = components.lastIndex(of: "worktrees"),
+              components.indices.contains(worktreesIndex + 1) else {
+            return nil
+        }
+        let lane = components[worktreesIndex + 1].trimmingCharacters(in: .whitespacesAndNewlines)
+        return lane.isEmpty ? nil : lane
+    }
+
     private static func stableSkillRunnerGateBinding(
         skillId: String,
         packageSHA256: String,
-        inputJSON: String
+        inputJSON: String,
+        executionContext: SkillRunnerExecutionContext
     ) -> String {
         [
             "skill_id=\(skillId)",
             "package_sha256=\(packageSHA256)",
+            "project_id=\(executionContext.projectId)",
+            "execution_role=\(executionContext.executionRole)",
+            "agent_mode=\(executionContext.agentMode)",
+            "lane_id=\(executionContext.laneId ?? "")",
+            "audit_ref=\(executionContext.auditRef ?? "")",
             "input=\(inputJSON)",
         ].joined(separator: "\n")
     }
@@ -7199,6 +7351,16 @@ return jsResult
             return String(target.dropFirst(prefix.count))
         }
         return target
+    }
+
+    private static func gitApplyOutputHeader(exit: Int32, plan: GitPatchPlan, threeWay: Bool) -> String {
+        [
+            "exit: \(exit)",
+            "mode: \(threeWay ? "three_way" : "standard")",
+            "changed_files: \(plan.changedFiles.joined(separator: ","))",
+            "hunk_count: \(plan.hunkCount)",
+            "can_use_three_way: \(plan.canUseThreeWay ? "true" : "false")"
+        ].joined(separator: "\n")
     }
 
     private static func strArg(_ call: ToolCall, _ key: String) -> String {

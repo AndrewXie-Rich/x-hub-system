@@ -159,7 +159,13 @@ final class AppModel: ObservableObject {
         var projection: XTUnifiedDoctorSkillDoctorTruthProjection
     }
 
-    @Published var settingsStore: SettingsStore
+    @Published var settingsStore: SettingsStore {
+        didSet {
+            refreshControlSurfaceSnapshot()
+            refreshModelSettingsSnapshot()
+            refreshSettingsCenterSnapshot()
+        }
+    }
     @Published var llmRouter: LLMRouter
     @Published var projectRoot: URL? = nil {
         didSet {
@@ -175,6 +181,11 @@ final class AppModel: ObservableObject {
     @Published var registry: AXProjectRegistry = .empty() {
         didSet {
             sortedProjectsCache = registry.sortedProjects()
+            refreshProjectListSnapshot()
+            refreshGlobalHomeResumeSnapshot()
+            refreshSkillLibrarySnapshot()
+            refreshModelSettingsSnapshot()
+            refreshSettingsCenterRouteRepairSnapshot()
         }
     }
     @Published var selectedProjectId: String? = nil {
@@ -217,23 +228,64 @@ final class AppModel: ObservableObject {
         didSet {
             if oldValue != skillsCompatibilitySnapshot {
                 cachedSkillDoctorTruthProjection = nil
+                refreshGlobalHomeSkillsSnapshot()
+                refreshSkillLibrarySnapshot()
+                refreshSettingsCenterSnapshot()
             }
         }
     }
-    @Published var unifiedDoctorReport: XTUnifiedDoctorReport = .empty
-    @Published private(set) var officialSkillsRecheckStatusLine: String = ""
-    @Published private(set) var historicalProjectBoundaryRepairStatusLine: String = ""
-    @Published private(set) var supervisorVoiceSmokeRunning: Bool = false
-    @Published private(set) var supervisorVoiceSmokeStatusLine: String = ""
-    @Published private(set) var supervisorVoiceSmokeDetailLine: String = ""
-    @Published private(set) var supervisorVoiceSmokeLastPassed: Bool? = nil
-    @Published private(set) var supervisorVoiceSmokeReportURL: URL? = nil
-    @Published private(set) var supervisorVoiceSmokeReportSummary: XTSupervisorVoiceSmokeReportSummary? = nil
-    @Published var lastImportedAgentSkillDirectory: URL? = nil
-    @Published var lastImportedAgentSkillName: String = ""
-    @Published var lastImportedAgentSkillStage: HubIPCClient.AgentImportStageResult? = nil
-    @Published var lastImportedAgentSkillStatusLine: String = ""
-    @Published var agentSkillImportBusy: Bool = false
+    @Published var unifiedDoctorReport: XTUnifiedDoctorReport = .empty {
+        didSet {
+            refreshModelSettingsSnapshot()
+            refreshSettingsCenterSnapshot()
+        }
+    }
+    @Published private(set) var officialSkillsRecheckStatusLine: String = "" {
+        didSet { refreshSettingsCenterSnapshot() }
+    }
+    @Published private(set) var historicalProjectBoundaryRepairStatusLine: String = "" {
+        didSet {
+            settingsSupervisorSignalStore.update(
+                XTSettingsSupervisorSignalSnapshot(
+                    historicalProjectBoundaryRepairStatusLine: historicalProjectBoundaryRepairStatusLine
+                )
+            )
+            refreshSettingsCenterSnapshot()
+        }
+    }
+    @Published private(set) var supervisorVoiceSmokeRunning: Bool = false {
+        didSet { refreshSettingsCenterSnapshot() }
+    }
+    @Published private(set) var supervisorVoiceSmokeStatusLine: String = "" {
+        didSet { refreshSettingsCenterSnapshot() }
+    }
+    @Published private(set) var supervisorVoiceSmokeDetailLine: String = "" {
+        didSet { refreshSettingsCenterSnapshot() }
+    }
+    @Published private(set) var supervisorVoiceSmokeLastPassed: Bool? = nil {
+        didSet { refreshSettingsCenterSnapshot() }
+    }
+    @Published private(set) var supervisorVoiceSmokeReportURL: URL? = nil {
+        didSet { refreshSettingsCenterSnapshot() }
+    }
+    @Published private(set) var supervisorVoiceSmokeReportSummary: XTSupervisorVoiceSmokeReportSummary? = nil {
+        didSet { refreshSettingsCenterSnapshot() }
+    }
+    @Published var lastImportedAgentSkillDirectory: URL? = nil {
+        didSet { refreshSkillLibrarySnapshot() }
+    }
+    @Published var lastImportedAgentSkillName: String = "" {
+        didSet { refreshSkillLibrarySnapshot() }
+    }
+    @Published var lastImportedAgentSkillStage: HubIPCClient.AgentImportStageResult? = nil {
+        didSet { refreshSkillLibrarySnapshot() }
+    }
+    @Published var lastImportedAgentSkillStatusLine: String = "" {
+        didSet { refreshSkillLibrarySnapshot() }
+    }
+    @Published var agentSkillImportBusy: Bool = false {
+        didSet { refreshSkillLibrarySnapshot() }
+    }
     @Published var baselineInstallBusy: Bool = false
     @Published var baselineInstallStatusLine: String = ""
     @Published private(set) var skillGovernanceActionStatusLine: String = "" {
@@ -253,19 +305,23 @@ final class AppModel: ObservableObject {
 
     private var sortedProjectsCache: [AXProjectEntry] = []
     private var cachedSkillDoctorTruthProjection: CachedSkillDoctorTruthProjection? = nil
-
-    @Published var runtimeStatus: AIRuntimeStatus? = nil
-    @Published var modelsState: ModelStateSnapshot = .empty()
+    private var settingsCenterRouteRepairLogLines: [String] = []
+    private var settingsCenterRouteRepairLogDigest: AXRouteRepairLogDigest = .empty
+    private var settingsCenterCurrentProjectRouteWatchItem: AXRouteRepairProjectWatchItem? = nil
 
     let hubConnectionStore = XTHubConnectionStore()
     let workSurfaceStore = XTWorkSurfaceStore()
     let navigationFocusStore = XTNavigationFocusStore()
     let projectListStore = XTProjectListStore()
+    let projectSidebarProjectionStore = XTCoreProjectSidebarProjectionStore()
     let globalHomeStore = XTGlobalHomeStore()
     let controlSurfaceStore = XTControlSurfaceStore()
     let skillLibraryStore = XTSkillLibraryStore()
     let modelSettingsStore = XTModelSettingsStore()
     let settingsCenterStore = XTSettingsCenterStore()
+    let settingsValueStore = XTSettingsValueStore()
+    let settingsSurfaceProjectionStore = XTSettingsSurfaceProjectionStore()
+    let settingsSupervisorSignalStore = XTSettingsSupervisorSignalStore()
 
     @discardableResult
     private func assignIfChanged<Value: Equatable>(
@@ -423,7 +479,9 @@ final class AppModel: ObservableObject {
     }
 
     func refreshWorkSurfaceSnapshot() {
-        workSurfaceStore.update(workSurfaceSnapshot)
+        let snapshot = workSurfaceSnapshot
+        workSurfaceStore.update(snapshot)
+        refreshProjectSidebarProjection(workSurfaceSnapshot: snapshot)
     }
 
     var projectListSnapshot: XTProjectListSnapshot {
@@ -437,7 +495,72 @@ final class AppModel: ObservableObject {
     }
 
     func refreshProjectListSnapshot() {
-        projectListStore.update(projectListSnapshot)
+        let snapshot = projectListSnapshot
+        projectListStore.update(snapshot)
+        refreshProjectSidebarProjection(projectListSnapshot: snapshot)
+    }
+
+    func refreshProjectSidebarProjection(
+        projectListSnapshot explicitProjectListSnapshot: XTProjectListSnapshot? = nil,
+        workSurfaceSnapshot explicitWorkSurfaceSnapshot: XTWorkSurfaceSnapshot? = nil
+    ) {
+        let projectListSnapshot = explicitProjectListSnapshot ?? self.projectListSnapshot
+        let workSurfaceSnapshot = explicitWorkSurfaceSnapshot ?? self.workSurfaceSnapshot
+        projectSidebarProjectionRevision &+= 1
+        let revision = projectSidebarProjectionRevision
+        let input = XTCoreProjectSidebarProjectionInputBuilder.build(
+            projectListSnapshot: projectListSnapshot,
+            workSurfaceSnapshot: workSurfaceSnapshot,
+            revision: revision,
+            governancePresentation: { [weak self] project in
+                guard let self else { return nil }
+                return ProjectGovernancePresentation(
+                    resolved: self.resolvedProjectGovernance(for: project)
+                )
+            },
+            sessionSummaryPresentation: { [weak self] project in
+                self?.sessionSummaryPresentation(projectId: project.projectId)
+            }
+        )
+        let projection = XTCoreProjectSidebarProjectionBuilder.build(input: input)
+        projectSidebarProjectionStore.update(projection)
+        refreshProjectSidebarProjectionFromRustIfAvailable(
+            revision: revision,
+            input: input
+        )
+    }
+
+    private func refreshProjectSidebarProjectionFromRustIfAvailable(
+        revision: UInt64,
+        input: XTCoreProjectSidebarProjectionInput
+    ) {
+        guard !Self.isRunningUnderTestProcess else { return }
+        guard let inputJSON = XTCoreProjectSidebarProjectionInputBuilder.jsonString(for: input) else {
+            return
+        }
+
+        projectSidebarProjectionTask?.cancel()
+        projectSidebarProjectionTask = Task { [weak self] in
+            let rustProjection = await Task.detached(priority: .utility) {
+                let result = XTCoreProjectionClient.fetch(
+                    surface: .projectSidebar,
+                    inputJSON: inputJSON,
+                    timeoutSec: 0.75
+                )
+                guard result.ok, let envelope = result.envelope else {
+                    return Optional<XTCoreProjectSidebarProjection>.none
+                }
+                return try? envelope.decodePayload(XTCoreProjectSidebarProjection.self)
+            }.value
+
+            guard !Task.isCancelled,
+                  let self,
+                  self.projectSidebarProjectionRevision == revision,
+                  let rustProjection else {
+                return
+            }
+            self.projectSidebarProjectionStore.update(rustProjection)
+        }
     }
 
     var navigationFocusSnapshot: XTNavigationFocusSnapshot {
@@ -615,7 +738,70 @@ final class AppModel: ObservableObject {
     }
 
     func refreshSettingsCenterSnapshot() {
-        settingsCenterStore.update(settingsCenterSnapshot)
+        let snapshot = settingsCenterSnapshot
+        settingsCenterStore.update(snapshot)
+        settingsValueStore.update(snapshot.settings)
+        if Self.isRunningUnderTestProcess {
+            settingsSurfaceProjectionStore.update(
+                XTSettingsSurfaceProjectionBuilder.build(from: snapshot)
+            )
+            return
+        }
+
+        settingsSurfaceProjectionRevision &+= 1
+        let revision = settingsSurfaceProjectionRevision
+        settingsSurfaceProjectionStore.update(
+            XTSettingsSurfaceProjectionBuilder.buildFast(
+                from: snapshot,
+                preservingDiagnosticsFrom: settingsSurfaceProjectionStore.snapshot
+            )
+        )
+        refreshSettingsSurfaceProjectionDiagnosticsFromRustIfAvailable(
+            revision: revision,
+            snapshot: snapshot
+        )
+    }
+
+    private func refreshSettingsSurfaceProjectionDiagnosticsFromRustIfAvailable(
+        revision: UInt64,
+        snapshot: XTSettingsCenterSnapshot
+    ) {
+        let input = XTSettingsDiagnosticsProjectionInputBuilder.build(from: snapshot)
+        let inputJSON = XTSettingsDiagnosticsProjectionInputBuilder.jsonString(for: input)
+
+        settingsSurfaceProjectionTask?.cancel()
+        settingsSurfaceProjectionTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 80_000_000)
+            guard !Task.isCancelled else { return }
+
+            let diagnosticsProjection = await Task.detached(priority: .utility) {
+                if let inputJSON {
+                    let result = XTCoreProjectionClient.fetch(
+                        surface: .settingsDiagnostics,
+                        inputJSON: inputJSON,
+                        timeoutSec: 0.75
+                    )
+                    if result.ok,
+                       let envelope = result.envelope,
+                       let projection = try? envelope.decodePayload(XTSettingsDiagnosticsProjection.self) {
+                        return projection
+                    }
+                }
+                return XTSettingsDiagnosticsProjectionInputBuilder.buildProjection(from: input)
+            }.value
+
+            guard !Task.isCancelled,
+                  let self,
+                  self.settingsSurfaceProjectionRevision == revision else {
+                return
+            }
+            self.settingsSurfaceProjectionStore.update(
+                XTSettingsSurfaceProjectionBuilder.build(
+                    from: snapshot,
+                    diagnosticsProjection: diagnosticsProjection
+                )
+            )
+        }
     }
 
     func refreshSettingsCenterRouteRepairSnapshot() {
@@ -846,6 +1032,10 @@ final class AppModel: ObservableObject {
     private var hubConnectivityIncidentSnapshot: XTHubConnectivityIncidentSnapshot? = nil
     private var hubRemotePrefsDoctorRefreshTask: Task<Void, Never>? = nil
     private var externalTerminalAccessDoctorRefreshTask: Task<Void, Never>? = nil
+    private var projectSidebarProjectionTask: Task<Void, Never>? = nil
+    private var projectSidebarProjectionRevision: UInt64 = 0
+    private var settingsSurfaceProjectionTask: Task<Void, Never>? = nil
+    private var settingsSurfaceProjectionRevision: UInt64 = 0
     private var externalTerminalAccessDoctorProjection: XTUnifiedDoctorExternalTerminalAccessProjection? =
         HubExternalTerminalAccessSnapshotStore.load(allowCompatibilityFallback: true)
     private var automaticReconnectStartupWarmupUntil: Date = .distantPast
@@ -960,6 +1150,8 @@ final class AppModel: ObservableObject {
         projectRootLoadTask?.cancel()
         projectSelectionTask?.cancel()
         hubRemotePrefsDoctorRefreshTask?.cancel()
+        projectSidebarProjectionTask?.cancel()
+        settingsSurfaceProjectionTask?.cancel()
         for observation in notifTokens {
             observation.center.removeObserver(observation.token)
         }
@@ -1614,6 +1806,7 @@ final class AppModel: ObservableObject {
     func openProjectPicker() {
         let panel = NSOpenPanel()
         panel.title = "Choose Project Folder"
+        panel.prompt = "Open"
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
@@ -1622,6 +1815,30 @@ final class AppModel: ObservableObject {
             guard let self, let url = urls.first else { return }
             self.addProject(url)
         }
+    }
+
+    func currentProjectFolderURLForOpening() -> URL? {
+        if let root = projectContext?.root,
+           existingDirectoryURL(root) != nil {
+            return root.standardizedFileURL
+        }
+
+        guard let selectedProjectId,
+              selectedProjectId != AXProjectRegistry.globalHomeId,
+              let entry = registry.project(for: selectedProjectId),
+              let url = resolvedProjectRootURL(for: entry) else {
+            return nil
+        }
+        return url.standardizedFileURL
+    }
+
+    @discardableResult
+    func openCurrentProjectFolder() -> Bool {
+        guard let url = currentProjectFolderURLForOpening() else {
+            openProjectPicker()
+            return false
+        }
+        return openWorkspaceURL(url)
     }
 
     func openSkillEditor() {
@@ -1677,9 +1894,14 @@ final class AppModel: ObservableObject {
         openURLInWorkspace(targetURL)
     }
 
-    func openWorkspaceURL(_ url: URL?) {
-        guard let url else { return }
-        openURLInWorkspace(url)
+    @discardableResult
+    func openWorkspaceURL(_ url: URL?) -> Bool {
+        guard let url else { return false }
+        let resolvedURL = url.standardizedFileURL
+        if existingDirectoryURL(resolvedURL) != nil {
+            return revealURLInWorkspace(resolvedURL)
+        }
+        return openURLInWorkspace(resolvedURL)
     }
 
     func presentSkillLibraryAlert(title: String, message: String) {
@@ -1772,7 +1994,7 @@ final class AppModel: ObservableObject {
             requestProjectSettingsFocus(
                 projectId: projectScope.projectId,
                 destination: .overview,
-                title: "处理本地技能审批",
+                title: "技能审批",
                 detail: governanceSurfaceDetail(
                     entry,
                     fallback: "查看当前项目的技能治理概况，并处理待本地确认的技能动作。"
@@ -3298,6 +3520,16 @@ final class AppModel: ObservableObject {
             return true
         }
         return NSWorkspace.shared.open(url)
+    }
+
+    @discardableResult
+    private func revealURLInWorkspace(_ url: URL) -> Bool {
+        if let override = openedURLOverrideForTesting {
+            override(url)
+            return true
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+        return true
     }
 
     @discardableResult
@@ -5641,19 +5873,23 @@ final class AppModel: ObservableObject {
     private func resolvedProjectRootURL(for entry: AXProjectEntry) -> URL? {
         let rootPath = entry.rootPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !rootPath.isEmpty else { return nil }
+        return existingDirectoryURL(URL(fileURLWithPath: rootPath, isDirectory: true))
+    }
 
+    private func existingDirectoryURL(_ url: URL) -> URL? {
         let fm = FileManager.default
-        guard fm.fileExists(atPath: rootPath),
-              fm.isReadableFile(atPath: rootPath) else {
+        let path = url.path
+        guard fm.fileExists(atPath: path),
+              fm.isReadableFile(atPath: path) else {
             return nil
         }
 
         var isDirectory: ObjCBool = false
-        guard fm.fileExists(atPath: rootPath, isDirectory: &isDirectory), isDirectory.boolValue else {
+        guard fm.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {
             return nil
         }
 
-        return URL(fileURLWithPath: rootPath, isDirectory: true)
+        return URL(fileURLWithPath: path, isDirectory: true)
     }
 
     private func observeModelAssignmentChanges() {
@@ -7445,92 +7681,6 @@ final class AppModel: ObservableObject {
         }
         nextUnifiedDoctorRefreshAt = now.addingTimeInterval(Self.backgroundUnifiedDoctorRefreshIntervalSec)
         traceOutcome = "updated sections=\(report.sections.count)"
-    }
-
-    private func refreshHubContractDoctorProjectionIfNeeded(force: Bool) {
-        guard hubInteractive else { return }
-
-        let now = Date()
-        if !force, now < nextHubContractDoctorRefreshAt {
-            return
-        }
-        guard hubContractDoctorRefreshTask == nil else { return }
-
-        nextHubContractDoctorRefreshAt = now.addingTimeInterval(30.0)
-        hubContractDoctorRefreshTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            defer { self.hubContractDoctorRefreshTask = nil }
-
-            let result = await HubContractClient.fetchContract()
-            guard !Task.isCancelled else { return }
-
-            let projection: XTUnifiedDoctorHubContractProjection
-            if result.ok, let snapshot = result.snapshot {
-                projection = XTUnifiedDoctorHubContractProjection(
-                    snapshot: snapshot,
-                    observedAt: Date()
-                )
-            } else if let existing = self.hubContractDoctorProjection {
-                projection = existing.withFetchFailure(
-                    errorCode: result.errorCode,
-                    errorMessage: result.errorMessage.isEmpty ? result.errorCode : result.errorMessage,
-                    observedAt: Date()
-                )
-            } else {
-                projection = XTUnifiedDoctorHubContractProjection.fetchFailure(
-                    errorCode: result.errorCode,
-                    errorMessage: result.errorMessage.isEmpty ? result.errorCode : result.errorMessage,
-                    observedAt: Date()
-                )
-            }
-
-            self.hubContractDoctorProjection = projection
-            self.refreshUnifiedDoctorReport(force: true)
-        }
-    }
-
-    private func refreshExternalTerminalAccessDoctorProjectionIfNeeded(force: Bool) {
-        guard hubInteractive else { return }
-
-        let now = Date()
-        if !force, now < nextExternalTerminalAccessDoctorRefreshAt {
-            return
-        }
-        guard externalTerminalAccessDoctorRefreshTask == nil else { return }
-
-        nextExternalTerminalAccessDoctorRefreshAt = now.addingTimeInterval(30.0)
-        externalTerminalAccessDoctorRefreshTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            defer { self.externalTerminalAccessDoctorRefreshTask = nil }
-
-            let result = await HubAccessKeysClient.listAccessKeys()
-            guard !Task.isCancelled else { return }
-
-            let projection: XTUnifiedDoctorExternalTerminalAccessProjection
-            if result.ok {
-                projection = XTUnifiedDoctorExternalTerminalAccessProjection(
-                    listResult: result,
-                    observedAt: Date()
-                )
-            } else if let existing = self.externalTerminalAccessDoctorProjection
-                ?? HubExternalTerminalAccessSnapshotStore.load(allowCompatibilityFallback: true) {
-                projection = existing.withFetchFailure(
-                    errorCode: result.errorCode,
-                    errorMessage: result.errorMessage.isEmpty ? result.errorCode : result.errorMessage,
-                    observedAt: Date()
-                )
-            } else {
-                projection = XTUnifiedDoctorExternalTerminalAccessProjection.fetchFailure(
-                    errorCode: result.errorCode,
-                    errorMessage: result.errorMessage.isEmpty ? result.errorCode : result.errorMessage,
-                    observedAt: Date()
-                )
-            }
-
-            self.externalTerminalAccessDoctorProjection = projection
-            HubExternalTerminalAccessSnapshotStore.write(projection)
-            self.refreshUnifiedDoctorReport(force: true)
-        }
     }
 
     private func refreshExternalTerminalAccessDoctorProjectionIfNeeded(force: Bool) {

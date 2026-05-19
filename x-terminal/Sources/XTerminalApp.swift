@@ -23,11 +23,15 @@ struct XTerminalApp: App {
                 .environmentObject(appModel.workSurfaceStore)
                 .environmentObject(appModel.navigationFocusStore)
                 .environmentObject(appModel.projectListStore)
+                .environmentObject(appModel.projectSidebarProjectionStore)
                 .environmentObject(appModel.globalHomeStore)
                 .environmentObject(appModel.controlSurfaceStore)
                 .environmentObject(appModel.skillLibraryStore)
                 .environmentObject(appModel.modelSettingsStore)
                 .environmentObject(appModel.settingsCenterStore)
+                .environmentObject(appModel.settingsValueStore)
+                .environmentObject(appModel.settingsSurfaceProjectionStore)
+                .environmentObject(appModel.settingsSupervisorSignalStore)
                 .onAppear {
                     appDelegate.bind(appModel: appModel)
                 }
@@ -40,11 +44,15 @@ struct XTerminalApp: App {
                 .environmentObject(appModel.workSurfaceStore)
                 .environmentObject(appModel.navigationFocusStore)
                 .environmentObject(appModel.projectListStore)
+                .environmentObject(appModel.projectSidebarProjectionStore)
                 .environmentObject(appModel.globalHomeStore)
                 .environmentObject(appModel.controlSurfaceStore)
                 .environmentObject(appModel.skillLibraryStore)
                 .environmentObject(appModel.modelSettingsStore)
                 .environmentObject(appModel.settingsCenterStore)
+                .environmentObject(appModel.settingsValueStore)
+                .environmentObject(appModel.settingsSurfaceProjectionStore)
+                .environmentObject(appModel.settingsSupervisorSignalStore)
         }
 
         Window("Supervisor Settings", id: "supervisor_settings") {
@@ -54,11 +62,15 @@ struct XTerminalApp: App {
                 .environmentObject(appModel.workSurfaceStore)
                 .environmentObject(appModel.navigationFocusStore)
                 .environmentObject(appModel.projectListStore)
+                .environmentObject(appModel.projectSidebarProjectionStore)
                 .environmentObject(appModel.globalHomeStore)
                 .environmentObject(appModel.controlSurfaceStore)
                 .environmentObject(appModel.skillLibraryStore)
                 .environmentObject(appModel.modelSettingsStore)
                 .environmentObject(appModel.settingsCenterStore)
+                .environmentObject(appModel.settingsValueStore)
+                .environmentObject(appModel.settingsSurfaceProjectionStore)
+                .environmentObject(appModel.settingsSupervisorSignalStore)
         }
 
         Window("AI 模型", id: "model_settings") {
@@ -68,11 +80,15 @@ struct XTerminalApp: App {
                 .environmentObject(appModel.workSurfaceStore)
                 .environmentObject(appModel.navigationFocusStore)
                 .environmentObject(appModel.projectListStore)
+                .environmentObject(appModel.projectSidebarProjectionStore)
                 .environmentObject(appModel.globalHomeStore)
                 .environmentObject(appModel.controlSurfaceStore)
                 .environmentObject(appModel.skillLibraryStore)
                 .environmentObject(appModel.modelSettingsStore)
                 .environmentObject(appModel.settingsCenterStore)
+                .environmentObject(appModel.settingsValueStore)
+                .environmentObject(appModel.settingsSurfaceProjectionStore)
+                .environmentObject(appModel.settingsSupervisorSignalStore)
         }
 
         Window("Hub Setup", id: "hub_setup") {
@@ -82,11 +98,15 @@ struct XTerminalApp: App {
                 .environmentObject(appModel.workSurfaceStore)
                 .environmentObject(appModel.navigationFocusStore)
                 .environmentObject(appModel.projectListStore)
+                .environmentObject(appModel.projectSidebarProjectionStore)
                 .environmentObject(appModel.globalHomeStore)
                 .environmentObject(appModel.controlSurfaceStore)
                 .environmentObject(appModel.skillLibraryStore)
                 .environmentObject(appModel.modelSettingsStore)
                 .environmentObject(appModel.settingsCenterStore)
+                .environmentObject(appModel.settingsValueStore)
+                .environmentObject(appModel.settingsSurfaceProjectionStore)
+                .environmentObject(appModel.settingsSupervisorSignalStore)
         }
         
         Settings {
@@ -96,11 +116,15 @@ struct XTerminalApp: App {
                 .environmentObject(appModel.workSurfaceStore)
                 .environmentObject(appModel.navigationFocusStore)
                 .environmentObject(appModel.projectListStore)
+                .environmentObject(appModel.projectSidebarProjectionStore)
                 .environmentObject(appModel.globalHomeStore)
                 .environmentObject(appModel.controlSurfaceStore)
                 .environmentObject(appModel.skillLibraryStore)
                 .environmentObject(appModel.modelSettingsStore)
                 .environmentObject(appModel.settingsCenterStore)
+                .environmentObject(appModel.settingsValueStore)
+                .environmentObject(appModel.settingsSurfaceProjectionStore)
+                .environmentObject(appModel.settingsSupervisorSignalStore)
         }
         .commands {
             CommandGroup(after: .newItem) {

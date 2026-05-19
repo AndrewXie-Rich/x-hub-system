@@ -86,6 +86,10 @@ func xtToolRuntimePolicyDecision(
     effectiveRuntimeSurface: AXProjectRuntimeSurfaceEffectivePolicy? = nil,
     resolvedGovernance: AXProjectResolvedGovernanceState? = nil
 ) -> XTToolRuntimePolicyDecision {
+    if let modeDeny = XTAgentModeToolGate.denyDecisionIfNeeded(call: call) {
+        return modeDeny
+    }
+
     let governanceState = xtRuntimeGovernanceState(
         projectRoot: projectRoot,
         config: config,
@@ -263,6 +267,11 @@ func xtToolRuntimePolicyDeniedSummary(
         "governance_compat_source": .string(governance.compatSource.rawValue),
         "governance_allowed_capabilities": .array(governance.capabilityBundle.allowedCapabilityLabels.map(JSONValue.string)),
     ]
+    if let agentMode = XTAgentMode.from(call: call) {
+        let contract = XTAgentModeCapabilityContract.contract(for: agentMode)
+        summary["agent_mode"] = .string(agentMode.rawValue)
+        summary["agent_mode_contract"] = .object(contract.jsonFields)
+    }
     for (key, value) in governance.debugSnapshot() {
         summary[key] = value
     }
@@ -361,6 +370,12 @@ private func xtGovernanceCapability(for call: ToolCall) -> XTGovernanceCapabilit
         return .gitPush
     case .git_apply, .git_apply_check:
         return .gitApply
+    case .projectDiagnostics, .lspDiagnostics, .checkRun:
+        return .repoBuildTest
+    case .buildRun:
+        return .repoBuild
+    case .testRun:
+        return .repoTest
     case .pr_create:
         return .prCreate
     case .ci_read:

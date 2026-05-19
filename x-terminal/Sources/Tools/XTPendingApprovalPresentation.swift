@@ -36,9 +36,9 @@ enum XTPendingApprovalPresentation {
         var primaryActionTitle: String {
             switch primaryAction {
             case .approveAndExecute:
-                return "批准并执行"
+                return "审批"
             case .approveRunnableSubset:
-                return "批准可放行项"
+                return "审批可放行项"
             case .reviewGrantStatus:
                 return "继续检查授权状态"
             case .reviewBlockedStatus:
@@ -102,9 +102,9 @@ enum XTPendingApprovalPresentation {
         var hubDisconnectedNote: String {
             switch primaryAction {
             case .approveAndExecute:
-                return "Hub 未连接，连上后才能批准并执行。"
+                return "Hub 未连接时仍可审批本地可执行动作；后续模型继续可能需要 Hub 路由。"
             case .approveRunnableSubset:
-                return "Hub 未连接，连上后才能继续处理并放行可执行项。"
+                return "Hub 未连接时仍可审批本地可放行项；仍需 Hub grant 的项会继续等待。"
             case .reviewGrantStatus:
                 return "Hub 未连接，连上后才能检查 grant 状态并继续处理。"
             case .reviewBlockedStatus:
@@ -251,6 +251,8 @@ enum XTPendingApprovalPresentation {
             return "stop.circle"
         case .git_status, .git_diff, .git_apply_check, .git_apply:
             return "arrow.triangle.branch"
+        case .projectDiagnostics, .lspDiagnostics, .checkRun, .buildRun, .testRun:
+            return "stethoscope"
         case .git_commit:
             return "checkmark.circle"
         case .git_push:
@@ -328,6 +330,16 @@ enum XTPendingApprovalPresentation {
             return "补丁校验"
         case .git_apply:
             return "应用补丁"
+        case .projectDiagnostics:
+            return "项目诊断"
+        case .lspDiagnostics:
+            return "LSP 诊断"
+        case .checkRun:
+            return "代码检查"
+        case .buildRun:
+            return "构建检查"
+        case .testRun:
+            return "测试检查"
         case .pr_create:
             return "创建 Pull Request"
         case .ci_read:
@@ -793,6 +805,16 @@ enum XTPendingApprovalPresentation {
             return "应用前校验补丁"
         case .git_apply:
             return "应用补丁"
+        case .projectDiagnostics:
+            return "运行项目诊断"
+        case .lspDiagnostics:
+            return "读取 LSP 诊断"
+        case .checkRun:
+            return "运行代码检查"
+        case .buildRun:
+            return "运行构建检查"
+        case .testRun:
+            return "运行测试检查"
         case .pr_create:
             return sentence("创建 Pull Request", target: previewValue(for: toolCall, keys: ["title", "base", "head"], includeLabel: true), fallback: "创建 Pull Request")
         case .ci_read:

@@ -1,16 +1,6 @@
 # X-Terminal
 
-> LEGACY WARNING: this `x-hub-system/x-terminal/` tree is no longer the active
-> X-Terminal implementation. Do not implement XT changes here, and do not
-> package XT from here.
->
-> Active XT source:
-> `/Users/andrew.xie/Documents/AX/rust/rust xt/swift-xterminal`
->
-> Active XT build command:
-> `/Users/andrew.xie/Documents/AX/rust/rust xt/commands/build_xt.command`
-
-`x-terminal/` is the legacy terminal surface for X-Hub.
+`x-terminal/` is the active terminal surface for X-Hub.
 
 It is where interaction, session runtime, supervisor workflows, readiness checks, and tool execution UX live. It is not the trust anchor.
 
@@ -97,36 +87,25 @@ Treat those as active implementation and migration layers, not as the full final
 | `work-orders/` | Scoped implementation packs and execution references |
 | `skills/` | Active repo-local skills used during terminal development |
 
-## Legacy Entry Points
+## Active Entry Points
 
-This legacy tree is blocked by default. For active XT work, use:
+Run locally:
 
 ```bash
-"/Users/andrew.xie/Documents/AX/rust/rust xt/swift-xterminal/tools/run_xterminal_from_source.command"
+bash x-terminal/tools/run_xterminal_from_source.command
 ```
 
-Build active XT with:
+Build locally:
 
 ```bash
-"/Users/andrew.xie/Documents/AX/rust/rust xt/commands/build_xt.command"
-```
-
-Build the release-style X-Terminal app bundle plus the Rust `xtd` sidecar:
-
-```bash
-bash x-terminal/tools/build_xt_with_rust_sidecar.command
-```
-
-Package X-Terminal and the Rust sidecar into a ZIP:
-
-```bash
-bash x-terminal/tools/package_xt_runtime.command
+cd x-terminal
+swift build
 ```
 
 Export the normalized XT doctor bundle from the latest saved unified doctor report:
 
 ```bash
-"/Users/andrew.xie/Documents/AX/rust/rust xt/swift-xterminal/tools/run_xterminal_from_source.command" --xt-unified-doctor-export --project-root /path/to/workspace
+bash x-terminal/tools/run_xterminal_from_source.command --xt-unified-doctor-export --project-root /path/to/workspace
 ```
 
 Or use the thin repo-level wrapper:
@@ -172,7 +151,7 @@ The XT-native source report envelope is frozen separately in `docs/memory-new/sc
 Run the release gate:
 
 ```bash
-bash "/Users/andrew.xie/Documents/AX/rust/rust xt/swift-xterminal/scripts/ci/xt_release_gate.sh"
+bash x-terminal/scripts/ci/xt_release_gate.sh
 ```
 
 `XT-G4 / Reliability` now requires three runtime smokes together: `--xt-route-smoke`, `--xt-grant-smoke`, and `--xt-supervisor-voice-smoke`. The voice smoke emits a machine-readable report at `.axcoder/reports/xt_supervisor_voice_smoke.runtime.json`, so release evidence can confirm the phone-like Supervisor path still covers wake, grant challenge, Hub brief playback, and talk-loop resume.
@@ -180,14 +159,14 @@ bash "/Users/andrew.xie/Documents/AX/rust/rust xt/swift-xterminal/scripts/ci/xt_
 Run the stricter gate mode:
 
 ```bash
-cd "/Users/andrew.xie/Documents/AX/rust/rust xt/swift-xterminal"
+cd x-terminal
 XT_GATE_MODE=strict bash scripts/ci/xt_release_gate.sh
 ```
 
 Run only the phone-like Supervisor voice smoke:
 
 ```bash
-cd "/Users/andrew.xie/Documents/AX/rust/rust xt/swift-xterminal"
+cd x-terminal
 swift run XTerminal --xt-supervisor-voice-smoke --project-root "$(pwd)" --out-json .axcoder/reports/xt_supervisor_voice_smoke.runtime.json
 ```
 

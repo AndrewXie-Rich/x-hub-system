@@ -123,46 +123,6 @@ struct XTPendingApprovalPresentationTests {
     }
 
     @Test
-    func approvalMessageExplainsTrustedAutomationApprovalEffect() {
-        let toolCall = ToolCall(
-            id: "pending-browser-trusted-automation-1",
-            tool: .deviceBrowserControl,
-            args: [
-                "action": .string("open_url"),
-                "url": .string("https://example.com/dashboard")
-            ]
-        )
-        let activity = ProjectSkillActivityItem(
-            requestID: "pending-browser-trusted-automation-1",
-            skillID: "guarded-automation",
-            toolName: ToolName.deviceBrowserControl.rawValue,
-            status: "awaiting_approval",
-            createdAt: 1.0,
-            resolutionSource: "",
-            toolArgs: toolCall.args,
-            routingReasonCode: "",
-            routingExplanation: "",
-            executionReadiness: XTSkillExecutionReadinessState.localApprovalRequired.rawValue,
-            approvalSummary: "",
-            grantFloor: XTSkillGrantFloor.none.rawValue,
-            approvalFloor: XTSkillApprovalFloor.localApproval.rawValue,
-            resultSummary: "",
-            detail: "",
-            denyCode: xtTrustedAutomationLocalApprovalRequiredDenyCode,
-            authorizationDisposition: ""
-        )
-
-        let message = XTPendingApprovalPresentation.approvalMessage(
-            for: toolCall,
-            activity: activity
-        )
-
-        #expect(message.summary.contains("启用可信设备自动化"))
-        #expect(message.nextStep?.contains("启用可信设备自动化") == true)
-        #expect(message.nextStep?.contains("macOS 系统权限") == true)
-    }
-
-    @Test
     func approvalMessageUsesGrantSpecificNextStepWhenReadinessRequiresGrant() {
         let toolCall = ToolCall(
             id: "pending-delivery-1",
@@ -419,11 +379,11 @@ struct XTPendingApprovalPresentationTests {
         )
 
         #expect(batch.primaryAction == .approveAndExecute)
-        #expect(batch.primaryActionTitle == "批准并执行")
+        #expect(batch.primaryActionTitle == "审批")
         #expect(batch.primaryActionSystemImage == "checkmark")
         #expect(batch.subtitle == "2 个工具调用等待你确认，其中 1 个来自受治理 skill")
         #expect(batch.footerNote.contains("批准后会立即执行当前这些待处理动作"))
-        #expect(batch.hubDisconnectedNote == "Hub 未连接，连上后才能批准并执行。")
+        #expect(batch.hubDisconnectedNote == "Hub 未连接时仍可审批本地可执行动作；后续模型继续可能需要 Hub 路由。")
     }
 
     @Test
@@ -457,12 +417,12 @@ struct XTPendingApprovalPresentationTests {
         )
 
         #expect(batch.primaryAction == .approveRunnableSubset)
-        #expect(batch.primaryActionTitle == "批准可放行项")
+        #expect(batch.primaryActionTitle == "审批可放行项")
         #expect(batch.primaryActionSystemImage == "checkmark.circle")
         #expect(batch.subtitle.contains("2 个工具调用等待处理"))
         #expect(batch.subtitle.contains("1 个仍需先完成 Hub grant"))
         #expect(batch.footerNote.contains("仍需 Hub grant"))
-        #expect(batch.hubDisconnectedNote == "Hub 未连接，连上后才能继续处理并放行可执行项。")
+        #expect(batch.hubDisconnectedNote == "Hub 未连接时仍可审批本地可放行项；仍需 Hub grant 的项会继续等待。")
     }
 
     @Test

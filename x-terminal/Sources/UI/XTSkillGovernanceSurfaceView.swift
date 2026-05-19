@@ -778,7 +778,7 @@ struct XTSkillGovernanceSurfaceView: View {
         case "request_hub_grant":
             return "处理 Hub Grant"
         case "request_local_approval":
-            return "处理本地审批"
+            return "审批"
         case "open_project_settings":
             return "项目治理"
         case "open_trusted_automation_doctor":

@@ -414,6 +414,29 @@ struct AppModelSkillToolbarActionTests {
     }
 
     @Test
+    func openCurrentProjectFolderUsesSelectedProjectRoot() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xt-appmodel-current-project-folder-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let appModel = AppModel.makeForTesting()
+        let upsert = AXProjectRegistryStore.upsertProject(.empty(), root: root)
+        appModel.registry = upsert.0
+        appModel.selectedProjectId = upsert.1.projectId
+
+        var openedURL: URL?
+        appModel.openedURLOverrideForTesting = { url in
+            openedURL = url
+        }
+
+        let didOpen = appModel.openCurrentProjectFolder()
+
+        #expect(didOpen)
+        #expect(openedURL?.standardizedFileURL == root.standardizedFileURL)
+    }
+
+    @Test
     func reviewLastImportedSkillShowsFetchedRecordAndUpdatesStatusLine() async throws {
         let appModel = AppModel()
         var alerts: [(title: String, message: String)] = []
@@ -744,7 +767,7 @@ struct AppModelSkillToolbarActionTests {
         let request = try #require(appModel.projectSettingsFocusRequest)
         #expect(request.projectId == projectId)
         #expect(request.destination == .overview)
-        #expect(request.context?.title == "处理本地技能审批")
+        #expect(request.context?.title == "技能审批")
         #expect(request.context?.detail?.contains("Agent Browser") == true)
         #expect(request.context?.detail?.contains("why_not=local_approval_required") == true)
         #expect(appModel.skillGovernanceActionStatusLine == "skill_governance_action=request_local_approval skill=agent-browser scope=project")

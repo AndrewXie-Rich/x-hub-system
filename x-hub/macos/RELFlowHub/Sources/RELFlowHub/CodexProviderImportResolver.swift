@@ -250,6 +250,9 @@ enum CodexProviderImportResolver {
     ) -> [URL] {
         var candidates: [URL] = []
         if let url {
+            if let pairedConfig = pairedConfigCandidate(forAuthURL: url) {
+                candidates.append(pairedConfig)
+            }
             candidates.append(url.deletingLastPathComponent().appendingPathComponent("config.toml", isDirectory: false))
         }
         if allowActiveCodexHome {
@@ -263,11 +266,33 @@ enum CodexProviderImportResolver {
             return []
         }
 
-        var candidates: [URL] = [
-            directory.appendingPathComponent("auth.json", isDirectory: false)
-        ]
+        var candidates: [URL] = []
+        if let url, let pairedAuth = pairedAuthCandidate(forConfigURL: url) {
+            candidates.append(pairedAuth)
+        }
+        candidates.append(directory.appendingPathComponent("auth.json", isDirectory: false))
         candidates.append(contentsOf: discoveredSiblingAuthCandidates(in: directory))
         return uniqueFileCandidates(candidates)
+    }
+
+    private static func pairedConfigCandidate(forAuthURL url: URL) -> URL? {
+        let stem = url.deletingPathExtension().lastPathComponent
+        guard stem.lowercased().hasPrefix("auth") else { return nil }
+        let suffix = String(stem.dropFirst("auth".count))
+        return url.deletingLastPathComponent().appendingPathComponent(
+            "config\(suffix).toml",
+            isDirectory: false
+        )
+    }
+
+    private static func pairedAuthCandidate(forConfigURL url: URL) -> URL? {
+        let stem = url.deletingPathExtension().lastPathComponent
+        guard stem.lowercased().hasPrefix("config") else { return nil }
+        let suffix = String(stem.dropFirst("config".count))
+        return url.deletingLastPathComponent().appendingPathComponent(
+            "auth\(suffix).json",
+            isDirectory: false
+        )
     }
 
     private static func discoveredSiblingAuthCandidates(in directory: URL) -> [URL] {

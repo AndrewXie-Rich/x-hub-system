@@ -4,15 +4,12 @@ import Foundation
 struct XTSkillLibrarySheet: View {
     let embedded: Bool
 
-    @EnvironmentObject private var appModel: AppModel
+    @Environment(\.xtAppModelReference) private var appModelReference
+    @EnvironmentObject private var skillLibraryStore: XTSkillLibraryStore
     @Environment(\.dismiss) private var dismiss
 
     @State private var query: String = ""
     @State private var localSkillSectionsCache: [LocalSkillSection] = []
-
-    init(embedded: Bool = false) {
-        self.embedded = embedded
-    }
 
     init(embedded: Bool = false) {
         self.embedded = embedded

@@ -159,6 +159,14 @@ struct AXProjectContext: Equatable {
         managedProcessesDir.appendingPathComponent("processes.json")
     }
 
+    var diagnosticsDir: URL {
+        xterminalDir.appendingPathComponent("diagnostics", isDirectory: true)
+    }
+
+    var latestDiagnosticsURL: URL {
+        diagnosticsDir.appendingPathComponent("latest.json")
+    }
+
     func ensureDirs() throws {
         try FileManager.default.createDirectory(at: xterminalDir, withIntermediateDirectories: true)
 

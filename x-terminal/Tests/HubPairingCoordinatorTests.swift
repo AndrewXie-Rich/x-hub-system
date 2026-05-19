@@ -246,8 +246,9 @@ struct HubPairingCoordinatorTests {
         #expect(pairingEnv.contains("AXHUB_PAIRING_SECRET='secret-1'"))
         #expect(hubEnv.contains("export HUB_HOST='192.168.10.109'"))
         #expect(hubEnv.contains("export HUB_GRPC_TLS_CA_CERT_PATH='/tmp/ca.pem'"))
-        #expect(connectionJSON.contains("\"hub_host\": \"192.168.10.109\""))
-        #expect(connectionJSON.contains("\"pairing_profile_epoch\": 13"))
+        let connection = try connectionJSONObject(from: connectionJSON)
+        #expect(connection["hub_host"] as? String == "192.168.10.109")
+        #expect(connection["pairing_profile_epoch"] as? Int == 13)
     }
 
     @Test
@@ -326,7 +327,8 @@ struct HubPairingCoordinatorTests {
         #expect(hubEnv.contains("export HUB_HOST='192.168.10.109'"))
         #expect(hubEnv.contains("export HUB_GRPC_TLS_MODE='tls'"))
         #expect(hubEnv.contains("export HUB_GRPC_TLS_SERVER_NAME='axhub'"))
-        #expect(connectionJSON.contains("\"hub_host\": \"192.168.10.109\""))
+        let connection = try connectionJSONObject(from: connectionJSON)
+        #expect(connection["hub_host"] as? String == "192.168.10.109")
     }
 
     @Test
@@ -992,7 +994,7 @@ struct HubPairingCoordinatorTests {
     @Test
     func authoritativeFormalBootstrapSkipsDiscoveryWhenStableNamedHostAndInviteTokenExist() {
         let skipped = HubPairingCoordinator.shouldSkipDiscoveryForAuthoritativeBootstrapForTesting(
-            configuredInternetHost: "hub.example.com",
+            configuredInternetHost: "hub.xhubsystem.com",
             inviteToken: "axhub_invite_test_123",
             hasAuthoritativeLocalProfile: false
         )
@@ -1011,14 +1013,14 @@ struct HubPairingCoordinatorTests {
         )
         #expect(
             HubPairingCoordinator.shouldSkipDiscoveryForAuthoritativeBootstrapForTesting(
-                configuredInternetHost: "hub.example.com",
+                configuredInternetHost: "hub.xhubsystem.com",
                 inviteToken: "",
                 hasAuthoritativeLocalProfile: false
             ) == false
         )
         #expect(
             HubPairingCoordinator.shouldSkipDiscoveryForAuthoritativeBootstrapForTesting(
-                configuredInternetHost: "hub.example.com",
+                configuredInternetHost: "hub.xhubsystem.com",
                 inviteToken: "axhub_invite_test_123",
                 hasAuthoritativeLocalProfile: true
             ) == false
@@ -1525,6 +1527,11 @@ struct HubPairingCoordinatorTests {
 
     private func writeFile(_ url: URL, _ contents: String) throws {
         try contents.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    private func connectionJSONObject(from contents: String) throws -> [String: Any] {
+        let object = try JSONSerialization.jsonObject(with: Data(contents.utf8))
+        return try #require(object as? [String: Any])
     }
 
     private func writeFakeAxhubctl(

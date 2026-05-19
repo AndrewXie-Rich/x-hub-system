@@ -1,13 +1,19 @@
 import SwiftUI
 
 struct XTReviewSurfaceView: View {
-    @EnvironmentObject private var appModel: AppModel
+    @Environment(\.xtAppModelReference) private var appModelReference
+    @EnvironmentObject private var hubConnectionStore: XTHubConnectionStore
     @Environment(\.openURL) private var openURL
 
-    @StateObject private var supervisor = SupervisorManager.shared
+    @StateObject private var reviewStore = XTReviewProjectionStore(
+        minimumUpdateIntervalNanoseconds: 16_000_000
+    )
+    @State private var initialRefreshTask: Task<Void, Never>? = nil
 
     let onOpenSupervisor: () -> Void
     let onOpenControl: () -> Void
+
+    private static let initialRefreshDelayNanoseconds: UInt64 = 180_000_000
 
     var body: some View {
         ScrollView {
@@ -35,20 +41,26 @@ struct XTReviewSurfaceView: View {
         }
         .frame(minWidth: 820, minHeight: 620)
         .onAppear {
-            refreshAll()
+            reviewStore.bind(supervisor: supervisor, appModel: appModel)
+            scheduleInitialRefresh()
+        }
+        .onDisappear {
+            initialRefreshTask?.cancel()
+            initialRefreshTask = nil
+            reviewStore.unbind()
         }
     }
 
     private var grants: [SupervisorManager.SupervisorPendingGrant] {
-        supervisor.frontstagePendingHubGrants
+        reviewSnapshot.grants
     }
 
     private var approvals: [SupervisorManager.SupervisorPendingSkillApproval] {
-        supervisor.frontstagePendingSupervisorSkillApprovals
+        reviewSnapshot.approvals
     }
 
     private var candidateReviews: [HubIPCClient.SupervisorCandidateReviewItem] {
-        supervisor.frontstageSupervisorCandidateReviews
+        reviewSnapshot.candidateReviews
     }
 
     private var header: some View {
@@ -146,7 +158,7 @@ struct XTReviewSurfaceView: View {
                 let row = SupervisorPendingHubGrantPresentation.row(
                     grant,
                     inFlightGrantIDs: [],
-                    hubInteractive: appModel.hubInteractive,
+                    hubInteractive: hubInteractive,
                     isFocused: false
                 )
                 queueCard(
@@ -214,8 +226,8 @@ struct XTReviewSurfaceView: View {
                 let row = SupervisorCandidateReviewPresentation.row(
                     item,
                     inFlightRequestIDs: [],
-                    hubInteractive: appModel.hubInteractive,
-                    projectNamesByID: supervisor.frontstageSupervisorCandidateReviewProjectNames,
+                    hubInteractive: hubInteractive,
+                    projectNamesByID: reviewSnapshot.candidateProjectNamesByID,
                     isFocused: false
                 )
                 queueCard(
@@ -313,6 +325,41 @@ struct XTReviewSurfaceView: View {
         supervisor.refreshPendingHubGrantSnapshotNow()
         supervisor.refreshPendingSupervisorSkillApprovalsNow()
         supervisor.refreshSupervisorCandidateReviewSnapshotNow()
+    }
+
+    private func scheduleInitialRefresh() {
+        guard initialRefreshTask == nil else { return }
+        XTPerformanceTrace.event("XT Review Initial Refresh Scheduled", "delay_ms=180")
+        initialRefreshTask = Task { @MainActor in
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: Self.initialRefreshDelayNanoseconds)
+            guard !Task.isCancelled else {
+                initialRefreshTask = nil
+                return
+            }
+            initialRefreshTask = nil
+            refreshAll()
+            XTPerformanceTrace.event("XT Review Initial Refresh Committed")
+        }
+    }
+
+    private var hubInteractive: Bool {
+        hubConnectionStore.snapshot.interactive
+    }
+
+    private var reviewSnapshot: XTReviewSurfaceSnapshot {
+        reviewStore.snapshot
+    }
+
+    private var supervisor: SupervisorManager {
+        SupervisorManager.shared
+    }
+
+    private var appModel: AppModel {
+        guard let appModelReference else {
+            preconditionFailure("XTReviewSurfaceView requires xtAppModelReference")
+        }
+        return appModelReference
     }
 
     private func sectionHeader(

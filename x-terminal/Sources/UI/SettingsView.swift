@@ -441,16 +441,17 @@ struct SettingsView: View {
     let embeddedInControlCenter: Bool
 
     @Environment(\.xtAppModelReference) private var appModelReference
-    @EnvironmentObject private var settingsCenterStore: XTSettingsCenterStore
+    @EnvironmentObject private var settingsSurfaceProjectionStore: XTSettingsSurfaceProjectionStore
     @EnvironmentObject private var navigationFocusStore: XTNavigationFocusStore
     private let supervisorManager = SupervisorManager.shared
     @StateObject private var modelManager = HubModelManager.shared
     @StateObject private var providerOAuthLoginModel = ProviderOAuthLoginModel()
     @StateObject private var securityRuntimeUpdateFeedback = XTTransientUpdateFeedbackState()
     @State private var activeFocusRequest: XTSettingsFocusRequest?
-    @State private var selectedSettingsSectionID: String = XTSettingsCenterManifest.sections.first?.id ?? "pair_hub"
+    @State private var selectedSettingsSectionID: String
     @State private var connectionToolsExpanded = false
     @State private var statusDetailsExpanded = false
+    @State private var diagnosticsDetailsExpanded = false
     @State private var defaultToolSandboxMode: ToolSandboxMode = ToolExecutor.sandboxMode()
     @State private var securityRuntimeChangeNotice: XTSettingsChangeNotice?
     @State private var rustHubReadinessPresentation = RustHubReadinessPresentation.loading()
@@ -465,26 +466,28 @@ struct SettingsView: View {
 
     var body: some View {
         ScrollViewReader { proxy in
-            HStack(spacing: 0) {
-                settingsNavigationPane(proxy: proxy)
-
-                Divider()
-
-                ScrollView {
-                    VStack(alignment: .leading, spacing: UIThemeTokens.sectionSpacing) {
-                        Color.clear
-                            .frame(height: 0)
-                            .id("settings_detail_top")
-
-                        headerSection
-                        settingsStatusSummary
-                        compactQuickActions
-                        selectedSettingsSectionContent(proxy: proxy)
+            Group {
+                if embeddedInControlCenter {
+                    ScrollView {
+                        settingsDetailContent(proxy: proxy)
+                            .padding(16)
+                            .frame(maxWidth: .infinity, alignment: .topLeading)
                     }
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .background(Color(nsColor: .windowBackgroundColor))
+                } else {
+                    HStack(spacing: 0) {
+                        settingsNavigationPane(proxy: proxy)
+
+                        Divider()
+
+                        ScrollView {
+                            settingsDetailContent(proxy: proxy)
+                                .padding(16)
+                                .frame(maxWidth: .infinity, alignment: .topLeading)
+                        }
+                        .background(Color(nsColor: .windowBackgroundColor))
+                    }
                 }
-                .background(Color(nsColor: .windowBackgroundColor))
             }
             .onAppear {
                 processSettingsFocusRequest(proxy)
@@ -515,214 +518,23 @@ struct SettingsView: View {
                 securityRuntimeChangeNotice = nil
             }
         }
-        .frame(minWidth: 860, idealWidth: 960, minHeight: 720)
-    }
-
-    private func settingsNavigationPane(proxy: ScrollViewProxy) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("设置")
-                    .font(.title3.weight(.semibold))
-                Text("按任务分组")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(XTSettingsCenterManifest.sections) { section in
-                    Button {
-                        selectSettingsSection(section.id, proxy: proxy)
-                    } label: {
-                        HStack(alignment: .center, spacing: 10) {
-                            Image(systemName: settingsSectionIconName(section.id))
-                                .frame(width: 18)
-
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(section.title)
-                                    .font(.subheadline.weight(.semibold))
-                                Text(settingsSectionShortSummary(section))
-                                    .font(.caption2)
-                                    .foregroundStyle(selectedSettingsSectionID == section.id ? .white.opacity(0.82) : .secondary)
-                                    .lineLimit(1)
-                            }
-
-                            Spacer(minLength: 6)
-
-                            if let badge = settingsSectionBadge(section.id) {
-                                Text(badge)
-                                    .font(.caption2.monospaced())
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 3)
-                                    .background(
-                                        Capsule()
-                                            .fill(selectedSettingsSectionID == section.id ? Color.white.opacity(0.16) : Color.secondary.opacity(0.10))
-                                    )
-                            }
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 9)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(
-                            RoundedRectangle(cornerRadius: UIThemeTokens.cardRadius, style: .continuous)
-                                .fill(selectedSettingsSectionID == section.id ? Color.accentColor : Color.clear)
-                        )
-                        .foregroundStyle(selectedSettingsSectionID == section.id ? .white : .primary)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-
-            Spacer(minLength: 12)
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("当前")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-
-                HStack {
-                    statusDot(color: connectionStateColor)
-                    Text(connectionStateLabel)
-                        .font(UIThemeTokens.monoFont())
-                        .lineLimit(1)
-                }
-
-                Text(selectedSettingsSection.repairEntry)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: UIThemeTokens.cardRadius, style: .continuous)
-                    .fill(UIThemeTokens.secondaryCardBackground)
-            )
-        }
-        .padding(14)
-        .frame(minWidth: 260, idealWidth: 260, maxWidth: 260, maxHeight: .infinity, alignment: .topLeading)
-        .background(Color(nsColor: .controlBackgroundColor))
-    }
-
-    private var settingsStatusSummary: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: settingsStatus.state.iconName)
-                    .font(.title3)
-                    .foregroundStyle(settingsStatus.state.tint)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(settingsStatus.headline)
-                        .font(.headline)
-                    Text(settingsStatus.userAction)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Spacer(minLength: 8)
-
-                Text(connectionStateLabel)
-                    .font(UIThemeTokens.monoFont())
-                    .foregroundStyle(connectionStateColor)
-            }
-
-            DisclosureGroup(isExpanded: $statusDetailsExpanded) {
-                StatusExplanationCard(explanation: settingsStatus)
-                    .padding(.top, 6)
-            } label: {
-                Text(statusDetailsExpanded ? "收起完整状态" : "查看完整状态")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: UIThemeTokens.cardRadius, style: .continuous)
-                .fill(UIThemeTokens.stateBackground(for: settingsStatus.state))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: UIThemeTokens.cardRadius, style: .continuous)
-                .stroke(settingsStatus.state.tint.opacity(0.22), lineWidth: 1)
+        .frame(
+            minWidth: embeddedInControlCenter ? 720 : 860,
+            idealWidth: embeddedInControlCenter ? 900 : 960,
+            minHeight: 720
         )
     }
 
-    private var compactQuickActions: some View {
-        LazyVGrid(
-            columns: [GridItem(.adaptive(minimum: 180), spacing: 10)],
-            alignment: .leading,
-            spacing: 10
-        ) {
-            ForEach(quickActions) { action in
-                Button {
-                    handleAction(action)
-                } label: {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Label(action.title, systemImage: action.systemImage)
-                            .font(.subheadline.weight(.semibold))
-                            .lineLimit(1)
-                        if let subtitle = action.subtitle, !subtitle.isEmpty {
-                            Text(subtitle)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
-                }
-                .buttonStyle(.bordered)
-                .tint(action.style == .diagnostic ? UIThemeTokens.color(for: .releaseFrozen) : nil)
-            }
-        }
-    }
+    private func settingsDetailContent(proxy: ScrollViewProxy) -> some View {
+        LazyVStack(alignment: .leading, spacing: UIThemeTokens.sectionSpacing) {
+            Color.clear
+                .frame(height: 0)
+                .id("settings_detail_top")
 
-    @ViewBuilder
-    private func selectedSettingsSectionContent(proxy: ScrollViewProxy) -> some View {
-        switch selectedSettingsSectionID {
-        case "pair_hub":
-            pairHubSection
-                .id("pair_hub")
-        case "choose_model":
-            chooseModelSection
-                .id("choose_model")
-        case "grant_permissions":
-            grantAndRepairSection
-                .id("grant_permissions")
-        case "external_terminals":
-            externalTerminalAccessSection { anchorID in
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    proxy.scrollTo(anchorID, anchor: .center)
-                }
-            }
-            .id("external_terminals")
-        case "security_runtime":
-            securityRuntimeSection
-                .id("security_runtime")
-        case "diagnostics":
-            diagnosticsSection
-                .id("diagnostics")
-        default:
-            pairHubSection
-                .id("pair_hub")
-        }
-    }
-
-    private var headerSection: some View {
-        HStack(alignment: .top, spacing: 14) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(selectedSettingsSection.title)
-                    .font(UIThemeTokens.sectionFont())
-                Text(selectedSettingsSection.summary)
-                    .font(UIThemeTokens.bodyFont())
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Spacer(minLength: 12)
-
-            Text("XT 设置中心")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+            headerSection
+            settingsStatusSummary
+            compactQuickActions
+            selectedSettingsSectionContent(proxy: proxy)
         }
     }
 
@@ -1018,7 +830,7 @@ struct SettingsView: View {
     }
 
     private var settingsCenterOverview: some View {
-        XTSettingsTaskSection(
+        return XTSettingsTaskSection(
             iconName: "rectangle.grid.1x2",
             title: "任务入口",
             subtitle: "按任务进入对应设置域，避免在一个长列表里寻找开关。"
@@ -1032,7 +844,7 @@ struct SettingsView: View {
     }
 
     private var pairHubSection: some View {
-        XTSettingsTaskSection(
+        return XTSettingsTaskSection(
             iconName: settingsSectionIconName("pair_hub"),
             title: "连接 Hub",
             subtitle: "发现、配对、连接按顺序推进；只有需要固定目标或清理旧状态时再展开高级参数。",
@@ -1130,7 +942,7 @@ struct SettingsView: View {
                                 Text("正式入口")
                                     .frame(width: 140, alignment: .leading)
                                 VStack(alignment: .leading, spacing: 4) {
-                                    TextField("hub.your-domain.example", text: internetHostBinding)
+                                    TextField("hub.xhubsystem.com", text: internetHostBinding)
                                         .textFieldStyle(.roundedBorder)
                                     Text(formalEntryGuidancePresentation.message)
                                         .font(.caption)
@@ -1194,7 +1006,7 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.borderless)
                 .controlSize(.small)
-                .help("刷新 Hub 内核状态")
+                .help("刷新 Rust Hub shadow 状态")
             }
 
             ForEach(Array(presentation.lines.enumerated()), id: \.offset) { _, line in
@@ -1443,8 +1255,8 @@ struct SettingsView: View {
                 TroubleshootPanel(
                     title: "3 步内定位修复入口",
                     issues: UITroubleshootIssue.highFrequencyIssues,
-                    paidAccessSnapshot: appModel.hubRemotePaidAccessSnapshot,
-                    internetHost: appModel.hubInternetHost,
+                    paidAccessSnapshot: settingsSnapshot.hubRemotePaidAccessSnapshot,
+                    internetHost: settingsSnapshot.hubInternetHost,
                     pairingContext: troubleshootPairingContext,
                     providerKeyRouteContext: modelRouteProviderKeyContext,
                     externalTerminalAccessProjection: externalTerminalAccessDoctorProjection
@@ -1457,7 +1269,12 @@ struct SettingsView: View {
         scrollToAccessKey: @escaping (String) -> Void
     ) -> some View {
         let sectionFocusContext = focusContext(for: "external_terminals")
-        return GroupBox("4) 非 XT Terminal 访问") {
+        return XTSettingsTaskSection(
+            iconName: settingsSectionIconName("external_terminals"),
+            title: "非 XT Terminal 访问",
+            subtitle: "集中管理外部 CLI 和自动化代理使用的 access key、导出、轮换与撤销。",
+            badgeText: settingsSectionBadge("external_terminals")
+        ) {
             VStack(alignment: .leading, spacing: 10) {
                 if let context = sectionFocusContext {
                     XTFocusContextCard(context: context)
@@ -1479,7 +1296,6 @@ struct SettingsView: View {
                     onRequestScrollToAccessKey: scrollToAccessKey
                 )
             }
-            .padding(8)
         }
     }
 
@@ -1512,13 +1328,13 @@ struct SettingsView: View {
                                 return true
                             },
                             onSuccess: {
-                                await modelManager.fetchModels()
+                                await modelManager.fetchModels(force: true)
                             }
                         )
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .disabled(!appModel.hubInteractive || providerOAuthLoginModel.isRunning)
+                    .disabled(!settingsSnapshot.hubInteractive || providerOAuthLoginModel.isRunning)
                 }
             }
 
@@ -1542,7 +1358,7 @@ struct SettingsView: View {
                     .textSelection(.enabled)
             }
 
-            if !appModel.hubInteractive {
+            if !settingsSnapshot.hubInteractive {
                 Text("先连上 Hub，再从 XT 直接发起 provider 登录。")
                     .font(.caption)
                     .foregroundStyle(UIThemeTokens.color(for: .diagnosticRequired))
@@ -1588,14 +1404,14 @@ struct SettingsView: View {
                     )
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!appModel.hubInteractive)
+                .disabled(!settingsSnapshot.hubInteractive)
 
-                Text(appModel.hubInteractive
+                Text(settingsSnapshot.hubInteractive
                      ? "Hub 已连通，可直接继续签发和导出。"
                      : "先连上 Hub，再继续签发和导出。")
                     .font(.caption)
                     .foregroundStyle(
-                        appModel.hubInteractive
+                        settingsSnapshot.hubInteractive
                             ? .secondary
                             : UIThemeTokens.color(for: .diagnosticRequired)
                     )
@@ -1616,7 +1432,12 @@ struct SettingsView: View {
             privacyMode: settingsSnapshot.settings.supervisorPrivacyMode
         )
 
-        return GroupBox("5) 安全与运行时") {
+        return XTSettingsTaskSection(
+            iconName: settingsSectionIconName("security_runtime"),
+            title: "安全与运行时",
+            subtitle: "把本地服务、工具执行路径和安全边界放在同一个可审计入口。",
+            badgeText: settingsSectionBadge("security_runtime")
+        ) {
             VStack(alignment: .leading, spacing: 10) {
                 if let context = focusContext(for: "security_runtime") {
                     XTFocusContextCard(context: context)
@@ -1700,7 +1521,15 @@ struct SettingsView: View {
     }
 
     private var diagnosticsSection: some View {
-        GroupBox("6) 诊断与核对") {
+        let runtimeDiagnosticsLines = diagnosticsLines
+        let visibleRouteRepairLogLines = displayedRouteRepairLogLines
+
+        return XTSettingsTaskSection(
+            iconName: settingsSectionIconName("diagnostics"),
+            title: "诊断与核对",
+            subtitle: "Doctor、自检、日志和运行时线索集中在这里，默认只展示下一步可操作信息。",
+            badgeText: settingsSectionBadge("diagnostics")
+        ) {
             VStack(alignment: .leading, spacing: 10) {
                 if let context = focusContext(for: "diagnostics") {
                     XTFocusContextCard(context: context)
@@ -1819,12 +1648,12 @@ struct SettingsView: View {
                             )
                         }
 
-                        if !XTSettingsSurfacePlanner.diagnosticsLines(for: settingsState).isEmpty {
+                        if !runtimeDiagnosticsLines.isEmpty {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("运行时状态线索")
                                     .font(.caption.weight(.semibold))
                                     .foregroundStyle(.secondary)
-                                ForEach(XTSettingsSurfacePlanner.diagnosticsLines(for: settingsState), id: \.self) { line in
+                                ForEach(runtimeDiagnosticsLines, id: \.self) { line in
                                     Text("• \(line)")
                                         .font(UIThemeTokens.monoFont())
                                         .foregroundStyle(.secondary)
@@ -1833,7 +1662,7 @@ struct SettingsView: View {
                             }
                         }
 
-                        if !routeRepairLogLines.isEmpty {
+                        if !visibleRouteRepairLogLines.isEmpty {
                             VStack(alignment: .leading, spacing: 4) {
                                 if routeRepairLogDigest.totalEvents > 0 {
                                     Text("路由修复摘要")
@@ -1891,7 +1720,12 @@ struct SettingsView: View {
                                 Text("最近路由修复记录")
                                     .font(.caption.weight(.semibold))
                                     .foregroundStyle(.secondary)
-                                ForEach(routeRepairLogLines, id: \.self) { line in
+                                if settingsSnapshot.routeRepairLogTotalLineCount > visibleRouteRepairLogLines.count {
+                                    Text("仅显示最近 \(visibleRouteRepairLogLines.count) 条路由修复记录。")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                ForEach(visibleRouteRepairLogLines, id: \.self) { line in
                                     Text("• \(line)")
                                         .font(UIThemeTokens.monoFont())
                                         .foregroundStyle(.secondary)
@@ -1901,7 +1735,7 @@ struct SettingsView: View {
                         }
 
                         ScrollView {
-                            Text(settingsSnapshot.hubRemoteLog.isEmpty ? "还没有远端连接日志。" : settingsSnapshot.hubRemoteLog)
+                            Text(displayedHubRemoteLog)
                                 .font(UIThemeTokens.monoFont())
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1937,8 +1771,8 @@ struct SettingsView: View {
         return appModelReference
     }
 
-    private var settingsSnapshot: XTSettingsCenterSnapshot {
-        settingsCenterStore.snapshot
+    private var settingsSnapshot: XTSettingsSurfaceProjectionSnapshot {
+        settingsSurfaceProjectionStore.snapshot
     }
 
     private var navigationFocusSnapshot: XTNavigationFocusSnapshot {
@@ -1947,6 +1781,10 @@ struct SettingsView: View {
 
     private var quickActions: [PrimaryActionRailAction] {
         XTSettingsSurfacePlanner.quickActions(for: settingsState)
+    }
+
+    private var configuredGlobalModelRoleCount: Int {
+        AXRole.allCases.filter { configuredGlobalModelID(for: $0) != nil }.count
     }
 
     private var selectedSettingsSection: XTSettingsSectionDescriptor {
@@ -2003,9 +1841,9 @@ struct SettingsView: View {
     private func settingsSectionBadge(_ sectionID: String) -> String? {
         switch sectionID {
         case "pair_hub":
-            if appModel.hubConnected { return "local" }
-            if appModel.hubRemoteConnected { return "remote" }
-            if appModel.hubRemoteLinking { return "linking" }
+            if settingsSnapshot.hubConnected { return "local" }
+            if settingsSnapshot.hubRemoteConnected { return "remote" }
+            if settingsSnapshot.hubRemoteLinking { return "linking" }
             return "off"
         case "choose_model":
             let configured = AXRole.allCases.filter { configuredGlobalModelID(for: $0) != nil }.count
@@ -2013,13 +1851,13 @@ struct SettingsView: View {
         case "grant_permissions":
             return XTSettingsSurfacePlanner.issue(for: settingsState) == nil ? "ok" : "fix"
         case "external_terminals":
-            return appModel.hubInteractive ? "live" : "wait"
+            return settingsSnapshot.hubInteractive ? "live" : "wait"
         case "security_runtime":
             return defaultToolSandboxMode == .host ? "host" : "sandbox"
         case "diagnostics":
             if runtimeSnapshot.replayPass == true { return "pass" }
             if runtimeSnapshot.replayPass == false { return "fail" }
-            return appModel.hubInteractive ? "live" : "fix"
+            return settingsSnapshot.hubInteractive ? "live" : "fix"
         default:
             return nil
         }
@@ -2054,6 +1892,22 @@ struct SettingsView: View {
 
     private var routeRepairLogLines: [String] {
         settingsSnapshot.routeRepairLogLines
+    }
+
+    private var displayedRouteRepairLogLines: [String] {
+        routeRepairLogLines
+    }
+
+    private var diagnosticsLines: [String] {
+        XTSettingsSurfacePlanner.diagnosticsLines(for: settingsState)
+    }
+
+    private var displayedHubRemoteLog: String {
+        let log = settingsSnapshot.hubRemoteLog
+        guard !log.isEmpty else {
+            return "还没有远端连接日志。"
+        }
+        return log
     }
 
     private var routeRepairLogDigest: AXRouteRepairLogDigest {

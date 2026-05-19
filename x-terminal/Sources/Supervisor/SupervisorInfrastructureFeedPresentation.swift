@@ -240,7 +240,8 @@ struct SupervisorInfrastructureFeedPresentation: Equatable {
                     timestamp: top.createdAt,
                     contractText: pendingSkillApprovalContractText(
                         routingNarrative: routingNarrative,
-                        activity: activityItem
+                        activity: activityItem,
+                        authorizationMode: authorizationMode
                     ),
                     nextSafeActionText: pendingSkillApprovalNextSafeActionText(
                         activity: activityItem,
@@ -933,18 +934,28 @@ struct SupervisorInfrastructureFeedPresentation: Equatable {
 
     private static func pendingSkillApprovalContractText(
         routingNarrative: String?,
-        activity: ProjectSkillActivityItem
+        activity: ProjectSkillActivityItem,
+        authorizationMode: SupervisorPendingSkillAuthorizationMode
     ) -> String? {
-        if let routingNarrative = normalizedOptionalScalar(routingNarrative) {
-            return "路由说明： \(routingNarrative)"
-        }
-
-        return normalizedOptionalScalar(
+        let readinessLine = normalizedOptionalScalar(
             XTPendingApprovalPresentation.governedSkillDetailLines(for: activity)
                 .first(where: { line in
                     line.hasPrefix("执行就绪：") || line.hasPrefix("治理闸门：")
                 })
         )
+
+        if let routingNarrative = normalizedOptionalScalar(routingNarrative) {
+            guard authorizationMode == .hubGrant, let readinessLine else {
+                return "路由说明： \(routingNarrative)"
+            }
+            return readinessLine
+        }
+
+        if let readinessLine {
+            return readinessLine
+        }
+
+        return nil
     }
 
     private static func pendingSkillApprovalNextSafeActionText(

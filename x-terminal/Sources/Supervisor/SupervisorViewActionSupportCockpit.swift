@@ -11,7 +11,8 @@ extension SupervisorViewActionSupport {
         openURL: @escaping (URL) -> Void,
         openWindow: @escaping (String) -> Void,
         openProjectGovernance: @escaping (String, XTProjectGovernanceDestination, String?, String?) -> Void,
-        setFocusedSplitLane: @escaping (String) -> Void
+        setFocusedSplitLane: @escaping (String) -> Void,
+        overrideLaneWinnerSelection: @escaping (String, String) -> Void
     ) -> SupervisorViewCockpitActionExecution.Dependencies {
         .init(
             setInputText: setInputText,
@@ -22,7 +23,8 @@ extension SupervisorViewActionSupport {
             openURL: openURL,
             openWindow: openWindow,
             openProjectGovernance: openProjectGovernance,
-            setFocusedSplitLane: setFocusedSplitLane
+            setFocusedSplitLane: setFocusedSplitLane,
+            overrideLaneWinnerSelection: overrideLaneWinnerSelection
         )
     }
 
@@ -54,7 +56,8 @@ extension SupervisorViewActionSupport {
         openURL: @escaping (URL) -> Void,
         openWindow: @escaping (String) -> Void,
         openProjectGovernance: @escaping (String, XTProjectGovernanceDestination, String?, String?) -> Void,
-        setFocusedSplitLane: @escaping (String) -> Void
+        setFocusedSplitLane: @escaping (String) -> Void,
+        overrideLaneWinnerSelection: @escaping (String, String) -> Void
     ) {
         performCockpitAction(
             action,
@@ -68,7 +71,8 @@ extension SupervisorViewActionSupport {
                 openURL: openURL,
                 openWindow: openWindow,
                 openProjectGovernance: openProjectGovernance,
-                setFocusedSplitLane: setFocusedSplitLane
+                setFocusedSplitLane: setFocusedSplitLane,
+                overrideLaneWinnerSelection: overrideLaneWinnerSelection
             )
         )
     }

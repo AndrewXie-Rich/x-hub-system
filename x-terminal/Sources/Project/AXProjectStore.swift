@@ -62,24 +62,115 @@ enum AXProjectStore {
         let snapshot = SupervisorProjectPlanStore.load(for: ctx)
         return snapshot.plans.contains { plan in
             switch plan.status {
-            case .active, .blocked, .awaitingAuthorization:
+            case .planning, .active, .blocked, .awaitingAuthorization:
                 break
-            case .planning, .completed, .failed, .canceled:
+            case .completed, .failed, .canceled:
                 return false
             }
 
             return plan.steps.contains { step in
-                guard step.kind == .launchRun else { return false }
-                let owner = step.currentOwner.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                guard owner == "coder" else { return false }
                 switch step.status {
                 case .pending, .running, .blocked, .awaitingAuthorization:
-                    return true
+                    return supervisorPlanStepRequiresCodingToolProfile(step)
                 case .completed, .failed, .canceled:
                     return false
                 }
             }
         }
+    }
+
+    private static func supervisorPlanStepRequiresCodingToolProfile(
+        _ step: SupervisorPlanStepRecord
+    ) -> Bool {
+        let owner = step.currentOwner.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if step.kind == .launchRun, owner == "coder" {
+            return true
+        }
+
+        guard step.kind == .callSkill else { return false }
+        let skillId = step.skillId
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let mutationSkillIds: Set<String> = [
+            "repo.write",
+            "repo.write.file",
+            "repo.file.write",
+            "repo.git.apply",
+            "repo.patch.apply",
+            "repo.git.patch.apply",
+            "repo.delete",
+            "repo.delete.path",
+            "repo.delete.file",
+            "repo.move",
+            "repo.move.path",
+            "repo.rename",
+            "repo.rename.path",
+        ]
+        return mutationSkillIds.contains(skillId)
+    }
+
+    private static func repairStaleWriteFilePolicyMemoryIfNeeded(
+        config: AXProjectConfig,
+        ctx: AXProjectContext
+    ) {
+        let allowedTools = ToolPolicy.effectiveAllowedTools(
+            profileRaw: config.toolProfile,
+            allowTokens: config.toolAllow,
+            denyTokens: config.toolDeny
+        )
+        guard allowedTools.contains(.write_file) else { return }
+
+        let governance = xtResolveProjectGovernance(projectRoot: ctx.root, config: config)
+        guard governance.capabilityBundle.allowRepoWrite else { return }
+        guard var memory = loadMemoryIfPresent(for: ctx) else { return }
+
+        var removedStaleLine = false
+        func scrub(_ values: [String]) -> [String] {
+            values.filter { value in
+                let stale = isStaleWriteFilePolicyMemoryLine(value)
+                if stale {
+                    removedStaleLine = true
+                }
+                return !stale
+            }
+        }
+
+        memory.currentState = scrub(memory.currentState)
+        memory.nextSteps = scrub(memory.nextSteps)
+        memory.openQuestions = scrub(memory.openQuestions)
+        memory.risks = scrub(memory.risks)
+        memory.recommendations = scrub(memory.recommendations)
+        guard removedStaleLine else { return }
+
+        let truthLine = "当前工具策略允许在项目根目录内使用 write_file；旧的 minimal/profile 手动建文件提示已失效。"
+        if !memory.currentState.contains(where: { $0 == truthLine }) {
+            memory.currentState.append(truthLine)
+        }
+        try? saveMemory(memory, for: ctx)
+    }
+
+    private static func isStaleWriteFilePolicyMemoryLine(_ value: String) -> Bool {
+        let normalized = value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !normalized.isEmpty else { return false }
+        let staleNeedles = [
+            "profile=minimal",
+            "tool policy currently set to profile=minimal",
+            "write_file tool not in allowed tools",
+            "only read-only tools available",
+            "write_file工具被策略阻止",
+            "write_file工具策略限制",
+            "解除write_file工具限制",
+            "手动创建三个文件",
+            "需手动创建",
+            "阻止自动创建文件",
+            "代码已提供需手动创建",
+            "manual file creation",
+            "change tool policy",
+            "switch to writable profile",
+        ]
+        return staleNeedles.contains { normalized.contains($0) }
     }
 
     static func saveConfig(_ cfg: AXProjectConfig, for ctx: AXProjectContext) throws {

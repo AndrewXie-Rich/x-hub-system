@@ -70,6 +70,7 @@ Recommended local prerequisites:
 - Swift 6 toolchain
 - recent Node.js LTS
 - Python 3 for runtime-related work
+- Rust toolchain for `rust/xhubd` and `rust/xtd`
 
 ## Common Local Commands
 
@@ -77,6 +78,12 @@ Recommended local prerequisites:
 
 ```bash
 x-hub/tools/build_hub_app.command
+```
+
+### Build The Rust Hub Kernel
+
+```bash
+bash rust/xhubd/tools/package_rust_hub.command
 ```
 
 ### Run X-Hub From Source
@@ -95,8 +102,13 @@ swift run XTerminal
 ### Build X-Terminal
 
 ```bash
-cd x-terminal
-swift build
+bash x-terminal/tools/build_xt_with_rust_sidecar.command
+```
+
+### Build Local Release DMGs
+
+```bash
+XHUB_RELEASE_VERSION=v1.2.10 scripts/package_macos_release.command
 ```
 
 ### Run The XT Release Gate

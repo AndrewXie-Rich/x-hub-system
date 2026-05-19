@@ -114,3 +114,39 @@ final class XTSettingsCenterStore: ObservableObject {
         snapshot = nextSnapshot
     }
 }
+
+@MainActor
+final class XTSettingsValueStore: ObservableObject {
+    @Published private(set) var snapshot: XTerminalSettings
+
+    init(snapshot: XTerminalSettings = .default()) {
+        self.snapshot = snapshot
+    }
+
+    func update(_ nextSnapshot: XTerminalSettings) {
+        guard snapshot != nextSnapshot else { return }
+        snapshot = nextSnapshot
+    }
+}
+
+struct XTSettingsSupervisorSignalSnapshot: Equatable {
+    var historicalProjectBoundaryRepairStatusLine: String
+
+    static let empty = XTSettingsSupervisorSignalSnapshot(
+        historicalProjectBoundaryRepairStatusLine: ""
+    )
+}
+
+@MainActor
+final class XTSettingsSupervisorSignalStore: ObservableObject {
+    @Published private(set) var snapshot: XTSettingsSupervisorSignalSnapshot
+
+    init(snapshot: XTSettingsSupervisorSignalSnapshot = .empty) {
+        self.snapshot = snapshot
+    }
+
+    func update(_ nextSnapshot: XTSettingsSupervisorSignalSnapshot) {
+        guard snapshot != nextSnapshot else { return }
+        snapshot = nextSnapshot
+    }
+}

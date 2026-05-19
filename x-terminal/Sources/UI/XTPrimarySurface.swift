@@ -11,7 +11,7 @@ enum XTPrimarySurface: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .work:
-            return "工作台"
+            return "工作台 / Coder"
         case .supervisor:
             return "Supervisor"
         case .review:
@@ -24,7 +24,7 @@ enum XTPrimarySurface: String, CaseIterable, Identifiable {
     var subtitle: String {
         switch self {
         case .work:
-            return "项目与对话"
+            return "项目 Coder 聊天"
         case .supervisor:
             return "总控与队列"
         case .review:
@@ -49,9 +49,16 @@ enum XTPrimarySurface: String, CaseIterable, Identifiable {
 }
 
 struct XTPrimarySidebarView: View {
-    @EnvironmentObject private var appModel: AppModel
+    @Environment(\.xtAppModelReference) private var appModelReference
 
     @Binding var selectedPrimarySurface: XTPrimarySurface
+    @State private var displayedPrimarySurfaceOverride: XTPrimarySurface? = nil
+    @State private var selectionCommitTask: Task<Void, Never>? = nil
+    @State private var retainedProjectSidebarAfterSurfaceSwitch: Bool = false
+    @State private var projectSidebarReleaseTask: Task<Void, Never>? = nil
+
+    private static let selectionCommitDelayNanoseconds: UInt64 = 16_000_000
+    private static let projectSidebarReleaseDelayNanoseconds: UInt64 = 32_000_000
 
     var body: some View {
         VStack(spacing: 0) {
@@ -64,11 +71,18 @@ struct XTPrimarySidebarView: View {
 
             Divider()
 
-            Group {
-                if selectedPrimarySurface == .work {
-                    ProjectSidebarView()
-                } else {
+            ZStack(alignment: .topLeading) {
+                if displayedPrimarySurface == .work || retainedProjectSidebarAfterSurfaceSwitch {
+                    ProjectSidebarView(isActive: displayedPrimarySurface == .work)
+                        .opacity(displayedPrimarySurface == .work ? 1 : 0)
+                        .allowsHitTesting(displayedPrimarySurface == .work)
+                        .accessibilityHidden(displayedPrimarySurface != .work)
+                        .zIndex(displayedPrimarySurface == .work ? 2 : 0)
+                }
+
+                if displayedPrimarySurface != .work {
                     surfaceContextPanel
+                        .zIndex(3)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -80,6 +94,22 @@ struct XTPrimarySidebarView: View {
         }
         .frame(minWidth: 260, idealWidth: 280, maxWidth: 300, maxHeight: .infinity)
         .background(Color(nsColor: .controlBackgroundColor))
+        .onChange(of: selectedPrimarySurface) { newValue in
+            guard let override = displayedPrimarySurfaceOverride else { return }
+            if override == newValue {
+                displayedPrimarySurfaceOverride = nil
+            } else {
+                selectionCommitTask?.cancel()
+                selectionCommitTask = nil
+                displayedPrimarySurfaceOverride = nil
+            }
+        }
+        .onDisappear {
+            selectionCommitTask?.cancel()
+            selectionCommitTask = nil
+            projectSidebarReleaseTask?.cancel()
+            projectSidebarReleaseTask = nil
+        }
     }
 
     private var header: some View {
@@ -97,6 +127,99 @@ struct XTPrimarySidebarView: View {
     }
 
     private var navigationRail: some View {
+        XTPrimaryNavigationRail(
+            displayedPrimarySurface: displayedPrimarySurface,
+            select: select
+        )
+    }
+
+    private var surfaceContextPanel: some View {
+        XTPrimarySurfaceContextPanel(displayedPrimarySurface: displayedPrimarySurface)
+    }
+
+    private var footerStatusCard: some View {
+        XTPrimarySidebarFooterStatusCard()
+    }
+
+    private var displayedPrimarySurface: XTPrimarySurface {
+        displayedPrimarySurfaceOverride ?? selectedPrimarySurface
+    }
+
+    private var appModel: AppModel {
+        guard let appModelReference else {
+            preconditionFailure("XTPrimarySidebarView requires xtAppModelReference")
+        }
+        return appModelReference
+    }
+
+    private func select(_ surface: XTPrimarySurface) {
+        let previous = displayedPrimarySurface
+        XTPerformanceTrace.event(
+            "XT Sidebar Surface Tap",
+            "\(previous.rawValue)->\(surface.rawValue)"
+        )
+        if previous == .work, surface != .work {
+            retainProjectSidebarDuringSurfaceSwitch()
+        } else if surface == .work {
+            releaseRetainedProjectSidebar()
+        }
+        displayedPrimarySurfaceOverride = surface
+        selectionCommitTask?.cancel()
+        selectionCommitTask = Task { @MainActor in
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: Self.selectionCommitDelayNanoseconds)
+            guard !Task.isCancelled else {
+                selectionCommitTask = nil
+                return
+            }
+            XTPerformanceTrace.event(
+                "XT Sidebar Surface Commit",
+                "\(previous.rawValue)->\(surface.rawValue)"
+            )
+            selectedPrimarySurface = surface
+            if surface == .work, appModel.projectListStore.snapshot.selectedProjectId == nil {
+                appModel.selectProject(AXProjectRegistry.globalHomeId)
+            }
+            selectionCommitTask = nil
+        }
+    }
+
+    private func retainProjectSidebarDuringSurfaceSwitch() {
+        retainedProjectSidebarAfterSurfaceSwitch = true
+        projectSidebarReleaseTask?.cancel()
+        XTPerformanceTrace.event(
+            "XT Project Sidebar Retain Scheduled",
+            "delay_ms=32"
+        )
+        projectSidebarReleaseTask = Task { @MainActor in
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: Self.projectSidebarReleaseDelayNanoseconds)
+            guard !Task.isCancelled else {
+                projectSidebarReleaseTask = nil
+                return
+            }
+            guard displayedPrimarySurface != .work else {
+                releaseRetainedProjectSidebar()
+                return
+            }
+            retainedProjectSidebarAfterSurfaceSwitch = false
+            projectSidebarReleaseTask = nil
+            XTPerformanceTrace.event("XT Project Sidebar Retain Released")
+        }
+    }
+
+    private func releaseRetainedProjectSidebar() {
+        projectSidebarReleaseTask?.cancel()
+        projectSidebarReleaseTask = nil
+        retainedProjectSidebarAfterSurfaceSwitch = false
+    }
+}
+
+private struct XTPrimaryNavigationRail: View {
+    let displayedPrimarySurface: XTPrimarySurface
+    let select: (XTPrimarySurface) -> Void
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(XTPrimarySurface.allCases) { surface in
                 Button {
@@ -112,45 +235,104 @@ struct XTPrimarySidebarView: View {
 
                             Text(surface.subtitle)
                                 .font(.caption)
-                                .foregroundStyle(selectedPrimarySurface == surface ? .white.opacity(0.88) : .secondary)
+                                .foregroundStyle(displayedPrimarySurface == surface ? .white.opacity(0.88) : .secondary)
                         }
 
                         Spacer(minLength: 8)
 
-                        if let badge = badgeText(for: surface) {
-                            Text(badge)
-                                .font(.caption2.monospaced())
-                                .foregroundStyle(selectedPrimarySurface == surface ? .white.opacity(0.92) : .secondary)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 3)
-                                .background(
-                                    Capsule()
-                                        .fill(
-                                            selectedPrimarySurface == surface
-                                                ? Color.white.opacity(0.18)
-                                                : Color.secondary.opacity(0.12)
-                                        )
-                                )
-                        }
+                        XTPrimarySurfaceBadgeView(
+                            surface: surface,
+                            isSelected: displayedPrimarySurface == surface
+                        )
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 10)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .fill(selectedPrimarySurface == surface ? Color.accentColor : Color.clear)
+                            .fill(displayedPrimarySurface == surface ? Color.accentColor : Color.clear)
                     )
-                    .foregroundStyle(selectedPrimarySurface == surface ? .white : .primary)
+                    .foregroundStyle(displayedPrimarySurface == surface ? .white : .primary)
                 }
                 .buttonStyle(.plain)
             }
         }
     }
+}
 
-    private var surfaceContextPanel: some View {
+private struct XTInactiveProjectSidebarPlaceholder: View {
+    var body: some View {
+        Color.clear
+            .frame(minWidth: 220, maxWidth: 320, maxHeight: .infinity)
+    }
+}
+
+private struct XTPrimarySurfaceBadgeView: View {
+    let surface: XTPrimarySurface
+    let isSelected: Bool
+
+    var body: some View {
+        switch surface {
+        case .work:
+            XTPrimaryProjectCountBadge(isSelected: isSelected)
+        case .control:
+            XTPrimaryHubStatusBadge(isSelected: isSelected)
+        case .supervisor, .review:
+            EmptyView()
+        }
+    }
+}
+
+private struct XTPrimaryProjectCountBadge: View {
+    @EnvironmentObject private var projectSidebarProjectionStore: XTCoreProjectSidebarProjectionStore
+
+    let isSelected: Bool
+
+    var body: some View {
+        XTPrimarySurfaceBadgeText(
+            text: projectSidebarProjectionStore.snapshot.projectCountText,
+            isSelected: isSelected
+        )
+    }
+}
+
+private struct XTPrimaryHubStatusBadge: View {
+    @EnvironmentObject private var hubConnectionStore: XTHubConnectionStore
+
+    let isSelected: Bool
+
+    var body: some View {
+        XTPrimarySurfaceBadgeText(
+            text: hubConnectionStore.snapshot.interactive ? "ready" : "fix",
+            isSelected: isSelected
+        )
+    }
+}
+
+private struct XTPrimarySurfaceBadgeText: View {
+    let text: String
+    let isSelected: Bool
+
+    var body: some View {
+        Text(text)
+            .font(.caption2.monospaced())
+            .foregroundStyle(isSelected ? .white.opacity(0.92) : .secondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(
+                Capsule()
+                    .fill(isSelected ? Color.white.opacity(0.18) : Color.secondary.opacity(0.12))
+            )
+    }
+}
+
+private struct XTPrimarySurfaceContextPanel: View {
+    let displayedPrimarySurface: XTPrimarySurface
+
+    var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                GroupBox(selectedPrimarySurface.title) {
+            LazyVStack(alignment: .leading, spacing: 12) {
+                GroupBox(displayedPrimarySurface.title) {
                     Text(surfaceContextText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -176,40 +358,10 @@ struct XTPrimarySidebarView: View {
         }
     }
 
-    private var footerStatusCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                statusChip(
-                    title: "Hub",
-                    value: hubStatusLabel,
-                    tint: hubStatusColor
-                )
-
-                statusChip(
-                    title: "Projects",
-                    value: "\(appModel.sortedProjects.count)",
-                    tint: .secondary
-                )
-            }
-
-            if let selectedProjectName {
-                Text("当前项目：\(selectedProjectName)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            } else {
-                Text("当前项目：未选中")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
     private var surfaceContextText: String {
-        switch selectedPrimarySurface {
+        switch displayedPrimarySurface {
         case .work:
-            return "只放项目、聊天和终端。"
+            return "这里是项目 Coder 聊天入口：先选项目，再在右侧底部输入框让 Coder 改文件、跑测试或继续任务。"
         case .supervisor:
             return "处理总控、对话和队列。"
         case .review:
@@ -220,9 +372,9 @@ struct XTPrimarySidebarView: View {
     }
 
     private var currentPriorityHeadline: String {
-        switch selectedPrimarySurface {
+        switch displayedPrimarySurface {
         case .work:
-            return appModel.hubInteractive ? "继续当前项目" : "先完成 Hub 连接"
+            return "找 Coder 输入框"
         case .supervisor:
             return "看队列，再调度"
         case .review:
@@ -233,12 +385,9 @@ struct XTPrimarySidebarView: View {
     }
 
     private var currentPriorityDetail: String {
-        switch selectedPrimarySurface {
+        switch displayedPrimarySurface {
         case .work:
-            if appModel.hubInteractive {
-                return "项目列表和主画布保留在这里。"
-            }
-            return "Hub 没接通时，先去设置完成连接。"
+            return "左边选具体项目；右侧主画布底部就是当前项目 Coder 的聊天框。Supervisor 任务请切到 Supervisor。"
         case .supervisor:
             return "适合多项目总控和调度。"
         case .review:
@@ -247,66 +396,92 @@ struct XTPrimarySidebarView: View {
             return "连接、模型、技能和诊断在这里切换。"
         }
     }
+}
 
-    private var selectedProjectName: String? {
-        guard let selectedProjectId = appModel.selectedProjectId,
-              selectedProjectId != AXProjectRegistry.globalHomeId else {
-            return nil
+private struct XTPrimarySidebarFooterStatusCard: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                XTPrimarySidebarHubStatusChip()
+                XTPrimarySidebarProjectCountChip()
+            }
+
+            XTPrimarySidebarSelectedProjectLabel()
         }
-        return appModel.registry.project(for: selectedProjectId)?.displayName
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct XTPrimarySidebarHubStatusChip: View {
+    @EnvironmentObject private var hubConnectionStore: XTHubConnectionStore
+
+    var body: some View {
+        XTPrimarySidebarStatusChip(
+            title: "Hub",
+            value: hubStatusLabel,
+            tint: hubStatusColor
+        )
     }
 
     private var hubStatusLabel: String {
-        if appModel.hubConnected {
-            return "local"
-        }
-        if appModel.hubRemoteConnected {
-            return "remote"
-        }
-        if appModel.hubRemoteLinking {
-            return "linking"
-        }
-        return "off"
+        XTHubConnectionPresentation.statusLabel(for: hubConnectionSnapshot)
+    }
+
+    private var hubConnectionSnapshot: XTHubConnectionSnapshot {
+        hubConnectionStore.snapshot
     }
 
     private var hubStatusColor: Color {
-        if appModel.hubConnected {
+        switch XTHubConnectionPresentation.statusTone(for: hubConnectionSnapshot) {
+        case .localReady:
             return .green
-        }
-        if appModel.hubRemoteConnected {
+        case .remoteReady, .linking:
             return .orange
-        }
-        if appModel.hubRemoteLinking {
-            return .orange
-        }
-        return .red
-    }
-
-    private func badgeText(for surface: XTPrimarySurface) -> String? {
-        switch surface {
-        case .work:
-            return "\(appModel.sortedProjects.count)"
-        case .supervisor:
-            return nil
-        case .review:
-            return nil
-        case .control:
-            return appModel.hubInteractive ? "ready" : "fix"
+        case .offline:
+            return .red
         }
     }
+}
 
-    private func select(_ surface: XTPrimarySurface) {
-        selectedPrimarySurface = surface
-        if surface == .work, appModel.selectedProjectId == nil {
-            appModel.selectedProjectId = AXProjectRegistry.globalHomeId
+private struct XTPrimarySidebarProjectCountChip: View {
+    @EnvironmentObject private var projectSidebarProjectionStore: XTCoreProjectSidebarProjectionStore
+
+    var body: some View {
+        XTPrimarySidebarStatusChip(
+            title: "Projects",
+            value: projectSidebarProjectionStore.snapshot.projectCountText,
+            tint: .secondary
+        )
+    }
+}
+
+private struct XTPrimarySidebarSelectedProjectLabel: View {
+    @EnvironmentObject private var projectSidebarProjectionStore: XTCoreProjectSidebarProjectionStore
+
+    var body: some View {
+        if let selectedProjectName {
+            Text("当前项目：\(selectedProjectName)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+        } else {
+            Text("当前项目：未选中")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
-    private func statusChip(
-        title: String,
-        value: String,
-        tint: Color
-    ) -> some View {
+    private var selectedProjectName: String? {
+        projectSidebarProjectionStore.snapshot.rows.first(where: \.isSelected)?.displayName
+    }
+}
+
+private struct XTPrimarySidebarStatusChip: View {
+    let title: String
+    let value: String
+    let tint: Color
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
                 .font(.caption2)

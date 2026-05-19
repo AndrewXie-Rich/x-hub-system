@@ -202,10 +202,50 @@ function checkBackgroundCadenceBaseline() {
   note("background cadence guard passed");
 }
 
+function checkSupervisorWindowObservationBaseline() {
+  const content = read("Sources/Supervisor/SupervisorViewContent.swift");
+
+  if (content.includes("settingsSurfaceProjectionStore")) {
+    fail("SupervisorViewContent must not observe the full settingsSurfaceProjectionStore; use the narrow settingsSupervisorSignalStore instead");
+  }
+
+  assertContains(
+    "SupervisorViewContent",
+    content,
+    "@EnvironmentObject private var settingsSupervisorSignalStore: XTSettingsSupervisorSignalStore"
+  );
+  note("supervisor window narrow settings observation guard passed");
+}
+
+function checkSettingsOnlyObservationBaseline() {
+  const settingsOnlyViews = [
+    "Sources/UI/SupervisorSettingsView.swift",
+    "Sources/UI/Supervisor/SupervisorPersonaCenterView.swift",
+    "Sources/UI/Supervisor/SupervisorPersonalReviewCenterView.swift",
+    "Sources/UI/Supervisor/SupervisorPersonalAssistantSummaryBoard.swift",
+    "Sources/UI/Projects/CreateProjectSheet.swift"
+  ];
+
+  for (const relativePath of settingsOnlyViews) {
+    const content = read(relativePath);
+    if (content.includes("settingsSurfaceProjectionStore")) {
+      fail(`${relativePath}: settings-only UI must not observe the full settingsSurfaceProjectionStore; use settingsValueStore instead`);
+    }
+    assertContains(
+      relativePath,
+      content,
+      "@EnvironmentObject private var settingsValueStore: XTSettingsValueStore"
+    );
+  }
+  note("settings-only narrow observation guard passed");
+}
+
 function main() {
   checkBroadAppModelObservation();
   checkSurfaceSwitchingBaseline();
   checkBackgroundCadenceBaseline();
+  checkSupervisorWindowObservationBaseline();
+  checkSettingsOnlyObservationBaseline();
 
   if (failures.length > 0) {
     console.error("[xt-sidebar-smooth-guard] failed");

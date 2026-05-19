@@ -277,6 +277,28 @@ final class RemoteProviderClientTests: XCTestCase {
         XCTAssertEqual(imported.source, .explicitProvider)
     }
 
+    func testProviderConfigImportAcceptsSelectedOpenAICompatibleProviderWithoutRequiresFlag() throws {
+        let text = """
+        model_provider = "flu"
+        model = "gpt-5.5"
+
+        [model_providers.flu]
+        name = "flu"
+        base_url = "https://sub.picfix.pro/v1"
+        wire_api = "responses"
+        """
+
+        let imported = try ProviderConfigImport.parse(text: text)
+
+        XCTAssertEqual(imported.providerName, "flu")
+        XCTAssertEqual(imported.backend, "openai_compatible")
+        XCTAssertEqual(imported.baseURL, "https://sub.picfix.pro/v1")
+        XCTAssertEqual(imported.apiKeyRef, "openai_compatible:sub.picfix.pro")
+        XCTAssertEqual(imported.preferredModelID, "gpt-5.5")
+        XCTAssertEqual(imported.wireAPI, "responses")
+        XCTAssertEqual(imported.source, .explicitProvider)
+    }
+
     func testProviderConfigImportRecognizesMinimalCodexConfigAsOpenAIResponses() throws {
         let text = """
         model = "gpt-5.4"
@@ -393,6 +415,91 @@ final class RemoteProviderClientTests: XCTestCase {
         XCTAssertEqual(credentials.apiKeyRef, "openai_compatible:wxs.lat")
         XCTAssertEqual(credentials.wireAPI, "responses")
         XCTAssertEqual(providerConfig.preferredModelID, "gpt-5.4")
+    }
+
+    func testCodexProviderImportResolverPairsSuffixedAuthDuringConfigImport() throws {
+        let importRoot = try makeTempImportDir()
+        try """
+        {
+          "OPENAI_API_KEY": "sk-default"
+        }
+        """.write(
+            to: importRoot.appendingPathComponent("auth.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try """
+        {
+          "OPENAI_API_KEY": "sk-suffixed"
+        }
+        """.write(
+            to: importRoot.appendingPathComponent("auth A.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try """
+        model_provider = "flu"
+        model = "gpt-5.5"
+
+        [model_providers.flu]
+        base_url = "https://api.dabuguoni.me/v1"
+        wire_api = "responses"
+        """.write(
+            to: importRoot.appendingPathComponent("config A.toml"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let resolved = try CodexProviderImportResolver.resolveConfigImport(
+            from: importRoot.appendingPathComponent("config A.toml")
+        )
+
+        let credentials = try XCTUnwrap(resolved.credentials)
+        XCTAssertEqual(credentials.apiKey, "sk-suffixed")
+        XCTAssertEqual(credentials.backend, "openai_compatible")
+        XCTAssertEqual(credentials.baseURL, "https://api.dabuguoni.me/v1")
+        XCTAssertEqual(credentials.apiKeyRef, "openai_compatible:api.dabuguoni.me")
+        XCTAssertEqual(credentials.wireAPI, "responses")
+        XCTAssertEqual(resolved.providerConfig?.preferredModelID, "gpt-5.5")
+        XCTAssertEqual(resolved.credentialVariants.first?.sourceURL?.lastPathComponent, "auth A.json")
+    }
+
+    func testCodexProviderImportResolverPairsSuffixedConfigDuringAuthImport() throws {
+        let importRoot = try makeTempImportDir()
+        try """
+        {
+          "OPENAI_API_KEY": "sk-suffixed"
+        }
+        """.write(
+            to: importRoot.appendingPathComponent("auth A.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try """
+        model_provider = "flu"
+        model = "gpt-5.5"
+
+        [model_providers.flu]
+        base_url = "https://api.dabuguoni.me/v1"
+        wire_api = "responses"
+        """.write(
+            to: importRoot.appendingPathComponent("config A.toml"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let resolved = try CodexProviderImportResolver.resolveAuthImport(
+            from: importRoot.appendingPathComponent("auth A.json")
+        )
+
+        let credentials = try XCTUnwrap(resolved.credentials)
+        XCTAssertEqual(credentials.apiKey, "sk-suffixed")
+        XCTAssertEqual(credentials.backend, "openai_compatible")
+        XCTAssertEqual(credentials.baseURL, "https://api.dabuguoni.me/v1")
+        XCTAssertEqual(credentials.apiKeyRef, "openai_compatible:api.dabuguoni.me")
+        XCTAssertEqual(credentials.wireAPI, "responses")
+        XCTAssertEqual(resolved.providerConfig?.preferredModelID, "gpt-5.5")
+        XCTAssertEqual(resolved.providerConfig?.source, .explicitProvider)
     }
 
     func testCodexProviderImportResolverKeepsChatGPTCompatWireAPIForFallbackConfigImport() throws {
@@ -674,6 +781,19 @@ final class RemoteProviderClientTests: XCTestCase {
             description,
             "Provider 当前正在限流，请稍后重试（status=429）：Rate limit reached for requests per min."
         )
+    }
+
+    func testProviderHTTPErrorHighlightsInvalidAPIKeyWithoutEchoingSecret() {
+        let description = RemoteProviderClient.ProviderError.httpError(
+            status: 401,
+            body: #"{"error":{"message":"Incorrect API key provided: sk-test-secret","type":"invalid_request_error","code":"invalid_api_key"}}"#
+        ).errorDescription
+
+        XCTAssertEqual(
+            description,
+            "Provider API Key 无效或已被撤销（status=401）。请重新粘贴有效的 Provider API Key，或在服务商后台轮换后再导入。"
+        )
+        XCTAssertFalse(description?.contains("sk-test-secret") ?? true)
     }
 
     func testProviderHTTPErrorHighlightsUsageLimitRetryTime() {

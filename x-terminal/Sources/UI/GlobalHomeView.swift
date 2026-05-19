@@ -716,7 +716,7 @@ struct ProjectHomeEntryControlPresentation: Equatable {
     ) -> ProjectHomeEntryControlPresentation {
         if pendingCount > 0 {
             return ProjectHomeEntryControlPresentation(
-                message: "Home 只保留项目汇总，不再直接发送新指令。先处理待审批调用，再到 Supervisor 继续任务。",
+                message: "Home 只保留项目汇总，不再直接发送新指令。先审批待审批调用，再到 Supervisor 继续任务。",
                 primaryActionTitle: "打开审批",
                 opensPendingApproval: true
             )

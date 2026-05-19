@@ -18,6 +18,7 @@ const SCHEMA_XT_FILE_IPC_SHADOW_PROCESSOR_STATUS_V1: &str =
     "xhub.rust_hub.xt_file_ipc_shadow_processor_status.v1";
 const SCHEMA_XT_FILE_IPC_SHADOW_WATCHER_STATUS_V1: &str =
     "xhub.rust_hub.xt_file_ipc_shadow_watcher_status.v1";
+const SCHEMA_XT_FILE_IPC_LIVE_STATUS_V1: &str = "xhub.rust_hub.xt_file_ipc_live_status.v1";
 const FAIL_CLOSED_REASON: &str = "rust_file_ipc_not_authoritative";
 const PROCESSOR_STATUS_FILENAME: &str = "rust_file_ipc_shadow_processor_status.json";
 const WATCHER_STATUS_FILENAME: &str = "rust_file_ipc_shadow_watcher_status.json";
@@ -247,6 +248,30 @@ pub fn shadow_http_json(
     (status, format!("{value}\n"))
 }
 
+pub fn live_status_http_json(config: &HubConfig, method: &str) -> (&'static str, String) {
+    if method != "GET" {
+        return (
+            "405 Method Not Allowed",
+            format!(
+                "{}\n",
+                json!({
+                    "schema_version": SCHEMA_XT_FILE_IPC_LIVE_STATUS_V1,
+                    "ok": false,
+                    "ready": false,
+                    "deny_code": "method_not_allowed",
+                    "required_method": "GET",
+                    "authority": authority_json(false),
+                })
+            ),
+        );
+    }
+
+    let value = live_status_value(config, now_ms());
+    let ok = value.get("ok").and_then(Value::as_bool).unwrap_or(false);
+    let status = if ok { "200 OK" } else { "409 Conflict" };
+    (status, format!("{value}\n"))
+}
+
 fn shadow_status_value(config: &HubConfig) -> Value {
     let input = XtFileIpcShadowInput {
         root_dir: config.root_dir.clone(),
@@ -303,6 +328,149 @@ fn shadow_status_value(config: &HubConfig) -> Value {
             {"name": "no_ml_execution_in_rust", "ok": true, "blocking": false}
         ]
     })
+}
+
+fn live_status_value(config: &HubConfig, generated_at_ms: u128) -> Value {
+    let Some(base_dir) = live_status_base_dir(config) else {
+        return json!({
+            "schema_version": SCHEMA_XT_FILE_IPC_LIVE_STATUS_V1,
+            "ok": false,
+            "ready": false,
+            "generated_at_ms": generated_at_ms.min(i64::MAX as u128) as i64,
+            "mode": "rust_file_ipc_live_status_read_only",
+            "deny_code": "live_base_dir_missing",
+            "root_dir": config.root_dir.display().to_string(),
+            "authority": authority_json(false),
+            "checks": [
+                {"name": "live_base_dir_configured", "ok": false, "blocking": true},
+                {"name": "read_only_status_projection", "ok": true, "blocking": false},
+                {"name": "hub_status_untouched", "ok": true, "blocking": false}
+            ],
+        });
+    };
+    let status_path = env_path("XHUB_RUST_XT_CLASSIC_HUB_STATUS_PATH")
+        .unwrap_or_else(|| base_dir.join("hub_status.json"));
+    live_status_value_for_base(config, generated_at_ms, &base_dir, &status_path)
+}
+
+fn live_status_value_for_base(
+    config: &HubConfig,
+    generated_at_ms: u128,
+    base_dir: &Path,
+    status_path: &Path,
+) -> Value {
+    let base_dir_display = base_dir.display().to_string();
+    let events_dir = base_dir.join("ipc_events");
+    let responses_dir = base_dir.join("ipc_responses");
+    let status_file_exists = status_path.is_file();
+    let status_file_modified_at_ms = file_modified_at_ms(status_path);
+    let (mut status, status_file_read_ok, status_file_error) = match read_json(status_path) {
+        Ok(Value::Object(map)) => (Value::Object(map), true, String::new()),
+        Ok(_) => (json!({}), false, "status_json_not_object".to_string()),
+        Err(error) if status_file_exists => (json!({}), false, error),
+        Err(_) => (json!({}), false, String::new()),
+    };
+    let generated_at_sec = (generated_at_ms as f64) / 1000.0;
+
+    if let Some(object) = status.as_object_mut() {
+        object.insert("updatedAt".to_string(), json!(generated_at_sec));
+        object.insert("ipcMode".to_string(), json!("file"));
+        object.insert(
+            "ipcPath".to_string(),
+            json!(events_dir.display().to_string()),
+        );
+        object.insert("baseDir".to_string(), json!(base_dir_display.clone()));
+        if !object.contains_key("protocolVersion") {
+            object.insert("protocolVersion".to_string(), json!(1));
+        }
+        if !object.contains_key("pid") {
+            object.insert("pid".to_string(), json!(process::id()));
+        }
+        if !object.contains_key("startedAt") {
+            object.insert("startedAt".to_string(), json!(generated_at_sec));
+        }
+        if !object.contains_key("aiReady") {
+            object.insert("aiReady".to_string(), json!(true));
+        }
+        if !object.contains_key("loadedModelCount") {
+            object.insert("loadedModelCount".to_string(), json!(0));
+        }
+        if !object.contains_key("modelsUpdatedAt") {
+            object.insert("modelsUpdatedAt".to_string(), json!(generated_at_sec));
+        }
+
+        let mut rust_hub = object
+            .get("rustHub")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_else(serde_json::Map::new);
+        rust_hub.insert(
+            "schema_version".to_string(),
+            json!("xhub.rust_hub.xt_classic_status.v1"),
+        );
+        rust_hub.insert("authority".to_string(), json!("rust_live_status_http"));
+        rust_hub.insert("http_addr".to_string(), json!(config.http_addr()));
+        rust_hub.insert(
+            "status_path".to_string(),
+            json!(status_path.display().to_string()),
+        );
+        rust_hub.insert("read_only_projection".to_string(), json!(true));
+        object.insert("rustHub".to_string(), Value::Object(rust_hub));
+    }
+
+    json!({
+        "schema_version": SCHEMA_XT_FILE_IPC_LIVE_STATUS_V1,
+        "ok": true,
+        "ready": true,
+        "generated_at_ms": generated_at_ms.min(i64::MAX as u128) as i64,
+        "mode": "rust_file_ipc_live_status_read_only",
+        "root_dir": config.root_dir.display().to_string(),
+        "base_dir": base_dir_display,
+        "events_dir": events_dir.display().to_string(),
+        "responses_dir": responses_dir.display().to_string(),
+        "status_path": status_path.display().to_string(),
+        "status_file_exists": status_file_exists,
+        "status_file_read_ok": status_file_read_ok,
+        "status_file_error": status_file_error,
+        "status_file_modified_at_ms": status_file_modified_at_ms,
+        "status": status,
+        "authority": {
+            "production_authority_change": false,
+            "rust_writes_classic_hub_status": false,
+            "rust_serves_live_status_http": true,
+            "rust_executes_ml": false,
+            "rust_executes_third_party_skills": false,
+            "memory_writer_authority_in_rust": false,
+        },
+        "checks": [
+            {"name": "live_base_dir_configured", "ok": true, "blocking": true},
+            {"name": "live_base_dir_exists", "ok": base_dir.is_dir(), "blocking": false},
+            {"name": "status_file_readable", "ok": status_file_read_ok || !status_file_exists, "blocking": false},
+            {"name": "read_only_status_projection", "ok": true, "blocking": false},
+            {"name": "hub_status_untouched", "ok": true, "blocking": false}
+        ],
+    })
+}
+
+fn live_status_base_dir(config: &HubConfig) -> Option<PathBuf> {
+    env_path("XHUB_RUST_XT_FILE_IPC_BASE_DIR")
+        .or_else(|| env_path("XHUB_RUST_XT_CLASSIC_HUB_BASE_DIR"))
+        .or_else(|| {
+            if config.runtime_base_dir.as_os_str().is_empty() {
+                None
+            } else {
+                Some(config.runtime_base_dir.clone())
+            }
+        })
+}
+
+fn file_modified_at_ms(path: &Path) -> i64 {
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
 }
 
 fn watcher_smoke_value(input: &XtFileIpcShadowInput) -> Value {
@@ -3485,6 +3653,77 @@ fn wants_runtime_adapter_candidate(value: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_status_projects_file_ipc_paths_without_writing_hub_status() {
+        let temp = unique_temp_dir("xhub-xt-file-ipc-live-status");
+        fs::create_dir_all(temp.join("ipc_events")).unwrap();
+        let status_path = temp.join("hub_status.json");
+        fs::write(
+            &status_path,
+            r#"{"updatedAt":1,"baseDir":"/old","ipcPath":"/old/ipc_events","protocolVersion":1,"rustHub":{"authority":"explicit_cutover_only"}}"#,
+        )
+        .unwrap();
+        let before = fs::read_to_string(&status_path).unwrap();
+        let config = config_for_runtime_dir(temp.clone());
+
+        let value = live_status_value_for_base(&config, 123_456, &temp, &status_path);
+
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["ready"], true);
+        assert_eq!(value["base_dir"], temp.display().to_string());
+        assert_eq!(
+            value["events_dir"],
+            temp.join("ipc_events").display().to_string()
+        );
+        assert_eq!(
+            value["responses_dir"],
+            temp.join("ipc_responses").display().to_string()
+        );
+        assert_eq!(value["status_file_read_ok"], true);
+        assert_eq!(value["status"]["baseDir"], temp.display().to_string());
+        assert_eq!(
+            value["status"]["ipcPath"],
+            temp.join("ipc_events").display().to_string()
+        );
+        assert_eq!(
+            value["status"]["rustHub"]["authority"],
+            "rust_live_status_http"
+        );
+        assert_eq!(value["authority"]["rust_writes_classic_hub_status"], false);
+        assert_eq!(fs::read_to_string(&status_path).unwrap(), before);
+
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn live_status_http_get_only_and_fails_closed_without_base_dir() {
+        let config = HubConfig {
+            root_dir: PathBuf::from("/tmp/rust-hub"),
+            db_path: PathBuf::from("/tmp/rust-hub/hub.sqlite3"),
+            runtime_base_dir: PathBuf::new(),
+            proto_path: PathBuf::from("/tmp/hub_protocol_v1.proto"),
+            canonical_proto_path: PathBuf::from("/tmp/canonical_hub_protocol_v1.proto"),
+            host: "127.0.0.1".to_string(),
+            http_port: 0,
+            grpc_port: 0,
+            http_access_key: None,
+            http_access_key_source: String::new(),
+            http_access_key_required: false,
+        };
+
+        let (method_status, method_body) = live_status_http_json(&config, "POST");
+        assert_eq!(method_status, "405 Method Not Allowed");
+        let method_value: Value = serde_json::from_str(method_body.trim()).unwrap();
+        assert_eq!(method_value["ok"], false);
+        assert_eq!(method_value["deny_code"], "method_not_allowed");
+
+        let (status, body) = live_status_http_json(&config, "GET");
+        assert_eq!(status, "409 Conflict");
+        let value: Value = serde_json::from_str(body.trim()).unwrap();
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["deny_code"], "live_base_dir_missing");
+    }
 
     #[test]
     fn post_defaults_fail_closed_without_shadow_opt_in() {

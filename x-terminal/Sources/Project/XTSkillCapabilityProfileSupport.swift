@@ -528,7 +528,8 @@ enum XTSkillCapabilityProfileSupport {
             families.append("repo.read")
         case .write_file, .delete_path, .move_path, .git_apply, .git_commit:
             families.append("repo.mutate")
-        case .git_apply_check, .run_command, .process_start, .process_stop:
+        case .git_apply_check, .run_command, .process_start, .process_stop,
+             .projectDiagnostics, .lspDiagnostics, .checkRun, .buildRun, .testRun:
             families.append("repo.verify")
         case .process_status, .process_logs:
             families.append("repo.read")

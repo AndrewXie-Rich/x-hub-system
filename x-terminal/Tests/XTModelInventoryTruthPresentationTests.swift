@@ -29,7 +29,7 @@ struct XTModelInventoryTruthPresentationTests {
 
         #expect(presentation.state == .localOnlyReady)
         #expect(presentation.summary.contains("正常的纯本地姿态"))
-        #expect(presentation.detail.contains("不配置云端服务或 API key"))
+        #expect(presentation.detail.contains("不配置云 provider / API key"))
         #expect(presentation.localInteractiveLoadedCount == 1)
         #expect(presentation.supportLoadedCount == 1)
         #expect(presentation.tone == .neutral)
@@ -63,7 +63,7 @@ struct XTModelInventoryTruthPresentationTests {
 
         #expect(presentation.state == .noReadyProvider)
         #expect(presentation.headline == "没有可用的就绪 provider")
-        #expect(presentation.summary.contains("没有任何就绪的本地模型服务"))
+        #expect(presentation.summary.contains("没有任何就绪的本地 provider"))
         #expect(presentation.detail.contains("检查 provider pack"))
         #expect(presentation.detail.contains("运行时：还没有就绪 provider"))
         #expect(presentation.tone == .critical)

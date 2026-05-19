@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct SupervisorPersonalReviewCenterView: View {
-    @EnvironmentObject private var settingsCenterStore: XTSettingsCenterStore
+    @EnvironmentObject private var settingsValueStore: XTSettingsValueStore
 
     @StateObject private var personalMemoryStore = SupervisorPersonalMemoryStore.shared
     @StateObject private var reviewStore = SupervisorPersonalReviewNoteStore.shared
@@ -248,6 +248,6 @@ struct SupervisorPersonalReviewCenterView: View {
     }
 
     private var settingsSnapshot: XTerminalSettings {
-        settingsCenterStore.snapshot.settings
+        settingsValueStore.snapshot
     }
 }

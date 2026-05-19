@@ -41,6 +41,12 @@ final class RustLiveFileIPCBridge: @unchecked Sendable {
     private static let maxCompatibilityEventFilesPerEndpoint = 12
     private static let maxCompatibilityDirectoryEntriesPerScan = 512
     private static let maxEventFileBytes = 4 * 1024 * 1024
+    private static let maxRuntimeAuthorityMirrorFileBytes = 16 * 1024 * 1024
+    private static let rustLiveStatusHTTPPath = "/xt/file-ipc/live-status"
+    private static let runtimeAuthorityMirrorFileNames = [
+        "models_state.json",
+        "hub_provider_keys.json",
+    ]
     private static let startupEnvironment = ProcessInfo.processInfo.environment
     private static let rustKernelEventTypes: Set<String> = [
         "project_sync",
@@ -61,6 +67,7 @@ final class RustLiveFileIPCBridge: @unchecked Sendable {
     private let httpLiveStatusOverride: ((TimeInterval) -> LiveStatus?)?
     private let runCompatibilityWorkInline: Bool
     private let httpBaseURLString: String
+    private let useRustLiveStatusHTTP: Bool
     private let stateLock = NSLock()
     private let compatibilityQueue = DispatchQueue(label: "xhub.rust-live-file-ipc.compat", qos: .utility)
     private var forwardedRequests: [String: ForwardedRequest] = [:]
@@ -90,6 +97,7 @@ final class RustLiveFileIPCBridge: @unchecked Sendable {
         },
         liveStatusOverride: ((TimeInterval) -> LiveStatus?)? = nil,
         httpLiveStatusOverride: ((TimeInterval) -> LiveStatus?)? = nil,
+        useRustLiveStatusHTTP: Bool = RustLiveFileIPCBridge.defaultUseRustLiveStatusHTTP(),
         runCompatibilityWorkInline: Bool = false
     ) {
         let normalizedAppBase = appBaseDir.standardizedFileURL
@@ -115,6 +123,7 @@ final class RustLiveFileIPCBridge: @unchecked Sendable {
         self.liveBaseDirCandidates = RustLiveFileIPCBridge.normalizedBaseDirCandidates(liveBaseDirCandidates())
         self.liveStatusOverride = liveStatusOverride
         self.httpLiveStatusOverride = httpLiveStatusOverride
+        self.useRustLiveStatusHTTP = useRustLiveStatusHTTP
         self.runCompatibilityWorkInline = runCompatibilityWorkInline
         self.httpBaseURLString = RustLiveFileIPCBridge.defaultHTTPBaseURL()
     }
@@ -125,6 +134,9 @@ final class RustLiveFileIPCBridge: @unchecked Sendable {
         now: TimeInterval = Date().timeIntervalSince1970
     ) -> Bool {
         guard let live = resolveLiveStatus(now: now) else {
+            return false
+        }
+        guard mirrorRuntimeAuthorityFiles(to: live.baseDir) else {
             return false
         }
 
@@ -251,6 +263,24 @@ final class RustLiveFileIPCBridge: @unchecked Sendable {
         return candidates
     }
 
+    private static func defaultUseRustLiveStatusHTTP(environment: [String: String]? = nil) -> Bool {
+        let environment = environment ?? startupEnvironment
+        if let explicit = environment["XHUB_RUST_XT_FILE_IPC_LIVE_STATUS_HTTP"] {
+            return environmentBool(explicit)
+        }
+        return environmentBool(environment["XHUB_RUST_XT_FILE_IPC_PRODUCTION_CUTOVER"])
+            || environmentBool(environment["XHUB_RUST_XT_CLASSIC_PRODUCTION_CUTOVER"])
+    }
+
+    private static func environmentBool(_ raw: String?) -> Bool {
+        switch (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "1", "true", "yes", "y", "on":
+            return true
+        default:
+            return false
+        }
+    }
+
     static func defaultCompatibilityBaseDirCandidates(
         appBaseDir: URL,
         environment: [String: String]? = nil
@@ -333,6 +363,12 @@ final class RustLiveFileIPCBridge: @unchecked Sendable {
             return cached
         }
 
+        if useRustLiveStatusHTTP,
+           let status = resolveHTTPHealthLiveStatus(now: now, preferRustLiveStatus: true) {
+            cacheLiveStatus(status, checkedAt: now)
+            return status
+        }
+
         for candidate in liveBaseDirCandidates {
             if let status = readLiveStatus(candidate: candidate, now: now) {
                 guard !isLocalEndpoint(status.baseDir) else {
@@ -342,7 +378,7 @@ final class RustLiveFileIPCBridge: @unchecked Sendable {
                 return status
             }
         }
-        let status = resolveHTTPHealthLiveStatus(now: now)
+        let status = resolveHTTPHealthLiveStatus(now: now, preferRustLiveStatus: useRustLiveStatusHTTP)
         if let status {
             cacheLiveStatus(status, checkedAt: now)
         }
@@ -379,7 +415,7 @@ final class RustLiveFileIPCBridge: @unchecked Sendable {
         )
     }
 
-    private func resolveHTTPHealthLiveStatus(now: TimeInterval) -> LiveStatus? {
+    private func resolveHTTPHealthLiveStatus(now: TimeInterval, preferRustLiveStatus: Bool) -> LiveStatus? {
         let cached = cachedHTTPFallbackStatus(now: now)
         if let cached {
             return cached
@@ -391,6 +427,8 @@ final class RustLiveFileIPCBridge: @unchecked Sendable {
         let status: LiveStatus?
         if let httpLiveStatusOverride {
             status = httpLiveStatusOverride(now)
+        } else if preferRustLiveStatus, let rustStatus = fetchRustHTTPLiveStatus(now: now) {
+            status = rustStatus
         } else {
             status = fetchHTTPHealthLiveStatus(now: now)
         }
@@ -403,38 +441,61 @@ final class RustLiveFileIPCBridge: @unchecked Sendable {
         return status
     }
 
+    private func fetchRustHTTPLiveStatus(now: TimeInterval) -> LiveStatus? {
+        guard let object = fetchHTTPJSONObject(path: Self.rustLiveStatusHTTPPath),
+              (object["ok"] as? Bool) == true,
+              let status = object["status"] as? [String: Any] else {
+            return nil
+        }
+
+        let liveBasePath = stringValue(status["baseDir"]).isEmpty
+            ? stringValue(object["base_dir"])
+            : stringValue(status["baseDir"])
+        guard !liveBasePath.isEmpty else {
+            return nil
+        }
+
+        let liveBase = URL(
+            fileURLWithPath: NSString(string: liveBasePath).expandingTildeInPath,
+            isDirectory: true
+        ).standardizedFileURL
+        let eventsPath = stringValue(status["ipcPath"]).isEmpty
+            ? stringValue(object["events_dir"])
+            : stringValue(status["ipcPath"])
+        let eventsDir = eventsPath.isEmpty
+            ? liveBase.appendingPathComponent("ipc_events", isDirectory: true)
+            : URL(
+                fileURLWithPath: NSString(string: eventsPath).expandingTildeInPath,
+                isDirectory: true
+            ).standardizedFileURL
+        let responsesPath = stringValue(object["responses_dir"])
+        let responsesDir = responsesPath.isEmpty
+            ? liveBase.appendingPathComponent("ipc_responses", isDirectory: true)
+            : URL(
+                fileURLWithPath: NSString(string: responsesPath).expandingTildeInPath,
+                isDirectory: true
+            ).standardizedFileURL
+
+        var raw = status
+        raw["updatedAt"] = doubleValue(raw["updatedAt"]) ?? now
+        if stringValue(raw["ipcMode"]).isEmpty {
+            raw["ipcMode"] = "file"
+        }
+        raw["ipcPath"] = eventsDir.path
+        raw["baseDir"] = liveBase.path
+        raw["protocolVersion"] = intValue(raw["protocolVersion"]) ?? 1
+        return LiveStatus(
+            raw: raw,
+            baseDir: liveBase,
+            eventsDir: eventsDir,
+            responsesDir: responsesDir,
+            updatedAt: doubleValue(raw["updatedAt"]) ?? now
+        )
+    }
+
     private func fetchHTTPHealthLiveStatus(now: TimeInterval) -> LiveStatus? {
-        guard let url = URL(string: httpBaseURL().appending("/health")) else {
-            return nil
-        }
-
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 0.25
-        config.timeoutIntervalForResource = 0.25
-        let session = URLSession(configuration: config)
-        let semaphore = DispatchSemaphore(value: 0)
-        let box = HTTPResponseBox()
-
-        let task = session.dataTask(with: url) { data, response, _ in
-            defer { semaphore.signal() }
-            guard let http = response as? HTTPURLResponse,
-                  http.statusCode == 200,
-                  let data,
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  (object["ok"] as? Bool) == true else {
-                return
-            }
-            box.object = object
-        }
-        task.resume()
-        if semaphore.wait(timeout: .now() + .milliseconds(300)) == .timedOut {
-            task.cancel()
-            session.invalidateAndCancel()
-            return nil
-        }
-        session.finishTasksAndInvalidate()
-
-        guard let health = box.object,
+        guard let health = fetchHTTPJSONObject(path: "/health"),
+              (health["ok"] as? Bool) == true,
               let liveBase = httpFallbackLiveBaseDir() else {
             return nil
         }
@@ -465,6 +526,45 @@ final class RustLiveFileIPCBridge: @unchecked Sendable {
             responsesDir: liveBase.appendingPathComponent("ipc_responses", isDirectory: true),
             updatedAt: now
         )
+    }
+
+    private func fetchHTTPJSONObject(path: String) -> [String: Any]? {
+        guard let url = URL(string: httpBaseURL().appending(path)) else {
+            return nil
+        }
+
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 0.25
+        config.timeoutIntervalForResource = 0.25
+        let session = URLSession(configuration: config)
+        let semaphore = DispatchSemaphore(value: 0)
+        let box = HTTPResponseBox()
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 0.25
+        if path != "/health",
+           let accessKey = RustHubRuntimeSupport.httpAccessKey() {
+            request.setValue("Bearer \(accessKey)", forHTTPHeaderField: "Authorization")
+            request.setValue(accessKey, forHTTPHeaderField: "X-XHub-Access-Key")
+        }
+
+        let task = session.dataTask(with: request) { data, response, _ in
+            defer { semaphore.signal() }
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode),
+                  let data,
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return
+            }
+            box.object = object
+        }
+        task.resume()
+        if semaphore.wait(timeout: .now() + .milliseconds(300)) == .timedOut {
+            task.cancel()
+            session.invalidateAndCancel()
+            return nil
+        }
+        session.finishTasksAndInvalidate()
+        return box.object
     }
 
     private func httpBaseURL() -> String {
@@ -761,6 +861,61 @@ final class RustLiveFileIPCBridge: @unchecked Sendable {
         return mirroredCount
     }
 
+    private func mirrorRuntimeAuthorityFiles(to liveBaseDir: URL) -> Bool {
+        let sourceBaseDir = primaryEndpoint.baseDir.standardizedFileURL
+        let destinationBaseDir = liveBaseDir.standardizedFileURL
+        guard !samePath(sourceBaseDir, destinationBaseDir) else { return true }
+
+        var ok = true
+        for fileName in Self.runtimeAuthorityMirrorFileNames {
+            if !mirrorRuntimeAuthorityFile(
+                named: fileName,
+                from: sourceBaseDir,
+                to: destinationBaseDir
+            ) {
+                ok = false
+            }
+        }
+        return ok
+    }
+
+    private func mirrorRuntimeAuthorityFile(
+        named fileName: String,
+        from sourceBaseDir: URL,
+        to destinationBaseDir: URL
+    ) -> Bool {
+        let source = sourceBaseDir.appendingPathComponent(fileName)
+        let destination = destinationBaseDir.appendingPathComponent(fileName)
+        guard let size = trustedRegularFileSize(source) else {
+            return true
+        }
+        guard size <= Self.maxRuntimeAuthorityMirrorFileBytes else {
+            return false
+        }
+        if let sourceModifiedAt = fileModificationTime(source),
+           let destinationModifiedAt = fileModificationTime(destination),
+           destinationModifiedAt >= sourceModifiedAt {
+            return true
+        }
+
+        let tmp = destinationBaseDir.appendingPathComponent(".\(fileName).swift_bridge.\(UUID().uuidString).tmp")
+        do {
+            let data = try Data(contentsOf: source)
+            try FileManager.default.createDirectory(at: destinationBaseDir, withIntermediateDirectories: true)
+            try data.write(to: tmp, options: .atomic)
+            try secureFile(tmp)
+            if FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.removeItem(at: destination)
+            }
+            try FileManager.default.moveItem(at: tmp, to: destination)
+            try secureFile(destination)
+            return true
+        } catch {
+            try? FileManager.default.removeItem(at: tmp)
+            return false
+        }
+    }
+
     private func pruneForwardedRequests(now: TimeInterval) {
         stateLock.lock()
         forwardedRequests = forwardedRequests.filter { _, request in
@@ -976,6 +1131,14 @@ final class RustLiveFileIPCBridge: @unchecked Sendable {
         guard (st.st_mode & S_IFMT) == S_IFREG else { return nil }
         guard st.st_uid == Darwin.geteuid() else { return nil }
         return Int64(st.st_size)
+    }
+
+    private func fileModificationTime(_ url: URL) -> TimeInterval? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let modifiedAt = attributes[.modificationDate] as? Date else {
+            return nil
+        }
+        return modifiedAt.timeIntervalSince1970
     }
 
     private func samePath(_ lhs: URL, _ rhs: URL) -> Bool {

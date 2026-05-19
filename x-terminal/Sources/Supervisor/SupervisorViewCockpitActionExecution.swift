@@ -12,6 +12,7 @@ enum SupervisorViewCockpitActionExecution {
         let openWindow: (String) -> Void
         let openProjectGovernance: (String, XTProjectGovernanceDestination, String?, String?) -> Void
         let setFocusedSplitLane: (String) -> Void
+        let overrideLaneWinnerSelection: (String, String) -> Void
     }
 
     static func apply(
@@ -44,6 +45,8 @@ enum SupervisorViewCockpitActionExecution {
                 dependencies.openProjectGovernance(projectId, destination, title, detail)
             case .setFocusedSplitLane(let laneID):
                 dependencies.setFocusedSplitLane(laneID)
+            case .overrideLaneWinnerSelection(let laneID, let reason):
+                dependencies.overrideLaneWinnerSelection(laneID, reason)
             }
         }
     }

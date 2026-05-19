@@ -27,6 +27,27 @@ struct ProviderKeyRuntimeFeedbackSupportTests {
     }
 
     @Test
+    func failureFeedbackNormalizesInvalidAPIKeyNoticeAsAuthError() {
+        let error = NSError(
+            domain: "xterminal",
+            code: 401,
+            userInfo: [
+                NSLocalizedDescriptionKey: "Provider API Key 无效或已被撤销（status=401）。请重新粘贴有效的 Provider API Key，或在服务商后台轮换后再导入。"
+            ]
+        )
+
+        let feedback = ProviderKeyRuntimeFeedbackSupport.failureFeedback(
+            accountKey: "openai:test",
+            modelID: "gpt-5.4",
+            error: error
+        )
+
+        #expect(feedback.outcome == "auth_error")
+        #expect(feedback.httpStatus == 401)
+        #expect(feedback.reasonCode == "invalid_api_key")
+    }
+
+    @Test
     func failureFeedbackNormalizesTimeoutAsNetworkError() {
         let error = NSError(
             domain: NSURLErrorDomain,

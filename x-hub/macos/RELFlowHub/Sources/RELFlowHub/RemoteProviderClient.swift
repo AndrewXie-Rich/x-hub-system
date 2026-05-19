@@ -50,6 +50,9 @@ enum RemoteProviderClient {
             }
             return HubUIStrings.Settings.RemoteModels.usageLimitDetail
         }
+        if let invalidAPIKeyNotice = invalidAPIKeyNotice(status: status, body: normalizedBody) {
+            return invalidAPIKeyNotice
+        }
         if let permissionNotice = permissionDeniedNotice(status: status, body: normalizedBody) {
             return permissionNotice
         }
@@ -66,6 +69,19 @@ enum RemoteProviderClient {
             return "Provider 当前正在限流，请稍后重试（status=\(status)）：\(normalizedBody)"
         }
         return HubUIStrings.Models.ProviderImport.httpError(status: status, body: normalizedBody)
+    }
+
+    private static func invalidAPIKeyNotice(status: Int, body: String) -> String? {
+        let normalized = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowercased = normalized.lowercased()
+        let hasInvalidKeySignal = lowercased.contains("invalid_api_key")
+            || lowercased.contains("invalid api key")
+            || lowercased.contains("incorrect api key")
+            || (lowercased.contains("api key") && lowercased.contains("incorrect"))
+            || lowercased.contains("authentication_failed")
+        guard hasInvalidKeySignal else { return nil }
+        let statusText = status > 0 ? "（status=\(status)）" : ""
+        return "Provider API Key 无效或已被撤销\(statusText)。请重新粘贴有效的 Provider API Key，或在服务商后台轮换后再导入。"
     }
 
     static func usageLimitNotice(from text: String) -> UsageLimitNotice? {

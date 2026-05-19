@@ -331,8 +331,26 @@ struct XTerminalSettings: Codable, Equatable {
 
     func assignment(for role: AXRole) -> RoleProviderAssignment {
         let primaryRole = role.primaryRole
-        return assignments.first(where: { $0.role == primaryRole })
+        let stored = assignments.first(where: { $0.role == primaryRole })
             ?? RoleProviderAssignment(role: primaryRole, providerKind: .hub, model: nil)
+        let routePrimary = roleModelRoutes.first(where: { $0.role == primaryRole })?
+            .primaryModelId
+        return RoleProviderAssignment(
+            role: primaryRole,
+            providerKind: .hub,
+            model: routePrimary ?? stored.model
+        )
+    }
+
+    func modelRoute(for role: AXRole) -> RoleModelRoutePreference {
+        let primaryRole = role.primaryRole
+        if let route = roleModelRoutes.first(where: { $0.role == primaryRole }) {
+            return route
+        }
+        return RoleModelRoutePreference(
+            role: primaryRole,
+            primaryModelId: assignment(for: primaryRole).model
+        )
     }
 
     func setting(role: AXRole, providerKind: ProviderKind, model: String?) -> XTerminalSettings {

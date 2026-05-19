@@ -546,6 +546,10 @@ enum HubIPCClient {
     struct SkillRunnerGateRequestPayload: Equatable, Sendable {
         var requestId: String
         var projectId: String?
+        var executionRole: String?
+        var agentMode: String?
+        var laneId: String?
+        var auditRef: String?
         var skillId: String
         var packageSHA256: String
         var toolName: String
@@ -6224,6 +6228,10 @@ enum HubIPCClient {
         let normalizedRequest = SkillRunnerGateRequestPayload(
             requestId: normalizedRequestId,
             projectId: normalized(request.projectId),
+            executionRole: normalized(request.executionRole),
+            agentMode: normalized(request.agentMode),
+            laneId: normalized(request.laneId),
+            auditRef: normalized(request.auditRef),
             skillId: normalizedSkillId,
             packageSHA256: normalizedPackageSHA256,
             toolName: normalizedToolName,

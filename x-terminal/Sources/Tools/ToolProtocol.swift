@@ -18,6 +18,11 @@ enum ToolName: String, Codable, CaseIterable, Sendable {
     case git_push
     case git_apply_check
     case git_apply
+    case projectDiagnostics = "project.diagnostics"
+    case lspDiagnostics = "lsp.diagnostics"
+    case checkRun = "check.run"
+    case buildRun = "build.run"
+    case testRun = "test.run"
     case pr_create
     case ci_read
     case ci_trigger
@@ -186,6 +191,9 @@ enum ToolPolicy {
                 .search,
                 .git_status,
                 .git_diff,
+                .projectDiagnostics,
+                .lspDiagnostics,
+                .checkRun,
                 .session_list,
                 .session_resume,
                 .session_compact,
@@ -218,6 +226,11 @@ enum ToolPolicy {
                 .git_commit,
                 .git_apply_check,
                 .git_apply,
+                .projectDiagnostics,
+                .lspDiagnostics,
+                .checkRun,
+                .buildRun,
+                .testRun,
                 .session_list,
                 .session_resume,
                 .session_compact,
@@ -251,6 +264,11 @@ enum ToolPolicy {
                 .git_push,
                 .git_apply_check,
                 .git_apply,
+                .projectDiagnostics,
+                .lspDiagnostics,
+                .checkRun,
+                .buildRun,
+                .testRun,
                 .pr_create,
                 .ci_read,
                 .ci_trigger,
@@ -357,9 +375,19 @@ enum ToolPolicy {
         case .git_push:
             return "- git_push {remote?, branch?, set_upstream?}"
         case .git_apply_check:
-            return "- git_apply_check {patch}"
+            return "- git_apply_check {patch, three_way?}"
         case .git_apply:
-            return "- git_apply {patch}"
+            return "- git_apply {patch, three_way?}"
+        case .projectDiagnostics:
+            return "- project.diagnostics {trigger?, kind?=auto|check|build|test|verify, changed_files_only?, use_verify_commands?, timeout_sec?, agent_mode?}"
+        case .lspDiagnostics:
+            return "- lsp.diagnostics {path?, changed_files_only?, timeout_sec?, agent_mode?}"
+        case .checkRun:
+            return "- check.run {timeout_sec?, agent_mode?}"
+        case .buildRun:
+            return "- build.run {timeout_sec?, agent_mode?}"
+        case .testRun:
+            return "- test.run {timeout_sec?, agent_mode?}"
         case .pr_create:
             return "- pr_create {title?, body?, base?, head?, draft?, fill?, labels?, reviewers?}"
         case .ci_read:
@@ -403,7 +431,7 @@ enum ToolPolicy {
         case .skills_pin:
             return "- skills.pin {skill_id, package_sha256, scope?, project_id?, note?}"
         case .skillsExecuteRunner:
-            return "- skills.execute.runner {skill_id, package_sha256, input?|payload?, timeout_sec?} // downloads the Hub package, checks Hub runner gate, then executes manifest entrypoint"
+            return "- skills.execute.runner {skill_id, package_sha256, input?|payload?, execution_role?|role?=coder|reviewer|supervisor, agent_mode?, project_id?, lane_id?, audit_ref?, timeout_sec?} // downloads the Hub package, binds role/mode/lane context, checks Hub runner gate, then executes manifest entrypoint"
         case .summarize:
             return "- summarize {url?|path?|text|content|value, focus?, format?, max_chars?, grant_id?, timeout_sec?, max_bytes?}"
         case .supervisorVoicePlayback:
@@ -432,6 +460,9 @@ enum ToolPolicy {
                     .search,
                     .git_status,
                     .git_diff,
+                    .projectDiagnostics,
+                    .lspDiagnostics,
+                    .checkRun,
                     .session_list,
                     .agentImportRecord,
                     .memory_snapshot,
@@ -461,6 +492,8 @@ enum ToolPolicy {
                 ])
             case "group:git":
                 out.formUnion([.git_status, .git_diff, .git_commit, .git_push, .git_apply_check, .git_apply])
+            case "group:diagnostics":
+                out.formUnion([.projectDiagnostics, .lspDiagnostics, .checkRun, .buildRun, .testRun])
             case "group:delivery":
                 out.formUnion([.git_push, .pr_create, .ci_read, .ci_trigger])
             case "group:network":
@@ -487,6 +520,13 @@ enum ToolPolicy {
         case .read_file, .list_dir, .search, .git_status, .git_diff:
             return .safe
         case .git_apply_check:
+            return .safe
+        case .projectDiagnostics:
+            if case .bool(true)? = call.args["use_verify_commands"] {
+                return .needsConfirm
+            }
+            return .safe
+        case .lspDiagnostics, .checkRun, .buildRun, .testRun:
             return .safe
         case .ci_read:
             return .safe

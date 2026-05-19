@@ -86,6 +86,7 @@ Start here when the task touches project `A-Tier`, `S-Tier`, `Heartbeat / Review
 - `docs/memory-new/xhub-coding-mode-fit-and-governed-engineering-strategy-v1.md`
 - `docs/memory-new/xhub-coding-mode-fit-and-governed-engineering-work-orders-v1.md`
 - `docs/memory-new/xhub-a-tier-execution-graduation-work-orders-v1.md`
+- `xt-kilo-code-debug-capability-upgrade-plan-v1.md`
 - `xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md`
 - `xt-w3-26-supervisor-one-shot-intake-adaptive-pool-planner-implementation-pack-v1.md`
 - `xt-w3-29-supervisor-conversation-window-persistent-session-implementation-pack-v1.md`
@@ -119,6 +120,7 @@ Use this family when the question is:
 - how recent project create / rename / delete / undo should behave as real transactions
 - how to turn `A4 Agent` from “policy configured” into “runtime ready”
 - why the engineering order should be `A2 -> A3 -> A4` rather than trying to hard-rush `A4`
+- how to absorb Kilo-style code/debug strengths without weakening Hub-first governance
 
 ### P0-D Voice, Guided Authorization, And Governed Remote Approval
 
@@ -157,6 +159,22 @@ Use this family when the question is:
 - how doctor / preflight / runner constraints should work
 - how assistant-runtime ideas can be absorbed without weakening Hub authority
 - how capability profile / readiness truth should stop depending on string inference
+
+### P0-F XT Rust Core, Swift Shell, And Projection Performance
+
+Start here when the task touches structural UI smoothness, SwiftUI invalidation,
+Rust/Swift ownership boundaries, or the long-term XT product architecture.
+
+- `xt-rust-core-swift-shell-projection-performance-implementation-pack-v1.md`
+
+Use this family when the question is:
+
+- how XT should become one product made of a Rust core plus a Swift shell
+- how to remove structural SwiftUI jank without redesigning the current UI
+- which state, policy, diagnostics, route truth, and projection logic should move
+  behind the Rust/core boundary
+- how to keep Settings, Sidebar, Model Settings, Supervisor Settings, approvals, and
+  project workflows visually consistent while migrating data ownership
 
 ## P1 - Important Next, But Not The First Default
 

@@ -438,18 +438,30 @@ resolve_rust_hub_package_dir() {
     return 1
   fi
 
-  local default_rust_source_root="$SOURCE_ROOT/rust/xhubd"
-  if [ ! -d "$default_rust_source_root" ] && [ -d "$SOURCE_ROOT/../rust/rust hub" ]; then
-    default_rust_source_root="$SOURCE_ROOT/../rust/rust hub"
-  fi
-  local rust_source_root="${XHUB_RUST_HUB_SOURCE_ROOT:-$default_rust_source_root}"
-  local dist_root="$rust_source_root/dist"
-  if [ ! -d "$dist_root" ]; then
-    return 1
+  local source_roots=()
+  if [ -n "${XHUB_RUST_HUB_SOURCE_ROOT:-}" ]; then
+    source_roots+=("$XHUB_RUST_HUB_SOURCE_ROOT")
+  else
+    source_roots+=("$SOURCE_ROOT/rust/xhubd")
+    source_roots+=("$SOURCE_ROOT/../rust/rust hub")
   fi
 
   local latest=""
-  latest="$(find "$dist_root" -maxdepth 1 -type d -name 'rust-hub-*' 2>/dev/null | sort | tail -n 1)"
+  local rust_source_root=""
+  local dist_root=""
+  for rust_source_root in "${source_roots[@]}"; do
+    [ -d "$rust_source_root" ] || continue
+    dist_root="$rust_source_root/dist"
+    [ -d "$dist_root" ] || continue
+    local candidate=""
+    candidate="$(find "$dist_root" -maxdepth 1 -type d -name 'rust-hub-*' 2>/dev/null | sort | tail -n 1)"
+    if [ -n "$candidate" ] && [ -d "$candidate" ]; then
+      if [ -z "$latest" ] || [ "$(basename "$candidate")" \> "$(basename "$latest")" ]; then
+        latest="$candidate"
+      fi
+    fi
+  done
+
   if [ -n "$latest" ] && [ -d "$latest" ]; then
     cd "$latest" && pwd
     return 0
@@ -760,5 +772,5 @@ echo "- Standalone Bridge.app and Dock Agent.app were removed; X-Hub now ships a
 echo "- Scope boundary: this command packages current x-hub/ + protocol/ into X-Hub.app only."
 echo "- Rust Hub embedding defaults to auto; set XHUB_EMBED_RUST_HUB=0 to skip or XHUB_EMBED_RUST_HUB=1 to require a package."
 echo "- To install the built app, run: \"$SOURCE_ROOT/x-hub/tools/install_hub_app.command\"; it writes /Applications/X-Hub.app only."
-echo "- If you also changed X-Terminal surfaces (for example doctor / troubleshoot / model-settings UI), rebuild active refactored XT separately with: \"$SOURCE_ROOT/../rust/rust xt/commands/build_xt.command\""
+echo "- If you also changed X-Terminal surfaces (for example doctor / troubleshoot / model-settings UI), rebuild XT with: \"$SOURCE_ROOT/x-terminal/tools/build_xt_with_rust_sidecar.command\""
 echo "- To rebuild both apps together, run: \"$SOURCE_ROOT/scripts/build_hub_and_xt_apps.command\""

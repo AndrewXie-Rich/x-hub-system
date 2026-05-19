@@ -22,6 +22,8 @@ case "$ARCH" in
   *) PLATFORM="macos-$ARCH" ;;
 esac
 
+APP_VERSION="${VERSION#v}"
+BUILD_NUMBER="${XHUB_RELEASE_BUILD_NUMBER:-$(date -u +%Y%m%d%H%M%S)}"
 RELEASE_DIR="${XHUB_RELEASE_DIR:-$ROOT_DIR/build/release/$VERSION}"
 HUB_APP="$ROOT_DIR/build/X-Hub.app"
 XT_APP="$ROOT_DIR/build/X-Terminal.app"
@@ -29,6 +31,7 @@ HUB_DMG="$RELEASE_DIR/X-Hub-${VERSION}-${PLATFORM}.dmg"
 XT_DMG="$RELEASE_DIR/X-Terminal-${VERSION}-${PLATFORM}.dmg"
 SYSTEM_DMG="$RELEASE_DIR/XHub-System-${VERSION}-${PLATFORM}.dmg"
 SYSTEM_STAGE="$ROOT_DIR/build/xhub_system_release_stage"
+RUST_HUB_SOURCE_ROOT="$ROOT_DIR/rust/xhubd"
 
 echo "[release] Version: $VERSION"
 echo "[release] Platform: $PLATFORM"
@@ -36,23 +39,30 @@ echo "[release] Output: $RELEASE_DIR"
 
 mkdir -p "$RELEASE_DIR"
 
-echo "[1/6] Building X-Hub.app..."
-"$ROOT_DIR/x-hub/tools/build_hub_app.command"
+echo "[1/7] Packaging Rust Hub runtime from repository source..."
+bash "$RUST_HUB_SOURCE_ROOT/tools/package_rust_hub.command"
 
-echo "[2/6] Building X-Terminal.app..."
-bash "$ROOT_DIR/x-terminal/tools/build_xterminal_app.command"
+echo "[2/7] Building X-Hub.app..."
+XHUB_RUST_HUB_SOURCE_ROOT="$RUST_HUB_SOURCE_ROOT" \
+XHUB_EMBED_RUST_HUB=1 \
+  "$ROOT_DIR/x-hub/tools/build_hub_app.command"
 
-echo "[3/6] Building X-Hub DMG..."
+echo "[3/7] Building X-Terminal.app and Rust XT sidecar..."
+XTERMINAL_APP_VERSION="$APP_VERSION" \
+XTERMINAL_BUILD_VERSION="$BUILD_NUMBER" \
+  bash "$ROOT_DIR/x-terminal/tools/build_xt_with_rust_sidecar.command"
+
+echo "[4/7] Building X-Hub DMG..."
 XHUB_DMG_OUTPUT="$HUB_DMG" \
-XHUB_DMG_VERSION="${VERSION#v}" \
+XHUB_DMG_VERSION="$APP_VERSION" \
   "$ROOT_DIR/x-hub/tools/build_hub_dmg.command"
 
-echo "[4/6] Building X-Terminal DMG..."
+echo "[5/7] Building X-Terminal DMG..."
 XTERMINAL_DMG_OUTPUT="$XT_DMG" \
-XTERMINAL_DMG_VERSION="${VERSION#v}" \
+XTERMINAL_DMG_VERSION="$APP_VERSION" \
   bash "$ROOT_DIR/x-terminal/tools/build_xterminal_dmg.command"
 
-echo "[5/6] Building combined XHub-System DMG..."
+echo "[6/7] Building combined XHub-System DMG..."
 if [ ! -d "$HUB_APP" ]; then
   echo "Hub app not found: $HUB_APP" >&2
   exit 1
@@ -89,7 +99,7 @@ ln -s "/Applications" "$SYSTEM_STAGE/Applications"
 rm -f "$SYSTEM_DMG" 2>/dev/null || true
 hdiutil create -volname "XHub-System $VERSION" -srcfolder "$SYSTEM_STAGE" -ov -format UDZO "$SYSTEM_DMG" >/dev/null
 
-echo "[6/6] Writing SHA256SUMS.txt..."
+echo "[7/7] Writing SHA256SUMS.txt..."
 (
   cd "$RELEASE_DIR"
   shasum -a 256 ./*.dmg > SHA256SUMS.txt

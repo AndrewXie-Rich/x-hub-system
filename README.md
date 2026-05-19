@@ -1,6 +1,6 @@
 # X-Hub-System
 
-> Active codebase marker: this repository root is the active Hub source, `/Users/andrew.xie/Documents/AX/x-hub-system`. The old/clean copy `/Users/andrew.xie/Documents/AX/x-hub-system-github-clean` is not the source of truth. Build the current Hub UI with `./x-hub/tools/build_hub_app.command`; the installed app should be `/Applications/X-Hub.app` with executable `Contents/MacOS/XHub`.
+> Active codebase marker: this repository root is the source of truth for the public X-Hub-System codebase. Build the current Hub UI with `./x-hub/tools/build_hub_app.command`; build X-Terminal with `./x-terminal/tools/build_xt_with_rust_sidecar.command`. Generated apps and DMGs live under `build/` and are release artifacts, not Git-tracked source.
 
 <p>
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License MIT" />
@@ -158,10 +158,10 @@ For normal users, use packaged macOS builds from GitHub Releases:
 https://github.com/AndrewXie-Rich/x-hub-system/releases
 ```
 
-Current Rust preview package:
+Current recommended package:
 
 ```text
-XHub-System-Rust-<version>-macos-arm64.dmg
+XHub-System-<version>-macos-arm64.dmg
 ```
 
 That combined package contains one user-facing Hub: `X-Hub.app`, the native Swift macOS UI shell with the Rust kernel/runtime embedded inside the app bundle. It also contains X-Terminal and the Rust `xtd` sidecar.
@@ -169,7 +169,7 @@ Normal users should not need to start or understand a separate Rust Hub daemon.
 
 Install flow:
 
-1. Open the combined Rust preview DMG or ZIP.
+1. Open the combined XHub-System DMG.
 2. Drag `X-Hub.app` and `X-Terminal.app` to Applications.
 3. Launch `X-Hub.app` first.
 4. Launch `X-Terminal.app` and pair it with X-Hub.
@@ -178,18 +178,17 @@ Install flow:
 Advanced users can install one side at a time:
 
 ```text
-X-Hub-<version>-macos-arm64.zip
-XHub-Rust-Hub-<version>-macos-arm64.zip
-X-Terminal-RustXT-<version>-macos-arm64.zip
+X-Hub-<version>-macos-arm64.dmg
+X-Terminal-<version>-macos-arm64.dmg
 ```
 
-`XHub-Rust-Hub-*` is the daemon/runtime package for CLI or service workflows. It is not the primary user-facing Hub UI.
+The Rust Hub runtime is embedded inside `X-Hub.app` for normal users. Maintainer-only daemon packages may exist for diagnostics, but they are not the primary user-facing Hub product.
 
 If no packaged release is available yet, build from source using the steps below.
 
 Release artifacts are uploaded to GitHub Releases and are intentionally not committed to this repository. If a release is unsigned or not notarized, the GitHub Release notes should say so explicitly.
 
-Legacy note: `XHub-System-v0.1.0-alpha.1-macos-arm64.dmg` was built from the older Swift/Node Hub app path. For the Rust refactor preview, use the `XHub-System-Rust-*` assets and the matching source tag.
+Legacy note: older `v0.1.0-alpha.*` assets were preview packages. For current builds, use the `XHub-System-<version>-macos-arm64.dmg` asset and the matching source tag.
 
 ## Requirements
 
@@ -226,6 +225,12 @@ Build the Hub Rust kernel/runtime for diagnostics or maintainer work:
 bash rust/xhubd/tools/build_rust_hub.command --release
 ```
 
+Build the Hub app:
+
+```bash
+bash x-hub/tools/build_hub_app.command
+```
+
 Build the X-Terminal app and Rust `xtd` sidecar:
 
 ```bash
@@ -256,10 +261,10 @@ bash scripts/run_xhub_doctor_from_source.command all --workspace-root /path/to/w
 
 ## Build Release Assets
 
-Maintainers can build the Rust preview release assets with one command:
+Maintainers can build the macOS release DMGs with one command:
 
 ```bash
-XHUB_RELEASE_VERSION=v0.1.0-alpha.2-rust-preview scripts/package_rust_preview_release.command
+XHUB_RELEASE_VERSION=v1.2.10 scripts/package_macos_release.command
 ```
 
 The output is written under:
@@ -271,26 +276,13 @@ build/release/<version>/
 Expected assets:
 
 ```text
-XHub-System-Rust-<version>-macos-arm64.dmg
-XHub-System-Rust-<version>-macos-arm64.zip
-X-Hub-<version>-macos-arm64.zip
-XHub-Rust-Hub-<version>-macos-arm64.zip
-X-Terminal-RustXT-<version>-macos-arm64.zip
+XHub-System-<version>-macos-arm64.dmg
+X-Hub-<version>-macos-arm64.dmg
+X-Terminal-<version>-macos-arm64.dmg
 SHA256SUMS.txt
 ```
 
-The release script fails before packaging if the required Swift Hub UI, Rust kernel contract, Swift pairing proxy, and XT contract client files are missing from Git tracking. It also checks the staged app for `X-Hub.app/Contents/Resources/rust-hub/bin/xhubd` before archive creation. This prevents publishing a source tag or release asset that only contains the Rust daemon/runtime lane.
-To run only that source gate without building the release:
-
-```bash
-XHUB_RELEASE_GATE_ONLY=1 scripts/package_rust_preview_release.command
-```
-
-After packaging, run the live artifact smoke without launching the GUI:
-
-```bash
-scripts/rust_preview_release_live_smoke.command build/release/<version>/stage/XHub-System-Rust-<version>-macos-arm64
-```
+The release script builds a fresh Rust Hub package from `rust/xhubd`, embeds it into `X-Hub.app`, builds `X-Terminal.app` plus the Rust `xtd` sidecar, then writes Hub, Terminal, and combined DMGs plus `SHA256SUMS.txt`.
 
 Upload those files to the matching GitHub Release. Do not commit generated `.app`, `.dmg`, or `build/` outputs.
 
@@ -666,7 +658,7 @@ x-hub/tools/build_hub_app.command
 ### Build The X-Terminal App
 
 ```bash
-"/Users/andrew.xie/Documents/AX/rust/rust xt/commands/build_xt.command"
+bash x-terminal/tools/build_xt_with_rust_sidecar.command
 ```
 
 ### Launch The Built X-Hub App
@@ -678,7 +670,7 @@ open build/X-Hub.app
 ### Launch The Built X-Terminal App
 
 ```bash
-open "/Users/andrew.xie/Documents/AX/rust/rust xt/build/X-Terminal.app"
+open build/X-Terminal.app
 ```
 
 ### Developer Source Run Notes
@@ -690,7 +682,7 @@ bash x-hub/tools/run_xhub_from_source.command
 ```
 
 ```bash
-"/Users/andrew.xie/Documents/AX/rust/rust xt/swift-xterminal/tools/run_xterminal_from_source.command"
+bash x-terminal/tools/run_xterminal_from_source.command
 ```
 
 ```bash
@@ -727,7 +719,7 @@ When XT has local cache/fallback/edit-buffer provenance to surface, the XT sourc
 
 The XT source report envelope itself is now frozen separately in `docs/memory-new/schema/xt_unified_doctor_report_contract.v1.json`. That keeps the XT-native `xt_unified_doctor_report.json` contract distinct from the normalized `xhub_doctor_output_xt.json` contract, and `consumed_contracts` now carries `xt.unified_doctor_report_contract.v1` instead of pretending the report's own schema version is an upstream dependency.
 
-Under the hood, the Hub-side Swift package still lives in the historical internal package directory `x-hub/macos/RELFlowHub/`. The active refactored XT-side package lives in `/Users/andrew.xie/Documents/AX/rust/rust xt/swift-xterminal`; `x-hub-system/x-terminal/` is legacy/read-only and its build/run entrypoints fail closed by default. The preferred public source-run entrypoints are now `x-hub/tools/run_xhub_from_source.command`, `/Users/andrew.xie/Documents/AX/rust/rust xt/swift-xterminal/tools/run_xterminal_from_source.command`, and the thin repo-level doctor wrapper `scripts/run_xhub_doctor_from_source.command`. That wrapper now exposes a more unified source-run parameter surface, including `hub`, `xt`, and `all` modes plus shared `--workspace-root` and `--out-dir` options, but it is still not the final packaged cross-product CLI.
+Under the hood, the Hub-side Swift package lives in `x-hub/macos/RELFlowHub/`, and the active X-Terminal Swift package lives in `x-terminal/`. The preferred public source-run entrypoints are `x-hub/tools/run_xhub_from_source.command`, `x-terminal/tools/run_xterminal_from_source.command`, and the thin repo-level doctor wrapper `scripts/run_xhub_doctor_from_source.command`. That wrapper exposes `hub`, `xt`, and `all` modes plus shared `--workspace-root` and `--out-dir` options.
 
 For a focused XT-only source smoke of the current doctor shell, run:
 
@@ -754,13 +746,13 @@ That gate now writes `build/reports/xhub_doctor_source_gate_summary.v1.json` plu
 ### Run The XT Release Gate
 
 ```bash
-bash "/Users/andrew.xie/Documents/AX/rust/rust xt/swift-xterminal/scripts/ci/xt_release_gate.sh"
+bash x-terminal/scripts/ci/xt_release_gate.sh
 ```
 
 If you want the stricter gate mode:
 
 ```bash
-cd "/Users/andrew.xie/Documents/AX/rust/rust xt/swift-xterminal"
+cd x-terminal
 XT_GATE_MODE=strict bash scripts/ci/xt_release_gate.sh
 ```
 
