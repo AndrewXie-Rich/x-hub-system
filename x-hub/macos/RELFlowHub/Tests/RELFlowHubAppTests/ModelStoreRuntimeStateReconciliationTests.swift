@@ -303,6 +303,96 @@ final class ModelStoreRuntimeStateReconciliationTests: XCTestCase {
         XCTAssertTrue(refreshed.state.models.contains { $0.id == "deepseek-r1-0528-qwen3-8b" })
     }
 
+    func testRefreshedBaseModelSnapshotsRegistersSystemVoiceTTSWhenBinaryIsAvailable() throws {
+        let baseDir = try makeTempDir()
+        let fakeSay = try makeExecutableFile(in: baseDir, named: "say")
+
+        let refreshed = ModelStore.refreshedBaseModelSnapshots(
+            catalog: ModelCatalogSnapshot(models: [], updatedAt: 10),
+            state: ModelStateSnapshot(models: [], updatedAt: 12),
+            baseDir: baseDir,
+            fileManager: .default,
+            reconcileManagedLocalModels: true,
+            systemVoiceTTSBinaryPath: fakeSay.path,
+            exportableRemoteModels: []
+        )
+
+        let catalogEntry = try XCTUnwrap(refreshed.catalog.models.first { $0.id == "system-voice-tts" })
+        let stateModel = try XCTUnwrap(refreshed.state.models.first { $0.id == "system-voice-tts" })
+        let expectedModelPath = baseDir
+            .appendingPathComponent("models", isDirectory: true)
+            .appendingPathComponent("system-voice-tts", isDirectory: true)
+            .path
+        var isDirectory: ObjCBool = false
+
+        XCTAssertEqual(catalogEntry.name, "macOS System Voice TTS")
+        XCTAssertEqual(catalogEntry.backend, "transformers")
+        XCTAssertEqual(catalogEntry.quant, "system")
+        XCTAssertEqual(catalogEntry.modelFormat, "system_voice")
+        XCTAssertEqual(catalogEntry.modelPath, expectedModelPath)
+        XCTAssertEqual(catalogEntry.taskKinds, ["text_to_speech"])
+        XCTAssertEqual(catalogEntry.inputModalities, ["text"])
+        XCTAssertEqual(catalogEntry.outputModalities, ["audio"])
+        XCTAssertEqual(catalogEntry.voiceProfile?.engineHints, ["system_voice"])
+        XCTAssertEqual(catalogEntry.resourceProfile.preferredDevice, "cpu")
+        XCTAssertEqual(catalogEntry.processorRequirements.tokenizerRequired, false)
+        XCTAssertEqual(stateModel.modelFormat, "system_voice")
+        XCTAssertEqual(stateModel.state, .available)
+        XCTAssertEqual(stateModel.modelPath, expectedModelPath)
+        XCTAssertEqual(stateModel.voiceProfile?.engineHints, ["system_voice"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: expectedModelPath, isDirectory: &isDirectory))
+        XCTAssertTrue(isDirectory.boolValue)
+    }
+
+    func testRefreshedBaseModelSnapshotsRemovesSystemVoiceTTSWhenBinaryIsUnavailable() throws {
+        let baseDir = try makeTempDir()
+        let stalePath = baseDir
+            .appendingPathComponent("models", isDirectory: true)
+            .appendingPathComponent("system-voice-tts", isDirectory: true)
+            .path
+        let staleCatalogEntry = ModelCatalogEntry(
+            id: "system-voice-tts",
+            name: "macOS System Voice TTS",
+            backend: "transformers",
+            quant: "system",
+            contextLength: 6000,
+            modelPath: stalePath,
+            note: "system_voice_compatibility",
+            modelFormat: "system_voice",
+            taskKinds: ["text_to_speech"],
+            inputModalities: ["text"],
+            outputModalities: ["audio"]
+        )
+        let staleStateModel = HubModel(
+            id: "system-voice-tts",
+            name: "macOS System Voice TTS",
+            backend: "transformers",
+            quant: "system",
+            contextLength: 6000,
+            paramsB: 0,
+            state: .available,
+            modelPath: stalePath,
+            note: "system_voice_compatibility",
+            modelFormat: "system_voice",
+            taskKinds: ["text_to_speech"],
+            inputModalities: ["text"],
+            outputModalities: ["audio"]
+        )
+
+        let refreshed = ModelStore.refreshedBaseModelSnapshots(
+            catalog: ModelCatalogSnapshot(models: [staleCatalogEntry], updatedAt: 10),
+            state: ModelStateSnapshot(models: [staleStateModel], updatedAt: 12),
+            baseDir: baseDir,
+            fileManager: .default,
+            reconcileManagedLocalModels: true,
+            systemVoiceTTSBinaryPath: baseDir.appendingPathComponent("missing-say").path,
+            exportableRemoteModels: []
+        )
+
+        XCTAssertFalse(refreshed.catalog.models.contains { $0.id == "system-voice-tts" })
+        XCTAssertFalse(refreshed.state.models.contains { $0.id == "system-voice-tts" })
+    }
+
     func testReconciledManagedLocalModelSnapshotsKeepsMissingExternalPaths() throws {
         let baseDir = try makeTempDir()
         let externalMissingPath = baseDir
@@ -585,7 +675,8 @@ final class ModelStoreRuntimeStateReconciliationTests: XCTestCase {
             catalog: catalog,
             state: state,
             baseDir: baseDir,
-            fileManager: .default
+            fileManager: .default,
+            systemVoiceTTSBinaryPath: baseDir.appendingPathComponent("missing-say").path
         )
 
         XCTAssertEqual(refreshed.catalog.models.count, 1)
@@ -686,6 +777,16 @@ final class ModelStoreRuntimeStateReconciliationTests: XCTestCase {
         addTeardownBlock {
             try? FileManager.default.removeItem(at: url)
         }
+        return url
+    }
+
+    private func makeExecutableFile(in directory: URL, named name: String) throws -> URL {
+        let url = directory.appendingPathComponent(name)
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: url)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: url.path
+        )
         return url
     }
 }
